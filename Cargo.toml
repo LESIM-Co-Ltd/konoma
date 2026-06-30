@@ -1,0 +1,135 @@
+[package]
+name = "konoma"
+version = "0.1.0"
+edition = "2021"
+# 依存 mermaid-text 0.56 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
+rust-version = "1.92"
+description = "Full-screen preview-focused terminal file browser (macOS Apple Silicon)"
+license = "MIT"
+repository = "https://github.com/LESIM-Co-Ltd/konoma"
+keywords = ["tui", "file-manager", "preview", "ratatui", "kitty-graphics"]
+categories = ["command-line-utilities"]
+# 公開 crate から開発・内部物を除外。samples は全て自作(下記 samples/README)で同梱=テスト fixture 兼デモ。
+# vendor は [patch] が公開時に剥がれ参照されないため不要。
+exclude = [
+    "/vendor",
+    "/docs",
+    "/git-demo",
+    "/git-sandbox",
+    "/scripts",
+    "/.claude",
+    "/.mcp.json",
+    "/CLAUDE.md",
+    "/.DS_Store",
+    "/.github",
+    "/about.toml",
+    "/about.hbs",
+    "/assets",
+]
+
+[dependencies]
+# TUI コア (ratatui 0.30 はモジュラー構成。アプリは main crate を使う)
+# unstable-rendered-line-info: 折返し後の表示行数 (Paragraph::line_count) を取得し、
+#   プレビューの縦スクロールを末尾でクランプするのに使う。システム依存ではなく cargo feature。
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = "0.29"
+
+# 画像 (kitty graphics protocol 等を統一して扱う)
+# 注意: default features の chafa-dyn はシステムライブラリ libchafa(pkg-config >= 1.8) を要求し、
+# 未導入環境では build.rs が panic してビルド不可になる。konoma は kitty graphics 狙いで chafa
+# (半ブロック等のフォールバック描画) は不要。PRD §5「cargo install で動作・外部依存は任意=配布容易性」
+# にも反するため default-features を切る。crossterm=バックエンド / image-defaults=画像フォーマット /
+# tokio=非同期リサイズ・デコードのオフロード(FR-4 の非ブロッキング描画用)。
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults", "tokio"] }
+image = "0.25"
+# SVG プレビュー: 純 Rust(usvg/tiny-skia/rustybuzz/fontdb)でラスタライズ→既存の画像経路へ流す。
+# chafa(C)/onig(C) を避けたのと同じ方針で、外部ライブラリ不要＝配布容易性(PRD §5)を維持。
+# default features に text/system-fonts/raster-images 等を含む(SVG 内テキスト/埋め込み画像対応)。
+resvg = "0.47"
+
+# Markdown / Mermaid / コードハイライト
+# 当初候補の ratatui-markdown(0.3.6) は ratatui ^0.29 依存で、画像プレビューが要求する
+# ratatui 0.30(ratatui-image 11)と両立不可のため不採用(2026-06 調査)。代わりに:
+#   - tui-markdown: ratatui-core ^0.1(=0.30 と同一型)ネイティブ。from_str(md) -> ratatui::text::Text。
+#     内部 pulldown-cmark + syntect(highlight-code 既定)。StyleSheet で要素別 Style を制御可。
+#   - mermaid-text: 依存 unicode-width のみの純 Rust。mermaid → Unicode 罫線テキスト(画像/ブラウザ不要)。
+#     render_with_width / RenderOptions(幅・ascii・color)で制御。state 図のみ非対応→raw 表示で fallback。
+# どちらも MIT(tui-markdown は MIT/Apache-2.0)。外部バイナリ不要・in-process・配布容易性(PRD §5)を維持。
+# default の highlight-code は syntect を既定(onig=oniguruma C)で引くため切る。
+# md フェンスコードのハイライトは konoma 側で純 Rust syntect(下記)に統一する＝配布容易性(PRD §5)。
+tui-markdown = { version = "0.3.7", default-features = false }
+mermaid-text = "0.56"
+# 拡張子付き単体コードファイルのハイライト用(md 内は tui-markdown が担当)。
+# 既定の onig バックエンドは oniguruma(C ライブラリ)を要求し配布容易性(PRD §5)に反するため、
+# default-features を切り純 Rust の fancy-regex(default-fancy) を使う(chafa を切ったのと同じ方針)。
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# syntect 同梱シンタックスに無い言語(TypeScript/TOML 等)を補う拡張シンタックス集(bat 由来・
+# ライセンス処理済み)。onig を避け純 Rust の fancy-regex を使う(syntect-fancy)。
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+# 表(GFM table)の桁揃え用。tui-markdown 0.3.7 は表を1行に潰すため、表ブロックは横取りして
+# 自前で列幅(全角=2幅)を測り罫線描画する。全角を正しく測れるので CJK でも崩れない。
+unicode-width = "0.2"
+
+# 設定
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# クリップボード
+arboard = "3"
+
+# glob / mime 判定
+globset = "0.4"
+infer = "0.16"
+
+# git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
+git2 = { version = "0.21", optional = true }
+
+# 非同期 (画像デコード・外部コマンドのオフロード)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
+
+# エラー処理
+anyhow = "1"
+
+# ファイル監視 (FR-1/FR-7 の自動更新)。macOS は FSEvents を使う。外部バイナリ不要・OS API ラッパ
+# のためコンパイル時依存のみ＝配布容易性(PRD §5)を損なわない。変更検知でツリー/git status を自動更新。
+notify = "8.2.0"
+
+# ゴミ箱送り (M7 Phase B・削除は復元可が既定)。macOS は NSFileManager の trashItem を使い
+# Finder の「戻す」に対応した正規ゴミ箱へ送る。外部バイナリ不要・コンパイル時依存のみ
+# (notify/git2 と同じ方針＝配布容易性を損なわない)。
+trash = "5"
+
+[features]
+default = ["git"]
+git = ["dep:git2"]
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# debug ビルドでも syntect/fancy-regex の正規表現コンパイルは重い(TS 等の巨大文法で数秒)。
+# 自分のコードはデバッグ可能なまま、これら依存クレートだけ最適化して初回ハイライトを実用域にする。
+[profile.dev.package.fancy-regex]
+opt-level = 3
+[profile.dev.package.regex]
+opt-level = 3
+[profile.dev.package.regex-syntax]
+opt-level = 3
+[profile.dev.package.regex-automata]
+opt-level = 3
+[profile.dev.package.syntect]
+opt-level = 3
+
+# mermaid-text のローカルフォーク（vendor/mermaid-text）。
+# upstream 0.56.0 は CJK(全角)入力で panic する: strip_keyword_prefix 系が
+# `line[..keyword.len()]` をバイト境界無視でスライスし、全角文字の途中で切ると
+# `byte index N is not a char boundary` で落ちる(parser の common/timeline/gantt/
+# journey/class の5箇所)。各所に `line.is_char_boundary(len)` ガードを足して回避。
+# 箱の右枠ズレ(Grid の 1セル=1列 前提に起因)は別問題で未対応＝今回のスコープ外。
+#
+# 注意: [patch] は `cargo publish` 時に剥がれ公開 crate には効かない。公開版は upstream 0.56 を
+# 引くため、CJK を含む mermaid 図は描画されず生ソースへ劣化フォールバックする(render_mermaid_safe の
+# catch_unwind でクラッシュはしない)。この制約は許容する方針(2026-06-27・docs/AUDIT-2026-06-27.md A1)。
+# ローカル開発ではこの patch が効くため CJK も描画される。
+[patch.crates-io]
+mermaid-text = { path = "vendor/mermaid-text" }

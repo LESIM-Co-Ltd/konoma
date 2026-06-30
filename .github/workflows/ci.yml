@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    # konoma targets macOS on Apple Silicon; macos-14 runners are arm64.
+    name: fmt / clippy / test (macOS Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Default features include `git`. Warnings are denied (the project's DoD is zero warnings).
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: Test (default features)
+        run: cargo test
+
+      - name: Test (no default features)
+        run: cargo test --no-default-features

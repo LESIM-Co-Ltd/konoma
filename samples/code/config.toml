@@ -1,0 +1,20 @@
+# Sample TOML config — syntax highlighting demo.
+title = "konoma sample"
+version = 2
+enabled = true
+
+[server]
+host = "127.0.0.1"
+port = 8080
+timeout = 30.5
+
+[paths]
+roots = ["/usr/local", "~/work"]
+
+[[plugins]]
+name = "preview"
+priority = 10
+
+[[plugins]]
+name = "git"
+priority = 5

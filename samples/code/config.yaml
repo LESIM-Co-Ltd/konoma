@@ -1,0 +1,18 @@
+# Sample YAML config — syntax highlighting demo.
+name: konoma
+version: 1.2.0
+enabled: true
+features:
+  - tree
+  - preview
+  - git
+server:
+  host: 0.0.0.0
+  port: 8080
+  tls: true
+limits:
+  max_bytes: 1048576
+  timeout: 30s
+description: >
+  Full-screen preview-focused
+  terminal file browser.

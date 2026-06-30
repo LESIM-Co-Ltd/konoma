@@ -1,0 +1,263 @@
+# konoma 設定例。~/.config/konoma/config.toml に置く。
+# 無くてもデフォルトで動作する。
+
+[ui]
+show_hidden = false
+# 表示言語。"auto"(既定) | "en" | "jp"。ヘルプ(?)・キーヒント・モード表示・メッセージ等に適用。
+# "auto" は OS の既定言語に追従 (macOS のシステム言語が日本語なら jp、それ以外は en)。
+lang = "auto"
+tabbar = "auto"            # always | auto | hidden
+# ステータス系の配置。
+#   split  = コンテキスト(モード/パス/倍率)を上(タブと同じ行の右)・キーヒントを下 (既定)。
+#   bottom = コンテキストもキーヒントも下1行にまとめる。
+# キーヒントは「最も有用な順」に、表示幅へ入る分だけ自動表示し、続きは末尾 … で省略する。
+statusbar = "split"
+# ツリー行頭に Nerd Font アイコンを表示。要 Nerd Font。端末に "Symbols Nerd Font" を
+# フォールバック追加すれば普段のフォントのまま使える。豆腐(□)が出る/未導入なら false に。
+# アイコンは無色(端末の既定前景色を継承)。色は将来 git status のあるファイルにのみ使う。
+icons = true
+# テキストプレビューの長い行の扱い。
+#   true  = 折返して全文を表示 (既定)。
+#   false = 折返さず h/l・←/→ で横スクロール (less 風)。
+wrap = true
+# コード/テキストプレビューに行番号ガターを表示するか。
+#   false = 表示しない (既定・最小表示)。
+#   true  = 行頭に行番号を表示 (淡色)。大きいファイルは less 風ウィンドウ読みで、
+#           G(末尾)時も総行数から正しい行番号を表示する。
+line_numbers = false
+# タブのタブストップ幅 (既定 4)。コード/テキストプレビューでタブを「可視マーカー(→)＋
+# 次タブストップまでの空白」に展開する桁数。端末はタブを桁揃えしないため、これでインデントが
+# 揃い、かつタブだと分かる。0 にすると展開しない(生のタブのまま=桁が崩れることがある)。
+tab_width = 4
+# コードのシンタックスハイライトを行うか。
+#   true  = syntect で着色 (既定)。初回に言語ごと文法コンパイルが入る(下記 preview_loading で吸収)。
+#   false = 素テキスト表示で最速 (syntect を一切使わない)。重さが気になる/不要なら false。
+syntax_highlight = true
+# 重いコードプレビュー(初めて開く言語=文法コンパイルが要るとき)の待ちの見せ方。
+# ※ 一度開いた言語は温まるので即時表示=この設定に関係なく一瞬。
+#   indicator   = 画面中央にローディング表示を出してから本文を着色表示 (既定)。
+#   progressive = 本文を素テキストで即表示し、準備でき次第ハイライトへ差し替え (フリーズ無し)。
+preview_loading = "indicator"
+# タイトル(tree/preview)のパス表示の既定。p キーで relative→home→full を巡回。
+#   relative = 起動ディレクトリ名からの相対 (例: konoma/src/main.rs)。既定。
+#   home     = HOME からの相対 (例: ~/work/konoma)。
+#   full     = フルパス (例: /Users/me/work/konoma)。
+path_style = "relative"
+# プレビューのページ送りキー流儀(既定プロファイル)。j/k 行移動・矢印・PageUp/Down は両流儀共通。
+#   vim  = Ctrl-f/Ctrl-b でページ、Ctrl-d/Ctrl-u でハーフページ (既定)。
+#   less = Space/b でページ、d/u でハーフページ (※プレビュー系の面のみ。ツリーの Space は
+#          ファイル管理リーダーに割り当て済みのため less でも vim ページのまま)。
+# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<面>] で
+#   上書きできる(そちらが優先・別物)。
+keys = "vim"
+# 画像プレビューの表示サイズスケール (0.1〜1.0)。表示矩形をこの倍率に縮めて表示する。
+# 既定 1.0 では「初期=画像サイズ(フィット)、+で拡大、viewport を超えたら hjkl でパン」。
+# 1.0 未満にすると表示が小さくなる代わりに、kitty への転送ピクセル(=表示/ズームの待ち時間)が減る。
+# 配置は常に中央・アスペクト比も正しい。速度が要るとき下げる(例 0.6 で転送 ≒ 1/3)。
+# GIF アニメ/全画像で共有(GIF の転送を軽くしたいときもこれ)。
+image_render_scale = 1.0
+
+# SVG ラスタライズの最大辺(px)。ベクタは無限解像度なので、この px まで拡大して描く
+# (小さい SVG もくっきり)。大きいほど鮮明だが描画・転送が重い。既定 800。
+# ★SVG 専用★: ラスタ画像/GIF はこの設定の影響を受けない(GIF の転送量は image_render_scale)。
+svg_max_px = 800
+
+# 詳細リスト表示: 各行の右に並べるメタ情報の列。空 [] (既定) で素の表示。
+# 指定できる列: "size"(サイズ) / "modified"(更新日時) / "perm"(権限 rwx) /
+#   "type"(file/dir/link) / "items"(ディレクトリの項目数。各 dir 行で read_dir するので
+#   ディレクトリが多い木では少し重い)。指定順に右へ並ぶ。
+# 長い名前は自動で切り詰め(…)、列は右寄せで縦に揃う。
+# 単体の全情報(symlink 先・絶対パス含む)は `i` のポップアップで見られる。
+details = []           # 例: ["type", "size", "modified"]
+
+# コミットグラフ(o→g)で同時に描くローカルブランチの上限 (既定 12)。
+# ブランチが多いとレーン/色/凡例が溢れるため、起動時は 基準/優先＋HEAD＋最近コミット順で
+# 上限まで自動選択する。グラフ内 `b` のパネルで表示/非表示の切替＋優先順の並び替えができる
+# (Space:切替 / J/K:並替 / a:全部 / n:現在のみ / Enter:適用、HEAD は常に表示)。0 で無制限。
+graph_max_branches = 12
+
+# コミットグラフの「基準/優先ブランチ」(順序つき・既定 [])。例: ["main", "develop"]
+# ① ここに挙げたブランチを優先的に表示(上限の先頭に置く)。
+# ② 左から最初に存在するものを「基準」= lane0 に左一直線で固定する。
+# ③ 並び順が凡例/パネルの表示順にも反映される(配列→HEAD→最近順)。
+# グラフ内 `b` パネルの J/K で当セッション限り並び替え可(config への書き戻しはしない)。
+graph_base_branches = []
+
+# log(o→l)/グラフ(o→g)のコミット行で、右側メタ情報(author・日付、グラフは short も)の寄せ方。
+#   "right"  (既定) … パネル右端に揃えて「列」にする。日付/著者が縦に揃い、新旧を一目で追える
+#                      (SourceTree / VS Code Git Graph 流)。狭い時は subject を末尾省略し、
+#                      さらに狭ければメタ自体を省く(非本質列を落とす)。
+#   "inline"        … subject の直後に続けて出す(従来表示。subject のすぐ隣にメタが並ぶ)。
+commit_meta_align = "right"
+
+# 終了確認。q(最上位ツリー)/ Q(どこからでも) でアプリ全体を終了するとき、確認ダイアログを出すか。
+#   true  (既定) … 「終了しますか?」を確認(q / y / Enter = 終了, n / Esc = 取消。qq で素早く抜ける)
+#   false        … 即終了(確認なし)
+confirm_quit = true
+
+# ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
+# (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
+[ui.sort]
+key        = "name"    # 並び替えの基準: "name"(既定) | "size" | "modified" | "ext"
+reverse    = false     # 降順にするか (既定 false=昇順)
+dirs_first = true      # ディレクトリを先頭に固める (既定 true)。false=ファイルと混在
+
+[ui.theme]
+# 色は "#rrggbb" / 色名 ("black","lightblue" 等) / 端末インデックス ("8") / "none" で指定。
+#
+# アプリ全体の背景色。既定 "none" = 端末の既定背景のまま (端末側の透過設定もそのまま活きる)。
+#   色を指定すると全画面をその色で塗りつぶす (透過は無効化される)。
+bg = "none"
+#
+# Markdown の「コード」の背景色 (inline code `...` とコードブロック ``` 共通)。
+#   "none" = 背景なし。inline code の箱を消し、太字/斜体/リンクと同じく前景色だけで表現
+#            (コードブロックは左ガター ▎ ＋色のみ)。見た目を揃えたい場合はこれ。
+# 既定はやや明るいスレート。背景を出したくない場合は code_bg = "none"。
+code_bg = "#2b303b"
+# コードブロック先頭の言語ラベル(バッジ)の寄せ。"right"(既定) または "left"。
+code_label_align = "right"
+# 言語バッジの背景色。
+#   "auto"(既定) = code_bg を少し明るくした色(本文コードと区別)。
+#   "none"       = 背景なし(淡色テキストのみ)。
+#   任意の色     = "#rrggbb" / 色名 等。
+code_label_bg = "auto"
+# コードのシンタックスハイライトのテーマ (two-face 同梱・単体コードと md フェンス共通)。
+# 既定 "TwoDark" = Zed の One Dark 配色。区切り(空白/-/_)と大文字小文字は無視・不明名は TwoDark。
+#   主な選択肢: "TwoDark"(=one-dark) / "OneHalfDark" / "Dracula" / "Nord" /
+#               "gruvbox-dark" / "gruvbox-light" / "Catppuccin Mocha"(Frappe/Latte/Macchiato) /
+#               "Monokai Extended" / "Solarized (dark)" / "Solarized (light)" /
+#               "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon" など。
+code_theme = "TwoDark"
+
+# プレビュールールは上から評価し、最初にマッチしたものを使う。
+# builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text")
+#   markdown=tui-markdown で装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
+#   mermaid =mermaid-text で .mmd/.mermaid 単体を Unicode 罫線図に描画(純Rust・外部不要)。
+#   image  =kitty graphics で全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
+#   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
+#   video  =ffmpegthumbnailer/ffmpeg で代表フレーム1枚を抽出しサムネイル表示(端末内再生はしない)。
+#          外部ツールは任意(不在ならヒント表示にフォールバック)。再生したい場合は下の command 例参照。
+#   pdf    =ページを1枚ずつラスタライズして画像表示(pdftocairo/pdftoppm/qlmanage/sips)。macOS は qlmanage/sips
+#          が常在するため事実上どの環境でも表示可。外部ツール全滅時のみヒント表示にフォールバック。
+#          複数ページは J/K(または PageDown/PageUp)で送る(poppler 必須=pdfinfo でページ数取得+任意ページ描画)。
+# command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
+# render_as: command 出力の扱い ("image" でPNG等を全画面画像表示)
+# detached: 別プロセスで開きTUIをブロックしない(動画等)
+
+[[preview.rules]]
+glob = "*.md"
+builtin = "markdown"
+
+[[preview.rules]]
+glob = "*.{mmd,mermaid}"
+builtin = "mermaid"        # 内蔵(mermaid-text)で罫線描画。崩れる図は下のコマンド委譲に差し替え可
+# command = "merman -i {path} -o {out}.png --scale 2"
+# render_as = "image"
+
+[[preview.rules]]
+glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
+builtin = "svg"
+
+[[preview.rules]]
+mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
+builtin = "image"
+
+[[preview.rules]]
+glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
+builtin = "code"
+
+[[preview.rules]]
+mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
+builtin = "video"
+# 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
+# command = "mpv {path}"
+# detached = true          # 別プロセスで開き TUI をブロックしない
+
+[[preview.rules]]
+glob = "*.pdf"             # 既定: ページを1枚ずつラスタライズして全画面画像表示(J/K でページ送り・macOS は標準ツールで表示可)
+builtin = "pdf"
+
+# どのルールにもマッチしないファイルは [can not preview: <ext>] を全画面表示。
+
+# ── キーバインド (FR-8) ──────────────────────────────────────────────────────
+# 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
+# (上の ui の keys="vim" とは別物。混同しやすいので注意)
+#
+# モデル: 「面(surface) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
+# あり、ここで上書き/追加/無効化できる(書かなければ既定のまま)。helix 風の表記:
+#   [keys.<面>]
+#   <キー> = "<アクション>"
+#
+# ■ 面(surface)名 — 「今どの画面か」で別々のマップを持つ。snake_case:
+#   global        : どの面でも効く(タブ t/w/[/]/1-9・ヘルプ ?)
+#   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
+#   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
+#   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
+#   sort  bookmarks  info  help
+#
+# ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
+#   装飾 "ctrl-f"(別名 "c-f")・名前付き "tab enter esc up down left right home end pageup pagedown"。
+#   和音(リーダー)は空白区切り 2 トークン: "y f" = y の後に f、"space d" = Space の後に d。
+#   ※ Esc/Enter/Backspace/Delete/Tab/矢印・テキスト入力中の文字キーは固定(rebind 不可・無視)。
+#
+# ■ アクション名(snake_case)の主なもの:
+#   移動         : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
+#   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent"
+#   ファイル管理 : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
+#   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
+#                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
+#                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
+#                  "enter_visual" "toggle_select"
+#   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
+#                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
+#   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
+#                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
+#                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
+#   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
+#
+# ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。
+#   y     → パスコピー   (n=名前 r=相対 f=フル p=親)
+#   Space → ファイル管理 (n=作成 r=改名 d=削除 c=コピー x=カット p=貼付) ※ツリー / ビジュアル
+#
+# ■ 衝突検知: 同じ面で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の
+#   タブキーを別用途にする等)は起動時に検知し、フッターに通知して既定へ戻す(黙って壊さない)。
+#
+# 例(コメントを外して使う):
+# [keys.tree]
+# d = "open_git_diff_cursor"   # カーソルの変更ファイル diff (既定)
+# "space d" = "file_delete"    # Space→d で削除 (既定)
+# "y f" = "copy_full"          # y→f でフルパスコピー (既定)
+# x = "noop"                   # x を無効化
+#
+# [keys.preview_text]
+# "ctrl-f" = "navigate:page_down"
+#
+# [keys.git_changes]
+# g = "git_open_graph"
+#
+# (後方互換) 旧 [keys] の copy_name/copy_full/copy_relative/copy_parent (suffix) は当面読み込み、
+# パスコピーの y リーダーへ反映する。**copy_prefix は無視** (新スキームでプレフィクスは y 固定)。
+# いずれも非推奨・新形式 [keys.<面>] を推奨。
+
+# 外部エディタ(`e` キーで起動)。**拡張子ごとに指定可能**。
+# 解決順: [editor.ext] の拡張子別 → command(全体既定) → $VISUAL → $EDITOR → vim。
+# 値はコマンド＋引数(空白区切り)。{path} があればそこへファイルパスを差し込み、無ければ末尾に追加。
+# (注: 引数のクオートは未対応＝空白区切りのみ。複雑な起動はラッパースクリプトを指定。)
+[editor]
+command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim にフォールバック。
+
+# 拡張子別の割り当て(ドット無しのキー)。
+[editor.ext]
+# rs  = "nvim"
+# md  = "code -w"            # GUI は終了待ちフラグ(-w/--wait)推奨
+# py  = "nvim {path}"        # {path} で位置を明示することも可
+# txt = "nano"
+
+# ── Git 連携 ───────────────────────────────────────────────────────────────
+# `o` で内蔵 Git ビュー(変更ハブ)を開く。外部 git ツールは変更ハブの中で `!` から起動する。
+[git]
+tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
+diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
+# main_branch: 【未実装/予約】基準ブランチ固定グラフ(リリース後・docs/GRAPH-BASE-SPEC.md)用。
+#              現状はどこからも参照されない=設定しても無効。実装時に有効化する。

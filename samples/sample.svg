@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300" viewBox="0 0 480 300">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e2030"/>
+      <stop offset="1" stop-color="#3a2f4f"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ee787"/>
+      <stop offset="1" stop-color="#2ea043"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#ffd54a" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#ffd54a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 背景 -->
+  <rect x="0" y="0" width="480" height="300" rx="18" fill="url(#bg)"/>
+  <circle cx="240" cy="120" r="130" fill="url(#glow)"/>
+
+  <!-- 木の枝(konoma=木の間) -->
+  <g stroke="#caa472" stroke-width="6" stroke-linecap="round" fill="none">
+    <path d="M240 250 L240 150"/>
+    <path d="M240 180 L300 130"/>
+    <path d="M240 165 L185 120"/>
+  </g>
+
+  <!-- 葉 -->
+  <g fill="url(#leaf)">
+    <ellipse cx="240" cy="120" rx="34" ry="22" transform="rotate(-18 240 120)"/>
+    <ellipse cx="305" cy="120" rx="26" ry="17" transform="rotate(22 305 120)"/>
+    <ellipse cx="180" cy="112" rx="26" ry="17" transform="rotate(-30 180 112)"/>
+  </g>
+
+  <!-- 透明部分の確認用: 端末背景が透ける角の切り欠き -->
+  <circle cx="40" cy="40" r="14" fill="#e06c75"/>
+  <circle cx="440" cy="40" r="14" fill="#61afef"/>
+
+  <!-- テキスト(フォント描画の確認) -->
+  <text x="240" y="282" font-family="Helvetica, Arial, sans-serif" font-size="30"
+        font-weight="700" fill="#e6e6e6" text-anchor="middle" letter-spacing="3">konoma</text>
+  <text x="240" y="300" font-family="Helvetica, Arial, sans-serif" font-size="0" fill="#000">.</text>
+</svg>

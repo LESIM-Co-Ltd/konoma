@@ -1,0 +1,15 @@
+# Sample YAML (.yml) — syntax highlighting demo.
+ci:
+  steps:
+    - name: build
+      run: cargo build --release
+    - name: test
+      run: cargo test --all-features
+matrix:
+  os: [macos, linux]
+  rust:
+    - stable
+    - nightly
+env:
+  RUST_LOG: debug
+  CI: true

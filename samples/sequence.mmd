@@ -1,0 +1,8 @@
+sequenceDiagram
+  participant U as User
+  participant K as konoma
+  participant E as Editor
+  U->>K: open a .mmd file
+  K->>K: render with mermaid-text
+  K-->>U: full-screen preview
+  U->>E: edit on the right pane

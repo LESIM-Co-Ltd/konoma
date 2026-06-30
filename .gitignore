@@ -1,0 +1,54 @@
+# konoma .gitignore — Rust(バイナリ crate) + macOS TUI + プロジェクト固有
+# 方針: 公開は最小限。追跡するのは src/ Cargo.* / vendor(=[patch] 先・ビルド必須) /
+#       LICENSE / README / config.example.toml / samples のみ。
+#       内部ドキュメント・エージェント設定・開発スクリプト等、ビルド成果物、
+#       各自 .git を持つ dev サンドボックスは無視する。
+# 注意: .gitignore は行内(末尾)コメント非対応。コメントは必ず行頭に書く
+#       (パターン行に # を付けると # 以降もパターンの一部になり機能しない)。
+
+# ── Rust ビルド成果物 ──
+/target/
+# vendor したフォーク crate のビルド成果物 (数百MB)。source は追跡・target だけ無視。
+vendor/**/target/
+# rustfmt のバックアップ / デバッグシンボル
+**/*.rs.bk
+*.pdb
+# konoma はバイナリ crate のため Cargo.lock はコミットする (無視しない)。
+
+# ── git 機能の動作確認用 dev サンドボックス (各自 .git を持つ確認用 repo) ──
+# 再生成: scripts/make-git-demo.sh (git-demo)。
+/git-demo/
+/git-sandbox/
+
+# ── デバッグログ (TUI は eprintln 不可視=ファイルログ運用の一時生成物) ──
+*.log
+
+# ── macOS ──
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+# AppleDouble / リソースフォーク
+._*
+
+# ── エディタ / IDE ──
+# vim スワップは .swp/.swo/.swn など全網羅 (隠し [._] 前置・誤コミット防止)。
+*.sw[a-p]
+[._]*.sw[a-p]
+*~
+.idea/
+.vscode/
+*.iml
+
+# ── 内部/開発物 (最小公開: リポジトリに出さない。ローカルには残る = 開発の durable store) ──
+# vendor/ は [patch.crates-io] の参照先=ローカルビルドに必須なので追跡する(ここで無視しない)。
+# PRD/KEYMAP/SPEC/STATUS/HANDOFF/AUDIT (内部ドキュメント)。キー一覧はアプリ内 ? ヘルプが正。
+/docs/
+# プロジェクト指示書 (内部の開発ナラティブ)。
+/CLAUDE.md
+# エージェント設定・スキル (konoma 固有でない汎用物を含む)。
+/.claude/
+# MCP サーバ設定 (ローカルツール設定)。
+/.mcp.json
+# make-git-demo.sh = 無視している git-demo の再生成器 (開発専用)。
+/scripts/

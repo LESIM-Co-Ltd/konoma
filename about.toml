@@ -1,0 +1,28 @@
+# cargo-about config for generating THIRD-PARTY-LICENSES.md.
+# Regenerate with: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
+#
+# Scope to what is actually linked into the shipped binary: konoma targets only
+# macOS/Apple Silicon, and dev-dependencies (test/fuzz crates such as libfuzzer-sys)
+# are never distributed, so they are excluded from the attribution list.
+targets = ["aarch64-apple-darwin"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+
+# Permissive licenses present in konoma's dependency tree (all MIT-compatible).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Zlib",
+    "BSL-1.0",
+    "Unlicense",
+    "0BSD",
+    "OpenSSL",
+]

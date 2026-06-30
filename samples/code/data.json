@@ -1,0 +1,15 @@
+{
+  "name": "konoma",
+  "version": "0.1.0",
+  "keywords": ["tui", "preview", "ratatui", "kitty-graphics"],
+  "settings": {
+    "wrap": false,
+    "maxBytes": 1048576,
+    "theme": null,
+    "icons": true
+  },
+  "authors": [
+    { "name": "alice", "active": true, "commits": 128 },
+    { "name": "bob", "active": false, "commits": 0 }
+  ]
+}
