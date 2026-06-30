@@ -22,7 +22,8 @@ jobs:
           - { os: macos-14, target: aarch64-apple-darwin }
           - { os: macos-14, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          # Windows excluded: konoma uses Unix-only std APIs and Windows terminals
+          # lack the kitty graphics protocol the previews need. See ci.yml.
     steps:
       - uses: actions/checkout@v4
 

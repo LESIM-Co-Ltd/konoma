@@ -51,7 +51,10 @@ jobs:
           - { os: macos-14, target: aarch64-apple-darwin }
           - { os: macos-14, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          # Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma uses
+          # Unix-only std APIs (PermissionsExt::mode, std::os::unix::fs::symlink,
+          # OsStrExt::from_bytes) and Windows terminals do not implement the kitty
+          # graphics protocol the previews depend on.
     steps:
       - uses: actions/checkout@v4
 
