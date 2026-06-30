@@ -1,0 +1,51 @@
+name: Release
+
+# Build prebuilt binaries on native runners and attach them to the GitHub Release
+# for the pushed tag (e.g. `git tag v0.1.1 && git push origin v0.1.1`).
+# Archive names match cargo-binstall's defaults so `cargo binstall konoma` works.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same C-dependency system libraries as the CI build job.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config cmake \
+            libssl-dev libssh2-1-dev zlib1g-dev \
+            libdbus-1-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Build and upload binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: konoma
+          target: ${{ matrix.target }}
+          # Produces konoma-<target>.tar.gz (unix) / konoma-<target>.zip (windows).
+          archive: $bin-$target
+          tar: unix
+          zip: windows
+          # Bundle docs alongside the binary in the archive.
+          include: README.md,LICENSE,CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -27,6 +27,15 @@ exclude = [
     "/assets",
 ]
 
+# cargo-binstall: fetch the prebuilt binary from the GitHub Release instead of
+# compiling from source. Archive names match the Release workflow / taiki-e action.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 # TUI コア (ratatui 0.30 はモジュラー構成。アプリは main crate を使う)
 # unstable-rendered-line-info: 折返し後の表示行数 (Paragraph::line_count) を取得し、
