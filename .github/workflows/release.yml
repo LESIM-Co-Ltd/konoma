@@ -12,8 +12,23 @@ permissions:
   contents: write
 
 jobs:
+  # The upload action attaches assets to an existing Release, so create it first.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+                 --title "${GITHUB_REF_NAME}" \
+                 --notes "Prebuilt binaries for ${GITHUB_REF_NAME} (macOS arm64/x86_64, Linux x86_64)."
+
   upload:
     name: ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -38,12 +53,16 @@ jobs:
             libdbus-1-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: konoma
           target: ${{ matrix.target }}
-          # Produces konoma-<target>.tar.gz (unix) / konoma-<target>.zip (windows).
+          # Produces konoma-<target>.tar.gz, matching cargo-binstall's defaults.
           archive: $bin-$target
           tar: unix
           zip: windows
