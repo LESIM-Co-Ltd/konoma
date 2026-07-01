@@ -27,6 +27,18 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
         .ok()
 }
 
+/// Read only the pixel dimensions of an image, sniffing the format from the file's content (not its
+/// extension). Used for inline Markdown images — including fetched remote images cached without an
+/// extension — to reserve layout rows without decoding the whole file. None if it is not an image.
+pub fn dimensions(path: &Path) -> Option<(u32, u32)> {
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 /// Minimum display time for each GIF frame. Anything below this (including 0) is treated as 100ms
 /// (a GIF delay=0 means "as fast as possible"; like browsers, snap to 100ms to prevent runaway).
 const MIN_FRAME_DELAY: Duration = Duration::from_millis(20);

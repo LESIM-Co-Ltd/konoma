@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use ratatui::layout::Rect;
@@ -586,6 +587,18 @@ pub struct App {
     /// Sending end that offloads heavy media loading (SVG rasterize / GIF full-frame decode) to a separate thread.
     /// The result is received by main's poll loop and applied in apply_media. None=synchronous fallback (tests, etc.).
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
+    /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
+    md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
+    /// Sender that offloads inline-image decoding to a background thread.
+    md_img_tx: Option<std::sync::mpsc::Sender<MdImageResult>>,
+    /// Remote inline-image URLs whose background download is in flight (deduplicates fetches).
+    md_remote_inflight: std::collections::HashSet<String>,
+    /// Remote inline-image URLs whose download failed — do not retry; they show a text placeholder.
+    md_remote_failed: std::collections::HashSet<String>,
+    /// Sender that reports the completion of a background remote-image download to the run loop.
+    md_remote_tx: Option<std::sync::mpsc::Sender<RemoteFetch>>,
+    /// Sender that offloads inline-image encoding (resize + protocol) to the encode worker thread.
+    md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
@@ -738,6 +751,8 @@ struct MdCache {
     path: PathBuf,
     width: u16,
     lines: Vec<Line<'static>>,
+    /// Block-level inline images reserved within `lines` (Markdown only; empty otherwise).
+    images: Vec<crate::preview::markdown::ImagePlacement>,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -765,6 +780,105 @@ struct WinCache {
     byte_top: u64,
     height: u16,
     lines: Vec<Line<'static>>,
+}
+
+/// A decoded inline Markdown image plus its background-encoded render protocol(s).
+#[derive(Default)]
+struct MdImgEntry {
+    /// The decoded source image (None while the background decode is in flight). Shared with the encode
+    /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread.
+    decoded: Option<Arc<image::DynamicImage>>,
+    /// The graphics protocol for the fully-visible image, encoded for `proto_size`.
+    protocol: Option<Protocol>,
+    /// The (cols, rows) `protocol` was encoded for.
+    proto_size: Option<(u16, u16)>,
+    /// The graphics protocol for a partially-scrolled image: only the visible vertical band, cropped and
+    /// encoded so the image renders clipped instead of being hidden. Re-encoded when the band changes.
+    clip_protocol: Option<Protocol>,
+    /// The (cols, full_rows, row_off, vis_rows) band `clip_protocol` was encoded for.
+    clip_key: Option<(u16, u16, u16, u16)>,
+    /// An encode request is in flight on the worker thread (at most one per image, so scrolling does not
+    /// queue a backlog — when it returns, the next render requests the then-current band).
+    enc_inflight: bool,
+    /// Decode or encode failed — do not retry; the placeholder/text fallback stays visible.
+    failed: bool,
+}
+
+/// Which protocol a background encode produces (so the result is stored in the right slot).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MdEncodeKey {
+    /// The whole image at (cols, rows) cells.
+    Full { cols: u16, rows: u16 },
+    /// A cropped vertical band, keyed by (cols, full_rows, row_off, vis_rows).
+    Clip {
+        cols: u16,
+        full_rows: u16,
+        row_off: u16,
+        vis_rows: u16,
+    },
+}
+
+/// A request to encode an inline image (or a cropped band of it) off the UI thread (principle #4).
+pub struct MdEncodeRequest {
+    path: PathBuf,
+    key: MdEncodeKey,
+    image: Arc<image::DynamicImage>,
+    /// Pixel band to crop before encoding; None encodes the whole image.
+    crop: Option<(u32, u32, u32, u32)>,
+    cols: u16,
+    rows: u16,
+}
+
+/// Result of a background inline-image encode, delivered to the run loop.
+pub struct MdEncodeResult {
+    path: PathBuf,
+    key: MdEncodeKey,
+    protocol: Protocol,
+}
+
+/// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
+/// cloned Picker, so the UI thread never blocks on the resize/encode (principle #4). Exits when the
+/// request sender is dropped (App teardown).
+pub fn md_encode_worker(
+    picker: Picker,
+    rx: std::sync::mpsc::Receiver<MdEncodeRequest>,
+    tx: std::sync::mpsc::Sender<MdEncodeResult>,
+) {
+    while let Ok(req) = rx.recv() {
+        let img = match req.crop {
+            Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
+            None => (*req.image).clone(),
+        };
+        let size = ratatui::layout::Size::new(req.cols, req.rows);
+        if let Ok(protocol) =
+            picker.new_protocol(img, size, Resize::Fit(Some(FilterType::Lanczos3)))
+        {
+            if tx
+                .send(MdEncodeResult {
+                    path: req.path,
+                    key: req.key,
+                    protocol,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+}
+
+/// Result of a background inline-image decode, delivered to the run loop.
+pub struct MdImageResult {
+    path: PathBuf,
+    image: Result<image::DynamicImage, String>,
+}
+
+/// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
+/// It carries no bytes: on success the file is already in the cache, so the run loop just invalidates
+/// the decoration cache to re-lay the image out; on failure the URL is remembered so it is not retried.
+pub struct RemoteFetch {
+    url: String,
+    ok: bool,
 }
 
 impl App {
@@ -847,6 +961,12 @@ impl App {
             gif_protocol: None,
             gif_proto_key: None,
             media_tx: None,
+            md_image_cache: std::collections::HashMap::new(),
+            md_img_tx: None,
+            md_remote_inflight: std::collections::HashSet::new(),
+            md_remote_failed: std::collections::HashSet::new(),
+            md_remote_tx: None,
+            md_enc_tx: None,
             media_gen: 0,
             media_loading: false,
             keymaps,
@@ -1952,6 +2072,7 @@ impl App {
         self.preview_kind = Some(kind);
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
         self.md_links.clear();
+        self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
         self.focused_link = None;
         self.preview_search = None;
         self.search_input = None;
@@ -2183,11 +2304,17 @@ impl App {
         };
         let hit = matches!(&self.md_cache, Some(c) if c.path == path && c.width == width);
         if !hit {
-            let lines = self.build_decorated(&path, width);
+            let (lines, images, remote) = self.build_decorated(&path, width);
+            // Kick off background downloads for any remote images shown as "loading". Each completes
+            // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
+            for url in &remote {
+                self.ensure_remote_md_fetch(url);
+            }
             self.md_cache = Some(MdCache {
                 path: path.clone(),
                 width,
                 lines,
+                images,
             });
         }
         self.md_cache
@@ -2196,8 +2323,27 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Read the file with a cap and generate decorated lines according to its kind. A read failure becomes a single safe line.
-    fn build_decorated(&self, path: &Path, width: u16) -> Vec<Line<'static>> {
+    /// Block-level inline images reserved in the current decorated Markdown (empty for other kinds
+    /// or when there is no image backend). `decorated_lines` must be called first (it fills the cache).
+    pub fn md_images(&self) -> Vec<crate::preview::markdown::ImagePlacement> {
+        self.md_cache
+            .as_ref()
+            .map(|c| c.images.clone())
+            .unwrap_or_default()
+    }
+
+    /// Read the file with a cap and generate decorated lines (plus inline-image placements and the list
+    /// of remote image URLs to fetch) according to its kind. A read failure becomes a single safe line.
+    /// Only Markdown yields image placements / remote URLs.
+    fn build_decorated(
+        &self,
+        path: &Path,
+        width: u16,
+    ) -> (
+        Vec<Line<'static>>,
+        Vec<crate::preview::markdown::ImagePlacement>,
+        Vec<String>,
+    ) {
         let src = match crate::preview::text::load(path) {
             Ok(content) => {
                 let mut s = content.lines.join("\n");
@@ -2206,7 +2352,13 @@ impl App {
                 }
                 s
             }
-            Err(e) => return vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+            Err(e) => {
+                return (
+                    vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
         };
         match &self.preview_kind {
             Some(PreviewKind::Markdown(_)) => {
@@ -2217,16 +2369,67 @@ impl App {
                     label_right: theme.code_label_right(),
                     tab_width: self.cfg.ui.tab_width,
                 };
-                crate::preview::markdown::render_markdown(&src, width, code, &theme.code_theme)
+                // Decide how to render each image URL. A local file or a cached remote fetch resolves to
+                // a path → Inline (with its display size in cells). An uncached remote URL is Loading
+                // (a fetch is kicked off separately, in `decorated_lines`) unless it has already failed.
+                // Anything else (no backend / missing file / data: URL) degrades to text (principle #3).
+                let font = self.picker.as_ref().map(|p| p.font_size());
+                let base_dir = path.parent().map(|p| p.to_path_buf());
+                let avail = width.saturating_sub(2);
+                let slot_of = |url: &str| -> crate::preview::markdown::ImageSlot {
+                    use crate::preview::markdown::ImageSlot;
+                    let Some(font) = font else {
+                        return ImageSlot::Unavailable;
+                    };
+                    if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
+                        match md_image_dims(&p) {
+                            Some((pw, ph)) => {
+                                let (cols, rows) = md_image_cells(
+                                    pw,
+                                    ph,
+                                    font.width,
+                                    font.height,
+                                    avail,
+                                    MD_IMAGE_MAX_ROWS,
+                                );
+                                ImageSlot::Inline { cols, rows }
+                            }
+                            None => ImageSlot::Unavailable,
+                        }
+                    } else if crate::preview::markdown::is_remote_image_url(url)
+                        && !self.md_remote_failed.contains(url)
+                    {
+                        ImageSlot::Loading
+                    } else {
+                        ImageSlot::Unavailable
+                    }
+                };
+                let (lines, images) = crate::preview::markdown::render_markdown_with_images(
+                    &src,
+                    width,
+                    code,
+                    &theme.code_theme,
+                    &slot_of,
+                );
+                let remote = if font.is_some() {
+                    crate::preview::markdown::collect_remote_image_urls(&src)
+                } else {
+                    Vec::new()
+                };
+                (lines, images, remote)
             }
-            Some(PreviewKind::Mermaid(_)) => {
-                crate::preview::markdown::render_mermaid_file(&src, width)
-            }
+            Some(PreviewKind::Mermaid(_)) => (
+                crate::preview::markdown::render_mermaid_file(&src, width),
+                Vec::new(),
+                Vec::new(),
+            ),
             // 単体コードファイルは syntect でシンタックスハイライト。
-            Some(PreviewKind::Code(_)) => {
-                crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme)
-            }
-            _ => Vec::new(),
+            Some(PreviewKind::Code(_)) => (
+                crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
+                Vec::new(),
+                Vec::new(),
+            ),
+            _ => (Vec::new(), Vec::new(), Vec::new()),
         }
     }
 
@@ -2239,6 +2442,231 @@ impl App {
     /// Attach the sending end that offloads heavy media loading (SVG/GIF) to a separate thread.
     pub fn attach_media_loader(&mut self, tx: std::sync::mpsc::Sender<MediaResult>) {
         self.media_tx = Some(tx);
+    }
+
+    /// Attach the sender that offloads inline Markdown image decoding to a background thread.
+    pub fn attach_md_image_loader(&mut self, tx: std::sync::mpsc::Sender<MdImageResult>) {
+        self.md_img_tx = Some(tx);
+    }
+
+    /// Attach the sender that offloads inline-image encoding (resize + protocol) to the encode worker.
+    pub fn attach_md_encoder(&mut self, tx: std::sync::mpsc::Sender<MdEncodeRequest>) {
+        self.md_enc_tx = Some(tx);
+    }
+
+    /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
+    pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
+        let entry = self.md_image_cache.entry(res.path).or_default();
+        match res.image {
+            Ok(img) => {
+                entry.decoded = Some(Arc::new(img));
+                entry.failed = false;
+            }
+            Err(_) => entry.failed = true,
+        }
+        true
+    }
+
+    /// Apply a completed background encode: store the protocol in its full or clip slot. Returns redraw.
+    pub fn apply_md_encode(&mut self, res: MdEncodeResult) -> bool {
+        let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
+            return false;
+        };
+        entry.enc_inflight = false;
+        match res.key {
+            MdEncodeKey::Full { cols, rows } => {
+                entry.protocol = Some(res.protocol);
+                entry.proto_size = Some((cols, rows));
+            }
+            MdEncodeKey::Clip {
+                cols,
+                full_rows,
+                row_off,
+                vis_rows,
+            } => {
+                entry.clip_protocol = Some(res.protocol);
+                entry.clip_key = Some((cols, full_rows, row_off, vis_rows));
+            }
+        }
+        true
+    }
+
+    /// Attach the sender that reports background remote-image download completions to the run loop.
+    pub fn attach_remote_md_loader(&mut self, tx: std::sync::mpsc::Sender<RemoteFetch>) {
+        self.md_remote_tx = Some(tx);
+    }
+
+    /// Apply a completed remote-image download. On success the file is now cached, so drop the
+    /// decoration cache to re-lay the image out inline; on failure remember the URL so it is not
+    /// retried and shows a text placeholder instead. Returns whether to redraw.
+    pub fn apply_remote_fetch(&mut self, res: RemoteFetch) -> bool {
+        self.md_remote_inflight.remove(&res.url);
+        if !res.ok {
+            self.md_remote_failed.insert(res.url);
+        }
+        // Re-decorate so a now-cached image is laid out (or a failed one degrades to text).
+        self.md_cache = None;
+        true
+    }
+
+    /// Ensure a background download is in flight for the remote image `url` (deduplicated). Skips URLs
+    /// that are already cached, already downloading, or known to have failed. The download runs off the
+    /// UI thread (principle #4) via `curl`; on completion it reports through `md_remote_tx`.
+    fn ensure_remote_md_fetch(&mut self, url: &str) {
+        if !crate::preview::markdown::is_remote_image_url(url) {
+            return;
+        }
+        // Already downloaded (cache file exists), already failed, or already downloading → nothing to do.
+        if resolve_md_image_path(url, None).is_some()
+            || self.md_remote_failed.contains(url)
+            || self.md_remote_inflight.contains(url)
+        {
+            return;
+        }
+        let (Some(tx), Some(dest)) = (self.md_remote_tx.clone(), md_remote_cache_path(url)) else {
+            return;
+        };
+        self.md_remote_inflight.insert(url.to_string());
+        let u = url.to_string();
+        std::thread::spawn(move || {
+            let ok = fetch_remote_image(&u, &dest);
+            let _ = tx.send(RemoteFetch { url: u, ok });
+        });
+    }
+
+    /// Ensure the inline image for `url` is decoding in the background and that the protocol for the
+    /// currently-visible portion (whole image, or a cropped band when partially scrolled) is encoding on
+    /// the worker thread. Called from the renderer for each visible inline image. Both decoding and
+    /// encoding are off-thread (principle #4) so this never blocks the UI; the protocol appears a frame
+    /// or two later. At most one encode is in flight per image, so scrolling never queues a backlog.
+    pub fn ensure_md_image(
+        &mut self,
+        url: &str,
+        cols: u16,
+        full_rows: u16,
+        row_off: u16,
+        vis_rows: u16,
+    ) {
+        let base = self
+            .preview_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        let Some(path) = resolve_md_image_path(url, base.as_deref()) else {
+            return;
+        };
+        // Kick off a one-time background decode.
+        if !self.md_image_cache.contains_key(&path) {
+            self.md_image_cache
+                .insert(path.clone(), MdImgEntry::default());
+            if let Some(tx) = self.md_img_tx.clone() {
+                let p = path.clone();
+                let svg_max_px = self.cfg.ui.svg_max_px;
+                std::thread::spawn(move || {
+                    // Sniff the format from content (remote-cache files have no extension); rasterize SVG.
+                    let image =
+                        md_decode_image(&p, svg_max_px).ok_or_else(|| "decode failed".to_string());
+                    let _ = tx.send(MdImageResult { path: p, image });
+                });
+            }
+            return;
+        }
+        let Some(enc_tx) = self.md_enc_tx.clone() else {
+            return;
+        };
+        let Some(entry) = self.md_image_cache.get_mut(&path) else {
+            return;
+        };
+        // Wait if it failed, is still decoding, or already has an encode in flight (one at a time).
+        if entry.failed || entry.enc_inflight {
+            return;
+        }
+        let Some(img) = entry.decoded.clone() else {
+            return;
+        };
+        // Fully visible: request an encode of the whole image at (cols, full_rows) unless already cached.
+        if row_off == 0 && vis_rows >= full_rows {
+            if entry.proto_size == Some((cols, full_rows)) {
+                return;
+            }
+            entry.enc_inflight = true;
+            let _ = enc_tx.send(MdEncodeRequest {
+                path,
+                key: MdEncodeKey::Full {
+                    cols,
+                    rows: full_rows,
+                },
+                image: img,
+                crop: None,
+                cols,
+                rows: full_rows,
+            });
+            return;
+        }
+        // Partially scrolled: request an encode of just the visible pixel band at (cols, vis_rows), so the
+        // image renders clipped to the viewport rather than being hidden.
+        if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
+            return;
+        }
+        let (dw, dh) = (img.width(), img.height());
+        let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
+        entry.enc_inflight = true;
+        let _ = enc_tx.send(MdEncodeRequest {
+            path,
+            key: MdEncodeKey::Clip {
+                cols,
+                full_rows,
+                row_off,
+                vis_rows,
+            },
+            image: img,
+            crop: Some((0, y0, dw, h)),
+            cols,
+            rows: vis_rows,
+        });
+    }
+
+    /// The render protocol to draw for the visible portion of inline image `url`. Prefers the protocol
+    /// that exactly matches the current position (full image when fully visible, or the band matching
+    /// `(cols, full_rows, row_off, vis_rows)`); while a newly-scrolled band is still encoding it returns
+    /// the last encoded protocol so the image stays on screen (and snaps to the exact band on arrival)
+    /// rather than blinking out. None only until the very first protocol for this image is ready.
+    pub fn md_image_proto(
+        &self,
+        url: &str,
+        cols: u16,
+        full_rows: u16,
+        row_off: u16,
+        vis_rows: u16,
+    ) -> Option<&Protocol> {
+        let base = self
+            .preview_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        let path = resolve_md_image_path(url, base.as_deref())?;
+        let entry = self.md_image_cache.get(&path)?;
+        // Exact match for the current position.
+        if row_off == 0 && vis_rows >= full_rows {
+            if entry.proto_size == Some((cols, full_rows)) {
+                return entry.protocol.as_ref();
+            }
+        } else if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
+            return entry.clip_protocol.as_ref();
+        }
+        // Not yet encoded for this exact position: keep the last band (or the full image) visible.
+        entry.clip_protocol.as_ref().or(entry.protocol.as_ref())
+    }
+
+    /// Whether any inline Markdown image is still loading — a remote download in flight, a decode not yet
+    /// finished, or an encode in flight (used by the run loop to keep ticking so results are applied
+    /// promptly and the image appears without waiting for the next key press).
+    pub fn md_images_loading(&self) -> bool {
+        !self.md_remote_inflight.is_empty()
+            || self
+                .md_image_cache
+                .values()
+                .any(|e| (e.decoded.is_none() && !e.failed) || e.enc_inflight)
     }
 
     /// Drop tx and the image state on exit (to terminate the worker thread).
@@ -3702,6 +4130,168 @@ fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
+const MD_IMAGE_MAX_ROWS: u16 = 24;
+
+/// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
+/// download-cache path, but only once it has been fetched (so callers treat a cached remote image
+/// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
+/// Markdown file's directory. Returns the path only if the file exists.
+fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
+    let u = url.trim();
+    if u.is_empty() {
+        return None;
+    }
+    if crate::preview::markdown::is_remote_image_url(u) {
+        let p = md_remote_cache_path(u)?;
+        return p.is_file().then_some(p);
+    }
+    let lower = u.to_ascii_lowercase();
+    if lower.starts_with("data:") {
+        return None;
+    }
+    let u = u.strip_prefix("file://").unwrap_or(u);
+    let p = PathBuf::from(u);
+    let p = if p.is_absolute() {
+        p
+    } else if let Some(b) = base {
+        b.join(p)
+    } else {
+        p
+    };
+    p.is_file().then_some(p)
+}
+
+/// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
+/// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
+fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
+    crate::preview::image::dimensions(path).or_else(|| crate::preview::svg::intrinsic_size(path))
+}
+
+/// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
+/// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
+fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> {
+    crate::preview::image::decode_static(path)
+        .or_else(|| crate::preview::svg::rasterize(path, svg_max_px))
+}
+
+/// The source-pixel band `(y0, height)` of an image `dh` pixels tall that corresponds to the visible
+/// cell rows `[row_off, row_off + vis_rows)` out of `full_rows` total. The result is always within
+/// `[0, dh]` (so `crop_imm(0, y0, _, height)` never exceeds the image and never panics), and the height
+/// is at least 1.
+fn md_band_pixels(full_rows: u16, row_off: u16, vis_rows: u16, dh: u32) -> (u32, u32) {
+    let fr = full_rows.max(1) as u32;
+    let y0 = (row_off as u32 * dh) / fr;
+    let y1 = ((row_off as u32 + vis_rows as u32).min(fr) * dh) / fr;
+    (y0, y1.saturating_sub(y0).max(1))
+}
+
+/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME` or `~/.cache`). None if neither is available.
+fn cache_root() -> Option<PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
+        if !x.is_empty() {
+            return Some(PathBuf::from(x));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(".cache"))
+}
+
+/// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is
+/// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
+fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let root = cache_root()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.trim().hash(&mut hasher);
+    Some(
+        root.join("konoma")
+            .join("remote-images")
+            .join(format!("{:016x}", hasher.finish())),
+    )
+}
+
+/// Maximum bytes to download for one remote image (guards against huge / hostile responses).
+const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Download a remote image with `curl` into `dest` (atomically, via a temp file), validating that the
+/// bytes decode as an image before committing. Returns whether a valid image now exists at `dest`.
+/// Runs on a background thread. Uses the system `curl` (always present on macOS) to avoid adding a
+/// TLS/HTTP dependency — consistent with konoma's external-tool delegation model (PRD §5).
+fn fetch_remote_image(url: &str, dest: &Path) -> bool {
+    use std::process::{Command, Stdio};
+    let Some(parent) = dest.parent() else {
+        return false;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    let tmp = dest.with_extension("part");
+    let status = Command::new("curl")
+        .args([
+            "-sSL", // silent, show errors, follow redirects (GitHub proxies images via camo)
+            "--fail",
+            "--max-time",
+            "20",
+            "--max-filesize",
+            &MD_REMOTE_MAX_BYTES.to_string(),
+            "-A",
+            "konoma image preview",
+            "-o",
+        ])
+        .arg(&tmp)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let downloaded = matches!(status, Ok(s) if s.success());
+    if !downloaded {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
+    if md_image_dims(&tmp).is_none() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    std::fs::rename(&tmp, dest).is_ok()
+}
+
+/// Compute the display size in terminal cells for an image of `pw`x`ph` pixels, given the terminal
+/// font cell size (`fw`x`fh` px). The image is fit to `avail_cols` (never upscaled beyond its natural
+/// cell size) and then capped to `max_rows`, preserving aspect ratio in both steps.
+fn md_image_cells(
+    pw: u32,
+    ph: u32,
+    fw: u16,
+    fh: u16,
+    avail_cols: u16,
+    max_rows: u16,
+) -> (u16, u16) {
+    let fw = (fw.max(1)) as f64;
+    let fh = (fh.max(1)) as f64;
+    let nat_cols = (pw as f64 / fw).ceil().max(1.0);
+    let nat_rows = (ph as f64 / fh).ceil().max(1.0);
+    let avail = avail_cols.max(1) as f64;
+    let (mut cols, mut rows) = if nat_cols <= avail {
+        (nat_cols, nat_rows)
+    } else {
+        let s = avail / nat_cols;
+        (avail, (nat_rows * s).round().max(1.0))
+    };
+    let maxr = max_rows.max(1) as f64;
+    if rows > maxr {
+        let s = maxr / rows;
+        rows = maxr;
+        cols = (cols * s).round().max(1.0);
+    }
+    (cols as u16, rows as u16)
 }
 
 /// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).

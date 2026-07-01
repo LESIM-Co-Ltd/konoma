@@ -4639,3 +4639,171 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---- inline Markdown images: remote fetch + raster/SVG helpers (non-network) ----
+
+#[test]
+fn resolve_md_image_path_remote_uncached_and_data_are_none() {
+    // A remote URL that has never been fetched has no cache file → None (renderer shows "loading").
+    assert!(
+        resolve_md_image_path("https://konoma.example/never-fetched-\u{2603}.png", None).is_none(),
+        "未取得のリモートは None"
+    );
+    // data: URLs are never inlined.
+    assert!(resolve_md_image_path("data:image/png;base64,AAAA", None).is_none());
+}
+
+#[test]
+fn md_remote_cache_path_is_stable_and_url_specific() {
+    let a1 = md_remote_cache_path("https://example.com/a.png");
+    let a2 = md_remote_cache_path("https://example.com/a.png");
+    let b = md_remote_cache_path("https://example.com/b.png");
+    // Requires a cache root (HOME / XDG_CACHE_HOME); present in normal environments.
+    if let (Some(a1), Some(a2), Some(b)) = (a1, a2, b) {
+        assert_eq!(a1, a2, "同一 URL は同一パス");
+        assert_ne!(a1, b, "異なる URL は異なるパス");
+        assert!(
+            a1.to_string_lossy().contains("remote-images"),
+            "remote-images 配下: {a1:?}"
+        );
+    }
+}
+
+#[test]
+fn md_image_dims_reads_raster_and_svg() {
+    let dir = std::env::temp_dir().join("konoma_md_dims_test");
+    let _ = std::fs::create_dir_all(&dir);
+    // Raster PNG (extension present).
+    let png = dir.join("p.png");
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([1, 2, 3, 255]))
+        .save(&png)
+        .unwrap();
+    assert_eq!(md_image_dims(&png), Some((4, 2)), "PNG の寸法");
+    // SVG stored WITHOUT an extension (mimics a remote-cache file): must sniff as SVG.
+    let svg = dir.join("noext");
+    std::fs::write(
+        &svg,
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"></svg>"#,
+    )
+    .unwrap();
+    assert_eq!(md_image_dims(&svg), Some((20, 10)), "拡張子なし SVG の寸法");
+    // Junk is neither.
+    let bad = dir.join("bad");
+    std::fs::write(&bad, b"not an image").unwrap();
+    assert!(md_image_dims(&bad).is_none(), "非画像は None");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn md_decode_image_decodes_raster_and_rasterizes_svg() {
+    let dir = std::env::temp_dir().join("konoma_md_decode_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let png = dir.join("p.png");
+    image::RgbaImage::from_pixel(3, 3, image::Rgba([9, 9, 9, 255]))
+        .save(&png)
+        .unwrap();
+    assert!(md_decode_image(&png, 800).is_some(), "PNG をデコード");
+    // Extension-less SVG → rasterized via resvg (max side 800).
+    let svg = dir.join("noext");
+    std::fs::write(
+        &svg,
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#0f0"/></svg>"##,
+    )
+    .unwrap();
+    let img = md_decode_image(&svg, 800).expect("SVG をラスタライズ");
+    assert_eq!((img.width(), img.height()), (800, 400), "最大辺 800 に拡大");
+    assert!(md_decode_image(&dir.join("missing"), 800).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
+    let dir = std::env::temp_dir().join("konoma_apply_remote_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let url = "https://example.com/x.png".to_string();
+    app.md_remote_inflight.insert(url.clone());
+    // Failure: remembered as failed, removed from in-flight, decoration cache dropped.
+    assert!(app.apply_remote_fetch(RemoteFetch {
+        url: url.clone(),
+        ok: false,
+    }));
+    assert!(!app.md_remote_inflight.contains(&url), "in-flight から除去");
+    assert!(app.md_remote_failed.contains(&url), "失敗を記録");
+    assert!(app.md_cache.is_none(), "装飾キャッシュを無効化");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn preview_survives_target_file_overwrite_and_delete() {
+    // A previewed file can be overwritten or deleted out from under konoma (a script re-plots or
+    // removes it). This must never panic — the preview reloads / degrades gracefully. Covers both an
+    // image preview and a text/Markdown preview ("画像だけではない").
+    use image::RgbImage;
+    let dir = std::env::temp_dir().join("konoma_preview_file_vanish_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // --- Image preview ---
+    let pic = dir.join("plot.png");
+    RgbImage::new(4, 3).save(&pic).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("plot.png"))
+        .unwrap();
+    app.selected = idx;
+    app.tree_activate().unwrap();
+    assert!(matches!(
+        app.preview_kind,
+        Some(crate::preview::PreviewKind::Image(_))
+    ));
+    // Overwrite with different valid bytes, force the reload path — no panic.
+    RgbImage::new(8, 6).save(&pic).unwrap();
+    app.preview_media_mtime = None;
+    let _ = app.refresh();
+    // Delete the file while it is the active preview, force reload — no panic (errors are non-fatal).
+    std::fs::remove_file(&pic).unwrap();
+    app.preview_media_mtime = None;
+    let _ = app.refresh();
+
+    // --- Markdown/text preview ---
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, b"# hello\n\nbody\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = idx;
+    app.tree_activate().unwrap();
+    let _ = app.decorated_lines(80);
+    std::fs::remove_file(&doc).unwrap();
+    let _ = app.refresh();
+    // Rendering the now-missing file must not panic (degrades to a safe "can not preview" line).
+    let _ = app.decorated_lines(80);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_band_pixels_stays_within_image_bounds() {
+    // The inline-image band crop must never exceed the image height (else crop_imm panics). Exercise
+    // the top, middle, bottom, single-row, and whole-image bands over a range of sizes.
+    for &dh in &[1u32, 3, 100, 1000] {
+        for full_rows in [1u16, 2, 24, 60] {
+            for row_off in 0..full_rows {
+                for vis_rows in 1..=full_rows {
+                    let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
+                    assert!(h >= 1, "帯の高さは 1 以上");
+                    assert!(
+                        y0 + h <= dh,
+                        "帯が画像外: dh={dh} full={full_rows} off={row_off} vis={vis_rows} → y0={y0} h={h}"
+                    );
+                }
+            }
+        }
+    }
+}

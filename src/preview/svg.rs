@@ -42,6 +42,25 @@ pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
     rasterize_bytes(&data, path, max_px)
 }
 
+/// Parse the SVG at `path` and return its intrinsic pixel size (rounded up), without rasterizing.
+/// Cheap enough for the UI thread (no pixmap allocation / rendering) — used to reserve layout rows for
+/// an inline SVG image and to validate that a fetched remote file is really an SVG. None if not an SVG.
+pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
+    let data = std::fs::read(path).ok()?;
+    let opt = usvg::Options {
+        resources_dir: path.parent().map(Path::to_path_buf),
+        fontdb: shared_fontdb(),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_data(&data, &opt).ok()?;
+    let size = tree.size();
+    let (w, h) = (size.width(), size.height());
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    Some((w.ceil() as u32, h.ceil() as u32))
+}
+
 /// Rasterize directly from a byte slice (for tests / future embedding). `max_px` = target px for the max side.
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
     let opt = usvg::Options {
@@ -117,6 +136,19 @@ mod tests {
     #[test]
     fn invalid_svg_returns_none() {
         assert!(rasterize_bytes(b"not an svg at all", Path::new("x.svg"), 800).is_none());
+    }
+
+    #[test]
+    fn intrinsic_size_reads_declared_size_without_rasterizing() {
+        let dir = std::env::temp_dir().join("konoma_svg_intrinsic_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let svg = dir.join("badge.svg");
+        std::fs::write(&svg, TINY_SVG).unwrap();
+        assert_eq!(intrinsic_size(&svg), Some((20, 10)), "declared 20x10");
+        let bad = dir.join("not.svg");
+        std::fs::write(&bad, b"not an svg at all").unwrap();
+        assert!(intrinsic_size(&bad).is_none(), "非 SVG は None");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

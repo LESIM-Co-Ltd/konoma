@@ -6,6 +6,26 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+- Inline image preview inside Markdown: block-level images (Markdown `![](…)` and
+  HTML `<img>`) render in the flow of the document via kitty graphics, decoded off
+  the UI thread. A dim `🖼 alt` placeholder reserves the space until the image is ready.
+- Remote images: `http(s)://` images are downloaded with the system `curl` into an
+  on-disk cache (`~/.cache/konoma/remote-images`) and then rendered like local files —
+  the kind of screenshots and badges READMEs show on GitHub. SVG badges/logos are
+  rasterized with resvg. A `loading…` line shows while fetching; unreachable hosts,
+  non-image responses, and missing files degrade to a text placeholder (principle #3).
+- Partially-scrolled inline images are drawn clipped to the viewport (their visible
+  band is cropped and encoded) instead of being hidden, so large/stacked images stay
+  visible while scrolling.
+- `samples/images.md` demonstrating local, HTML, remote, and fallback cases.
+
+### Changed
+- Inline-image encoding (resize + protocol) runs on a dedicated worker thread, so the
+  UI never blocks while an image is prepared or re-clipped during scrolling.
+
 ## [0.1.1]
 
 ### Added

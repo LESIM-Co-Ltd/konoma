@@ -33,7 +33,10 @@ use ratatui_image::picker::Picker;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use app::{App, IgnoredResult, MediaResult, SortKey};
+use app::{
+    App, IgnoredResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult, RemoteFetch,
+    SortKey,
+};
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
 /// Re-encode result sent from the worker to the UI.
@@ -86,11 +89,20 @@ fn main() -> Result<()> {
 
     // 重いメディア(SVG ラスタライズ / GIF 全フレームデコード)を別スレッドで読み、結果を run ループへ。
     let (media_tx, media_rx) = std::sync::mpsc::channel::<MediaResult>();
+    // インライン Markdown 画像のデコードを別スレッドで行い、結果を run ループへ。
+    let (md_img_tx, md_img_rx) = std::sync::mpsc::channel::<MdImageResult>();
+    // リモート(http(s)) Markdown 画像の curl ダウンロード完了を run ループへ通知する。
+    let (md_remote_tx, md_remote_rx) = std::sync::mpsc::channel::<RemoteFetch>();
+    // インライン Markdown 画像のエンコード(リサイズ+プロトコル)を専用ワーカーへ逃がす(UI を塞がない)。
+    let (md_enc_tx, md_enc_worker_rx) = std::sync::mpsc::channel::<MdEncodeRequest>();
+    let (md_enc_res_tx, md_enc_res_rx) = std::sync::mpsc::channel::<MdEncodeResult>();
     // 重い git ignored(無視セット・大規模 repo で ~800ms)を別スレッドで計算し、結果を run ループへ。
     let (ignored_tx, ignored_rx) = std::sync::mpsc::channel::<IgnoredResult>();
 
     let mut app = App::new(dir, cfg)?;
     app.attach_media_loader(media_tx);
+    app.attach_md_image_loader(md_img_tx);
+    app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
     // 設定の読み込みエラー + キーマップ衝突/無視した設定を起動時メッセージで知らせる
     // (黙って既定に戻ると気づけないため)。両方あれば結合して 1 行に出す。
@@ -100,6 +112,12 @@ fn main() -> Result<()> {
         (Some(a), None) => Some(a),
         (None, b) => b,
     };
+    // インライン画像のエンコードワーカー: バックエンドがある時だけ起動する(Picker を clone して渡す)。
+    // App を drop すれば md_enc_tx が消え、ワーカーの recv が Err を返して綺麗に終了する。
+    if let Some(pk) = picker.clone() {
+        std::thread::spawn(move || app::md_encode_worker(pk, md_enc_worker_rx, md_enc_res_tx));
+        app.attach_md_encoder(md_enc_tx);
+    }
     if let Some(picker) = picker {
         // tx を App に渡す(画像ごとの ThreadProtocol が clone して使う)。
         app.attach_image_backend(picker, req_tx);
@@ -107,7 +125,18 @@ fn main() -> Result<()> {
     // 注意: main 側に req_tx の clone を残さない。App を drop すれば全 Sender が消え、
     // ワーカーの recv が None を返して綺麗に終了できる。
 
-    let result = run(&mut terminal, &mut app, resp_rx, media_rx, ignored_rx);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        resp_rx,
+        WorkerRx {
+            media: media_rx,
+            md_img: md_img_rx,
+            md_remote: md_remote_rx,
+            md_enc: md_enc_res_rx,
+            ignored: ignored_rx,
+        },
+    );
 
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
@@ -195,12 +224,20 @@ fn is_ignore_rule_file(p: &Path) -> bool {
     }
 }
 
+/// Background-worker result receivers drained each iteration of the run loop.
+struct WorkerRx {
+    media: std::sync::mpsc::Receiver<MediaResult>,
+    md_img: std::sync::mpsc::Receiver<MdImageResult>,
+    md_remote: std::sync::mpsc::Receiver<RemoteFetch>,
+    md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
+    ignored: std::sync::mpsc::Receiver<IgnoredResult>,
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     mut resp_rx: UnboundedReceiver<ResizeResult>,
-    media_rx: std::sync::mpsc::Receiver<MediaResult>,
-    ignored_rx: std::sync::mpsc::Receiver<IgnoredResult>,
+    rx: WorkerRx,
 ) -> Result<()> {
     // ファイル監視: 現在の root 配下の変更でツリー/git status を自動更新する。
     // notify のコールバックは別スレッドから呼ばれるので、変更を std チャネルで run ループへ送る。
@@ -245,7 +282,7 @@ fn run(
         // し続ける」。保留中のイベントを**一括で処理してから 1 回だけ描画**する(最終状態へ収束)。
         // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする。
         // 別スレッドのメディア読み込み待ちの間も、結果を即反映できるようこまめに起きる。
-        let poll_timeout = if app.is_media_loading() {
+        let poll_timeout = if app.is_media_loading() || app.md_images_loading() {
             Duration::from_millis(16)
         } else {
             app.gif_poll_timeout().unwrap_or(Duration::from_millis(100))
@@ -323,15 +360,36 @@ fn run(
         }
 
         // 別スレッドのメディア読み込み(SVG/GIF)完了を反映(複数あれば全部・古い世代は破棄)。
-        while let Ok(result) = media_rx.try_recv() {
+        while let Ok(result) = rx.media.try_recv() {
             if app.apply_media(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // インライン Markdown 画像のデコード完了を反映(複数あれば全部)。
+        while let Ok(result) = rx.md_img.try_recv() {
+            if app.apply_md_image(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // リモート Markdown 画像のダウンロード完了を反映(md_cache を無効化して再レイアウト)。
+        while let Ok(result) = rx.md_remote.try_recv() {
+            if app.apply_remote_fetch(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // インライン Markdown 画像のエンコード完了(別ワーカー)を反映(複数あれば全部)。
+        while let Ok(result) = rx.md_enc.try_recv() {
+            if app.apply_md_encode(result) {
                 needs_redraw = true;
             }
         }
 
         // 別スレッドの git ignored(無視セット)計算完了を反映(複数あれば全部・古い世代は破棄)。
         // 反映で暗転表示(gitignore 除外の dim)が現れるため再描画する。
-        while let Ok(result) = ignored_rx.try_recv() {
+        while let Ok(result) = rx.ignored.try_recv() {
             if app.apply_ignored(result) {
                 needs_redraw = true;
             }

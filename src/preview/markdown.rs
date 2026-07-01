@@ -118,6 +118,309 @@ pub fn render_markdown(src: &str, width: u16, code: CodeStyle, theme: &str) -> V
     out
 }
 
+// ---- Inline images (MVP: block-level local images) ----
+// tui-markdown drops image URLs (it alt-izes them), so block-level images are extracted here
+// *before* the text runs reach tui-markdown. Each standalone image line (Markdown `![alt](url)`
+// or a line that is just an HTML `<img src=...>`) becomes reserved rows in the decorated output plus
+// an `ImagePlacement` recording where to overlay the real image (drawn via kitty graphics by ui::preview).
+
+/// Where an inline image sits in the decorated line list, and its display size in cells.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImagePlacement {
+    /// The image URL/path as written in the source (may be relative to the Markdown file).
+    pub url: String,
+    /// The alt text (used for the placeholder / text fallback).
+    pub alt: String,
+    /// Index of the first reserved row within the decorated line list.
+    pub line: usize,
+    /// Display width in terminal cells.
+    pub cols: u16,
+    /// Display height in terminal cells (== number of reserved rows).
+    pub rows: u16,
+}
+
+enum BlockPart {
+    Text(String),
+    Image { alt: String, url: String },
+}
+
+/// How the app wants one block-level image rendered. The app decides this because it owns the image
+/// backend, the local file / remote-cache state, and any in-flight fetch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImageSlot {
+    /// The image is available (local file or a cached remote fetch): reserve `cols`x`rows` cells and
+    /// record a placement so the renderer draws the real image inline.
+    Inline { cols: u16, rows: u16 },
+    /// A remote image is being fetched in the background: show a dim "loading" line until it arrives.
+    Loading,
+    /// The image cannot be shown inline (no backend / missing file / fetch failed / `data:` URL):
+    /// degrade to a one-line text placeholder (design principle #3).
+    Unavailable,
+}
+
+/// Render Markdown, additionally reserving space for block-level images and returning their placements.
+/// `slot_of(url)` tells how to render each image: `Inline` reserves rows and records a placement for the
+/// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
+/// degrades to a one-line text placeholder (design principle #3). Text runs are rendered by
+/// `render_markdown` unchanged, so all existing decoration behavior is preserved.
+pub fn render_markdown_with_images(
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    slot_of: &dyn Fn(&str) -> ImageSlot,
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut placements: Vec<ImagePlacement> = Vec::new();
+    for part in split_block_images(src) {
+        match part {
+            BlockPart::Text(t) => out.extend(render_markdown(&t, width, code, theme)),
+            BlockPart::Image { alt, url } => match slot_of(&url) {
+                ImageSlot::Inline { cols, rows } => {
+                    placements.push(ImagePlacement {
+                        url,
+                        alt: alt.clone(),
+                        line: out.len(),
+                        cols,
+                        rows,
+                    });
+                    out.extend(image_placeholder_lines(cols, rows, &alt, width));
+                }
+                ImageSlot::Loading => out.extend(image_loading_line(&alt, &url, width)),
+                ImageSlot::Unavailable => out.extend(image_text_fallback(&alt, &url, width)),
+            },
+        }
+    }
+    (out, placements)
+}
+
+/// Whether a Markdown image URL points at a remote resource fetched over HTTP(S).
+pub fn is_remote_image_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Collect the URLs of all block-level images whose source is remote (HTTP(S)), in document order.
+/// Fence-aware (an image inside a code fence is skipped), matching `render_markdown_with_images`. Used
+/// by the app to kick off background fetches for the remote images it is about to show as "loading".
+pub fn collect_remote_image_urls(src: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for part in split_block_images(src) {
+        if let BlockPart::Image { url, .. } = part {
+            if is_remote_image_url(&url) {
+                urls.push(url);
+            }
+        }
+    }
+    urls
+}
+
+/// Split the source into text runs and standalone block-level images. Fence-aware: an image inside a
+/// ``` / ~~~ code fence stays in the surrounding text run (it is not treated as an image).
+fn split_block_images(src: &str) -> Vec<BlockPart> {
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    // Open code fence, as (fence char byte, fence length).
+    let mut open: Option<(u8, usize)> = None;
+    for line in src.split_inclusive('\n') {
+        let bare = line.strip_suffix('\n').unwrap_or(line);
+        match open {
+            None => {
+                if let Some((fence, _info)) = parse_fence(bare) {
+                    open = Some((fence.ch, fence.len));
+                    text.push_str(line);
+                } else if let Some((alt, url)) = extract_block_image(bare) {
+                    if !text.is_empty() {
+                        parts.push(BlockPart::Text(std::mem::take(&mut text)));
+                    }
+                    parts.push(BlockPart::Image { alt, url });
+                } else {
+                    text.push_str(line);
+                }
+            }
+            Some((ch, len)) => {
+                text.push_str(line);
+                let closing = parse_fence(bare)
+                    .map(|(f, info)| f.ch == ch && f.len >= len && info.is_empty())
+                    .unwrap_or(false);
+                if closing {
+                    open = None;
+                }
+            }
+        }
+    }
+    if !text.is_empty() {
+        parts.push(BlockPart::Text(text));
+    }
+    parts
+}
+
+/// If `line` is *just* an image — Markdown `![alt](url)` (optionally wrapped in a link) or an HTML
+/// `<img src=...>` (optionally wrapped in layout tags like `<p>`/`<td>`/`<a>`) — return (alt, url).
+fn extract_block_image(line: &str) -> Option<(String, String)> {
+    let t = line.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some(img) = extract_html_img(t) {
+        return Some(img);
+    }
+    extract_md_img(t)
+}
+
+/// Extract an HTML `<img>` when the line consists only of tags (no other visible text).
+fn extract_html_img(t: &str) -> Option<(String, String)> {
+    let lower = t.to_ascii_lowercase();
+    let pos = lower.find("<img")?;
+    // The character after "<img" must be whitespace or a tag terminator (avoid matching `<images>`).
+    let after = lower[pos + 4..].chars().next()?;
+    if !after.is_whitespace() && after != '>' && after != '/' {
+        return None;
+    }
+    // The whole line must be only tags around the image (no stray words).
+    if !html_is_only_tags(t) {
+        return None;
+    }
+    let tag_end = lower[pos..].find('>').map(|i| pos + i)?;
+    let tag = &t[pos..tag_end];
+    let url = html_attr(tag, "src")?;
+    let alt = html_attr(tag, "alt").unwrap_or_default();
+    Some((alt, url))
+}
+
+/// Whether the visible text outside of `<...>` tags is empty (the line is pure HTML tags).
+fn html_is_only_tags(t: &str) -> bool {
+    let mut depth = 0i32;
+    for c in t.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = (depth - 1).max(0),
+            _ if depth > 0 => {}
+            c if c.is_whitespace() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Read an HTML attribute value (double- or single-quoted) from a tag string.
+fn html_attr(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let mut search = 0usize;
+    while let Some(rel) = lower[search..].find(name) {
+        let i = search + rel;
+        let before_ok = i == 0 || lower.as_bytes()[i - 1].is_ascii_whitespace();
+        if before_ok {
+            let after = tag[i + name.len()..].trim_start();
+            if let Some(rest) = after.strip_prefix('=') {
+                let rest = rest.trim_start();
+                if let Some(q) = rest.chars().next() {
+                    if (q == '"' || q == '\'') && rest.len() > 1 {
+                        if let Some(end) = rest[1..].find(q) {
+                            return Some(rest[1..1 + end].to_string());
+                        }
+                    }
+                }
+            }
+        }
+        search = i + name.len();
+    }
+    None
+}
+
+/// Extract a Markdown `![alt](url)`, optionally wrapped in a `[ ... ](href)` link, requiring the
+/// line to contain nothing else.
+fn extract_md_img(t: &str) -> Option<(String, String)> {
+    let bang = t.find("![")?;
+    let prefix = t[..bang].trim();
+    if !(prefix.is_empty() || prefix == "[") {
+        return None;
+    }
+    let rest = &t[bang + 2..];
+    let close_alt = rest.find(']')?;
+    let alt = rest[..close_alt].to_string();
+    let after_alt = rest[close_alt + 1..].trim_start();
+    let after_alt = after_alt.strip_prefix('(')?;
+    let close_url = after_alt.find(')')?;
+    // Strip an optional title: ![alt](url "title")
+    let url = after_alt[..close_url]
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    if url.is_empty() {
+        return None;
+    }
+    // Whatever follows the image must be empty or just the link close `](href)`.
+    let suffix = after_alt[close_url + 1..].trim();
+    let ok_suffix = suffix.is_empty() || (prefix == "[" && suffix.starts_with(']'));
+    if !ok_suffix {
+        return None;
+    }
+    Some((alt, url))
+}
+
+/// Reserved rows for an inline image (covered by the real image once it is decoded and fully visible).
+/// The first row shows a dim `🖼 alt` label so the user sees an image is present while it loads.
+fn image_placeholder_lines(cols: u16, rows: u16, alt: &str, width: u16) -> Vec<Line<'static>> {
+    let rows = rows.max(1);
+    let pad = (width.saturating_sub(cols) / 2) as usize;
+    let indent = " ".repeat(pad);
+    let alt = alt.trim();
+    let label = if alt.is_empty() {
+        "🖼 image".to_string()
+    } else {
+        format!("🖼 {alt}")
+    };
+    let label = truncate_width(&label, cols as usize);
+    let mut lines = Vec::with_capacity(rows as usize);
+    lines.push(Line::from(format!("{indent}{label}")).dim());
+    for _ in 1..rows {
+        lines.push(Line::from(String::new()));
+    }
+    lines
+}
+
+/// One-line fallback for an image that cannot be shown inline (no backend / remote / missing file).
+fn image_text_fallback(alt: &str, url: &str, width: u16) -> Vec<Line<'static>> {
+    let alt = alt.trim();
+    let s = if alt.is_empty() {
+        format!("🖼 {url}")
+    } else {
+        format!("🖼 {alt} — {url}")
+    };
+    vec![Line::from(truncate_width(&s, width as usize)).dim()]
+}
+
+/// One-line "loading" indicator shown while a remote image is being fetched in the background.
+/// It is replaced by the real inline image once the fetch completes and the preview re-decorates.
+fn image_loading_line(alt: &str, url: &str, width: u16) -> Vec<Line<'static>> {
+    let alt = alt.trim();
+    let what = if alt.is_empty() { url } else { alt };
+    let s = format!("🖼 {what} — loading…");
+    vec![Line::from(truncate_width(&s, width as usize)).dim()]
+}
+
+/// Truncate a string to a maximum display width (CJK/emoji counted as 2), appending `…` when cut.
+fn truncate_width(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    let budget = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut w = 0usize;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 /// Add konoma's own decorations to the tui-markdown output as a post-processing step.
 /// Turn code fences into a "special area" with a background, left gutter, and language header,
 /// and strip the leading `#` from heading lines, laying a full-width rule below H1/H2 to convey hierarchy.
@@ -1119,6 +1422,115 @@ mod tests {
                 .chars()
                 .any(|c| ('\u{2500}'..='\u{257F}').contains(&c)),
             "罫線が無い: {joined}"
+        );
+    }
+
+    // ---- Inline block-level images ----
+
+    #[test]
+    fn extract_block_image_markdown_and_html() {
+        assert_eq!(
+            extract_block_image("![alt text](pic.png)"),
+            Some(("alt text".into(), "pic.png".into()))
+        );
+        // Link-wrapped image.
+        assert_eq!(
+            extract_block_image("[![a](i.png)](https://x)"),
+            Some(("a".into(), "i.png".into()))
+        );
+        // A title in the URL is stripped.
+        assert_eq!(
+            extract_block_image(r#"![a](p.png "title")"#),
+            Some(("a".into(), "p.png".into()))
+        );
+        // HTML <img>, optionally wrapped in layout tags.
+        assert_eq!(
+            extract_block_image(r#"<img src="x.png" alt="y">"#),
+            Some(("y".into(), "x.png".into()))
+        );
+        assert_eq!(
+            extract_block_image(r#"<p align="center"><img src="hero.png" width="860"></p>"#),
+            Some((String::new(), "hero.png".into()))
+        );
+        // Not standalone images.
+        assert_eq!(extract_block_image("see ![a](p.png) here"), None);
+        assert_eq!(extract_block_image("just text"), None);
+        assert_eq!(
+            extract_block_image(r#"<p>text <img src="a.png"> more</p>"#),
+            None
+        );
+    }
+
+    #[test]
+    fn images_in_code_fences_are_not_extracted() {
+        let src = "before\n\n```\n![a](x.png)\n```\n\nafter\n";
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 10, rows: 4 };
+        let (_lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", &slot_of);
+        assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
+    }
+
+    #[test]
+    fn block_image_reserves_rows_and_records_placement() {
+        let src = "# Title\n\n![hero](hero.png)\n\nbody\n";
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 20, rows: 5 };
+        let (lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", &slot_of);
+        assert_eq!(imgs.len(), 1);
+        let p = &imgs[0];
+        assert_eq!((p.cols, p.rows), (20, 5));
+        assert_eq!(p.url, "hero.png");
+        assert_eq!(p.alt, "hero");
+        assert!(p.line < lines.len());
+        // The first reserved row shows the alt label; the block reserves `rows` lines.
+        assert!(
+            lines[p.line].to_string().contains("hero"),
+            "placeholder label 無し"
+        );
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("body"), "画像後の本文が消えた");
+    }
+
+    #[test]
+    fn image_without_backend_degrades_to_text() {
+        let src = "![alt](missing.png)\n";
+        let slot_of = |_: &str| ImageSlot::Unavailable; // no backend / unresolvable → text (principle #3)
+        let (lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", &slot_of);
+        assert!(imgs.is_empty());
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("alt"), "alt テキストが無い: {joined}");
+        assert!(joined.contains("missing.png"));
+    }
+
+    #[test]
+    fn remote_image_shows_loading_line() {
+        let src = "![shot](https://example.com/a.png)\n";
+        let slot_of = |_: &str| ImageSlot::Loading;
+        let (lines, imgs) = render_markdown_with_images(src, 60, BG, "TwoDark", &slot_of);
+        assert!(imgs.is_empty(), "loading 中は placement を出さない");
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("loading"), "loading 表示が無い: {joined}");
+    }
+
+    #[test]
+    fn collect_remote_image_urls_finds_http_only() {
+        let src = "\
+![a](local.png)
+
+![b](https://example.com/remote.png)
+
+<p><img src=\"http://example.com/html.png\"></p>
+
+```
+![c](https://example.com/in-fence.png)
+```
+";
+        let urls = collect_remote_image_urls(src);
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/remote.png".to_string(),
+                "http://example.com/html.png".to_string(),
+            ],
+            "remote のみ・fence 内は除外・順序保持: {urls:?}"
         );
     }
 }

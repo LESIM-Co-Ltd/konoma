@@ -334,6 +334,49 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let para = para.scroll((app.preview_scroll, app.preview_hscroll));
     frame.render_widget(para, area);
+
+    // Overlay block-level inline images (kitty graphics) over their reserved placeholder rows.
+    // A partially-scrolled image is clipped to the viewport (only its visible band is drawn).
+    overlay_inline_images(frame, app, inner);
+}
+
+/// Draw decoded inline Markdown images over their reserved rows. While an image is still decoding,
+/// its placeholder rows remain visible. A partially-scrolled image is drawn clipped to the viewport
+/// (its visible vertical band is cropped and encoded), so large images are not hidden while scrolling.
+fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
+    let placements = app.md_images();
+    if placements.is_empty() {
+        return;
+    }
+    let scroll = app.preview_scroll as i32;
+    let top_bound = inner.y as i32;
+    let bottom_bound = (inner.y + inner.height) as i32;
+    for p in placements {
+        let top = top_bound + p.line as i32 - scroll; // block's first row on screen
+                                                      // Visible screen band for this image (clipped to the viewport top/bottom).
+        let vis_top = top.max(top_bound);
+        let vis_bottom = (top + p.rows as i32).min(bottom_bound);
+        if vis_bottom <= vis_top {
+            continue; // fully off-screen
+        }
+        let row_off = (vis_top - top) as u16; // image rows scrolled above the viewport
+        let vis_rows = (vis_bottom - vis_top) as u16;
+        let cols = p.cols.min(inner.width);
+        if cols == 0 || vis_rows == 0 {
+            continue;
+        }
+        let x = inner.x + (inner.width.saturating_sub(cols)) / 2;
+        let target = Rect {
+            x,
+            y: vis_top as u16,
+            width: cols,
+            height: vis_rows,
+        };
+        app.ensure_md_image(&p.url, cols, p.rows, row_off, vis_rows);
+        if let Some(proto) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
+            frame.render_widget(Image::new(proto), target);
+        }
+    }
 }
 
 /// GitDiff preview rendering. Displays the lines from `git::file_diff` Zed-style (gutter + change bar + colored body + row background)
