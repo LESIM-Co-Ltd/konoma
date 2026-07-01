@@ -6,6 +6,19 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Added
+- Prebuilt binaries for macOS (Apple Silicon / Intel) and Linux (`x86_64`) attached
+  to each GitHub Release, with `cargo binstall konoma` support.
+- CI verifies builds on Linux and Windows in addition to macOS.
+
+### Notes
+- Windows is intentionally not built: konoma uses Unix-only standard-library APIs,
+  and Windows terminals lack the kitty graphics protocol the previews rely on.
+- Linux support is experimental — it builds in CI, but its runtime (previews,
+  clipboard, trash) is not yet verified.
+
 ## [0.1.0]
 
 Initial release.
@@ -26,5 +39,6 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LESIM-Co-Ltd/konoma/releases/tag/v0.1.0

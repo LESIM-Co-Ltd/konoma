@@ -71,19 +71,33 @@ Pre-release (feature-complete). The milestones below track what is implemented.
 - [x] PDF preview (multi-page, one page at a time)
 - [x] File manager: create / rename / delete / copy / move, search, bookmarks, sorting (M7)
 - [x] Configurable keymap with conflict detection
-- [ ] crates.io publish
+- [x] crates.io publish
+- [x] Prebuilt binaries and `cargo binstall` (macOS, Linux `x86_64`)
 
 ## Requirements
 
-- **macOS on Apple Silicon** (the only supported target).
+- **macOS on Apple Silicon** is the primary target. macOS on Intel (`x86_64`) also has prebuilt binaries.
+  Linux (`x86_64`) builds in CI and has prebuilt binaries too, but is **experimental** — its runtime
+  (previews, clipboard, trash) is not yet verified. Windows is not supported.
 - A terminal that supports the **kitty graphics protocol** (e.g. [Ghostty](https://ghostty.org)) for image,
   SVG, video-thumbnail, and PDF previews. Without it, text-based previews still work.
 
 ## Install
 
+Prebuilt binaries (fastest — no compilation) via [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo binstall konoma
+```
+
+Or compile and install from crates.io:
+
 ```bash
 cargo install konoma
 ```
+
+Prebuilt archives for macOS (Apple Silicon / Intel) and Linux (`x86_64`) are also attached to each
+[GitHub Release](https://github.com/LESIM-Co-Ltd/konoma/releases).
 
 Or build from source:
 
