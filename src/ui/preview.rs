@@ -77,6 +77,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("h / l / ← →", l(crate::i18n::Msg::HScroll))
         .row("0 / $", l(crate::i18n::Msg::LineStartEnd))
         .row("/  n / N", l(crate::i18n::Msg::SearchHint))
+        .row("v → j / k → y", l(crate::i18n::Msg::PreviewSelectHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
@@ -145,6 +146,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
+    // 行選択コピーは windowed(Code/Text)のみ。
+    if app.is_windowed() {
+        v.push(hint(lang, "v", crate::i18n::Msg::PreviewSelectHelp));
+    }
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));
     v.push(hint(lang, "e", crate::i18n::Msg::HintEdit));

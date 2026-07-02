@@ -44,6 +44,8 @@ pub enum DisplayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InternalMode {
     Visual,
+    /// Windowed-preview line selection (`v` in a code/text preview).
+    PreviewVisual,
     Filter,
     Search,
     Sort,
@@ -349,6 +351,8 @@ struct TabState {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
+    // windowed(Code/Text)プレビューの行カーソル位置(別タブから戻っても同じ行に戻る)。選択(anchor)は持ち越さない。
+    preview_cursor_line: usize,
     // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
     git_view: bool,
     git_view_sel: usize,
@@ -591,6 +595,13 @@ pub struct App {
     table_left_col: usize,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
+
+    /// Line cursor for windowed (Code/Text) previews: absolute 0-based logical line under the cursor.
+    /// The current line is highlighted; `j`/`k` move it (the window follows). Only meaningful while windowed.
+    preview_cursor_line: usize,
+    /// Visual line-selection anchor. Some = selecting (started with `v`): the range is anchor..=cursor.
+    /// `y` copies the selected logical lines. None = not selecting.
+    preview_visual_anchor: Option<usize>,
 
     /// GIF animation (M6). All frames (composited RGBA) + each display duration. Empty means no animation (still image).
     /// A separate path from the still-image asynchronous ThreadProtocol: to avoid the "render an unencoded
@@ -1003,6 +1014,8 @@ impl App {
             table_top_row: 0,
             table_left_col: 0,
             table_viewport_rows: 0,
+            preview_cursor_line: 0,
+            preview_visual_anchor: None,
             gif_frames: Vec::new(),
             gif_idx: 0,
             gif_shown_at: None,
@@ -1286,6 +1299,9 @@ impl App {
         if self.is_visual() {
             return Some(InternalMode::Visual);
         }
+        if self.is_preview_visual() {
+            return Some(InternalMode::PreviewVisual);
+        }
         None
     }
 
@@ -1373,6 +1389,8 @@ impl App {
                     S::PreviewImage
                 } else if self.is_table_preview() {
                     S::PreviewTable
+                } else if self.is_preview_visual() {
+                    S::PreviewTextVisual
                 } else {
                     S::PreviewText
                 }
@@ -2131,7 +2149,10 @@ impl App {
         self.search_matches.clear();
         self.search_idx = 0;
         self.setup_windowed(); // 大きい Code/Text なら less 風ウィンドウ読みに切替
-                               // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
+                               // windowed プレビューの行カーソル/選択を先頭へリセット。
+        self.preview_cursor_line = 0;
+        self.preview_visual_anchor = None;
+        // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
         self.table_cur_row = 0;
         self.table_cur_col = 0;
         self.table_top_row = 0;
@@ -2315,6 +2336,68 @@ impl App {
         self.preview_win.is_some()
     }
 
+    // ---- windowed プレビューの行カーソル / ビジュアル選択コピー ---------------
+
+    /// Whether a visual line-selection is active in a windowed preview (routes the PreviewTextVisual surface).
+    pub fn is_preview_visual(&self) -> bool {
+        self.is_windowed() && self.preview_visual_anchor.is_some()
+    }
+
+    /// The inclusive selected line range (lo, hi) while selecting, else None. For the render highlight and copy.
+    pub fn preview_selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.preview_visual_anchor?;
+        let c = self.preview_cursor_line;
+        Some((a.min(c), a.max(c)))
+    }
+
+    /// `v`: start a visual line-selection at the current cursor line (windowed previews only).
+    pub fn preview_enter_visual(&mut self) {
+        if self.is_windowed() {
+            self.preview_visual_anchor = Some(self.preview_cursor_line);
+        }
+    }
+
+    /// Exit visual selection without copying (`v` again / Esc / q).
+    pub fn preview_exit_visual(&mut self) {
+        self.preview_visual_anchor = None;
+    }
+
+    /// The selected logical lines (or the current line if not selecting) as text, read from the real file.
+    /// Uses the file's unwrapped/logical lines, so pasting into an editor/Claude keeps the original layout.
+    /// Empty when there is no path or the range is out of bounds.
+    fn preview_selection_text(&self) -> String {
+        let (lo, hi) = self
+            .preview_selection_range()
+            .unwrap_or((self.preview_cursor_line, self.preview_cursor_line));
+        let Some(path) = self.preview_path.as_ref() else {
+            return String::new();
+        };
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let s = String::from_utf8_lossy(&bytes);
+                let lines: Vec<&str> = s.lines().collect();
+                let end = hi.min(lines.len().saturating_sub(1));
+                if lo > end || lines.is_empty() {
+                    String::new()
+                } else {
+                    lines[lo..=end].join("\n")
+                }
+            }
+            Err(_) => String::new(),
+        }
+    }
+
+    /// `y`: copy the selected logical lines (or the current line if not selecting) to the clipboard, then exit visual.
+    pub fn preview_copy_selection(&mut self) {
+        let text = self.preview_selection_text();
+        self.preview_visual_anchor = None;
+        if text.is_empty() {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
+            return;
+        }
+        self.set_clipboard_flash(&text);
+    }
+
     pub fn back_to_tree(&mut self) {
         self.mode = Mode::Tree;
         self.preview_path = None;
@@ -2340,6 +2423,8 @@ impl App {
         self.table_cur_col = 0;
         self.table_top_row = 0;
         self.table_left_col = 0;
+        self.preview_cursor_line = 0;
+        self.preview_visual_anchor = None;
     }
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
@@ -3265,6 +3350,7 @@ impl App {
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
+            self.preview_cursor_line = 0;
             self.preview_byte_top = 0;
             self.preview_top_line = 0;
         } else {
@@ -3281,11 +3367,8 @@ impl App {
             return;
         }
         let vh = self.preview_viewport.max(1) as usize;
-        let total = if self.cfg.ui.line_numbers {
-            self.win_total()
-        } else {
-            None
-        };
+        // 行カーソルの末尾クランプに総行数が要るので常に求める(キャッシュされる)。
+        let total = self.win_total();
         let cur = self.preview_top_line;
         if let Some(b) = self
             .preview_win
@@ -3294,6 +3377,9 @@ impl App {
         {
             self.preview_byte_top = b;
             self.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
+        }
+        if let Some(t) = total {
+            self.preview_cursor_line = t.saturating_sub(1);
         }
     }
 
@@ -3320,12 +3406,35 @@ impl App {
 
     pub fn preview_scroll(&mut self, delta: i32) {
         if self.is_windowed() {
-            self.win_scroll_lines(delta);
+            // windowed(Code/Text)は行カーソルを動かし、窓を追従させる(常時カーソルモデル)。
+            self.preview_cursor_move(delta);
             return;
         }
         let next = self.preview_scroll as i32 + delta;
         // 下限のみここで。上限 (末尾) は内容・画面サイズが判る描画時にクランプする。
         self.preview_scroll = next.max(0) as u16;
+    }
+
+    /// Move the windowed line cursor by `delta` (clamped to the file), then scroll the window to keep it visible.
+    /// In visual mode the anchor stays fixed, so moving the cursor extends the selection.
+    fn preview_cursor_move(&mut self, delta: i32) {
+        let total = self.win_total().unwrap_or(usize::MAX);
+        let maxl = total.saturating_sub(1) as i64;
+        let next = (self.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
+        self.preview_cursor_line = next;
+        self.follow_cursor();
+    }
+
+    /// Scroll the window (byte-based) just enough that the line cursor is on screen.
+    fn follow_cursor(&mut self) {
+        let vh = self.preview_viewport.max(1) as usize;
+        let top = self.preview_top_line;
+        let cur = self.preview_cursor_line;
+        if cur < top {
+            self.win_scroll_lines(-((top - cur) as i32));
+        } else if cur >= top + vh {
+            self.win_scroll_lines((cur + 1 - (top + vh)) as i32);
+        }
     }
 
     /// Windowed scroll (delta lines). Computes the surrounding line-head bytes each time to move preview_byte_top, and
@@ -3335,7 +3444,8 @@ impl App {
         let vh = self.preview_viewport.max(1) as usize;
         let top = self.preview_byte_top;
         let line = self.preview_top_line;
-        let total = if self.cfg.ui.line_numbers {
+        // 行番号 ON、または(行カーソルのため)総行数が既にキャッシュされていれば末尾クランプに使う。
+        let total = if self.cfg.ui.line_numbers || self.preview_total_lines.is_some() {
             self.win_total()
         } else {
             None
@@ -3472,7 +3582,14 @@ impl App {
         };
         // git 変更ガター(設定 ON・変更のあるファイルのみ)。行番号の左に 1 セルのマーカーを前置する。
         let marks = self.git_gutter_marks();
-        with_git_gutter(content, top_line, &marks)
+        let content = with_git_gutter(content, top_line, &marks);
+        // 行カーソル/選択範囲のハイライト(最後に適用＝ガター/行番号ごと着色)。
+        highlight_cursor_line(
+            content,
+            top_line,
+            self.preview_cursor_line,
+            self.preview_selection_range(),
+        )
     }
 
     /// Git gutter marks (per 1-based new-file line) for the current code/text preview, cached per path.
@@ -3952,6 +4069,7 @@ impl App {
             table_cur_col: self.table_cur_col,
             table_top_row: self.table_top_row,
             table_left_col: self.table_left_col,
+            preview_cursor_line: self.preview_cursor_line,
             git_view: self.git_view,
             git_view_sel: self.git_view_sel,
             git_view_entries: self.git_view_entries.clone(),
@@ -4065,6 +4183,9 @@ impl App {
         }
         // 大きい Code/Text なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
         self.setup_windowed();
+        // windowed プレビューの行カーソルを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
+        self.preview_cursor_line = t.preview_cursor_line;
+        self.preview_visual_anchor = None;
         // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
         self.load_table();
         self.table_cur_row = t.table_cur_row;
@@ -4452,6 +4573,51 @@ fn with_git_gutter(
             Line::from(spans).style(style)
         })
         .collect()
+}
+
+/// Highlight the current line (subtle background) or, while selecting, the whole selected range
+/// (stronger background). Applied last so the gutter/line-number cells are highlighted too.
+/// Windowed (Code/Text) previews only; the visible row's absolute line = `top_line + i`.
+fn highlight_cursor_line(
+    lines: Vec<Line<'static>>,
+    top_line: usize,
+    cursor: usize,
+    sel: Option<(usize, usize)>,
+) -> Vec<Line<'static>> {
+    use ratatui::style::Color;
+    // 暗色テーマ向けの控えめな背景(現在行)と、選択範囲の少し強い青系背景。
+    const CURSOR_BG: Color = Color::Rgb(55, 60, 74);
+    const SEL_BG: Color = Color::Rgb(40, 66, 104);
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let abs = top_line + i;
+            let bg = match sel {
+                Some((lo, hi)) if abs >= lo && abs <= hi => Some(SEL_BG),
+                None if abs == cursor => Some(CURSOR_BG),
+                _ => None,
+            };
+            match bg {
+                Some(c) => line_with_bg(line, c),
+                None => line,
+            }
+        })
+        .collect()
+}
+
+/// Set a background color on a whole line (both the line's base style and every span), preserving foreground/modifiers.
+fn line_with_bg(mut line: Line<'static>, bg: ratatui::style::Color) -> Line<'static> {
+    line.spans = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let style = s.style.bg(bg);
+            Span::styled(s.content, style)
+        })
+        .collect();
+    line.style = line.style.bg(bg);
+    line
 }
 
 /// Prepend a line-number gutter (right-aligned + a space) to each line. The first line's number is `top_line+1` (1-based).

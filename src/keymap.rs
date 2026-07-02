@@ -103,6 +103,12 @@ pub enum Action {
     SearchStart,
     SearchNext,
     SearchPrev,
+    /// `v`: start a line-selection in a windowed code/text preview.
+    PreviewEnterVisual,
+    /// `y` (in preview-visual): copy the selected logical lines.
+    PreviewCopySelection,
+    /// `v`/`q` (in preview-visual): exit selection without copying.
+    PreviewExitVisual,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
     LinkFocusPrev,
@@ -262,6 +268,8 @@ pub enum Surface {
     Visual,
     Tree,
     PreviewText,
+    /// Windowed (Code/Text) preview line-selection mode (`v`): `j`/`k` extend, `y` copies the lines.
+    PreviewTextVisual,
     PreviewImage,
     /// CSV/TSV table preview (cell cursor + `y→` cell/row/column copy).
     PreviewTable,
@@ -644,11 +652,31 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
         ptext.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
         ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         per_surface.insert(Surface::PreviewText, ptext);
+
+        // --- Preview: text/code line-selection (v) ---
+        // j/k/g/G/ページで選択範囲を伸ばし、y でコピー、v・q・Esc で抜ける。h/l/0/$ は横スクロール。
+        let mut pvis: ContextMap = HashMap::new();
+        pvis.insert(KeyPress::ch('j'), nav(Motion::Down));
+        pvis.insert(KeyPress::ch('k'), nav(Motion::Up));
+        pvis.insert(KeyPress::ch('g'), nav(Motion::Top));
+        pvis.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+        pvis.insert(KeyPress::ch('l'), nav(Motion::Right));
+        pvis.insert(KeyPress::ch('h'), nav(Motion::Left));
+        pvis.insert(KeyPress::ch('0'), nav(Motion::LineHome));
+        pvis.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
+        pvis.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
+        pvis.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
+        apply_scheme_paging(&mut pvis, scheme);
+        pvis.insert(KeyPress::ch('y'), run(Action::PreviewCopySelection));
+        pvis.insert(KeyPress::ch('v'), run(Action::PreviewExitVisual));
+        pvis.insert(KeyPress::ch('q'), run(Action::PreviewExitVisual));
+        per_surface.insert(Surface::PreviewTextVisual, pvis);
 
         // --- Preview: image ---
         let mut pimg: ContextMap = HashMap::new();
@@ -1091,6 +1119,7 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "tree" => Surface::Tree,
         "tree_visual" => Surface::Visual,
         "preview_text" => Surface::PreviewText,
+        "preview_text_visual" => Surface::PreviewTextVisual,
         "preview_image" => Surface::PreviewImage,
         "preview_table" => Surface::PreviewTable,
         "sort" => Surface::Sort,
@@ -1464,6 +1493,9 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "search_start" => Action::SearchStart,
         "search_next" => Action::SearchNext,
         "search_prev" => Action::SearchPrev,
+        "preview_enter_visual" => Action::PreviewEnterVisual,
+        "preview_copy_selection" => Action::PreviewCopySelection,
+        "preview_exit_visual" => Action::PreviewExitVisual,
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
         "link_open" => Action::LinkOpen,
@@ -1597,6 +1629,9 @@ pub fn action_name(a: Action) -> String {
         Action::SearchStart => "search_start",
         Action::SearchNext => "search_next",
         Action::SearchPrev => "search_prev",
+        Action::PreviewEnterVisual => "preview_enter_visual",
+        Action::PreviewCopySelection => "preview_copy_selection",
+        Action::PreviewExitVisual => "preview_exit_visual",
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",
@@ -1862,6 +1897,36 @@ mod tests {
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('q')),
             Resolution::Action(Action::PreviewBack)
+        );
+    }
+
+    // Preview の行選択(v)モード。v で開始 → j/k 拡張 → y コピー → v/q 取消。
+    #[test]
+    fn preview_visual_resolution() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        // 通常テキストプレビューで v = 選択開始。
+        assert_eq!(
+            m.resolve(Surface::PreviewText, None, KeyPress::ch('v')),
+            Resolution::Action(Action::PreviewEnterVisual)
+        );
+        // 選択面: j/k = 範囲拡張(カーソル移動)。
+        assert_eq!(
+            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('j')),
+            Resolution::Action(Action::Navigate(Motion::Down))
+        );
+        // y = 選択コピー。
+        assert_eq!(
+            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('y')),
+            Resolution::Action(Action::PreviewCopySelection)
+        );
+        // v / q = 選択解除。
+        assert_eq!(
+            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('v')),
+            Resolution::Action(Action::PreviewExitVisual)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('q')),
+            Resolution::Action(Action::PreviewExitVisual)
         );
     }
 

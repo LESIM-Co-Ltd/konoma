@@ -399,6 +399,9 @@ pub enum Msg {
     HintCell,
     TableMoveHelp,
     TableColsHelp,
+    // --- テキスト/コードプレビューの行選択(v) ---
+    PreviewVisualHint,
+    PreviewSelectHelp,
     // 以下は git コピー機能専用ラベル。no-git では構築されないので dead_code を許容する。
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     WkGitCopyTitle,
@@ -691,6 +694,8 @@ fn en(msg: Msg) -> &'static str {
         HintCell => "cell",
         TableMoveHelp => "move between cells",
         TableColsHelp => "first / last column",
+        PreviewVisualHint => "j / k / g / G: extend    y: copy lines    v / Esc: cancel",
+        PreviewSelectHelp => "select lines (copy with y)",
         StRename => "RENAME",
         StRenameConfirm => "RENAME?",
         StSearch => "SEARCH",
@@ -1025,6 +1030,8 @@ fn jp(msg: Msg) -> &'static str {
         HintCell => "セル",
         TableMoveHelp => "セル間を移動",
         TableColsHelp => "先頭 / 末尾の列",
+        PreviewVisualHint => "j / k / g / G: 範囲拡張    y: 行コピー    v / Esc: 取消",
+        PreviewSelectHelp => "行を選択(y でコピー)",
         StRename => "リネーム",
         StRenameConfirm => "リネーム確認",
         StSearch => "検索",
@@ -1468,6 +1475,8 @@ mod tests {
         Msg::HintCell,
         Msg::TableMoveHelp,
         Msg::TableColsHelp,
+        Msg::PreviewVisualHint,
+        Msg::PreviewSelectHelp,
         Msg::WkGitCopyTitle,
         Msg::WkShortHash,
         Msg::WkFullHash,

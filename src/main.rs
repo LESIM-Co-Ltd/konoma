@@ -616,7 +616,9 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::HalfDown => app.tree_half_page(1),
             Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd => {}
         },
-        Surface::PreviewText => match m {
+        // 通常のテキスト/コードプレビュー、およびその行選択(visual)サブモード。
+        // windowed のときは preview_scroll/to_top 等が行カーソルを動かす(視覚選択中は範囲が伸びる)。
+        Surface::PreviewText | Surface::PreviewTextVisual => match m {
             Motion::Up => app.preview_scroll(-1),
             Motion::Down => app.preview_scroll(1),
             Motion::Top => app.preview_to_top(),
@@ -821,6 +823,9 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::SearchStart => app.start_search(),
         Action::SearchNext => app.search_next(1),
         Action::SearchPrev => app.search_next(-1),
+        Action::PreviewEnterVisual => app.preview_enter_visual(),
+        Action::PreviewCopySelection => app.preview_copy_selection(),
+        Action::PreviewExitVisual => app.preview_exit_visual(),
         Action::LinkFocusNext => app.link_focus(1),
         Action::LinkFocusPrev => app.link_focus(-1),
         Action::LinkOpen => app.open_focused_link()?,
@@ -1034,6 +1039,8 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
                 app.back_to_tree();
             }
         }
+        // 行選択中の Esc は選択解除(ツリーへは戻らない)。
+        Surface::PreviewTextVisual => app.preview_exit_visual(),
         #[cfg(feature = "git")]
         Surface::GitDetail => app.close_git_detail(),
         #[cfg(feature = "git")]

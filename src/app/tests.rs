@@ -3696,23 +3696,104 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
     };
     assert!(first_line(&mut app).contains("line 0"), "先頭は line 0");
 
-    // 下スクロール(windowed → win_scroll_lines 経由)で byte_top が前進し、窓が動く。
+    // 常時カーソルモデル: 窓内(vh=10)で行カーソルを動かしても、末端に達するまで窓は動かない。
     assert_eq!(app.preview_byte_top, 0);
-    app.preview_scroll(5);
-    assert!(app.preview_byte_top > 0, "5行下って byte_top が進む");
+    app.preview_scroll(5); // カーソル 0→5(まだ可視範囲内)
+    assert_eq!(app.preview_cursor_line, 5, "カーソルは 5 行目");
+    assert_eq!(app.preview_byte_top, 0, "窓内移動では窓は動かない");
     assert!(
-        first_line(&mut app).contains("line 5"),
-        "5行下の先頭は line 5"
+        first_line(&mut app).contains("line 0"),
+        "先頭は line 0 のまま"
     );
 
-    // windowed の preview_to_top は byte_top/top_line を 0 へ。
+    // カーソルが下端を超えると窓が追従する(byte_top が前進)。
+    app.preview_scroll(5); // カーソル 5→10(下端 vh=10 を超える)
+    assert_eq!(app.preview_cursor_line, 10, "カーソルは 10 行目");
+    assert!(
+        app.preview_byte_top > 0,
+        "下端超えで窓が追従(byte_top 前進)"
+    );
+    assert!(
+        first_line(&mut app).contains("line 1"),
+        "line 10 が見えるよう先頭は line 1"
+    );
+
+    // windowed の preview_to_top はカーソルと窓を先頭へ。
     app.preview_to_top();
+    assert_eq!(app.preview_cursor_line, 0);
     assert_eq!(app.preview_byte_top, 0);
     assert_eq!(app.preview_top_line, 0);
     assert!(
         first_line(&mut app).contains("line 0"),
         "to_top で先頭へ戻る"
     );
+
+    // 末尾へ: カーソルは最終行(199)、窓は最終ページ。
+    app.preview_to_bottom();
+    assert_eq!(app.preview_cursor_line, 199, "to_bottom で最終行へ");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn preview_visual_selection_copies_logical_lines() {
+    let dir = std::env::temp_dir().join("konoma_preview_visual_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let content = (0..20)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("code.txt"), content.as_bytes()).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("code.txt"))
+        .unwrap();
+    app.selected = i;
+    app.tree_activate().unwrap();
+    assert!(app.is_windowed(), "テキストは窓読み(行カーソル有効)");
+    app.preview_viewport = 10;
+
+    // カーソルを 2 行目へ。まだ非選択。
+    app.preview_scroll(2);
+    assert_eq!(app.preview_cursor_line, 2);
+    assert!(!app.is_preview_visual(), "まだ選択していない");
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
+
+    // v で選択開始 → 2 行下へ伸ばす(2..=4)。
+    app.preview_enter_visual();
+    assert!(app.is_preview_visual(), "選択モードに入る");
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewTextVisual);
+    assert_eq!(
+        app.internal_mode(),
+        Some(crate::app::InternalMode::PreviewVisual)
+    );
+    app.preview_scroll(2); // カーソル 2→4(anchor=2 固定)
+    assert_eq!(app.preview_selection_range(), Some((2, 4)));
+
+    // 選択テキスト = 論理行 2..=4。
+    assert_eq!(app.preview_selection_text(), "line 2\nline 3\nline 4");
+
+    // コピー実行で選択解除(クリップボード可否に依存せず状態遷移を検証)。
+    app.preview_copy_selection();
+    assert!(!app.is_preview_visual(), "コピー後は選択解除");
+
+    // 逆方向(上へ)選択でも範囲は昇順に正規化される。
+    app.preview_to_top(); // カーソル 0
+    app.preview_scroll(5); // カーソル 5
+    app.preview_enter_visual();
+    app.preview_scroll(-3); // カーソル 2、anchor=5 → 範囲 2..=5
+    assert_eq!(app.preview_selection_range(), Some((2, 5)));
+    assert_eq!(
+        app.preview_selection_text(),
+        "line 2\nline 3\nline 4\nline 5"
+    );
+
+    // Esc 相当(exit)で解除。
+    app.preview_exit_visual();
+    assert!(!app.is_preview_visual());
     std::fs::remove_dir_all(&dir).ok();
 }
 
