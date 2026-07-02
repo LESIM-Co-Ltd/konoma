@@ -446,6 +446,7 @@ impl App {
             self.refresh_git_status_only(); // statuses+branch のみ(ignored はキャッシュ保持)
         }
         self.diff_cache = None; // 作業ツリーが変わった可能性 → diff キャッシュを落とす(外部編集の追従)
+        self.gutter_cache = None; // 同上: git 変更ガターも作業ツリー変更で作り直す
         self.rebuild_tree()?;
         // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
         self.selection.retain(|p| p.symlink_metadata().is_ok());

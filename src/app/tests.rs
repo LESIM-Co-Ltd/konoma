@@ -4807,3 +4807,72 @@ fn md_band_pixels_stays_within_image_bounds() {
         }
     }
 }
+
+// ---- git change gutter (editor-style Zed-like markers on code/text previews) ----
+
+#[test]
+fn gutter_marks_classifies_add_modify_delete() {
+    use crate::git::{DiffLine, DiffLineKind};
+    let ctx = |old, new| DiffLine {
+        kind: DiffLineKind::Context,
+        old_no: Some(old),
+        new_no: Some(new),
+        text: String::new(),
+    };
+    let add = |new| DiffLine {
+        kind: DiffLineKind::Added,
+        old_no: None,
+        new_no: Some(new),
+        text: String::new(),
+    };
+    let rem = |old| DiffLine {
+        kind: DiffLineKind::Removed,
+        old_no: Some(old),
+        new_no: None,
+        text: String::new(),
+    };
+
+    // Pure insertion → Added (green).
+    let m = gutter_marks(&[ctx(1, 1), add(2)]);
+    assert_eq!(m.get(&2), Some(&GutterMark::Added));
+
+    // Removed+Added in one block → the new line is Modified (blue).
+    let m = gutter_marks(&[ctx(1, 1), rem(2), add(2), ctx(3, 3)]);
+    assert_eq!(m.get(&2), Some(&GutterMark::Modified));
+
+    // Pure deletion in the middle → the following line is marked Deleted (red).
+    let m = gutter_marks(&[ctx(3, 3), rem(4), ctx(5, 4)]);
+    assert_eq!(m.get(&4), Some(&GutterMark::Deleted));
+
+    // Deletion at EOF (no following line) → anchor to the preceding line's number.
+    let m = gutter_marks(&[ctx(3, 3), rem(4), rem(5)]);
+    assert_eq!(m.get(&3), Some(&GutterMark::Deleted));
+
+    // Unchanged → no marks (so no gutter column is shown).
+    assert!(gutter_marks(&[ctx(1, 1), ctx(2, 2)]).is_empty());
+}
+
+#[test]
+fn git_gutter_prepends_marker_only_when_changed() {
+    let base = vec![Line::from("aaa"), Line::from("bbb")];
+    // No marks → lines untouched (unchanged files / non-repos keep their exact layout).
+    let out = with_git_gutter(base.clone(), 0, &std::collections::HashMap::new());
+    assert_eq!(out[0].to_string(), "aaa");
+    // A mark on new line 2 (top_line 0 → displayed row 1). Row 1 gets a blank cell, row 2 the bar.
+    let mut marks = std::collections::HashMap::new();
+    marks.insert(2u32, GutterMark::Added);
+    let out = with_git_gutter(base, 0, &marks);
+    assert!(out[0].to_string().starts_with(' '), "変更なし行は空セル");
+    assert!(out[1].to_string().starts_with('▌'), "追加行は変更バー ▌");
+
+    // A deletion is anchored to the line below it and drawn as a top-edge bar (▔),
+    // so it reads as "removed between these rows" rather than "this row was removed".
+    let base = vec![Line::from("aaa"), Line::from("bbb")];
+    let mut marks = std::collections::HashMap::new();
+    marks.insert(2u32, GutterMark::Deleted);
+    let out = with_git_gutter(base, 0, &marks);
+    assert!(
+        out[1].to_string().starts_with('▔'),
+        "削除位置は上端バー ▔（行間の目印）"
+    );
+}

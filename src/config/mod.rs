@@ -204,6 +204,9 @@ pub struct UiConfig {
     pub icons: bool, // ツリー行頭の Nerd Font アイコン (要 Nerd Font。無ければ false でプレーン記号)
     pub wrap: bool, // テキストプレビューの折返し。true=折返して全文表示 / false=非折返し+横スクロール
     pub line_numbers: bool, // コード/テキストプレビューに行番号ガターを出すか (既定 false)
+    /// Show an editor-style git change gutter (Zed-like: green added / blue modified / red deleted
+    /// markers in the left margin) on code/text previews of files with working-tree changes. Default true.
+    pub git_gutter: bool,
     /// Tab stop width (default 4). The number of columns to which a tab is expanded in code/text previews as
     /// "a visible marker (→) plus the spaces up to the next tab stop." Because terminals do not column-align tabs, this
     /// aligns indentation and makes tabs recognizable. 0 disables expansion (raw tabs kept).
@@ -388,6 +391,7 @@ impl Default for UiConfig {
             icons: true,
             wrap: true,
             line_numbers: false,
+            git_gutter: true,
             tab_width: 4,
             syntax_highlight: true,
             preview_loading: "indicator".into(),
