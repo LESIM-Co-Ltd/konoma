@@ -6,6 +6,19 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Added
+- Editor-style git change gutter in code/text previews (Zed/VS Code style): a
+  one-cell marker to the left of the line-number column shows added, modified,
+  and deleted lines at a glance. Distinct from the full-screen `d` diff view.
+  Green `▌` marks added lines, amber `▌` modified lines, and a red `▔` sits on
+  the top edge of the line just below a removed block, so a deletion reads as
+  "removed between these rows" without disturbing line spacing. A deletion that
+  is contiguous with an add/modify folds into the modified marker (matching Zed).
+- `[ui] git_gutter` config option (default `true`) to toggle the gutter. Files
+  with no changes and non-repositories keep their previous layout unchanged.
+
 ## [0.2.0]
 
 ### Added
