@@ -4876,3 +4876,93 @@ fn git_gutter_prepends_marker_only_when_changed() {
         "削除位置は上端バー ▔（行間の目印）"
     );
 }
+
+/// Open a CSV as a table preview and set the cell cursor. 3 cols × 2 data rows.
+fn app_with_table() -> (App, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join("konoma_table_app_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("t.csv");
+    std::fs::write(&csv, "h1,h2,h3\na,b,c\nd,e,f\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.preview_path = Some(csv.clone());
+    app.mode = Mode::Preview;
+    app.load_table();
+    (app, csv)
+}
+
+#[test]
+fn csv_resolves_to_table_preview() {
+    let (app, _) = app_with_table();
+    assert!(
+        matches!(
+            app.preview_kind,
+            Some(PreviewKind::Table {
+                delimiter: b',',
+                ..
+            })
+        ),
+        "*.csv は Table(カンマ区切り)に解決される"
+    );
+    assert!(app.is_table_preview(), "パース成功でテーブル面が有効");
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
+    assert_eq!(app.display_mode(), crate::app::DisplayMode::Table);
+}
+
+#[test]
+fn table_cursor_moves_and_clamps() {
+    let (mut app, _) = app_with_table();
+    assert_eq!(app.table_cursor(), (0, 0));
+    // 範囲外へ大きく動かしても末尾(row 1, col 2)にクランプ。
+    app.table_cursor_move(9, 9);
+    assert_eq!(app.table_cursor(), (1, 2));
+    // 負方向も先頭(0,0)でクランプ。
+    app.table_cursor_move(-9, -9);
+    assert_eq!(app.table_cursor(), (0, 0));
+    // 行/列ジャンプ。
+    app.table_row_to(true);
+    app.table_col_to(true);
+    assert_eq!(app.table_cursor(), (1, 2));
+    app.table_row_to(false);
+    app.table_col_to(false);
+    assert_eq!(app.table_cursor(), (0, 0));
+}
+
+#[test]
+fn table_copy_text_cell_row_column() {
+    let (mut app, _) = app_with_table();
+    // カーソルを (row 1, col 1) = "e" に。
+    app.table_cursor_move(1, 1);
+    assert_eq!(
+        app.table_copy_text(TableCopyKind::Cell).as_deref(),
+        Some("e")
+    );
+    // 行コピー = その行をカンマ結合。
+    assert_eq!(
+        app.table_copy_text(TableCopyKind::Row).as_deref(),
+        Some("d,e,f")
+    );
+    // 列コピー = ヘッダ + 各行の該当列を改行結合。
+    assert_eq!(
+        app.table_copy_text(TableCopyKind::Column).as_deref(),
+        Some("h2\nb\ne")
+    );
+}
+
+#[test]
+fn table_cursor_survives_tab_roundtrip() {
+    // タブ保存/復元でセルカーソルが保たれ、テーブルが再パースされる。
+    let (mut app, _) = app_with_table();
+    app.table_cursor_move(1, 2);
+    app.tab_new().unwrap(); // 現タブを保存し、新タブへ
+    app.tab_cycle(-1); // 元タブへ戻る(load_active でテーブル再パース+カーソル復元)
+    assert!(
+        app.is_table_preview(),
+        "復元後もテーブルとして再パースされる"
+    );
+    assert_eq!(
+        app.table_cursor(),
+        (1, 2),
+        "セルカーソルがタブ跨ぎで保たれる"
+    );
+}

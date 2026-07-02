@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[cfg(feature = "git")]
 use crate::app::GitCopyKind;
-use crate::app::{CopyKind, SortKey};
+use crate::app::{CopyKind, SortKey, TableCopyKind};
 use crate::i18n::Msg;
 
 // =============================================================================
@@ -115,6 +115,10 @@ pub enum Action {
     /// PDF: next/previous page (inert for non-PDF image previews; the handler gates on the kind).
     PdfNextPage,
     PdfPrevPage,
+
+    // --- Preview: table (csv/tsv) ---
+    /// Copy the current cell / row / column of a CSV/TSV table (via the `y→` menu).
+    TableCopy(TableCopyKind),
 
     // --- Preview: gitdiff / GitDetail 共通 ---
     #[cfg(feature = "git")]
@@ -259,6 +263,8 @@ pub enum Surface {
     Tree,
     PreviewText,
     PreviewImage,
+    /// CSV/TSV table preview (cell cursor + `y→` cell/row/column copy).
+    PreviewTable,
     #[cfg(feature = "git")]
     PreviewGitDiff,
 }
@@ -438,6 +444,8 @@ pub enum LeaderId {
     Copy,
     /// `Space` file management.
     File,
+    /// `y` cell/row/column copy (CSV/TSV table preview).
+    TableCopy,
     /// `y` commit-info copy (git log/graph/detail).
     #[cfg(feature = "git")]
     GitCopy,
@@ -663,6 +671,26 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         per_surface.insert(Surface::PreviewImage, pimg);
 
+        // --- Preview: table (csv/tsv) ---
+        // hjkl = セルカーソル移動 / g・G = 先頭・末尾行 / 0・$ = 先頭・末尾列 / y→ = セル/行/列コピー。
+        let mut ptbl: ContextMap = HashMap::new();
+        ptbl.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        ptbl.insert(KeyPress::ch('j'), nav(Motion::Down));
+        ptbl.insert(KeyPress::ch('k'), nav(Motion::Up));
+        ptbl.insert(KeyPress::ch('h'), nav(Motion::Left));
+        ptbl.insert(KeyPress::ch('l'), nav(Motion::Right));
+        ptbl.insert(KeyPress::ch('g'), nav(Motion::Top));
+        ptbl.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+        ptbl.insert(KeyPress::ch('0'), nav(Motion::LineHome));
+        ptbl.insert(KeyPress::ch('$'), nav(Motion::LineEnd));
+        ptbl.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
+        ptbl.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
+        apply_scheme_paging(&mut ptbl, scheme);
+        ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
+        ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
+        per_surface.insert(Surface::PreviewTable, ptbl);
+
         // --- Git 系の面 (feature gate) ---
         #[cfg(feature = "git")]
         {
@@ -827,6 +855,7 @@ impl KeyMap {
         let mut leaders: HashMap<LeaderId, LeaderMenu> = HashMap::new();
         leaders.insert(LeaderId::Copy, copy_leader_default());
         leaders.insert(LeaderId::File, file_leader_default());
+        leaders.insert(LeaderId::TableCopy, table_copy_leader_default());
         #[cfg(feature = "git")]
         leaders.insert(LeaderId::GitCopy, git_copy_leader_default());
 
@@ -1063,6 +1092,7 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "tree_visual" => Surface::Visual,
         "preview_text" => Surface::PreviewText,
         "preview_image" => Surface::PreviewImage,
+        "preview_table" => Surface::PreviewTable,
         "sort" => Surface::Sort,
         "bookmarks" => Surface::Bookmarks,
         "info" => Surface::Info,
@@ -1099,6 +1129,7 @@ fn leader_name(id: LeaderId) -> &'static str {
     match id {
         LeaderId::Copy => "copy",
         LeaderId::File => "file",
+        LeaderId::TableCopy => "table_copy",
         #[cfg(feature = "git")]
         LeaderId::GitCopy => "git_copy",
     }
@@ -1199,6 +1230,36 @@ fn copy_leader_default() -> LeaderMenu {
     }
 }
 
+/// The `y` cell/row/column copy leader (CSV/TSV table preview). `f` keeps the full-path copy reachable.
+fn table_copy_leader_default() -> LeaderMenu {
+    LeaderMenu {
+        id: LeaderId::TableCopy,
+        title: Msg::WkTableCopyTitle,
+        items: vec![
+            LeaderItem {
+                key: KeyPress::ch('c'),
+                action: Action::TableCopy(TableCopyKind::Cell),
+                label: Msg::WkCell,
+            },
+            LeaderItem {
+                key: KeyPress::ch('r'),
+                action: Action::TableCopy(TableCopyKind::Row),
+                label: Msg::WkRow,
+            },
+            LeaderItem {
+                key: KeyPress::ch('C'),
+                action: Action::TableCopy(TableCopyKind::Column),
+                label: Msg::WkColumn,
+            },
+            LeaderItem {
+                key: KeyPress::ch('f'),
+                action: Action::CopyPath(CopyKind::Full),
+                label: Msg::WkFull,
+            },
+        ],
+    }
+}
+
 /// The `y` commit-info copy leader (git log/graph/detail).
 #[cfg(feature = "git")]
 fn git_copy_leader_default() -> LeaderMenu {
@@ -1292,6 +1353,9 @@ fn leader_label(a: Action) -> Msg {
         Action::FileCopy => Msg::CopyHint,
         Action::FileCut => Msg::CutHint,
         Action::FilePaste => Msg::WkPaste,
+        Action::TableCopy(TableCopyKind::Cell) => Msg::WkCell,
+        Action::TableCopy(TableCopyKind::Row) => Msg::WkRow,
+        Action::TableCopy(TableCopyKind::Column) => Msg::WkColumn,
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => Msg::WkShortHash,
         #[cfg(feature = "git")]
@@ -1409,6 +1473,10 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "image_zoom_reset" => Action::ImageZoomReset,
         "pdf_next_page" => Action::PdfNextPage,
         "pdf_prev_page" => Action::PdfPrevPage,
+        // Preview: table (csv/tsv)
+        "table_copy_cell" => Action::TableCopy(TableCopyKind::Cell),
+        "table_copy_row" => Action::TableCopy(TableCopyKind::Row),
+        "table_copy_column" => Action::TableCopy(TableCopyKind::Column),
         // Sort
         "sort_name" => Action::SortSet(SortKey::Name),
         "sort_size" => Action::SortSet(SortKey::Size),
@@ -1537,6 +1605,9 @@ pub fn action_name(a: Action) -> String {
         Action::ImageZoomReset => "image_zoom_reset",
         Action::PdfNextPage => "pdf_next_page",
         Action::PdfPrevPage => "pdf_prev_page",
+        Action::TableCopy(TableCopyKind::Cell) => "table_copy_cell",
+        Action::TableCopy(TableCopyKind::Row) => "table_copy_row",
+        Action::TableCopy(TableCopyKind::Column) => "table_copy_column",
         Action::SortSet(SortKey::Name) => "sort_name",
         Action::SortSet(SortKey::Size) => "sort_size",
         Action::SortSet(SortKey::Modified) => "sort_modified",
@@ -1684,7 +1755,12 @@ mod tests {
     fn shift_q_quits_via_global_on_keymap_surfaces() {
         // Q=アプリ全終了。global に置いたので allows_tabs() の面(入力/確認モーダル以外)が継承する。
         let m = KeyMap::defaults(KeyScheme::Vim);
-        for sfc in [Surface::Tree, Surface::PreviewText, Surface::Visual] {
+        for sfc in [
+            Surface::Tree,
+            Surface::PreviewText,
+            Surface::PreviewTable,
+            Surface::Visual,
+        ] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('Q')),
                 Resolution::Action(Action::Quit),
@@ -1736,6 +1812,56 @@ mod tests {
         assert_eq!(
             m.resolve(Surface::Visual, None, KeyPress::ch('y')),
             Resolution::Unbound
+        );
+    }
+
+    // Preview:table (csv/tsv) の面のキー解決。hjkl=セル移動 / y→=セル/行/列コピー / q=戻る。
+    #[test]
+    fn table_surface_resolution() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        // hjkl = セルカーソル移動。
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('l')),
+            Resolution::Action(Action::Navigate(Motion::Right))
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('0')),
+            Resolution::Action(Action::Navigate(Motion::LineHome))
+        );
+        // y→ はテーブル専用の TableCopy リーダー(パスコピーの Copy とは別メニュー)。
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('y')),
+            Resolution::EnterLeader(LeaderId::TableCopy)
+        );
+        assert_eq!(
+            m.resolve(
+                Surface::PreviewTable,
+                Some(LeaderId::TableCopy),
+                KeyPress::ch('c')
+            ),
+            Resolution::Action(Action::TableCopy(TableCopyKind::Cell))
+        );
+        assert_eq!(
+            m.resolve(
+                Surface::PreviewTable,
+                Some(LeaderId::TableCopy),
+                KeyPress::ch('C')
+            ),
+            Resolution::Action(Action::TableCopy(TableCopyKind::Column))
+        );
+        // f はパスコピー(フル)を残してある。
+        assert_eq!(
+            m.resolve(
+                Surface::PreviewTable,
+                Some(LeaderId::TableCopy),
+                KeyPress::ch('f')
+            ),
+            Resolution::Action(Action::CopyPath(CopyKind::Full))
+        );
+        // q = 戻る。
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('q')),
+            Resolution::Action(Action::PreviewBack)
         );
     }
 

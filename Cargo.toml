@@ -87,6 +87,10 @@ arboard = "3"
 globset = "0.4"
 infer = "0.16"
 
+# CSV/TSV プレビュー(テーブル表示)。純 Rust・外部依存なし=配布容易性(PRD §5)を維持。
+# 引用符内カンマ・改行埋め込み・可変列数を正しく扱う(素朴な split では壊れる)。
+csv = "1"
+
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { version = "0.21", optional = true }
 

@@ -11,6 +11,7 @@ pub mod info;
 pub mod preview;
 pub mod status;
 pub mod tabbar;
+pub mod table;
 pub mod tree;
 
 use ratatui::layout::{Constraint, Layout};

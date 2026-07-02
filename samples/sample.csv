@@ -1,0 +1,16 @@
+id,name,department,city,role,note,score
+1,Alice,Engineering,Tokyo,Backend,"stable, on-call this week",92
+2,Bob,Engineering,Osaka,Frontend,ships fast,88
+3,Carol,Design,Kyoto,UX,"loves whitespace, hates modals",95
+4,Dave,Sales,Nagoya,Account,"quota crusher, top of the board",73
+5,Eve,Research,Sapporo,ML,"publishes a lot; long note to show truncation behaviour in a narrow column",99
+6,Mallory,Security,Fukuoka,Pentest,"finds everything",81
+7,山田太郎,広報,横浜,PR,全角セルの幅計算を確認,64
+8,Trent,Support,Sendai,Tier2,"patient, thorough",77
+9,Peggy,Finance,Kobe,Analyst,spreadsheets forever,85
+10,Victor,Legal,Chiba,Counsel,"reads the fine print, twice",70
+11,Walter,Ops,Hiroshima,SRE,"pages at 3am, stays calm",90
+12,Wendy,Marketing,Kanazawa,Growth,"A/B tests everything",83
+13,Sybil,Data,Naha,Engineer,"pipelines, dashboards, coffee",87
+14,Oscar,Product,Matsuyama,PM,"herds cats professionally",79
+15,Niaj,QA,Toyama,Automation,"breaks things on purpose",84

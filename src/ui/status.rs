@@ -40,6 +40,8 @@ fn display_chip(app: &App) -> Span<'static> {
         // 「中身を見る」青系の家族。IMAGE は明度違い(LightBlue)でズーム/パンの別操作を示す。
         DisplayMode::Preview => (Msg::StPreview, Color::Blue, true),
         DisplayMode::Image => (Msg::StImage, Color::LightBlue, false),
+        // テーブルも「中身を見る」青系の家族(csvlens 風の閲覧モード)。
+        DisplayMode::Table => (Msg::StTable, Color::Cyan, true),
     };
     chip(app.lang, msg, bg, dark)
 }

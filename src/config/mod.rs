@@ -258,6 +258,9 @@ pub struct UiConfig {
     /// Ask for confirmation before quitting the whole app (`q` at the top level / `Q` from anywhere). Default true.
     /// When true, `q`/`Q` open a yes/no dialog (`q`/`y`/Enter = quit, `n`/Esc = cancel). false = quit immediately.
     pub confirm_quit: bool,
+    /// Color each column of a CSV/TSV table preview with a rotating "rainbow" palette (default true), the way
+    /// Rainbow CSV / csvlens do, so columns are easy to tell apart. false = monochrome (still aligned, still navigable).
+    pub csv_rainbow: bool,
 }
 
 /// Default tree sort (`[ui.sort]`). Changeable at runtime via the `s` sort menu.
@@ -408,6 +411,7 @@ impl Default for UiConfig {
             graph_base_branches: Vec::new(),
             commit_meta_align: "right".into(),
             confirm_quit: true,
+            csv_rainbow: true,
         }
     }
 }
@@ -436,6 +440,17 @@ impl Default for PreviewConfig {
                 Rule {
                     mime: Some("image/*".into()),
                     builtin: Some("image".into()),
+                    ..Rule::empty()
+                },
+                Rule {
+                    // CSV/TSV は整列テーブル(列レインボー＋セルカーソル)で表示する。
+                    glob: Some("*.csv".into()),
+                    builtin: Some("csv".into()),
+                    ..Rule::empty()
+                },
+                Rule {
+                    glob: Some("*.tsv".into()),
+                    builtin: Some("tsv".into()),
                     ..Rule::empty()
                 },
                 Rule {

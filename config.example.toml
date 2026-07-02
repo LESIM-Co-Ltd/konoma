@@ -101,6 +101,12 @@ commit_meta_align = "right"
 #   false        … 即終了(確認なし)
 confirm_quit = true
 
+# CSV/TSV テーブルプレビューの列レインボー。列ごとに色を回して見分けやすくする(Rainbow CSV / csvlens 流)。
+#   true  (既定) … 列ごとに色付け。
+#   false        … 単色(整列・セル移動・コピーはそのまま)。
+# 操作: hjkl=セル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / y→ c:セル r:行 C:列 f:フルパス / q:戻る。
+csv_rainbow = true
+
 # ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
 # (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
 [ui.sort]
@@ -146,6 +152,8 @@ code_theme = "TwoDark"
 #   pdf    =ページを1枚ずつラスタライズして画像表示(pdftocairo/pdftoppm/qlmanage/sips)。macOS は qlmanage/sips
 #          が常在するため事実上どの環境でも表示可。外部ツール全滅時のみヒント表示にフォールバック。
 #          複数ページは J/K(または PageDown/PageUp)で送る(poppler 必須=pdfinfo でページ数取得+任意ページ描画)。
+#   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
+#   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
 # render_as: command 出力の扱い ("image" でPNG等を全画面画像表示)
 # detached: 別プロセスで開きTUIをブロックしない(動画等)
@@ -167,6 +175,14 @@ builtin = "svg"
 [[preview.rules]]
 mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
 builtin = "image"
+
+[[preview.rules]]
+glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
+builtin = "csv"
+
+[[preview.rules]]
+glob = "*.tsv"             # タブ区切り版
+builtin = "tsv"
 
 [[preview.rules]]
 glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"

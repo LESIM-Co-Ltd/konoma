@@ -10,6 +10,7 @@ pub mod image;
 pub mod markdown;
 pub mod pdf;
 pub mod svg;
+pub mod table;
 pub mod text;
 pub mod video;
 pub mod window;
@@ -37,6 +38,9 @@ pub enum PreviewKind {
     Pdf(PathBuf),
     /// Built-in code highlighting (syntect).
     Code(PathBuf),
+    /// Built-in CSV/TSV table preview: aligned grid with rainbow columns and a movable cell cursor.
+    /// `delimiter` is the field separator byte (`b','` for csv, `b'\t'` for tsv).
+    Table { path: PathBuf, delimiter: u8 },
     /// Built-in plain-text display (extension not registered but judged to be text).
     Text(PathBuf),
     /// Git diff preview (opened with Enter in the Git view; unified display, Zed-style coloring).
@@ -70,6 +74,15 @@ impl PreviewKind {
                 "video" => PreviewKind::Video(p),
                 "pdf" => PreviewKind::Pdf(p),
                 "code" => PreviewKind::Code(p),
+                // csv=カンマ / tsv=タブ区切り。どちらも同じテーブルレンダラへ(区切り文字だけ違う)。
+                "csv" => PreviewKind::Table {
+                    path: p,
+                    delimiter: b',',
+                },
+                "tsv" => PreviewKind::Table {
+                    path: p,
+                    delimiter: b'\t',
+                },
                 "text" => PreviewKind::Text(p),
                 _ => PreviewKind::can_not_preview(path),
             };

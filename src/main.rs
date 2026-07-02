@@ -637,6 +637,21 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Right => app.image_pan(1.0, 0.0),
             _ => {}
         },
+        // テーブル(csv/tsv): hjkl=セルカーソル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / ページ送り。
+        Surface::PreviewTable => match m {
+            Motion::Up => app.table_cursor_move(-1, 0),
+            Motion::Down => app.table_cursor_move(1, 0),
+            Motion::Left => app.table_cursor_move(0, -1),
+            Motion::Right => app.table_cursor_move(0, 1),
+            Motion::Top => app.table_row_to(false),
+            Motion::Bottom => app.table_row_to(true),
+            Motion::PageUp => app.table_page(-1),
+            Motion::PageDown => app.table_page(1),
+            Motion::HalfUp => app.table_half_page(-1),
+            Motion::HalfDown => app.table_half_page(1),
+            Motion::LineHome => app.table_col_to(false),
+            Motion::LineEnd => app.table_col_to(true),
+        },
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => match m {
             Motion::Up => app.preview_scroll(-1),
@@ -814,6 +829,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ImageZoomReset => app.image_zoom_reset(),
         Action::PdfNextPage => app.pdf_next_page(),
         Action::PdfPrevPage => app.pdf_prev_page(),
+        Action::TableCopy(kind) => app.table_copy(kind),
         Action::SortSet(k) => app.sort_menu_key(sort_key_char(k))?,
         Action::SortToggleReverse => app.sort_menu_key('r')?,
         Action::SortToggleDirsFirst => app.sort_menu_key('.')?,

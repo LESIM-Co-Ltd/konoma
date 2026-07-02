@@ -35,6 +35,8 @@ pub enum DisplayMode {
     Tree,
     Preview,
     Image,
+    /// CSV/TSV table preview (aligned grid + cell cursor).
+    Table,
 }
 
 /// Internal mode (inner): what is currently being operated. Shows the **inner chip** only while active and switches the footer keys too.
@@ -342,6 +344,11 @@ struct TabState {
     // PDF の現在ページ/総ページ数もタブごとに保持(別タブから戻ったとき同じページを再描画する)。
     pdf_page: u32,
     pdf_pages: Option<u32>,
+    // CSV/TSV テーブルのセルカーソル/スクロールもタブごとに保持(テーブル本体は復元時に再パース)。
+    table_cur_row: usize,
+    table_cur_col: usize,
+    table_top_row: usize,
+    table_left_col: usize,
     // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
     git_view: bool,
     git_view_sel: usize,
@@ -571,6 +578,20 @@ pub struct App {
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
 
+    /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
+    /// None while not a table, or when parsing failed (then the preview degrades to raw text).
+    table_data: Option<crate::preview::table::TableData>,
+    /// Cell cursor: 0-based data-row index (header is a fixed non-selectable row above).
+    table_cur_row: usize,
+    /// Cell cursor: 0-based column index.
+    table_cur_col: usize,
+    /// First visible data row (vertical scroll). Adjusted at render time to keep the cursor visible.
+    table_top_row: usize,
+    /// First visible column (horizontal scroll). Adjusted at render time to keep the cursor visible.
+    table_left_col: usize,
+    /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
+    table_viewport_rows: u16,
+
     /// GIF animation (M6). All frames (composited RGBA) + each display duration. Empty means no animation (still image).
     /// A separate path from the still-image asynchronous ThreadProtocol: to avoid the "render an unencoded
     /// new protocol → nothing shows" churn in an animation whose frame changes each time, the current frame is **synchronously encoded**
@@ -745,6 +766,17 @@ pub enum GitCopyKind {
     Author,
     /// Date.
     Date,
+}
+
+/// CSV/TSV table copy kind (chosen after `y` in the table preview).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableCopyKind {
+    /// The current cell's value.
+    Cell,
+    /// The current row's cells joined by the delimiter (`,` / tab).
+    Row,
+    /// The current column's header plus every cell value, one per line.
+    Column,
 }
 
 /// Cache of decorated preview content. The key is (path, display width).
@@ -965,6 +997,12 @@ impl App {
             pdf_page: 1,
             pdf_pages: None,
             preview_media_mtime: None,
+            table_data: None,
+            table_cur_row: 0,
+            table_cur_col: 0,
+            table_top_row: 0,
+            table_left_col: 0,
+            table_viewport_rows: 0,
             gif_frames: Vec::new(),
             gif_idx: 0,
             gif_shown_at: None,
@@ -1174,6 +1212,8 @@ impl App {
             Mode::Preview => {
                 if self.is_image_preview() {
                     DisplayMode::Image
+                } else if self.is_table_preview() {
+                    DisplayMode::Table
                 } else {
                     DisplayMode::Preview
                 }
@@ -1331,6 +1371,8 @@ impl App {
             Mode::Preview => {
                 if self.is_image_preview() {
                     S::PreviewImage
+                } else if self.is_table_preview() {
+                    S::PreviewTable
                 } else {
                     S::PreviewText
                 }
@@ -2089,6 +2131,12 @@ impl App {
         self.search_matches.clear();
         self.search_idx = 0;
         self.setup_windowed(); // 大きい Code/Text なら less 風ウィンドウ読みに切替
+                               // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
+        self.table_cur_row = 0;
+        self.table_cur_col = 0;
+        self.table_top_row = 0;
+        self.table_left_col = 0;
+        self.load_table();
         self.mode = Mode::Preview;
     }
 
@@ -2214,6 +2262,11 @@ impl App {
         if matches!(self.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
+            // CSV/TSV は外部編集で内容が変わり得る。再パースしてカーソルを範囲内へクランプ(位置は保つ)。
+            if matches!(self.preview_kind, Some(PreviewKind::Table { .. })) {
+                self.load_table();
+                self.clamp_table_cursor();
+            }
         }
     }
 
@@ -2282,6 +2335,11 @@ impl App {
         self.search_matches.clear();
         self.search_idx = 0;
         self.came_from_git_view = false;
+        self.table_data = None;
+        self.table_cur_row = 0;
+        self.table_cur_col = 0;
+        self.table_top_row = 0;
+        self.table_left_col = 0;
     }
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
@@ -2899,6 +2957,161 @@ impl App {
                 .unwrap_or(Duration::ZERO),
         };
         Some(remaining.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+    }
+
+    // ---- CSV/TSV テーブルプレビュー ------------------------------------------
+
+    /// Parse the current Table-kind preview into `table_data` (None on failure = raw-text fallback).
+    /// Does not touch the cursor/scroll (callers reset or restore those as appropriate).
+    fn load_table(&mut self) {
+        self.table_data = None;
+        if let Some(PreviewKind::Table { path, delimiter }) = self.preview_kind.clone() {
+            if let Ok(t) = crate::preview::table::parse(&path, delimiter) {
+                self.table_data = Some(t);
+            }
+        }
+    }
+
+    /// Clamp the cell cursor into the table's bounds (after a reload/restore that may have shrunk it).
+    fn clamp_table_cursor(&mut self) {
+        match &self.table_data {
+            Some(t) if t.nrows() > 0 && t.ncols > 0 => {
+                self.table_cur_row = self.table_cur_row.min(t.nrows() - 1);
+                self.table_cur_col = self.table_cur_col.min(t.ncols - 1);
+            }
+            _ => {
+                self.table_cur_row = 0;
+                self.table_cur_col = 0;
+            }
+        }
+    }
+
+    /// Whether a CSV/TSV table preview is active **and parsed** (routes the PreviewTable surface / renderer).
+    /// A Table kind whose parse failed returns false → the preview degrades to raw text.
+    pub fn is_table_preview(&self) -> bool {
+        matches!(self.preview_kind, Some(PreviewKind::Table { .. })) && self.table_data.is_some()
+    }
+
+    /// The field-separator byte of the active table (`,` by default).
+    fn table_delimiter(&self) -> u8 {
+        match self.preview_kind {
+            Some(PreviewKind::Table { delimiter, .. }) => delimiter,
+            _ => b',',
+        }
+    }
+
+    /// The parsed table (for the renderer). None when not a table preview.
+    pub fn table_data(&self) -> Option<&crate::preview::table::TableData> {
+        self.table_data.as_ref()
+    }
+
+    /// The cell cursor as (data-row, column), both 0-based.
+    pub fn table_cursor(&self) -> (usize, usize) {
+        (self.table_cur_row, self.table_cur_col)
+    }
+
+    /// The current (top data row, left column) scroll offsets.
+    pub fn table_scroll(&self) -> (usize, usize) {
+        (self.table_top_row, self.table_left_col)
+    }
+
+    /// Renderer feedback: store the scroll offsets it settled on (to keep the cursor visible) plus the
+    /// visible data-row count (used as the PageUp/Down step). Mirrors how `preview_scroll`/`preview_viewport`
+    /// are clamped/recorded at render time.
+    pub fn set_table_view(&mut self, top_row: usize, left_col: usize, viewport_rows: u16) {
+        self.table_top_row = top_row;
+        self.table_left_col = left_col;
+        self.table_viewport_rows = viewport_rows;
+    }
+
+    /// Move the cell cursor by (drow, dcol), clamped to the table. The renderer scrolls to follow.
+    pub fn table_cursor_move(&mut self, drow: i32, dcol: i32) {
+        let Some(t) = &self.table_data else {
+            return;
+        };
+        let (nr, nc) = (t.nrows(), t.ncols);
+        if nr == 0 || nc == 0 {
+            return;
+        }
+        let r = (self.table_cur_row as i64 + drow as i64).clamp(0, nr as i64 - 1);
+        let c = (self.table_cur_col as i64 + dcol as i64).clamp(0, nc as i64 - 1);
+        self.table_cur_row = r as usize;
+        self.table_cur_col = c as usize;
+    }
+
+    /// Jump to the first (`bottom=false`) or last (`bottom=true`) data row.
+    pub fn table_row_to(&mut self, bottom: bool) {
+        let Some(t) = &self.table_data else {
+            return;
+        };
+        self.table_cur_row = if bottom {
+            t.nrows().saturating_sub(1)
+        } else {
+            0
+        };
+    }
+
+    /// Jump to the first (`end=false`) or last (`end=true`) column.
+    pub fn table_col_to(&mut self, end: bool) {
+        let Some(t) = &self.table_data else {
+            return;
+        };
+        self.table_cur_col = if end { t.ncols.saturating_sub(1) } else { 0 };
+    }
+
+    /// Move the cursor down/up by whole pages (`dir` = +1 / -1). The page size is the last render's visible rows.
+    pub fn table_page(&mut self, dir: i32) {
+        let page = self.table_viewport_rows.max(1) as i32;
+        self.table_cursor_move(dir * page, 0);
+    }
+
+    /// Move the cursor down/up by half a page (`dir` = +1 / -1).
+    pub fn table_half_page(&mut self, dir: i32) {
+        let half = (self.table_viewport_rows / 2).max(1) as i32;
+        self.table_cursor_move(dir * half, 0);
+    }
+
+    /// Build the text a table copy would place on the clipboard (None when there is no table).
+    /// Cell = the current cell's value; Row = the current row's cells joined by the delimiter;
+    /// Column = the column's header + every cell value, one per line.
+    fn table_copy_text(&self, kind: TableCopyKind) -> Option<String> {
+        let t = self.table_data.as_ref()?;
+        let (r, c) = (self.table_cur_row, self.table_cur_col);
+        let sep = (self.table_delimiter() as char).to_string();
+        Some(match kind {
+            TableCopyKind::Cell => {
+                if t.nrows() == 0 {
+                    t.header(c).to_string()
+                } else {
+                    t.cell(r, c).to_string()
+                }
+            }
+            TableCopyKind::Row => {
+                if t.nrows() == 0 {
+                    t.headers.join(&sep)
+                } else {
+                    t.rows.get(r).map(|row| row.join(&sep)).unwrap_or_default()
+                }
+            }
+            TableCopyKind::Column => {
+                let mut vals = vec![t.header(c).to_string()];
+                vals.extend(
+                    t.rows
+                        .iter()
+                        .map(|row| row.get(c).cloned().unwrap_or_default()),
+                );
+                vals.join("\n")
+            }
+        })
+    }
+
+    /// Copy the current cell / row / column to the clipboard and flash the result.
+    pub fn table_copy(&mut self, kind: TableCopyKind) {
+        let Some(text) = self.table_copy_text(kind) else {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
+            return;
+        };
+        self.set_clipboard_flash(&text);
     }
 
     /// Whether the current preview is a (renderable) image. Used to route image-only keys (zoom/pan).
@@ -3690,7 +3903,6 @@ impl App {
 
     /// Write to the clipboard and flash success/failure (common processing for copy operations). On success, shows a one-line preview
     /// (multi-line content such as a full message is rounded to the first line + `…` so the footer does not overflow).
-    #[cfg(feature = "git")]
     fn set_clipboard_flash(&mut self, text: &str) {
         match set_clipboard(text) {
             Ok(()) => {
@@ -3736,6 +3948,10 @@ impl App {
             image_center: self.image_center,
             pdf_page: self.pdf_page,
             pdf_pages: self.pdf_pages,
+            table_cur_row: self.table_cur_row,
+            table_cur_col: self.table_cur_col,
+            table_top_row: self.table_top_row,
+            table_left_col: self.table_left_col,
             git_view: self.git_view,
             git_view_sel: self.git_view_sel,
             git_view_entries: self.git_view_entries.clone(),
@@ -3849,6 +4065,13 @@ impl App {
         }
         // 大きい Code/Text なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
         self.setup_windowed();
+        // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
+        self.load_table();
+        self.table_cur_row = t.table_cur_row;
+        self.table_cur_col = t.table_cur_col;
+        self.table_top_row = t.table_top_row;
+        self.table_left_col = t.table_left_col;
+        self.clamp_table_cursor();
     }
 
     pub fn tab_count(&self) -> usize {

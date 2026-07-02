@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- CSV/TSV table preview: `.csv` / `.tsv` files render as an aligned grid with a fixed
+  header row, rainbow (per-column) colors, and a movable cell cursor — the way csvlens
+  and Rainbow CSV present tabular data. Parsing goes through the `csv` crate, so quoted
+  commas, embedded newlines, ragged (variable-column) rows, and full-width (CJK) cells
+  are handled correctly; a file that fails to parse degrades to a raw-text preview.
+  Navigate cells with `h`/`j`/`k`/`l` (`g`/`G` = first/last row, `0`/`$` = first/last
+  column), and copy with `y` → `c` (cell) / `r` (row) / `C` (column) / `f` (full path).
+- `[ui] csv_rainbow` config option (default `true`) to toggle the rainbow column colors.
+
 ## [0.3.0]
 
 ### Added

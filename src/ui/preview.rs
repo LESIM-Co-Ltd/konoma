@@ -49,6 +49,16 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("x", l(crate::i18n::Msg::DiscardWholeFile))
             .row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
     }
+    if app.is_table_preview() {
+        return vec![HelpSection::new(l(crate::i18n::Msg::PreviewTable))
+            .row("h j k l / arrows", l(crate::i18n::Msg::TableMoveHelp))
+            .row("g / G", l(crate::i18n::Msg::TopBottom))
+            .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
+            .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
+            .row("y → f", l(crate::i18n::Msg::WkFull))
+            .row("e", l(crate::i18n::Msg::EditExternal))
+            .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
+    }
     if app.is_image_preview() {
         let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewImage))
             .row("+ / -", l(crate::i18n::Msg::Zoom))
@@ -78,6 +88,18 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 /// **Edit here to change the Preview footer**. Takes `&App`, so it can also depend on state.
 pub fn footer_hints(app: &App) -> Vec<String> {
     let lang = app.lang;
+    if app.is_table_preview() {
+        return vec![
+            hint(lang, "hjkl", crate::i18n::Msg::HintCell),
+            hint(lang, "y", crate::i18n::Msg::CopyHint),
+            hint(lang, "g/G", crate::i18n::Msg::HintEnds),
+            hint(lang, "q", crate::i18n::Msg::GitBack),
+            hint(lang, "?", crate::i18n::Msg::HintHelp),
+            hint(lang, "e", crate::i18n::Msg::HintEdit),
+            hint(lang, "[/]", crate::i18n::Msg::HintTab),
+            hint(lang, "p", crate::i18n::Msg::HintPath),
+        ];
+    }
     if app.is_image_preview() {
         let mut v = vec![
             hint(lang, "+/-", crate::i18n::Msg::Zoom),
@@ -171,6 +193,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
+    // CSV/TSV テーブル: 整列グリッド(列レインボー＋セルカーソル)で描画する(専用パス)。
+    // パース失敗時は is_table_preview=false になり、下のテキスト経路で生 CSV へ安全降格する。
+    if app.is_table_preview() {
+        crate::ui::table::render(frame, app, area);
+        return;
+    }
+
     // GitDiff プレビュー: unified 差分を Zed 風着色で描画する(専用パス)。
     if app.is_git_diff_preview() {
         render_gitdiff(frame, app, area);
@@ -236,6 +265,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
+        // テーブルは上の専用パスで描画済み。ここに来るのはパース失敗時=生 CSV/TSV をテキスト表示(安全降格)。
+        Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
         // GitDiff は上の専用パスで描画済み(ここには来ない)。網羅性のため安全側。
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),

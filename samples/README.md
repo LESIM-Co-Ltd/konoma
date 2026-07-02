@@ -12,8 +12,11 @@ and are covered by the project's MIT license.
   `<img>`): the local `sample.png` / `sample.jpg`, plus remote `http(s)://` images
   fetched at runtime (a placeholder raster and a shields.io badge — nothing is
   committed here; they are downloaded into the user's cache on preview).
-- `sample.svg`, the text / Markdown / CSV files, and everything under `code/` — written
-  by hand for konoma.
+- `sample.csv` / `sample.tsv` / `data.csv` — hand-written tables that exercise the CSV/TSV
+  table preview (rainbow columns, cell navigation, quoted commas, full-width CJK cells, and
+  long-value truncation).
+- `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
+  for konoma.
 
 If you add new sample files, only commit material you have the right to redistribute
 under MIT (your own work, CC0, or public domain).
