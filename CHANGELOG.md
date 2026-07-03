@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-03
+
 ### Added
 - Markdown/Mermaid raw-source toggle (`R`). Markdown and Mermaid previews are reflowed
   when rendered, so their on-screen lines don't map to the file and range selection was
@@ -123,7 +125,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.2.0...v0.3.0
