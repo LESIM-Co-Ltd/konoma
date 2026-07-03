@@ -103,11 +103,13 @@ pub enum Action {
     SearchStart,
     SearchNext,
     SearchPrev,
-    /// `v`: start a line-selection in a windowed code/text preview.
+    /// `v`: start a charwise (exact character range) selection in a windowed code/text preview.
     PreviewEnterVisual,
-    /// `y` (in preview-visual): copy the selected logical lines.
+    /// `V`: start a linewise (whole-line) selection in a windowed code/text preview.
+    PreviewEnterVisualLine,
+    /// `y` (in preview-visual): copy the selection to the clipboard.
     PreviewCopySelection,
-    /// `v`/`q` (in preview-visual): exit selection without copying.
+    /// `v`/`V`/`q` (in preview-visual): exit selection without copying.
     PreviewExitVisual,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
@@ -653,14 +655,15 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
+        ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
         ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         per_surface.insert(Surface::PreviewText, ptext);
 
-        // --- Preview: text/code line-selection (v) ---
-        // j/k/g/G/ページで選択範囲を伸ばし、y でコピー、v・q・Esc で抜ける。h/l/0/$ は横スクロール。
+        // --- Preview: text/code visual selection (v charwise / V linewise) ---
+        // h/j/k/l で 2D キャレットを動かして範囲を伸ばし、y でコピー、v・V・q・Esc で抜ける。
         let mut pvis: ContextMap = HashMap::new();
         pvis.insert(KeyPress::ch('j'), nav(Motion::Down));
         pvis.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -675,6 +678,7 @@ impl KeyMap {
         apply_scheme_paging(&mut pvis, scheme);
         pvis.insert(KeyPress::ch('y'), run(Action::PreviewCopySelection));
         pvis.insert(KeyPress::ch('v'), run(Action::PreviewExitVisual));
+        pvis.insert(KeyPress::ch('V'), run(Action::PreviewExitVisual));
         pvis.insert(KeyPress::ch('q'), run(Action::PreviewExitVisual));
         per_surface.insert(Surface::PreviewTextVisual, pvis);
 
@@ -1494,6 +1498,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "search_next" => Action::SearchNext,
         "search_prev" => Action::SearchPrev,
         "preview_enter_visual" => Action::PreviewEnterVisual,
+        "preview_enter_visual_line" => Action::PreviewEnterVisualLine,
         "preview_copy_selection" => Action::PreviewCopySelection,
         "preview_exit_visual" => Action::PreviewExitVisual,
         "link_focus_next" => Action::LinkFocusNext,
@@ -1630,6 +1635,7 @@ pub fn action_name(a: Action) -> String {
         Action::SearchNext => "search_next",
         Action::SearchPrev => "search_prev",
         Action::PreviewEnterVisual => "preview_enter_visual",
+        Action::PreviewEnterVisualLine => "preview_enter_visual_line",
         Action::PreviewCopySelection => "preview_copy_selection",
         Action::PreviewExitVisual => "preview_exit_visual",
         Action::LinkFocusNext => "link_focus_next",

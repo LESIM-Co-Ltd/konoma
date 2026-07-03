@@ -254,17 +254,17 @@ mod tests {
             let buf = term.backend().buffer();
             buf.content().iter().map(|c| c.symbol()).collect()
         };
-        // 既定(hscroll=0)=行頭: START は見え、遠い END は画面外。
+        // 既定(キャレット行頭)=行頭: START は見え、遠い END は画面外。
         let s0 = dump(&mut app);
         assert!(s0.contains("START"), "行頭に START が無い");
         assert!(!s0.contains("END"), "行頭で END が見えてはいけない");
-        // $ で行末へ: END が見える(START は画面外)。
-        app.preview_hscroll_end();
+        // $ で行末の文字へ: ビューが追従して END が見える(START は画面外)。
+        app.preview_col_end();
         let se = dump(&mut app);
         assert!(se.contains("END"), "$ で行末(END)が見えない");
         assert!(!se.contains("START"), "行末で START が見えてはいけない");
         // 0 で行頭へ戻る。
-        app.preview_hscroll_home();
+        app.preview_col_home();
         let sh = dump(&mut app);
         assert!(
             sh.contains("START") && !sh.contains("END"),

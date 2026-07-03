@@ -351,8 +351,9 @@ struct TabState {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
-    // windowed(Code/Text)プレビューの行カーソル位置(別タブから戻っても同じ行に戻る)。選択(anchor)は持ち越さない。
+    // windowed(Code/Text)プレビューの 2D キャレット位置(別タブから戻っても同じ行/列に戻る)。選択(anchor)は持ち越さない。
     preview_cursor_line: usize,
+    preview_cursor_col: usize,
     // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
     git_view: bool,
     git_view_sel: usize,
@@ -599,9 +600,13 @@ pub struct App {
     /// Line cursor for windowed (Code/Text) previews: absolute 0-based logical line under the cursor.
     /// The current line is highlighted; `j`/`k` move it (the window follows). Only meaningful while windowed.
     preview_cursor_line: usize,
-    /// Visual line-selection anchor. Some = selecting (started with `v`): the range is anchor..=cursor.
-    /// `y` copies the selected logical lines. None = not selecting.
-    preview_visual_anchor: Option<usize>,
+    /// Column cursor: 0-based char index within the logical line (`h`/`l` move it). The render clamps it to the
+    /// line's length and writes the clamp back. Used for the block caret and charwise (`v`) selection.
+    preview_cursor_col: usize,
+    /// Visual-selection anchor `(line, col)`. Some = selecting. Charwise (`v`) uses both; linewise (`V`) uses the line.
+    preview_visual_anchor: Option<(usize, usize)>,
+    /// Whether the active selection is linewise (`V`, whole lines) rather than charwise (`v`, exact character range).
+    preview_visual_linewise: bool,
 
     /// GIF animation (M6). All frames (composited RGBA) + each display duration. Empty means no animation (still image).
     /// A separate path from the still-image asynchronous ThreadProtocol: to avoid the "render an unencoded
@@ -1015,7 +1020,9 @@ impl App {
             table_left_col: 0,
             table_viewport_rows: 0,
             preview_cursor_line: 0,
+            preview_cursor_col: 0,
             preview_visual_anchor: None,
+            preview_visual_linewise: false,
             gif_frames: Vec::new(),
             gif_idx: 0,
             gif_shown_at: None,
@@ -2149,9 +2156,11 @@ impl App {
         self.search_matches.clear();
         self.search_idx = 0;
         self.setup_windowed(); // 大きい Code/Text なら less 風ウィンドウ読みに切替
-                               // windowed プレビューの行カーソル/選択を先頭へリセット。
+                               // windowed プレビューの 2D キャレット/選択を先頭へリセット。
         self.preview_cursor_line = 0;
+        self.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
         // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
         self.table_cur_row = 0;
         self.table_cur_col = 0;
@@ -2336,58 +2345,89 @@ impl App {
         self.preview_win.is_some()
     }
 
-    // ---- windowed プレビューの行カーソル / ビジュアル選択コピー ---------------
+    // ---- windowed プレビューの 2D キャレット / ビジュアル選択コピー -----------
 
-    /// Whether a visual line-selection is active in a windowed preview (routes the PreviewTextVisual surface).
+    /// Whether a visual selection is active in a windowed preview (routes the PreviewTextVisual surface).
     pub fn is_preview_visual(&self) -> bool {
         self.is_windowed() && self.preview_visual_anchor.is_some()
     }
 
-    /// The inclusive selected line range (lo, hi) while selecting, else None. For the render highlight and copy.
-    pub fn preview_selection_range(&self) -> Option<(usize, usize)> {
-        let a = self.preview_visual_anchor?;
-        let c = self.preview_cursor_line;
-        Some((a.min(c), a.max(c)))
+    /// Whether the active preview selection is linewise (`V`) rather than charwise (`v`). For the status chip/footer.
+    pub fn preview_visual_linewise(&self) -> bool {
+        self.preview_visual_linewise
     }
 
-    /// `v`: start a visual line-selection at the current cursor line (windowed previews only).
-    pub fn preview_enter_visual(&mut self) {
-        if self.is_windowed() {
-            self.preview_visual_anchor = Some(self.preview_cursor_line);
+    /// The active selection for the render/copy: charwise (`v`) or linewise (`V`), normalized so start ≤ end.
+    pub fn preview_selection(&self) -> PreviewSelection {
+        let Some((al, ac)) = self.preview_visual_anchor else {
+            return PreviewSelection::None;
+        };
+        let (cl, cc) = (self.preview_cursor_line, self.preview_cursor_col);
+        if self.preview_visual_linewise {
+            PreviewSelection::Line {
+                lo: al.min(cl),
+                hi: al.max(cl),
+            }
+        } else {
+            // charwise: order by (line, col)
+            let (start, end) = if (al, ac) <= (cl, cc) {
+                ((al, ac), (cl, cc))
+            } else {
+                ((cl, cc), (al, ac))
+            };
+            PreviewSelection::Char { start, end }
         }
     }
 
-    /// Exit visual selection without copying (`v` again / Esc / q).
+    /// `v` (charwise) / `V` (linewise): start a visual selection at the current 2D caret (windowed previews only).
+    pub fn preview_enter_visual(&mut self, linewise: bool) {
+        if self.is_windowed() {
+            self.preview_visual_anchor = Some((self.preview_cursor_line, self.preview_cursor_col));
+            self.preview_visual_linewise = linewise;
+        }
+    }
+
+    /// Exit visual selection without copying (`v`/`V` again / Esc / q).
     pub fn preview_exit_visual(&mut self) {
         self.preview_visual_anchor = None;
     }
 
-    /// The selected logical lines (or the current line if not selecting) as text, read from the real file.
-    /// Uses the file's unwrapped/logical lines, so pasting into an editor/Claude keeps the original layout.
+    /// The selected text read from the real file: whole logical lines (linewise) or an exact character range
+    /// (charwise, end-inclusive). Uses the file's unwrapped/logical lines so a paste keeps the original layout.
     /// Empty when there is no path or the range is out of bounds.
     fn preview_selection_text(&self) -> String {
-        let (lo, hi) = self
-            .preview_selection_range()
-            .unwrap_or((self.preview_cursor_line, self.preview_cursor_line));
         let Some(path) = self.preview_path.as_ref() else {
             return String::new();
         };
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let s = String::from_utf8_lossy(&bytes);
-                let lines: Vec<&str> = s.lines().collect();
-                let end = hi.min(lines.len().saturating_sub(1));
-                if lo > end || lines.is_empty() {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return String::new(),
+        };
+        let s = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = s.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        let last = lines.len() - 1;
+        match self.preview_selection() {
+            PreviewSelection::Line { lo, hi } => {
+                let end = hi.min(last);
+                if lo > end {
                     String::new()
                 } else {
                     lines[lo..=end].join("\n")
                 }
             }
-            Err(_) => String::new(),
+            PreviewSelection::None => {
+                // not selecting → the current logical line
+                let l = self.preview_cursor_line.min(last);
+                lines[l].to_string()
+            }
+            PreviewSelection::Char { start, end } => selection_char_text(&lines, start, end),
         }
     }
 
-    /// `y`: copy the selected logical lines (or the current line if not selecting) to the clipboard, then exit visual.
+    /// `y`: copy the current selection (or the current line if not selecting) to the clipboard, then exit visual.
     pub fn preview_copy_selection(&mut self) {
         let text = self.preview_selection_text();
         self.preview_visual_anchor = None;
@@ -2396,6 +2436,35 @@ impl App {
             return;
         }
         self.set_clipboard_flash(&text);
+    }
+
+    /// `h`/`l`: move the column caret by `dir` chars (windowed previews). The render clamps it to the line length
+    /// and writes the clamp back, so overshoot is corrected on the next frame. Falls back to hscroll otherwise.
+    pub fn preview_col_move(&mut self, dir: i32) {
+        if self.is_windowed() {
+            let next = (self.preview_cursor_col as i64 + dir as i64).max(0) as usize;
+            self.preview_cursor_col = next;
+        } else {
+            self.preview_hscroll(dir * 2);
+        }
+    }
+
+    /// `0`: move the caret to the first column (windowed), else scroll home.
+    pub fn preview_col_home(&mut self) {
+        if self.is_windowed() {
+            self.preview_cursor_col = 0;
+        } else {
+            self.preview_hscroll_home();
+        }
+    }
+
+    /// `$`: move the caret to the last column (windowed). The render clamps the sentinel to the line length.
+    pub fn preview_col_end(&mut self) {
+        if self.is_windowed() {
+            self.preview_cursor_col = usize::MAX;
+        } else {
+            self.preview_hscroll_end();
+        }
     }
 
     pub fn back_to_tree(&mut self) {
@@ -2424,7 +2493,9 @@ impl App {
         self.table_top_row = 0;
         self.table_left_col = 0;
         self.preview_cursor_line = 0;
+        self.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
     }
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
@@ -3573,8 +3644,26 @@ impl App {
                 })
                 .collect();
         }
-        // 行番号ガター(設定 ON のときだけ)。先頭行番号 = preview_top_line。
         let top_line = self.preview_top_line;
+        // 2D キャレット列を可視のカーソル行の実長さにクランプし、書き戻す(`l`/`$` の行き過ぎ補正)。
+        // キャレット行はビューポート追従で常に可視なので、ここで content から実長を取得できる。
+        if self.preview_cursor_line >= top_line
+            && self.preview_cursor_line < top_line + content.len()
+        {
+            let ln = &content[self.preview_cursor_line - top_line];
+            let len: usize = ln.spans.iter().map(|s| s.content.chars().count()).sum();
+            // 読み取り専用キャレットは常に実在の文字の上に置く(空行は 0)。$ は最後の文字へ。
+            self.preview_cursor_col = self.preview_cursor_col.min(len.saturating_sub(1));
+        }
+        // 行カーソル/選択範囲のハイライト(ガター前＝列インデックスが本文先頭 0 基準に揃う)。
+        let content = apply_preview_caret(
+            content,
+            top_line,
+            self.preview_cursor_line,
+            self.preview_cursor_col,
+            self.preview_selection(),
+        );
+        // 行番号ガター(設定 ON のときだけ)。先頭行番号 = preview_top_line。
         let content = if self.cfg.ui.line_numbers {
             with_line_numbers(content, top_line)
         } else {
@@ -3582,14 +3671,7 @@ impl App {
         };
         // git 変更ガター(設定 ON・変更のあるファイルのみ)。行番号の左に 1 セルのマーカーを前置する。
         let marks = self.git_gutter_marks();
-        let content = with_git_gutter(content, top_line, &marks);
-        // 行カーソル/選択範囲のハイライト(最後に適用＝ガター/行番号ごと着色)。
-        highlight_cursor_line(
-            content,
-            top_line,
-            self.preview_cursor_line,
-            self.preview_selection_range(),
-        )
+        with_git_gutter(content, top_line, &marks)
     }
 
     /// Git gutter marks (per 1-based new-file line) for the current code/text preview, cached per path.
@@ -4070,6 +4152,7 @@ impl App {
             table_top_row: self.table_top_row,
             table_left_col: self.table_left_col,
             preview_cursor_line: self.preview_cursor_line,
+            preview_cursor_col: self.preview_cursor_col,
             git_view: self.git_view,
             git_view_sel: self.git_view_sel,
             git_view_entries: self.git_view_entries.clone(),
@@ -4183,9 +4266,11 @@ impl App {
         }
         // 大きい Code/Text なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
         self.setup_windowed();
-        // windowed プレビューの行カーソルを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
+        // windowed プレビューの 2D キャレットを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
         self.preview_cursor_line = t.preview_cursor_line;
+        self.preview_cursor_col = t.preview_cursor_col;
         self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
         // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
         self.load_table();
         self.table_cur_row = t.table_cur_row;
@@ -4575,17 +4660,80 @@ fn with_git_gutter(
         .collect()
 }
 
-/// Highlight the current line (subtle background) or, while selecting, the whole selected range
-/// (stronger background). Applied last so the gutter/line-number cells are highlighted too.
-/// Windowed (Code/Text) previews only; the visible row's absolute line = `top_line + i`.
-fn highlight_cursor_line(
+/// The active visual selection in a windowed preview, normalized so `start ≤ end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewSelection {
+    /// Not selecting (only the block caret is drawn).
+    None,
+    /// Charwise (`v`): an inclusive `(line, col)` character range across one or more lines.
+    Char {
+        start: (usize, usize),
+        end: (usize, usize),
+    },
+    /// Linewise (`V`): whole logical lines `lo..=hi`.
+    Line { lo: usize, hi: usize },
+}
+
+/// Extract the text of a charwise selection from the file's logical lines (`start`/`end` end-inclusive,
+/// columns are char indices). Slicing by chars (not bytes) keeps multibyte/CJK content intact.
+fn selection_char_text(lines: &[&str], start: (usize, usize), end: (usize, usize)) -> String {
+    let (sl, sc) = start;
+    let (el, ec) = end;
+    if sl >= lines.len() {
+        return String::new();
+    }
+    let el = el.min(lines.len() - 1);
+    if sl == el {
+        // 単一行: [sc..=ec](正規化済みで sc ≤ ec)
+        lines[sl]
+            .chars()
+            .skip(sc)
+            .take((ec + 1).saturating_sub(sc))
+            .collect()
+    } else {
+        let mut out = String::new();
+        out.push_str(&lines[sl].chars().skip(sc).collect::<String>());
+        for l in &lines[sl + 1..el] {
+            out.push('\n');
+            out.push_str(l);
+        }
+        out.push('\n');
+        out.push_str(&lines[el].chars().take(ec + 1).collect::<String>());
+        out
+    }
+}
+
+/// The character range `[lo, hi)` to highlight on absolute line `abs` for a charwise selection, or None.
+/// `usize::MAX` for `hi` means "to end of line". End is inclusive, so the last covered char is `end.1`.
+fn char_range_for_line(
+    abs: usize,
+    start: (usize, usize),
+    end: (usize, usize),
+) -> Option<(usize, usize)> {
+    if abs < start.0 || abs > end.0 {
+        return None;
+    }
+    let lo = if abs == start.0 { start.1 } else { 0 };
+    let hi = if abs == end.0 {
+        end.1.saturating_add(1)
+    } else {
+        usize::MAX
+    };
+    Some((lo, hi))
+}
+
+/// Paint the 2D caret and selection onto the visible content lines (char-column based, applied BEFORE the
+/// line-number/git gutters so column indices align with the file text). The whole-line cases also set the
+/// line's base style so the gutter cells inherit the tint; charwise partial ranges tint only the spanned chars.
+fn apply_preview_caret(
     lines: Vec<Line<'static>>,
     top_line: usize,
-    cursor: usize,
-    sel: Option<(usize, usize)>,
+    cursor_line: usize,
+    cursor_col: usize,
+    sel: PreviewSelection,
 ) -> Vec<Line<'static>> {
     use ratatui::style::Color;
-    // 暗色テーマ向けの控えめな背景(現在行)と、選択範囲の少し強い青系背景。
+    // 暗色テーマ向け: 控えめな現在行背景と、選択範囲の少し強い青系背景。
     const CURSOR_BG: Color = Color::Rgb(55, 60, 74);
     const SEL_BG: Color = Color::Rgb(40, 66, 104);
     lines
@@ -4593,30 +4741,89 @@ fn highlight_cursor_line(
         .enumerate()
         .map(|(i, line)| {
             let abs = top_line + i;
-            let bg = match sel {
-                Some((lo, hi)) if abs >= lo && abs <= hi => Some(SEL_BG),
-                None if abs == cursor => Some(CURSOR_BG),
-                _ => None,
+            let caret = if abs == cursor_line {
+                Some(cursor_col)
+            } else {
+                None
             };
-            match bg {
-                Some(c) => line_with_bg(line, c),
-                None => line,
+            let (range, whole): (Option<(usize, usize, Color)>, bool) = match sel {
+                PreviewSelection::None => {
+                    if abs == cursor_line {
+                        (Some((0, usize::MAX, CURSOR_BG)), true)
+                    } else {
+                        (None, false)
+                    }
+                }
+                PreviewSelection::Line { lo, hi } => {
+                    if abs >= lo && abs <= hi {
+                        (Some((0, usize::MAX, SEL_BG)), true)
+                    } else {
+                        (None, false)
+                    }
+                }
+                PreviewSelection::Char { start, end } => match char_range_for_line(abs, start, end)
+                {
+                    Some((lo, hi)) => (Some((lo, hi, SEL_BG)), lo == 0 && hi == usize::MAX),
+                    None => (None, false),
+                },
+            };
+            if range.is_none() && caret.is_none() {
+                return line;
             }
+            restyle_line(line, range, whole, caret)
         })
         .collect()
 }
 
-/// Set a background color on a whole line (both the line's base style and every span), preserving foreground/modifiers.
-fn line_with_bg(mut line: Line<'static>, bg: ratatui::style::Color) -> Line<'static> {
-    line.spans = line
-        .spans
-        .into_iter()
-        .map(|s| {
-            let style = s.style.bg(bg);
-            Span::styled(s.content, style)
-        })
-        .collect();
-    line.style = line.style.bg(bg);
+/// Rebuild a line applying a background to chars in `range` `(lo, hi, color)` and the REVERSED modifier to the
+/// `caret` char. When `whole` is set, the line's base style also gets the bg (so gutters inherit it). Consecutive
+/// chars with the same resulting style are coalesced into one span to keep the span count low.
+fn restyle_line(
+    line: Line<'static>,
+    range: Option<(usize, usize, ratatui::style::Color)>,
+    whole: bool,
+    caret: Option<usize>,
+) -> Line<'static> {
+    use ratatui::style::Modifier;
+    let base = line.style;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut idx = 0usize; // char index within the line content
+    let mut cur = String::new();
+    let mut cur_style: Option<ratatui::style::Style> = None;
+    for span in line.spans.into_iter() {
+        for ch in span.content.chars() {
+            let mut style = span.style;
+            if let Some((lo, hi, color)) = range {
+                if idx >= lo && idx < hi {
+                    style = style.bg(color);
+                }
+            }
+            if caret == Some(idx) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            if cur_style != Some(style) {
+                if !cur.is_empty() {
+                    out.push(Span::styled(std::mem::take(&mut cur), cur_style.unwrap()));
+                }
+                cur_style = Some(style);
+            }
+            cur.push(ch);
+            idx += 1;
+        }
+    }
+    if !cur.is_empty() {
+        out.push(Span::styled(cur, cur_style.unwrap_or(base)));
+    }
+    let mut line = Line::from(out);
+    line.style = if whole {
+        if let Some((_, _, color)) = range {
+            base.bg(color)
+        } else {
+            base
+        }
+    } else {
+        base
+    };
     line
 }
 

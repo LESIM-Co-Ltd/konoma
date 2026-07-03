@@ -3762,16 +3762,20 @@ fn preview_visual_selection_copies_logical_lines() {
     assert!(!app.is_preview_visual(), "まだ選択していない");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
 
-    // v で選択開始 → 2 行下へ伸ばす(2..=4)。
-    app.preview_enter_visual();
+    // V で行選択開始 → 2 行下へ伸ばす(2..=4)。
+    app.preview_enter_visual(true);
     assert!(app.is_preview_visual(), "選択モードに入る");
+    assert!(app.preview_visual_linewise(), "V は行選択");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTextVisual);
     assert_eq!(
         app.internal_mode(),
         Some(crate::app::InternalMode::PreviewVisual)
     );
     app.preview_scroll(2); // カーソル 2→4(anchor=2 固定)
-    assert_eq!(app.preview_selection_range(), Some((2, 4)));
+    assert_eq!(
+        app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 2, hi: 4 }
+    );
 
     // 選択テキスト = 論理行 2..=4。
     assert_eq!(app.preview_selection_text(), "line 2\nline 3\nline 4");
@@ -3783,9 +3787,12 @@ fn preview_visual_selection_copies_logical_lines() {
     // 逆方向(上へ)選択でも範囲は昇順に正規化される。
     app.preview_to_top(); // カーソル 0
     app.preview_scroll(5); // カーソル 5
-    app.preview_enter_visual();
+    app.preview_enter_visual(true);
     app.preview_scroll(-3); // カーソル 2、anchor=5 → 範囲 2..=5
-    assert_eq!(app.preview_selection_range(), Some((2, 5)));
+    assert_eq!(
+        app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 2, hi: 5 }
+    );
     assert_eq!(
         app.preview_selection_text(),
         "line 2\nline 3\nline 4\nline 5"
@@ -3794,6 +3801,82 @@ fn preview_visual_selection_copies_logical_lines() {
     // Esc 相当(exit)で解除。
     app.preview_exit_visual();
     assert!(!app.is_preview_visual());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn preview_charwise_selection_copies_character_range() {
+    let dir = std::env::temp_dir().join("konoma_preview_charwise_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 各行 "abcdefghij" の 6 行。
+    let content = (0..6)
+        .map(|_| "abcdefghij".to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(dir.join("code.txt"), content.as_bytes()).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("code.txt"))
+        .unwrap();
+    app.selected = i;
+    app.tree_activate().unwrap();
+    assert!(app.is_windowed());
+    app.preview_viewport = 10;
+
+    // 1 行目(line 0)の 2 列目(c)から開始 → l を 3 回で col 2→5(f)。単一行 charwise。
+    app.preview_col_move(1); // col 1
+    app.preview_col_move(1); // col 2
+    app.preview_enter_visual(false); // charwise, anchor=(0,2)
+    assert!(app.is_preview_visual());
+    assert!(!app.preview_visual_linewise(), "v は文字選択");
+    app.preview_col_move(1); // 3
+    app.preview_col_move(1); // 4
+    app.preview_col_move(1); // 5
+    assert_eq!(
+        app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 2),
+            end: (0, 5)
+        }
+    );
+    // 文字範囲 [2..=5] = "cdef"(end-inclusive)。
+    assert_eq!(app.preview_selection_text(), "cdef");
+
+    // 複数行 charwise: (0,2) から 2 行下・col 3 へ → "cdefghij\nabcdefghij\nabcd"。
+    app.preview_scroll(2); // カーソル行 0→2
+    app.preview_col_home(); // col 0
+    app.preview_col_move(1); // 1
+    app.preview_col_move(1); // 2
+    app.preview_col_move(1); // 3
+    assert_eq!(
+        app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 2),
+            end: (2, 3)
+        }
+    );
+    assert_eq!(app.preview_selection_text(), "cdefghij\nabcdefghij\nabcd");
+
+    // 逆方向でも (line,col) 昇順に正規化される。
+    app.preview_exit_visual();
+    app.preview_to_top();
+    app.preview_scroll(3); // 行 3
+    app.preview_col_home();
+    app.preview_col_move(1); // col 1
+    app.preview_enter_visual(false); // anchor=(3,1)
+    app.preview_scroll(-1); // 行 2
+    app.preview_col_move(1); // col 2
+    assert_eq!(
+        app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (2, 2),
+            end: (3, 1)
+        }
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

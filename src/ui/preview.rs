@@ -77,7 +77,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("h / l / ← →", l(crate::i18n::Msg::HScroll))
         .row("0 / $", l(crate::i18n::Msg::LineStartEnd))
         .row("/  n / N", l(crate::i18n::Msg::SearchHint))
-        .row("v → j / k → y", l(crate::i18n::Msg::PreviewSelectHelp))
+        .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
@@ -146,9 +146,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
-    // 行選択コピーは windowed(Code/Text)のみ。
+    // 範囲選択コピー(v=文字 / V=行)は windowed(Code/Text)のみ。
     if app.is_windowed() {
-        v.push(hint(lang, "v", crate::i18n::Msg::PreviewSelectHelp));
+        v.push(hint(lang, "v/V", crate::i18n::Msg::PreviewSelectHelp));
     }
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));
@@ -519,6 +519,26 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
 
     let wrap = app.cfg.ui.wrap;
+    // 非折返し時は 2D キャレットが画面外へ出ないよう横スクロールを追従させる(テーブルと同じ流儀)。
+    // キャレット桁はレンダ済み行の REVERSED スパン開始位置(＝ガター込みの表示桁)から求める。
+    if !wrap {
+        if let Some((caret_disp, caret_row)) = caret_display_col(&lines) {
+            let w = inner.width as usize;
+            let line_w = lines[caret_row].width();
+            if line_w <= w {
+                // キャレット行が画面幅に収まるなら先頭から表示(短い行で孤立文字にしない)。
+                app.preview_hscroll = 0;
+            } else {
+                // 収まらない長い行は最小移動で追従(キャレットを端に置く)。
+                let h = app.preview_hscroll as usize;
+                if caret_disp < h {
+                    app.preview_hscroll = caret_disp as u16;
+                } else if caret_disp >= h + w {
+                    app.preview_hscroll = (caret_disp + 1 - w) as u16;
+                }
+            }
+        }
+    }
     let mut para = Paragraph::new(Text::from(lines)).block(block);
     if wrap {
         para = para.wrap(Wrap { trim: false });
@@ -533,6 +553,23 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     // 縦は窓で切り出し済みなので 0。横のみスクロール。
     let para = para.scroll((0, app.preview_hscroll));
     frame.render_widget(para, area);
+}
+
+/// The `(display_column, row_index)` of the 2D caret in the rendered windowed lines, or None if it isn't drawn
+/// (e.g. an empty line). The caret is the single span carrying the REVERSED modifier, so its start column is the
+/// sum of the widths of the spans before it (gutter included). Used for non-wrap horizontal follow.
+fn caret_display_col(lines: &[ratatui::text::Line<'static>]) -> Option<(usize, usize)> {
+    use ratatui::style::Modifier;
+    for (row, line) in lines.iter().enumerate() {
+        let mut disp = 0usize;
+        for span in &line.spans {
+            if span.style.add_modifier.contains(Modifier::REVERSED) {
+                return Some((disp, row));
+            }
+            disp += span.width();
+        }
+    }
+    None
 }
 
 /// Shared component for a loading display that draws one line of "spinner  message" centered inside the frame.

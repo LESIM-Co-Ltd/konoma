@@ -15,12 +15,14 @@ All notable changes to konoma are documented in this file. The format is based o
   Navigate cells with `h`/`j`/`k`/`l` (`g`/`G` = first/last row, `0`/`$` = first/last
   column), and copy with `y` → `c` (cell) / `r` (row) / `C` (column) / `f` (full path).
 - `[ui] csv_rainbow` config option (default `true`) to toggle the rainbow column colors.
-- Line selection + copy in code/text previews: the current line is highlighted (a line
-  cursor moved with `j`/`k`, the window following at the edges), `v` starts a visual line
-  selection, `j`/`k`/`g`/`G` extend it, and `y` copies the selected **logical** lines
-  (the real file text, not the wrapped display) to the clipboard — ideal for pasting a
-  code range elsewhere. `Esc`/`v`/`q` cancel. Applies to windowed code/text previews
-  (Markdown/Mermaid are reflowed and excluded).
+- Range selection + copy in code/text previews with a vim-style 2D caret: a block caret
+  moves by line (`j`/`k`, the window following at the edges) and by column (`h`/`l`,
+  `0`/`$` for line start/end, the view following horizontally when not wrapping). `v`
+  starts a **charwise** selection (an exact character range across lines) and `V` a
+  **linewise** selection (whole logical lines); the caret extends the range and `y`
+  copies it to the clipboard — the real file text, not the wrapped display, ideal for
+  pasting a precise snippet elsewhere. `Esc`/`v`/`V`/`q` cancel. Applies to windowed
+  code/text previews (Markdown/Mermaid are reflowed and excluded).
 
 ## [0.3.0]
 

@@ -61,8 +61,14 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
     }
     let (msg, bg, dark) = match app.internal_mode()? {
         InternalMode::Visual => (Msg::StVisual, Color::Magenta, true),
-        // プレビューの行選択も同じ VISUAL チップ(選択中であることを示す)。
-        InternalMode::PreviewVisual => (Msg::StVisual, Color::Magenta, true),
+        // プレビューの選択: 文字範囲(v)=VISUAL / 行(V)=V-LINE。
+        InternalMode::PreviewVisual => {
+            if app.preview_visual_linewise() {
+                (Msg::StVisualLine, Color::Magenta, true)
+            } else {
+                (Msg::StVisual, Color::Magenta, true)
+            }
+        }
         InternalMode::Filter => (Msg::StFilter, Color::Yellow, false),
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
         InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
@@ -160,7 +166,13 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::BatchRename => tr(lang, crate::i18n::Msg::StRenamePreviewHint),
         InternalMode::Rename => tr(lang, crate::i18n::Msg::StRenameHint),
         InternalMode::Visual => tr(lang, crate::i18n::Msg::VisualOpsHint),
-        InternalMode::PreviewVisual => tr(lang, crate::i18n::Msg::PreviewVisualHint),
+        InternalMode::PreviewVisual => {
+            if app.preview_visual_linewise() {
+                tr(lang, crate::i18n::Msg::PreviewVisualLineHint)
+            } else {
+                tr(lang, crate::i18n::Msg::PreviewVisualHint)
+            }
+        }
         InternalMode::Info => tr(lang, crate::i18n::Msg::StCloseHint),
         InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
