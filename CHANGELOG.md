@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-03
+
 ### Fixed
 - Much broader syntax highlighting for the files you inspect from the CLI. Previously
   only a fixed list of extensions was colored; anything else (including many languages
@@ -112,7 +114,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.1.1...v0.2.0
