@@ -354,6 +354,8 @@ struct TabState {
     // windowed(Code/Text)プレビューの 2D キャレット位置(別タブから戻っても同じ行/列に戻る)。選択(anchor)は持ち越さない。
     preview_cursor_line: usize,
     preview_cursor_col: usize,
+    // Markdown/Mermaid の raw ソース表示(`R`)状態もタブごとに保持する。
+    md_raw: bool,
     // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
     git_view: bool,
     git_view_sel: usize,
@@ -536,6 +538,10 @@ pub struct App {
     /// Avoids re-parsing (pulldown-cmark/syntect/mermaid layout) on every scroll.
     /// It depends on width (to fit mermaid to the display width), so the key is (path, width).
     md_cache: Option<MdCache>,
+
+    /// `R`: show a Markdown/Mermaid preview as its raw source (windowed, like a code file) instead of the
+    /// decorated render. Raw mode makes lines/columns match the file, so the 2D caret selection/copy works.
+    md_raw: bool,
 
     /// Cache of raw diff lines for the GitDiff preview (per path). Avoids recomputing `git diff` every frame.
     diff_cache: Option<DiffCache>,
@@ -994,6 +1000,7 @@ impl App {
             pending_edit: None,
             pending_git_tool: false,
             md_cache: None,
+            md_raw: false,
             diff_cache: None,
             gutter_cache: None,
             md_links: Vec::new(),
@@ -2147,6 +2154,7 @@ impl App {
         }
         self.start_media_load(&kind, path);
         self.preview_kind = Some(kind);
+        self.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
         self.md_links.clear();
         self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
@@ -2184,10 +2192,12 @@ impl App {
             && matches!(self.preview_kind, Some(PreviewKind::Code(_)))
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
+        // Code/Text は常に windowed。Markdown/Mermaid は raw 表示(`R`)のときだけ windowed 化＝
+        // 素のソースを行/桁一致で読み、2D キャレット選択をそのまま乗せる。
         let windowed_kind = matches!(
             self.preview_kind,
             Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
-        );
+        ) || self.is_raw_source();
         if !windowed_kind {
             return;
         }
@@ -2345,6 +2355,49 @@ impl App {
         self.preview_win.is_some()
     }
 
+    /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
+    /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
+    pub fn is_raw_source(&self) -> bool {
+        self.md_raw
+            && matches!(
+                self.preview_kind,
+                Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
+            )
+    }
+
+    /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
+    pub fn is_decorated_kind(&self) -> bool {
+        matches!(
+            self.preview_kind,
+            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
+        )
+    }
+
+    /// Whether raw source view is currently on (for the footer/title indicator).
+    pub fn is_md_raw(&self) -> bool {
+        self.md_raw
+    }
+
+    /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source. No-op for other kinds.
+    /// Rebuilds the windowed reader and resets the caret/scroll/selection so the new view starts at the top.
+    pub fn toggle_md_raw(&mut self) {
+        if !self.is_decorated_kind() {
+            return;
+        }
+        self.md_raw = !self.md_raw;
+        // 表示切替＝先頭から。窓読み(raw)/装飾(rendered)を張り直す。
+        self.preview_byte_top = 0;
+        self.preview_top_line = 0;
+        self.preview_scroll = 0;
+        self.preview_hscroll = 0;
+        self.preview_cursor_line = 0;
+        self.preview_cursor_col = 0;
+        self.preview_visual_anchor = None;
+        self.preview_visual_linewise = false;
+        self.md_cache = None;
+        self.setup_windowed();
+    }
+
     // ---- windowed プレビューの 2D キャレット / ビジュアル選択コピー -----------
 
     /// Whether a visual selection is active in a windowed preview (routes the PreviewTextVisual surface).
@@ -2473,6 +2526,7 @@ impl App {
         self.preview_kind = None;
         self.clear_image(); // graphics 状態を解放
         self.md_cache = None;
+        self.md_raw = false;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -3577,6 +3631,10 @@ impl App {
         let syntax_kind = match &self.preview_kind {
             Some(PreviewKind::Code(_)) => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
+            // raw ソース表示(`R`)の Markdown/Mermaid はファイルの文法(.md→Markdown 等)で着色する。
+            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.md_raw => {
+                crate::preview::code::has_named_syntax(p)
+            }
             _ => false,
         };
         let want_syntax = self.cfg.ui.syntax_highlight
@@ -4160,6 +4218,7 @@ impl App {
             table_left_col: self.table_left_col,
             preview_cursor_line: self.preview_cursor_line,
             preview_cursor_col: self.preview_cursor_col,
+            md_raw: self.md_raw,
             git_view: self.git_view,
             git_view_sel: self.git_view_sel,
             git_view_entries: self.git_view_entries.clone(),
@@ -4271,7 +4330,9 @@ impl App {
                 self.image_crop = None;
             }
         }
-        // 大きい Code/Text なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
+        // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
+        self.md_raw = t.md_raw;
+        // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
         self.setup_windowed();
         // windowed プレビューの 2D キャレットを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
         self.preview_cursor_line = t.preview_cursor_line;

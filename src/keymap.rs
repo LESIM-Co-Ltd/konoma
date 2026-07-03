@@ -113,6 +113,8 @@ pub enum Action {
     PreviewCopySelection,
     /// `v`/`V`/`q` (in preview-visual): exit selection without copying.
     PreviewExitVisual,
+    /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source (selectable).
+    ToggleMarkdownRaw,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
     LinkFocusPrev,
@@ -658,6 +660,7 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
+        ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
@@ -1504,6 +1507,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "preview_enter_visual_line" => Action::PreviewEnterVisualLine,
         "preview_copy_selection" => Action::PreviewCopySelection,
         "preview_exit_visual" => Action::PreviewExitVisual,
+        "toggle_markdown_raw" => Action::ToggleMarkdownRaw,
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
         "link_open" => Action::LinkOpen,
@@ -1642,6 +1646,7 @@ pub fn action_name(a: Action) -> String {
         Action::PreviewEnterVisualLine => "preview_enter_visual_line",
         Action::PreviewCopySelection => "preview_copy_selection",
         Action::PreviewExitVisual => "preview_exit_visual",
+        Action::ToggleMarkdownRaw => "toggle_markdown_raw",
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",

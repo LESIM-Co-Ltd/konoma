@@ -6,6 +6,15 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- Markdown/Mermaid raw-source toggle (`R`). Markdown and Mermaid previews are reflowed
+  when rendered, so their on-screen lines don't map to the file and range selection was
+  disabled for them. Pressing `R` now switches a Markdown/Mermaid preview to its raw
+  source — shown windowed and syntax-highlighted like a code file, with the title marked
+  `· raw source` — where the 2D caret selection/copy works against the real file text
+  (`v`/`V` → `y`). Press `R` again to return to the decorated render. The mode is kept
+  per tab.
+
 ## [0.4.1] - 2026-07-03
 
 ### Fixed

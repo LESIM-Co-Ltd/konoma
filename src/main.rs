@@ -837,6 +837,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewEnterVisualLine => app.preview_enter_visual(true),
         Action::PreviewCopySelection => app.preview_copy_selection(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
+        Action::ToggleMarkdownRaw => app.toggle_md_raw(),
         Action::LinkFocusNext => app.link_focus(1),
         Action::LinkFocusPrev => app.link_focus(-1),
         Action::LinkOpen => app.open_focused_link()?,

@@ -78,6 +78,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("0 / $", l(crate::i18n::Msg::LineStartEnd))
         .row("/  n / N", l(crate::i18n::Msg::SearchHint))
         .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
+        .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
@@ -120,12 +121,13 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         ]);
         return v;
     }
-    if matches!(app.preview_kind, Some(PreviewKind::Markdown(_))) {
-        // Markdown 固有のリンク操作(Tab フォーカス / Enter で開く)を前に出す。
+    if matches!(app.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
+        // Markdown(装飾表示)固有のリンク操作(Tab フォーカス / Enter で開く)＋ R でソース表示へ。
         return vec![
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintLink),
             hint(lang, "↵", crate::i18n::Msg::HintOpen),
+            hint(lang, "R", crate::i18n::Msg::HintRawSource),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
             hint(lang, "e", crate::i18n::Msg::HintEdit),
@@ -146,9 +148,18 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
-    // 範囲選択コピー(v=文字 / V=行)は windowed(Code/Text)のみ。
+    // 範囲選択コピー(v=文字 / V=行)は windowed(Code/Text/raw Markdown)のみ。
     if app.is_windowed() {
         v.push(hint(lang, "v/V", crate::i18n::Msg::PreviewSelectHelp));
+    }
+    // Markdown/Mermaid は R で装飾表示 ⇄ raw ソース表示をトグル(ラベルは現在モードで切替)。
+    if app.is_decorated_kind() {
+        let msg = if app.is_md_raw() {
+            crate::i18n::Msg::HintRendered
+        } else {
+            crate::i18n::Msg::HintRawSource
+        };
+        v.push(hint(lang, "R", msg));
     }
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));
@@ -494,6 +505,13 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
         (Some(p), None) => format!(" {} ", app.format_path(&p)),
         _ => " preview ".to_string(),
     };
+    // Markdown/Mermaid を raw ソース表示中はタイトルで明示する(装飾表示と区別)。
+    if app.is_raw_source() {
+        title.push_str(&format!(
+            "· {} ",
+            tr(app.lang, crate::i18n::Msg::HintRawSource)
+        ));
+    }
     // progressive 待ち中はタイトルに「ハイライト中」を添える(本文は素テキストで即読める)。
     if app.is_highlight_pending() && !app.loading_is_indicator() {
         title.push_str(tr(app.lang, crate::i18n::Msg::Highlighting));

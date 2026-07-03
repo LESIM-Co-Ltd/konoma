@@ -3881,6 +3881,53 @@ fn preview_charwise_selection_copies_character_range() {
 }
 
 #[test]
+fn markdown_raw_toggle_enables_windowed_selection() {
+    let dir = std::env::temp_dir().join("konoma_md_raw_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        b"# Title\n\nSome **bold** text.\n\n- item one\n- item two\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = i;
+    app.tree_activate().unwrap();
+
+    // 既定は装飾表示: windowed でない＝2D 選択は効かない。R トグル対象ではある。
+    assert!(app.is_decorated_kind(), "Markdown は装飾種別");
+    assert!(!app.is_windowed(), "装飾表示は windowed でない");
+    assert!(!app.is_raw_source());
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
+
+    // R で raw ソース表示へ: windowed 化し、選択が乗る。
+    app.toggle_md_raw();
+    assert!(app.is_raw_source(), "raw ソース表示に切替");
+    assert!(app.is_windowed(), "raw は windowed(選択可)");
+    app.preview_viewport = 10;
+
+    // 先頭行 "# Title" を charwise で全選択してコピー内容を確認(生ソースの行/桁一致)。
+    app.preview_enter_visual(false); // anchor=(0,0)
+    for _ in 0..6 {
+        app.preview_col_move(1); // (0,0)→(0,6) = "# Title"(7文字, end-inclusive)
+    }
+    assert_eq!(app.preview_selection_text(), "# Title");
+
+    // R で装飾表示へ戻す: windowed 解除・選択解除。
+    app.preview_exit_visual();
+    app.toggle_md_raw();
+    assert!(!app.is_raw_source(), "装飾表示へ戻る");
+    assert!(!app.is_windowed());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn dialog_cursor_right_and_end_clamp() {
     let dir = std::env::temp_dir().join("konoma_dialog_cursor_re_test");
     let _ = std::fs::remove_dir_all(&dir);
