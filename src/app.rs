@@ -3570,10 +3570,17 @@ impl App {
         }
         let top = self.preview_byte_top;
         let path = self.preview_path.clone().unwrap_or_default();
-        // syntax を着けるか: ハイライト無効(off-switch) / progressive で待ち中(hl_pending)/ 非 Code は素。
+        // syntax を着けるか: ハイライト無効(off-switch) / progressive で待ち中(hl_pending)なら素。
+        // Code は常に対象。Text は「拡張子/ファイル名から実在の文法が解決できる時だけ」対象にする＝
+        // .bashrc/Makefile/Dockerfile 等の設定ファイルを着色しつつ、本当に素のテキストは無色のまま保つ。
         // progressive 待ち中だけは「差し替え前の素テキスト」なのでキャッシュしない(後で着色版に替わる)。
+        let syntax_kind = match &self.preview_kind {
+            Some(PreviewKind::Code(_)) => true,
+            Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
+            _ => false,
+        };
         let want_syntax = self.cfg.ui.syntax_highlight
-            && matches!(self.preview_kind, Some(PreviewKind::Code(_)))
+            && syntax_kind
             && (!self.hl_pending || self.loading_is_indicator());
         let mut content: Vec<Line<'static>> = if want_syntax {
             let hit = matches!(

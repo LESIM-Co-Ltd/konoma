@@ -182,23 +182,63 @@ fn read_head(path: &Path, max_bytes: usize) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Highlight a standalone code file by its extension into decorated lines (`PreviewKind::Code`).
-/// `theme` is the configured theme name (unknown/empty → TwoDark). Even if it cannot be detected, it falls back to plain text without crashing.
+/// Map a file whose extension/name two-face has no dedicated syntax for onto a close relative, the way `bat`
+/// maps such files. Only families common in CLI work are aliased: ignore files (`.dockerignore`/`.npmignore`/…)
+/// → Git Ignore, and JSON with comments/extensions (`.jsonc`/`.json5`) → JSON. Returns a token to look up.
+fn alias_syntax_token(name: &str, ext: &str) -> Option<&'static str> {
+    if name.ends_with("ignore") {
+        return Some(".gitignore");
+    }
+    match ext {
+        "jsonc" | "json5" => Some("json"),
+        _ => None,
+    }
+}
+
+/// Find a file's syntax from its extension, then its **full file name** (covers dotfiles like `.bashrc` and named
+/// files like `Makefile`/`Dockerfile`, whose `Path::extension()` is empty), then a family alias (see
+/// `alias_syntax_token`). two-face/Sublime list such names in a syntax's file_extensions (sometimes with the
+/// leading dot, sometimes without), so the raw name and the dot-trimmed name are both tried. No first-line/plain.
+fn find_named_syntax<'a>(ss: &'a SyntaxSet, path: &Path) -> Option<&'a SyntaxReference> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let name = path.file_name().and_then(|e| e.to_str()).unwrap_or("");
+    (!ext.is_empty())
+        .then(|| ss.find_syntax_by_extension(ext))
+        .flatten()
+        .or_else(|| ss.find_syntax_by_extension(name))
+        .or_else(|| ss.find_syntax_by_extension(name.trim_start_matches('.')))
+        .or_else(|| alias_syntax_token(name, ext).and_then(|t| ss.find_syntax_by_extension(t)))
+}
+
+/// Resolve the syntax for a file (extension/name/alias, then first line/shebang), falling back to plain text.
+fn resolve_syntax<'a>(ss: &'a SyntaxSet, path: &Path, src: &str) -> &'a SyntaxReference {
+    find_named_syntax(ss, path)
+        .or_else(|| ss.find_syntax_by_first_line(src.lines().next().unwrap_or("")))
+        .unwrap_or_else(|| ss.find_syntax_plain_text())
+}
+
+/// Whether a **real** (non-plain-text) syntax resolves for `path` from its extension, file name, or alias —
+/// WITHOUT reading the file (no first-line/shebang check). Lets the windowed preview color extensionless config
+/// files (`.bashrc`, `Makefile`, `Dockerfile`, …) while leaving genuinely plain text untouched.
+pub fn has_named_syntax(path: &Path) -> bool {
+    let ss = &assets().syntaxes;
+    match find_named_syntax(ss, path) {
+        Some(s) => s.name != ss.find_syntax_plain_text().name,
+        None => false,
+    }
+}
+
+/// Highlight a standalone code/text file into decorated lines. Resolves the syntax by extension, file name, or
+/// first line (see `resolve_syntax`), so dotfiles and named config files (`.bashrc`, `Makefile`, `Dockerfile`, …)
+/// are colored too. `theme` is the configured theme name (unknown/empty → TwoDark). Undetectable content falls
+/// back to plain text without crashing.
 pub fn highlight(src: &str, path: &Path, theme: &str) -> Vec<Line<'static>> {
     let assets = assets();
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let syntax = assets
-        .syntaxes
-        .find_syntax_by_extension(ext)
-        .or_else(|| {
-            assets
-                .syntaxes
-                .find_syntax_by_first_line(src.lines().next().unwrap_or(""))
-        })
-        .unwrap_or_else(|| assets.syntaxes.find_syntax_plain_text());
+    let syntax = resolve_syntax(&assets.syntaxes, path, src);
     let out = highlight_with(src, syntax, theme);
     // この呼び出しで ext の文法はコンパイル済み(syntect の static キャッシュに載った)。
     // is_ext_warm が「次回以降は即時」を正しく返すよう記録(同期ハイライト=indicator 経路も含む)。
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     mark_warm(ext);
     out
 }
@@ -369,6 +409,51 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _))));
         assert!(colored, "前景色が付いていない");
+    }
+
+    #[test]
+    fn config_dotfiles_and_named_files_resolve_a_real_syntax() {
+        // 拡張子の無い設定ファイル/名前付きファイルもファイル名から文法解決できる(素テキストと区別)。
+        // 末尾4件(.dockerignore/.npmignore/.jsonc/.json5)は two-face 非対応→エイリアスで解決。
+        for name in [
+            ".bashrc",
+            ".zshrc",
+            ".gitconfig",
+            "Makefile",
+            "Dockerfile",
+            ".dockerignore",
+            ".npmignore",
+            "tsconfig.jsonc",
+            "app.json5",
+        ] {
+            assert!(
+                has_named_syntax(&PathBuf::from(name)),
+                "{name} が文法解決できていない(素テキスト扱い)"
+            );
+        }
+        // 本当に素のプレーンテキストは has_named_syntax=false のまま(テーマ fg も付けない)。
+        for name in ["notes.txt", "README", "output.dat"] {
+            assert!(
+                !has_named_syntax(&PathBuf::from(name)),
+                "{name} は素テキスト扱いのはず"
+            );
+        }
+        // .bashrc は実際にハイライトされ、複数色の span ができる。
+        let src = "# comment\nexport PATH=\"$HOME/bin:$PATH\"\nalias ll='ls -la'\n";
+        let lines = highlight(src, &PathBuf::from(".bashrc"), "TwoDark");
+        let distinct: std::collections::HashSet<_> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter_map(|s| match s.style.fg {
+                Some(Color::Rgb(r, g, b)) => Some((r, g, b)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            distinct.len() >= 2,
+            ".bashrc が単色(ハイライトされていない): {} 色",
+            distinct.len()
+        );
     }
 
     #[test]

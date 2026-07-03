@@ -6,6 +6,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- Much broader syntax highlighting for the files you inspect from the CLI. Previously
+  only a fixed list of extensions was colored; anything else (including many languages
+  and every extensionless config file) was shown as plain text, because the syntax was
+  resolved solely from the file extension — which is empty for a leading-dot name like
+  `.bashrc`. The syntax is now resolved by extension, then by **file name**, then by
+  first line, so dotfiles and named files are colored too: `.bashrc`, `.zshrc`,
+  `.gitconfig`, `Makefile`, `Dockerfile`, `.env`, `.gitignore`, `Cargo.lock`, `go.mod`,
+  logs, diffs/patches, and every language two-face knows (Ruby, Java, Kotlin, Swift,
+  PHP, Lua, SQL, HTML/CSS, …). A small alias map also covers close relatives that lack a
+  dedicated grammar — `.dockerignore`/`.npmignore` (→ Git Ignore) and `.jsonc`/`.json5`
+  (→ JSON). Genuinely plain text (a `.txt`/`README` with no matching syntax) still
+  renders without coloring.
+
 ## [0.4.0] - 2026-07-03
 
 ### Added
