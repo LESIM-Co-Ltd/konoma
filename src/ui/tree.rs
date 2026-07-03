@@ -170,11 +170,26 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 /// It reads `&App`, so in the future it can also switch by cursor position or selection state.
 pub fn footer_hints(app: &App) -> Vec<String> {
     let lang = app.lang;
-    vec![
+    // 複数タブなら q=タブを閉じる(＋Q=終了)、最後の1つなら q=終了。
+    let multi = app.tab_count() > 1;
+    let mut v = vec![
         hint(lang, "jk", crate::i18n::Msg::GitMove),
         hint(lang, "l", crate::i18n::Msg::HintEnter),
         hint(lang, "h", crate::i18n::Msg::HintUp),
-        hint(lang, "q", crate::i18n::Msg::HintQuit),
+        hint(
+            lang,
+            "q",
+            if multi {
+                crate::i18n::Msg::HintCloseTab
+            } else {
+                crate::i18n::Msg::HintQuit
+            },
+        ),
+    ];
+    if multi {
+        v.push(hint(lang, "Q", crate::i18n::Msg::HintQuit));
+    }
+    v.extend([
         hint(lang, "?", crate::i18n::Msg::HintHelp),
         hint(lang, "/", crate::i18n::Msg::HintFilter),
         hint(lang, "Space", crate::i18n::Msg::HintFileOps),
@@ -194,7 +209,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         hint(lang, "V", crate::i18n::Msg::HintPick),
         hint(lang, "a", crate::i18n::Msg::HintAnchor),
         page_hint(app),
-    ]
+    ]);
+    v
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {

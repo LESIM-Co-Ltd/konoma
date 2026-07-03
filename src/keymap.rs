@@ -63,6 +63,8 @@ pub enum Action {
 
     // --- Tree (通常) ---
     Quit,
+    /// `q` at the tree top level: close the current tab if more than one is open, otherwise quit the app.
+    CloseTabOrQuit,
     FilterStart,
     TreeDescend,
     TreeActivate,
@@ -601,7 +603,7 @@ impl KeyMap {
         tree.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         tree.insert(KeyPress::ch('h'), run(Action::TreeLeave));
         tree.insert(KeyPress::ch('l'), run(Action::TreeDescend));
-        tree.insert(KeyPress::ch('q'), run(Action::Quit));
+        tree.insert(KeyPress::ch('q'), run(Action::CloseTabOrQuit));
         tree.insert(KeyPress::ch('/'), run(Action::FilterStart));
         tree.insert(KeyPress::ch('.'), run(Action::ToggleHidden));
         tree.insert(KeyPress::ch('r'), run(Action::Refresh));
@@ -1463,6 +1465,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "copy_parent" => Action::CopyPath(CopyKind::Parent),
         // Tree
         "quit" => Action::Quit,
+        "close_tab_or_quit" => Action::CloseTabOrQuit,
         "filter_start" => Action::FilterStart,
         "tree_descend" => Action::TreeDescend,
         "tree_activate" => Action::TreeActivate,
@@ -1603,6 +1606,7 @@ pub fn action_name(a: Action) -> String {
         Action::CopyPath(CopyKind::Full) => "copy_full",
         Action::CopyPath(CopyKind::Parent) => "copy_parent",
         Action::Quit => "quit",
+        Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
         Action::TreeDescend => "tree_descend",
         Action::TreeActivate => "tree_activate",
@@ -1788,6 +1792,20 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::Visual, None, KeyPress::ch('q')),
+            Resolution::Action(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn tree_q_resolves_to_close_tab_or_quit() {
+        // ツリー最上位の q は「タブを閉じる or 最後なら終了」。Q は従来どおり Quit。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('q')),
+            Resolution::Action(Action::CloseTabOrQuit)
+        );
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
         );
     }

@@ -24,6 +24,12 @@ All notable changes to konoma are documented in this file. The format is based o
   pasting a precise snippet elsewhere. `Esc`/`v`/`V`/`q` cancel. Applies to windowed
   code/text previews (Markdown/Mermaid are reflowed and excluded).
 
+### Changed
+- At the tree top level, `q` now closes the current tab when more than one tab is open,
+  and only quits the app once the last tab remains (with the usual quit confirmation).
+  `Q` still quits the whole app from anywhere. The tree footer reflects this — it shows
+  `q: close tab` plus `Q: quit` while multiple tabs are open, and `q: quit` otherwise.
+
 ## [0.3.0]
 
 ### Added

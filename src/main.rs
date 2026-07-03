@@ -762,6 +762,16 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
             }
             return Ok(true);
         }
+        Action::CloseTabOrQuit => {
+            // タブが複数あれば現在タブを閉じる。最後の1つなら通常の終了フロー(Q と同じ)。
+            if app.tab_count() > 1 {
+                app.tab_close();
+            } else if app.request_quit() {
+                return Ok(false);
+            } else {
+                return Ok(true);
+            }
+        }
         Action::FilterStart => app.start_filter(),
         Action::TreeDescend => app.tree_descend()?,
         Action::TreeActivate => app.tree_activate()?,
@@ -1600,6 +1610,28 @@ mod tests {
             flash.contains("boom"),
             "原因メッセージが flash に出る: {flash}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn close_tab_or_quit_closes_tab_when_multiple_else_quits() {
+        // ツリー q: 複数タブなら現在タブを閉じる(終了しない)、最後の1枚なら終了要求。
+        let dir = std::env::temp_dir().join("konoma_close_tab_or_quit_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.ui.confirm_quit = false; // 最後の1枚は即終了で判定(ダイアログを挟まない)
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+
+        // 2枚 → q はタブを閉じるだけ(quit=false)。
+        app.tab_new().unwrap();
+        assert_eq!(app.tab_count(), 2);
+        let quit = dispatch_action(&mut app, Action::CloseTabOrQuit, Surface::Tree).unwrap();
+        assert!(!quit, "複数タブでは終了しない");
+        assert_eq!(app.tab_count(), 1, "現在タブが閉じて1枚に戻る");
+
+        // 最後の1枚 → q は終了要求(confirm_quit=false なので即 Ok(true))。
+        let quit = dispatch_action(&mut app, Action::CloseTabOrQuit, Surface::Tree).unwrap();
+        assert!(quit, "最後の1枚では終了する");
         std::fs::remove_dir_all(&dir).ok();
     }
 
