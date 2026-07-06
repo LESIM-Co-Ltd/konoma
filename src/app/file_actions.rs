@@ -207,6 +207,37 @@ impl App {
         }
     }
 
+    /// Deep reveal: expand **every** collapsed ancestor of `target` under root (rebuilding as each level
+    /// appears), then select it. Unlike `reveal_and_select` (one level), this reaches into collapsed
+    /// subtrees — used by the changed-file jump (`n`/`N`) and follow mode. Returns whether the target
+    /// became visible and selected (false = e.g. hidden by the dotfile filter).
+    pub(super) fn reveal_path_deep(&mut self, target: &Path) -> Result<bool> {
+        // root 直下から target の親まで浅い順に。expanded を立てて rebuild すると次の階層が現れる。
+        let mut ancestors: Vec<PathBuf> = Vec::new();
+        let mut p = target.parent();
+        while let Some(a) = p {
+            if a == self.root || !a.starts_with(&self.root) {
+                break;
+            }
+            ancestors.push(a.to_path_buf());
+            p = a.parent();
+        }
+        ancestors.reverse();
+        for anc in ancestors {
+            if let Some(e) = self.entries.iter_mut().find(|e| e.path == anc) {
+                if e.is_dir && !e.expanded {
+                    e.expanded = true;
+                    self.rebuild_tree()?;
+                }
+            }
+        }
+        if let Some(i) = self.entries.iter().position(|e| e.path == target) {
+            self.selected = i;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it before rebuilding.
     pub(super) fn reveal_and_select(&mut self, target: &Path) -> Result<()> {
         if let Some(parent) = target.parent() {

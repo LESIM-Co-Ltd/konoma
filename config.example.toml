@@ -107,6 +107,13 @@ confirm_quit = true
 # 操作: hjkl=セル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / y→ c:セル r:行 C:列 f:フルパス / q:戻る。
 csv_rainbow = true
 
+# フォローモード(F)がジャンプ先ファイルをどう開くか。
+#   "diff" (既定) … そのファイルの全画面 git diff(何から何に変わったかがハンク単位で見える。
+#                    未追跡ファイルは全行追加の diff)。q で戻る・s でレイアウト切替。
+#   "file"        … 通常の全画面プレビュー(最初の変更ハンクの位置まで自動スクロール・変更行にガター)。
+# どちらでも、diff の無いファイル(変更なし/リポジトリ外)と画像/SVG/動画/PDF は通常プレビューで開く。
+follow_view = "diff"
+
 # ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
 # (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
 [ui.sort]
@@ -224,13 +231,16 @@ builtin = "pdf"
 #
 # ■ アクション名(snake_case)の主なもの:
 #   移動         : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
-#   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent"
+#   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref"(@相対パス)
 #   ファイル管理 : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
 #   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
 #                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
 #                  "enter_visual" "toggle_select"
+#   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
+#                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
 #   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
+#                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
 #   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
@@ -239,7 +249,7 @@ builtin = "pdf"
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
 # ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。
-#   y     → パスコピー   (n=名前 r=相対 f=フル p=親)
+#   y     → パスコピー   (n=名前 r=相対 f=フル p=親 @=AI 向け @相対パス参照)
 #   Space → ファイル管理 (n=作成 r=改名 d=削除 c=コピー x=カット p=貼付) ※ツリー / ビジュアル
 #
 # ■ 衝突検知: 同じ面で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の

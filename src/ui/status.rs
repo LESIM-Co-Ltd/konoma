@@ -70,6 +70,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
             }
         }
         InternalMode::Filter => (Msg::StFilter, Color::Yellow, false),
+        // 変更ファイルのみ表示(Agent Watch)。git 変更の一覧=Git 家族の黄系。
+        InternalMode::ChangedFilter => (Msg::StChangedOnly, Color::Yellow, false),
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
         InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
@@ -134,6 +136,11 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::from(" "));
         spans.push(ic);
     }
+    // フォローモード(`F`)は他の状態と併存するので独立チップで常時見せる(ON が一目で分かるように)。
+    if app.follow_enabled() {
+        spans.push(Span::from(" "));
+        spans.push(chip(app.lang, Msg::StFollow, Color::Green, false));
+    }
     // 各ビュー固有の追記(Tree=ソート/選択件数 / Preview=画像倍率)。チップはここでは出さない。
     spans.extend(match app.mode {
         Mode::Tree => crate::ui::tree::context(app),
@@ -174,6 +181,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
             }
         }
         InternalMode::Info => tr(lang, crate::i18n::Msg::StCloseHint),
+        InternalMode::ChangedFilter => tr(lang, crate::i18n::Msg::ChangedFilterHint),
         InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
         InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),

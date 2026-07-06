@@ -189,6 +189,8 @@ impl App {
         self.hl_warming = false;
         self.came_from_git_view = self.git_view;
         self.git_view = false;
+        // 既定はフルの git 変更スコープ(フォロー由来のときだけ呼び出し側が true に上書きする)。
+        self.diff_follow_scope = false;
         self.mode = Mode::Preview;
     }
 

@@ -86,6 +86,14 @@ pub enum Action {
     OpenGitDiffCursor,
     EnterVisual,
     ToggleSelect,
+    /// `C`: toggle the changed-files-only tree view (flat list of files with a git status; Agent Watch).
+    ToggleChangedFilter,
+    /// `n`/`N`: jump the tree cursor to the next/previous changed file (wraps; reveals collapsed dirs).
+    JumpNextChange,
+    JumpPrevChange,
+    /// `F` (global): toggle follow mode — externally changed files are auto-selected and previewed
+    /// (watch an AI agent work); any other key stops following.
+    ToggleFollow,
 
     // --- ファイル管理 (Space→ リーダー配下 / Visual も共有) ---
     FileCreate,
@@ -111,6 +119,8 @@ pub enum Action {
     PreviewEnterVisualLine,
     /// `y` (in preview-visual): copy the selection to the clipboard.
     PreviewCopySelection,
+    /// `Y`: copy an `@path#L12-34` reference (Claude Code file+line context) for the selection/caret line.
+    PreviewCopySelectionRef,
     /// `v`/`V`/`q` (in preview-visual): exit selection without copying.
     PreviewExitVisual,
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source (selectable).
@@ -621,6 +631,10 @@ impl KeyMap {
         tree.insert(KeyPress::ch('A'), run(Action::ResetAnchor));
         tree.insert(KeyPress::ch('v'), run(Action::EnterVisual));
         tree.insert(KeyPress::ch('V'), run(Action::ToggleSelect));
+        // Agent Watch: C=変更ファイルのみ表示 / n・N=次/前の変更ファイルへジャンプ。
+        tree.insert(KeyPress::ch('C'), run(Action::ToggleChangedFilter));
+        tree.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
+        tree.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
         tree.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         tree.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
         per_surface.insert(Surface::Tree, tree);
@@ -661,6 +675,8 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
         ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
+        // Y=キャレット行の @path#L 参照コピー(Claude Code へ場所を渡す)。選択中は範囲(visual 面の Y)。
+        ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
@@ -682,6 +698,7 @@ impl KeyMap {
         pvis.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut pvis, scheme);
         pvis.insert(KeyPress::ch('y'), run(Action::PreviewCopySelection));
+        pvis.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         pvis.insert(KeyPress::ch('v'), run(Action::PreviewExitVisual));
         pvis.insert(KeyPress::ch('V'), run(Action::PreviewExitVisual));
         pvis.insert(KeyPress::ch('q'), run(Action::PreviewExitVisual));
@@ -747,6 +764,9 @@ impl KeyMap {
             pgit.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
             pgit.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
             apply_scheme_paging(&mut pgit, scheme);
+            // n/N=次/前の変更ファイルの diff へ切替(ビューを出ずに変更を回遊。ツリーの n/N と同義)。
+            pgit.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
+            pgit.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
             pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
             per_surface.insert(Surface::PreviewGitDiff, pgit);
 
@@ -878,6 +898,8 @@ impl KeyMap {
         // Q=アプリ全終了。allows_tabs() の全面(入力/確認モーダル以外)が global を継承するので、
         // どの面からでも Q で抜けられる。`[keys.global]` で変更可・起動時 validate() で衝突検知。
         global.insert(KeyPress::ch('Q'), run(Action::Quit));
+        // F=フォローモード(外部変更へ自動ジャンプ)。Tree/Preview どちらからでも切替できるよう global。
+        global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
         global.insert(KeyPress::ch('t'), run(Action::TabNew));
         global.insert(KeyPress::ch('w'), run(Action::TabClose));
         global.insert(KeyPress::ch('['), run(Action::TabPrev));
@@ -1264,6 +1286,11 @@ fn copy_leader_default() -> LeaderMenu {
                 action: Action::CopyPath(CopyKind::Parent),
                 label: Msg::WkParent,
             },
+            LeaderItem {
+                key: KeyPress::ch('@'),
+                action: Action::CopyPath(CopyKind::AtRef),
+                label: Msg::WkAtRef,
+            },
         ],
     }
 }
@@ -1385,6 +1412,7 @@ fn leader_label(a: Action) -> Msg {
         Action::CopyPath(CopyKind::Relative) => Msg::WkRelative,
         Action::CopyPath(CopyKind::Full) => Msg::WkFull,
         Action::CopyPath(CopyKind::Parent) => Msg::WkParent,
+        Action::CopyPath(CopyKind::AtRef) => Msg::WkAtRef,
         Action::FileCreate => Msg::WkCreate,
         Action::FileRename => Msg::WkRename,
         Action::FileDelete => Msg::WkDelete,
@@ -1466,6 +1494,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "copy_relative" => Action::CopyPath(CopyKind::Relative),
         "copy_full" => Action::CopyPath(CopyKind::Full),
         "copy_parent" => Action::CopyPath(CopyKind::Parent),
+        "copy_at_ref" => Action::CopyPath(CopyKind::AtRef),
         // Tree
         "quit" => Action::Quit,
         "close_tab_or_quit" => Action::CloseTabOrQuit,
@@ -1487,6 +1516,10 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "open_git_diff_cursor" => Action::OpenGitDiffCursor,
         "enter_visual" => Action::EnterVisual,
         "toggle_select" => Action::ToggleSelect,
+        "toggle_changed_filter" => Action::ToggleChangedFilter,
+        "jump_next_change" => Action::JumpNextChange,
+        "jump_prev_change" => Action::JumpPrevChange,
+        "toggle_follow" => Action::ToggleFollow,
         // ファイル管理
         "file_create" => Action::FileCreate,
         "file_rename" => Action::FileRename,
@@ -1506,6 +1539,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "preview_enter_visual" => Action::PreviewEnterVisual,
         "preview_enter_visual_line" => Action::PreviewEnterVisualLine,
         "preview_copy_selection" => Action::PreviewCopySelection,
+        "preview_copy_selection_ref" => Action::PreviewCopySelectionRef,
         "preview_exit_visual" => Action::PreviewExitVisual,
         "toggle_markdown_raw" => Action::ToggleMarkdownRaw,
         "link_focus_next" => Action::LinkFocusNext,
@@ -1609,6 +1643,7 @@ pub fn action_name(a: Action) -> String {
         Action::CopyPath(CopyKind::Relative) => "copy_relative",
         Action::CopyPath(CopyKind::Full) => "copy_full",
         Action::CopyPath(CopyKind::Parent) => "copy_parent",
+        Action::CopyPath(CopyKind::AtRef) => "copy_at_ref",
         Action::Quit => "quit",
         Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
@@ -1629,6 +1664,10 @@ pub fn action_name(a: Action) -> String {
         Action::OpenGitDiffCursor => "open_git_diff_cursor",
         Action::EnterVisual => "enter_visual",
         Action::ToggleSelect => "toggle_select",
+        Action::ToggleChangedFilter => "toggle_changed_filter",
+        Action::JumpNextChange => "jump_next_change",
+        Action::JumpPrevChange => "jump_prev_change",
+        Action::ToggleFollow => "toggle_follow",
         Action::FileCreate => "file_create",
         Action::FileRename => "file_rename",
         Action::FileDelete => "file_delete",
@@ -1645,6 +1684,7 @@ pub fn action_name(a: Action) -> String {
         Action::PreviewEnterVisual => "preview_enter_visual",
         Action::PreviewEnterVisualLine => "preview_enter_visual_line",
         Action::PreviewCopySelection => "preview_copy_selection",
+        Action::PreviewCopySelectionRef => "preview_copy_selection_ref",
         Action::PreviewExitVisual => "preview_exit_visual",
         Action::ToggleMarkdownRaw => "toggle_markdown_raw",
         Action::LinkFocusNext => "link_focus_next",
@@ -2435,5 +2475,65 @@ mod tests {
         // 存在しないキーの remove は no-op。
         menu.remove(KeyPress::ch('z'));
         assert_eq!(menu.items.len(), 1);
+    }
+
+    // Agent Watch: C=変更フィルタ / n・N=変更間ジャンプ / F=フォロー(global) / y@=@参照 / Y=@path#L。
+    #[test]
+    fn agent_watch_keys_resolve() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('C')),
+            Resolution::Action(Action::ToggleChangedFilter)
+        );
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('n')),
+            Resolution::Action(Action::JumpNextChange)
+        );
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('N')),
+            Resolution::Action(Action::JumpPrevChange)
+        );
+        // F は global 継承(Tree/Preview どちらからでも)。
+        for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('F')),
+                Resolution::Action(Action::ToggleFollow),
+                "F が {sfc:?} でフォロー切替に解決する"
+            );
+        }
+        // y→@ = @参照パスコピー(全 y リーダー面で共通メニュー)。
+        assert_eq!(
+            m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('@')),
+            Resolution::Action(Action::CopyPath(CopyKind::AtRef))
+        );
+        // Y = 選択/キャレットの @path#L 参照(通常/visual 両面)。
+        for sfc in [Surface::PreviewText, Surface::PreviewTextVisual] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('Y')),
+                Resolution::Action(Action::PreviewCopySelectionRef),
+                "Y が {sfc:?} で @参照コピーに解決する"
+            );
+        }
+        // diff ビュー内の n/N=変更ファイル回遊(ツリーの n/N と同じ Action に解決)。
+        #[cfg(feature = "git")]
+        for (k, a) in [('n', Action::JumpNextChange), ('N', Action::JumpPrevChange)] {
+            assert_eq!(
+                m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch(k)),
+                Resolution::Action(a),
+                "diff ビューの {k} が変更間ジャンプに解決する"
+            );
+        }
+        // 設定文字列の往復。
+        for s in [
+            "toggle_changed_filter",
+            "jump_next_change",
+            "jump_prev_change",
+            "toggle_follow",
+            "copy_at_ref",
+            "preview_copy_selection_ref",
+        ] {
+            let a = action_from_str(s).unwrap_or_else(|| panic!("unknown action: {s}"));
+            assert_eq!(action_name(a), s, "config 文字列が往復する");
+        }
     }
 }

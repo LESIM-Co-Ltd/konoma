@@ -45,6 +45,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         return vec![HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff))
             .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
+            .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
             .row(crate::ui::status::page_help(app), "")
             .row("x", l(crate::i18n::Msg::DiscardWholeFile))
             .row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
@@ -78,6 +79,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("0 / $", l(crate::i18n::Msg::LineStartEnd))
         .row("/  n / N", l(crate::i18n::Msg::SearchHint))
         .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
+        .row("Y", l(crate::i18n::Msg::AtRefHelp))
         .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
@@ -151,7 +153,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     // 範囲選択コピー(v=文字 / V=行)は windowed(Code/Text/raw Markdown)のみ。
     if app.is_windowed() {
         v.push(hint(lang, "v/V", crate::i18n::Msg::PreviewSelectHelp));
+        v.push(hint(lang, "Y", crate::i18n::Msg::WkAtRef));
     }
+    // フォロー(F)の再開導線(解除後に1キーで戻れることを見せる)。
+    v.push(hint(lang, "F", crate::i18n::Msg::StFollow));
     // Markdown/Mermaid は R で装飾表示 ⇄ raw ソース表示をトグル(ラベルは現在モードで切替)。
     if app.is_decorated_kind() {
         let msg = if app.is_md_raw() {
@@ -432,10 +437,15 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     // Auto は内側幅で解決する。先に枠の内側幅を見積もる。
     let split = app.diff_is_split(Block::bordered().inner(area).width);
     let mode_tag = if split { " ⇆" } else { "" };
+    // 変更ファイル集合の中での位置 `(2/5)`(n/N 回遊の現在地。集合外なら出さない)。
+    let pos = app
+        .diff_change_position()
+        .map(|(i, n)| format!(" ({i}/{n})"))
+        .unwrap_or_default();
     let title = app
         .preview_path
         .clone()
-        .map(|p| format!(" diff{mode_tag}: {} ", app.format_path(&p)))
+        .map(|p| format!(" diff{mode_tag}: {}{pos} ", app.format_path(&p)))
         .unwrap_or_else(|| " diff ".to_string());
     let block = Block::bordered().title(title);
     let inner = block.inner(area);

@@ -6,6 +6,45 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Agent Watch** — a set of features for konoma's core use case, sitting next to an AI
+  coding agent (Claude Code) and reviewing what it does:
+  - **Follow mode (`F`)**: while on, konoma automatically shows any file that changes
+    on disk — watch the agent work in real time. By default the changed file opens as
+    its **full-screen git diff** (`ui.follow_view = "diff"`): hunk-level before/after,
+    the way dedicated agent-watching tools (hunk, livediff, diffpane) present edits;
+    untracked files show as an all-added diff, and the diff refreshes in place while
+    the same file keeps changing. Set `ui.follow_view = "file"` to open the normal
+    content preview instead, **scrolled to the first changed hunk** (caret on the
+    changed line, git gutter lighting up the edits) — files with no diff and media
+    fall back to this view automatically. View switches between files are rate-limited
+    (about one per second, latest change wins), so a burst of multi-file edits doesn't
+    thrash the screen. Pressing any other key stops following (you took the keyboard
+    back, Zed-style); one `F` re-enables it. Shown as a green `FOLLOW` chip.
+    Repository internals (`.git`), gitignored and hidden files are not followed.
+  - **Changed-files view (`C`)**: toggles the tree into a flat list of the files with
+    uncommitted git changes (relative paths, status markers, live-updated) — review an
+    agent's work top to bottom without hunting through the tree. `n` / `N` jump to the
+    next/previous changed file from the normal tree too, expanding collapsed
+    directories as needed and wrapping around.
+  - **`n` / `N` inside the diff view**: switch straight to the next/previous changed
+    file's diff without leaving the view (wraps; the title shows your position as
+    `(2/5)`), so reviewing a multi-file change is one keystroke per file — the
+    hunk/lazygit-style review loop. The tree cursor follows, and `q` still returns to
+    wherever the diff was opened from (tree or git hub). **The navigation scope depends
+    on how the diff was opened**: a follow-opened diff cycles only the files changed
+    during the current follow session ("what the agent just did" — pre-existing
+    uncommitted changes don't get in the way; the session resets each time `F` is
+    turned on), while a diff opened from the tree (`d`) or the git hub cycles the full
+    uncommitted change set.
+  - **`@path` references for the conversation**: `y` → `@` copies an `@relative/path`
+    reference (Claude Code's file-context syntax) for the selected entry, and `Y` in a
+    text preview copies `@path#L12` / `@path#L12-34` for the caret line or the
+    `v`/`V` selection — paste it into the agent chat to point at an exact spot.
+  - All keys are rebindable (`toggle_follow`, `toggle_changed_filter`,
+    `jump_next_change`, `jump_prev_change`, `copy_at_ref`,
+    `preview_copy_selection_ref`).
+
 ## [0.4.2] - 2026-07-03
 
 ### Added

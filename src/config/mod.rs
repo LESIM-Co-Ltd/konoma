@@ -258,6 +258,12 @@ pub struct UiConfig {
     /// Ask for confirmation before quitting the whole app (`q` at the top level / `Q` from anywhere). Default true.
     /// When true, `q`/`Q` open a yes/no dialog (`q`/`y`/Enter = quit, `n`/Esc = cancel). false = quit immediately.
     pub confirm_quit: bool,
+    /// What follow mode (`F`) opens when it jumps to a changed file. `"diff"` (default) = the full-screen
+    /// git diff of that file (hunk-level before/after — the way hunk/livediff/diffpane present agent
+    /// edits; untracked files show as an all-added diff); `"file"` = the normal content preview scrolled
+    /// to the first changed hunk. Files with no diff (unchanged / outside a repo) and media
+    /// (image/SVG/video/PDF) always fall back to the content preview.
+    pub follow_view: String,
     /// Color each column of a CSV/TSV table preview with a rotating "rainbow" palette (default true), the way
     /// Rainbow CSV / csvlens do, so columns are easy to tell apart. false = monochrome (still aligned, still navigable).
     pub csv_rainbow: bool,
@@ -412,6 +418,7 @@ impl Default for UiConfig {
             commit_meta_align: "right".into(),
             confirm_quit: true,
             csv_rainbow: true,
+            follow_view: "diff".into(),
         }
     }
 }

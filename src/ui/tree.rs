@@ -13,7 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::fileops;
-use crate::i18n::tr;
+use crate::i18n::{tr, Msg};
 use crate::ui::icons;
 use crate::ui::status::{hint, page_hint};
 
@@ -142,6 +142,9 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("i", l(crate::i18n::Msg::TreeFileInfo))
             .row("e", l(crate::i18n::Msg::EditExternalEnv))
             .row("o", l(crate::i18n::Msg::TreeGitChangesHub))
+            .row("C", l(crate::i18n::Msg::ChangedFilterHelp))
+            .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
+            .row("F", l(crate::i18n::Msg::FollowHelp))
             .row("r", l(crate::i18n::Msg::Refresh))
             .row("s", l(crate::i18n::Msg::SortHint))
             .row("m / '", l(crate::i18n::Msg::TreeBookmarkHint))
@@ -196,6 +199,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         hint(lang, "e", crate::i18n::Msg::HintEdit),
         hint(lang, "o", crate::i18n::Msg::HintGit),
         hint(lang, "d", crate::i18n::Msg::HintDiff),
+        hint(lang, "C", crate::i18n::Msg::StChangedOnly),
+        hint(lang, "F", crate::i18n::Msg::StFollow),
         hint(lang, "y", crate::i18n::Msg::CopyHint),
         hint(lang, "t", crate::i18n::Msg::HintTab),
         hint(lang, "[/]", crate::i18n::Msg::HintTab),
@@ -222,8 +227,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let show_gutter = app.git_has_changes();
     // 複数選択中/ビジュアル中は、各行の最左に選択マーカー列(2桁)を出す(空なら出さない)。
     let show_sel = app.show_selection_gutter();
-    // 絞り込み中はフラットな結果一覧なので、各行に root からの相対パスを出して場所が分かるようにする。
-    let filtering = app.filter_query().is_some();
+    // 絞り込み中/変更のみ表示中はフラットな結果一覧なので、各行に root からの相対パスを出して場所が分かるようにする。
+    let filtering = app.filter_query().is_some() || app.changed_filter();
     let query = app.filter_query().unwrap_or("").to_string();
     let root_for_rel = app.root.clone();
     // 詳細リスト列 (設定 [ui] details)。有効な列のみ採用し、右端に固定幅で並べる。
@@ -375,12 +380,19 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let root = app.root.clone();
-    // タイトル枠にパス＋(git リポジトリなら) ブランチ名を併記する。絞り込み中はクエリ件数も。
+    // タイトル枠にパス＋(git リポジトリなら) ブランチ名を併記する。絞り込み中はクエリ件数も、
+    // 変更のみ表示中は変更件数を出す。
     let title = match (app.filter_query(), app.git_branch()) {
         (Some(q), _) => format!(
             " {}  /{}  ({}) ",
             app.format_path(&root),
             q,
+            app.entries.len()
+        ),
+        (None, _) if app.changed_filter() => format!(
+            " {}  ± {} ({}) ",
+            app.format_path(&root),
+            tr(app.lang, Msg::StChangedOnly),
             app.entries.len()
         ),
         (None, Some(branch)) => format!(" {}  ⎇ {} ", app.format_path(&root), branch),

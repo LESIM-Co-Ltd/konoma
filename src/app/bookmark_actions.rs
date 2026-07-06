@@ -260,11 +260,12 @@ impl App {
         self.rebuild_tree_notify();
     }
 
-    /// Discard the filter state (input/query/pool) (does not rebuild the tree).
+    /// Discard the filter state (input/query/pool and the changed-files filter) (does not rebuild the tree).
     pub(super) fn clear_filter_state(&mut self) {
         self.filter_input = None;
         self.tree_filter = None;
         self.filter_pool = Vec::new();
+        self.changed_filter = false;
     }
 
     /// Whether input mode (key interception) is active.
@@ -302,6 +303,206 @@ impl App {
         }
         // 絞り込み結果は別 entries 集合なので visual_anchor(添字)は stale。無効化する。
         self.visual_anchor = None;
+    }
+
+    // --- 変更ファイルのみフィルタ (`C`) ＋ 変更間ジャンプ (`n`/`N`) — Agent Watch ① ----------
+    /// Whether the changed-files-only tree filter is active (drives the flat relative-path rendering).
+    pub fn changed_filter(&self) -> bool {
+        self.changed_filter
+    }
+
+    /// The sorted list of files with a git status under the current root (the review work-list).
+    /// Deleted files have a status but no longer exist, so they are excluded (nothing to preview/select).
+    fn changed_paths(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self
+            .git_status
+            .keys()
+            .filter(|p| p.starts_with(&self.root) && p.is_file())
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// `C`: toggle the changed-files-only view. ON shows the flat list of changed files (like the `/`
+    /// filter's result list — review them top to bottom); OFF returns to the normal tree. When there is
+    /// no change, stays on the tree with a flash (never trap the user in an empty list).
+    pub fn toggle_changed_filter(&mut self) {
+        if self.changed_filter {
+            self.changed_filter = false;
+            self.selected = 0;
+            self.rebuild_tree_notify();
+            return;
+        }
+        self.refresh_git_if_needed();
+        if self.changed_paths().is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
+            return;
+        }
+        self.clear_filter_state(); // 名前絞り込み(`/`)とは排他
+        self.changed_filter = true;
+        self.selected = 0;
+        self.reapply_changed_filter();
+    }
+
+    /// Rebuild entries as the flat changed-files list. Called on toggle and by `refresh_fs` while active
+    /// (an agent committing/reverting updates the list live). Auto-exits to the tree when the last change
+    /// disappears (e.g. everything was committed) instead of leaving an empty list.
+    pub(super) fn reapply_changed_filter(&mut self) {
+        let entries: Vec<super::Entry> = self
+            .changed_paths()
+            .into_iter()
+            .map(|path| super::Entry {
+                path,
+                is_dir: false,
+                depth: 0,
+                expanded: false,
+            })
+            .collect();
+        if entries.is_empty() {
+            self.changed_filter = false;
+            self.selected = 0;
+            self.rebuild_tree_notify();
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
+            return;
+        }
+        self.entries = entries;
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len().saturating_sub(1);
+        }
+        self.visual_anchor = None;
+    }
+
+    /// `n`/`N` on the tree: jump the cursor to the next/previous changed file in path order (wraps).
+    /// In the normal tree the target is revealed (collapsed ancestors expanded); in the changed-only
+    /// filter it moves within the flat list.
+    pub fn jump_changed(&mut self, dir: i64) {
+        // diff ビュー表示中は「次/前の変更ファイルの diff へ切替」= ビューを出ずに変更を回遊する
+        // (hunk/lazygit 流のレビュー動線)。ツリーでは従来どおりカーソルジャンプ。
+        if self.is_git_diff_preview() {
+            self.diff_jump_changed(dir);
+            return;
+        }
+        self.refresh_git_if_needed();
+        let paths = self.changed_paths();
+        if paths.is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
+            return;
+        }
+        let len = paths.len() as i64;
+        let idx = match self.entries.get(self.selected).map(|e| e.path.clone()) {
+            Some(cur) => match paths.binary_search(&cur) {
+                Ok(i) => (i as i64 + dir).rem_euclid(len) as usize,
+                // カーソルが変更ファイル上にない: 挿入位置の次(前)へ(wrap)。
+                Err(ins) => {
+                    if dir > 0 {
+                        (ins as i64).rem_euclid(len) as usize
+                    } else {
+                        (ins as i64 - 1).rem_euclid(len) as usize
+                    }
+                }
+            },
+            None => 0,
+        };
+        let target = paths[idx].clone();
+        if self.changed_filter {
+            if let Some(i) = self.entries.iter().position(|e| e.path == target) {
+                self.selected = i;
+            }
+            return;
+        }
+        match self.reveal_path_deep(&target) {
+            Ok(true) => {}
+            // 対象が隠しディレクトリ配下などで可視化できない(`.` で隠し表示に切替すれば届く)。
+            Ok(false) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JumpTargetHidden).into());
+            }
+            Err(e) => {
+                self.flash = Some(format!(
+                    "{}{e}",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
+                ));
+            }
+        }
+    }
+
+    /// `n`/`N` inside the GitDiff preview: switch the diff target to the next/previous changed file
+    /// (wraps) without leaving the view. **Scope depends on how the diff was opened**: a follow-opened
+    /// diff cycles only the files changed during the current follow session ("what just changed"),
+    /// while a tree-/hub-opened diff cycles the full uncommitted change set. The tree cursor follows
+    /// (so `q` lands on the file just reviewed), and where `q` returns to (hub vs tree) is preserved.
+    fn diff_jump_changed(&mut self, dir: i64) {
+        let paths = if self.diff_follow_scope {
+            self.follow_session_paths()
+        } else {
+            self.refresh_git_if_needed();
+            self.changed_paths()
+        };
+        if paths.is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
+            return;
+        }
+        let Some(crate::preview::PreviewKind::GitDiff(cur)) = self.preview_kind.clone() else {
+            return;
+        };
+        let len = paths.len() as i64;
+        let idx = match paths.iter().position(|p| *p == cur) {
+            Some(i) => (i as i64 + dir).rem_euclid(len) as usize,
+            // 表示中ファイルが集合に無い(直前にコミットされた等): 先頭/末尾から。
+            None => {
+                if dir > 0 {
+                    0
+                } else {
+                    (len - 1) as usize
+                }
+            }
+        };
+        let target = paths[idx].clone();
+        if target == cur {
+            return; // 対象が1つだけ
+        }
+        // ツリーのカーソルも同期(q で戻ったとき、いま見ていたファイルの上に居る)。
+        if self.changed_filter {
+            self.reapply_changed_filter();
+            if let Some(i) = self.entries.iter().position(|e| e.path == target) {
+                self.selected = i;
+            }
+        } else {
+            let _ = self.reveal_path_deep(&target);
+        }
+        // open_git_diff は came_from_git_view / diff_follow_scope を初期化するため保存/復元する
+        // (ハブ経由の diff から回遊しても q でハブへ戻れる・フォロースコープの回遊が続く)。
+        let came = self.came_from_git_view;
+        let scope = self.diff_follow_scope;
+        self.open_git_diff(&target);
+        self.came_from_git_view = came;
+        self.diff_follow_scope = scope;
+    }
+
+    /// The follow session's reviewable files (recorded while `F` was ON), pruned to still-existing
+    /// non-media files. First-change order (chronological — the review order of "what just happened").
+    fn follow_session_paths(&self) -> Vec<PathBuf> {
+        self.follow_session
+            .iter()
+            .filter(|p| p.is_file() && !self.follow_is_media(p))
+            .cloned()
+            .collect()
+    }
+
+    /// The current GitDiff target's position within its navigation set (1-based, total) — the follow
+    /// session for follow-opened diffs, the full change set otherwise. For the title's `(2/5)` indicator.
+    pub fn diff_change_position(&self) -> Option<(usize, usize)> {
+        let crate::preview::PreviewKind::GitDiff(p) = self.preview_kind.as_ref()? else {
+            return None;
+        };
+        let paths = if self.diff_follow_scope {
+            self.follow_session_paths()
+        } else {
+            self.changed_paths()
+        };
+        let i = paths.iter().position(|q| q == p)?;
+        Some((i + 1, paths.len()))
     }
 
     /// Refetch git status if root changed (called just before rendering). Does nothing if root is unchanged.
@@ -448,6 +649,11 @@ impl App {
         self.diff_cache = None; // 作業ツリーが変わった可能性 → diff キャッシュを落とす(外部編集の追従)
         self.gutter_cache = None; // 同上: git 変更ガターも作業ツリー変更で作り直す
         self.rebuild_tree()?;
+        // 変更ファイルのみフィルタ中は一覧を最新の statuses から作り直す(エージェントの編集に追従)。
+        if self.changed_filter {
+            self.refresh_git_if_needed();
+            self.reapply_changed_filter();
+        }
         // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
         self.selection.retain(|p| p.symlink_metadata().is_ok());
         // アクティブな派生ビューのみ追従させる。

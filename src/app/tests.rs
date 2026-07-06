@@ -5177,3 +5177,424 @@ fn table_cursor_survives_tab_roundtrip() {
         "セルカーソルがタブ跨ぎで保たれる"
     );
 }
+
+// --- Agent Watch: @参照コピー(③) / 変更フィルタ+ジャンプ(①) / フォローモード(②) ---
+
+#[test]
+fn at_ref_is_strictly_relative_to_open_dir() {
+    let work = std::env::temp_dir().join("konoma_at_ref_test");
+    let _ = std::fs::remove_dir_all(&work);
+    let a = work.join("A");
+    std::fs::create_dir_all(&a).unwrap();
+    // 配下: 起動 dir 名を先頭に付けない(Claude Code の cwd 相対 @参照と一致させる)。
+    assert_eq!(
+        at_ref_text(&a, &a.join("src").join("main.rs")),
+        "@src/main.rs"
+    );
+    // 外(兄弟): `..` 相対。
+    assert_eq!(at_ref_text(&a, &work.join("B").join("x.md")), "@../B/x.md");
+    std::fs::remove_dir_all(&work).ok();
+}
+
+#[test]
+fn preview_selection_ref_formats_caret_and_ranges() {
+    let dir = std::env::temp_dir().join("konoma_sel_ref_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("notes.txt");
+    std::fs::write(&file, b"l1\nl2\nl3\nl4\nl5\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.enter_preview(&file);
+    assert!(app.is_windowed(), "テキストは windowed");
+
+    // 非選択: キャレット行(1-based)。
+    app.preview_cursor_line = 2;
+    assert_eq!(
+        app.preview_selection_ref_text().as_deref(),
+        Some("@notes.txt#L3")
+    );
+    // linewise 選択 3..=5 行目。
+    app.preview_enter_visual(true);
+    app.preview_cursor_line = 4;
+    assert_eq!(
+        app.preview_selection_ref_text().as_deref(),
+        Some("@notes.txt#L3-5")
+    );
+    app.preview_exit_visual();
+    // charwise 選択は行スパンへ丸める(2..=4 行目)。
+    app.preview_cursor_line = 1;
+    app.preview_cursor_col = 1;
+    app.preview_enter_visual(false);
+    app.preview_cursor_line = 3;
+    app.preview_cursor_col = 0;
+    assert_eq!(
+        app.preview_selection_ref_text().as_deref(),
+        Some("@notes.txt#L2-4")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn changed_filter_lists_changed_files_flat_and_toggles_back() {
+    let dir = std::env::temp_dir().join("konoma_changed_filter_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git_repo_with_commits(&dir); // a.txt をコミット済み
+    let canon = dir.canonicalize().unwrap();
+    // 変更を作る: a.txt を編集(M) + collapsed になる sub/ 配下に未追跡ファイル(U)。
+    std::fs::write(canon.join("a.txt"), b"changed\n").unwrap();
+    std::fs::create_dir_all(canon.join("sub")).unwrap();
+    std::fs::write(canon.join("sub").join("b.txt"), b"new\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    assert!(!app.changed_filter());
+    app.toggle_changed_filter();
+    assert!(app.changed_filter(), "変更があるので ON になる");
+    let paths: Vec<PathBuf> = app.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(
+        paths,
+        vec![canon.join("a.txt"), canon.join("sub").join("b.txt")],
+        "root 配下の変更ファイルのみ・パス順のフラット一覧"
+    );
+    assert!(app.entries.iter().all(|e| !e.is_dir), "ファイルのみ");
+
+    // 一覧から Enter でプレビュー(絞り込みと同じ動き)。
+    app.selected = 0;
+    app.tree_activate().unwrap();
+    assert!(matches!(app.mode, Mode::Preview));
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("a.txt").as_path())
+    );
+    app.back_to_tree();
+
+    // h で通常ツリーへ戻る(root は上げない)。
+    app.tree_leave().unwrap();
+    assert!(!app.changed_filter());
+    assert_eq!(app.root, canon, "変更フィルタ解除であって親移動ではない");
+    assert!(
+        app.entries.iter().any(|e| e.is_dir),
+        "通常ツリーに戻る(ディレクトリ行が復活)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn jump_changed_reveals_collapsed_targets_and_wraps() {
+    let dir = std::env::temp_dir().join("konoma_jump_changed_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git_repo_with_commits(&dir);
+    let canon = dir.canonicalize().unwrap();
+    std::fs::write(canon.join("a.txt"), b"changed\n").unwrap();
+    std::fs::create_dir_all(canon.join("sub")).unwrap();
+    std::fs::write(canon.join("sub").join("b.txt"), b"new\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.selected = 0; // 既定ソート(dirs_first)では sub が先頭 = 変更ファイル上ではない
+    app.jump_changed(1);
+    assert_eq!(
+        app.entries[app.selected].path,
+        canon.join("sub").join("b.txt"),
+        "collapsed な sub/ を展開して選択(deep reveal)"
+    );
+    app.jump_changed(1);
+    assert_eq!(
+        app.entries[app.selected].path,
+        canon.join("a.txt"),
+        "末尾の次は先頭へ wrap"
+    );
+    app.jump_changed(-1);
+    assert_eq!(
+        app.entries[app.selected].path,
+        canon.join("sub").join("b.txt"),
+        "N は逆順"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn follow_jump_reveals_and_previews_only_valid_targets() {
+    let dir = std::env::temp_dir().join("konoma_follow_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
+    std::fs::write(dir.join("sub").join("b.txt"), b"b\n").unwrap();
+    std::fs::write(dir.join(".hidden").join("c.txt"), b"c\n").unwrap();
+    let outside = std::env::temp_dir().join("konoma_follow_outside.txt");
+    std::fs::write(&outside, b"x\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // OFF の間は何もしない。
+    app.follow_jump(&dir.join("a.txt"));
+    assert!(matches!(app.mode, Mode::Tree));
+
+    app.toggle_follow();
+    assert!(app.follow_enabled());
+    // root 外・隠しディレクトリ配下・ディレクトリはスキップ(状態不変)。
+    app.follow_jump(&outside);
+    app.follow_jump(&dir.join(".hidden").join("c.txt"));
+    app.follow_jump(&dir.join("sub"));
+    assert!(matches!(app.mode, Mode::Tree), "無効ターゲットでは動かない");
+
+    // collapsed な sub/ 配下でも deep reveal してプレビューへ。
+    app.follow_jump(&dir.join("sub").join("b.txt"));
+    assert!(matches!(app.mode, Mode::Preview));
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(dir.join("sub").join("b.txt").as_path())
+    );
+    // Preview 面のまま別ファイルの変更が来ても追従する。
+    app.follow_jump(&dir.join("a.txt"));
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(dir.join("a.txt").as_path())
+    );
+
+    // ユーザーがキーボードを取ったら解除(flash 付き)。
+    app.follow_break();
+    assert!(!app.follow_enabled());
+    assert!(app.flash.is_some(), "解除は flash で見せる");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_file(&outside).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_jump_scrolls_to_first_changed_hunk() {
+    // 大きいファイルの深部(100行目)だけ変更 → follow で開くと**変更行が窓に入る**(先頭表示だと
+    // 変更が画面外で見えない=P1 の回帰防止)。上に3行の文脈・キャレットは変更行。
+    let dir = std::env::temp_dir().join("konoma_follow_scroll_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let big = dir.join("big.txt");
+    let mut lines: Vec<String> = (1..=200).map(|i| format!("line {i:03}")).collect();
+    std::fs::write(&big, lines.join("\n")).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-m", "big"]);
+    lines[99] = "line 100 CHANGED".into(); // 1-based 100 行目を変更
+    std::fs::write(&big, lines.join("\n")).unwrap();
+
+    let canon = dir.canonicalize().unwrap();
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.cfg.ui.follow_view = "file".into(); // 本テストはファイル表示モードの挙動(既定は diff)
+    app.toggle_follow();
+    app.follow_jump(&canon.join("big.txt"));
+    assert!(matches!(app.mode, Mode::Preview));
+    assert_eq!(
+        app.preview_top_line, 96,
+        "変更行(0-based 99)の3行上が窓の先頭"
+    );
+    assert_eq!(app.preview_cursor_line, 99, "キャレットは変更行");
+    assert!(app.preview_byte_top > 0, "窓はファイル先頭ではない");
+
+    // 未変更ファイル(変更ハンク無し)は従来どおり先頭から。
+    // (実運用では follow_jump の前に必ず refresh_fs が走り新規ファイルがツリーに載る=同じ順で呼ぶ)
+    let plain = canon.join("plain.txt");
+    std::fs::write(&plain, b"p1\np2\n").unwrap();
+    app.refresh().unwrap();
+    app.follow_jump(&plain);
+    assert_eq!(app.preview_path.as_deref(), Some(plain.as_path()));
+    assert_eq!(app.preview_top_line, 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_jump_opens_diff_view_by_default_and_falls_back() {
+    // 既定(ui.follow_view="diff")では追跡済み変更ファイルを**全画面 diff** で開く。
+    // 未追跡(diff が出せない=全行新規)はファイルプレビューへフォールバック。
+    let dir = std::env::temp_dir().join("konoma_follow_diff_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git_repo_with_commits(&dir); // a.txt をコミット済み
+    let canon = dir.canonicalize().unwrap();
+    std::fs::write(canon.join("a.txt"), b"one\nCHANGED\n").unwrap();
+    std::fs::write(canon.join("fresh.txt"), b"new file\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    assert_eq!(app.cfg.ui.follow_view, "diff", "既定は diff 表示");
+    app.toggle_follow();
+
+    // 追跡済み+変更あり → GitDiff プレビュー。
+    app.follow_jump(&canon.join("a.txt"));
+    assert!(app.is_git_diff_preview(), "変更ファイルは diff で開く");
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("a.txt").as_path())
+    );
+
+    // diff ビュー表示中でも次のファイルへ追従が続く(PreviewGitDiff 面の許可・回帰防止)。
+    // 未追跡も file_diff が全行追加の diff を合成できる → diff で開く(一貫)。
+    app.follow_jump(&canon.join("fresh.txt"));
+    assert!(
+        app.is_git_diff_preview(),
+        "未追跡も all-added の diff で開く"
+    );
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("fresh.txt").as_path()),
+        "diff ビューから次の変更ファイルへ切替わる"
+    );
+    // q はツリーへ戻る(git ハブ由来ではない)。
+    app.close_git_diff();
+    assert!(matches!(app.mode, Mode::Tree));
+
+    // 変更の無いコミット済みファイル(diff が空)はファイルプレビューへフォールバック。
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    };
+    std::fs::write(canon.join("clean.txt"), b"committed\n").unwrap();
+    sh(&["add", "clean.txt"]);
+    sh(&["commit", "-m", "clean file"]);
+    app.refresh().unwrap();
+    app.follow_jump(&canon.join("clean.txt"));
+    assert!(
+        !app.is_git_diff_preview(),
+        "変更なしはファイル表示へフォールバック"
+    );
+    assert!(matches!(app.mode, Mode::Preview));
+    assert!(app.is_windowed());
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("clean.txt").as_path())
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn diff_view_n_switches_changed_files_and_keeps_return_target() {
+    // diff ビュー内の n/N: ビューを出ずに次/前の変更ファイルの diff へ(wrap・位置表示・
+    // ツリーカーソル同期・q の戻り先も保存)。
+    let dir = std::env::temp_dir().join("konoma_diff_nav_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git_repo_with_commits(&dir); // a.txt をコミット済み
+    let canon = dir.canonicalize().unwrap();
+    std::fs::write(canon.join("a.txt"), b"CHANGED\n").unwrap();
+    std::fs::write(canon.join("b.txt"), b"new b\n").unwrap();
+    std::fs::write(canon.join("e.txt"), b"new e\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed(); // 実運用では初回描画が取得済み(位置表示は statuses 由来)
+    app.open_git_diff(&canon.join("a.txt"));
+    assert_eq!(app.diff_change_position(), Some((1, 3)));
+
+    app.jump_changed(1); // a → b
+    assert!(app.is_git_diff_preview(), "diff ビューのまま");
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("b.txt").as_path())
+    );
+    assert_eq!(app.diff_change_position(), Some((2, 3)));
+    assert_eq!(
+        app.entries[app.selected].path,
+        canon.join("b.txt"),
+        "ツリーカーソルも同期"
+    );
+
+    app.jump_changed(1); // b → e
+    app.jump_changed(1); // e → a (wrap)
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("a.txt").as_path())
+    );
+    app.jump_changed(-1); // a → e (逆順 wrap)
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("e.txt").as_path())
+    );
+
+    // ハブ経由で開いた印(came_from_git_view)は回遊しても保たれ、q でハブへ戻れる。
+    app.came_from_git_view = true;
+    app.jump_changed(1); // e → a
+    assert!(app.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
+    app.close_git_diff();
+    assert!(app.is_git_view(), "q でハブへ戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
+    // フォロー由来の diff の n/N は「追尾セッション中に変わったファイル」だけを回遊する
+    // (作業ツリー全体の未コミット変更ではない)。位置表示もセッション基準。
+    let dir = std::env::temp_dir().join("konoma_follow_session_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git_repo_with_commits(&dir); // a.txt をコミット済み
+    let canon = dir.canonicalize().unwrap();
+    // 未コミット変更を5つ用意(既存の作業に相当) — うちセッションで変わるのは b と d だけ。
+    std::fs::write(canon.join("a.txt"), b"CHANGED\n").unwrap();
+    for name in ["b.txt", "c.txt", "d.txt", "e.txt"] {
+        std::fs::write(canon.join(name), format!("new {name}\n")).unwrap();
+    }
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed();
+    app.toggle_follow();
+    assert!(app.follow_session.is_empty(), "F ON でセッションは空から");
+
+    // ドレイン相当: セッションへ記録(有効ターゲットのみ true)。
+    let outside = std::env::temp_dir().join("konoma_follow_session_outside.txt");
+    std::fs::write(&outside, b"x\n").unwrap();
+    assert!(!app.follow_note_change(&outside), "root 外は記録しない");
+    assert!(app.follow_note_change(&canon.join("b.txt")));
+    assert!(app.follow_note_change(&canon.join("d.txt")));
+    assert!(
+        app.follow_note_change(&canon.join("d.txt")),
+        "重複は許容(再変更)"
+    );
+    assert_eq!(app.follow_session.len(), 2, "重複は積まない");
+
+    // ジャンプで古い flash(follow: on 等)が消える=フッターが diff ヒントに切り替わる。
+    app.flash = Some("stale flash".into());
+    app.follow_jump(&canon.join("d.txt"));
+    assert!(app.is_git_diff_preview());
+    assert!(app.flash.is_none(), "ジャンプ成立で flash を消す");
+    assert_eq!(
+        app.diff_change_position(),
+        Some((2, 2)),
+        "位置表示はセッション(2件)基準=全 git 変更(5件)ではない"
+    );
+
+    // n はセッション内だけを回遊(wrap)。c/e.txt(セッション外の変更)へは行かない。
+    app.jump_changed(1);
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("b.txt").as_path())
+    );
+    assert_eq!(app.diff_change_position(), Some((1, 2)));
+    app.jump_changed(1);
+    assert_eq!(
+        app.preview_path.as_deref(),
+        Some(canon.join("d.txt").as_path())
+    );
+
+    // F を入れ直すとセッションはリセットされる。
+    app.toggle_follow();
+    app.toggle_follow();
+    assert!(app.follow_session.is_empty(), "次の ON で新セッション");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_file(&outside).ok();
+}

@@ -47,6 +47,8 @@ pub enum InternalMode {
     /// Windowed-preview line selection (`v` in a code/text preview).
     PreviewVisual,
     Filter,
+    /// Changed-files-only tree view (`C`; Agent Watch).
+    ChangedFilter,
     Search,
     Sort,
     Mark,
@@ -385,6 +387,7 @@ struct TabState {
     tree_filter: Option<String>,
     filter_input: Option<String>,
     filter_pool: Vec<Entry>,
+    changed_filter: bool,
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
@@ -494,6 +497,19 @@ pub struct App {
     filter_input: Option<String>,
     /// All entries to filter from (recursively collected under root). Built once when `/` starts.
     filter_pool: Vec<Entry>,
+    /// Changed-files-only tree filter (`C`). While true, entries is a flat list of the files with a git
+    /// status under root (the review companion for AI-made changes; broot's `:gs` equivalent). Per tab.
+    changed_filter: bool,
+    /// Follow mode (`F`, global): while true, an external file change (e.g. an AI agent writing) jumps the
+    /// tree selection to that file and opens its preview. Any other keypress turns it off (Zed-style).
+    follow_mode: bool,
+    /// Files changed during the current follow session (since `F` was last turned ON; first-change order,
+    /// deduped). Powers the session-scoped `n`/`N` review in follow-opened diffs — "what just changed",
+    /// not the whole dirty worktree. Kept after follow turns off (review continues); reset by the next ON.
+    follow_session: Vec<PathBuf>,
+    /// Whether the current GitDiff preview was opened by follow mode. While true, `n`/`N` and the title's
+    /// position indicator use `follow_session` instead of the full git change set.
+    diff_follow_scope: bool,
 
     /// The target, kind, and scroll position (vertical/horizontal) while in Preview mode.
     /// Horizontal scroll is used to view long lines when not wrapping (ui.wrap=false).
@@ -770,6 +786,10 @@ pub enum CopyKind {
     Relative,
     /// Full path of the parent directory (`cd`).
     Parent,
+    /// `@relative/path` reference for AI agents (`y@`). Claude Code reads `@path` as file context, so
+    /// the path is strictly relative to `open_dir` (the launch/anchor dir where the agent usually runs),
+    /// **without** the leading directory name that `Relative` prepends for display.
+    AtRef,
 }
 
 /// Commit-info copy kind (chosen after `y` in git log/graph/detail).
@@ -984,6 +1004,10 @@ impl App {
             tree_filter: None,
             filter_input: None,
             filter_pool: Vec::new(),
+            changed_filter: false,
+            follow_mode: false,
+            follow_session: Vec::new(),
+            diff_follow_scope: false,
             preview_path: None,
             preview_kind: None,
             preview_scroll: 0,
@@ -1315,6 +1339,9 @@ impl App {
         }
         if self.is_preview_visual() {
             return Some(InternalMode::PreviewVisual);
+        }
+        if self.changed_filter && matches!(self.mode, Mode::Tree) {
+            return Some(InternalMode::ChangedFilter);
         }
         None
     }
@@ -2065,7 +2092,7 @@ impl App {
     /// If a directory, toggle expansion; if a file, transition to Preview.
     /// While filtering (a flat result list), expand-toggle is meaningless, so behave the same as `tree_descend`.
     pub fn tree_activate(&mut self) -> Result<()> {
-        if self.tree_filter.is_some() {
+        if self.tree_filter.is_some() || self.changed_filter {
             return self.tree_descend();
         }
         let Some(entry) = self.entries.get(self.selected).cloned() else {
@@ -2098,6 +2125,10 @@ impl App {
     pub fn tree_leave(&mut self) -> Result<()> {
         if self.tree_filter.is_some() {
             self.filter_clear();
+            return Ok(());
+        }
+        if self.changed_filter {
+            self.toggle_changed_filter(); // OFF に戻す(通常ツリーへ)
             return Ok(());
         }
         if let Some(parent) = self.root.parent().map(Path::to_path_buf) {
@@ -2136,6 +2167,180 @@ impl App {
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.show_hidden = !self.show_hidden;
         self.rebuild_tree()
+    }
+
+    // --- フォローモード (`F`) — Agent Watch ② -------------------------------------
+    /// `F`: toggle follow mode (auto-jump to externally changed files; the "watch the AI work" view).
+    /// Turning it ON starts a fresh follow session (the "what changed while following" list for `n`/`N`).
+    pub fn toggle_follow(&mut self) {
+        self.follow_mode = !self.follow_mode;
+        if self.follow_mode {
+            self.follow_session.clear();
+        }
+        let msg = if self.follow_mode {
+            crate::i18n::Msg::FollowOn
+        } else {
+            crate::i18n::Msg::FollowOff
+        };
+        self.flash = Some(tr(self.lang, msg).into());
+    }
+
+    /// Whether follow mode is on (chip display / the run loop's jump gate).
+    pub fn follow_enabled(&self) -> bool {
+        self.follow_mode
+    }
+
+    /// The user took over the keyboard (pressed any key not bound to `F`): stop following (Zed-style —
+    /// following is a hands-off state; re-enable with one `F`). Flash so the state change is visible.
+    pub fn follow_break(&mut self) {
+        if self.follow_mode {
+            self.follow_mode = false;
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::FollowOff).into());
+        }
+    }
+
+    /// Follow-mode jump: reveal `path` in the tree and open its preview. Gated to meaningful targets:
+    /// under root, an existing visible file, not gitignored, not already being previewed (the preview
+    /// auto-reload handles content changes of the current file). No-op outside Tree/Preview surfaces
+    /// (dialogs and git views are never hijacked — normally unreachable anyway since any key breaks follow).
+    pub fn follow_jump(&mut self, path: &Path) {
+        use crate::keymap::Surface;
+        if !self.follow_mode {
+            return;
+        }
+        // フォロー自身が開いた diff ビュー(PreviewGitDiff)からも次のファイルへ追従を続ける。
+        // それ以外の git ビュー/ダイアログ等は乗っ取らない(通常はキー押下で follow が切れるので届かない)。
+        let surface_ok = matches!(
+            self.surface(),
+            Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable
+        );
+        #[cfg(feature = "git")]
+        let surface_ok = surface_ok || matches!(self.surface(), Surface::PreviewGitDiff);
+        if !surface_ok {
+            return;
+        }
+        if self.preview_path.as_deref() == Some(path) {
+            return;
+        }
+        if !self.follow_target_ok(path) {
+            return;
+        }
+        // 追尾がビューを動かす瞬間に古い flash(「follow: on」等)を消す=フッターを
+        // その面の操作ヒントに明け渡す(flash は本来キー入力で消えるが、追尾はキー無しで進むため)。
+        self.flash = None;
+        if self.changed_filter {
+            // 変更一覧を最新化してから対象を選択(一覧に居るはず=変更イベント由来)。
+            self.reapply_changed_filter();
+            if let Some(i) = self.entries.iter().position(|e| e.path == path) {
+                self.selected = i;
+            }
+        } else if !matches!(self.reveal_path_deep(path), Ok(true)) {
+            return;
+        }
+        // 既定(`ui.follow_view="diff"`)は**全画面 diff** で開く=何から何に変わったかがハンク単位で
+        // 見える(hunk/livediff/diffpane と同じ提示)。diff を出せない未追跡(全行新規)・リポジトリ外や、
+        // バイナリのメディア系はファイルプレビュー(+最初の変更ハンクへスクロール)へフォールバック。
+        if self.cfg.ui.follow_view != "file" && !self.follow_is_media(path) {
+            let diff = crate::git::file_diff(&self.root, path);
+            if !diff.is_empty() {
+                self.open_git_diff(path);
+                // いま取った diff をキャッシュに載せ、描画での再取得(git 再実行)を省く。
+                self.diff_cache = Some(DiffCache {
+                    path: path.to_path_buf(),
+                    lines: diff,
+                });
+                // フォロー由来の diff: n/N と位置表示は「このセッションで変わったファイル」を回遊。
+                self.diff_follow_scope = true;
+                return;
+            }
+        }
+        self.enter_preview(path);
+        self.follow_scroll_to_first_change();
+    }
+
+    /// Whether `path` is a valid follow target: under root, an existing file, not gitignored, and not
+    /// inside a hidden (dot) directory unless hidden files are shown. Shared by the jump and the
+    /// session-list recording so both see the same set.
+    fn follow_target_ok(&self, path: &Path) -> bool {
+        if !path.starts_with(&self.root) || !path.is_file() || self.is_ignored(path) {
+            return false;
+        }
+        if !self.show_hidden {
+            // 隠し(ドット)ディレクトリ/ファイル配下はツリーに出せないので追わない(show_hidden で解禁)。
+            let hidden = path
+                .strip_prefix(&self.root)
+                .map(|r| {
+                    r.components().any(|c| {
+                        c.as_os_str()
+                            .to_str()
+                            .map(|s| s.starts_with('.'))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(true);
+            if hidden {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Record one changed file into the current follow session (called from the run loop's event drain
+    /// while follow is ON). Returns whether the path is a valid follow target (the caller uses this to
+    /// decide whether it may become the pending jump target). First-change order, deduped.
+    pub fn follow_note_change(&mut self, path: &Path) -> bool {
+        if !self.follow_mode || !self.follow_target_ok(path) {
+            return false;
+        }
+        if !self.follow_session.iter().any(|p| p == path) {
+            self.follow_session.push(path.to_path_buf());
+        }
+        true
+    }
+
+    /// Whether `path` previews as media (image/SVG/video/PDF) — its git diff would be a useless
+    /// "binary files differ" line, so follow shows the content preview instead.
+    fn follow_is_media(&self, path: &Path) -> bool {
+        matches!(
+            self.cfg.resolve_preview(path),
+            PreviewKind::Image(_)
+                | PreviewKind::Svg(_)
+                | PreviewKind::Video(_)
+                | PreviewKind::Pdf(_)
+        )
+    }
+
+    /// After a follow jump, scroll the (windowed) preview to the **first changed hunk** instead of the
+    /// file top — an edit deep in a large file would otherwise be off-screen and invisible, which defeats
+    /// "watch the agent work" (Zed follows the edit position; diffpane scrolls to the latest change).
+    /// A few context lines are kept above, and the caret lands on the changed line (ready for `v`/`Y`).
+    /// No-ops for non-windowed previews, untracked files (all-new → top is right), and outside a repo.
+    fn follow_scroll_to_first_change(&mut self) {
+        if !self.is_windowed() {
+            return;
+        }
+        let Some(path) = self.preview_path.clone() else {
+            return;
+        };
+        // ガター設定 OFF でも変更行は取得する(ON なら同じ計算が gutter_cache に載り描画でも再利用)。
+        let marks = if self.cfg.ui.git_gutter {
+            self.git_gutter_marks()
+        } else {
+            gutter_marks(&crate::git::file_diff(&self.root, &path))
+        };
+        let Some(first) = marks.keys().min().copied() else {
+            return;
+        };
+        let line0 = (first as usize).saturating_sub(1); // marks は 1-based
+        let top = line0.saturating_sub(3); // 上に文脈を数行残す
+        let Some(win) = self.preview_win.as_mut() else {
+            return;
+        };
+        if let Ok((off, _)) = win.advance(0, top) {
+            self.preview_byte_top = off;
+            self.preview_top_line = top;
+            self.preview_cursor_line = line0;
+        }
     }
 
     fn enter_preview(&mut self, path: &Path) {
@@ -2488,6 +2693,38 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
             return;
         }
+        self.set_clipboard_flash(&text);
+    }
+
+    /// The `@path#L12-34` reference text (Claude Code's file+line context syntax) for the current
+    /// selection — or the caret line when not selecting. Line numbers are 1-based and inclusive; a single
+    /// line is `#L12`. In non-windowed previews (no caret) it degrades to `@path`. None without a target.
+    fn preview_selection_ref_text(&self) -> Option<String> {
+        let path = self.preview_path.as_ref()?;
+        let base = at_ref_text(&self.open_dir, path);
+        if !self.is_windowed() {
+            return Some(base);
+        }
+        let (lo, hi) = match self.preview_selection() {
+            PreviewSelection::Line { lo, hi } => (lo, hi),
+            PreviewSelection::Char { start, end } => (start.0, end.0),
+            PreviewSelection::None => (self.preview_cursor_line, self.preview_cursor_line),
+        };
+        Some(if lo == hi {
+            format!("{base}#L{}", lo + 1)
+        } else {
+            format!("{base}#L{}-{}", lo + 1, hi + 1)
+        })
+    }
+
+    /// `Y`: copy the `@path#L…` reference of the selection/caret to the clipboard, then exit visual
+    /// (paste it to Claude Code to point the conversation at this exact spot).
+    pub fn preview_copy_selection_ref(&mut self) {
+        let Some(text) = self.preview_selection_ref_text() else {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
+            return;
+        };
+        self.preview_visual_anchor = None;
         self.set_clipboard_flash(&text);
     }
 
@@ -4244,6 +4481,7 @@ impl App {
             tree_filter: self.tree_filter.clone(),
             filter_input: self.filter_input.clone(),
             filter_pool: self.filter_pool.clone(),
+            changed_filter: self.changed_filter,
             preview_search: self.preview_search.clone(),
             search_input: self.search_input.clone(),
             search_matches: self.search_matches.clone(),
@@ -4302,12 +4540,15 @@ impl App {
         self.tree_filter = t.tree_filter;
         self.filter_input = t.filter_input;
         self.filter_pool = t.filter_pool;
+        self.changed_filter = t.changed_filter;
         self.preview_search = t.preview_search;
         self.search_input = t.search_input;
         self.search_matches = t.search_matches;
         self.search_idx = t.search_idx;
         // 装飾キャッシュは持ち越さない (decorated_lines が再生成)。
         self.md_cache = None;
+        // 復元した diff プレビューはフォロー由来の印を持ち越さない(セッションはタブ横断の概念でない)。
+        self.diff_follow_scope = false;
         // 画像は重い状態(protocol/元画像/GIFフレーム)を持ち越さず、画像系プレビューなら再読込で復元する。
         self.clear_image();
         if let (Some(kind), Some(path)) = (self.preview_kind.clone(), self.preview_path.clone()) {
@@ -5183,7 +5424,22 @@ fn copy_text(path: &Path, open_dir: &Path, kind: CopyKind) -> String {
             .unwrap_or_default(),
         // 左上のタイトル表示 (format_path の Relative) と完全に同じ基準にする。
         CopyKind::Relative => rel_to_open(open_dir, path),
+        CopyKind::AtRef => at_ref_text(open_dir, path),
     }
+}
+
+/// `@path` reference for AI agents (Claude Code's `@file` context syntax). Under `open_dir` the path is
+/// strictly relative to it (`src/app.rs` — no leading dir name, unlike `rel_to_open`); outside it is
+/// `..`-relative; if neither works, absolute. Prefixed with `@`.
+fn at_ref_text(open_dir: &Path, path: &Path) -> String {
+    let rel = match path.strip_prefix(open_dir) {
+        Ok(r) if !r.as_os_str().is_empty() => r.display().to_string(),
+        _ => match rel_from(open_dir, path) {
+            Some(r) if !r.as_os_str().is_empty() => r.display().to_string(),
+            _ => path.display().to_string(),
+        },
+    };
+    format!("@{rel}")
 }
 
 /// A relative display string based on `open_dir` (the launch directory). For paths underneath, it puts the launch directory name first (e.g. `A/sub/x`),

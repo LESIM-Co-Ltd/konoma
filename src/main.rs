@@ -189,6 +189,17 @@ fn classify_fs_paths(paths: &[PathBuf]) -> (bool, bool) {
     (meaningful, ignore_rules)
 }
 
+/// Paths from an fs event that follow mode may jump to: anything not under a `.git` directory
+/// (repository internals — index/refs/lock churn — are never review targets). Existence/kind/root
+/// checks happen later in `App::follow_jump` (the event may be a deletion, or outside the tree).
+fn follow_candidates(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|p| !p.components().any(|c| c.as_os_str() == ".git"))
+        .cloned()
+        .collect()
+}
+
 /// Whether `p` is a lock file (`*.lock`) under `.git`. These are transient files created and removed
 /// on every git invocation, and reacting to them causes a self-feedback loop. True only when the path
 /// has a `.git` component and ends in `*.lock` (a user's `Cargo.lock` etc. is outside `.git`, so excluded).
@@ -243,12 +254,13 @@ fn run(
     // notify のコールバックは別スレッドから呼ばれるので、変更を std チャネルで run ループへ送る。
     // チャネルの bool = 「無視ルール(.gitignore / .git/info/exclude)が変わったか」。
     // `.git/*.lock` 等の一過性ノイズは握り潰す(下記 classify_fs_paths。自己フィードバックループ対策)。
-    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<bool>();
+    // チャネルの Vec<PathBuf> = フォローモード用の変更パス候補(.git 配下を除く)。
+    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(bool, Vec<PathBuf>)>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
             let (meaningful, ignore_rules) = classify_fs_paths(&ev.paths);
             if meaningful {
-                let _ = fs_tx.send(ignore_rules);
+                let _ = fs_tx.send((ignore_rules, follow_candidates(&ev.paths)));
             }
         }
     })
@@ -259,6 +271,13 @@ fn run(
     // ローディング: 裏でコード文法をウォームし、完了をこのチャネルで run ループへ通知。
     // indicator/progressive とも UI を止めず(スピナーが回り続ける)、完了で着色版に差し替える。
     let (hl_tx, hl_rx) = std::sync::mpsc::channel::<()>();
+
+    // フォローモードの切替 debounce: エージェントが複数ファイルを高速に書き替えても、
+    // ビューの切替(ファイル跨ぎのジャンプ)は最短この間隔＝画面が跳ね回らず一瞥できる。
+    // 保留中の最新ターゲット(latest-wins)は dwell 明けに拾う。同一ファイルの再読込は無制限(別経路)。
+    const FOLLOW_MIN_DWELL: Duration = Duration::from_millis(1000);
+    let mut pending_follow: Option<PathBuf> = None;
+    let mut last_follow_jump: Option<std::time::Instant> = None;
 
     let mut needs_redraw = true;
     loop {
@@ -406,9 +425,18 @@ fn run(
         // 重い ignored セットも作り直す。それ以外は安い statuses+branch だけ更新する。
         let mut fs_changed = false;
         let mut ignore_rules_changed = false;
-        while let Ok(b) = fs_rx.try_recv() {
+        while let Ok((b, paths)) = fs_rx.try_recv() {
             fs_changed = true;
             ignore_rules_changed |= b;
+            // フォローモード: 有効ターゲットをセッション一覧(n/N レビューの母集合)へ記録しつつ、
+            // 最後の1つを保留ターゲットに(latest-wins)。無効パスは dwell 枠を消費しない。
+            if app.follow_enabled() {
+                for p in paths {
+                    if app.follow_note_change(&p) {
+                        pending_follow = Some(p);
+                    }
+                }
+            }
         }
         if fs_changed {
             // 一覧 + git status に加え、refresh_fs() がアクティブな派生ビューも一元的に取り直す
@@ -416,6 +444,21 @@ fn run(
             //  残る既知バグを解消。Git ビューなら変更一覧を更新)。
             let _ = app.refresh_fs(ignore_rules_changed);
             needs_redraw = true;
+        }
+        // フォローの切替判定(ドレイン外=毎ループ)。dwell 中に来たターゲットは保留され、明けた時点の
+        // 最新へ 1 回だけ跳ぶ。表示中ファイルへの変更は切替不要(上の refresh_fs の再読込が追従)。
+        if pending_follow.is_some() && !app.follow_enabled() {
+            pending_follow = None; // 解除されたら保留も破棄
+        }
+        if let Some(p) = pending_follow.clone() {
+            if app.preview_path.as_deref() == Some(p.as_path()) {
+                pending_follow = None;
+            } else if last_follow_jump.is_none_or(|t| t.elapsed() >= FOLLOW_MIN_DWELL) {
+                pending_follow = None;
+                app.follow_jump(&p);
+                last_follow_jump = Some(std::time::Instant::now());
+                needs_redraw = true;
+            }
         }
 
         // root が変わったら監視先を張り替える(h/l/タブ切替など)。
@@ -790,6 +833,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::OpenGitDiffCursor => app.tree_open_git_diff(),
         Action::EnterVisual => app.enter_visual(),
         Action::ToggleSelect => app.toggle_select(),
+        Action::ToggleChangedFilter => app.toggle_changed_filter(),
+        Action::JumpNextChange => app.jump_changed(1),
+        Action::JumpPrevChange => app.jump_changed(-1),
+        Action::ToggleFollow => app.toggle_follow(),
         Action::FileCreate => {
             commit_visual_if_needed(app, sfc);
             app.start_create();
@@ -836,6 +883,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewEnterVisual => app.preview_enter_visual(false),
         Action::PreviewEnterVisualLine => app.preview_enter_visual(true),
         Action::PreviewCopySelection => app.preview_copy_selection(),
+        Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
         Action::ToggleMarkdownRaw => app.toggle_md_raw(),
         Action::LinkFocusNext => app.link_focus(1),
@@ -1160,6 +1208,21 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     app.flash = None;
     let sfc = app.surface();
 
+    // フォロー中に F(ToggleFollow に解決されるキー)以外を押したら追尾を止める(Zed 流:
+    // 手を置いた=閲覧、キーボードを取った=手動優先。F 一発で再開できる)。
+    if app.follow_enabled() {
+        let is_follow_key = !sfc.is_text_input()
+            && !sfc.is_modal_confirm()
+            && app.pending_leader.is_none()
+            && matches!(
+                app.keymaps.resolve(sfc, None, KeyPress::norm(&key)),
+                Resolution::Action(Action::ToggleFollow)
+            );
+        if !is_follow_key {
+            app.follow_break();
+        }
+    }
+
     // 1) 固定面 (テキスト入力 / 確認モーダル) は専用ハンドラへ (keymap 非適用・要件4)。
     if sfc.is_text_input() {
         return handle_text_input(app, sfc, key);
@@ -1263,6 +1326,55 @@ mod tests {
         );
         // パス不明イベントは安全側(再読込する・ignored は触らない)。
         assert_eq!(classify_fs_paths(&[]), (true, false));
+    }
+
+    #[test]
+    fn follow_candidates_exclude_git_internals() {
+        // フォロー対象は .git 配下以外(index/refs/lock の churn はレビュー対象でない)。
+        let got = follow_candidates(&[
+            PathBuf::from("/repo/.git/index"),
+            PathBuf::from("/repo/.git/refs/heads/main"),
+            PathBuf::from("/repo/src/main.rs"),
+            PathBuf::from("/repo/README.md"),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/repo/src/main.rs"),
+                PathBuf::from("/repo/README.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn any_key_but_follow_toggle_breaks_follow() {
+        // フォロー中に F 以外のキー → 解除(Zed 流)。F 自体はトグルに解決される。
+        let dir = std::env::temp_dir().join("konoma_follow_break_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(app.follow_enabled(), "F で ON");
+        // F をもう一度: follow_break でなくトグル経由の OFF(=見分けは付かないが OFF になる)。
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(!app.follow_enabled(), "F 再押下で OFF");
+        // ON に戻して j(移動キー)→ 解除される。
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(app.follow_enabled());
+        handle_key(&mut app, key('j')).unwrap();
+        assert!(!app.follow_enabled(), "F 以外のキーで追尾解除");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
