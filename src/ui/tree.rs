@@ -209,7 +209,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         hint(lang, "i", crate::i18n::Msg::HintInfo),
         hint(lang, "s", crate::i18n::Msg::HintSort),
         hint(lang, "m", crate::i18n::Msg::HintMark),
-        hint(lang, "'", crate::i18n::Msg::HintGoto),
+        hint(lang, "'", crate::i18n::Msg::HintBookmarks),
         hint(lang, "v", crate::i18n::Msg::HintVisual),
         hint(lang, "V", crate::i18n::Msg::HintPick),
         hint(lang, "a", crate::i18n::Msg::HintAnchor),

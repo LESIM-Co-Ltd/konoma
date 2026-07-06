@@ -22,6 +22,7 @@ use crate::preview::PreviewKind;
 mod bookmark_actions;
 mod file_actions;
 mod git_view;
+mod md_tasks;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -52,7 +53,6 @@ pub enum InternalMode {
     Search,
     Sort,
     Mark,
-    Goto,
     Bookmarks,
     Info,
     Create,
@@ -242,13 +242,6 @@ impl Sort {
             dirs_first: c.dirs_first,
         }
     }
-}
-
-/// State of waiting for a letter key after `m` (set) / `'` (jump) (M7 auxiliary, bookmarks).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MarkAction {
-    Set,
-    Jump,
 }
 
 /// Destructive/creation operations confirmed through a modal dialog (M7 Phase B, safety first).
@@ -473,7 +466,8 @@ pub struct App {
     /// Bookmarks (M7 auxiliary). Lowercase a-z=local (per launch dir) / uppercase A-Z=global.
     pub bookmarks: crate::bookmarks::Bookmarks,
     /// State of waiting for a letter after `m`/`'` (Set=register / Jump=jump).
-    mark_pending: Option<MarkAction>,
+    /// Waiting for the letter key after `m` (bookmark set). (`'` opens the list directly.)
+    mark_set_pending: bool,
     /// Whether the bookmark-list overlay is showing.
     bookmark_list: bool,
     /// Selection position in the list (a flat index over local on top and global below, concatenated).
@@ -563,10 +557,11 @@ pub struct App {
     diff_cache: Option<DiffCache>,
     gutter_cache: Option<GutterCache>,
 
-    /// Links in the Markdown preview (collected on each render). Focus with Tab/⇧Tab, open with Enter.
-    md_links: Vec<MdLink>,
-    /// Index of the focused link (within md_links). None=nothing selected.
-    focused_link: Option<usize>,
+    /// Interactive items in the Markdown preview (links + task checkboxes, collected on each render).
+    /// Focus with Tab/⇧Tab; Enter opens a link / toggles a checkbox, Space toggles a checkbox.
+    md_items: Vec<MdItem>,
+    /// Index of the focused item (within md_items). None=nothing selected.
+    focused_item: Option<usize>,
 
     /// In-preview search (`/`, less style). Some=search is active (the query). Highlights matches and moves with n/N.
     /// Currently only Code/Text (windowed) previews are supported.
@@ -847,12 +842,20 @@ struct GutterCache {
     marks: std::collections::HashMap<u32, GutterMark>,
 }
 
-/// A single link within Markdown. `line`=index of the decorated line (for scrolling), `target`=URL/relative path.
-/// tui-markdown renders a link as "text (URL)" and makes the URL an underlined blue span, so
-/// it can be collected directly from the render result (no source re-parsing needed).
-struct MdLink {
+/// One interactive item within a rendered Markdown preview: a link or a task-list checkbox.
+/// `line`=index of the decorated line (for scrolling). Both are collected straight from the render
+/// result (links = underlined blue spans + collapsed targets, checkboxes = `task_marker_style` spans),
+/// so no source re-parsing is needed.
+struct MdItem {
     line: usize,
-    target: String,
+    kind: MdItemKind,
+}
+
+enum MdItemKind {
+    /// A link; `target`=URL/relative path.
+    Link { target: String },
+    /// A task checkbox; `state`=its current state char (` `/`x`/custom) as shown.
+    Task { state: char },
 }
 
 /// Cache of highlighted lines for windowed reading.
@@ -993,7 +996,7 @@ impl App {
             sort,
             sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
-            mark_pending: None,
+            mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
             dialog: None,
@@ -1027,8 +1030,8 @@ impl App {
             md_raw: false,
             diff_cache: None,
             gutter_cache: None,
-            md_links: Vec::new(),
-            focused_link: None,
+            md_items: Vec::new(),
+            focused_item: None,
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
@@ -1323,10 +1326,8 @@ impl App {
         if self.is_sort_menu() {
             return Some(InternalMode::Sort);
         }
-        match self.mark_is_set() {
-            Some(true) => return Some(InternalMode::Mark),
-            Some(false) => return Some(InternalMode::Goto),
-            None => {}
+        if self.is_marking() {
+            return Some(InternalMode::Mark);
         }
         if self.is_bookmark_list() {
             return Some(InternalMode::Bookmarks);
@@ -2361,9 +2362,9 @@ impl App {
         self.preview_kind = Some(kind);
         self.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
-        self.md_links.clear();
+        self.md_items.clear();
         self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
-        self.focused_link = None;
+        self.focused_item = None;
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
@@ -2771,8 +2772,8 @@ impl App {
         self.hl_warming = false;
         self.preview_byte_top = 0;
         self.preview_top_line = 0;
-        self.md_links.clear();
-        self.focused_link = None;
+        self.md_items.clear();
+        self.focused_item = None;
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
@@ -2925,6 +2926,7 @@ impl App {
                     code,
                     &theme.code_theme,
                     self.cfg.ui.icons,
+                    &self.cfg.ui.md_task_state_chars(),
                     &slot_of,
                 );
                 let remote = if font.is_some() {
@@ -4128,36 +4130,49 @@ impl App {
         self.preview_hscroll = u16::MAX;
     }
 
-    /// Arrange the links in decorated Markdown lines to "show label only", build `md_links`, and return the line list with the focused
-    /// link rendered inverted (called just before rendering).
-    /// Since tui-markdown outputs the "label (URL)" form, `collapse_links` folds the accompanying URL
-    /// (the URL is the hidden destination) and styles the label as a link plus (when configured) an icon. Follows the normal display of glow, etc.
-    pub fn decorate_links(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    /// Arrange the links in decorated Markdown lines to "show label only", build `md_items` (links +
+    /// task checkboxes), and return the line list with the focused item rendered inverted (called just
+    /// before rendering). Since tui-markdown outputs the "label (URL)" form, `collapse_links` folds the
+    /// accompanying URL (the URL is the hidden destination) and styles the label as a link plus (when
+    /// configured) an icon. Checkbox markers are recognized by their dedicated style (`is_task_span`).
+    pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
-        // 畳んだリンク span を順に走査し、同順の targets と対応付けて md_links を作る。
-        let mut links = Vec::new();
+        // 畳んだリンク span とタスクマーカー span を出現順に走査して md_items を作る。
+        let mut items = Vec::new();
         let mut k = 0usize;
         for (li, line) in lines.iter().enumerate() {
             for span in &line.spans {
                 if is_link_span(span) {
                     let target = targets.get(k).cloned().unwrap_or_default();
-                    links.push(MdLink { line: li, target });
+                    items.push(MdItem {
+                        line: li,
+                        kind: MdItemKind::Link { target },
+                    });
                     k += 1;
+                } else if crate::preview::markdown::is_task_span(span) {
+                    if let Some(state) =
+                        crate::preview::markdown::task_span_state(span.content.as_ref())
+                    {
+                        items.push(MdItem {
+                            line: li,
+                            kind: MdItemKind::Task { state },
+                        });
+                    }
                 }
             }
         }
         // フォーカス添字を範囲内にクランプ。
-        match self.focused_link {
-            Some(_) if links.is_empty() => self.focused_link = None,
-            Some(f) if f >= links.len() => self.focused_link = Some(links.len() - 1),
+        match self.focused_item {
+            Some(_) if items.is_empty() => self.focused_item = None,
+            Some(f) if f >= items.len() => self.focused_item = Some(items.len() - 1),
             _ => {}
         }
-        self.md_links = links;
+        self.md_items = items;
 
-        let Some(target_idx) = self.focused_link else {
+        let Some(target_idx) = self.focused_item else {
             return lines;
         };
-        // フォーカス中リンク(n 番目の下線青 span)を反転して強調。
+        // フォーカス中アイテム(n 番目のリンク/マーカー span)を反転して強調。
         use ratatui::style::Modifier;
         let mut seen = 0usize;
         lines
@@ -4168,7 +4183,7 @@ impl App {
                     .spans
                     .into_iter()
                     .map(|mut span| {
-                        if is_link_span(&span) {
+                        if is_link_span(&span) || crate::preview::markdown::is_task_span(&span) {
                             if seen == target_idx {
                                 span.style = span.style.add_modifier(Modifier::REVERSED);
                             }
@@ -4182,21 +4197,21 @@ impl App {
             .collect()
     }
 
-    /// Move the link focus of the Markdown preview (dir: +1=next / -1=previous, cyclic).
-    /// If the focused line is off-screen, scroll until it is visible. If there are no links, do nothing.
-    pub fn link_focus(&mut self, dir: i32) {
-        if self.md_links.is_empty() {
+    /// Move the item focus of the Markdown preview (dir: +1=next / -1=previous, cyclic over links and
+    /// checkboxes in document order). If the focused line is off-screen, scroll until it is visible.
+    pub fn md_focus_move(&mut self, dir: i32) {
+        if self.md_items.is_empty() {
             return;
         }
-        let n = self.md_links.len() as i32;
-        let next = match self.focused_link {
+        let n = self.md_items.len() as i32;
+        let next = match self.focused_item {
             Some(f) => (f as i32 + dir).rem_euclid(n),
             None if dir >= 0 => 0,
             None => n - 1,
         } as usize;
-        self.focused_link = Some(next);
+        self.focused_item = Some(next);
         // フォーカス行を表示範囲に収める。
-        let line = self.md_links[next].line;
+        let line = self.md_items[next].line;
         let vh = self.preview_viewport.max(1) as usize;
         let scroll = self.preview_scroll as usize;
         if line < scroll {
@@ -4206,16 +4221,46 @@ impl App {
         }
     }
 
-    /// Open the focused link. URLs open externally (browser, etc.), local ones open within konoma.
-    pub fn open_focused_link(&mut self) -> Result<()> {
-        let Some(f) = self.focused_link else {
+    /// Activate the focused item: a link opens (URLs externally, local paths within konoma),
+    /// a task checkbox toggles.
+    pub fn md_activate_focused(&mut self) -> Result<()> {
+        let Some(f) = self.focused_item else {
             return Ok(());
         };
-        let Some(link) = self.md_links.get(f) else {
-            return Ok(());
-        };
-        let target = link.target.clone();
-        self.open_link_target(&target)
+        match self.md_items.get(f) {
+            Some(MdItem {
+                kind: MdItemKind::Link { target },
+                ..
+            }) => {
+                let target = target.clone();
+                self.open_link_target(&target)
+            }
+            Some(MdItem {
+                kind: MdItemKind::Task { .. },
+                ..
+            }) => {
+                self.md_toggle_focused_task();
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Whether the currently focused Markdown item is a task checkbox (drives the Space fixed key:
+    /// only then does Space toggle instead of falling through to the keymap).
+    pub fn md_focused_task(&self) -> bool {
+        !self.is_raw_source()
+            && self
+                .focused_item
+                .and_then(|f| self.md_items.get(f))
+                .is_some_and(|it| matches!(it.kind, MdItemKind::Task { .. }))
+    }
+
+    /// Whether the rendered Markdown preview has any task checkboxes (drives the footer hint).
+    pub fn md_has_tasks(&self) -> bool {
+        self.md_items
+            .iter()
+            .any(|it| matches!(it.kind, MdItemKind::Task { .. }))
     }
 
     /// Open a link target. `scheme://`/`mailto:`, etc. are delegated externally; local paths open in konoma

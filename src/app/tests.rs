@@ -1,6 +1,14 @@
 use super::*;
 use crate::config::Config;
 
+/// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
+fn item_target(it: &MdItem) -> &str {
+    match &it.kind {
+        MdItemKind::Link { target } => target,
+        MdItemKind::Task { .. } => panic!("expected a link item"),
+    }
+}
+
 #[test]
 fn path_styles_format_as_expected() {
     let open = std::env::temp_dir().join("konoma_app_test_open");
@@ -1404,13 +1412,13 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
     // 描画でリンクを収集 (decorate_links が走る)。
     let mut term = Terminal::new(TestBackend::new(72, 8)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    assert_eq!(app.md_links.len(), 2, "リンク数");
-    assert!(app.md_links[0].target.ends_with("target.md"));
-    assert_eq!(app.md_links[1].target, "https://example.com/x");
+    assert_eq!(app.md_items.len(), 2, "リンク数");
+    assert!(item_target(&app.md_items[0]).ends_with("target.md"));
+    assert_eq!(item_target(&app.md_items[1]), "https://example.com/x");
     // 先頭リンク(ローカル)にフォーカスして開く → konoma が target.md をプレビュー。
-    app.link_focus(1);
-    assert_eq!(app.focused_link, Some(0));
-    app.open_focused_link().unwrap();
+    app.md_focus_move(1);
+    assert_eq!(app.focused_item, Some(0));
+    app.md_activate_focused().unwrap();
     assert!(
         app.preview_path
             .as_deref()
@@ -1418,6 +1426,187 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
         "ローカルリンクで target.md に遷移していない: {:?}",
         app.preview_path
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_task_toggle_cycles_and_writes_file() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // Tab でチェックボックスへフォーカス → トグルで状態文字1文字だけがファイルに書き戻る。
+    // 既定サイクル ' '⇄'x'・大文字 X は x と同値・他行は不変(CJK 本文でもバイト破壊なし)。
+    let dir = std::env::temp_dir().join("konoma_md_task_toggle_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "# t\n\n- [ ] 未着手のタスク\n- [X] 済み\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("todo.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(72, 12)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert_eq!(app.md_items.len(), 2);
+    assert!(app.md_has_tasks());
+    app.md_focus_move(1);
+    assert!(app.md_focused_task());
+    app.md_toggle_focused_task();
+    let s = std::fs::read_to_string(&f).unwrap();
+    assert!(s.contains("- [x] 未着手のタスク"), "{s}");
+    assert!(s.contains("- [X] 済み"), "他行は不変: {s}");
+    // 再描画で状態を取り直してから逆方向: 'x'→' '。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_toggle_focused_task();
+    let s = std::fs::read_to_string(&f).unwrap();
+    assert!(s.contains("- [ ] 未着手のタスク"), "{s}");
+    // 2つ目(大文字 X)へ: X=x と同値 → 次は ' '。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_focus_move(1);
+    app.md_toggle_focused_task();
+    let s = std::fs::read_to_string(&f).unwrap();
+    assert!(s.contains("- [ ] 済み"), "{s}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_task_toggle_custom_states_cycle() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // ui.md_task_states = [" ", "/", "x"]: Space が配列順に巡回し、カスタム状態 [/] も
+    // 再描画後にトグル対象として認識される。
+    let dir = std::env::temp_dir().join("konoma_md_task_custom_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "- [ ] a\n").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.md_task_states = vec![" ".into(), "/".into(), "x".into()];
+    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    let cycle = |app: &mut App, term: &mut Terminal<TestBackend>| {
+        term.draw(|fr| crate::ui::render(fr, app)).unwrap();
+        if app.focused_item.is_none() {
+            app.md_focus_move(1);
+        }
+        app.md_toggle_focused_task();
+        std::fs::read_to_string(&f).unwrap()
+    };
+    assert_eq!(cycle(&mut app, &mut term), "- [/] a\n");
+    assert_eq!(cycle(&mut app, &mut term), "- [x] a\n");
+    assert_eq!(cycle(&mut app, &mut term), "- [ ] a\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_task_toggle_aborts_when_file_changed_externally() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // 表示とディスクの状態が食い違ったら書かない(flash+再読込)。外部エージェントの編集と競合しない。
+    let dir = std::env::temp_dir().join("konoma_md_task_abort_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "- [ ] a\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_focus_move(1);
+    // ①状態の食い違い: 画面は ' ' のままディスクは 'x' に。
+    std::fs::write(&f, "- [x] a\n").unwrap();
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [x] a\n",
+        "書かない"
+    );
+    assert!(app.flash.is_some(), "flash で通知");
+    // ②個数の食い違い: タスクが増えた(描画側は1個のまま)。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 画面を x に追従させ…
+    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // …ディスクだけ2個に
+    app.flash = None;
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [x] a\n- [ ] b\n",
+        "個数不一致でも書かない"
+    );
+    assert!(app.flash.is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join("konoma_md_task_raw_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "- [ ] a\r\n\r\ntail\r\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_focus_move(1);
+    // raw ソース表示(R)中はトグルもフォーカス判定も無効(2D キャレット面)。
+    app.toggle_md_raw();
+    assert!(!app.md_focused_task());
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [ ] a\r\n\r\ntail\r\n",
+        "raw 中は書かない"
+    );
+    // 装飾表示に戻せばトグルでき、CRLF・末尾バイトは保たれる(1文字だけの置換)。
+    app.toggle_md_raw();
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [x] a\r\n\r\ntail\r\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_items_mix_links_and_tasks_in_document_order() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // リンクとチェックボックスが文書順で1本の Tab 巡回に載る。
+    let dir = std::env::temp_dir().join("konoma_md_items_mix_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        "[l1](https://x/1)\n\n- [ ] t1\n\n[l2](https://x/2)\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    let kinds: Vec<bool> = app
+        .md_items
+        .iter()
+        .map(|it| matches!(it.kind, MdItemKind::Task { .. }))
+        .collect();
+    assert_eq!(kinds, vec![false, true, false], "Link→Task→Link の順");
+    app.md_focus_move(1);
+    assert!(!app.md_focused_task());
+    app.md_focus_move(1);
+    assert!(app.md_focused_task(), "2番目=チェックボックス");
+    app.md_focus_move(1);
+    assert!(!app.md_focused_task());
+    app.md_focus_move(1);
+    assert_eq!(app.focused_item, Some(0), "巡回で先頭へ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1473,9 +1662,9 @@ fn decorate_links_highlights_focused() {
         Line::from(vec![Span::raw("a "), link("u0")]),
         Line::from(vec![Span::raw("b "), link("u1")]),
     ];
-    app.focused_link = Some(1);
-    let out = app.decorate_links(lines);
-    assert_eq!(app.md_links.len(), 2);
+    app.focused_item = Some(1);
+    let out = app.decorate_md_items(lines);
+    assert_eq!(app.md_items.len(), 2);
     // フォーカス中(1番目)のリンク span だけ REVERSED が付く。
     let rev = |line: &Line<'static>| -> bool {
         line.spans
@@ -2124,9 +2313,10 @@ fn bookmark_set_and_jump_via_marks() {
     app.mark_input('b');
     assert_eq!(app.bookmarks.get('b'), Some(proj.join("f.txt")));
 
-    // ' a: ディレクトリ → そこへ移動 (Tree)。
-    app.start_mark_jump();
-    app.mark_input('a');
+    // ' → 一覧が開き、英字 a: ディレクトリ → そこへ移動 (Tree)。
+    app.open_bookmark_list();
+    app.bookmark_jump_letter('a');
+    assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
     assert_eq!(
         app.root,
         proj.join("sub"),
@@ -2138,8 +2328,8 @@ fn bookmark_set_and_jump_via_marks() {
     app.root = proj.clone();
     let _ = app.rebuild_tree();
     let root_before = app.root.clone();
-    app.start_mark_jump();
-    app.mark_input('b');
+    app.open_bookmark_list();
+    app.bookmark_jump_letter('b');
     assert_eq!(
         app.mode,
         Mode::Preview,
@@ -2165,11 +2355,13 @@ fn bookmark_set_and_jump_via_marks() {
     assert_eq!(app.mode, Mode::Tree);
     assert_eq!(app.root, root_before);
 
-    // 未登録マークはジャンプせず flash。
-    app.start_mark_jump();
-    app.mark_input('z');
+    // 未登録マークはジャンプせず flash(一覧は開いたまま)。
+    app.open_bookmark_list();
+    app.bookmark_jump_letter('z');
     assert_eq!(app.root, root_before, "未登録マークではジャンプしない");
     assert!(app.flash.is_some());
+    assert!(app.is_bookmark_list(), "未登録では一覧を閉じない");
+    app.close_bookmark_list();
 
     // 一覧で e: 選択中がファイルなら直接エディタ対象に(プレビューを挟まない)。
     app.open_bookmark_list();
@@ -4568,21 +4760,21 @@ fn close_git_graph_returns_to_git_view() {
 // --- bookmark_actions / file_actions のカバレッジ ---------------------------
 
 #[test]
-fn mark_set_jump_state_and_cancel() {
+fn mark_set_state_and_cancel() {
+    // `m` の登録待ちのみが Mark 面(`'` は即一覧なので待ち状態を持たない)。
     let dir = std::env::temp_dir().join("konoma_mark_state_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     assert!(!app.is_marking());
-    assert_eq!(app.mark_is_set(), None, "待機中でなければ None");
     app.start_mark_set();
-    assert_eq!(app.mark_is_set(), Some(true), "m=set");
+    assert!(app.is_marking(), "m=登録待ち");
     app.cancel_mark();
     assert!(!app.is_marking(), "cancel_mark で待機解除");
-    app.start_mark_jump();
-    assert_eq!(app.mark_is_set(), Some(false), "'=jump");
-    app.cancel_mark();
-    assert_eq!(app.mark_is_set(), None);
+    // 待機していない時の mark_input は無視(flash も出ない)。
+    app.flash = None;
+    app.mark_input('a');
+    assert!(app.flash.is_none());
     std::fs::remove_dir_all(&dir).ok();
 }
 

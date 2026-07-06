@@ -869,13 +869,15 @@ impl KeyMap {
         sort.insert(KeyPress::ch('.'), run(Action::SortToggleDirsFirst));
         per_surface.insert(Surface::Sort, sort);
 
-        // --- Bookmark 一覧。Enter→BookmarkJump は固定キー。 ---
+        // --- Bookmark 一覧。Enter→BookmarkJump は固定キー。素の英字はブックマーク名ジャンプに
+        // 予約(main の Unbound フォールバック)なので、編集/削除は Ctrl 修飾に置く。 ---
         let mut bm: ContextMap = HashMap::new();
         bm.insert(KeyPress::ch('j'), nav(Motion::Down));
         bm.insert(KeyPress::ch('k'), nav(Motion::Up));
-        bm.insert(KeyPress::ch('e'), run(Action::BookmarkEdit));
-        bm.insert(KeyPress::ch('d'), run(Action::BookmarkDelete));
+        bm.insert(KeyPress::ctrl_ch('e'), run(Action::BookmarkEdit));
+        bm.insert(KeyPress::ctrl_ch('d'), run(Action::BookmarkDelete));
         bm.insert(KeyPress::ch('q'), run(Action::BookmarkClose));
+        bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
         per_surface.insert(Surface::Bookmarks, bm);
 
         // --- Info ---
@@ -2188,6 +2190,42 @@ mod tests {
             Resolution::Unbound
         );
         assert!(m.warnings.iter().any(|w| w.contains("fixed key")));
+    }
+
+    #[test]
+    fn bookmark_list_defaults_reserve_plain_letters_for_jump() {
+        // 一覧内の素の英字はブックマーク名ジャンプに予約: 編集/削除は Ctrl 修飾・`'`/q で閉じる。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ctrl_ch('e')),
+            Resolution::Action(Action::BookmarkEdit)
+        );
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ctrl_ch('d')),
+            Resolution::Action(Action::BookmarkDelete)
+        );
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ch('\'')),
+            Resolution::Action(Action::BookmarkClose)
+        );
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ch('q')),
+            Resolution::Action(Action::BookmarkClose)
+        );
+        // 素の e/d は未割当(=main の Unbound フォールバックで英字ジャンプに落ちる)。
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ch('e')),
+            Resolution::Unbound
+        );
+        assert_eq!(
+            m.resolve(Surface::Bookmarks, None, KeyPress::ch('d')),
+            Resolution::Unbound
+        );
+        // Tree の `'` は一覧を開く MarkJump のまま(config 名も不変)。
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('\'')),
+            Resolution::Action(Action::MarkJump)
+        );
     }
 
     // §10.9 less プロファイル。

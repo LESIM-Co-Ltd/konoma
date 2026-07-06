@@ -827,7 +827,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::CyclePathStyle => app.cycle_path_style(),
         Action::OpenSortMenu => app.open_sort_menu(),
         Action::MarkSet => app.start_mark_set(),
-        Action::MarkJump => app.start_mark_jump(),
+        // `'`: 従来の不可視の「ジャンプ待ち」でなく、即ブックマーク一覧を開く(which-key 流)。
+        Action::MarkJump => app.open_bookmark_list(),
         Action::SetAnchor => app.reanchor_root(),
         Action::ResetAnchor => app.reset_anchor(),
         Action::OpenGitDiffCursor => app.tree_open_git_diff(),
@@ -886,9 +887,9 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
         Action::ToggleMarkdownRaw => app.toggle_md_raw(),
-        Action::LinkFocusNext => app.link_focus(1),
-        Action::LinkFocusPrev => app.link_focus(-1),
-        Action::LinkOpen => app.open_focused_link()?,
+        Action::LinkFocusNext => app.md_focus_move(1),
+        Action::LinkFocusPrev => app.md_focus_move(-1),
+        Action::LinkOpen => app.md_activate_focused()?,
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
         Action::ImageZoomReset => app.image_zoom_reset(),
@@ -1131,7 +1132,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
 fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
     match sfc {
         Surface::Tree => app.tree_activate()?,
-        Surface::PreviewText => app.open_focused_link()?,
+        Surface::PreviewText => app.md_activate_focused()?,
         Surface::Bookmarks => app.bookmark_list_jump(),
         #[cfg(feature = "git")]
         Surface::GitChanges => {
@@ -1182,17 +1183,24 @@ fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option
         }
         KeyCode::Esc => handle_esc(app, sfc),
         KeyCode::Enter => handle_enter(app, sfc)?,
-        // Markdown リンク: Tab=次 / ⇧Tab=前 (テキストプレビューのみ・他面では無処理で飲む)。
+        // Markdown リンク/チェックボックス: Tab=次 / ⇧Tab=前 (装飾テキストプレビューのみ・
+        // raw ソース表示(R)中は装飾表示のアイテムが stale なので動かさない・他面では無処理で飲む)。
         KeyCode::Tab => {
-            if sfc == Surface::PreviewText {
-                app.link_focus(1);
+            if sfc == Surface::PreviewText && !app.is_raw_source() {
+                app.md_focus_move(1);
             }
             false
         }
         KeyCode::BackTab => {
-            if sfc == Surface::PreviewText {
-                app.link_focus(-1);
+            if sfc == Surface::PreviewText && !app.is_raw_source() {
+                app.md_focus_move(-1);
             }
+            false
+        }
+        // Markdown チェックボックス: フォーカス中だけ Space=トグル。フォーカスが無ければ
+        // keymap へフォールスルー(less 流儀の Space=PageDown を奪わない)。
+        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_task() => {
+            app.md_toggle_focused_task();
             false
         }
         _ => return Ok(None),
@@ -1253,7 +1261,18 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             Ok(false)
         }
         Resolution::Action(a) => dispatch_action(app, a, sfc),
-        Resolution::Unbound => Ok(false),
+        Resolution::Unbound => {
+            // ブックマーク一覧: keymap 未割当の素の英字はブックマーク名として直接ジャンプ
+            // (a-z=ローカル / A-Z=グローバル)。q/j/k や global の t/w/F/Q 等は上で解決済み=対象外。
+            if sfc == Surface::Bookmarks && !kp.ctrl {
+                if let KeyCode::Char(c) = kp.code {
+                    if c.is_ascii_alphabetic() {
+                        app.bookmark_jump_letter(c);
+                    }
+                }
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -1375,6 +1394,60 @@ mod tests {
         handle_key(&mut app, key('j')).unwrap();
         assert!(!app.follow_enabled(), "F 以外のキーで追尾解除");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn quote_opens_bookmark_list_and_letters_jump() {
+        // `'` 一発で一覧が開き(不可視の待ち受けは廃止)、一覧内の素の英字はブックマーク名として
+        // 直接ジャンプ。旧 e/d(編集/削除)は Ctrl 修飾へ移設され、素の e もジャンプに使える。
+        let root = std::env::temp_dir().join("konoma_quote_list_test");
+        let _ = std::fs::remove_dir_all(&root);
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join("sub")).unwrap();
+        std::fs::write(proj.join("f.txt"), b"x").unwrap();
+        let proj = proj.canonicalize().unwrap();
+        let mut app = App::new(proj.clone(), Config::default()).unwrap();
+        app.bookmarks = bookmarks::Bookmarks::with_base(root.join("cfgbase"), &proj);
+        app.bookmarks.set('a', proj.join("sub")).unwrap();
+        app.bookmarks.set('e', proj.join("f.txt")).unwrap();
+
+        handle_key(&mut app, key('\'')).unwrap();
+        assert!(app.is_bookmark_list(), "' 一発で一覧が開く");
+        assert!(!app.is_marking(), "ジャンプの待ち受け状態は無い");
+        // 未登録の英字: flash して一覧は開いたまま。
+        handle_key(&mut app, key('z')).unwrap();
+        assert!(app.is_bookmark_list());
+        assert!(app.flash.is_some(), "未登録は flash");
+        // e はブックマーク名としてジャンプ(ファイル → プレビュー)。
+        handle_key(&mut app, key('e')).unwrap();
+        assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
+        assert_eq!(app.mode, Mode::Preview);
+        assert!(app
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("f.txt")));
+        // 戻って `'` 2度目=閉じる(トグル感)。
+        handle_key(&mut app, key('q')).unwrap(); // preview → tree
+        handle_key(&mut app, key('\'')).unwrap();
+        assert!(app.is_bookmark_list());
+        handle_key(&mut app, key('\'')).unwrap();
+        assert!(!app.is_bookmark_list(), "' 再押下で閉じる");
+        // Ctrl+D=選択行を削除(素の d はジャンプ用に予約)。j で e の行へ降りてから消す。
+        handle_key(&mut app, key('\'')).unwrap();
+        let before = app.bookmark_list_items().len();
+        handle_key(&mut app, key('j')).unwrap();
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(app.bookmark_list_items().len(), before - 1, "Ctrl+D で削除");
+        assert!(app.bookmarks.get('e').is_none(), "消えたのは選択行の e");
+        // ディレクトリのブックマークは root 移動。
+        handle_key(&mut app, key('a')).unwrap();
+        assert_eq!(app.root, proj.join("sub"));
+        assert!(!app.is_bookmark_list());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

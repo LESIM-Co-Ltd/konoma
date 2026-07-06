@@ -75,7 +75,6 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
         InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
-        InternalMode::Goto => (Msg::StGoto, Color::Yellow, false),
         InternalMode::Bookmarks => (Msg::StBookmarks, Color::Yellow, false),
         InternalMode::Info => (Msg::StInfo, Color::DarkGray, true),
         InternalMode::Create => (Msg::StCreate, Color::Green, false),
@@ -252,14 +251,9 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
             Span::from(tr(lang, crate::i18n::Msg::StSortHint)).dim(),
         ];
     }
-    // ブックマークのマーク待ちプロンプト (m=登録 / '=ジャンプ)。
-    if let Some(is_set) = app.mark_is_set() {
-        let msg = if is_set {
-            tr(lang, crate::i18n::Msg::MarkHint)
-        } else {
-            tr(lang, crate::i18n::Msg::GotoMarkHint)
-        };
-        return vec![Span::from(msg).bold()];
+    // ブックマークの登録待ちプロンプト (m=登録。'=一覧は Surface::Bookmarks 側)。
+    if app.is_marking() {
+        return vec![Span::from(tr(lang, crate::i18n::Msg::MarkHint)).bold()];
     }
     vec![Span::from(fit_tokens(&hint_tokens(app), width)).dim()]
 }

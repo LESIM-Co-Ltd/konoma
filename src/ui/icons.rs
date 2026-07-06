@@ -16,6 +16,18 @@ pub fn link_icon() -> char {
     '\u{f0c1}' // nf-fa-link (鎖リンク)
 }
 
+/// Icons for Markdown task-list checkboxes. Used only when `ui.icons=true`.
+/// Unicode ☐/☑ (U+2610/U+2611) are East-Asian-Neutral = 1 cell to unicode-width, but CJK
+/// fallback fonts draw them double-width, clipping the glyph and halving the focus highlight —
+/// so like the tree icons we use Nerd Font glyphs (guaranteed 1 cell) instead.
+pub fn task_icon(checked: bool) -> char {
+    if checked {
+        '\u{f046}' // nf-fa-check_square_o
+    } else {
+        '\u{f096}' // nf-fa-square_o
+    }
+}
+
 /// Icon for directories. Distinguished by open/closed state.
 pub fn dir_icon(expanded: bool) -> char {
     if expanded {

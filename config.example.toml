@@ -114,6 +114,15 @@ csv_rainbow = true
 # どちらでも、diff の無いファイル(変更なし/リポジトリ外)と画像/SVG/動画/PDF は通常プレビューで開く。
 follow_view = "diff"
 
+# Markdown プレビューのタスクリスト(チェックボックス)で Space が巡回する状態の配列(巡回順)。
+# 各要素は 1 文字。既定 [" ", "x"] = GFM 標準の 未完 ⇄ 完了。
+# 例: [" ", "/", "x"] で Obsidian 流の「作業中 [/]」を挟む。標準状態は Nerd Font の
+# チェックボックスアイコン(ui.icons=false なら [ ]/[x])・カスタム状態は [/] のまま表示。
+# 操作: 装飾表示で Tab/⇧Tab=リンクとチェックボックスを巡回 → Space(または Enter)=トグル。
+# トグルは書込み前にファイルを照合し、外部で変わっていたら書かずに再読込する(安全側)。
+# 配列に無い状態のボックスは先頭状態へ正規化。不正な設定(2文字要素・1要素以下)は既定に戻る。
+md_task_states = [" ", "x"]
+
 # ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
 # (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
 [ui.sort]
@@ -239,6 +248,10 @@ builtin = "pdf"
 #                  "enter_visual" "toggle_select"
 #   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
 #                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
+#   ブックマーク : 一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
+#                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
+#                  ※ j/k/q と global の t/w/F/Q はキー操作に取られるため、その文字のブックマークは
+#                    j/k + Enter で選んで開く(または当該キーを config で退避)。
 #   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
 #                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"

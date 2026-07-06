@@ -267,6 +267,32 @@ pub struct UiConfig {
     /// Color each column of a CSV/TSV table preview with a rotating "rainbow" palette (default true), the way
     /// Rainbow CSV / csvlens do, so columns are easy to tell apart. false = monochrome (still aligned, still navigable).
     pub csv_rainbow: bool,
+    /// Task-list checkbox states cycled by Space on a focused checkbox in a Markdown preview, in cycle order
+    /// (default `[" ", "x"]` = the standard GFM unchecked/checked pair). Each entry must be exactly one
+    /// character; e.g. `[" ", "/", "x"]` adds an Obsidian-style "in progress" state (shown as `[/]`).
+    /// A state not in the list normalizes to the first entry on toggle. Invalid config falls back to the default.
+    pub md_task_states: Vec<String>,
+}
+
+impl UiConfig {
+    /// `md_task_states` resolved to chars: every entry must be exactly 1 char and there must be at
+    /// least 2 states (a cycle needs somewhere to go) — otherwise fall back to the default (` `/`x`).
+    pub fn md_task_state_chars(&self) -> Vec<char> {
+        let chars: Vec<char> = self
+            .md_task_states
+            .iter()
+            .filter_map(|s| {
+                let mut it = s.chars();
+                let c = it.next()?;
+                it.next().is_none().then_some(c)
+            })
+            .collect();
+        if chars.len() >= 2 && chars.len() == self.md_task_states.len() {
+            chars
+        } else {
+            crate::preview::markdown::DEFAULT_TASK_STATES.to_vec()
+        }
+    }
 }
 
 /// Default tree sort (`[ui.sort]`). Changeable at runtime via the `s` sort menu.
@@ -419,6 +445,7 @@ impl Default for UiConfig {
             confirm_quit: true,
             csv_rainbow: true,
             follow_view: "diff".into(),
+            md_task_states: vec![" ".into(), "x".into()],
         }
     }
 }
@@ -598,6 +625,26 @@ mod tests {
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(bytes).unwrap();
         p
+    }
+
+    #[test]
+    fn md_task_state_chars_validates_and_falls_back() {
+        let mut ui = UiConfig::default();
+        assert_eq!(ui.md_task_state_chars(), vec![' ', 'x'], "既定");
+        ui.md_task_states = vec![" ".into(), "/".into(), "x".into()];
+        assert_eq!(
+            ui.md_task_state_chars(),
+            vec![' ', '/', 'x'],
+            "カスタム3状態"
+        );
+        // 不正: 2文字の要素 → 既定へフォールバック。
+        ui.md_task_states = vec![" ".into(), "xx".into()];
+        assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
+        // 不正: 1要素だけ(巡回先が無い) → 既定へ。空も同様。
+        ui.md_task_states = vec!["x".into()];
+        assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
+        ui.md_task_states = Vec::new();
+        assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
     }
 
     #[test]

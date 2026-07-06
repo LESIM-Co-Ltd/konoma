@@ -87,12 +87,31 @@ impl StyleSheet for KonomaStyles {
 /// the box-drawing lines stay intact even when a later Paragraph wraps.
 /// `icons`: whether Nerd Font icons are enabled (`ui.icons`) — table-cell link labels get the same
 /// link icon prefix as paragraph links, and the icon width is included in the column widths.
+/// (Production goes through `render_markdown_tasks`/`render_markdown_with_images` with the
+/// configured task states; this default-states shorthand remains for the test suites.)
+#[cfg(test)]
 pub fn render_markdown(
     src: &str,
     width: u16,
     code: CodeStyle,
     theme: &str,
     icons: bool,
+) -> Vec<Line<'static>> {
+    render_markdown_tasks(src, width, code, theme, icons, DEFAULT_TASK_STATES)
+}
+
+/// The standard GFM task states (unchecked / checked). Used when no custom states are configured.
+pub(crate) const DEFAULT_TASK_STATES: &[char] = &[' ', 'x'];
+
+/// `render_markdown` plus the configured task-list states (`ui.md_task_states`): custom state
+/// chars (e.g. `/`) are also recognized as toggleable task markers.
+pub fn render_markdown_tasks(
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
 ) -> Vec<Line<'static>> {
     let opts = Options::new(KonomaStyles { code_bg: code.bg });
     let mut out = Vec::new();
@@ -123,7 +142,9 @@ pub fn render_markdown(
                                             tui_markdown::from_str_with_options(&t2, &opts);
                                         let lines = into_static_lines(rendered);
                                         // 見出し強調・コードブロックの特殊エリア化を後処理で付与。
-                                        out.extend(decorate_md_lines(lines, width, code, theme));
+                                        out.extend(decorate_md_lines(
+                                            lines, width, code, theme, icons, tasks,
+                                        ));
                                     }
                                     HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                                 }
@@ -190,13 +211,16 @@ pub fn render_markdown_with_images(
     code: CodeStyle,
     theme: &str,
     icons: bool,
+    tasks: &[char],
     slot_of: &dyn Fn(&str) -> ImageSlot,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
     for part in split_block_images(src) {
         match part {
-            BlockPart::Text(t) => out.extend(render_markdown(&t, width, code, theme, icons)),
+            BlockPart::Text(t) => {
+                out.extend(render_markdown_tasks(&t, width, code, theme, icons, tasks))
+            }
             BlockPart::Image { alt, url } => match slot_of(&url) {
                 ImageSlot::Inline { cols, rows } => {
                     placements.push(ImagePlacement {
@@ -452,16 +476,24 @@ fn decorate_md_lines(
     width: u16,
     code: CodeStyle,
     theme: &str,
+    icons: bool,
+    tasks: &[char],
 ) -> Vec<Line<'static>> {
     let lines = decorate_code_blocks(lines, width, code, theme);
     let lines = decorate_headings(lines, width);
-    decorate_extras(lines, width)
+    decorate_extras(lines, width, icons, tasks)
 }
 
 /// Small post-passes over tui-markdown output: a thematic break (`---`/`***`/`___`) renders as a
-/// full-width rule instead of literal dashes, and task-list checkboxes `[ ]`/`[x]` become ☐/☑.
+/// full-width rule instead of literal dashes, and task-list checkboxes `[ ]`/`[x]` become dedicated
+/// marker spans (Nerd Font icon when `icons`, ASCII bracket otherwise).
 /// Runs after the code-block pass, so fenced content (already `▎`-prefixed) can't be mistaken.
-fn decorate_extras(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+fn decorate_extras(
+    lines: Vec<Line<'static>>,
+    width: u16,
+    icons: bool,
+    tasks: &[char],
+) -> Vec<Line<'static>> {
     lines
         .into_iter()
         .map(|l| {
@@ -474,36 +506,191 @@ fn decorate_extras(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> 
                     Style::new().fg(TABLE_BORDER_FG),
                 ));
             }
-            replace_task_checkbox(l, &joined)
+            replace_task_checkbox(l, &joined, icons, tasks)
         })
         .collect()
 }
 
-/// Replace a leading task-list checkbox (`- [ ] ` / `- [x] `) with ☐ / ☑ in place (span styles kept).
+/// Replace a leading task-list checkbox (`- [ ] ` / `- [x] ` / a configured custom state like `- [/] `)
+/// with a dedicated marker span (`task_marker_style`), so the app can focus/toggle it like a link.
 /// Only the list-leading marker is touched — a literal `[ ]` mid-sentence stays as-is.
-fn replace_task_checkbox(mut l: Line<'static>, joined: &str) -> Line<'static> {
-    let t = joined.trim_start();
-    let sym = if t.starts_with("- [ ] ") {
-        "☐"
-    } else if t.starts_with("- [x] ") || t.starts_with("- [X] ") {
-        "☑"
-    } else {
+fn replace_task_checkbox(
+    l: Line<'static>,
+    joined: &str,
+    icons: bool,
+    tasks: &[char],
+) -> Line<'static> {
+    let Some(state) = task_prefix_state(joined.trim_start(), tasks) else {
         return l;
     };
-    for sp in l.spans.iter_mut() {
-        let c = sp.content.as_ref();
-        if let Some(pos) = c
-            .find("[ ]")
-            .or_else(|| c.find("[x]"))
-            .or_else(|| c.find("[X]"))
-        {
-            let mut new = c.to_string();
-            new.replace_range(pos..pos + 3, sym);
-            *sp = Span::styled(new, sp.style);
-            break;
+    let pat = format!("[{state}]");
+    let Some(pos) = joined.find(&pat) else {
+        return l;
+    };
+    // 直後の半角スペースもマーカー span に取り込む(必ず在る: 検出条件が "] " 必須)。
+    // フォーカスの反転がグリフ+空白の2セルを覆うので、Nerd Font グリフを全角(2セル)幅で
+    // 描くフォント(HackGen NF 等)でもグリフ全体が反転域に収まる。ツリーの
+    // 「アイコン+空白」と同じ、はみ出し許容の流儀。
+    let trail_space = joined[pos + pat.len()..].starts_with(' ');
+    let end = pos + pat.len() + usize::from(trail_space);
+    let (style, alignment) = (l.style, l.alignment);
+    // joined 上のマーカー範囲 [pos, end) を専用 span に置き換える。tui-markdown はカスタム状態
+    // (`[/]` 等)を複数 span に割ることがあるので、span 単位でなく範囲で分割する。
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut off = 0usize;
+    let mut inserted = false;
+    for sp in l.spans {
+        let s = sp.content.as_ref();
+        let (a, b) = (off, off + s.len());
+        off = b;
+        if b <= pos || a >= end {
+            out.push(sp); // マーカー範囲外はそのまま
+            continue;
+        }
+        // マーカー範囲と重なる span: 範囲外にはみ出す前後だけ元様式で残す。
+        if a < pos {
+            out.push(Span::styled(s[..pos - a].to_string(), sp.style));
+        }
+        if !inserted {
+            let mut disp = task_marker_display(state, icons);
+            if trail_space {
+                disp.push(' ');
+            }
+            out.push(Span::styled(disp, task_marker_style()));
+            inserted = true;
+        }
+        if b > end {
+            out.push(Span::styled(s[end - a..].to_string(), sp.style));
         }
     }
-    l
+    let mut nl = Line::from(out).style(style);
+    nl.alignment = alignment;
+    nl
+}
+
+// ---- Task-list checkboxes (interactive: Tab focus / Space toggle, wired by the app) ----
+
+/// The state char if the (whitespace-trimmed) line starts with a task marker `- [<c>] ` where `<c>`
+/// is a recognized state (` `/`x`/`X` always, plus the configured custom states).
+fn task_prefix_state(t: &str, tasks: &[char]) -> Option<char> {
+    let rest = t.strip_prefix("- [")?;
+    let c = rest.chars().next()?;
+    if !rest[c.len_utf8()..].starts_with("] ") {
+        return None;
+    }
+    is_task_state(c, tasks).then_some(c)
+}
+
+fn is_task_state(c: char, tasks: &[char]) -> bool {
+    c == ' ' || c == 'x' || c == 'X' || tasks.contains(&c)
+}
+
+/// Display form of a task state. Standard states use Nerd Font checkbox icons when `ui.icons`
+/// is on (guaranteed 1 cell — Unicode ☐/☑ are EAW-Neutral but CJK fallback fonts draw them
+/// double-width, clipping the glyph and halving the focus highlight), ASCII brackets otherwise
+/// (no tofu). Custom states keep the bracket form (`[/]`) so glyph coverage is never an issue.
+fn task_marker_display(state: char, icons: bool) -> String {
+    match state {
+        ' ' if icons => crate::ui::icons::task_icon(false).to_string(),
+        'x' | 'X' if icons => crate::ui::icons::task_icon(true).to_string(),
+        ' ' => "[ ]".into(),
+        'x' | 'X' => "[x]".into(),
+        c => format!("[{c}]"),
+    }
+}
+
+/// Style used **only** for task markers — doubles as the sentinel by which the app recognizes
+/// them among rendered spans (same trick as the hidden link-target spans). BOLD distinguishes it
+/// from the plain-cyan code gutter, and `is_task_span` additionally checks the content form.
+pub(crate) fn task_marker_style() -> Style {
+    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+}
+
+/// Whether this span is a task marker produced by `replace_task_checkbox`.
+pub(crate) fn is_task_span(span: &Span<'_>) -> bool {
+    span.style == task_marker_style() && task_span_state(span.content.as_ref()).is_some()
+}
+
+/// Recover the state char from a rendered marker span (NF icon→` `/`x`, `[c]`→`c`).
+/// The marker span carries a trailing space (highlight/overflow room for double-width fonts).
+pub(crate) fn task_span_state(s: &str) -> Option<char> {
+    let s = s.strip_suffix(' ').unwrap_or(s);
+    if s == crate::ui::icons::task_icon(false).to_string() {
+        return Some(' ');
+    }
+    if s == crate::ui::icons::task_icon(true).to_string() {
+        return Some('x');
+    }
+    let inner = s.strip_prefix('[')?.strip_suffix(']')?;
+    let mut it = inner.chars();
+    let c = it.next()?;
+    it.next().is_none().then_some(c)
+}
+
+/// Location of one toggleable task marker in the **source** text.
+pub(crate) struct TaskLoc {
+    /// 0-based line index (by `\n`).
+    pub line: usize,
+    /// Byte offset of the state char within the line.
+    pub state_off: usize,
+    /// Current state char in the source.
+    pub state: char,
+}
+
+/// Scan Markdown source for task markers, in document order, skipping exactly what the render
+/// pipeline diverts away from `decorate_extras`: code/mermaid fences, HTML blocks (start line up
+/// to the next blank line) and GFM table blocks. This keeps the Nth checkbox on screen aligned
+/// with the Nth `TaskLoc`, so a toggle edits the right line. Pathological documents could still
+/// disagree — the caller cross-checks count and current state before writing.
+pub(crate) fn task_source_locs(src: &str, tasks: &[char]) -> Vec<TaskLoc> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    let mut fence: Option<char> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim_start();
+        if let Some(f) = fence {
+            if t.starts_with(&f.to_string().repeat(3)) {
+                fence = None;
+            }
+            i += 1;
+            continue;
+        }
+        if t.starts_with("```") {
+            fence = Some('`');
+            i += 1;
+            continue;
+        }
+        if t.starts_with("~~~") {
+            fence = Some('~');
+            i += 1;
+            continue;
+        }
+        if is_html_block_start(line) {
+            while i < lines.len() && !lines[i].trim().is_empty() {
+                i += 1;
+            }
+            continue;
+        }
+        if looks_like_table_row(line) && i + 1 < lines.len() && is_table_delimiter(lines[i + 1]) {
+            i += 2;
+            while i < lines.len() && looks_like_table_row(lines[i]) {
+                i += 1;
+            }
+            continue;
+        }
+        let indent = line.len() - t.len();
+        if let Some(state) = task_prefix_state(t, tasks) {
+            out.push(TaskLoc {
+                line: i,
+                state_off: indent + 3, // "- [" の直後
+                state,
+            });
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Turn the range enclosed by ```lang fences into a special area. When `code.bg`=None there is no background band
@@ -1801,12 +1988,101 @@ mod tests {
             all.iter().any(|t| t.trim() == "─".repeat(40)),
             "--- が全幅罫線になる: {all:?}"
         );
+        // icons=false: ASCII ブラケット表示(☐/☑ は CJK フォールバックで全角描画されるため廃止)。
         assert!(
-            all.iter().any(|t| t.contains("☐ open task")),
-            "未完 ☐: {all:?}"
+            all.iter().any(|t| t.contains("[ ] open task")),
+            "未完 [ ]: {all:?}"
         );
-        assert!(all.iter().any(|t| t.contains("☑ done task")), "完了 ☑");
-        assert!(all.iter().all(|t| !t.contains("[ ]") && !t.contains("[x]")));
+        assert!(all.iter().any(|t| t.contains("[x] done task")), "完了 [x]");
+        // マーカーは専用 span(スタイル番兵)として発出される。
+        let markers: Vec<String> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_task_span(s))
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(markers, vec!["[ ] ", "[x] "], "マーカーは末尾スペース込み");
+    }
+
+    #[test]
+    fn task_markers_become_dedicated_spans_with_custom_states() {
+        // 標準 (` `/`x`) は専用 span(icons=NF アイコン/false=ブラケット)、カスタム `/` は設定時のみ対象。
+        let md = "- [ ] open\n- [x] done\n- [/] doing\n";
+        let dflt = render_markdown(md, 40, BG, "TwoDark", false);
+        let markers = |lines: &[Line<'static>]| -> Vec<String> {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .filter(|s| is_task_span(s))
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+        assert_eq!(markers(&dflt), vec!["[ ] ", "[x] "], "既定では / は対象外");
+        let custom = render_markdown_tasks(md, 40, BG, "TwoDark", false, &[' ', '/', 'x']);
+        assert_eq!(markers(&custom), vec!["[ ] ", "[x] ", "[/] "]);
+        // icons=true: 標準状態は Nerd Font アイコン(1セル固定)・カスタムはブラケットのまま。
+        let nf_off = format!("{} ", crate::ui::icons::task_icon(false));
+        let nf_on = format!("{} ", crate::ui::icons::task_icon(true));
+        let iconed = render_markdown_tasks(md, 40, BG, "TwoDark", true, &[' ', '/', 'x']);
+        assert_eq!(
+            markers(&iconed),
+            vec![nf_off.clone(), nf_on.clone(), "[/] ".into()]
+        );
+        // 状態の復元(トグルの照合に使う)。
+        assert_eq!(
+            task_span_state(&nf_off),
+            Some(' '),
+            "末尾スペース込みで復元"
+        );
+        assert_eq!(task_span_state(&nf_on), Some('x'));
+        assert_eq!(task_span_state("[ ]"), Some(' '));
+        assert_eq!(task_span_state("[/]"), Some('/'));
+        assert_eq!(task_span_state("[ab]"), None, "2文字はマーカーでない");
+        // 文中の [ ] は不変(既存保証の再確認)。
+        let mid = render_markdown("text with [ ] brackets\n", 40, BG, "TwoDark", false);
+        assert!(mid
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .all(|s| !is_task_span(s)));
+    }
+
+    #[test]
+    fn task_source_locs_skip_fences_html_and_tables() {
+        // 描画パイプラインが decorate_extras に流さない領域(フェンス/HTML/表)を同じ規則でスキップし、
+        // 実タスクの行番号・状態文字・バイト位置を正しく返す(トグル書込みの座標になる)。
+        let src = "\
+- [ ] first
+```
+- [x] in fence
+```
+<details>
+- [x] in html block
+
+</details>
+
+| a | b |
+|---|---|
+| - [ ] cell | x |
+  - [X] nested
+- [/] custom
+本文 [ ] は対象外
+";
+        let locs = task_source_locs(src, &[' ', '/', 'x']);
+        let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
+        assert_eq!(
+            got,
+            vec![(0, ' '), (12, 'X'), (13, '/')],
+            "実タスクのみ: {got:?}"
+        );
+        // state_off は行内の状態文字を正確に指す(CJK/インデント混在でも)。
+        let lines: Vec<&str> = src.lines().collect();
+        for l in &locs {
+            assert!(
+                lines[l.line][l.state_off..].starts_with(l.state),
+                "offset mismatch at line {}",
+                l.line
+            );
+        }
     }
 
     #[test]
@@ -2235,7 +2511,15 @@ mod tests {
     fn images_in_code_fences_are_not_extracted() {
         let src = "before\n\n```\n![a](x.png)\n```\n\nafter\n";
         let slot_of = |_: &str| ImageSlot::Inline { cols: 10, rows: 4 };
-        let (_lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", false, &slot_of);
+        let (_lines, imgs) = render_markdown_with_images(
+            src,
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &slot_of,
+        );
         assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
     }
 
@@ -2243,7 +2527,15 @@ mod tests {
     fn block_image_reserves_rows_and_records_placement() {
         let src = "# Title\n\n![hero](hero.png)\n\nbody\n";
         let slot_of = |_: &str| ImageSlot::Inline { cols: 20, rows: 5 };
-        let (lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", false, &slot_of);
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &slot_of,
+        );
         assert_eq!(imgs.len(), 1);
         let p = &imgs[0];
         assert_eq!((p.cols, p.rows), (20, 5));
@@ -2263,7 +2555,15 @@ mod tests {
     fn image_without_backend_degrades_to_text() {
         let src = "![alt](missing.png)\n";
         let slot_of = |_: &str| ImageSlot::Unavailable; // no backend / unresolvable → text (principle #3)
-        let (lines, imgs) = render_markdown_with_images(src, 40, BG, "TwoDark", false, &slot_of);
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &slot_of,
+        );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("alt"), "alt テキストが無い: {joined}");
@@ -2274,7 +2574,15 @@ mod tests {
     fn remote_image_shows_loading_line() {
         let src = "![shot](https://example.com/a.png)\n";
         let slot_of = |_: &str| ImageSlot::Loading;
-        let (lines, imgs) = render_markdown_with_images(src, 60, BG, "TwoDark", false, &slot_of);
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &slot_of,
+        );
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("loading"), "loading 表示が無い: {joined}");

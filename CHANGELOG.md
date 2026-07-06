@@ -6,6 +6,37 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- Task checkboxes no longer render as Unicode `☐`/`☑` (added in 0.5.1). Those code points are
+  East-Asian-Neutral (1 terminal cell) but CJK fallback fonts draw them double width, so the
+  glyph clipped into the next cell and the new focus highlight covered only its left half.
+  Checkboxes now follow the tree-icon policy: a Nerd Font checkbox icon when `ui.icons` is
+  on, plain `[ ]` / `[x]` otherwise. The marker span also includes the space that follows it,
+  so the focus highlight covers glyph + space — fonts that draw Nerd Font glyphs double width
+  (HackGen NF and friends serve icons from the primary font at full width) get the whole
+  glyph inside the highlighted area instead of a half-covered one.
+
+### Added
+- Markdown task-list checkboxes are now interactive: `Tab`/`Shift-Tab` walks links **and**
+  checkboxes in one document-order cycle, and `Space` (or `Enter`) toggles the focused
+  checkbox by writing the single state character back to the source file. The write is
+  verified first — the file is re-scanned and the toggle is cancelled (with a notice and a
+  reload) if the file changed on disk in the meantime, so it cannot clobber a concurrent
+  external edit (e.g. an AI agent editing the same file). Code fences, HTML blocks and
+  tables are excluded exactly like the renderer excludes them. Toggling never happens in
+  raw-source (`R`) view.
+- `ui.md_task_states` — configurable task states cycled by `Space`, in order (default
+  `[" ", "x"]`). E.g. `[" ", "/", "x"]` adds an Obsidian-style "in progress" state:
+  custom states render in bracket form (`[/]`) and are recognized as toggleable markers.
+  Invalid configs (multi-char entries, fewer than two states) fall back to the default.
+- The bookmark list now opens on the first `'` press (which-key style; the old invisible
+  "waiting for a letter" state is gone, `''` is no longer needed). Inside the list a plain
+  letter jumps straight to that bookmark (a-z local / A-Z global; dir → new root, file →
+  preview; unknown letters flash and keep the list open). Edit/delete moved to `Ctrl-e` /
+  `Ctrl-d` so every letter stays available as a bookmark name; `'`, `q` or `Esc` closes.
+  (Letters taken by list/global keys — `j`/`k`/`q`, tab keys, `F`, `Q` — are reachable via
+  `j`/`k` + `Enter`.) `m` (set bookmark) is unchanged.
+
 ## [0.5.1] - 2026-07-06
 
 ### Fixed

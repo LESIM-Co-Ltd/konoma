@@ -4,83 +4,80 @@ use super::*;
 
 impl App {
     // --- ブックマーク (M7 補助) ----------------------------------------------
-    /// Whether we are waiting for an alphabetic key after `m`/`'` (while true, main intercepts keys).
+    /// Whether we are waiting for an alphabetic key after `m` (while true, main intercepts keys).
     pub fn is_marking(&self) -> bool {
-        self.mark_pending.is_some()
-    }
-    /// For the footer prompt: Some(true)=set (m) / Some(false)=jump (') / None=not marking.
-    pub fn mark_is_set(&self) -> Option<bool> {
-        self.mark_pending.map(|a| a == MarkAction::Set)
+        self.mark_set_pending
     }
     /// `m`=enter set mode (the next letter registers; scope = letter case).
     pub fn start_mark_set(&mut self) {
-        self.mark_pending = Some(MarkAction::Set);
-    }
-    /// `'`=enter jump mode (the next letter jumps; `'` shows the list).
-    pub fn start_mark_jump(&mut self) {
-        self.mark_pending = Some(MarkAction::Jump);
+        self.mark_set_pending = true;
     }
     /// Cancel the mark wait (Esc or a non-applicable key).
     pub fn cancel_mark(&mut self) {
-        self.mark_pending = None;
+        self.mark_set_pending = false;
     }
-    /// The one key after `m`/`'`. Set = register the current location (root) / Jump = letter jumps, `'` shows the list.
+    /// The one key after `m`: register the cursor item (or the current root) under that letter.
     pub fn mark_input(&mut self, c: char) {
-        let Some(action) = self.mark_pending.take() else {
+        if !std::mem::take(&mut self.mark_set_pending) {
             return;
-        };
-        match action {
-            MarkAction::Set if c.is_ascii_alphabetic() => {
-                // カーソル位置のファイル/ディレクトリを登録。選択が無ければ現在の root。
-                let target = self
-                    .entries
-                    .get(self.selected)
-                    .map(|e| e.path.clone())
-                    .unwrap_or_else(|| self.root.clone());
-                match self.bookmarks.set(c, target.clone()) {
-                    Ok(_) => {
-                        let scope = if c.is_ascii_uppercase() {
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::GlobalApp)
-                        } else {
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::Local)
-                        };
-                        self.flash = Some(format!(
-                            "{} {c} = {}  [{scope}]",
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::Bookmarked),
-                            self.format_path(&target),
-                        ));
-                    }
-                    // 保存失敗: メモリ上には登録済みだが再起動で消える旨を通知(握り潰さない)。
-                    Err(e) => {
-                        self.flash = Some(format!(
-                            "{}{e}",
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
-                        ));
-                    }
-                }
+        }
+        if !c.is_ascii_alphabetic() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::InvalidMarkKey).into());
+            return;
+        }
+        // カーソル位置のファイル/ディレクトリを登録。選択が無ければ現在の root。
+        let target = self
+            .entries
+            .get(self.selected)
+            .map(|e| e.path.clone())
+            .unwrap_or_else(|| self.root.clone());
+        match self.bookmarks.set(c, target.clone()) {
+            Ok(_) => {
+                let scope = if c.is_ascii_uppercase() {
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::GlobalApp)
+                } else {
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::Local)
+                };
+                self.flash = Some(format!(
+                    "{} {c} = {}  [{scope}]",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::Bookmarked),
+                    self.format_path(&target),
+                ));
             }
-            MarkAction::Jump if c == '\'' => self.open_bookmark_list(),
-            MarkAction::Jump if c.is_ascii_alphabetic() => match self.bookmarks.get(c) {
-                // ディレクトリ=そこへ移動 / ファイル=プレビューで開く(tree は変えず、終了で元の tree へ戻る)。
-                Some(p) if p.is_dir() => self.jump_to_dir(p),
-                Some(p) if p.is_file() => self.enter_preview(&p),
-                Some(p) => {
-                    self.flash = Some(format!(
-                        "{}: {}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkTargetMissing),
-                        self.format_path(&p)
-                    ))
-                }
-                None => {
-                    self.flash = Some(format!(
-                        "{} '{c}'",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::NoBookmark)
-                    ))
-                }
-            },
-            _ => {
-                self.flash =
-                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::InvalidMarkKey).into())
+            // 保存失敗: メモリ上には登録済みだが再起動で消える旨を通知(握り潰さない)。
+            Err(e) => {
+                self.flash = Some(format!(
+                    "{}{e}",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
+                ));
+            }
+        }
+    }
+    /// A plain letter inside the bookmark list (`'` opens it): jump straight to that bookmark
+    /// (a-z local / A-Z global; dir=new root / file=preview). Unknown letters just flash and the
+    /// list stays open. Keys claimed by the list/global keymap (j/k/q, tab keys …) never reach here.
+    pub fn bookmark_jump_letter(&mut self, c: char) {
+        match self.bookmarks.get(c) {
+            Some(p) if p.is_dir() => {
+                self.close_bookmark_list();
+                self.jump_to_dir(p);
+            }
+            Some(p) if p.is_file() => {
+                self.close_bookmark_list();
+                self.enter_preview(&p);
+            }
+            Some(p) => {
+                self.flash = Some(format!(
+                    "{}: {}",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkTargetMissing),
+                    self.format_path(&p)
+                ))
+            }
+            None => {
+                self.flash = Some(format!(
+                    "{} '{c}'",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::NoBookmark)
+                ))
             }
         }
     }

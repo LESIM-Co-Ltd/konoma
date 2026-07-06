@@ -183,8 +183,8 @@ impl App {
         self.preview_total_lines = None;
         self.md_cache = None;
         self.diff_cache = None; // 別ファイルの diff を開く: 生 diff キャッシュを無効化
-        self.md_links.clear();
-        self.focused_link = None;
+        self.md_items.clear();
+        self.focused_item = None;
         self.hl_pending = false;
         self.hl_warming = false;
         self.came_from_git_view = self.git_view;

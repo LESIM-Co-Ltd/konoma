@@ -1,5 +1,7 @@
-//! Centered popup for the bookmark list (M7 auxiliary). Shows local (lowercase a-z) and global (uppercase A-Z)
-//! under separate headings, with the selected row reversed. `↵` = jump / `d` = delete / `Esc` = close. Follows the help popup.
+//! Centered popup for the bookmark list (M7 auxiliary), opened directly by `'`. Shows local
+//! (lowercase a-z) and global (uppercase A-Z) under separate headings, with the selected row
+//! reversed. A plain letter jumps straight to that bookmark; `↵` = jump to selection /
+//! `Ctrl-e` = edit / `Ctrl-d` = delete / `'`/`q`/`Esc` = close. Follows the help popup.
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style, Stylize};

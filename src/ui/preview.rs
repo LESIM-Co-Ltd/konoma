@@ -83,6 +83,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
+        .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
         .row(crate::ui::status::page_help(app), "")
         .row("q / Esc", l(crate::i18n::Msg::BackToTree))]
@@ -124,11 +125,17 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         return v;
     }
     if matches!(app.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
-        // Markdown(装飾表示)固有のリンク操作(Tab フォーカス / Enter で開く)＋ R でソース表示へ。
-        return vec![
+        // Markdown(装飾表示)固有のリンク/チェックボックス操作(Tab フォーカス / Enter で開く /
+        // Space でトグル=チェックボックスがある文書のみ表示)＋ R でソース表示へ。
+        let mut v = vec![
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintLink),
             hint(lang, "↵", crate::i18n::Msg::HintOpen),
+        ];
+        if app.md_has_tasks() {
+            v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
+        }
+        v.extend([
             hint(lang, "R", crate::i18n::Msg::HintRawSource),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
@@ -137,7 +144,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "[/]", crate::i18n::Msg::HintTab),
             hint(lang, "p", crate::i18n::Msg::HintPath),
             page_hint(app),
-        ];
+        ]);
+        return v;
     }
     // コード / 素テキスト。検索中は n/N(一致 cur/total)を前に出す。
     let mut v = vec![hint(lang, "jk", crate::i18n::Msg::Scroll)];
@@ -356,7 +364,7 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     // 装飾行を取得 (mermaid は inner 幅でフィット済みなので、後段で折返しても罫線が崩れない)。
     // リンクを収集し、フォーカス中リンクは反転表示する (Markdown のみ。他種別は 0 件)。
     let lines = app.decorated_lines(inner.width);
-    let lines = app.decorate_links(lines);
+    let lines = app.decorate_md_items(lines);
     let logical_lines = lines.len();
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
 
