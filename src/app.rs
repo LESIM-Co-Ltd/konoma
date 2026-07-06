@@ -2924,6 +2924,7 @@ impl App {
                     width,
                     code,
                     &theme.code_theme,
+                    self.cfg.ui.icons,
                     &slot_of,
                 );
                 let remote = if font.is_some() {
@@ -4753,6 +4754,18 @@ fn collapse_links(lines: Vec<Line<'static>>, icons: bool) -> (Vec<Line<'static>>
         let mut new: Vec<Span<'static>> = Vec::with_capacity(n);
         let mut i = 0;
         while i < n {
+            // 表セル由来の「ラベル＋隠しターゲット」ペア(markdown::render_table が生成):
+            // ラベルはそのまま残し(幅を変えない=表の桁揃え維持のためアイコンも付けない)、
+            // 隠しスパンを取り除いて URL を targets へ回収する(Tab/Enter は通常リンクと同じ)。
+            if i + 1 < n
+                && is_link_span(&spans[i])
+                && crate::preview::markdown::is_hidden_link_target(&spans[i + 1])
+            {
+                targets.push(spans[i + 1].content.to_string());
+                new.push(spans[i].clone());
+                i += 2;
+                continue;
+            }
             let is_link_pattern = i + 2 < n
                 && spans[i + 1].content.as_ref() == " ("
                 && is_link_span(&spans[i + 2])

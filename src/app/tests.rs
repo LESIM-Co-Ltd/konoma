@@ -5598,3 +5598,47 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_file(&outside).ok();
 }
+
+#[test]
+fn collapse_links_folds_table_hidden_targets_in_document_order() {
+    // 表セルの「ラベル＋隠しターゲット」ペアが、通常リンク(label (URL) 形式)と**出現順で混ざって**
+    // targets に回収されること(decorate_links の zip 整合=順序ズレは全リンクの誤爆になる)。
+    // 表リンクはアイコンを付けない(幅を変えない=桁揃え維持)・隠しスパンは表示行から消えること。
+    let md =
+        "See [first](a.md) here.\n\n| doc |\n|---|\n| [table](b.md) |\n\nAlso [last](c.md) end.\n";
+    let style = crate::preview::markdown::CodeStyle {
+        bg: None,
+        label_bg: None,
+        label_right: true,
+        tab_width: 4,
+    };
+    let lines = crate::preview::markdown::render_markdown(md, 60, style, "TwoDark", false);
+    let (collapsed, targets) = collapse_links(lines, true); // icons=true(既定)でも表は幅不変
+    assert_eq!(
+        targets,
+        vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()],
+        "targets は出現順(段落→表→段落)"
+    );
+    // 表リンクのラベルは "table" のまま(アイコン無し)でリンク様式。
+    assert!(
+        collapsed.iter().any(|l| l
+            .spans
+            .iter()
+            .any(|sp| sp.content.as_ref() == "table" && is_link_span(sp))),
+        "表リンクのラベルがリンク様式で残る"
+    );
+    // 隠しターゲット span は表示行に残らない。
+    assert!(
+        collapsed.iter().all(|l| l
+            .spans
+            .iter()
+            .all(|sp| !crate::preview::markdown::is_hidden_link_target(sp))),
+        "隠しスパンは除去される"
+    );
+    // リンク span 総数 == targets 数(decorate_links が順に対応付ける前提)。
+    let n_links: usize = collapsed
+        .iter()
+        .map(|l| l.spans.iter().filter(|sp| is_link_span(sp)).count())
+        .sum();
+    assert_eq!(n_links, targets.len());
+}

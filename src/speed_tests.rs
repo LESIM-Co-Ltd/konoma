@@ -88,6 +88,7 @@ fn render_markdown_large_doc_is_bounded() {
         80,
         crate::preview::markdown::CodeStyle::default(),
         "TwoDark",
+        false,
     );
     let dt = t.elapsed();
     assert!(!lines.is_empty());

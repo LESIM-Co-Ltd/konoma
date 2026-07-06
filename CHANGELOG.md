@@ -6,6 +6,39 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- Links inside Markdown tables now render as links. konoma draws GFM tables with its own
+  box-drawing renderer (tui-markdown collapses them), and that renderer treated cell text
+  as plain strings — so `[label](url)` showed as raw Markdown. Cells are now parsed for
+  inline links: the label renders in link style (blue underline), Tab focuses it and
+  Enter opens the target just like paragraph links, and column alignment stays exact
+  (widths are measured on the displayed label, CJK included; labels stay atomic when a
+  cell wraps). A CommonMark title (`[t](./x.md "Title")`) and `<...>`-wrapped
+  destinations are reduced to the plain target so Enter opens the right file.
+  Images (`![alt](url)`) and unmatched brackets are left as text.
+- Markdown rendering audit fixes (a GFM sweep of the whole preview):
+  - An escaped pipe (`\|`) inside a table cell no longer splits the cell (GFM treats it
+    as a literal `|`; previously it grew a ghost column).
+  - `**bold**`, `*italic*`, `` `code` `` and `~~strike~~` inside table cells now render
+    styled instead of showing their raw markers (flat, GFM-flanking-aware — `2 * 3 * 4`
+    stays literal).
+  - Table alignment colons (`:---`, `:---:`, `---:`) are respected: cells pad
+    left/center/right per column instead of always left.
+  - HTML blocks such as `<details>` no longer disappear silently: their tag-stripped
+    text is shown (entities decoded; `<!-- comments -->` stay hidden). Autolinks like
+    `<https://…>` are unaffected.
+  - A thematic break (`---`) renders as a full-width rule instead of literal dashes.
+  - Task-list checkboxes render as `☐` / `☑` instead of raw `[ ]` / `[x]`.
+  - Table-cell links get the same link icon as paragraph links when `ui.icons` is on
+    (the icon is included in the column-width math, so alignment stays exact).
+
+### Changed
+- `samples/m3-demo.md` is renamed to `samples/markdown.md` (the old name referred to an
+  internal milestone). The links demo (`samples/links.md`) gains a table-links section,
+  and the Markdown demo gains sections for table alignment/inline styles/escaped pipes,
+  horizontal rules, task lists, and HTML blocks — so every fix above can be seen in the
+  samples.
+
 ## [0.5.0] - 2026-07-06
 
 ### Added
