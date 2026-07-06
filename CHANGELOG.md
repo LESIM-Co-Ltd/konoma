@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-06
+
 ### Fixed
 - Task checkboxes no longer render as Unicode `☐`/`☑` (added in 0.5.1). Those code points are
   East-Asian-Neutral (1 terminal cell) but CJK fallback fonts draw them double width, so the
@@ -232,7 +234,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.4.1...v0.4.2
