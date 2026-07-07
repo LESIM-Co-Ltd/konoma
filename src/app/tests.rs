@@ -3071,6 +3071,76 @@ fn descend_into_nested_different_repo_recomputes_ignored_set() {
 // fix③: 重い ignored は別スレッド計算→`apply_ignored` で反映する。世代(gen)で陳腐化判定し、
 // 計算中に別 repo へ移った(=世代が進んだ)結果は捨てる。git 不要の純状態ロジックなので両 feature で走る。
 #[test]
+fn busy_indicator_reflects_background_jobs() {
+    // busy_jobs は既存の各ジョブ状態から**導出**する(begin/end の対応漏れでスピナーが
+    // 固まる事故を構造的に防ぐ)。アイドル=空・config off=非表示・複数ジョブ=+n 表記。
+    let dir = std::env::temp_dir().join("konoma_busy_indicator_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    assert!(app.busy_jobs().is_empty(), "アイドルではジョブ無し");
+    assert!(!app.busy_indicator_active());
+
+    // メディア読込中 → 右上コンテキストにスピナー+ラベル。
+    app.media_loading = true;
+    assert!(app.busy_jobs().contains(&crate::i18n::Msg::BusyMedia));
+    assert!(app.busy_indicator_active());
+    let joined: String = crate::ui::status::context_spans(&app)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(joined.contains("loading media"), "{joined}");
+
+    // 複数ジョブは先頭ラベル + n 表記。
+    app.md_remote_inflight
+        .insert("https://example.com/a.png".into());
+    let joined: String = crate::ui::status::context_spans(&app)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(joined.contains("+1"), "複数ジョブは +n: {joined}");
+
+    // config off なら表示・ティックとも無効(個別の中央表示は別系統のまま)。
+    app.cfg.ui.busy_indicator = false;
+    assert!(!app.busy_indicator_active());
+    let joined: String = crate::ui::status::context_spans(&app)
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(!joined.contains("loading media"), "{joined}");
+
+    // 全ジョブ終了で空へ(=ティックが止まりアイドル負荷ゼロに戻る)。
+    app.cfg.ui.busy_indicator = true;
+    app.media_loading = false;
+    app.md_remote_inflight.clear();
+    assert!(app.busy_jobs().is_empty());
+    assert!(!app.busy_indicator_active());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn busy_indicator_tracks_ignored_scan() {
+    // git ignored スキャン: pending が立っている間 GitScan・現世代の適用で消える。
+    let dir = std::env::temp_dir().join("konoma_busy_gitscan_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.git_ignored_gen = 7;
+    app.git_ignored_pending = Some(dir.clone());
+    assert!(app.busy_jobs().contains(&crate::i18n::Msg::BusyGitScan));
+    let cur = IgnoredResult {
+        gen: 7,
+        workdir: dir.clone(),
+        set: Default::default(),
+    };
+    assert!(app.apply_ignored(cur));
+    assert!(
+        !app.busy_jobs().contains(&crate::i18n::Msg::BusyGitScan),
+        "適用でスキャン中表示が消える"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn apply_ignored_reflects_current_gen_and_discards_stale() {
     let dir = std::env::temp_dir().join("konoma_apply_ignored_gen");
     let _ = std::fs::remove_dir_all(&dir);
@@ -5867,6 +5937,7 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
         label_bg: None,
         label_right: true,
         tab_width: 4,
+        wrap: true,
     };
     let lines = crate::preview::markdown::render_markdown(md, 60, style, "TwoDark", false);
     let (collapsed, targets) = collapse_links(lines, true); // icons=true(既定)でも表は幅不変

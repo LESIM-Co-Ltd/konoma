@@ -64,6 +64,7 @@ copy_prefix = "y"
 | `confirm_quit` | `true` | Ask before quitting (`q`/`y`/`Enter` = quit, `n`/`Esc` = cancel; `qq` quits quickly). `false` = quit immediately. |
 | `csv_rainbow` | `true` | Rainbow column colors in CSV/TSV table previews. `false` = monochrome (alignment and navigation unchanged). |
 | `follow_view` | `"diff"` | How follow mode (`F`) opens a changed file: `"diff"` (full-screen git diff; untracked files show as all-added) or `"file"` (normal preview scrolled to the first changed hunk). Files without a diff and media always open as `"file"`. |
+| `busy_indicator` | `true` | Small spinner + job label at the top-right while background work runs (git-ignored scan, media decode, highlight warm-up, image fetches). Idle shows nothing and costs nothing. |
 | `md_task_states` | `[" ", "x"]` | Task-checkbox states cycled by `Space` in a Markdown preview, in order. Each entry is exactly one character. E.g. `[" ", "/", "x"]` adds an Obsidian-style in-progress state (shown as `[/]`). Invalid configs fall back to the default. |
 
 ## `[ui.sort]` — default tree order

@@ -366,7 +366,10 @@ fn run(
 
         // 中央スピナー表示中(コードハイライト待ち / SVG・GIF の別スレッド読み込み中)は、
         // 待機ティックごとにコマを進めて回す。読み込み中は poll が 16ms なので滑らかに回る。
-        if (app.is_highlight_pending() && app.loading_is_indicator()) || app.is_media_loading() {
+        if (app.is_highlight_pending() && app.loading_is_indicator())
+            || app.is_media_loading()
+            || app.busy_indicator_active()
+        {
             app.tick_spinner();
             needs_redraw = true;
         }

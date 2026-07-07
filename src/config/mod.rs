@@ -272,6 +272,10 @@ pub struct UiConfig {
     /// character; e.g. `[" ", "/", "x"]` adds an Obsidian-style "in progress" state (shown as `[/]`).
     /// A state not in the list normalizes to the first entry on toggle. Invalid config falls back to the default.
     pub md_task_states: Vec<String>,
+    /// Show a small spinner + job label at the top-right while background work is in flight
+    /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
+    /// The indicator only animates while something is running — idle stays at zero redraws.
+    pub busy_indicator: bool,
 }
 
 impl UiConfig {
@@ -446,6 +450,7 @@ impl Default for UiConfig {
             csv_rainbow: true,
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],
+            busy_indicator: true,
         }
     }
 }

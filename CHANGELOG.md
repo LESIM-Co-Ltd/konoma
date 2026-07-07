@@ -6,6 +6,23 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- With soft-wrap on (`ui.wrap = true`), a Markdown code-block line longer than the
+  screen broke the block's left `▎` gutter and background band: wrapping was left to
+  the terminal paragraph, so continuation rows started bare. Code-block lines are now
+  pre-wrapped by the renderer itself (CJK-aware, syntax colors preserved across the
+  split), so every visual row carries the gutter and the full-width band. `ui.wrap =
+  false` keeps long lines intact for horizontal scrolling, as before.
+
+### Added
+- A background-activity indicator (`ui.busy_indicator`, default on): while something
+  runs off the UI thread — the git-ignored scan, media decoding, syntax-highlight
+  warm-up, inline-image fetches — the top-right shows a small spinner with the job
+  name (`⠋ git scan`, plus `+n` when several run at once) and disappears when done.
+  The indicator is derived from the jobs' own state (nothing to leak or get stuck)
+  and only schedules animation frames while active, so an idle konoma still costs
+  zero redraws and 0.0% CPU.
+
 ### Added
 - Documentation site at <https://lesim-co-ltd.github.io/konoma/> (English and Japanese):
   getting started, scenario guides (AI-agent workflow, previews, git, files), and full

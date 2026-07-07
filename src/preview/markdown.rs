@@ -37,6 +37,10 @@ pub struct CodeStyle {
     /// Tab stop width (the `ui.tab_width` setting, default 4). The number of columns to which
     /// code-block tabs expand, shown as a visible marker (→) plus spaces. 0 disables it; same basis as the standalone code preview.
     pub tab_width: usize,
+    /// Whether text previews soft-wrap (`ui.wrap`). When true, code-block lines are pre-wrapped
+    /// **here** so every visual row carries the `▎` gutter and the full-width background band —
+    /// leaving the wrapping to ratatui's Paragraph breaks the bar on continuation rows.
+    pub wrap: bool,
 }
 
 /// konoma styles for headings, code, and so on. Headings are emphasized per level.
@@ -752,6 +756,7 @@ fn decorate_code_blocks(
                 code_bg,
                 theme,
                 code.tab_width,
+                code.wrap,
             ));
             // 下端のパディング行 (ガターだけ) でブロックの終端を示す。
             out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
@@ -774,6 +779,7 @@ fn decorate_code_blocks(
             code_bg,
             theme,
             code.tab_width,
+            code.wrap,
         ));
         out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
     }
@@ -782,6 +788,7 @@ fn decorate_code_blocks(
 
 /// Syntect-highlight the collected code body using the `lang` token and `theme`, then add a left gutter, background, and
 /// full-width padding to each line. If the body is empty (a fence with no content), no lines are added.
+#[allow(clippy::too_many_arguments)]
 fn highlight_body(
     body: &[String],
     lang: &str,
@@ -789,6 +796,7 @@ fn highlight_body(
     code_bg: Option<Color>,
     theme: &str,
     tab_width: usize,
+    wrap: bool,
 ) -> Vec<Line<'static>> {
     if body.is_empty() {
         return Vec::new();
@@ -800,19 +808,68 @@ fn highlight_body(
         crate::preview::code::highlight_lang(&src, lang, theme),
         tab_width,
     );
+    // 折返し有効時はここで幅に合わせて**事前折返し**する(ガター2桁を差し引いた幅)。
+    // Paragraph の折返しに任せると、折返し2行目以降に ▎ ガターも背景帯も付かず縦の帯が
+    // 途切れる(ユーザー報告 2026-07-07)。全視覚行をここで確定させれば Paragraph は
+    // 折返し不要になり、ガター/帯が必ず連続する。
+    let content_w = w.saturating_sub(GUTTER_COLS).max(1);
     hl.into_iter()
-        .map(|line| {
-            let mut spans = vec![gutter_span(code_bg)];
-            for s in line.spans {
-                let st = match code_bg {
-                    Some(bg) => s.style.bg(bg),
-                    None => s.style,
-                };
-                spans.push(Span::styled(s.content, st));
-            }
-            pad_to_width(spans, w, code_bg)
+        .flat_map(|line| {
+            let styled: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|s| {
+                    let st = match code_bg {
+                        Some(bg) => s.style.bg(bg),
+                        None => s.style,
+                    };
+                    Span::styled(s.content, st)
+                })
+                .collect();
+            let rows = if wrap {
+                wrap_spans_by_width(styled, content_w)
+            } else {
+                vec![styled]
+            };
+            rows.into_iter().map(move |chunk| {
+                let mut spans = vec![gutter_span(code_bg)];
+                spans.extend(chunk);
+                pad_to_width(spans, w, code_bg)
+            })
         })
         .collect()
+}
+
+/// Display columns taken by the code-block gutter (`▎` + one space).
+const GUTTER_COLS: usize = 2;
+
+/// Split styled spans into rows of at most `maxw` display columns (CJK = 2 columns; span styles
+/// are preserved across splits). A single char wider than `maxw` still gets its own row (no loss).
+fn wrap_spans_by_width(spans: Vec<Span<'static>>, maxw: usize) -> Vec<Vec<Span<'static>>> {
+    use unicode_width::UnicodeWidthChar;
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for sp in spans {
+        let mut buf = String::new();
+        for ch in sp.content.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + cw > maxw && used > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), sp.style));
+                }
+                rows.push(std::mem::take(&mut cur));
+                used = 0;
+            }
+            buf.push(ch);
+            used += cw;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, sp.style));
+        }
+    }
+    rows.push(cur);
+    rows
 }
 
 /// Remove the leading `#` span from heading lines, and lay a full-width rule directly below H1/H2.
@@ -1701,6 +1758,7 @@ mod tests {
         label_bg: Some(Color::Rgb(70, 78, 99)), // = lighten(DEFAULT_CODE_BG)
         label_right: true,
         tab_width: 4,
+        wrap: true,
     };
     /// No background (equivalent to code_bg="none").
     const NO_CODE: CodeStyle = CodeStyle {
@@ -1708,6 +1766,7 @@ mod tests {
         label_bg: None,
         label_right: true,
         tab_width: 4,
+        wrap: true,
     };
 
     /// Display width of a line (full-width = 2).
@@ -2021,6 +2080,68 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(markers, vec!["[ ] ", "[x] "], "マーカーは末尾スペース込み");
+    }
+
+    #[test]
+    fn code_block_wrap_keeps_gutter_on_every_row() {
+        use unicode_width::UnicodeWidthStr;
+        // 幅超過のコード行は**事前折返し**され、折返し後の全視覚行に ▎ ガターが付き、
+        // どの行も幅を超えない(Paragraph 任せだと2行目以降のガター/帯が途切れる回帰)。
+        let long = "abcdefghij".repeat(6); // 60 桁
+        let md = format!("```\n{long}\nshort\n```\n");
+        let lines = render_markdown(&md, 30, BG, "TwoDark", false);
+        let code_rows: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with('▎')))
+            .collect();
+        // バッジ行 1 + 60桁は 28桁(=30-ガター2)ごとに 3 行 + short 1 行 + 終端パディング 1 行。
+        assert_eq!(code_rows.len(), 6, "{:?}", code_rows.len());
+        for l in &code_rows {
+            let w: usize = l.spans.iter().map(|s| s.content.as_ref().width()).sum();
+            assert!(w <= 30, "行幅が枠を超えない: {w}");
+        }
+        // 中身が失われていない(全行の連結に元テキストが含まれる)。
+        let joined: String = code_rows
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref().trim_start_matches("▎ "))
+            .collect::<String>()
+            .replace(' ', "");
+        assert!(joined.contains(&long), "折返しで文字が欠けない");
+
+        // CJK: 全角20文字(40桁)は 28桁境界で分割され、境界で桁を壊さない。
+        let cjk = "あ".repeat(20);
+        let md = format!("```\n{cjk}\n```\n");
+        let lines = render_markdown(&md, 30, BG, "TwoDark", false);
+        let rows: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with('▎')))
+            .collect();
+        assert_eq!(rows.len(), 4, "バッジ+全角14文字+6文字+終端パディング");
+        for l in &rows {
+            let w: usize = l.spans.iter().map(|s| s.content.as_ref().width()).sum();
+            assert!(w <= 30, "CJK でも行幅が枠内: {w}");
+        }
+
+        // wrap=false(横スクロール運用)では従来どおり1論理行のまま(事前折返ししない)。
+        let nowrap = CodeStyle { wrap: false, ..BG };
+        let md = format!("```\n{long}\n```\n");
+        let lines = render_markdown_tasks(&md, 30, nowrap, "TwoDark", false, DEFAULT_TASK_STATES);
+        let rows: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with('▎')))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            3,
+            "バッジ+本文1行+終端パディングのみ(分割しない)"
+        );
+        let w0: usize = rows[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref().width())
+            .sum();
+        assert!(w0 > 30, "wrap=false は長い行を保つ(h スクロールで読む)");
     }
 
     #[test]

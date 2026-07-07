@@ -2453,6 +2453,33 @@ impl App {
         None
     }
 
+    /// Background jobs currently in flight, as i18n labels (drives the top-right busy indicator).
+    /// **Derived** from the existing per-job state (no separate begin/end pairing that could leak
+    /// a stuck spinner): git-ignored scan / media decode / syntax-highlight warm-up / inline images.
+    pub fn busy_jobs(&self) -> Vec<crate::i18n::Msg> {
+        let mut v = Vec::new();
+        if self.git_ignored_pending.is_some() {
+            v.push(crate::i18n::Msg::BusyGitScan);
+        }
+        if self.media_loading {
+            v.push(crate::i18n::Msg::BusyMedia);
+        }
+        if self.hl_pending || self.hl_warming {
+            v.push(crate::i18n::Msg::BusyHighlight);
+        }
+        if self.md_images_loading() {
+            v.push(crate::i18n::Msg::BusyImages);
+        }
+        v
+    }
+
+    /// Whether the top-right busy indicator should be shown/animated right now
+    /// (config on + at least one background job in flight). The run loop only schedules
+    /// animation ticks while this is true, so idle CPU stays at zero.
+    pub fn busy_indicator_active(&self) -> bool {
+        self.cfg.ui.busy_indicator && !self.busy_jobs().is_empty()
+    }
+
     /// Advance the spinner by one frame (the run loop calls this periodically while waiting = keeps it spinning).
     pub fn tick_spinner(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
@@ -2884,6 +2911,7 @@ impl App {
                     label_bg: theme.code_label_bg(),
                     label_right: theme.code_label_right(),
                     tab_width: self.cfg.ui.tab_width,
+                    wrap: self.cfg.ui.wrap,
                 };
                 // Decide how to render each image URL. A local file or a cached remote fetch resolves to
                 // a path → Inline (with its display size in cells). An uncached remote URL is Loading

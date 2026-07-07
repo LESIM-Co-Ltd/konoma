@@ -129,8 +129,23 @@ pub fn page_help(app: &App) -> String {
 /// Persistent context line: **each view owns its own context spans (chips, etc.)**; here we
 /// delegate to that and then append the common path display style. (Tree = chip only / Preview = chip + image zoom.)
 pub fn context_spans(app: &App) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    // バックグラウンド処理インジケーター(実行中のみ・`ui.busy_indicator`)。スピナー＋先頭ジョブの
+    // ラベル(複数実行中は +n)。ジョブが無ければ何も出さない=アイドルの見た目は従来どおり。
+    if app.busy_indicator_active() {
+        let jobs = app.busy_jobs();
+        if let Some(first) = jobs.first() {
+            let label = tr(app.lang, *first);
+            let txt = if jobs.len() > 1 {
+                format!("{} {} +{}  ", app.spinner_glyph(), label, jobs.len() - 1)
+            } else {
+                format!("{} {}  ", app.spinner_glyph(), label)
+            };
+            spans.push(Span::from(txt).dim());
+        }
+    }
     // 外側チップ(表示モード) ＋ 内側チップ(内部モード・あれば)。
-    let mut spans = vec![display_chip(app)];
+    spans.push(display_chip(app));
     if let Some(ic) = internal_chip(app) {
         spans.push(Span::from(" "));
         spans.push(ic);
