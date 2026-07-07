@@ -1,12 +1,120 @@
-/* konoma brand accent — forest green, after the name (木の間 = "between the trees").
-   Values follow Starlight's accent scale (low/base/high per theme). */
+/* konoma brand theme — "木の間: the terminal as a forest at night".
+   Ported from the approved design comp: green-biased darks, moss/leaf accents,
+   an amber reserved for the terminal cursor, monospace as the display voice.
+   Only visuals live here — search, i18n, sidebar etc. stay stock Starlight. */
+
 :root {
+	--konoma-mono: 'SF Mono', Menlo, 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+	--konoma-amber: #d9a94e;
+
+	/* Dark (default) — comp palette mapped to Starlight's scale. */
 	--sl-color-accent-low: #14301f;
-	--sl-color-accent: #2e8b57;
-	--sl-color-accent-high: #b5e3c6;
+	--sl-color-accent: #3e9b63;
+	--sl-color-accent-high: #a7d3a0;
+	--sl-color-white: #e9efe6; /* strongest text (paper) */
+	--sl-color-gray-1: #d8e1d4;
+	--sl-color-gray-2: #b9c4b3;
+	--sl-color-gray-3: #87927f; /* muted text (bark) */
+	--sl-color-gray-4: #57624f;
+	--sl-color-gray-5: #253128; /* hairlines */
+	--sl-color-gray-6: #141b16; /* raised surfaces (pane) */
+	--sl-color-black: #0e1310; /* page ground (ink) */
 }
+
 :root[data-theme='light'] {
 	--sl-color-accent-low: #d9f0e2;
 	--sl-color-accent: #1f7a45;
 	--sl-color-accent-high: #143d26;
+	--sl-color-white: #17211a;
+	--sl-color-gray-1: #223027;
+	--sl-color-gray-2: #3c4a40;
+	--sl-color-gray-3: #5f6b5a;
+	--sl-color-gray-4: #8b9686;
+	--sl-color-gray-5: #cfdacb;
+	--sl-color-gray-6: #e9efe4;
+	--sl-color-gray-7: #f0f5ec;
+	--sl-color-black: #f5f8f2;
+}
+
+/* ---------- type: monospace is the display voice ---------- */
+
+.site-title {
+	font-family: var(--konoma-mono);
+	letter-spacing: 0.02em;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5),
+h1[data-page-title],
+.hero h1 {
+	font-family: var(--konoma-mono);
+	letter-spacing: -0.01em;
+}
+
+.hero .tagline {
+	max-width: 60ch;
+}
+
+/* ---------- landing hero: ghosted vertical 木の間 ---------- */
+
+[data-has-hero] .hero {
+	position: relative;
+}
+[data-has-hero] .hero::after {
+	content: '木の間';
+	position: absolute;
+	top: -1rem;
+	right: -0.5rem;
+	writing-mode: vertical-rl;
+	font-weight: 700;
+	font-size: clamp(4rem, 10vw, 8rem);
+	line-height: 1;
+	letter-spacing: 0.12em;
+	color: var(--sl-color-accent);
+	opacity: 0.1;
+	user-select: none;
+	pointer-events: none;
+}
+@media (max-width: 72rem) {
+	[data-has-hero] .hero::after {
+		display: none;
+	}
+}
+
+/* ---------- cards (landing feature grid) ---------- */
+
+.card {
+	background: var(--sl-color-gray-6);
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.5rem;
+}
+.card .title {
+	font-family: var(--konoma-mono);
+	font-size: var(--sl-text-lg);
+	color: var(--sl-color-accent-high);
+}
+:root[data-theme='light'] .card .title {
+	color: var(--sl-color-accent);
+}
+.card .icon {
+	color: var(--sl-color-accent);
+}
+
+/* ---------- keycap chips: <kbd> everywhere ---------- */
+
+.sl-markdown-content kbd {
+	font-family: var(--konoma-mono);
+	font-size: 0.8em;
+	color: var(--sl-color-white);
+	background: var(--sl-color-gray-6);
+	border: 1px solid var(--sl-color-gray-5);
+	border-bottom-width: 3px;
+	border-radius: 0.3rem;
+	padding: 0.1rem 0.5rem;
+	white-space: nowrap;
+}
+
+/* ---------- sidebar: current page marker ---------- */
+
+.sidebar-content a[aria-current='page'] {
+	font-weight: 600;
 }

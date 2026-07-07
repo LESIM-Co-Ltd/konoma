@@ -9,9 +9,6 @@ hero:
     full screen. Markdown, images, PDFs, CSV tables, git diffs and commit
     graphs — rendered right in your terminal, and built to sit next to an AI
     coding agent.
-  image:
-    file: ../../assets/hero-image.png
-    alt: konoma previewing a Markdown document in the terminal
   actions:
     - text: Get started
       link: ./getting-started/
@@ -23,6 +20,9 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import TerminalDemo from '../../components/TerminalDemo.astro';
+
+<TerminalDemo lang="en" />
 
 ## Why konoma?
 

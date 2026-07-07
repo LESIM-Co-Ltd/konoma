@@ -9,9 +9,6 @@ hero:
     Markdown・画像・PDF・CSV テーブル・git の diff とコミットグラフを
     ターミナルの中でそのまま描画。AI コーディングエージェントの隣に
     置くために設計されています。
-  image:
-    file: ../../../assets/hero-image.png
-    alt: ターミナル内で Markdown をプレビューする konoma
   actions:
     - text: はじめる
       link: ./getting-started/
@@ -23,6 +20,9 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import TerminalDemo from '../../../components/TerminalDemo.astro';
+
+<TerminalDemo lang="ja" />
 
 ## konoma の特徴
 
