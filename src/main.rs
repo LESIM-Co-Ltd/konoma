@@ -11,6 +11,8 @@
 mod app;
 mod bookmarks;
 mod config;
+#[cfg(test)]
+mod e2e_tests;
 mod fileops;
 mod git;
 mod i18n;
