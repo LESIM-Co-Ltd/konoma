@@ -115,9 +115,9 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
     let l = |m| tr(lang, m);
     let mut out = vec![HelpSection::new(l(crate::i18n::Msg::HelpTabs))
         .row("t", l(crate::i18n::Msg::HelpNewTab))
-        .row("w", l(crate::i18n::Msg::CloseTab))
         .row("[ / ]", l(crate::i18n::Msg::PrevNextTab))
-        .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))];
+        .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))
+        .row("T", l(crate::i18n::Msg::HelpTabList))];
     // パスコピーは `y` リーダー(設定反映済み)から。タイトルは "Copy path"。
     if let Some(sec) = leader_section(app, LeaderId::Copy, "y") {
         out.push(sec);

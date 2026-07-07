@@ -776,6 +776,11 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Down => app.bookmark_list_move(1),
             _ => {}
         },
+        Surface::Tabs => match m {
+            Motion::Up => app.tab_list_move(-1),
+            Motion::Down => app.tab_list_move(1),
+            _ => {}
+        },
         Surface::Help => match m {
             Motion::Up => app.help_scroll_by(-1),
             Motion::Down => app.help_scroll_by(1),
@@ -902,6 +907,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::SortSet(k) => app.sort_menu_key(sort_key_char(k))?,
         Action::SortToggleReverse => app.sort_menu_key('r')?,
         Action::SortToggleDirsFirst => app.sort_menu_key('.')?,
+        Action::ToggleTabList => app.toggle_tab_list(),
+        Action::TabListClose => app.tab_list_close_selected(),
         Action::BookmarkJump => app.bookmark_list_jump(),
         Action::BookmarkEdit => app.bookmark_list_edit(),
         Action::BookmarkDelete => app.bookmark_list_delete(),
@@ -1087,6 +1094,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::Sort => app.close_sort_menu(),
         Surface::Info => app.toggle_info(),
         Surface::Bookmarks => app.close_bookmark_list(),
+        Surface::Tabs => app.toggle_tab_list(),
         Surface::Tree => {
             // クエリありの Esc は絞り込み解除、無ければ選択クリア (旧 tree 挙動)。
             if app.filter_query().is_some() {
@@ -1137,6 +1145,7 @@ fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
         Surface::Tree => app.tree_activate()?,
         Surface::PreviewText => app.md_activate_focused()?,
         Surface::Bookmarks => app.bookmark_list_jump(),
+        Surface::Tabs => app.tab_list_activate(),
         #[cfg(feature = "git")]
         Surface::GitChanges => {
             if let Some(p) = app.git_view_selected() {
@@ -1266,7 +1275,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Resolution::Action(a) => dispatch_action(app, a, sfc),
         Resolution::Unbound => {
             // ブックマーク一覧: keymap 未割当の素の英字はブックマーク名として直接ジャンプ
-            // (a-z=ローカル / A-Z=グローバル)。q/j/k や global の t/w/F/Q 等は上で解決済み=対象外。
+            // (a-z=ローカル / A-Z=グローバル)。q/j/k や global の t/T/F/Q 等は上で解決済み=対象外。
             if sfc == Surface::Bookmarks && !kp.ctrl {
                 if let KeyCode::Char(c) = kp.code {
                     if c.is_ascii_alphabetic() {

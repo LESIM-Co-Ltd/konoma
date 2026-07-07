@@ -10,6 +10,7 @@ pub mod icons;
 pub mod info;
 pub mod preview;
 pub mod status;
+pub mod tab_list;
 pub mod tabbar;
 pub mod table;
 pub mod tree;
@@ -61,9 +62,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let bottom = areas[idx];
 
     if let Some(top) = top {
-        // タブは左、コンテキストは右(split)。同じ行に共存させる。
+        // タブは左、コンテキストは右(split)。同じ行に共存させるため、タブバーには
+        // コンテキスト表示分を除いた幅を渡す(あふれ時の可視窓計画が右側を侵食しない)。
         if show_tabs {
-            tabbar::render(frame, app, top);
+            let mut tab_area = top;
+            if split {
+                let ctx = status::context_width(app).saturating_add(1); // 1=間隔
+                tab_area.width = top.width.saturating_sub(ctx);
+            }
+            tabbar::render(frame, app, tab_area);
         }
         if split {
             status::render_context(frame, app, top);
@@ -104,6 +111,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // ブックマーク一覧オーバーレイも最前面に重ねる。
     if app.is_bookmark_list() {
         bookmarks::render(frame, app, frame.area());
+    }
+    // タブ一覧オーバーレイ(`T`)。
+    if app.is_tab_list() {
+        tab_list::render(frame, app, frame.area());
     }
     // ファイル情報ポップアップ。
     if app.is_info() {

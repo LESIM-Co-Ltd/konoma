@@ -76,6 +76,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
         InternalMode::Bookmarks => (Msg::StBookmarks, Color::Yellow, false),
+        InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
         InternalMode::Info => (Msg::StInfo, Color::DarkGray, true),
         InternalMode::Create => (Msg::StCreate, Color::Green, false),
         InternalMode::Rename => (Msg::StRename, Color::Cyan, false),
@@ -355,6 +356,14 @@ pub fn render_combined(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Render the context only (for the right side of the split header). Right-aligned.
+/// Display width of the top-right context spans (used to shrink the tab bar's share of the row).
+pub fn context_width(app: &App) -> u16 {
+    context_spans(app)
+        .iter()
+        .map(|s| s.content.as_ref().width() as u16)
+        .sum()
+}
+
 pub fn render_context(frame: &mut Frame, app: &App, area: Rect) {
     let p =
         Paragraph::new(Line::from(context_spans(app))).alignment(ratatui::layout::Alignment::Right);

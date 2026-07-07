@@ -201,7 +201,7 @@ Action names are snake_case strings — the full annotated list is in
 - **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open`, `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `table_copy_cell/row/column`
 - **Agent Watch**: `toggle_follow` (`F`), `toggle_changed_filter` (`C`), `jump_next_change` (`n`), `jump_prev_change` (`N`)
 - **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`O`), `cycle_diff_layout`, `git_copy_*`, `branch_*`
-- **Tabs / app** (`global`): `tab_new` (`t`), `tab_close` (`w`), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`)
+- **Tabs / app** (`global`): `tab_new` (`t`), `toggle_tab_list` (`T` — tab list; `tab_list_close` = `d` inside it), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`). `tab_close` has no default key (closing is `q` on the tree; rebind with `"w" = "tab_close"` if you want it back)
 - `noop` (alias `disabled`) removes a default binding.
 
 Conflicting bindings that would break essential defaults (stealing a leader prefix, tab

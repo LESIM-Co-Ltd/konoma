@@ -4913,6 +4913,61 @@ fn global_bookmark_display_is_absolute() {
 }
 
 #[test]
+fn tab_list_switch_close_and_guards() {
+    // タブ一覧: T で開くと選択=アクティブ・j/k 巡回・Enter で切替(一覧は閉じる)・
+    // w は**選択タブ**を閉じ(アクティブ index を正しく調整)・最後の1枚は拒否 flash。
+    let dir = std::env::temp_dir().join("konoma_tab_list_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.tab_new().unwrap();
+    app.tab_new().unwrap(); // 3枚・アクティブ=2(末尾)
+    assert_eq!(app.tab_count(), 3);
+    assert_eq!(app.active_tab_index(), 2);
+
+    app.toggle_tab_list();
+    assert!(app.is_tab_list());
+    assert_eq!(app.tab_list_sel(), 2, "開いた時の選択はアクティブタブ");
+    app.tab_list_move(1);
+    assert_eq!(app.tab_list_sel(), 0, "末尾から wrap");
+    app.tab_list_move(-1);
+    assert_eq!(app.tab_list_sel(), 2);
+
+    // Enter: 選択タブへ切替+一覧が閉じる。
+    app.tab_list_move(1); // → 0
+    app.tab_list_activate();
+    assert!(!app.is_tab_list(), "切替で一覧が閉じる");
+    assert_eq!(app.active_tab_index(), 0);
+
+    // w(選択=非アクティブの末尾タブ)を閉じてもアクティブは維持。
+    app.toggle_tab_list();
+    app.tab_list_move(-1); // sel=2
+    app.tab_list_close_selected();
+    assert!(app.is_tab_list(), "w では一覧は開いたまま");
+    assert_eq!(app.tab_count(), 2);
+    assert_eq!(
+        app.active_tab_index(),
+        0,
+        "非アクティブを閉じてもアクティブ不変"
+    );
+    assert!(app.tab_list_sel() < app.tab_count(), "選択はクランプ");
+
+    // アクティブより前のタブを閉じたら active index は詰まる。
+    app.tab_goto(1);
+    app.toggle_tab_list();
+    app.tab_list_move(-1); // sel=0 (アクティブ=1)
+    app.tab_list_close_selected();
+    assert_eq!(app.tab_count(), 1);
+    assert_eq!(app.active_tab_index(), 0, "前方を閉じたら index が詰まる");
+
+    // 最後の1枚は閉じられない(flash)。
+    app.flash = None;
+    app.tab_list_close_selected();
+    assert_eq!(app.tab_count(), 1);
+    assert!(app.flash.is_some(), "最後の1枚は拒否して flash");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn bookmark_list_jump_delete_and_close() {
     // ブックマークの base をテスト専用にして実 ~/.config を汚さない。
     let root = std::env::temp_dir().join("konoma_bm_list_ops_test");

@@ -6,6 +6,44 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- The panic guard added in 0.8.0 was too blunt: one problematic construct (e.g. a
+  loose list containing task items, which panics the underlying tui-markdown) made
+  konoma render the **whole document section** as plain undecorated text. The guard
+  now retries by bisecting the section at blank lines (never inside code fences), so
+  in practice the entire document renders decorated and at worst only the single
+  offending paragraph degrades.
+- Running `git pull` (or any locking git command) in a repository konoma was watching
+  could fail with `Unable to create .git/index.lock: File exists`. konoma refreshes
+  its status on every file-system event, and plain `git status` takes the optional
+  index lock to write back the refreshed stat cache — during a pull's burst of file
+  events the two raced. All of konoma's background reads now pass
+  `--no-optional-locks` (the git facility built for background tooling, git 2.15+),
+  so they never take the index lock; a regression test pins that reads leave
+  `.git/index` untouched.
+
+### Changed
+- `w` no longer closes the tab (it is unbound by default). Closing a tab had two
+  keys, and for vim users `w` is word-motion muscle memory — an accidental press
+  closed a tab. Closing is unified on `q` in the tree (the last tab quits, behind
+  the usual confirmation); inside the tab list the close key is now `d`. Rebind
+  with `[keys.global] w = "tab_close"` if you want the old behavior back.
+
+### Added
+- Tab list (`T`, from any screen): every tab on one popup — number, name and root
+  path, the active tab marked. `1`-`9`/`Enter` switch, `w` closes the **selected**
+  tab (the list stays open; the last tab refuses), `T`/`q`/`Esc` close the list.
+- The tab bar now handles overflow: when tabs don't fit, it shows a window centered
+  on the active tab with `‹n` / `n›` markers for the tabs hidden on each side — the
+  active tab can no longer scroll out of sight.
+
+### Fixed
+- The tab bar no longer runs under the top-right context/status area on the shared
+  top row (its layout budget now excludes that width).
+- Keymap validation: a built-in per-screen specialization of a global key (like `w`
+  in the tab list) is no longer flagged/stripped; a user override of such a key now
+  falls back to the built-in specialization instead of the global action.
+
 ## [0.8.0] - 2026-07-07
 
 ### Fixed

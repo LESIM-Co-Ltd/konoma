@@ -16,9 +16,10 @@ information contextually inside the app.
 |---|---|
 | `?` | help for the current screen |
 | `Q` | quit (confirmation unless `ui.confirm_quit = false`; `qq` is quick) |
-| `t` / `w` | new tab / close tab |
+| `t` | new tab (closing is `q` on the tree; `w` is deliberately unbound — vim word-motion muscle memory) |
 | `[` / `]` / `1`-`9` | previous / next / numbered tab |
 | `F` | follow mode (auto-show whatever changes on disk) |
+| `T` | tab list (switch / close tabs; the tab bar shows `‹n / n›` when tabs overflow) |
 
 ## Tree
 
@@ -88,6 +89,15 @@ information contextually inside the app.
 | Graph: `s` / `x` / `b` | pin base branch / unpin / branch picker |
 | Branches: `Enter` / `n` / `d` / `/` | checkout / create / delete / filter |
 
+## Tab list (`T`)
+
+| Key | Action |
+|---|---|
+| `1`-`9` / `Enter` | switch to that tab / to the selection |
+| `j` `k` | move |
+| `d` | close the **selected** tab (list stays open; the last tab refuses) |
+| `T` `q` `Esc` | close the list |
+
 ## Bookmark list (`'`)
 
 | Key | Action |
@@ -97,5 +107,5 @@ information contextually inside the app.
 | `Ctrl-e` / `Ctrl-d` | edit target in editor / delete bookmark |
 | `'` `q` `Esc` | close |
 
-Letters used by the list or global keys (`j` `k` `q` `t` `w` `F` `Q`) can't
+Letters used by the list or global keys (`j` `k` `q` `t` `T` `F` `Q`) can't
 letter-jump — select those with `j`/`k` + `Enter`, or rebind.

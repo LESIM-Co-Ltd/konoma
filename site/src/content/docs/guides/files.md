@@ -42,7 +42,11 @@ launched in, **uppercase = global** across everything.
 
 ## Tabs
 
-- `t` new tab, `w` close, `[` / `]` switch, `1`-`9` jump by number.
+- `t` new tab, `[` / `]` switch, `1`-`9` jump by number; closing is `q` on the
+  tree (`w` is deliberately unbound — vim word-motion muscle memory).
+- `T` opens the tab list from any screen: `Enter`/digits switch, `d` closes the
+  selected tab, `q`/`Esc` closes the list. When tabs overflow the bar, a window
+  centered on the active tab is shown with `‹n` / `n›` overflow markers.
 - Each tab keeps its own root, cursor, preview and scroll state.
 - `q` on the tree closes the current tab (quitting the app when it's the last
   one); `Q` quits from anywhere, with a confirmation (`ui.confirm_quit`).

@@ -91,6 +91,9 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
     let out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
+            "--no-optional-locks", // 背景ツールの掟: 任意ロック(index.lock の stat キャッシュ
+            // 書き戻し)を取らない。konoma が status を回している最中の `git pull` を
+            // 「index.lock: File exists」で失敗させない(git 2.15+)。
             "-c",
             "status.renames=true",
             "status",
@@ -182,6 +185,7 @@ pub fn ignored(root: &Path) -> HashSet<PathBuf> {
     let out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
+            "--no-optional-locks", // 任意ロック禁止(statuses() と同じ理由)
             "status",
             "--porcelain=v1",
             "-z",
@@ -585,6 +589,7 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
     let cmd_out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
+            "--no-optional-locks", // 任意ロック禁止(statuses() と同じ理由)
             "-c",
             "status.renames=true",
             "status",
@@ -1469,6 +1474,49 @@ fn classify(s: git2::Status) -> FileStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 背景の読み取り(statuses/ignored)は index を**書き戻さない**(--no-optional-locks)。
+    /// stat キャッシュが陳腐化した状態(内容同一で mtime だけ更新)で status を読んでも
+    /// .git/index が変化しないこと。これが破れると、konoma が status を回している最中の
+    /// `git pull` が「index.lock: File exists」で失敗する(ユーザー報告 2026-07-07)。
+    #[test]
+    fn background_reads_never_write_the_index() {
+        let dir = std::env::temp_dir().join("konoma_no_optional_locks_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {:?}", out);
+        };
+        run(&["init", "-q", "."]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), b"same content").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "init"]);
+
+        // 内容同一のまま mtime を更新 → index の stat キャッシュが陳腐化。
+        // フラグ無しの `git status` はここで index を書き戻す(=index.lock を取る)。
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("a.txt"), b"same content").unwrap();
+
+        let index = dir.join(".git/index");
+        let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+        let st = statuses(&dir);
+        let ig = ignored(&dir);
+        let after = std::fs::metadata(&index).unwrap().modified().unwrap();
+        assert_eq!(before, after, "読み取りで index を書き戻さない");
+        assert!(
+            st.is_empty(),
+            "内容同一なので clean 判定は正しく出る: {st:?}"
+        );
+        assert!(ig.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[cfg(feature = "git")]
     #[test]

@@ -142,17 +142,15 @@ pub fn render_markdown_tasks(
                                             continue;
                                         }
                                         // from_str_with_options は借用した Text<'_> を返すので即 'static へ複製。
-                                        // tui-markdown は特定入力(例: loose リスト直後のタスク項目)で
+                                        // tui-markdown は特定入力(例: loose リスト内のタスク項目)で
                                         // panic する(0.3.7/0.3.8 で確認)。原則#3=クラッシュさせない:
-                                        // 捕捉してそのセグメントだけ素のテキストへ降格する。
-                                        match render_md_segment(&t2, &opts) {
-                                            Some(lines) => out.extend(decorate_md_lines(
-                                                lines, width, code, theme, icons, tasks,
-                                            )),
-                                            None => out.extend(
-                                                t2.lines().map(|l| Line::from(l.to_string())),
-                                            ),
-                                        }
+                                        // 捕捉し、二分割の再帰で**最小の失敗ブロックだけ**を素の
+                                        // テキストへ降格する(丸ごと降格だと実在の文書が全編
+                                        // 無装飾になる — 2026-07-07 ユーザー報告)。
+                                        render_text_block_safe(
+                                            &mut out, &t2, &opts, width, code, theme, icons, tasks,
+                                            0,
+                                        );
                                     }
                                     HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                                 }
@@ -838,6 +836,83 @@ fn highlight_body(
             })
         })
         .collect()
+}
+
+/// Render one text block via tui-markdown with panic isolation. On panic the block is split
+/// in half at a blank line **outside code fences** and both halves are rendered recursively, so
+/// only the minimal offending paragraph degrades to plain text — not the whole document segment.
+#[allow(clippy::too_many_arguments)]
+fn render_text_block_safe(
+    out: &mut Vec<Line<'static>>,
+    src: &str,
+    opts: &Options<KonomaStyles>,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    depth: u8,
+) {
+    if src.trim().is_empty() {
+        return;
+    }
+    if let Some(lines) = render_md_segment(src, opts) {
+        out.extend(decorate_md_lines(lines, width, code, theme, icons, tasks));
+        return;
+    }
+    // 深さ上限 or これ以上割れない → このブロックだけ素のテキストで(内容は失わない)。
+    if depth >= 8 {
+        out.extend(src.lines().map(|l| Line::from(l.to_string())));
+        return;
+    }
+    match split_block_for_retry(src) {
+        Some((a, b)) => {
+            render_text_block_safe(out, a, opts, width, code, theme, icons, tasks, depth + 1);
+            render_text_block_safe(out, b, opts, width, code, theme, icons, tasks, depth + 1);
+        }
+        None => out.extend(src.lines().map(|l| Line::from(l.to_string()))),
+    }
+}
+
+/// Split point for the panic-isolation retry: the blank line nearest the middle that is **not**
+/// inside a code fence (splitting a fence would corrupt its rendering). Falls back to the
+/// non-fenced newline nearest the middle; None when the block is a single line.
+fn split_block_for_retry(src: &str) -> Option<(&str, &str)> {
+    let mut blanks: Vec<usize> = Vec::new(); // 空行の開始オフセット
+    let mut newlines: Vec<usize> = Vec::new(); // 改行位置(フェンス外)
+    let mut in_fence = false;
+    let mut off = 0usize;
+    for line in src.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        let end = off + line.len();
+        if !in_fence && line.ends_with('\n') {
+            if line.trim().is_empty() {
+                blanks.push(off);
+            }
+            newlines.push(end);
+        }
+        off = end;
+    }
+    let mid = src.len() / 2;
+    // 空行 = その行ごと前半に含め、後半は空行の次から。前後どちらかが空にならない候補のみ。
+    let pick = |cands: &[usize]| -> Option<usize> {
+        cands
+            .iter()
+            .copied()
+            .filter(|&i| i > 0 && i < src.len())
+            .min_by_key(|&i| i.abs_diff(mid))
+    };
+    if let Some(i) = pick(&blanks) {
+        return Some((&src[..i], &src[i..]));
+    }
+    let cut = pick(&newlines)?;
+    if cut == 0 || cut >= src.len() {
+        return None;
+    }
+    Some((&src[..cut], &src[cut..]))
 }
 
 /// Display columns taken by the code-block gutter (`▎` + one space).
@@ -2146,10 +2221,11 @@ mod tests {
 
     #[test]
     fn loose_list_task_item_does_not_panic() {
-        // tui-markdown 0.3.7/0.3.8 は「loose リスト(空行区切り)の後のタスク項目」で
-        // panic する(insertion index should be <= len)。konoma は捕捉して当該セグメントを
-        // 素のテキストへ降格し、クラッシュしない(原則#3)。
-        let md = "- a\n\n- [ ] b\n";
+        // tui-markdown 0.3.7/0.3.8 は「loose リスト(空行区切り)内のタスク項目」で panic する
+        // (insertion index should be <= len)。konoma は捕捉して**空行境界の二分割で再試行**し、
+        // 割れた各半分は普通に描ける=装飾(タスクマーカー等)が生き残る。丸ごと素テキスト降格に
+        // していた頃は、この記法を1箇所含むだけで文書全編が無装飾になった(実文書で報告)。
+        let md = "# title\n\n- a\n\n- [ ] b\n\n**bold**\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let all: Vec<String> = lines
             .iter()
@@ -2159,7 +2235,39 @@ mod tests {
             all.iter().any(|t| t.contains("- a")),
             "内容は読める形で残る: {all:?}"
         );
-        assert!(all.iter().any(|t| t.contains("[ ] b")), "{all:?}");
+        // 二分割の再試行で装飾が生きる: タスクは専用マーカー span・bold は記号が剥がれる。
+        let markers: Vec<String> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_task_span(s))
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(markers, vec!["[ ] "], "タスクが装飾のまま: {all:?}");
+        assert!(
+            all.iter().any(|t| t.contains("bold") && !t.contains("**")),
+            "bold が描画される: {all:?}"
+        );
+        assert!(
+            all.iter().all(|t| !t.contains("# title")),
+            "見出しの # が剥がれる: {all:?}"
+        );
+    }
+
+    #[test]
+    fn split_block_for_retry_avoids_fences() {
+        // 再試行の分割点はフェンス外の空行。フェンス内の空行では割らない。
+        let src = "para1\n\n```\ncode\n\nmore\n```\n\npara2\n";
+        let (a, b) = split_block_for_retry(src).expect("分割できる");
+        assert!(
+            a.matches("```").count() % 2 == 0,
+            "前半のフェンスは閉じている: {a:?}"
+        );
+        assert!(
+            b.matches("```").count() % 2 == 0,
+            "後半のフェンスは閉じている: {b:?}"
+        );
+        // 1行だけのブロックは割れない。
+        assert!(split_block_for_retry("only-one-line").is_none());
     }
 
     #[test]

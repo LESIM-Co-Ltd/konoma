@@ -234,11 +234,12 @@ builtin = "pdf"
 #   <キー> = "<アクション>"
 #
 # ■ 面(surface)名 — 「今どの画面か」で別々のマップを持つ。snake_case:
-#   global        : どの面でも効く(タブ t/w/[/]/1-9・ヘルプ ?)
+#   global        : どの面でも効く(タブ t/[/]/1-9・T=タブ一覧・ヘルプ ?)。w は既定未割当
+#                  (vim の単語移動と誤爆するため。閉じるはツリーの q。"w"="tab_close" で復活可)
 #   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
 #   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
 #   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
-#   sort  bookmarks  info  help
+#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
 #
 # ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
 #   装飾 "ctrl-f"(別名 "c-f")・名前付き "tab enter esc up down left right home end pageup pagedown"。
@@ -258,7 +259,7 @@ builtin = "pdf"
 #   ブックマーク : m=登録・'=一覧はツリーとプレビュー両面に既定割当(プレビュー中は表示中ファイルを登録)。
 #                  一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
 #                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
-#                  ※ j/k/q と global の t/w/F/Q はキー操作に取られるため、その文字のブックマークは
+#                  ※ j/k/q と global の t/T/F/Q はキー操作に取られるため、その文字のブックマークは
 #                    j/k + Enter で選んで開く(または当該キーを config で退避)。
 #   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
 #                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)

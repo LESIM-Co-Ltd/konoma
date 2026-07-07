@@ -54,6 +54,7 @@ pub enum InternalMode {
     Sort,
     Mark,
     Bookmarks,
+    Tabs,
     Info,
     Create,
     Rename,
@@ -677,6 +678,9 @@ pub struct App {
     /// Tabs (FR-5). Each tab is a tree context. The active tab's working state is held in the fields above as the source of truth.
     tabs: Vec<TabState>,
     active_tab: usize,
+    /// Tab-list overlay (`T`). App-global (not per-tab).
+    tab_list: bool,
+    tab_list_sel: usize,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -1079,6 +1083,8 @@ impl App {
             help_scroll: 0,
             tabs: Vec::new(),
             active_tab: 0,
+            tab_list: false,
+            tab_list_sel: 0,
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
@@ -1332,6 +1338,9 @@ impl App {
         if self.is_bookmark_list() {
             return Some(InternalMode::Bookmarks);
         }
+        if self.is_tab_list() {
+            return Some(InternalMode::Tabs);
+        }
         if self.is_info() {
             return Some(InternalMode::Info);
         }
@@ -1417,6 +1426,9 @@ impl App {
         }
         if self.is_bookmark_list() {
             return S::Bookmarks;
+        }
+        if self.is_tab_list() {
+            return S::Tabs;
         }
         if self.is_info() {
             return S::Info;
@@ -4762,6 +4774,7 @@ impl App {
 
     /// Move tabs relatively (dir: +1=next / -1=previous). Wraps at the ends.
     pub fn tab_cycle(&mut self, dir: i32) {
+        self.tab_list = false; // 一覧から [/] で切替えた場合も一覧は用済み
         if self.tabs.len() <= 1 {
             return;
         }
@@ -4773,12 +4786,70 @@ impl App {
 
     /// Select a tab by number (0-based). Out-of-range or the same tab is ignored.
     pub fn tab_goto(&mut self, i: usize) {
+        self.tab_list = false; // 一覧(1-9/Enter)からの切替で一覧を閉じる
         if i >= self.tabs.len() || i == self.active_tab {
             return;
         }
         self.save_active();
         self.active_tab = i;
         self.load_active();
+    }
+
+    // --- タブ一覧オーバーレイ (`T`) ----------------------------------------
+    pub fn is_tab_list(&self) -> bool {
+        self.tab_list
+    }
+    /// `T`: open/close the tab list. Opening puts the selection on the active tab.
+    pub fn toggle_tab_list(&mut self) {
+        self.tab_list = !self.tab_list;
+        if self.tab_list {
+            self.tab_list_sel = self.active_tab;
+        }
+    }
+    pub fn tab_list_sel(&self) -> usize {
+        self.tab_list_sel
+    }
+    pub fn tab_list_move(&mut self, delta: i32) {
+        let n = self.tabs.len();
+        if n == 0 {
+            return;
+        }
+        self.tab_list_sel = (self.tab_list_sel as i32 + delta).rem_euclid(n as i32) as usize;
+    }
+    /// Enter in the list: switch to the selected tab (closing the list; same tab = just close).
+    pub fn tab_list_activate(&mut self) {
+        let i = self.tab_list_sel;
+        self.tab_list = false;
+        self.tab_goto(i);
+    }
+    /// `w` in the list: close the **selected** tab (the list stays open, like the bookmark list).
+    /// Closing the active tab switches to a neighbor; the last tab refuses with a flash.
+    pub fn tab_list_close_selected(&mut self) {
+        if self.tabs.len() <= 1 {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::CantCloseLastTab).into());
+            return;
+        }
+        let i = self.tab_list_sel;
+        if i == self.active_tab {
+            self.tab_close();
+        } else {
+            self.tabs.remove(i);
+            if self.active_tab > i {
+                self.active_tab -= 1;
+            }
+        }
+        self.tab_list_sel = self.tab_list_sel.min(self.tabs.len() - 1);
+    }
+    /// Root directory of tab `i` (for the tab list's path column).
+    pub fn tab_root(&self, i: usize) -> std::path::PathBuf {
+        if i == self.active_tab {
+            self.root.clone()
+        } else {
+            self.tabs
+                .get(i)
+                .map(|t| t.root.clone())
+                .unwrap_or_else(|| self.root.clone())
+        }
     }
 
     /// Format a path into a display string using the current path_style (shared by the tree/preview title).
@@ -5557,7 +5628,7 @@ fn set_clipboard(text: &str) -> Result<()> {
 }
 
 /// `~/...` if under HOME, otherwise the full path.
-fn home_relative(path: &Path) -> String {
+pub(crate) fn home_relative(path: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         if let Ok(rel) = path.strip_prefix(&home) {

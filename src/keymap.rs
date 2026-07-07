@@ -229,6 +229,9 @@ pub enum Action {
     SortToggleReverse,
     SortToggleDirsFirst,
 
+    // --- タブ一覧 (`T`) ---
+    ToggleTabList,
+    TabListClose,
     // --- Bookmark 一覧 ---
     BookmarkJump,
     BookmarkEdit,
@@ -266,6 +269,8 @@ pub enum Surface {
     Help,
     Sort,
     Bookmarks,
+    /// Tab-list overlay (`T`): j/k + Enter switch, `w` closes the selected tab.
+    Tabs,
     Info,
     #[cfg(feature = "git")]
     GitDetail,
@@ -887,6 +892,14 @@ impl KeyMap {
         bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
         per_surface.insert(Surface::Bookmarks, bm);
 
+        // --- タブ一覧 (`T` で開閉。Enter=切替 は固定キー・T は global 継承で閉じる) ---
+        let mut tl: ContextMap = HashMap::new();
+        tl.insert(KeyPress::ch('j'), nav(Motion::Down));
+        tl.insert(KeyPress::ch('k'), nav(Motion::Up));
+        tl.insert(KeyPress::ch('d'), run(Action::TabListClose));
+        tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
+        per_surface.insert(Surface::Tabs, tl);
+
         // --- Info ---
         let mut info: ContextMap = HashMap::new();
         info.insert(KeyPress::ch('i'), run(Action::InfoClose));
@@ -910,7 +923,10 @@ impl KeyMap {
         // F=フォローモード(外部変更へ自動ジャンプ)。Tree/Preview どちらからでも切替できるよう global。
         global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
         global.insert(KeyPress::ch('t'), run(Action::TabNew));
-        global.insert(KeyPress::ch('w'), run(Action::TabClose));
+        global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
+        // `w` に既定バインドは置かない: vim の単語移動の癖で誤爆しやすく、タブを閉じるのは
+        // ツリーの `q`(CloseTabOrQuit)に一本化(2026-07-07 ユーザー決定)。`tab_close` アクション
+        // 自体は残っているので `[keys.global] w = "tab_close"` で復活できる。
         global.insert(KeyPress::ch('['), run(Action::TabPrev));
         global.insert(KeyPress::ch(']'), run(Action::TabNext));
         for i in 1..=9u8 {
@@ -1076,30 +1092,38 @@ impl KeyMap {
             }
 
             // --- GlobalShadow: allows_tabs 面で Global 既定キーを別 Action に奪った ---
+            // 既定マップ自身が持つ面別特化(例: タブ一覧の `w`=選択タブを閉じる)は合法。
+            // ユーザー config が**既定と違う形で** Global キーを奪った時だけ矯正し、
+            // 既定に面別バインドがあればそれへ、無ければ Global へ戻す。
             if sfc.allows_tabs() {
-                let shadows: Vec<(KeyPress, String, String)> = {
+                let shadows: Vec<(KeyPress, String, String, Option<Binding>)> = {
                     let cmap = match self.per_surface.get(&sfc) {
                         Some(m) => m,
                         None => continue,
                     };
+                    let dmap = defaults.per_surface.get(&sfc);
                     global_keys
                         .iter()
                         .filter_map(|gk| {
                             let local = cmap.get(gk)?;
                             let global = self.global.get(gk);
-                            if Some(local) != global {
-                                Some((
-                                    *gk,
-                                    global.map(binding_name).unwrap_or_default(),
-                                    binding_name(local),
-                                ))
-                            } else {
-                                None
+                            if Some(local) == global {
+                                return None;
                             }
+                            let default_local = dmap.and_then(|m| m.get(gk));
+                            if Some(local) == default_local {
+                                return None; // 既定どおりの面別特化
+                            }
+                            let restore = default_local.cloned();
+                            let kept = match &restore {
+                                Some(b) => binding_name(b),
+                                None => global.map(binding_name).unwrap_or_default(),
+                            };
+                            Some((*gk, kept, binding_name(local), restore))
                         })
                         .collect()
                 };
-                for (gk, kept, dropped) in shadows {
+                for (gk, kept, dropped, restore) in shadows {
                     conflicts.push(KeyConflict {
                         surface: sfc,
                         key: gk,
@@ -1107,10 +1131,15 @@ impl KeyMap {
                         dropped,
                         reason: ConflictKind::GlobalShadow,
                     });
-                    self.per_surface
-                        .get_mut(&sfc)
-                        .expect("surface present")
-                        .remove(&gk);
+                    let m = self.per_surface.get_mut(&sfc).expect("surface present");
+                    match restore {
+                        Some(b) => {
+                            m.insert(gk, b);
+                        }
+                        None => {
+                            m.remove(&gk);
+                        }
+                    }
                 }
             }
         }
@@ -1164,6 +1193,7 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "preview_table" => Surface::PreviewTable,
         "sort" => Surface::Sort,
         "bookmarks" => Surface::Bookmarks,
+        "tabs" => Surface::Tabs,
         "info" => Surface::Info,
         "help" => Surface::Help,
         #[cfg(feature = "git")]
@@ -1572,6 +1602,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "sort_toggle_reverse" => Action::SortToggleReverse,
         "sort_toggle_dirs_first" => Action::SortToggleDirsFirst,
         // Bookmark
+        "toggle_tab_list" => Action::ToggleTabList,
+        "tab_list_close" => Action::TabListClose,
         "bookmark_jump" => Action::BookmarkJump,
         "bookmark_edit" => Action::BookmarkEdit,
         "bookmark_delete" => Action::BookmarkDelete,
@@ -1713,6 +1745,8 @@ pub fn action_name(a: Action) -> String {
         Action::SortSet(SortKey::Ext) => "sort_ext",
         Action::SortToggleReverse => "sort_toggle_reverse",
         Action::SortToggleDirsFirst => "sort_toggle_dirs_first",
+        Action::ToggleTabList => "toggle_tab_list",
+        Action::TabListClose => "tab_list_close",
         Action::BookmarkJump => "bookmark_jump",
         Action::BookmarkEdit => "bookmark_edit",
         Action::BookmarkDelete => "bookmark_delete",
@@ -2187,6 +2221,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn global_shadow_default_specialization_rule() {
+        // 既定 config に衝突が無いこと(既定マップ自身の面別特化があっても合法、の恒久検査)。
+        let m = KeyMap::from_config(KeyScheme::Vim, &crate::keymap::KeysFileConfig::default());
+        assert!(
+            m.conflicts.is_empty(),
+            "既定 config に衝突なし: {:?}",
+            m.conflicts
+        );
+        // ユーザーが global キー(T)を面で別 Action に奪う → 検知し、既定に面別特化が無いので
+        // global の割当へ戻す。(既定特化への復元パスは、既定に面別特化が存在する時に効く
+        // 将来向けの規則 — 現状の既定には該当キーが無い。)
+        let cfg = cfg_with("tabs", &[("T", "refresh")]);
+        let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
+        assert_eq!(
+            m.conflicts
+                .iter()
+                .filter(|c| c.reason == ConflictKind::GlobalShadow)
+                .count(),
+            1
+        );
+        assert_eq!(
+            m.resolve(Surface::Tabs, None, KeyPress::ch('T')),
+            Resolution::Action(Action::ToggleTabList),
+            "global の割当へ戻る"
+        );
+    }
+
     // §10.8 固定キー rebind 拒否。
     #[test]
     fn fixed_key_rebind_rejected() {
@@ -2248,6 +2310,49 @@ mod tests {
             m.resolve(Surface::Tree, None, KeyPress::ch('\'')),
             Resolution::Action(Action::MarkJump)
         );
+    }
+
+    #[test]
+    fn tab_list_defaults_resolve() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        // global T で開閉(全面から)・一覧内 w=選択タブを閉じる(global の TabClose を面で上書き)。
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('T')),
+            Resolution::Action(Action::ToggleTabList)
+        );
+        assert_eq!(
+            m.resolve(Surface::Tabs, None, KeyPress::ch('T')),
+            Resolution::Action(Action::ToggleTabList),
+            "一覧内の T は global 継承で閉じる"
+        );
+        assert_eq!(
+            m.resolve(Surface::Tabs, None, KeyPress::ch('d')),
+            Resolution::Action(Action::TabListClose)
+        );
+        assert_eq!(
+            m.resolve(Surface::Tabs, None, KeyPress::ch('q')),
+            Resolution::Action(Action::ToggleTabList)
+        );
+        // 既定の `w` は**どこにも**タブを閉じる割当を持たない(誤爆防止・q に一本化)。
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch('w')),
+            Resolution::Unbound
+        );
+        assert_eq!(
+            m.resolve(Surface::Tabs, None, KeyPress::ch('w')),
+            Resolution::Unbound
+        );
+        // config 文字列の往復。
+        assert_eq!(
+            action_from_str("toggle_tab_list"),
+            Some(Action::ToggleTabList)
+        );
+        assert_eq!(action_name(Action::ToggleTabList), "toggle_tab_list");
+        assert_eq!(
+            action_from_str("tab_list_close"),
+            Some(Action::TabListClose)
+        );
+        assert_eq!(action_name(Action::TabListClose), "tab_list_close");
     }
 
     // §10.9 less プロファイル。
