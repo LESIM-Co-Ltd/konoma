@@ -1,6 +1,6 @@
 [package]
 name = "konoma"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 # 依存 mermaid-text 0.56 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
 rust-version = "1.92"
