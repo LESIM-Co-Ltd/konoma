@@ -13,13 +13,17 @@ hero:
     - text: はじめる
       link: ./getting-started/
       icon: right-arrow
+    - text: チュートリアル
+      link: ./tutorial/
+      icon: open-book
+      variant: secondary
     - text: GitHub で見る
       link: https://github.com/LESIM-Co-Ltd/konoma
       icon: external
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import TerminalDemo from '../../../components/TerminalDemo.astro';
 
 <TerminalDemo lang="ja" />
@@ -58,6 +62,19 @@ import TerminalDemo from '../../../components/TerminalDemo.astro';
 ![自作レンダラによるコミットグラフ](../../../assets/git-graph.png)
 
 ![Markdown と Mermaid の描画](../../../assets/markdown.png)
+
+## ドキュメント
+
+<CardGrid>
+	<LinkCard title="はじめる" description="インストール・2画面モデル・5分ツアー。" href="./getting-started/" />
+	<LinkCard title="チュートリアル" description="7ステップのガイド付きツアー。ターミナルで操作しながら。" href="./tutorial/" />
+	<LinkCard title="AI エージェントと働く" description="フォローモード・変更ファイルビュー・@path 参照。" href="./guides/agent-watch/" />
+	<LinkCard title="プレビューを使い倒す" description="Markdown・チェックボックス・テーブル・メディア・コピー。" href="./guides/preview/" />
+	<LinkCard title="git スイート" description="変更ハブ・diff・log・コミットグラフ・ブランチ。" href="./guides/git/" />
+	<LinkCard title="ファイル・ブックマーク・タブ" description="絞り込み・安全なファイル操作・ブックマーク・タブ。" href="./guides/files/" />
+	<LinkCard title="設定リファレンス" description="全オプション — UI・配色・プレビュールール・キー。" href="./reference/configuration/" />
+	<LinkCard title="既定キーマップ" description="画面ごとのキー一覧。すべて変更可能。" href="./reference/keymap/" />
+</CardGrid>
 
 ## インストール
 

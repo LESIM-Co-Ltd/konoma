@@ -13,13 +13,17 @@ hero:
     - text: Get started
       link: ./getting-started/
       icon: right-arrow
+    - text: Tutorial
+      link: ./tutorial/
+      icon: open-book
+      variant: secondary
     - text: View on GitHub
       link: https://github.com/LESIM-Co-Ltd/konoma
       icon: external
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import TerminalDemo from '../../components/TerminalDemo.astro';
 
 <TerminalDemo lang="en" />
@@ -59,6 +63,19 @@ import TerminalDemo from '../../components/TerminalDemo.astro';
 ![Custom git commit-graph renderer](../../assets/git-graph.png)
 
 ![Markdown and Mermaid rendering](../../assets/markdown.png)
+
+## Documentation
+
+<CardGrid>
+	<LinkCard title="Getting started" description="Install, the two-screen model, a five-minute tour." href="./getting-started/" />
+	<LinkCard title="Tutorial" description="A guided tour in seven steps — follow along in your terminal." href="./tutorial/" />
+	<LinkCard title="Working with an AI agent" description="Follow mode, changed-files view, @path references." href="./guides/agent-watch/" />
+	<LinkCard title="Previews in depth" description="Markdown, checkboxes, tables, media, copying." href="./guides/preview/" />
+	<LinkCard title="The git suite" description="Hub, diffs, log, commit graph, branches." href="./guides/git/" />
+	<LinkCard title="Files, bookmarks & tabs" description="Filtering, safe file ops, bookmarks, tabs." href="./guides/files/" />
+	<LinkCard title="Configuration" description="Every option — UI, colors, preview rules, keys." href="./reference/configuration/" />
+	<LinkCard title="Default keymap" description="Key bindings per screen, all rebindable." href="./reference/keymap/" />
+</CardGrid>
 
 ## Install
 
