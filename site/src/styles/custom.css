@@ -1,0 +1,12 @@
+/* konoma brand accent — forest green, after the name (木の間 = "between the trees").
+   Values follow Starlight's accent scale (low/base/high per theme). */
+:root {
+	--sl-color-accent-low: #14301f;
+	--sl-color-accent: #2e8b57;
+	--sl-color-accent-high: #b5e3c6;
+}
+:root[data-theme='light'] {
+	--sl-color-accent-low: #d9f0e2;
+	--sl-color-accent: #1f7a45;
+	--sl-color-accent-high: #143d26;
+}

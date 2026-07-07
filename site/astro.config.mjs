@@ -14,6 +14,7 @@ export default defineConfig({
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/LESIM-Co-Ltd/konoma' },
 			],
+			customCss: ['./src/styles/custom.css'],
 			defaultLocale: 'root',
 			locales: {
 				root: { label: 'English', lang: 'en' },
@@ -23,7 +24,7 @@ export default defineConfig({
 				{
 					label: 'Start here',
 					translations: { ja: 'はじめに' },
-					items: [{ slug: 'getting-started' }],
+					items: [{ slug: 'getting-started' }, { slug: 'tutorial' }],
 				},
 				{
 					label: 'Guides',

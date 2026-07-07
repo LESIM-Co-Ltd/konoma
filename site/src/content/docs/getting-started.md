@@ -75,6 +75,7 @@ konoma konoma/samples        # then open tutorial.md
 
 ## Where next
 
+- [Tutorial](../tutorial/) — the same tour as above, in seven guided steps.
 - [Working with an AI agent](../guides/agent-watch/) — konoma's flagship workflow.
 - [Previews in depth](../guides/preview/) — Markdown, tables, media, copying.
 - [The git suite](../guides/git/) — hub, diffs, log, graph, branches.

@@ -74,6 +74,7 @@ konoma konoma/samples        # tutorial.ja.md を開く
 
 ## 次に読む
 
+- [チュートリアル](../tutorial/) — 7ステップのガイド付きツアー。
 - [AI エージェントと働く](../guides/agent-watch/) — konoma の看板ワークフロー。
 - [プレビューを使い倒す](../guides/preview/) — Markdown・テーブル・メディア・コピー。
 - [git スイート](../guides/git/) — ハブ・diff・log・グラフ・ブランチ。
