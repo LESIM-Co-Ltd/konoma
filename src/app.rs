@@ -2600,6 +2600,13 @@ impl App {
         self.preview_win.is_some()
     }
 
+    /// Index of the focused Markdown item (link/checkbox), if any. Read-only query used by the
+    /// E2E simulation tests to assert Tab/⇧Tab focus movement.
+    #[cfg(test)]
+    pub fn focused_item(&self) -> Option<usize> {
+        self.focused_item
+    }
+
     /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
     /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
@@ -4250,15 +4257,48 @@ impl App {
             None => n - 1,
         } as usize;
         self.focused_item = Some(next);
-        // フォーカス行を表示範囲に収める。
+        // フォーカス行を表示範囲に収める。preview_scroll は**表示行(折返し後)**の座標系
+        // (描画側が para.line_count でクランプしている)なので、アイテムの論理行も
+        // 表示行へ変換してから比較する(論理行のままだと折返しで乖離し、画面外の
+        // フォーカスに追従しない — 2026-07-08 ユーザー報告)。
         let line = self.md_items[next].line;
+        let (top, height) = self.md_visual_span(line);
         let vh = self.preview_viewport.max(1) as usize;
         let scroll = self.preview_scroll as usize;
-        if line < scroll {
-            self.preview_scroll = line as u16;
-        } else if line >= scroll + vh {
-            self.preview_scroll = (line + 1).saturating_sub(vh) as u16;
+        if top < scroll {
+            self.preview_scroll = top as u16;
+        } else if top + height > scroll + vh {
+            self.preview_scroll = (top + height).saturating_sub(vh) as u16;
         }
+    }
+
+    /// Visual (post-wrap) row offset of decorated line `line` plus its own wrapped height.
+    /// With wrap off this is just (line, 1). Uses the cached decorated lines and ratatui's own
+    /// reflow (`line_count`), so the numbers match what the renderer draws exactly.
+    fn md_visual_span(&self, line: usize) -> (usize, usize) {
+        use ratatui::text::Text;
+        use ratatui::widgets::{Paragraph, Wrap};
+        if !self.cfg.ui.wrap {
+            return (line, 1);
+        }
+        let Some(cache) = &self.md_cache else {
+            return (line, 1);
+        };
+        if cache.width == 0 || line >= cache.lines.len() {
+            return (line, 1);
+        }
+        let top = if line == 0 {
+            0
+        } else {
+            Paragraph::new(Text::from(cache.lines[..line].to_vec()))
+                .wrap(Wrap { trim: false })
+                .line_count(cache.width)
+        };
+        let height = Paragraph::new(Text::from(vec![cache.lines[line].clone()]))
+            .wrap(Wrap { trim: false })
+            .line_count(cache.width)
+            .max(1);
+        (top, height)
     }
 
     /// Activate the focused item: a link opens (URLs externally, local paths within konoma),
@@ -4435,6 +4475,22 @@ impl App {
                 ))
             }
         }
+    }
+
+    /// Test-only: the exact string `copy_path(kind)` would place on the clipboard for the current
+    /// copy target (tree selection / preview path / git-changes selection). `None` when there is no
+    /// target — the same gate as `copy_path`. Lets E2E assert copy values without the (headless-flaky)
+    /// clipboard round-trip.
+    #[cfg(test)]
+    pub fn copy_string_for(&self, kind: CopyKind) -> Option<String> {
+        let path = self.copy_target()?;
+        Some(copy_text(&path, &self.open_dir, kind))
+    }
+
+    /// Test-only: the exact `@path#L..` string that `preview_copy_selection_ref` (`Y`) would copy.
+    #[cfg(test)]
+    pub fn selection_ref_string(&self) -> Option<String> {
+        self.preview_selection_ref_text()
     }
 
     /// Get metadata for the selected commit in log/graph/detail. detail uses the already-loaded data, while log/graph

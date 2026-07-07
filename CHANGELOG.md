@@ -6,6 +6,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- With soft-wrap on, `Tab` focus in a Markdown preview did not scroll the view when
+  the next link/checkbox was off-screen. The renderer clamps scrolling in visual
+  (post-wrap) rows, but the focus-follow compared the item's logical line against
+  that visual offset — once long wrapped paragraphs pushed the two apart, the check
+  always thought the item was still visible. Focus-follow now converts the item's
+  position with the exact same reflow the renderer uses.
+
 ## [0.9.0] - 2026-07-07
 
 ### Fixed

@@ -1430,6 +1430,57 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
 }
 
 #[test]
+fn md_focus_follows_offscreen_items_when_wrapped() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // 折返し(wrap=true 既定)で長い段落が画面高さを超えるとき、Tab のフォーカス移動が
+    // **表示行**基準でスクロール追従する。論理行基準だと「まだ画面内」と誤判定して
+    // 一切スクロールしない(2026-07-08 ユーザー報告の回帰)。
+    let dir = std::env::temp_dir().join("konoma_md_focus_wrap_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 論理行は数行だが、先頭段落が幅40で大きく折り返して 20 行超の表示になる文書。
+    let long = "word ".repeat(200); // 1000桁 ≒ 幅40で25表示行
+    std::fs::write(
+        dir.join("doc.md"),
+        format!(
+            "{long}
+
+[link](https://example.com/x)
+"
+        ),
+    )
+    .unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    assert!(app.cfg.ui.wrap, "前提: 既定は折返しON");
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert_eq!(app.md_items.len(), 1);
+    assert_eq!(app.preview_scroll, 0);
+    // Tab でリンクへ: リンクの論理行(2)は viewport(10) 未満だが、表示行では 25 行目付近
+    // → スクロールが表示行基準で進む(旧実装は 0 のまま=このアサーションで落ちる)。
+    app.md_focus_move(1);
+    assert!(
+        app.preview_scroll > 5,
+        "折返し文書でフォーカスに追従してスクロールする: scroll={}",
+        app.preview_scroll
+    );
+    // 追従後の描画でフォーカス行が画面内にある(表示行の窓に収まる)。
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        screen.contains("link"),
+        "フォーカスしたリンクが画面内に描画される"
+    );
+    // 逆方向(Shift-Tab 相当)で戻ると巡回して同じアイテム=スクロール維持、
+    // 先頭側のアイテムが無いので上方向追従は別文書で担保(上方向分岐は同式の対称)。
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn md_task_toggle_cycles_and_writes_file() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
