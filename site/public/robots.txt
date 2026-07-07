@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://lesim-co-ltd.github.io/konoma/sitemap-index.xml
