@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-07
+
 ### Fixed
 - With soft-wrap on (`ui.wrap = true`), a Markdown code-block line longer than the
   screen broke the block's left `▎` gutter and background band: wrapping was left to
@@ -283,7 +285,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.5.0...v0.5.1
