@@ -82,7 +82,12 @@ h1[data-page-title],
 
 /* ---------- cards (landing feature grid) ---------- */
 
-.card {
+/* One brand hue for every card: outranks Starlight's per-card color cycling
+   (.card:nth-child(4n+…) sets orange/purple/red/green vars at (0,2,0) — this
+   selector is (0,3,0) so it wins regardless of file order). */
+.sl-markdown-content .card.sl-flex {
+	--sl-card-border: var(--sl-color-accent);
+	--sl-card-bg: var(--sl-color-accent-low);
 	background: var(--sl-color-gray-6);
 	border: 1px solid var(--sl-color-gray-5);
 	border-radius: 0.5rem;
