@@ -57,6 +57,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
             .row("y → f", l(crate::i18n::Msg::WkFull))
+            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
             .row("e", l(crate::i18n::Msg::EditExternal))
             .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
@@ -69,6 +70,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             sec = sec.row("J / K  ·  PageDown / PageUp", l(crate::i18n::Msg::HintPage));
         }
         return vec![sec
+            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
             .row("e", l(crate::i18n::Msg::EditExternal))
             .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
@@ -84,6 +86,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
+        .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
         .row(crate::ui::status::page_help(app), "")
         .row("q / Esc", l(crate::i18n::Msg::BackToTree))]

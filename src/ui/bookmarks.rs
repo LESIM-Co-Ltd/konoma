@@ -36,7 +36,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(header).bold().fg(Color::Cyan));
                 last = Some(*is_local);
             }
-            let row = format!("  {key}  {}", app.format_path(path));
+            // ローカル=文脈相対表示 / グローバル=絶対(~短縮)表示。ツリー外を指すグローバルが
+            // `../../..` になる読みにくさを避ける。
+            let row = format!("  {key}  {}", app.bookmark_display_path(*is_local, path));
             if i == sel {
                 sel_line = lines.len() as u16;
                 lines.push(Line::from(row).reversed());

@@ -248,7 +248,8 @@ builtin = "pdf"
 #                  "enter_visual" "toggle_select"
 #   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
 #                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
-#   ブックマーク : 一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
+#   ブックマーク : m=登録・'=一覧はツリーとプレビュー両面に既定割当(プレビュー中は表示中ファイルを登録)。
+#                  一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
 #                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
 #                  ※ j/k/q と global の t/w/F/Q はキー操作に取られるため、その文字のブックマークは
 #                    j/k + Enter で選んで開く(または当該キーを config で退避)。

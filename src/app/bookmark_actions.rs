@@ -25,12 +25,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::InvalidMarkKey).into());
             return;
         }
-        // カーソル位置のファイル/ディレクトリを登録。選択が無ければ現在の root。
-        let target = self
-            .entries
-            .get(self.selected)
-            .map(|e| e.path.clone())
-            .unwrap_or_else(|| self.root.clone());
+        let target = self.bookmark_target();
         match self.bookmarks.set(c, target.clone()) {
             Ok(_) => {
                 let scope = if c.is_ascii_uppercase() {
@@ -41,7 +36,7 @@ impl App {
                 self.flash = Some(format!(
                     "{} {c} = {}  [{scope}]",
                     crate::i18n::tr(self.lang, crate::i18n::Msg::Bookmarked),
-                    self.format_path(&target),
+                    self.bookmark_display_path(c.is_ascii_lowercase(), &target),
                 ));
             }
             // 保存失敗: メモリ上には登録済みだが再起動で消える旨を通知(握り潰さない)。
@@ -53,6 +48,32 @@ impl App {
             }
         }
     }
+    /// What `m` registers: the previewed file in Preview mode, otherwise the tree cursor entry
+    /// (fallback: the current root). Preview mode's tree cursor can lag behind the shown file
+    /// (bookmark jumps / follow mode open previews without moving it), so the shown file wins.
+    fn bookmark_target(&self) -> std::path::PathBuf {
+        if matches!(self.mode, Mode::Preview) {
+            if let Some(p) = &self.preview_path {
+                return p.clone();
+            }
+        }
+        self.entries
+            .get(self.selected)
+            .map(|e| e.path.clone())
+            .unwrap_or_else(|| self.root.clone())
+    }
+
+    /// Display form for a bookmark target. Local marks show the contextual (relative-style) path;
+    /// global marks always show their absolute location (`~`-shortened) — a global target usually
+    /// lives outside the current tree, where a relative `../../...` rendering is unreadable.
+    pub fn bookmark_display_path(&self, is_local: bool, path: &std::path::Path) -> String {
+        if is_local {
+            self.format_path(path)
+        } else {
+            home_relative(path)
+        }
+    }
+
     /// A plain letter inside the bookmark list (`'` opens it): jump straight to that bookmark
     /// (a-z local / A-Z global; dir=new root / file=preview). Unknown letters just flash and the
     /// list stays open. Keys claimed by the list/global keymap (j/k/q, tab keys …) never reach here.
@@ -70,7 +91,7 @@ impl App {
                 self.flash = Some(format!(
                     "{}: {}",
                     crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkTargetMissing),
-                    self.format_path(&p)
+                    self.bookmark_display_path(c.is_ascii_lowercase(), &p)
                 ))
             }
             None => {
@@ -165,7 +186,7 @@ impl App {
     /// Jump to the selected bookmark (closes the list).
     pub fn bookmark_list_jump(&mut self) {
         let items = self.bookmark_list_items();
-        if let Some((_, _, p)) = items.get(self.bookmark_list_sel).cloned() {
+        if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             self.bookmark_list = false;
             if p.is_dir() {
                 self.jump_to_dir(p);
@@ -175,7 +196,7 @@ impl App {
                 self.flash = Some(format!(
                     "{}: {}",
                     crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkTargetMissing),
-                    self.format_path(&p)
+                    self.bookmark_display_path(is_local, &p)
                 ));
             }
         }
@@ -184,7 +205,7 @@ impl App {
     /// (closes the list and sets pending_edit; the run loop launches run_editor). Directories cannot be edited and flash.
     pub fn bookmark_list_edit(&mut self) {
         let items = self.bookmark_list_items();
-        if let Some((_, _, p)) = items.get(self.bookmark_list_sel).cloned() {
+        if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             if p.is_file() {
                 self.bookmark_list = false;
                 self.pending_edit = Some(p);
@@ -195,7 +216,7 @@ impl App {
                 self.flash = Some(format!(
                     "{}: {}",
                     crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkTargetMissing),
-                    self.format_path(&p)
+                    self.bookmark_display_path(is_local, &p)
                 ));
             }
         }

@@ -6,6 +6,19 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- Bookmarks can be set from a preview: `m` while previewing a file (text/Markdown, image,
+  CSV table) bookmarks **the previewed file** (not the tree cursor, which can lag behind
+  after bookmark jumps or follow mode), and `'` opens the bookmark list on top of the
+  preview. Same letters, same list, same jumps as in the tree.
+
+### Fixed
+- Global (uppercase) bookmarks now display their absolute location (`~`-shortened, e.g.
+  `~/.vimrc`) in the list and in the registration notice. They were shown relative to the
+  current directory (`../../.vimrc`), which is unreadable for targets outside the tree.
+  Storage was always absolute — this is a display fix; local bookmarks keep the contextual
+  relative form.
+
 ## [0.6.0] - 2026-07-06
 
 ### Fixed

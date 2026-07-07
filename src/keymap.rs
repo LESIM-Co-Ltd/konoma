@@ -681,6 +681,9 @@ impl KeyMap {
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
         ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+        // ブックマーク: プレビュー中のファイルを m で登録・' で一覧(ツリーと同じ action)。
+        ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
+        ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
         per_surface.insert(Surface::PreviewText, ptext);
 
         // --- Preview: text/code visual selection (v charwise / V linewise) ---
@@ -723,6 +726,8 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
+        pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
+        pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
         per_surface.insert(Surface::PreviewImage, pimg);
 
         // --- Preview: table (csv/tsv) ---
@@ -743,6 +748,8 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
+        ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
+        ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
         per_surface.insert(Surface::PreviewTable, ptbl);
 
         // --- Git 系の面 (feature gate) ---
@@ -2221,6 +2228,21 @@ mod tests {
             m.resolve(Surface::Bookmarks, None, KeyPress::ch('d')),
             Resolution::Unbound
         );
+        // プレビュー3面でも m=登録 / '=一覧(表示中ファイルのブックマーク)。
+        for sfc in [
+            Surface::PreviewText,
+            Surface::PreviewImage,
+            Surface::PreviewTable,
+        ] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('m')),
+                Resolution::Action(Action::MarkSet)
+            );
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('\'')),
+                Resolution::Action(Action::MarkJump)
+            );
+        }
         // Tree の `'` は一覧を開く MarkJump のまま(config 名も不変)。
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('\'')),

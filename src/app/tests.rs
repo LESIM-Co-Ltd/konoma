@@ -4779,6 +4779,70 @@ fn mark_set_state_and_cancel() {
 }
 
 #[test]
+fn bookmark_from_preview_registers_previewed_file() {
+    // プレビュー中の m は「表示中のファイル」を登録する(ツリーカーソルではなく)。
+    let root = std::env::temp_dir().join("konoma_bm_preview_test");
+    let _ = std::fs::remove_dir_all(&root);
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(proj.join("a.txt"), b"a").unwrap();
+    std::fs::write(proj.join("b.txt"), b"b").unwrap();
+    let proj = proj.canonicalize().unwrap();
+    let mut app = App::new(proj.clone(), Config::default()).unwrap();
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase"), &proj);
+    // b.txt をプレビューで開くが、ツリーカーソルは a.txt に置いたまま(フォロー/ジャンプ等で乖離する状況)。
+    app.enter_preview(&proj.join("b.txt"));
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("a.txt"))
+        .unwrap();
+    assert_eq!(app.mode, Mode::Preview);
+    app.start_mark_set();
+    app.mark_input('p');
+    assert_eq!(
+        app.bookmarks.get('p'),
+        Some(proj.join("b.txt")),
+        "カーソルの a.txt でなく表示中の b.txt が登録される"
+    );
+    assert_eq!(app.mode, Mode::Preview, "登録後もプレビューのまま");
+    // ツリーに戻れば従来どおりカーソル位置を登録。
+    app.back_to_tree();
+    app.start_mark_set();
+    app.mark_input('q');
+    assert_eq!(app.bookmarks.get('q'), Some(proj.join("a.txt")));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn global_bookmark_display_is_absolute() {
+    // グローバルは絶対(~短縮)表示・ローカルは従来の文脈相対表示。
+    let dir = std::env::temp_dir().join("konoma_bm_display_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.path_style = PathStyle::Relative;
+    if let Some(home) = std::env::var_os("HOME") {
+        let vimrc = PathBuf::from(home).join(".vimrc");
+        assert_eq!(
+            app.bookmark_display_path(false, &vimrc),
+            "~/.vimrc",
+            "グローバル=HOME 配下は ~ 短縮の絶対表示(相対 ../../.. にしない)"
+        );
+        assert!(
+            app.bookmark_display_path(true, &vimrc).contains(".vimrc"),
+            "ローカルは format_path(文脈相対)"
+        );
+    }
+    let outside = PathBuf::from("/opt/other/place");
+    assert_eq!(
+        app.bookmark_display_path(false, &outside),
+        "/opt/other/place",
+        "HOME 外はフル絶対のまま"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn bookmark_list_jump_delete_and_close() {
     // ブックマークの base をテスト専用にして実 ~/.config を汚さない。
     let root = std::env::temp_dir().join("konoma_bm_list_ops_test");
