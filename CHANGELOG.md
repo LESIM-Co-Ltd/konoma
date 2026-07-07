@@ -6,6 +6,23 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- Documentation site at <https://lesim-co-ltd.github.io/konoma/> (English and Japanese):
+  getting started, scenario guides (AI-agent workflow, previews, git, files), and full
+  configuration/keymap references. Built with Astro Starlight from `site/`, deployed by
+  the `Docs` workflow.
+- A hands-on tutorial designed to be read inside konoma — `samples/tutorial.md` /
+  `samples/tutorial.ja.md` — with links you can follow and checkboxes you can toggle.
+- `CONFIGURATION.md` — a full configuration reference (every `[ui]` option, colors,
+  preview rules, editor/git integration, and the complete keybinding model), linked
+  from the README.
+
+### Fixed
+- A Markdown preview could crash the app on inputs that panic the underlying
+  tui-markdown renderer (e.g. a loose list followed by a task-list item, still present
+  in tui-markdown 0.3.8). konoma now catches the panic and degrades that text segment
+  to plain lines instead — no input can crash the preview (design principle #3).
+
 ## [0.7.0] - 2026-07-07
 
 ### Added

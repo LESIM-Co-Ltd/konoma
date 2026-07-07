@@ -52,3 +52,8 @@ Icon?
 /.mcp.json
 # make-git-demo.sh = 無視している git-demo の再生成器 (開発専用)。
 /scripts/
+
+# docs site (Astro Starlight) build outputs
+/site/node_modules/
+/site/dist/
+/site/.astro/

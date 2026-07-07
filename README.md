@@ -18,6 +18,10 @@ where you keep konoma on one half of the screen and work on the other.
 The name "konoma" (木の間, "between the trees") comes from the tool's character:
 peering through the gaps between the trees to look into the contents of the file tree.
 
+**📖 Documentation: [lesim-co-ltd.github.io/konoma](https://lesim-co-ltd.github.io/konoma/)**
+— getting started, guides and full reference, in English and
+[日本語](https://lesim-co-ltd.github.io/konoma/ja/).
+
 ## Why it exists
 
 When you want a tree + preview pane filling one half of the screen while you work on the
@@ -113,6 +117,10 @@ konoma [DIR]     # opens DIR (defaults to the current directory)
 
 Press `?` in the app for the full, context-sensitive key reference.
 
+**Take the tour**: open [`samples/tutorial.md`](samples/tutorial.md)
+([日本語](samples/tutorial.ja.md)) *inside konoma* — a hands-on walkthrough with
+links you can follow and checkboxes you can actually toggle.
+
 ## Optional tools
 
 konoma never breaks when an external tool is missing — the relevant preview just degrades to a hint
@@ -126,7 +134,13 @@ konoma never breaks when an external tool is missing — the relevant preview ju
 
 ## Configuration
 
-`~/.config/konoma/config.toml` (works with defaults if absent). See `config.example.toml`.
+`~/.config/konoma/config.toml` (works with defaults if absent).
+
+- **[CONFIGURATION.md](CONFIGURATION.md)** — full reference: every `[ui]` option,
+  colors/themes, preview rules (built-in renderers & external-command delegation),
+  external editor, git integration, and the complete keybinding model.
+- [`config.example.toml`](config.example.toml) — a fully commented example config
+  (Japanese inline comments); copy it as a starting point.
 
 ## License
 
