@@ -2,6 +2,12 @@
 // Animated hero terminal: konoma's core loop (full-screen Tree ⇄ full-screen Preview)
 // drawn in HTML/CSS instead of a screenshot. Deliberately dark in both site themes —
 // it depicts a terminal. Honors prefers-reduced-motion (static Preview frame).
+//
+// Layout notes (learned the hard way):
+// - `not-content` opts the whole widget out of Starlight's markdown flow spacing,
+//   which otherwise inflates every row with margins and breaks the fixed height.
+// - The frame is CSS borders + flex rows, not ASCII box-drawing, so nothing can
+//   misalign or overflow at any viewport width.
 interface Props {
 	lang?: 'en' | 'ja';
 }
@@ -10,19 +16,27 @@ const t =
 	lang === 'ja'
 		? {
 				aria: 'konoma のツリー画面とプレビュー画面が切り替わるデモ',
-				toggleNote: 'Space でトグル、ファイルに書き戻る',
+				toggleNote: '— Space でトグル、ファイルに書き戻る',
 				linkNote: '← Tab でフォーカス・↵ で開く',
 				today: '今日',
 			}
 		: {
 				aria: 'Demo of konoma switching between its tree and preview screens',
-				toggleNote: 'Space toggles, written back to the file',
+				toggleNote: '— Space toggles, written back to the file',
 				linkNote: '← Tab focuses, ↵ opens',
 				today: 'today',
 			};
+const rows = [
+	{ icon: '▸', name: 'src', mark: '', size: '--', date: '06-30 09:12' },
+	{ icon: '', name: 'README.md', mark: 'M', size: '4.2 KB', date: `${t.today} 14:02`, sel: true },
+	{ icon: '', name: 'app.rs', mark: 'M', size: '18.6 KB', date: `${t.today} 14:01` },
+	{ icon: '', name: 'Cargo.toml', mark: '', size: '1.1 KB', date: '06-28 18:40' },
+	{ icon: '', name: 'sample.pdf', mark: '', size: '312 KB', date: '06-27 11:05' },
+	{ icon: '', name: 'data.csv', mark: '', size: '8.4 KB', date: '06-27 10:58' },
+];
 ---
 
-<div class="term" role="img" aria-label={t.aria}>
+<div class="term not-content" role="img" aria-label={t.aria}>
 	<div class="term-bar">
 		<span class="dot"></span><span class="dot"></span><span class="dot"></span>
 		<span class="term-title">konoma — ~/work/app</span>
@@ -30,28 +44,34 @@ const t =
 	</div>
 	<div class="screens">
 		<div class="screen tree">
-			<div class="trow thead"><span class="chip">TREE</span>&nbsp;&nbsp;sort: name ↑ · path: rel</div>
-			<div class="trow dim">┌ app ─────────────────────────────────────────────┐</div>
-			<div class="trow">│ ▸&nbsp;&nbsp;src&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">--&nbsp;&nbsp;&nbsp;06-30 09:12</span> │</div>
-			<div class="trow sel">│&nbsp;&nbsp;&nbsp;&nbsp;<span class="mark">M</span> README.md&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">4.2 KB&nbsp;&nbsp;{t.today} 14:02</span> │<span class="cursor"></span></div>
-			<div class="trow">│&nbsp;&nbsp;&nbsp;&nbsp;<span class="mark">M</span> app.rs&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">18.6 KB&nbsp;&nbsp;{t.today} 14:01</span> │</div>
-			<div class="trow">│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Cargo.toml&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">1.1 KB&nbsp;&nbsp;06-28 18:40</span> │</div>
-			<div class="trow">│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sample.pdf&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">312 KB&nbsp;&nbsp;06-27 11:05</span> │</div>
-			<div class="trow">│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;data.csv&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="dim">8.4 KB&nbsp;&nbsp;06-27 10:58</span> │</div>
-			<div class="trow dim">└──────────────────────────────────────────────────┘</div>
-			<div class="foot">j/k:move&nbsp;&nbsp;↵:preview&nbsp;&nbsp;/:filter&nbsp;&nbsp;o:git&nbsp;&nbsp;F:follow&nbsp;&nbsp;?:help</div>
+			<div class="thead"><span class="chip">TREE</span><span>sort: name ↑ · path: rel</span></div>
+			<div class="frame">
+				<span class="frame-label">app</span>
+				{
+					rows.map((r) => (
+						<div class:list={['row', { sel: r.sel }]}>
+							<span class="ric">{r.icon}</span>
+							<span class:list={['rmark', { on: r.mark }]}>{r.mark || '·'}</span>
+							<span class="rname">{r.name}</span>
+							<span class="rsize">{r.size}</span>
+							<span class="rdate">{r.date}</span>
+							{r.sel && <span class="cursor" />}
+						</div>
+					))
+				}
+			</div>
+			<div class="foot">j/k:move&ensp;↵:preview&ensp;/:filter&ensp;o:git&ensp;F:follow&ensp;?:help</div>
 		</div>
 		<div class="screen preview">
-			<div class="trow thead"><span class="chip">PREVIEW</span>&nbsp;&nbsp;README.md</div>
-			<div class="trow">&nbsp;</div>
-			<div class="trow md-h">Release checklist</div>
-			<div class="trow md-rule">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</div>
-			<div class="trow"><span class="on"></span>&nbsp;&nbsp;bump version <span class="dim">— {t.toggleNote}</span></div>
-			<div class="trow"><span class="on"></span>&nbsp;&nbsp;update changelog</div>
-			<div class="trow"><span class="dim"></span>&nbsp;&nbsp;tag &amp; publish</div>
-			<div class="trow">&nbsp;</div>
-			<div class="trow">docs: <span class="md-link">CONFIGURATION.md</span> <span class="dim">{t.linkNote}</span></div>
-			<div class="foot">Tab:link&nbsp;&nbsp;Space:toggle&nbsp;&nbsp;/:search&nbsp;&nbsp;R:raw&nbsp;&nbsp;q:back</div>
+			<div class="thead"><span class="chip">PREVIEW</span><span>README.md</span></div>
+			<div class="frame md">
+				<div class="md-h">Release checklist</div>
+				<div class="md-line"><span class="on"></span> bump version <span class="dim">{t.toggleNote}</span></div>
+				<div class="md-line"><span class="on"></span> update changelog</div>
+				<div class="md-line"><span class="dim"></span> tag &amp; publish</div>
+				<div class="md-line md-gap">docs: <span class="md-link">CONFIGURATION.md</span> <span class="dim">{t.linkNote}</span></div>
+			</div>
+			<div class="foot">Tab:link&ensp;Space:toggle&ensp;/:search&ensp;R:raw&ensp;q:back</div>
 		</div>
 	</div>
 </div>
@@ -68,13 +88,16 @@ const t =
 		--t-bark: #87927f;
 		--t-amber: #d9a94e;
 		margin: 2.5rem auto 0;
-		max-width: 46rem;
+		max-width: 44rem;
 		border: 1px solid var(--t-line);
 		border-radius: 10px;
 		background: var(--t-pane);
 		overflow: hidden;
 		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 		text-align: left;
+		font-family: var(--konoma-mono, 'SF Mono', Menlo, Consolas, monospace);
+		font-size: 0.82rem;
+		line-height: 1.6;
 	}
 	.term-bar {
 		display: flex;
@@ -82,7 +105,6 @@ const t =
 		gap: 8px;
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--t-line);
-		font-family: var(--konoma-mono, monospace);
 		font-size: 12px;
 		color: var(--t-bark);
 	}
@@ -91,6 +113,7 @@ const t =
 		height: 10px;
 		border-radius: 50%;
 		background: var(--t-line);
+		flex: none;
 	}
 	.term-title {
 		margin-left: 10px;
@@ -99,18 +122,19 @@ const t =
 		margin-left: auto;
 		color: var(--t-moss);
 	}
+
 	.screens {
 		position: relative;
-		height: 21rem;
-		font-family: var(--konoma-mono, monospace);
-		font-size: 0.82rem;
-		line-height: 1.9;
+		height: 19.5rem;
 		background: var(--t-ink);
 	}
 	.screen {
 		position: absolute;
 		inset: 0;
-		padding: 14px 20px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		padding: 14px 18px 12px;
 		opacity: 0;
 		overflow: hidden;
 	}
@@ -152,7 +176,6 @@ const t =
 			animation: none;
 		}
 		.screen.preview {
-			position: relative;
 			opacity: 1;
 		}
 		.screen.tree {
@@ -162,67 +185,89 @@ const t =
 			animation: none;
 		}
 	}
-	.trow {
-		white-space: pre;
+
+	.thead {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		color: var(--t-bark);
+		flex: none;
+	}
+	.chip {
+		color: var(--t-ink);
+		background: var(--t-leaf);
+		padding: 0 7px;
+		border-radius: 3px;
+		font-weight: 600;
+	}
+
+	.frame {
+		position: relative;
+		border: 1px solid var(--t-line);
+		border-radius: 4px;
+		padding: 0.7rem 0.6rem 0.5rem;
+		flex: none;
+	}
+	.frame-label {
+		position: absolute;
+		top: -0.75em;
+		left: 0.8rem;
+		background: var(--t-ink);
+		padding: 0 0.4em;
+		color: var(--t-bark);
+	}
+	.row {
+		display: flex;
+		align-items: baseline;
+		gap: 0.6ch;
+		padding: 0.05rem 0.5rem;
+		border-radius: 3px;
 		color: var(--t-paper);
 	}
-	.trow .dim,
-	.trow.dim {
-		color: var(--t-bark);
-	}
-	.trow .mark {
-		color: var(--t-moss);
-		font-weight: 600;
-	}
-	.trow.sel {
+	.row.sel {
 		background: rgba(62, 155, 99, 0.16);
-		border-radius: 3px;
 	}
-	.thead {
-		color: var(--t-bark);
+	.ric {
+		width: 1.2ch;
+		flex: none;
+		color: var(--t-paper);
 	}
-	.thead .chip {
-		color: var(--t-ink);
-		background: var(--t-leaf);
-		padding: 1px 7px;
-		border-radius: 3px;
-		font-weight: 600;
+	.rmark {
+		width: 1.2ch;
+		flex: none;
+		color: transparent;
 	}
-	.foot {
-		position: absolute;
-		left: 20px;
-		right: 20px;
-		bottom: 10px;
-		color: var(--t-bark);
-		font-size: 0.72rem;
-		border-top: 1px solid var(--t-line);
-		padding-top: 8px;
-		white-space: pre;
-		overflow: hidden;
-	}
-	.md-h {
-		color: var(--t-leaf);
-		font-weight: 700;
-		font-size: 1rem;
-	}
-	.md-rule {
-		color: var(--t-line);
-	}
-	.on {
+	.rmark.on {
 		color: var(--t-moss);
-	}
-	.md-link {
-		background: var(--t-leaf);
-		color: var(--t-ink);
-		padding: 0 2px;
 		font-weight: 600;
+	}
+	.rname {
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.rsize,
+	.rdate {
+		color: var(--t-bark);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.rsize {
+		width: 7.5ch;
+		text-align: right;
+	}
+	.rdate {
+		width: 12ch;
+		text-align: right;
 	}
 	.cursor {
 		display: inline-block;
 		width: 8px;
-		height: 1rem;
+		height: 0.95rem;
 		background: var(--t-amber);
-		vertical-align: -2px;
+		align-self: center;
+		flex: none;
 		animation: blink 1.2s steps(1) infinite;
 	}
 	@keyframes blink {
@@ -230,10 +275,57 @@ const t =
 			opacity: 0;
 		}
 	}
+
+	.frame.md {
+		padding: 0.8rem 1rem 0.9rem;
+	}
+	.md-h {
+		color: var(--t-leaf);
+		font-weight: 700;
+		font-size: 1rem;
+		border-bottom: 1px solid var(--t-line);
+		padding-bottom: 0.35rem;
+		margin-bottom: 0.55rem;
+	}
+	.md-line {
+		color: var(--t-paper);
+	}
+	.md-line .on {
+		color: var(--t-moss);
+	}
+	.md-gap {
+		margin-top: 0.9rem;
+	}
+	.dim {
+		color: var(--t-bark);
+	}
+	.md-link {
+		background: var(--t-leaf);
+		color: var(--t-ink);
+		padding: 0 2px;
+		font-weight: 600;
+	}
+
+	.foot {
+		margin-top: auto;
+		flex: none;
+		color: var(--t-bark);
+		font-size: 0.72rem;
+		border-top: 1px solid var(--t-line);
+		padding-top: 0.5rem;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+
 	@media (max-width: 40rem) {
+		.term {
+			font-size: 0.72rem;
+		}
+		.rdate {
+			display: none;
+		}
 		.screens {
-			font-size: 0.62rem;
-			height: 17rem;
+			height: 18rem;
 		}
 	}
 </style>
