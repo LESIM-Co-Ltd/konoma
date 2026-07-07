@@ -138,13 +138,17 @@ pub fn render_markdown_tasks(
                                             continue;
                                         }
                                         // from_str_with_options は借用した Text<'_> を返すので即 'static へ複製。
-                                        let rendered =
-                                            tui_markdown::from_str_with_options(&t2, &opts);
-                                        let lines = into_static_lines(rendered);
-                                        // 見出し強調・コードブロックの特殊エリア化を後処理で付与。
-                                        out.extend(decorate_md_lines(
-                                            lines, width, code, theme, icons, tasks,
-                                        ));
+                                        // tui-markdown は特定入力(例: loose リスト直後のタスク項目)で
+                                        // panic する(0.3.7/0.3.8 で確認)。原則#3=クラッシュさせない:
+                                        // 捕捉してそのセグメントだけ素のテキストへ降格する。
+                                        match render_md_segment(&t2, &opts) {
+                                            Some(lines) => out.extend(decorate_md_lines(
+                                                lines, width, code, theme, icons, tasks,
+                                            )),
+                                            None => out.extend(
+                                                t2.lines().map(|l| Line::from(l.to_string())),
+                                            ),
+                                        }
                                     }
                                     HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                                 }
@@ -158,6 +162,21 @@ pub fn render_markdown_tasks(
         }
     }
     out
+}
+
+/// Run tui-markdown on one text segment, catching panics (upstream can panic on some
+/// inputs, e.g. a loose list followed by a task item — seen in 0.3.7/0.3.8). Returns
+/// None on panic so the caller degrades that segment to plain text (principle #3).
+fn render_md_segment(src: &str, opts: &Options<KonomaStyles>) -> Option<Vec<Line<'static>>> {
+    // 既定の panic hook は stderr に書き raw mode の画面を汚すので、捕捉中だけ黙らせる。
+    // (描画はメインスレッドのみ=フックの一時差し替えで実害なし。)
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        into_static_lines(tui_markdown::from_str_with_options(src, opts))
+    }));
+    std::panic::set_hook(prev);
+    r.ok()
 }
 
 // ---- Inline images (MVP: block-level local images) ----
@@ -2002,6 +2021,24 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(markers, vec!["[ ] ", "[x] "], "マーカーは末尾スペース込み");
+    }
+
+    #[test]
+    fn loose_list_task_item_does_not_panic() {
+        // tui-markdown 0.3.7/0.3.8 は「loose リスト(空行区切り)の後のタスク項目」で
+        // panic する(insertion index should be <= len)。konoma は捕捉して当該セグメントを
+        // 素のテキストへ降格し、クラッシュしない(原則#3)。
+        let md = "- a\n\n- [ ] b\n";
+        let lines = render_markdown(md, 60, BG, "TwoDark", false);
+        let all: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            all.iter().any(|t| t.contains("- a")),
+            "内容は読める形で残る: {all:?}"
+        );
+        assert!(all.iter().any(|t| t.contains("[ ] b")), "{all:?}");
     }
 
     #[test]
