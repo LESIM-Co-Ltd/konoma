@@ -2474,7 +2474,7 @@ fn bookmark_set_and_jump_via_marks() {
     // プレビュー中に e を押すと、そのブックマークのファイルが外部エディタの対象になる。
     app.request_edit();
     assert_eq!(
-        app.take_pending_edit().as_deref(),
+        app.take_pending_edit().map(|(p, _)| p).as_deref(),
         Some(f.as_path()),
         "ブックマークのファイルが編集対象になる"
     );
@@ -2498,7 +2498,7 @@ fn bookmark_set_and_jump_via_marks() {
     app.bookmark_list_edit();
     assert!(!app.is_bookmark_list(), "編集で一覧を閉じる");
     assert_eq!(
-        app.take_pending_edit().as_deref(),
+        app.take_pending_edit().map(|(p, _)| p).as_deref(),
         Some(f.as_path()),
         "一覧の e でファイルが編集対象になる"
     );
@@ -2767,7 +2767,9 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
     app.request_edit();
     let got = app.take_pending_edit();
     assert!(
-        got.as_deref().map(|p| p.ends_with("a.rs")).unwrap_or(false),
+        got.as_ref()
+            .map(|(p, _)| p.ends_with("a.rs"))
+            .unwrap_or(false),
         "選択ファイルが編集対象: {got:?}"
     );
     assert!(
@@ -2804,7 +2806,9 @@ fn request_edit_targets_preview_file() {
     app.request_edit();
     let got = app.take_pending_edit();
     assert!(
-        got.as_deref().map(|p| p.ends_with("b.rs")).unwrap_or(false),
+        got.as_ref()
+            .map(|(p, _)| p.ends_with("b.rs"))
+            .unwrap_or(false),
         "プレビュー中ファイルが編集対象: {got:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -4126,6 +4130,67 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 }
 
 #[test]
+fn request_edit_opens_at_windowed_caret_line() {
+    // `e` は windowed プレビュー(text/code)のキャレット行でエディタを開く(1始まり)。
+    // ツリー編集・非 windowed(装飾 Markdown)は行なし(先頭で開く)。
+    let dir = std::env::temp_dir().join("konoma_edit_line_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut content = String::new();
+    for i in 0..200 {
+        content.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(dir.join("big.txt"), content.as_bytes()).unwrap();
+    std::fs::write(dir.join("doc.md"), "# Title\n\nsome text\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    // ① ツリーからの編集: 行なし。
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("big.txt"))
+        .unwrap();
+    app.selected = i;
+    app.request_edit();
+    let (p, line) = app.take_pending_edit().expect("edit requested");
+    assert!(p.ends_with("big.txt"));
+    assert_eq!(line, None, "ツリー編集は行を渡さない");
+
+    // ② windowed プレビュー: キャレット行 + 1。
+    app.tree_activate().unwrap();
+    assert!(app.is_windowed());
+    app.preview_viewport = 10;
+    app.preview_scroll(12); // キャレット 0→12
+    assert_eq!(app.preview_cursor_line, 12);
+    app.request_edit();
+    let (p, line) = app.take_pending_edit().expect("edit requested");
+    assert!(p.ends_with("big.txt"));
+    assert_eq!(
+        line,
+        Some(13),
+        "キャレット 12 行目 → エディタは 13 行目(1始まり)"
+    );
+
+    // ③ 非 windowed(装飾 Markdown): reflow で 1:1 対応が無いので行なし。
+    app.back_to_tree();
+    let j = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = j;
+    app.tree_activate().unwrap();
+    assert!(!app.is_windowed(), "装飾 Markdown は非 windowed");
+    app.request_edit();
+    let (p, line) = app.take_pending_edit().expect("edit requested");
+    assert!(p.ends_with("doc.md"));
+    assert_eq!(line, None, "装飾 Markdown は行を渡さない(先頭で開く)");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn preview_visual_selection_copies_logical_lines() {
     let dir = std::env::temp_dir().join("konoma_preview_visual_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -5039,6 +5104,101 @@ fn global_bookmark_display_is_absolute() {
         "HOME 外はフル絶対のまま"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
+    // 既定(confirm_bookmark_overwrite=true): 別パスへの上書きは確認ダイアログを出し、
+    // 即座には書き換えない。y(dialog_confirm(true))で上書き・n(false)で元のまま。
+    let root = std::env::temp_dir().join("konoma_bm_overwrite_confirm");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"a").unwrap();
+    std::fs::write(root.join("b.txt"), b"b").unwrap();
+    let root = root.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase"), &root);
+    let a = root.join("a.txt");
+    let b = root.join("b.txt");
+
+    // まず a.txt を 'x' に登録(確認は出ない=未使用キー)。
+    app.enter_preview(&a);
+    app.start_mark_set();
+    app.mark_input('x');
+    assert_eq!(app.bookmarks.get('x'), Some(a.clone()));
+    assert!(app.dialog.is_none(), "未使用キーは確認ダイアログ無し");
+
+    // b.txt を同じ 'x' に登録しようとすると確認ダイアログが開き、まだ上書きしない。
+    app.enter_preview(&b);
+    app.start_mark_set();
+    app.mark_input('x');
+    assert!(
+        app.dialog.is_some(),
+        "別パスへの上書きは確認ダイアログを出す"
+    );
+    assert!(
+        app.confirm_is_bookmark(),
+        "ブックマーク確認として判定される"
+    );
+    assert_eq!(app.bookmarks.get('x'), Some(a.clone()), "確認前は元のまま");
+
+    // n=取消: 元のまま。
+    app.dialog_confirm(false).unwrap();
+    assert!(app.dialog.is_none());
+    assert_eq!(app.bookmarks.get('x'), Some(a.clone()), "取消で元のまま");
+
+    // 再度出して y=上書き: b.txt に切り替わる。
+    app.start_mark_set();
+    app.mark_input('x');
+    assert!(app.dialog.is_some());
+    app.dialog_confirm(true).unwrap();
+    assert!(app.dialog.is_none());
+    assert_eq!(app.bookmarks.get('x'), Some(b.clone()), "y で上書き成立");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
+    // 確認を出さない2ケース: ①同じパスの再登録(上書きにならない) ②confirm_bookmark_overwrite=false。
+    let root = std::env::temp_dir().join("konoma_bm_overwrite_skip");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"a").unwrap();
+    std::fs::write(root.join("b.txt"), b"b").unwrap();
+    let root = root.canonicalize().unwrap();
+    let a = root.join("a.txt");
+    let b = root.join("b.txt");
+
+    // ① 確認 ON でも「同じパスの再登録」は確認を出さず即登録。
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase1"), &root);
+    app.enter_preview(&a);
+    app.start_mark_set();
+    app.mark_input('x');
+    app.start_mark_set();
+    app.mark_input('x'); // 同じ a.txt を再登録
+    assert!(app.dialog.is_none(), "同一パス再登録は確認不要");
+    assert_eq!(app.bookmarks.get('x'), Some(a.clone()));
+
+    // ② confirm_bookmark_overwrite=false なら別パスでも即上書き。
+    let mut cfg = Config::default();
+    cfg.ui.confirm_bookmark_overwrite = false;
+    let mut app = App::new(root.clone(), cfg).unwrap();
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase2"), &root);
+    app.enter_preview(&a);
+    app.start_mark_set();
+    app.mark_input('x');
+    app.enter_preview(&b);
+    app.start_mark_set();
+    app.mark_input('x'); // 別パスだが確認オフ
+    assert!(
+        app.dialog.is_none(),
+        "confirm オフは確認ダイアログを出さない"
+    );
+    assert_eq!(app.bookmarks.get('x'), Some(b.clone()), "即上書き");
+
+    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]

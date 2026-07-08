@@ -346,8 +346,9 @@ fn run(
         }
 
         // 外部エディタ要求(`e`): TUI を退避して同期起動し、終了後に復帰＋プレビュー再読込。
-        if let Some(path) = app.take_pending_edit() {
-            run_editor(terminal, app, &path)?;
+        // プレビューから開いた時は表示中の行(line)でエディタを開く。
+        if let Some((path, line)) = app.take_pending_edit() {
+            run_editor(terminal, app, &path, line)?;
             needs_redraw = true;
         }
 
@@ -506,8 +507,9 @@ fn run_editor(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     path: &std::path::Path,
+    line: Option<usize>,
 ) -> Result<()> {
-    let argv = app.cfg.editor.resolve(path);
+    let argv = app.cfg.editor.resolve(path, line);
     let Some((prog, args)) = argv.split_first() else {
         return Ok(());
     };
@@ -808,6 +810,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::TabGoto(i) => app.tab_goto(i as usize),
         Action::ToggleHelp => app.toggle_help(),
         Action::CopyPath(kind) => app.copy_path(kind),
+        Action::CopyCodeBlock => app.md_copy_focused_code(),
+        Action::PasteJump => app.paste_jump(),
         Action::Quit => {
             // confirm_quit が ON なら確認ダイアログを開いてまだ終了しない。OFF なら即終了。
             if app.request_quit() {
@@ -900,6 +904,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::LinkFocusNext => app.md_focus_move(1),
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
+        Action::OpenLinkNewTab => app.md_open_focused_link_new_tab()?,
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
         Action::ImageZoomReset => app.image_zoom_reset(),
@@ -1081,6 +1086,12 @@ fn handle_modal_confirm(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bo
             | KeyCode::Char('Q')
             | KeyCode::Enter => return Ok(true),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dialog_cancel(),
+            _ => {}
+        },
+        // ブックマーク上書き確認: y/Enter=上書き / n/Esc=取消。
+        Surface::DialogConfirmBookmark => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => app.dialog_confirm(true)?,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dialog_confirm(false)?,
             _ => {}
         },
         _ => {}
@@ -1271,14 +1282,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // 4) keymap 解決 (1 入力 = HashMap 1〜2 参照・要件5)。
     match app.keymaps.resolve(sfc, None, kp) {
         Resolution::EnterLeader(id) => {
-            // 装飾 Markdown でコードブロックにフォーカス中は、コピーリーダー(既定 `y`)を
-            // 横取りしてそのブロックを直接コピー(which-key を出さず一発・他のコピー操作と
-            // 同じ `y`)。非フォーカス/他面ではリーダーを開いて従来のパスコピーメニュー。
-            if id == keymap::LeaderId::Copy && sfc == Surface::PreviewText && app.md_focused_code()
-            {
-                app.md_copy_focused_code();
-                return Ok(false);
-            }
+            // コピーリーダー(既定 `y`)は常に which-key メニューを開く。装飾 Markdown で
+            // コードブロックにフォーカス中は、そのメニューに `c:code block` が現れて選べる
+            // (whichkey_spans が面/フォーカスで出し分け)。従来のパスコピー n/r/f/p/@ と両立。
             app.pending_leader = Some(id);
             Ok(false)
         }

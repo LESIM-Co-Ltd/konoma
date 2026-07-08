@@ -50,7 +50,9 @@ impl Default for GitConfig {
 
 /// External editor settings (FR: delegate editing with `e`). **Configurable per extension.**
 /// Priority: per-extension `[editor.ext]` -> `editor.command` (global default) -> `$VISUAL` -> `$EDITOR` -> `vim`.
-/// Values are command + args (whitespace-separated). If `{path}` is present the file path is substituted there, otherwise appended at the end.
+/// Values are command + args (whitespace-separated). `{path}` is substituted with the file path (otherwise
+/// appended at the end); `{line}` with the current preview line. Without a `{line}` token, common editors
+/// still open at the line automatically (vim `+N`, VS Code `-g path:N`, Sublime/Helix `path:N`).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct EditorConfig {
@@ -76,9 +78,10 @@ impl EditorConfig {
         })
     }
 
-    /// Resolves the argv of the editor for editing `path`.
+    /// Resolves the argv of the editor for editing `path`, optionally jumping to `line` (1-based).
     /// Priority: per-extension -> command -> `$VISUAL` -> `$EDITOR` -> `vim`. `{path}` substitution or appended at the end.
-    pub fn resolve(&self, path: &Path) -> Vec<String> {
+    /// `line` matches the on-screen preview position; see `build_argv`/`apply_editor_line` for how it reaches the editor.
+    pub fn resolve(&self, path: &Path, line: Option<usize>) -> Vec<String> {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -89,7 +92,7 @@ impl EditorConfig {
             .or_else(|| env_nonempty("VISUAL"))
             .or_else(|| env_nonempty("EDITOR"))
             .unwrap_or_else(|| "vim".to_string());
-        build_argv(&tmpl, path)
+        build_argv(&tmpl, path, line)
     }
 }
 
@@ -101,25 +104,75 @@ fn env_nonempty(key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Splits a command template (whitespace-separated) into argv and inserts the file path.
-/// If a token contains `{path}` it is substituted, otherwise appended at the end. An empty template is `vim <path>`.
-fn build_argv(tmpl: &str, path: &Path) -> Vec<String> {
+/// Splits a command template (whitespace-separated) into argv and inserts the file path (and,
+/// optionally, a line number). A token containing `{path}` is substituted, otherwise the path is
+/// appended at the end. `{line}` is substituted with `line` (or 1 when unknown). When `line` is
+/// present but the template has no `{line}` token, `apply_editor_line` injects the right line flag
+/// for common editors. An empty template is `vim <path>`.
+fn build_argv(tmpl: &str, path: &Path, line: Option<usize>) -> Vec<String> {
     let p = path.to_string_lossy().to_string();
     let mut argv: Vec<String> = tmpl.split_whitespace().map(|s| s.to_string()).collect();
     if argv.is_empty() {
-        return vec!["vim".to_string(), p];
+        argv.push("vim".to_string());
     }
-    let mut substituted = false;
+    let mut path_sub = false;
+    let mut line_sub = false;
     for a in argv.iter_mut() {
         if a.contains("{path}") {
             *a = a.replace("{path}", &p);
-            substituted = true;
+            path_sub = true;
+        }
+        if a.contains("{line}") {
+            *a = a.replace("{line}", &line.unwrap_or(1).to_string());
+            line_sub = true;
         }
     }
-    if !substituted {
+    if !path_sub {
         argv.push(p);
     }
+    if let Some(l) = line {
+        if !line_sub {
+            apply_editor_line(&mut argv, l);
+        }
+    }
     argv
+}
+
+/// When the editor template has no explicit `{line}` token, inject a line-jump argument for common
+/// editors so the file opens at `line` (1-based). Recognizes the vi/vim family and terminal editors
+/// that accept `+N`, VS Code (`-g <path>:<line>`), and Sublime/Helix/Zed (`<path>:<line>`). Unknown
+/// editors are left unchanged (they simply open at the top — configure `{line}` for them explicitly).
+fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
+    let Some(prog) = argv.first() else {
+        return;
+    };
+    let name = Path::new(prog)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match name.as_str() {
+        // vi/vim family + terminal editors that accept `+N` before the file.
+        "vim" | "nvim" | "vi" | "view" | "gvim" | "mvim" | "vimx" | "neovim" | "nano" | "pico"
+        | "emacs" | "emacsclient" | "gedit" | "kak" | "kakoune" | "joe" | "jed" | "ne"
+        | "mcedit" | "micro" => {
+            argv.insert(1, format!("+{line}"));
+        }
+        // VS Code family: `-g <path>:<line>`.
+        "code" | "code-insiders" | "codium" | "vscodium" | "cursor" | "windsurf" => {
+            if let Some(last) = argv.last_mut() {
+                *last = format!("{last}:{line}");
+            }
+            argv.insert(1, "-g".to_string());
+        }
+        // Sublime / Helix / Zed: `<path>:<line>`.
+        "subl" | "sublime_text" | "hx" | "helix" | "zed" => {
+            if let Some(last) = argv.last_mut() {
+                *last = format!("{last}:{line}");
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Keybinding settings (`[keys]`).
@@ -258,6 +311,11 @@ pub struct UiConfig {
     /// Ask for confirmation before quitting the whole app (`q` at the top level / `Q` from anywhere). Default true.
     /// When true, `q`/`Q` open a yes/no dialog (`q`/`y`/Enter = quit, `n`/Esc = cancel). false = quit immediately.
     pub confirm_quit: bool,
+    /// Ask for confirmation before **overwriting an existing bookmark**. Default true. When true, setting
+    /// a bookmark (`m` + a letter) whose letter already points to a **different** path opens a yes/no
+    /// dialog (`y`/Enter = overwrite, `n`/Esc = cancel). false = overwrite silently. Setting a fresh
+    /// letter, or re-setting the same path, never asks.
+    pub confirm_bookmark_overwrite: bool,
     /// What follow mode (`F`) opens when it jumps to a changed file. `"diff"` (default) = the full-screen
     /// git diff of that file (hunk-level before/after — the way hunk/livediff/diffpane present agent
     /// edits; untracked files show as an all-added diff); `"file"` = the normal content preview scrolled
@@ -447,6 +505,7 @@ impl Default for UiConfig {
             graph_base_branches: Vec::new(),
             commit_meta_align: "right".into(),
             confirm_quit: true,
+            confirm_bookmark_overwrite: true,
             csv_rainbow: true,
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],
@@ -677,16 +736,62 @@ mod tests {
     #[test]
     fn editor_build_argv_substitutes_or_appends_path() {
         let path = Path::new("/tmp/a.rs");
-        // {path} があればその位置へ置換。
+        // {path} があればその位置へ置換(行指定なし)。
         assert_eq!(
-            build_argv("code -g {path}:1", path),
+            build_argv("code -g {path}:1", path, None),
             vec!["code", "-g", "/tmp/a.rs:1"]
         );
         // 無ければ末尾に追加。
-        assert_eq!(build_argv("nvim", path), vec!["nvim", "/tmp/a.rs"]);
-        assert_eq!(build_argv("code -w", path), vec!["code", "-w", "/tmp/a.rs"]);
+        assert_eq!(build_argv("nvim", path, None), vec!["nvim", "/tmp/a.rs"]);
+        assert_eq!(
+            build_argv("code -w", path, None),
+            vec!["code", "-w", "/tmp/a.rs"]
+        );
         // 空テンプレは vim フォールバック。
-        assert_eq!(build_argv("   ", path), vec!["vim", "/tmp/a.rs"]);
+        assert_eq!(build_argv("   ", path, None), vec!["vim", "/tmp/a.rs"]);
+    }
+
+    #[test]
+    fn editor_build_argv_opens_at_line() {
+        let path = Path::new("/tmp/a.rs");
+        // {line} トークンはその位置に行番号を差し込む(明示テンプレ優先=注入しない)。
+        assert_eq!(
+            build_argv("code -g {path}:{line}", path, Some(42)),
+            vec!["code", "-g", "/tmp/a.rs:42"]
+        );
+        assert_eq!(
+            build_argv("nvim +{line} {path}", path, Some(42)),
+            vec!["nvim", "+42", "/tmp/a.rs"]
+        );
+        // {line} トークン無し+行あり=既知エディタごとに自動注入。
+        // vim 系は +N を先頭引数に。
+        assert_eq!(
+            build_argv("vim", path, Some(42)),
+            vec!["vim", "+42", "/tmp/a.rs"]
+        );
+        assert_eq!(
+            build_argv("nvim", path, Some(7)),
+            vec!["nvim", "+7", "/tmp/a.rs"]
+        );
+        // 空テンプレ(=vim フォールバック)でも行が効く。
+        assert_eq!(
+            build_argv("   ", path, Some(9)),
+            vec!["vim", "+9", "/tmp/a.rs"]
+        );
+        // VS Code は -g path:line。
+        assert_eq!(
+            build_argv("code -w", path, Some(15)),
+            vec!["code", "-g", "-w", "/tmp/a.rs:15"]
+        );
+        // Sublime/Helix は path:line。
+        assert_eq!(build_argv("hx", path, Some(3)), vec!["hx", "/tmp/a.rs:3"]);
+        // 未知エディタは注入せず(先頭=トップで開く)。
+        assert_eq!(
+            build_argv("weirded", path, Some(3)),
+            vec!["weirded", "/tmp/a.rs"]
+        );
+        // 行なし(ツリーからの編集など)は従来どおり注入しない。
+        assert_eq!(build_argv("vim", path, None), vec!["vim", "/tmp/a.rs"]);
     }
 
     #[test]
@@ -717,11 +822,14 @@ mod tests {
         e.ext.insert("md".into(), "code -w".into());
         // 大文字拡張子でも小文字照合でヒット、末尾にパス追加。
         assert_eq!(
-            e.resolve(Path::new("/x/NOTE.MD")),
+            e.resolve(Path::new("/x/NOTE.MD"), None),
             vec!["code", "-w", "/x/NOTE.MD"]
         );
         // 未登録拡張子は command。
-        assert_eq!(e.resolve(Path::new("/x/a.rs")), vec!["nvim", "/x/a.rs"]);
+        assert_eq!(
+            e.resolve(Path::new("/x/a.rs"), None),
+            vec!["nvim", "/x/a.rs"]
+        );
     }
 
     #[test]
@@ -1016,14 +1124,14 @@ d = "refresh"
             ext: HashMap::new(),
         };
         ec.ext.insert("rs".into(), "nvim {path}".into());
-        let argv = ec.resolve(Path::new("/x/main.rs"));
+        let argv = ec.resolve(Path::new("/x/main.rs"), None);
         assert_eq!(
             argv,
             vec!["nvim".to_string(), "/x/main.rs".to_string()],
             "{{path}} 置換"
         );
         // 2) 拡張子未指定なら command(末尾追記)。
-        let argv = ec.resolve(Path::new("/x/readme.md"));
+        let argv = ec.resolve(Path::new("/x/readme.md"), None);
         assert_eq!(
             argv,
             vec![
@@ -1044,19 +1152,19 @@ d = "refresh"
         std::env::set_var("VISUAL", "myvisual");
         std::env::set_var("EDITOR", "myeditor");
         assert_eq!(
-            empty.resolve(Path::new("/x/f")),
+            empty.resolve(Path::new("/x/f"), None),
             vec!["myvisual".to_string(), "/x/f".to_string()],
             "VISUAL 優先"
         );
         std::env::remove_var("VISUAL");
         assert_eq!(
-            empty.resolve(Path::new("/x/f")),
+            empty.resolve(Path::new("/x/f"), None),
             vec!["myeditor".to_string(), "/x/f".to_string()],
             "次に EDITOR"
         );
         std::env::remove_var("EDITOR");
         assert_eq!(
-            empty.resolve(Path::new("/x/f")),
+            empty.resolve(Path::new("/x/f"), None),
             vec!["vim".to_string(), "/x/f".to_string()],
             "最後は vim"
         );

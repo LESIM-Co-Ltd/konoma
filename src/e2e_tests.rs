@@ -503,6 +503,87 @@ fn e2e_bookmarks_set_list_jump() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+#[test]
+fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
+    // 既定(confirm_bookmark_overwrite=true): 使用済みキーへ別パスを登録すると確認ダイアログ。
+    // n=取消で元のまま・y=上書きで新パスへ。
+    let root = sandbox("bm_overwrite");
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    seed_files(&proj);
+    let proj = canon(&proj);
+    let mut s = Sim::new(&proj);
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
+
+    // notes.txt を 'b' に登録(未使用キー=確認無し)。
+    s.select("notes.txt");
+    s.keys("mb");
+    s.see("bookmarked");
+    let notes = s.app.bookmarks.get('b').expect("b set");
+
+    // data.csv を同じ 'b' に登録 → 確認ダイアログ。まだ上書きしない。
+    s.select("data.csv");
+    s.keys("mb");
+    s.see("OVERWRITE?");
+    s.see("Overwrite bookmark");
+    assert_eq!(
+        s.app.bookmarks.get('b'),
+        Some(notes.clone()),
+        "確認前は元のまま"
+    );
+
+    // n=取消。
+    s.key('n');
+    s.see("canceled");
+    assert_eq!(
+        s.app.bookmarks.get('b'),
+        Some(notes.clone()),
+        "取消で notes.txt のまま"
+    );
+
+    // 再度出して y=上書き。
+    s.select("data.csv");
+    s.keys("mb");
+    s.see("OVERWRITE?");
+    s.key('y');
+    assert!(
+        s.app
+            .bookmarks
+            .get('b')
+            .is_some_and(|p| p.ends_with("data.csv")),
+        "y で data.csv へ上書き"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn e2e_bookmark_overwrite_off_applies_silently() {
+    // confirm_bookmark_overwrite=false: 別パスでも確認せず即上書き。
+    let root = sandbox("bm_overwrite_off");
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    seed_files(&proj);
+    let proj = canon(&proj);
+    let mut cfg = Config::default();
+    cfg.ui.confirm_bookmark_overwrite = false;
+    let mut s = Sim::with_config(&proj, cfg);
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
+
+    s.select("notes.txt");
+    s.keys("mb");
+    s.select("data.csv");
+    s.keys("mb");
+    s.dont_see("OVERWRITE?");
+    assert!(
+        s.app
+            .bookmarks
+            .get('b')
+            .is_some_and(|p| p.ends_with("data.csv")),
+        "confirm オフは即上書き"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
 // =============================================================================
 // git: ハブ・stage/unstage・diff・変更フィルタ・フォロー
 // =============================================================================
@@ -1409,8 +1490,8 @@ fn e2e_md_raw_source_toggle() {
 #[test]
 fn e2e_md_code_block_tab_focus_and_copy() {
     // Tab がリンク→コードブロック→タスクを文書順で巡回し、コードブロックにフォーカス中は
-    // `y`(他のコピー操作と同じキー)でその生ソースをコピーできる(値は clipboard 非依存の
-    // getter で照合)。Enter はコードブロックでは何もしない。
+    // `y` でコピーメニューが開き、そこに現れる `c` でその生ソースをコピーできる(値は
+    // clipboard 非依存の getter で照合)。Enter はコードブロックでは何もしない。
     let dir = sandbox("md_code_copy");
     seed_files(&dir);
     std::fs::write(
@@ -1434,13 +1515,18 @@ fn e2e_md_code_block_tab_focus_and_copy() {
     // Enter はコードブロックでは無操作(which-key も出ず flash も出ない)。
     s.enter();
     assert!(s.app.flash.is_none(), "Enter はコードブロックで何もしない");
-    // `y` でコピー(clipboard は環境依存なので flash が立つことだけ確認)。
+    // `y` は横取りせずコピーメニューを開く(which-key)。フォーカス中は `c:code block` が現れる。
     s.key('y');
-    assert!(
-        s.app.pending_leader.is_none(),
-        "y はコピーリーダーを開かず直コピー"
+    assert_eq!(
+        s.app.pending_leader,
+        Some(crate::keymap::LeaderId::Copy),
+        "y はコピーリーダー(which-key)を開く"
     );
-    assert!(s.app.flash.is_some(), "y でコピー通知が出る");
+    s.see("code block"); // メニューにコードブロックコピーが出る
+                         // `c` でコピー(clipboard は環境依存なので flash が立つことだけ確認)。
+    s.key('c');
+    assert!(s.app.pending_leader.is_none(), "c で確定=リーダー閉じる");
+    assert!(s.app.flash.is_some(), "y c でコピー通知が出る");
     s.tab(); // タスク
     assert!(!s.app.md_focused_code());
     std::fs::remove_dir_all(&dir).ok();
@@ -1718,5 +1804,205 @@ fn e2e_busy_indicator_absent_when_idle() {
         !s2.app.busy_indicator_active(),
         "busy_indicator=false は常に非アクティブ"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// Paste-jump (P): クリップボードのパス/GitHub リンク → その位置へ移動
+// =============================================================================
+
+#[test]
+fn e2e_paste_jump_local_path_with_line() {
+    // ローカル相対パス + `:行` を渡すと、その位置へ移動してプレビューを開き、指定行まで
+    // スクロールする(先頭マーカーは画面外へ)。不在パスは flash 通知でクラッシュしない。
+    let dir = sandbox("paste_jump_local");
+    seed_files(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    // 素テキスト(windowed・ハイライト待ちが無い=同期ハーネスで決定的)。行ジャンプ経路は Code と同一。
+    let mut body = String::new();
+    for i in 1..=60 {
+        if i == 1 {
+            body.push_str("LINE_ONE_MARKER\n");
+        } else if i == 30 {
+            body.push_str("LINE_THIRTY_MARKER\n");
+        } else {
+            body.push_str(&format!("plain line {i}\n"));
+        }
+    }
+    std::fs::write(dir.join("src/deep.txt"), body).unwrap();
+    let dir = canon(&dir);
+
+    let mut s = Sim::new(&dir);
+    // ツリー(プレビュー未開)から貼り付けジャンプ。paste_jump_from はクリップボード非依存の pub 入口。
+    s.app.paste_jump_from("src/deep.txt:30");
+    s.draw();
+    assert_eq!(s.app.mode, Mode::Preview, "ファイルはプレビューで開く");
+    assert!(
+        s.app
+            .preview_path
+            .as_deref()
+            .map(|p| p.ends_with("src/deep.txt"))
+            .unwrap_or(false),
+        "deep.txt がプレビュー対象: {:?}",
+        s.app.preview_path
+    );
+    s.see("LINE_THIRTY_MARKER"); // 30 行目までスクロールした
+    s.dont_see("LINE_ONE_MARKER"); // 先頭は画面外＝実際にスクロールしている
+
+    // 見つからないパスは flash で通知し、クラッシュしない(原則#3)。
+    s.app.paste_jump_from("does/not/exist.rs");
+    s.draw();
+    assert!(
+        s.app
+            .flash
+            .as_deref()
+            .map(|f| f.contains("exist.rs"))
+            .unwrap_or(false),
+        "不在パスは flash 通知: {:?}",
+        s.app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_paste_jump_github_url_switches_root() {
+    // repo のサブディレクトリで konoma を開いた状態で、その repo の別ディレクトリを指す GitHub blob
+    // URL を貼ると: ①URL の owner/repo/blob/ref を落として手元の repo(workdir)基準でファイルを解決し、
+    // ②対象が現在の root 外なので root を repo(workdir)へ切替えて reveal + preview する。
+    let dir = sandbox("paste_jump_url");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "pub fn hi() {}\n").unwrap();
+    std::fs::write(dir.join("docs/guide.md"), "# GUIDE_MARKER\n\nbody\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+
+    let repo = canon(&dir);
+    let subdir = repo.join("src");
+    // konoma をサブディレクトリ(src)で起動。docs/guide.md はこの root の外。
+    let mut s = Sim::new(&subdir);
+    assert_eq!(s.app.root, subdir, "起動 root は src サブディレクトリ");
+
+    // リポジトリ名(owner/name)が手元と違っても、末尾サフィックス docs/guide.md が実在すれば開ける。
+    s.app
+        .paste_jump_from("https://github.com/some-owner/some-name/blob/main/docs/guide.md");
+    s.draw();
+
+    assert_eq!(s.app.root, repo, "root が repo(workdir)へ切替わる");
+    assert_eq!(s.app.mode, Mode::Preview, "guide.md をプレビューで開く");
+    assert!(
+        s.app
+            .preview_path
+            .as_deref()
+            .map(|p| p.ends_with("docs/guide.md"))
+            .unwrap_or(false),
+        "guide.md がプレビュー対象: {:?}",
+        s.app.preview_path
+    );
+    s.see("GUIDE_MARKER");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// Markdown リンクを別タブで開く (Ctrl-t)
+// =============================================================================
+
+#[test]
+fn e2e_md_link_ctrl_t_opens_in_new_tab() {
+    // Markdown のローカルリンクにフォーカスして Ctrl-t を押すと、リンク先を**別タブ**で開く。
+    // 元のドキュメントのタブは残り、[ で戻れる。Enter(同タブ)は従来どおり。
+    let dir = sandbox("md_link_newtab");
+    seed_files(&dir);
+    std::fs::write(dir.join("target.txt"), "TARGET_FILE_MARKER\nmore lines\n").unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        "# DOC_HEADING\n\nsee [go](./target.txt) here.\n",
+    )
+    .unwrap();
+    let dir = canon(&dir);
+
+    let mut s = Sim::new(&dir);
+    s.select("doc.md");
+    s.enter();
+    s.see("DOC_HEADING");
+    assert_eq!(s.app.tab_count(), 1, "最初は1タブ");
+
+    s.tab(); // リンク "go" にフォーカス
+    assert!(s.app.focused_item().is_some(), "リンクにフォーカス");
+
+    s.ctrl('t'); // 別タブで開く
+    assert_eq!(s.app.tab_count(), 2, "別タブが増える");
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(
+        s.app
+            .preview_path
+            .as_deref()
+            .map(|p| p.ends_with("target.txt"))
+            .unwrap_or(false),
+        "新タブは target.txt を開く: {:?}",
+        s.app.preview_path
+    );
+    s.see("TARGET_FILE_MARKER");
+
+    // 元のドキュメントのタブは残っている: [ (tab_prev) で戻ると doc.md のまま。
+    s.key('[');
+    assert!(
+        s.app
+            .preview_path
+            .as_deref()
+            .map(|p| p.ends_with("doc.md"))
+            .unwrap_or(false),
+        "元タブは doc.md のまま: {:?}",
+        s.app.preview_path
+    );
+    s.see("DOC_HEADING");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// タブ切替でアクティブになったタブをディスクから再読み込み
+// =============================================================================
+
+#[test]
+fn e2e_tab_switch_reloads_tree_from_disk() {
+    // ファイル監視はアクティブ root しか見ないので、裏に居たタブの外部変更はスナップショットのまま。
+    // タブに切替えると refresh_fs で再読み込みされ、裏で作成されたファイルがツリーに現れる。
+    let dir = sandbox("tab_switch_reload");
+    seed_files(&dir);
+    let dir = canon(&dir);
+
+    let mut s = Sim::new(&dir);
+    s.dont_see("ZZ_NEW_FILE.txt");
+
+    // 新規タブ(同じ root)を作り、そちらをアクティブにする(タブ1 は裏へ)。
+    s.key('t');
+    assert_eq!(s.app.tab_count(), 2, "タブが2つ");
+
+    // タブ1 が裏に居る間に、外部でファイルを作成する。
+    std::fs::write(dir.join("ZZ_NEW_FILE.txt"), "hi\n").unwrap();
+
+    // タブ1 へ戻る([ = tab_prev)。切替時の再読み込みで新規ファイルが現れるはず。
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0, "タブ1 に戻る");
+    assert!(
+        s.app
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("ZZ_NEW_FILE.txt")),
+        "タブ切替でツリーが再読み込みされ新規ファイルが現れる"
+    );
+    s.see("ZZ_NEW_FILE.txt");
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -85,6 +85,13 @@ impl App {
     pub fn confirm_is_quit(&self) -> bool {
         matches!(self.dialog.as_ref().map(|d| &d.op), Some(PendingOp::Quit))
     }
+    /// Whether the current confirm dialog is a bookmark-overwrite confirmation (own chip/footer wording).
+    pub fn confirm_is_bookmark(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::BookmarkOverwrite { .. })
+        )
+    }
 
     /// Receive a paste from the terminal (including drag-and-drop). While input is active (dialog input / filter /
     /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,

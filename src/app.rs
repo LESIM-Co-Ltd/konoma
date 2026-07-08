@@ -23,6 +23,7 @@ mod bookmark_actions;
 mod file_actions;
 mod git_view;
 mod md_tasks;
+mod paste_jump;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -63,6 +64,7 @@ pub enum InternalMode {
     DeleteConfirm,
     DropConfirm,
     QuitConfirm,
+    BookmarkConfirm,
     GitChanges,
     GitDiff,
     Commit,
@@ -274,6 +276,8 @@ enum PendingOp {
     DropTransfer { sources: Vec<PathBuf>, dir: PathBuf },
     /// Quit the whole app. A confirmation is requested before exiting (see `ui.confirm_quit`).
     Quit,
+    /// Overwrite an existing bookmark under `key` with `target` (confirmation via `ui.confirm_bookmark_overwrite`).
+    BookmarkOverwrite { key: char, target: PathBuf },
 }
 
 /// A confirmation (yes/no) or text-input modal. On confirm, calls fileops according to `op`.
@@ -538,9 +542,10 @@ pub struct App {
     /// Frame index of the central spinner (advanced by the run loop while waiting on the indicator = animation).
     spinner_frame: usize,
 
-    /// The file requested for external-editor launch via `e`. The run loop takes it, suspends the TUI, and launches
-    /// (because entering/leaving the terminal must happen on the render thread, here we only raise the "request").
-    pending_edit: Option<PathBuf>,
+    /// The file requested for external-editor launch via `e`, plus the 1-based line to open at (matching
+    /// the on-screen preview position; None = open at the top). The run loop takes it, suspends the TUI, and
+    /// launches (because entering/leaving the terminal must happen on the render thread, here we only raise the "request").
+    pending_edit: Option<(PathBuf, Option<usize>)>,
 
     /// Flag requesting launch of an external git tool (lazygit, etc.) via `O`. The run loop takes it, suspends the TUI, and launches.
     pending_git_tool: bool,
@@ -1289,6 +1294,10 @@ impl App {
             return Some(match &d.kind {
                 // アプリ終了確認は非破壊。削除/ドロップとは別チップ/フッターにする。
                 DialogKind::Confirm { .. } if self.confirm_is_quit() => InternalMode::QuitConfirm,
+                // ブックマーク上書き確認も非破壊=別チップ/フッター。
+                DialogKind::Confirm { .. } if self.confirm_is_bookmark() => {
+                    InternalMode::BookmarkConfirm
+                }
                 // D&D 転送は破壊的でないので削除確認とは別チップ/フッターにする。
                 DialogKind::Confirm { .. } if self.confirm_is_drop() => InternalMode::DropConfirm,
                 DialogKind::Confirm { .. } => InternalMode::DeleteConfirm,
@@ -1371,6 +1380,9 @@ impl App {
             if self.dialog_is_confirm() {
                 if self.confirm_is_quit() {
                     return S::DialogConfirmQuit;
+                }
+                if self.confirm_is_bookmark() {
+                    return S::DialogConfirmBookmark;
                 }
                 if self.confirm_is_drop() {
                     return S::DialogConfirmDrop;
@@ -1940,6 +1952,7 @@ impl App {
             | PendingOp::GitCreateBranch
             | PendingOp::GitDeleteBranch { .. }
             | PendingOp::DropTransfer { .. }
+            | PendingOp::BookmarkOverwrite { .. }
             | PendingOp::Quit => {}
         }
         Ok(())
@@ -2030,6 +2043,8 @@ impl App {
             },
             // ブランチ削除(安全): git branch -d。失敗(未マージ等)は git の stderr を flash。
             PendingOp::GitDeleteBranch { name } => self.git_delete_branch(&name, false),
+            // ブックマーク上書きの確定: 実際に登録する(mark_input と同じ経路)。
+            PendingOp::BookmarkOverwrite { key, target } => self.perform_mark_set(key, target),
             _ => {}
         }
         Ok(())
@@ -2507,6 +2522,7 @@ impl App {
 
     /// `e`: decide the target to open in the external editor and raise the request. Tree=the selected file / Preview=the file being shown.
     /// For a directory or no target, notify via flash and do nothing (only files can be edited).
+    /// In Preview the editor is asked to open at the on-screen position (see `preview_edit_line`).
     pub fn request_edit(&mut self) {
         let target = match self.mode {
             Mode::Tree => match self.entries.get(self.selected) {
@@ -2520,13 +2536,21 @@ impl App {
             Mode::Preview => self.preview_path.clone(),
         };
         match target {
-            Some(p) => self.pending_edit = Some(p),
+            Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
     }
 
-    /// Taken by the run loop: if set, return the editor-launch target path and clear it.
-    pub fn take_pending_edit(&mut self) -> Option<PathBuf> {
+    /// The 1-based file line to open the external editor at, matching the on-screen position: the caret
+    /// line of a windowed preview (plain text / code / raw-Markdown via `R`). Returns None (open at the
+    /// top) for tree edits and non-windowed previews — rendered Markdown/Mermaid reflow the source, so
+    /// there is no 1:1 mapping from a scroll row back to a source line.
+    fn preview_edit_line(&self) -> Option<usize> {
+        (self.mode == Mode::Preview && self.is_windowed()).then(|| self.preview_cursor_line + 1)
+    }
+
+    /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
+    pub fn take_pending_edit(&mut self) -> Option<(PathBuf, Option<usize>)> {
         self.pending_edit.take()
     }
 
@@ -4459,21 +4483,8 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::AnchorsUnsupported).into());
             return Ok(());
         }
-        // ローカルパス: md ファイルのディレクトリ基準で解決 (# 以降のアンカーは捨てる)。
         let path_part = t.split('#').next().unwrap_or(t);
-        let base = self
-            .preview_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.clone());
-        let p = Path::new(path_part);
-        let resolved = if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            base.join(p)
-        };
-        let resolved = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+        let resolved = self.resolve_link_local(t);
         if resolved.is_dir() {
             self.back_to_tree();
             // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越さない)。
@@ -4492,6 +4503,66 @@ impl App {
                 path_part
             ));
         }
+        Ok(())
+    }
+
+    /// Resolve a local (non-URL, non-anchor) Markdown link target to an absolute path (existence not
+    /// guaranteed), relative to the current preview file's directory. A `#anchor` suffix is dropped.
+    fn resolve_link_local(&self, target: &str) -> PathBuf {
+        let t = target.trim();
+        let path_part = t.split('#').next().unwrap_or(t);
+        let base = self
+            .preview_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone());
+        let p = Path::new(path_part);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            base.join(p)
+        };
+        std::fs::canonicalize(&resolved).unwrap_or(resolved)
+    }
+
+    /// `Ctrl-t`: open the focused Markdown link in a **new tab** (the current doc's tab stays intact).
+    /// URLs still go to the browser (a tab makes no sense for them); a local file/dir opens in a fresh
+    /// foreground tab via the shared paste-jump navigation (reveal + root-switch-if-outside + preview).
+    /// No-op when the focused item is not a link (task/code) or nothing is focused.
+    pub fn md_open_focused_link_new_tab(&mut self) -> Result<()> {
+        let Some(f) = self.focused_item else {
+            return Ok(());
+        };
+        let target = match self.md_items.get(f) {
+            Some(MdItem {
+                kind: MdItemKind::Link { target },
+                ..
+            }) => target.clone(),
+            _ => return Ok(()),
+        };
+        let t = target.trim();
+        // URL/mailto/tel はタブにできないので、Enter と同じく外部(ブラウザ等)で開く。
+        if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
+            return self.open_external(t);
+        }
+        if t.starts_with('#') {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::AnchorsUnsupported).into());
+            return Ok(());
+        }
+        // タブを作る前に、現在の md ファイルの位置基準でローカルパスを解決しておく。
+        let resolved = self.resolve_link_local(t);
+        if !resolved.exists() {
+            self.flash = Some(format!(
+                "{}{}",
+                tr(self.lang, crate::i18n::Msg::NotFound),
+                t.split('#').next().unwrap_or(t)
+            ));
+            return Ok(());
+        }
+        // 新規タブ(前面)を作り、その中でジャンプする。元のドキュメントのタブは save_active で保持済み。
+        self.tab_new()?;
+        self.paste_jump_to(&resolved, None);
         Ok(())
     }
 
@@ -4834,6 +4905,16 @@ impl App {
         self.table_top_row = t.table_top_row;
         self.table_left_col = t.table_left_col;
         self.clamp_table_cursor();
+
+        // 切替でアクティブになったタブを**ディスクから再読み込み**する。ファイル監視はアクティブな
+        // root しか見ていない(rewatch)ため、裏に居た間の外部変更(ファイルの作成/削除/リネーム・git
+        // 状態・変更ガター/diff)がスナップショットのまま古い。fs イベント時と同じ refresh_fs 経路を
+        // 通して、ツリー再構築・git status・diff/gutter キャッシュ・変更フィルタ・git ビュー・プレビュー
+        // 再読込を一括で追従させる。`false`=重い ignore セット(gitignore)は作り直さずキャッシュ保持
+        // (root が変われば次の描画の refresh_git_if_needed が workdir 単位キャッシュで面倒を見る＝
+        // 巨大 repo の性能対策[[git-watch-feedback-loop-perf]]を壊さない)。プレビューの表示位置は
+        // reload_preview が保持する(スクロール/ズーム/テーブルカーソル)。
+        let _ = self.refresh_fs(false);
     }
 
     pub fn tab_count(&self) -> usize {

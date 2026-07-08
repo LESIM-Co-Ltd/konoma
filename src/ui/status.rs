@@ -14,6 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DisplayMode, InternalMode, KeyScheme, Mode, PathStyle};
 use crate::i18n::{tr, Lang, Msg};
+use crate::keymap::Surface;
 
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
 fn chip(lang: Lang, msg: Msg, bg: Color, dark_bg: bool) -> Span<'static> {
@@ -87,6 +88,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::DropConfirm => (Msg::StDrop, Color::Cyan, false),
         // アプリ終了確認は非破壊=黄。
         InternalMode::QuitConfirm => (Msg::StQuit, Color::Yellow, false),
+        // ブックマーク上書き確認も非破壊=黄。
+        InternalMode::BookmarkConfirm => (Msg::StMarkOverwrite, Color::Yellow, false),
         InternalMode::GitChanges => (Msg::StChanges, Color::Yellow, false),
         // diff は「中身を見る」プレビュー家族なので青系。
         InternalMode::GitDiff => (Msg::StDiff, Color::Blue, true),
@@ -183,6 +186,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::DeleteConfirm => tr(lang, crate::i18n::Msg::StTrashDelete),
         InternalMode::DropConfirm => tr(lang, crate::i18n::Msg::StCopyMoveHint),
         InternalMode::QuitConfirm => tr(lang, crate::i18n::Msg::StQuitHint),
+        InternalMode::BookmarkConfirm => tr(lang, crate::i18n::Msg::StMarkOverwriteHint),
         InternalMode::RenamePreview => tr(lang, crate::i18n::Msg::StApply),
         InternalMode::Create => tr(lang, crate::i18n::Msg::StCreateHint),
         InternalMode::BatchRename => tr(lang, crate::i18n::Msg::StRenamePreviewHint),
@@ -280,9 +284,13 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
     let lead = app.pending_leader?;
     let menu = app.keymaps.leaders.get(&lead)?;
     let title = tr(app.lang, menu.title);
+    // The code-block copy entry only makes sense while a Markdown code block is focused; hide it
+    // everywhere else so the normal path-copy menu stays uncluttered.
+    let show_code = app.surface() == Surface::PreviewText && app.md_focused_code();
     let items: Vec<String> = menu
         .items
         .iter()
+        .filter(|it| show_code || !matches!(it.action, crate::keymap::Action::CopyCodeBlock))
         .map(|it| {
             let k = match it.key.code {
                 KeyCode::Char(' ') => "Space".to_string(),

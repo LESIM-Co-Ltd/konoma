@@ -21,7 +21,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(head.to_string()).bold());
+    // head は複数行(改行区切り)になり得る(例: ブックマーク上書き確認の old → new)。
+    // 1 行目=見出し(太字)、以降=詳細(通常)として1行ずつ積む。
+    for (i, l) in head.split('\n').enumerate() {
+        if i == 0 {
+            lines.push(Line::from(l.to_string()).bold());
+        } else {
+            lines.push(Line::from(l.to_string()));
+        }
+    }
     lines.push(Line::from(""));
 
     let (title, accent) = if is_confirm {
@@ -51,6 +59,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         } else if app.confirm_is_quit() {
             // アプリ終了確認: 非破壊なので黄(削除の赤と区別)。本文(head)に "Quit konoma?" を表示。
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::StQuitHint)).dim());
+            (
+                tr(app.lang, crate::i18n::Msg::DlgConfirmTitle),
+                Color::Yellow,
+            )
+        } else if app.confirm_is_bookmark() {
+            // ブックマーク上書き確認: 非破壊なので黄。y/Enter=上書き / n/Esc=取消。
+            lines.push(Line::from(tr(app.lang, crate::i18n::Msg::StMarkOverwriteHint)).dim());
             (
                 tr(app.lang, crate::i18n::Msg::DlgConfirmTitle),
                 Color::Yellow,

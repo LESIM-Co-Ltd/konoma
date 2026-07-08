@@ -85,6 +85,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
+        .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
         .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
@@ -134,10 +135,11 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintLink),
             hint(lang, "↵", crate::i18n::Msg::HintOpen),
+            hint(lang, "C-t", crate::i18n::Msg::HintNewTab),
         ];
-        // コードブロックにフォーカス中は y=そのブロックをコピー(他のコピー操作と同じ y)。
+        // コードブロックにフォーカス中は y→c=そのブロックをコピー(y のコピーメニューに現れる)。
         if app.md_focused_code() {
-            v.push(hint(lang, "y", crate::i18n::Msg::HintCopyCode));
+            v.push(hint(lang, "y c", crate::i18n::Msg::HintCopyCode));
         }
         if app.md_has_tasks() {
             v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));

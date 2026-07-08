@@ -125,6 +125,7 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
     out.push(
         HelpSection::new(l(crate::i18n::Msg::HelpGlobal))
             .row("p", l(crate::i18n::Msg::CyclePathStyle))
+            .row("P", l(crate::i18n::Msg::PasteJumpHelp))
             .row("?", l(crate::i18n::Msg::ToggleHelp))
             .row("q", l(crate::i18n::Msg::QuitOrCloseTab))
             .row("Q", l(crate::i18n::Msg::Quit)),

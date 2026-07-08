@@ -17,6 +17,8 @@ impl App {
         self.mark_set_pending = false;
     }
     /// The one key after `m`: register the cursor item (or the current root) under that letter.
+    /// If `ui.confirm_bookmark_overwrite` is on and the letter already points to a **different** path,
+    /// open a yes/no confirmation dialog instead of overwriting silently.
     pub fn mark_input(&mut self, c: char) {
         if !std::mem::take(&mut self.mark_set_pending) {
             return;
@@ -26,6 +28,34 @@ impl App {
             return;
         }
         let target = self.bookmark_target();
+        // 上書き確認: 既にそのキーが**別のパス**に割り当て済みで、確認が有効なら、直に上書きせず
+        // 確認ダイアログを出す(同じパスの再登録・未使用キーは無条件で登録=無駄な確認を出さない)。
+        if self.cfg.ui.confirm_bookmark_overwrite {
+            if let Some(existing) = self.bookmarks.get(c) {
+                if existing != target {
+                    let msg = format!(
+                        "{} {c}\n{}\n  → {}",
+                        crate::i18n::tr(self.lang, crate::i18n::Msg::BookmarkOverwriteConfirm),
+                        self.bookmark_display_path(c.is_ascii_lowercase(), &existing),
+                        self.bookmark_display_path(c.is_ascii_lowercase(), &target),
+                    );
+                    self.dialog = Some(Dialog {
+                        op: PendingOp::BookmarkOverwrite { key: c, target },
+                        kind: DialogKind::Confirm {
+                            message: msg,
+                            allow_permanent: false,
+                        },
+                    });
+                    return;
+                }
+            }
+        }
+        self.perform_mark_set(c, target);
+    }
+
+    /// Actually write the bookmark under `c` and flash the result. Used by `mark_input` directly (no
+    /// overwrite / confirm off) and by the overwrite confirmation (`dialog_confirm`).
+    pub(super) fn perform_mark_set(&mut self, c: char, target: std::path::PathBuf) {
         match self.bookmarks.set(c, target.clone()) {
             Ok(_) => {
                 let scope = if c.is_ascii_uppercase() {
@@ -208,7 +238,7 @@ impl App {
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             if p.is_file() {
                 self.bookmark_list = false;
-                self.pending_edit = Some(p);
+                self.pending_edit = Some((p, None));
             } else if p.is_dir() {
                 self.flash =
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());

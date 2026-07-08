@@ -6,6 +6,49 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Open a Markdown link in a new tab (`Ctrl-t`)**: with a link focused (`Tab`), `Ctrl-t` opens its
+  target in a new foreground tab, leaving the document you were reading intact in its own tab
+  (`[`/`]` to switch back). `Enter` still opens in the current tab, and URLs still open in the
+  default browser either way. `Ctrl-t` follows the TUI convention (fzf/Telescope) and konoma's
+  `t`=new tab, and — unlike `Ctrl+Enter` — works reliably in every terminal and under tmux. Bound in
+  `[keys.preview_text]` as `open_link_new_tab`.
+- **Paste-to-jump (`P`)**: read a path or a GitHub link from the clipboard and jump straight to it —
+  the tree deep-reveals it and a preview opens, so you no longer have to hand-navigate from a link
+  someone shared. It understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and
+  `#L123` / `:123` line anchors (Code/Text and raw-Markdown previews scroll to the line). GitHub URLs
+  resolve by finding the longest trailing path that exists in your checkout, so a differing
+  repository name or a slashy branch name still opens the right file. When the target lies outside
+  the current root, konoma switches root to the target's repository working tree. konoma's own
+  `@path#L` reference copy pastes straight back in. Anything unparseable or missing degrades to a
+  flash. Bound in `[keys.global]` as `paste_jump`.
+- **Bookmark overwrite confirmation.** Registering a bookmark (`m`) onto a key that already points to
+  a **different** path now opens a confirmation dialog (`y`/`Enter` = overwrite, `n`/`Esc` = cancel)
+  showing the existing target and the new one, so a mistyped letter no longer silently clobbers a
+  saved location. Re-registering the same path or an unused key never prompts. Controlled by the new
+  `[ui] confirm_bookmark_overwrite` option (default `true`); set it to `false` to overwrite silently.
+- **Editing from a preview opens at the on-screen line.** Pressing `e` in a windowed preview (plain
+  text, code, or raw Markdown via `R`) now launches the external editor **at the caret line** instead
+  of the top, so you land where you were reading. `[editor]` templates gain a `{line}` token (next to
+  `{path}`); without it, common editors are handled automatically (vim family `+N`, VS Code
+  `-g path:N`, Sublime/Helix `path:N`). Rendered Markdown/Mermaid reflow the source, so they still open
+  at the top — press `R` first for an exact-line open.
+
+### Changed
+- **Markdown code-block copy moved into the `y` menu.** Focusing a code block (`Tab`) and pressing `y`
+  no longer copies it immediately (which shadowed the normal path-copy `y`); instead the copy which-key
+  menu now shows a `c:code block` entry alongside the path options, so `y c` copies the block and the
+  path-copy commands stay reachable. The entry appears only while a code block is focused.
+
+### Fixed
+- **Switching to a tab now reloads it from disk.** The file watcher only watches the active tab's
+  root, so a tab left in the background could show a stale tree (files created/deleted/renamed while
+  away were missing), stale git status, and stale change gutters/diffs. Activating a tab now runs the
+  same refresh used for filesystem events — rebuilding the tree, refreshing git status and the
+  diff/gutter caches, and reloading the preview — so the tab reflects the current filesystem. The
+  heavy ignore-set is not recomputed on switch (it is refreshed lazily per repository), and preview
+  scroll/zoom/table-cursor positions are preserved.
+
 ## [0.10.0] - 2026-07-08
 
 ### Added

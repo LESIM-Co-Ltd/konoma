@@ -60,6 +60,11 @@ pub enum Action {
     ToggleHelp,
     /// Path copy via y→{n,r,f,p} (reuses the existing app::CopyKind).
     CopyPath(CopyKind),
+    /// `y → c` (Markdown preview): copy the source of the focused code block. Shown in the copy
+    /// which-key menu only while a code block is focused; a no-op (flash) otherwise.
+    CopyCodeBlock,
+    /// `P` (global): read a path / GitHub link from the clipboard and jump there (reveal + preview).
+    PasteJump,
 
     // --- Tree (通常) ---
     Quit,
@@ -129,6 +134,10 @@ pub enum Action {
     LinkFocusNext,
     LinkFocusPrev,
     LinkOpen,
+    /// `Ctrl-t`: open the focused Markdown link in a **new tab** (local file/dir; URLs still go to
+    /// the browser). Enter keeps opening in the current tab. `Ctrl-t` mirrors the TUI convention
+    /// (fzf/Telescope) and konoma's `t`=new tab, and is reliable in every terminal + tmux.
+    OpenLinkNewTab,
 
     // --- Preview: image ---
     ImageZoomIn,
@@ -264,6 +273,8 @@ pub enum Surface {
     DialogRenamePreview,
     /// App-quit confirmation (`q`/`y`/Enter = quit, `n`/Esc = cancel).
     DialogConfirmQuit,
+    /// Bookmark-overwrite confirmation (`y`/Enter = overwrite, `n`/Esc = cancel).
+    DialogConfirmBookmark,
 
     // --- オーバーレイ (keymap 駆動) ---
     Help,
@@ -317,6 +328,7 @@ impl Surface {
                 | Surface::DialogConfirmDrop
                 | Surface::DialogRenamePreview
                 | Surface::DialogConfirmQuit
+                | Surface::DialogConfirmBookmark
         )
     }
 
@@ -680,6 +692,10 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
         ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
+        // Ctrl-t=フォーカス中の Markdown リンクを別タブで開く(Enter は同タブのまま)。
+        // TUI 定番(fzf/Telescope の Ctrl-t=新タブ)＋konoma の t=新規タブと一貫。Ctrl+英字は
+        // 全端末＋tmux で確実(Ctrl+Enter と違い kitty protocol 不要)。リンク未フォーカスでは no-op。
+        ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
         // Y=キャレット行の @path#L 参照コピー(Claude Code へ場所を渡す)。選択中は範囲(visual 面の Y)。
         ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
@@ -924,6 +940,9 @@ impl KeyMap {
         global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
         global.insert(KeyPress::ch('t'), run(Action::TabNew));
         global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
+        // P=クリップボードのパス/GitHub リンクを読んでその位置へ移動(reveal + preview)。
+        // Tree/Preview どちらからでも使えるよう global。`[keys.global]` で変更可。
+        global.insert(KeyPress::ch('P'), run(Action::PasteJump));
         // `w` に既定バインドは置かない: vim の単語移動の癖で誤爆しやすく、タブを閉じるのは
         // ツリーの `q`(CloseTabOrQuit)に一本化(2026-07-07 ユーザー決定)。`tab_close` アクション
         // 自体は残っているので `[keys.global] w = "tab_close"` で復活できる。
@@ -1330,6 +1349,13 @@ fn copy_leader_default() -> LeaderMenu {
                 action: Action::CopyPath(CopyKind::AtRef),
                 label: Msg::WkAtRef,
             },
+            // Markdown code block copy. Displayed in the which-key menu only while a code block is
+            // focused (see ui::status::whichkey_spans); harmless no-op otherwise.
+            LeaderItem {
+                key: KeyPress::ch('c'),
+                action: Action::CopyCodeBlock,
+                label: Msg::WkCodeBlock,
+            },
         ],
     }
 }
@@ -1452,6 +1478,7 @@ fn leader_label(a: Action) -> Msg {
         Action::CopyPath(CopyKind::Full) => Msg::WkFull,
         Action::CopyPath(CopyKind::Parent) => Msg::WkParent,
         Action::CopyPath(CopyKind::AtRef) => Msg::WkAtRef,
+        Action::CopyCodeBlock => Msg::WkCodeBlock,
         Action::FileCreate => Msg::WkCreate,
         Action::FileRename => Msg::WkRename,
         Action::FileDelete => Msg::WkDelete,
@@ -1534,6 +1561,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "copy_full" => Action::CopyPath(CopyKind::Full),
         "copy_parent" => Action::CopyPath(CopyKind::Parent),
         "copy_at_ref" => Action::CopyPath(CopyKind::AtRef),
+        "copy_code_block" => Action::CopyCodeBlock,
+        "paste_jump" => Action::PasteJump,
         // Tree
         "quit" => Action::Quit,
         "close_tab_or_quit" => Action::CloseTabOrQuit,
@@ -1584,6 +1613,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
         "link_open" => Action::LinkOpen,
+        "open_link_new_tab" => Action::OpenLinkNewTab,
         // Preview: image
         "image_zoom_in" => Action::ImageZoomIn,
         "image_zoom_out" => Action::ImageZoomOut,
@@ -1685,6 +1715,8 @@ pub fn action_name(a: Action) -> String {
         Action::CopyPath(CopyKind::Full) => "copy_full",
         Action::CopyPath(CopyKind::Parent) => "copy_parent",
         Action::CopyPath(CopyKind::AtRef) => "copy_at_ref",
+        Action::CopyCodeBlock => "copy_code_block",
+        Action::PasteJump => "paste_jump",
         Action::Quit => "quit",
         Action::CloseTabOrQuit => "close_tab_or_quit",
         Action::FilterStart => "filter_start",
@@ -1731,6 +1763,7 @@ pub fn action_name(a: Action) -> String {
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",
+        Action::OpenLinkNewTab => "open_link_new_tab",
         Action::ImageZoomIn => "image_zoom_in",
         Action::ImageZoomOut => "image_zoom_out",
         Action::ImageZoomReset => "image_zoom_reset",
@@ -1896,6 +1929,38 @@ mod tests {
             m.resolve(Surface::Tree, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
         );
+    }
+
+    #[test]
+    fn paste_jump_p_is_global_and_config_roundtrips() {
+        // P はグローバル(allows_tabs 面が継承)＝Tree/Preview どちらからでも解決する。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('P')),
+                Resolution::Action(Action::PasteJump),
+                "P が {sfc:?} で paste_jump に解決する"
+            );
+        }
+        // config 文字列の双方向対応。
+        assert_eq!(action_from_str("paste_jump"), Some(Action::PasteJump));
+        assert_eq!(action_name(Action::PasteJump), "paste_jump");
+    }
+
+    #[test]
+    fn open_link_new_tab_is_ctrl_t_in_preview_text() {
+        // Ctrl-t=フォーカス中リンクを別タブ(PreviewText 専用)。Ctrl+英字は全端末で確実。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('t')),
+            Resolution::Action(Action::OpenLinkNewTab),
+            "Ctrl-t が PreviewText で open_link_new_tab に解決する"
+        );
+        assert_eq!(
+            action_from_str("open_link_new_tab"),
+            Some(Action::OpenLinkNewTab)
+        );
+        assert_eq!(action_name(Action::OpenLinkNewTab), "open_link_new_tab");
     }
 
     #[test]
@@ -2671,6 +2736,15 @@ mod tests {
             m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('@')),
             Resolution::Action(Action::CopyPath(CopyKind::AtRef))
         );
+        // y→c = コードブロックコピー(Copy リーダーのメニュー項目。表示は面/フォーカスで出し分け)。
+        assert_eq!(
+            m.resolve(
+                Surface::PreviewText,
+                Some(LeaderId::Copy),
+                KeyPress::ch('c')
+            ),
+            Resolution::Action(Action::CopyCodeBlock)
+        );
         // Y = 選択/キャレットの @path#L 参照(通常/visual 両面)。
         for sfc in [Surface::PreviewText, Surface::PreviewTextVisual] {
             assert_eq!(
@@ -2695,6 +2769,7 @@ mod tests {
             "jump_prev_change",
             "toggle_follow",
             "copy_at_ref",
+            "copy_code_block",
             "preview_copy_selection_ref",
         ] {
             let a = action_from_str(s).unwrap_or_else(|| panic!("unknown action: {s}"));
