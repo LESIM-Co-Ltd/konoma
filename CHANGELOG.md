@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-08
+
 ### Added
 - Markdown preview: **code blocks are now `Tab`-focusable and copy with `y`**. `Tab`/`⇧Tab`
   cycles through links, checkboxes and fenced code blocks in document order; focusing a code
@@ -343,7 +345,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.7.0...v0.8.0
