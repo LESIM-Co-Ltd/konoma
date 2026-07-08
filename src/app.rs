@@ -860,6 +860,8 @@ enum MdItemKind {
     Link { target: String },
     /// A task checkbox; `state`=its current state char (` `/`x`/custom) as shown.
     Task { state: char },
+    /// A fenced code block (its header line is the focus target; `Enter` copies its raw source).
+    CodeBlock,
 }
 
 /// Cache of highlighted lines for windowed reading.
@@ -4205,6 +4207,11 @@ impl App {
                             kind: MdItemKind::Task { state },
                         });
                     }
+                } else if crate::preview::markdown::is_code_header_span(span) {
+                    items.push(MdItem {
+                        line: li,
+                        kind: MdItemKind::CodeBlock,
+                    });
                 }
             }
         }
@@ -4219,19 +4226,41 @@ impl App {
         let Some(target_idx) = self.focused_item else {
             return lines;
         };
-        // フォーカス中アイテム(n 番目のリンク/マーカー span)を反転して強調。
+        // フォーカス中アイテムを反転して強調。リンク/タスクは該当マーカー span のみ、
+        // コードブロックはヘッダ行全体を反転する(1 行なので明確なフォーカス手がかりになる)。
         use ratatui::style::Modifier;
+        let (target_line, whole_line) = {
+            let it = &self.md_items[target_idx];
+            (it.line, matches!(it.kind, MdItemKind::CodeBlock))
+        };
         let mut seen = 0usize;
         lines
             .into_iter()
-            .map(|line| {
+            .enumerate()
+            .map(|(li, line)| {
                 let style = line.style;
+                if whole_line && li == target_line {
+                    // コードブロック: ヘッダ行の全 span を反転。
+                    let spans = line
+                        .spans
+                        .into_iter()
+                        .map(|mut span| {
+                            span.style = span.style.add_modifier(Modifier::REVERSED);
+                            span
+                        })
+                        .collect::<Vec<_>>();
+                    return Line::from(spans).style(style);
+                }
                 let spans = line
                     .spans
                     .into_iter()
                     .map(|mut span| {
-                        if is_link_span(&span) || crate::preview::markdown::is_task_span(&span) {
-                            if seen == target_idx {
+                        // md_items と同じ順でマーカーを数える(リンク/タスク/コードヘッダ)。
+                        if is_link_span(&span)
+                            || crate::preview::markdown::is_task_span(&span)
+                            || crate::preview::markdown::is_code_header_span(&span)
+                        {
+                            if seen == target_idx && !whole_line {
                                 span.style = span.style.add_modifier(Modifier::REVERSED);
                             }
                             seen += 1;
@@ -4322,8 +4351,84 @@ impl App {
                 self.md_toggle_focused_task();
                 Ok(())
             }
+            // コードブロックは「開く/トグル」対象が無いので Enter では何もしない。
+            // コピーは他のコピー操作と揃えて `y`(コピーリーダー)で行う(main.rs で先取り)。
+            Some(MdItem {
+                kind: MdItemKind::CodeBlock,
+                ..
+            }) => Ok(()),
             None => Ok(()),
         }
+    }
+
+    /// Raw source of the focused code block, matched by ordinal against the on-screen headers. The
+    /// block text is re-scanned from the file; `None` when the focused item is not a code block,
+    /// there is no path, the read fails, or the counts disagree (file changed / pathological doc) —
+    /// the caller then flashes instead of copying garbage (safe fallback, #3). Also used by tests
+    /// to assert the copied value without a clipboard round-trip.
+    fn focused_code_source(&self) -> Option<String> {
+        let f = self.focused_item?;
+        if !matches!(
+            self.md_items.get(f),
+            Some(MdItem {
+                kind: MdItemKind::CodeBlock,
+                ..
+            })
+        ) {
+            return None;
+        }
+        // 文書内で何番目のコードブロックか(リンク/タスクを除いた序数)。
+        let ordinal = self.md_items[..=f]
+            .iter()
+            .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
+            .count()
+            .saturating_sub(1);
+        let total = self
+            .md_items
+            .iter()
+            .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
+            .count();
+        let src = std::fs::read_to_string(self.preview_path.as_ref()?).ok()?;
+        let blocks = crate::preview::markdown::code_block_source_locs(&src);
+        // 画面上のヘッダ数とソースのブロック数が一致するときだけ信頼して写す。
+        (blocks.len() == total)
+            .then(|| blocks.get(ordinal).cloned())
+            .flatten()
+    }
+
+    /// Copy the focused code block's raw source to the clipboard, or flash a safe notice when it
+    /// cannot be resolved (`focused_code_source` = None). Triggered by the copy leader (`y`) in a
+    /// Markdown preview when a code block is focused (pre-empted in `handle_key`).
+    pub fn md_copy_focused_code(&mut self) {
+        let Some(text) = self.focused_code_source() else {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::CodeBlockCopyUnavailable).into());
+            return;
+        };
+        match set_clipboard(&text) {
+            Ok(()) => self.flash = Some(tr(self.lang, crate::i18n::Msg::CopiedCodeBlock).into()),
+            Err(e) => {
+                self.flash = Some(format!(
+                    "{}{e}",
+                    tr(self.lang, crate::i18n::Msg::CopyFailed)
+                ))
+            }
+        }
+    }
+
+    /// Test-only: the exact text `Enter` would copy for the focused code block (no clipboard).
+    #[cfg(test)]
+    pub fn focused_code_text(&self) -> Option<String> {
+        self.focused_code_source()
+    }
+
+    /// Whether the currently focused Markdown item is a code block (drives the footer hint:
+    /// `Enter` copies the block).
+    pub fn md_focused_code(&self) -> bool {
+        !self.is_raw_source()
+            && self
+                .focused_item
+                .and_then(|f| self.md_items.get(f))
+                .is_some_and(|it| matches!(it.kind, MdItemKind::CodeBlock))
     }
 
     /// Whether the currently focused Markdown item is a task checkbox (drives the Space fixed key:

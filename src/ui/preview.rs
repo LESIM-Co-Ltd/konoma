@@ -135,6 +135,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "Tab", crate::i18n::Msg::HintLink),
             hint(lang, "↵", crate::i18n::Msg::HintOpen),
         ];
+        // コードブロックにフォーカス中は y=そのブロックをコピー(他のコピー操作と同じ y)。
+        if app.md_focused_code() {
+            v.push(hint(lang, "y", crate::i18n::Msg::HintCopyCode));
+        }
         if app.md_has_tasks() {
             v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
         }

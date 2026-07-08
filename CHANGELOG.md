@@ -6,6 +6,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- Markdown preview: **code blocks are now `Tab`-focusable and copy with `y`**. `Tab`/`⇧Tab`
+  cycles through links, checkboxes and fenced code blocks in document order; focusing a code
+  block reverses its header line, and `y` (the same copy key used everywhere else) copies the
+  block's **raw source** (unhighlighted, fence contents only) to the clipboard — no which-key
+  menu, just one press. The footer shows `y copy code` while a block is focused. No mouse capture
+  is used, so the terminal's own text selection keeps working.
+
 ## [0.9.1] - 2026-07-08
 
 ### Fixed

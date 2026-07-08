@@ -648,6 +648,66 @@ pub(crate) fn task_span_state(s: &str) -> Option<char> {
     it.next().is_none().then_some(c)
 }
 
+/// Style for the **code-block header's** left gutter — doubles as the sentinel by which the app
+/// recognizes a focusable code block among rendered spans (same trick as task markers). ITALIC on
+/// the `▎` is visually negligible but distinguishes it from the plain-cyan body gutter (no modifier)
+/// and the task marker (BOLD).
+pub(crate) fn code_header_marker_style() -> Style {
+    Style::new()
+        .fg(CODE_GUTTER_FG)
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// Whether this span is a code-block header gutter produced by `code_header` (the Tab-focus target
+/// for "copy this code block"). Ignores the (optional) background so it matches with or without a
+/// code background.
+pub(crate) fn is_code_header_span(span: &Span<'_>) -> bool {
+    span.style.fg == Some(CODE_GUTTER_FG)
+        && span.style.add_modifier.contains(Modifier::ITALIC)
+        && !span.style.add_modifier.contains(Modifier::BOLD)
+        && span.content.as_ref().starts_with('▎')
+}
+
+/// Raw inner text of each fenced code block (```` ``` ```` / `~~~`), in document order, skipping
+/// `mermaid` fences (they are diverted to diagram rendering and produce no code-block header).
+/// Used by the "copy focused code block" action: the Nth entry maps to the Nth focusable block.
+/// The caller cross-checks the count against the on-screen headers before copying (safe fallback).
+pub(crate) fn code_block_source_locs(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        let fence = if t.starts_with("```") {
+            Some('`')
+        } else if t.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        let Some(fc) = fence else {
+            i += 1;
+            continue;
+        };
+        let info = t.trim_start_matches(fc).trim();
+        let is_mermaid = is_mermaid_info(info);
+        let close = fc.to_string().repeat(3);
+        i += 1; // opening fence
+        let mut body = Vec::new();
+        while i < lines.len() && !lines[i].trim_start().starts_with(&close) {
+            body.push(lines[i].to_string());
+            i += 1;
+        }
+        if i < lines.len() {
+            i += 1; // closing fence
+        }
+        if !is_mermaid {
+            out.push(body.join("\n"));
+        }
+    }
+    out
+}
+
 /// Location of one toggleable task marker in the **source** text.
 pub(crate) struct TaskLoc {
     /// 0-based line index (by `\n`).
@@ -997,7 +1057,15 @@ fn gutter_span(code_bg: Option<Color>) -> Span<'static> {
 /// so it stands out from the body code. When `code.label_bg`=None, it is shown dimmed with no background.
 fn code_header(label: &str, w: usize, code: CodeStyle) -> Line<'static> {
     let code_bg = code.bg;
-    let gutter = gutter_span(code_bg);
+    // ヘッダのガターは番兵スタイル(is_code_header_span)で識別=Tab フォーカス対象の目印。
+    let gutter = {
+        let st = code_header_marker_style();
+        let st = match code_bg {
+            Some(bg) => st.bg(bg),
+            None => st,
+        };
+        Span::styled("▎ ", st)
+    };
     let badge_text = format!(" {label} "); // 前後に余白を持つバッジ
                                            // バッジのスタイル: 背景ありなら(指定背景＋太字白)、無しなら淡色イタリック。
     let badge_style = match code.label_bg {
@@ -2541,6 +2609,56 @@ mod tests {
             indented.to_string().contains("    let x = 1;"),
             "インデントが失われた: {:?}",
             indented.to_string()
+        );
+    }
+
+    #[test]
+    fn code_header_gutter_is_sentinel_and_body_gutter_is_not() {
+        // ヘッダのガター span は is_code_header_span で識別でき(Tab フォーカスの目印)、
+        // 本文行のガター(番兵でない)は識別されない。
+        let lines = render_markdown("```rust\nlet x = 1;\n```\n", 28, BG, "TwoDark", false);
+        let header = lines
+            .iter()
+            .find(|l| l.to_string().contains("rust"))
+            .expect("言語ヘッダが無い");
+        assert!(
+            header.spans.iter().any(is_code_header_span),
+            "ヘッダに番兵ガターが無い"
+        );
+        // 本文行(コード行)のガターは番兵ではない。
+        let body = lines
+            .iter()
+            .find(|l| l.to_string().contains("let x = 1;"))
+            .expect("コード本文行が無い");
+        assert!(
+            !body.spans.iter().any(is_code_header_span),
+            "本文ガターを誤って番兵判定"
+        );
+    }
+
+    #[test]
+    fn code_block_source_locs_extracts_and_skips_mermaid() {
+        let src = "\
+intro
+
+```rust
+fn a() {}
+```
+
+```mermaid
+graph TD
+  A-->B
+```
+
+~~~text
+plain body
+~~~
+";
+        let blocks = code_block_source_locs(src);
+        assert_eq!(
+            blocks,
+            vec!["fn a() {}".to_string(), "plain body".to_string()],
+            "``` と ~~~ を拾い mermaid は除外・生本文を保つ"
         );
     }
 

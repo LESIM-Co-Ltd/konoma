@@ -1407,6 +1407,46 @@ fn e2e_md_raw_source_toggle() {
 }
 
 #[test]
+fn e2e_md_code_block_tab_focus_and_copy() {
+    // Tab がリンク→コードブロック→タスクを文書順で巡回し、コードブロックにフォーカス中は
+    // `y`(他のコピー操作と同じキー)でその生ソースをコピーできる(値は clipboard 非依存の
+    // getter で照合)。Enter はコードブロックでは何もしない。
+    let dir = sandbox("md_code_copy");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        "see [doc](./notes.txt)\n\n```rust\nfn main() {}\nlet y = 2;\n```\n\n- [ ] todo\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+    s.see("rust"); // コードブロックの言語ヘッダ
+    s.tab(); // リンク
+    assert!(!s.app.md_focused_code());
+    s.tab(); // コードブロック
+    assert!(s.app.md_focused_code(), "2番目=コードブロックにフォーカス");
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("fn main() {}\nlet y = 2;"),
+        "生ソースをコピー対象に"
+    );
+    // Enter はコードブロックでは無操作(which-key も出ず flash も出ない)。
+    s.enter();
+    assert!(s.app.flash.is_none(), "Enter はコードブロックで何もしない");
+    // `y` でコピー(clipboard は環境依存なので flash が立つことだけ確認)。
+    s.key('y');
+    assert!(
+        s.app.pending_leader.is_none(),
+        "y はコピーリーダーを開かず直コピー"
+    );
+    assert!(s.app.flash.is_some(), "y でコピー通知が出る");
+    s.tab(); // タスク
+    assert!(!s.app.md_focused_code());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_md_wrapped_focus_follows_offscreen_item() {
     // 折返し時: 画面高さを超える段落の後ろのリンクへ Tab で移ると preview_scroll が追従する。
     // 非折返し時: 段落は1行に潰れ全て画面内=スクロール不要(both で挙動差を確認)。

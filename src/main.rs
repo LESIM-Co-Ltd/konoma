@@ -1271,6 +1271,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // 4) keymap 解決 (1 入力 = HashMap 1〜2 参照・要件5)。
     match app.keymaps.resolve(sfc, None, kp) {
         Resolution::EnterLeader(id) => {
+            // 装飾 Markdown でコードブロックにフォーカス中は、コピーリーダー(既定 `y`)を
+            // 横取りしてそのブロックを直接コピー(which-key を出さず一発・他のコピー操作と
+            // 同じ `y`)。非フォーカス/他面ではリーダーを開いて従来のパスコピーメニュー。
+            if id == keymap::LeaderId::Copy && sfc == Surface::PreviewText && app.md_focused_code()
+            {
+                app.md_copy_focused_code();
+                return Ok(false);
+            }
             app.pending_leader = Some(id);
             Ok(false)
         }

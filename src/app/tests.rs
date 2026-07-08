@@ -6,6 +6,7 @@ fn item_target(it: &MdItem) -> &str {
     match &it.kind {
         MdItemKind::Link { target } => target,
         MdItemKind::Task { .. } => panic!("expected a link item"),
+        MdItemKind::CodeBlock => panic!("expected a link item"),
     }
 }
 
@@ -1658,6 +1659,83 @@ fn md_items_mix_links_and_tasks_in_document_order() {
     assert!(!app.md_focused_task());
     app.md_focus_move(1);
     assert_eq!(app.focused_item, Some(0), "巡回で先頭へ戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_code_block_is_tab_focusable_and_copies_source() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // リンク・コードブロック・タスクが文書順で1本の Tab 巡回に載り、コードブロックに
+    // フォーカスすると Enter でその生ソースをコピーできる(focused_code_text で値照合)。
+    let dir = std::env::temp_dir().join("konoma_md_code_focus_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("doc.md"),
+        "[l1](https://x/1)\n\n```rust\nfn main() {}\nlet x = 1;\n```\n\n- [ ] t1\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let kinds: Vec<&str> = app
+        .md_items
+        .iter()
+        .map(|it| match it.kind {
+            MdItemKind::Link { .. } => "link",
+            MdItemKind::Task { .. } => "task",
+            MdItemKind::CodeBlock => "code",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["link", "code", "task"], "Link→Code→Task の順");
+
+    // フォーカス無し/リンク上ではコードコピー不可。
+    assert!(app.focused_code_text().is_none());
+    app.md_focus_move(1); // リンク
+    assert!(!app.md_focused_code());
+    app.md_focus_move(1); // コードブロック
+    assert!(app.md_focused_code(), "2番目=コードブロック");
+    assert_eq!(
+        app.focused_code_text().as_deref(),
+        Some("fn main() {}\nlet x = 1;"),
+        "生ソース(装飾/ハイライトを含まない)をコピー"
+    );
+
+    // フォーカス手がかり: 再描画するとコードブロックのヘッダ行(言語名 rust を含む)が
+    // 全幅反転(REVERSED)される。描画バッファのセル修飾で確認(tmux に依らず決定的)。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    {
+        use ratatui::style::Modifier;
+        let buf = term.backend().buffer();
+        let w = buf.area.width;
+        let header_row = (0..buf.area.height).find(|&y| {
+            (0..w)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("rust")
+        });
+        let y = header_row.expect("rust ヘッダ行が描画されている");
+        // ヘッダ行の可視セル(▎ を含む)が REVERSED を持つ。
+        let reversed = (0..w)
+            .filter(|&x| buf[(x, y)].symbol().trim() != "" || buf[(x, y)].symbol() == "▎")
+            .any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED));
+        assert!(
+            reversed,
+            "フォーカス中コードブロックのヘッダ行が反転していない"
+        );
+    }
+
+    // コピー動作(`y` 経由で呼ばれる。クリップボードは環境依存なのでパニックしないことだけ確認)。
+    app.md_copy_focused_code();
+    // Enter はコードブロックでは何もしない(開く/トグル対象が無い)。
+    app.md_activate_focused().unwrap();
+    app.md_focus_move(1); // タスク
+    assert!(!app.md_focused_code());
+    assert!(app.focused_code_text().is_none());
     std::fs::remove_dir_all(&dir).ok();
 }
 
