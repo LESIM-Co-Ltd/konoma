@@ -139,7 +139,8 @@ fn build_argv(tmpl: &str, path: &Path, line: Option<usize>) -> Vec<String> {
 }
 
 /// When the editor template has no explicit `{line}` token, inject a line-jump argument for common
-/// editors so the file opens at `line` (1-based). Recognizes the vi/vim family and terminal editors
+/// editors so the file opens at `line` (1-based). The vi/vim family also gets `+normal! zt` to scroll
+/// that line to the top of the window (matching konoma's top-of-view). Also recognizes terminal editors
 /// that accept `+N`, VS Code (`-g <path>:<line>`), and Sublime/Helix/Zed (`<path>:<line>`). Unknown
 /// editors are left unchanged (they simply open at the top — configure `{line}` for them explicitly).
 fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
@@ -152,10 +153,16 @@ fn apply_editor_line(argv: &mut Vec<String>, line: usize) {
         .unwrap_or("")
         .to_ascii_lowercase();
     match name.as_str() {
-        // vi/vim family + terminal editors that accept `+N` before the file.
-        "vim" | "nvim" | "vi" | "view" | "gvim" | "mvim" | "vimx" | "neovim" | "nano" | "pico"
-        | "emacs" | "emacsclient" | "gedit" | "kak" | "kakoune" | "joe" | "jed" | "ne"
-        | "mcedit" | "micro" => {
+        // vi/vim family: `+N` positions the cursor, and `+normal! zt` scrolls that line to the top of
+        // the window so it matches konoma's top-of-view. Without `zt`, vim leaves the window at the file
+        // top when N fits on the first screen (cursor buried mid-screen — 2026-07-09 user report).
+        "vim" | "nvim" | "vi" | "view" | "gvim" | "mvim" | "vimx" | "neovim" => {
+            argv.insert(1, format!("+{line}"));
+            argv.insert(2, "+normal! zt".to_string());
+        }
+        // Other terminal editors that accept `+N` (no reliable scroll-to-top flag; open at the line).
+        "nano" | "pico" | "emacs" | "emacsclient" | "gedit" | "kak" | "kakoune" | "joe" | "jed"
+        | "ne" | "mcedit" | "micro" => {
             argv.insert(1, format!("+{line}"));
         }
         // VS Code family: `-g <path>:<line>`.
@@ -764,19 +771,28 @@ mod tests {
             vec!["nvim", "+42", "/tmp/a.rs"]
         );
         // {line} トークン無し+行あり=既知エディタごとに自動注入。
-        // vim 系は +N を先頭引数に。
+        // vim 系は +N(カーソル)＋ +normal! zt(その行を画面先頭へスクロール)。
         assert_eq!(
             build_argv("vim", path, Some(42)),
-            vec!["vim", "+42", "/tmp/a.rs"]
+            vec!["vim", "+42", "+normal! zt", "/tmp/a.rs"]
         );
         assert_eq!(
             build_argv("nvim", path, Some(7)),
-            vec!["nvim", "+7", "/tmp/a.rs"]
+            vec!["nvim", "+7", "+normal! zt", "/tmp/a.rs"]
         );
-        // 空テンプレ(=vim フォールバック)でも行が効く。
+        // 空テンプレ(=vim フォールバック)でも行＋zt が効く。
         assert_eq!(
             build_argv("   ", path, Some(9)),
-            vec!["vim", "+9", "/tmp/a.rs"]
+            vec!["vim", "+9", "+normal! zt", "/tmp/a.rs"]
+        );
+        // nano/emacs 等は +N のみ(zt は vim 専用コマンドなので付けない)。
+        assert_eq!(
+            build_argv("nano", path, Some(5)),
+            vec!["nano", "+5", "/tmp/a.rs"]
+        );
+        assert_eq!(
+            build_argv("emacs", path, Some(8)),
+            vec!["emacs", "+8", "/tmp/a.rs"]
         );
         // VS Code は -g path:line。
         assert_eq!(

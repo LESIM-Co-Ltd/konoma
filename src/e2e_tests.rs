@@ -1488,6 +1488,100 @@ fn e2e_md_raw_source_toggle() {
 }
 
 #[test]
+fn e2e_markdown_edit_opens_near_scroll_position() {
+    // 装飾 Markdown をスクロールして `e` を押すと、エディタは現在の表示位置に対応する近似
+    // ソース行で開く(reflow のため厳密でなく近似)。先頭では 1 行目・下へスクロールで前進。
+    // Sim は毎キー後に UI を描画するので md_view_rows(折返し総行数)が実使用同様に設定される。
+    let dir = sandbox("md_edit_line");
+    let mut content = String::from("# Top\n\n");
+    for i in 1..=25 {
+        content.push_str(&format!(
+            "Intro prose line {i:02} with several words to read on it here.\n"
+        ));
+    }
+    content.push_str("\n## Section Two\n\n");
+    for i in 26..=50 {
+        content.push_str(&format!(
+            "Section prose line {i:02} with several words to read on it here.\n"
+        ));
+    }
+    std::fs::write(dir.join("doc.md"), content).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.enter(); // 装飾 Markdown プレビュー
+    assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
+
+    // 先頭では 1 行目で開く。
+    s.key('e');
+    let (_p, top) = s.app.take_pending_edit().expect("edit requested");
+    assert_eq!(top, Some(1), "先頭スクロールは 1 行目");
+
+    // 下へ十分スクロールしてから `e`: 先頭に張り付かず、後方のソース行を指す。
+    for _ in 0..40 {
+        s.key('j');
+    }
+    s.key('e');
+    let (_p, deep) = s.app.take_pending_edit().expect("edit requested");
+    let deep = deep.expect("装飾 md は描画後に近似行を渡す");
+    assert!(
+        deep > 10,
+        "スクロール後は後方のソース行(>10)を指すべき: {deep}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_edit_content_anchor_hits_exact_line() {
+    // 折返す長いイントロの後に一意な見出しを置く。比例推定だけだと折返しでずれるが、content-anchor
+    // が画面先頭のテキストをソース検索して見出しの「正確な」ソース行に着地することを確認する。
+    let dir = sandbox("md_anchor");
+    let mut content = String::from("# Title\n\n");
+    for i in 1..=15 {
+        content.push_str(&format!(
+            "Intro paragraph {i:02} with a deliberately long sentence that wraps across several display rows in a narrow preview here.\n"
+        ));
+    }
+    content.push_str("\n## ANCHORZZZ Section\n\n");
+    // 見出しを画面先頭(row2)まで押し上げられるよう、後続に十分な行を積む。
+    for i in 1..=60 {
+        content.push_str(&format!("Trailing line {i:02} after the anchor.\n"));
+    }
+    // 見出しのソース行(1始まり)。
+    let heading_line = content
+        .lines()
+        .position(|l| l.contains("ANCHORZZZ"))
+        .expect("見出しがある")
+        + 1;
+    std::fs::write(dir.join("doc.md"), &content).unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.enter(); // 装飾 Markdown プレビュー
+    assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
+
+    // 見出しが画面先頭(枠内1行目=buffer 3行目)に来るまで 1 行ずつスクロール。
+    let mut scrolled = 0;
+    while scrolled < 300 {
+        let top = s.screen().lines().nth(2).unwrap_or("").to_string();
+        if top.contains("ANCHORZZZ") {
+            break;
+        }
+        s.key('j');
+        scrolled += 1;
+    }
+    s.see("ANCHORZZZ"); // 画面に見出しが出ている
+
+    s.key('e');
+    let (_p, line) = s.app.take_pending_edit().expect("edit requested");
+    assert_eq!(
+        line,
+        Some(heading_line),
+        "content-anchor は見出しの正確なソース行 {heading_line} に着地すべき"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_md_code_block_tab_focus_and_copy() {
     // Tab がリンク→コードブロック→タスクを文書順で巡回し、コードブロックにフォーカス中は
     // `y` でコピーメニューが開き、そこに現れる `c` でその生ソースをコピーできる(値は

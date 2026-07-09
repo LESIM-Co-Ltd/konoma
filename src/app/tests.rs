@@ -4172,7 +4172,7 @@ fn request_edit_opens_at_windowed_caret_line() {
         "キャレット 12 行目 → エディタは 13 行目(1始まり)"
     );
 
-    // ③ 非 windowed(装飾 Markdown): reflow で 1:1 対応が無いので行なし。
+    // ③ 装飾 Markdown(非 windowed): 描画前(md_cache 未構築)は行なし=先頭で開く。
     app.back_to_tree();
     let j = app
         .entries
@@ -4185,7 +4185,7 @@ fn request_edit_opens_at_windowed_caret_line() {
     app.request_edit();
     let (p, line) = app.take_pending_edit().expect("edit requested");
     assert!(p.ends_with("doc.md"));
-    assert_eq!(line, None, "装飾 Markdown は行を渡さない(先頭で開く)");
+    assert_eq!(line, None, "描画前(cache 未構築)は行なし=先頭");
 
     std::fs::remove_dir_all(&dir).ok();
 }

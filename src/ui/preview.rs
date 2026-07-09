@@ -392,6 +392,9 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
     app.preview_scroll = app.preview_scroll.min(max_v);
     app.preview_viewport = inner.height;
+    // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
+    // line (preview_edit_line). Same value preview_scroll is clamped against, so the fraction lines up.
+    app.md_view_rows = total_rows;
 
     // 横スクロール: 折返し時は不要。非折返し時のみ最長行が収まる範囲まで。
     let max_h = if wrap {

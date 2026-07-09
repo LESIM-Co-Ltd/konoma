@@ -6,6 +6,23 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **`e` on a scrolled rendered-Markdown preview now opens the editor at the spot you were reading**,
+  at the top of the editor window — not buried at the top of the file. Two problems were fixed:
+  - *Landing line.* Rendered Markdown reflows the source, so it is not a windowed preview and used to
+    pass no line to the editor. It now starts from a proportional estimate of the source line at the
+    top of the view, then refines it by content: it searches the source for the text on screen (a
+    single decorated span carries no Markdown markers, so it is a verbatim substring of the source)
+    and lands on the matching line closest to the estimate. On a heavily-wrapping document this is
+    exact where the plain proportional estimate would undershoot by several lines. Rendering is
+    untouched; if nothing matches it falls back to the estimate.
+  - *Editor scroll.* The vim family now also gets `+normal! zt`, scrolling the target line to the top
+    of the window so it matches konoma's top-of-view. vim otherwise leaves the window at the file top
+    when the line fits on the first screen, burying the cursor mid-screen.
+
+  Windowed previews (plain text, code, raw Markdown via `R`) still open at the exact caret line;
+  Mermaid and images still open at the top.
+
 ## [0.11.0] - 2026-07-08
 
 ### Added

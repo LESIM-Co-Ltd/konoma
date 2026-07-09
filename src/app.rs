@@ -519,6 +519,10 @@ pub struct App {
     pub preview_hscroll: u16,
     /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
     pub preview_viewport: u16,
+    /// Total wrapped display rows of the current decorated Markdown at the last render (what
+    /// `preview_scroll` is clamped against). Set by the preview renderer; used with `MdCache::src_lines`
+    /// to map the scroll position back to an approximate source line when opening the editor (`e`).
+    pub md_view_rows: usize,
 
     /// less-style windowed reading for Code/Text (does not read the whole file). Always Some during a Code/Text preview.
     /// While Some, scrolling uses preview_byte_top (the line-head byte) instead of preview_scroll.
@@ -832,6 +836,9 @@ struct MdCache {
     lines: Vec<Line<'static>>,
     /// Block-level inline images reserved within `lines` (Markdown only; empty otherwise).
     images: Vec<crate::preview::markdown::ImagePlacement>,
+    /// Number of source lines in the file. Used with the on-screen wrapped-row count to map the scroll
+    /// position back to an approximate source line, so `e` opens the editor near the top of the view.
+    src_lines: usize,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -1025,6 +1032,7 @@ impl App {
             preview_path: None,
             preview_kind: None,
             preview_scroll: 0,
+            md_view_rows: 0,
             preview_hscroll: 0,
             preview_viewport: 0,
             preview_win: None,
@@ -2541,12 +2549,98 @@ impl App {
         }
     }
 
-    /// The 1-based file line to open the external editor at, matching the on-screen position: the caret
-    /// line of a windowed preview (plain text / code / raw-Markdown via `R`). Returns None (open at the
-    /// top) for tree edits and non-windowed previews — rendered Markdown/Mermaid reflow the source, so
-    /// there is no 1:1 mapping from a scroll row back to a source line.
+    /// The 1-based file line to open the external editor at, matching the on-screen position.
+    /// - Windowed preview (plain text / code / raw-Markdown via `R`): the exact caret line.
+    /// - Rendered Markdown: an **approximate** source line for the top of the current view. Reflow means
+    ///   there is no exact scroll-row → source-line mapping, so the top-of-view fraction through the wrapped
+    ///   output (`preview_scroll / md_view_rows`) is mapped to that fraction of the source. This lands the
+    ///   editor near where you were reading rather than at the top (block-structured docs land on the
+    ///   section being read; see `preview_edit_line` verification).
+    /// - Otherwise (tree edits, Mermaid, images): None (open at the top).
     fn preview_edit_line(&self) -> Option<usize> {
-        (self.mode == Mode::Preview && self.is_windowed()).then(|| self.preview_cursor_line + 1)
+        if self.mode != Mode::Preview {
+            return None;
+        }
+        if self.is_windowed() {
+            return Some(self.preview_cursor_line + 1);
+        }
+        // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Start with
+        // a proportional estimate (top of view is at `scroll / total_rows` through the wrapped output),
+        // then refine it by content — search the source for the text on screen (see md_content_anchor_line).
+        if matches!(self.preview_kind, Some(PreviewKind::Markdown(_))) {
+            if let Some(c) = &self.md_cache {
+                let same = self.preview_path.as_ref().is_some_and(|p| *p == c.path);
+                if same && c.src_lines > 0 && self.md_view_rows > 0 {
+                    let est = ((self.preview_scroll as usize) * c.src_lines / self.md_view_rows)
+                        .min(c.src_lines - 1);
+                    return Some(self.md_content_anchor_line(est).unwrap_or(est) + 1);
+                }
+            }
+        }
+        None
+    }
+
+    /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
+    /// so it matches what the renderer draws (`preview_scroll` is in post-wrap display rows).
+    fn md_top_logical_line(&self) -> Option<usize> {
+        use ratatui::text::Text;
+        use ratatui::widgets::{Paragraph, Wrap};
+        let c = self.md_cache.as_ref()?;
+        if c.lines.is_empty() {
+            return None;
+        }
+        let scroll = self.preview_scroll as usize;
+        if !self.cfg.ui.wrap || c.width == 0 {
+            return Some(scroll.min(c.lines.len() - 1));
+        }
+        let mut acc = 0usize;
+        for (i, line) in c.lines.iter().enumerate() {
+            let h = Paragraph::new(Text::from(vec![line.clone()]))
+                .wrap(Wrap { trim: false })
+                .line_count(c.width)
+                .max(1);
+            if acc + h > scroll {
+                return Some(i);
+            }
+            acc += h;
+        }
+        Some(c.lines.len() - 1)
+    }
+
+    /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
+    /// visible span of the top on-screen logical line (a single span carries no Markdown markers, so its
+    /// text is a verbatim substring of the source) and find the source line containing it, closest to
+    /// `est`. Returns a 0-based source line, or None to fall back to `est`. Re-reads the file so it
+    /// matches what the editor will open (an agent may have edited it since the preview was built).
+    fn md_content_anchor_line(&self, est: usize) -> Option<usize> {
+        use ratatui::style::Modifier;
+        let c = self.md_cache.as_ref()?;
+        let top = self.md_top_logical_line()?;
+        let line = c.lines.get(top)?;
+        // Longest non-hidden, non-blank span (hidden spans carry link/URL targets, not on-screen text).
+        let key = line
+            .spans
+            .iter()
+            .filter(|s| !s.style.add_modifier.contains(Modifier::HIDDEN))
+            .map(|s| s.content.trim())
+            .filter(|t| !t.is_empty())
+            .max_by_key(|t| t.chars().count())?;
+        if key.chars().count() < 4 {
+            return None;
+        }
+        let content = crate::preview::text::load(c.path.as_path()).ok()?;
+        let mut best: Option<usize> = None;
+        let mut best_d = usize::MAX;
+        for (i, sl) in content.lines.iter().enumerate() {
+            if sl.contains(key) {
+                let d = i.abs_diff(est);
+                if d < best_d {
+                    best_d = d;
+                    best = Some(i);
+                }
+            }
+        }
+        best
     }
 
     /// Taken by the run loop: if set, return the editor-launch target path (+ line) and clear it.
@@ -2892,7 +2986,7 @@ impl App {
         };
         let hit = matches!(&self.md_cache, Some(c) if c.path == path && c.width == width);
         if !hit {
-            let (lines, images, remote) = self.build_decorated(&path, width);
+            let (lines, images, remote, src_lines) = self.build_decorated(&path, width);
             // Kick off background downloads for any remote images shown as "loading". Each completes
             // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
             for url in &remote {
@@ -2903,6 +2997,7 @@ impl App {
                 width,
                 lines,
                 images,
+                src_lines,
             });
         }
         self.md_cache
@@ -2931,6 +3026,7 @@ impl App {
         Vec<Line<'static>>,
         Vec<crate::preview::markdown::ImagePlacement>,
         Vec<String>,
+        usize,
     ) {
         let src = match crate::preview::text::load(path) {
             Ok(content) => {
@@ -2945,9 +3041,12 @@ impl App {
                     vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
                     Vec::new(),
                     Vec::new(),
+                    0,
                 )
             }
         };
+        // Source line count, used to map the scroll position back to an approximate source line.
+        let src_lines = src.lines().count();
         match &self.preview_kind {
             Some(PreviewKind::Markdown(_)) => {
                 let theme = &self.cfg.ui.theme;
@@ -3007,20 +3106,22 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                (lines, images, remote)
+                (lines, images, remote, src_lines)
             }
             Some(PreviewKind::Mermaid(_)) => (
                 crate::preview::markdown::render_mermaid_file(&src, width),
                 Vec::new(),
                 Vec::new(),
+                src_lines,
             ),
             // 単体コードファイルは syntect でシンタックスハイライト。
             Some(PreviewKind::Code(_)) => (
                 crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
                 Vec::new(),
                 Vec::new(),
+                src_lines,
             ),
-            _ => (Vec::new(), Vec::new(), Vec::new()),
+            _ => (Vec::new(), Vec::new(), Vec::new(), src_lines),
         }
     }
 

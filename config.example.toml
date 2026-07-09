@@ -308,8 +308,10 @@ builtin = "pdf"
 # 解決順: [editor.ext] の拡張子別 → command(全体既定) → $VISUAL → $EDITOR → vim。
 # 値はコマンド＋引数(空白区切り)。{path} があればそこへファイルパスを差し込み、無ければ末尾に追加。
 # {line} は「プレビューで見ていた行」に置換(text/code/生 Markdown[R] のキャレット行)。
-# {line} を書かなくても主要エディタは自動で行指定になる(vim 系=+N / VS Code=-g path:N / Sublime・Helix=path:N)。
-# 装飾 Markdown/Mermaid は reflow で 1:1 対応が無いため先頭で開く(`R` で生ソースにすれば行指定可)。
+# {line} を書かなくても主要エディタは自動で行指定になる(vim 系=+N ＋ zt で対象行を画面先頭へスクロール /
+#  VS Code=-g path:N / Sublime・Helix=path:N)。
+# 装飾 Markdown は reflow で 1:1 対応が無いため、画面先頭に見えているテキストをソースから検索してその行で開く
+# (段落構造の文書なら画面に出ている見出し/段落にピタリ着地。厳密行が要るなら `R` で生ソースに)。Mermaid・画像は先頭で開く。
 # (注: 引数のクオートは未対応＝空白区切りのみ。複雑な起動はラッパースクリプトを指定。)
 [editor]
 command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim にフォールバック。

@@ -161,9 +161,12 @@ present, otherwise the file path is appended.
 **Opening at the preview line.** Pressing `e` from a windowed preview (plain text, code,
 or raw Markdown via `R`) opens the editor at the caret line. Use a `{line}` token to place
 it explicitly (`code -g {path}:{line}`, `hx {path}:{line}`, `nvim +{line} {path}`). Without
-a `{line}` token, common editors are handled automatically — vim family (`+N`), VS Code
-(`-g path:N`), and Sublime/Helix/Zed (`path:N`); other editors open at the top. Rendered
-Markdown/Mermaid reflow the source, so they open at the top regardless (`R` gives an exact-line open).
+a `{line}` token, common editors are handled automatically — vim family (`+N`, plus `zt`
+to scroll that line to the top of the window), VS Code (`-g path:N`), and Sublime/Helix/Zed
+(`path:N`); other editors open at the top. Rendered Markdown reflows the source, so `e` opens
+at the line whose text is at the top of your view — it searches the source for the on-screen
+text and lands on it (block-structured docs land right on the section on screen; `R` gives an
+exact caret open). Mermaid and images always open at the top.
 
 ## `[git]` — git integration
 
