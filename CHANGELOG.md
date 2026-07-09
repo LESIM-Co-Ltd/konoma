@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-09
+
 ### Fixed
 - **`e` on a scrolled rendered-Markdown preview now opens the editor at the spot you were reading**,
   at the top of the editor window — not buried at the top of the file. Two problems were fixed:
@@ -407,7 +409,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.0...v0.9.1
