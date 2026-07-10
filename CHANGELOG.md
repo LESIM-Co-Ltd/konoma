@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-07-10
+
 ### Added
 - **Open the tree entry under the cursor in a new tab (`Ctrl-t`)**: in the tree, `Ctrl-t` opens the
   selected entry in a new foreground tab, leaving the current tab untouched — a file opens as a
@@ -424,7 +426,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.10.0...v0.11.0
