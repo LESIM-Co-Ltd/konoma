@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-10
+
 ### Changed
 - **`e` on a rendered-Markdown preview now opens at the Tab-focused item** (link, checkbox, or code
   block) when that focus is on screen, instead of the top of the view. So if you `Tab` to a checkbox
@@ -415,7 +417,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.9.1...v0.10.0
