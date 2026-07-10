@@ -166,7 +166,8 @@ to scroll that line to the top of the window), VS Code (`-g path:N`), and Sublim
 (`path:N`); other editors open at the top. Rendered Markdown reflows the source, so `e` opens
 at the line whose text is at the top of your view — it searches the source for the on-screen
 text and lands on it (block-structured docs land right on the section on screen; `R` gives an
-exact caret open). Mermaid and images always open at the top.
+exact caret open). If you have `Tab`-focused an item (link, checkbox, code block) that is on
+screen, `e` opens at that item's line instead. Mermaid and images always open at the top.
 
 ## `[git]` — git integration
 

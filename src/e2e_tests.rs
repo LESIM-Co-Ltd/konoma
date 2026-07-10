@@ -1582,6 +1582,53 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
 }
 
 #[test]
+fn e2e_markdown_edit_lands_on_tab_focused_item() {
+    // Tab でアイテム(タスク/リンク)にフォーカスしていれば、`e` は画面先頭ではなくその
+    // フォーカス行で開く。Tab を進めるとフォーカスが移り、開く行も追従する。
+    let dir = sandbox("md_focus_edit");
+    let content = "# Title\n\nIntro paragraph one.\n\n- [ ] UNIQUETASK finish the report\n\nMiddle paragraph.\n\nSee [UNIQUELINK](./target.txt) here.\n";
+    std::fs::write(dir.join("doc.md"), content).unwrap();
+    std::fs::write(dir.join("target.txt"), "x\n").unwrap();
+    let task_line = content
+        .lines()
+        .position(|l| l.contains("UNIQUETASK"))
+        .expect("task line")
+        + 1;
+    let link_line = content
+        .lines()
+        .position(|l| l.contains("UNIQUELINK"))
+        .expect("link line")
+        + 1;
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.enter(); // 装飾 Markdown プレビュー
+    assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
+
+    // Tab → 最初のアイテム(タスク)にフォーカス。e → タスクのソース行で開く。
+    s.tab();
+    s.key('e');
+    let (_p, line) = s.app.take_pending_edit().expect("edit requested");
+    assert_eq!(
+        line,
+        Some(task_line),
+        "Tab フォーカスのタスク行 {task_line}"
+    );
+
+    // もう一度 Tab → リンクへ。e → リンクのソース行で開く。
+    s.tab();
+    s.key('e');
+    let (_p, line) = s.app.take_pending_edit().expect("edit requested");
+    assert_eq!(
+        line,
+        Some(link_line),
+        "Tab フォーカスのリンク行 {link_line}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_md_code_block_tab_focus_and_copy() {
     // Tab がリンク→コードブロック→タスクを文書順で巡回し、コードブロックにフォーカス中は
     // `y` でコピーメニューが開き、そこに現れる `c` でその生ソースをコピーできる(値は

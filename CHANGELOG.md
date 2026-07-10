@@ -6,6 +6,12 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **`e` on a rendered-Markdown preview now opens at the Tab-focused item** (link, checkbox, or code
+  block) when that focus is on screen, instead of the top of the view. So if you `Tab` to a checkbox
+  and press `e`, the editor lands on that checkbox's line. If nothing is focused, or the focus has
+  been scrolled out of view, it still opens at the top-of-view line as before.
+
 ## [0.11.1] - 2026-07-09
 
 ### Fixed

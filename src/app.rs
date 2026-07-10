@@ -2564,20 +2564,38 @@ impl App {
         if self.is_windowed() {
             return Some(self.preview_cursor_line + 1);
         }
-        // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Start with
-        // a proportional estimate (top of view is at `scroll / total_rows` through the wrapped output),
-        // then refine it by content — search the source for the text on screen (see md_content_anchor_line).
+        // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
+        // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
+        // source line proportionally, then refine by content (see md_content_anchor_line).
         if matches!(self.preview_kind, Some(PreviewKind::Markdown(_))) {
             if let Some(c) = &self.md_cache {
                 let same = self.preview_path.as_ref().is_some_and(|p| *p == c.path);
                 if same && c.src_lines > 0 && self.md_view_rows > 0 {
-                    let est = ((self.preview_scroll as usize) * c.src_lines / self.md_view_rows)
-                        .min(c.src_lines - 1);
-                    return Some(self.md_content_anchor_line(est).unwrap_or(est) + 1);
+                    // Prefer the on-screen Tab focus (the visible "cursor"); otherwise the top of view.
+                    let (logical, row) = match self.md_focused_visible_line() {
+                        Some(hit) => hit,
+                        None => (
+                            self.md_top_logical_line().unwrap_or(0),
+                            self.preview_scroll as usize,
+                        ),
+                    };
+                    let est = (row * c.src_lines / self.md_view_rows).min(c.src_lines - 1);
+                    return Some(self.md_content_anchor_line(logical, est).unwrap_or(est) + 1);
                 }
             }
         }
         None
+    }
+
+    /// The (decorated logical line, top display row) of the Tab-focused Markdown item, but only when it
+    /// is currently on screen — so `e` opens where the visible cursor is. None if nothing is focused or
+    /// the focus has been scrolled out of view (then `e` falls back to the top of the view).
+    fn md_focused_visible_line(&self) -> Option<(usize, usize)> {
+        let item = self.focused_item.and_then(|i| self.md_items.get(i))?;
+        let (row, h) = self.md_visual_span(item.line);
+        let scroll = self.preview_scroll as usize;
+        let vh = self.preview_viewport.max(1) as usize;
+        (row < scroll + vh && row + h > scroll).then_some((item.line, row))
     }
 
     /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
@@ -2608,15 +2626,14 @@ impl App {
     }
 
     /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
-    /// visible span of the top on-screen logical line (a single span carries no Markdown markers, so its
+    /// visible span of decorated logical line `logical` (a single span carries no Markdown markers, so its
     /// text is a verbatim substring of the source) and find the source line containing it, closest to
     /// `est`. Returns a 0-based source line, or None to fall back to `est`. Re-reads the file so it
     /// matches what the editor will open (an agent may have edited it since the preview was built).
-    fn md_content_anchor_line(&self, est: usize) -> Option<usize> {
+    fn md_content_anchor_line(&self, logical: usize, est: usize) -> Option<usize> {
         use ratatui::style::Modifier;
         let c = self.md_cache.as_ref()?;
-        let top = self.md_top_logical_line()?;
-        let line = c.lines.get(top)?;
+        let line = c.lines.get(logical)?;
         // Longest non-hidden, non-blank span (hidden spans carry link/URL targets, not on-screen text).
         let key = line
             .spans
