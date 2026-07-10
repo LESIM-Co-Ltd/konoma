@@ -259,7 +259,7 @@ builtin = "pdf"
 #   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
 #                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
-#                  "enter_visual" "toggle_select"
+#                  "enter_visual" "toggle_select" "open_in_new_tab"(Ctrl-t: カーソル下を別タブで開く)
 #   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
 #                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
 #   パス移動     : "paste_jump"(P・global: クリップボードのパス/GitHub リンクを読んでその位置へ移動＝

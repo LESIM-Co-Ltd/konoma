@@ -457,6 +457,38 @@ fn e2e_tabs_full_lifecycle() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn e2e_ctrl_t_opens_selected_in_new_tab() {
+    // ツリーで Ctrl-t=カーソル下を別タブで開く。ファイル→プレビュー / ディレクトリ→新タブの root。
+    // 元タブは維持される。
+    let dir = sandbox("newtab_open");
+    std::fs::write(dir.join("note.txt"), "HELLO_NEWTAB body\n").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/inside.txt"), "INSIDE_MARK\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+
+    // ファイル: Ctrl-t で新規タブにプレビュー。
+    s.select("note.txt");
+    assert_eq!(s.app.tab_count(), 1);
+    s.ctrl('t');
+    assert_eq!(s.app.tab_count(), 2, "Ctrl-t で新規タブができる");
+    assert_eq!(s.app.active_tab_index(), 1, "新規タブがアクティブ");
+    s.see("HELLO_NEWTAB"); // 新タブでファイルがプレビューされている
+
+    // 元タブは維持: [ で戻るとツリーに note.txt が居る(プレビュー内容は見えない)。
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.see("note.txt");
+    s.dont_see("HELLO_NEWTAB");
+
+    // ディレクトリ: Ctrl-t で新規タブがそのフォルダを root に。
+    s.select("sub");
+    s.ctrl('t');
+    assert_eq!(s.app.tab_count(), 3);
+    s.see("inside.txt"); // 新タブは sub の中身を表示
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // =============================================================================
 // ブックマーク
 // =============================================================================

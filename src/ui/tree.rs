@@ -133,6 +133,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("l", l(crate::i18n::Msg::EnterDirectory))
             .row("Enter", l(crate::i18n::Msg::ExpandInPlace))
+            .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
             .row("h", l(crate::i18n::Msg::ToParent))
             .row("a", l(crate::i18n::Msg::TreeAnchorRoot))
             .row("A", l(crate::i18n::Msg::ResetRoot))
@@ -203,6 +204,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         hint(lang, "F", crate::i18n::Msg::StFollow),
         hint(lang, "y", crate::i18n::Msg::CopyHint),
         hint(lang, "t", crate::i18n::Msg::HintTab),
+        hint(lang, "C-t", crate::i18n::Msg::HintNewTab),
         hint(lang, "[/]", crate::i18n::Msg::HintTab),
         hint(lang, "p", crate::i18n::Msg::HintPath),
         hint(lang, ".", crate::i18n::Msg::HintHidden),

@@ -905,6 +905,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
         Action::OpenLinkNewTab => app.md_open_focused_link_new_tab()?,
+        Action::OpenInNewTab => app.tab_new_from_selection()?,
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
         Action::ImageZoomReset => app.image_zoom_reset(),

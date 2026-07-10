@@ -138,6 +138,10 @@ pub enum Action {
     /// the browser). Enter keeps opening in the current tab. `Ctrl-t` mirrors the TUI convention
     /// (fzf/Telescope) and konoma's `t`=new tab, and is reliable in every terminal + tmux.
     OpenLinkNewTab,
+    /// `Ctrl-t` in the tree: open the entry under the cursor in a **new tab** (file → preview,
+    /// directory → the new tab's root). The current tab is left untouched. Same key/meaning as
+    /// `OpenLinkNewTab` in the preview — "open this in a new tab" — pairing with global `t`=new tab.
+    OpenInNewTab,
 
     // --- Preview: image ---
     ImageZoomIn,
@@ -654,6 +658,9 @@ impl KeyMap {
         tree.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
         tree.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         tree.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
+        // Ctrl-t=カーソル下のエントリを別タブで開く(ファイル=プレビュー / ディレクトリ=新タブの root)。
+        // preview の OpenLinkNewTab と同じキー/意味(「これを別タブで」)＝global t(新規タブ)と対。
+        tree.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
         per_surface.insert(Surface::Tree, tree);
 
         // --- Tree:Visual ---
@@ -1614,6 +1621,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "link_focus_prev" => Action::LinkFocusPrev,
         "link_open" => Action::LinkOpen,
         "open_link_new_tab" => Action::OpenLinkNewTab,
+        "open_in_new_tab" => Action::OpenInNewTab,
         // Preview: image
         "image_zoom_in" => Action::ImageZoomIn,
         "image_zoom_out" => Action::ImageZoomOut,
@@ -1764,6 +1772,7 @@ pub fn action_name(a: Action) -> String {
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",
         Action::OpenLinkNewTab => "open_link_new_tab",
+        Action::OpenInNewTab => "open_in_new_tab",
         Action::ImageZoomIn => "image_zoom_in",
         Action::ImageZoomOut => "image_zoom_out",
         Action::ImageZoomReset => "image_zoom_reset",
@@ -1961,6 +1970,22 @@ mod tests {
             Some(Action::OpenLinkNewTab)
         );
         assert_eq!(action_name(Action::OpenLinkNewTab), "open_link_new_tab");
+    }
+
+    #[test]
+    fn open_in_new_tab_is_ctrl_t_in_tree() {
+        // Ctrl-t=カーソル下のエントリを別タブで開く(Tree)。preview の OpenLinkNewTab と同じキー/意味。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ctrl_ch('t')),
+            Resolution::Action(Action::OpenInNewTab),
+            "Ctrl-t が Tree で open_in_new_tab に解決する"
+        );
+        assert_eq!(
+            action_from_str("open_in_new_tab"),
+            Some(Action::OpenInNewTab)
+        );
+        assert_eq!(action_name(Action::OpenInNewTab), "open_in_new_tab");
     }
 
     #[test]

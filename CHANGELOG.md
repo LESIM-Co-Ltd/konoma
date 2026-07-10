@@ -6,6 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Open the tree entry under the cursor in a new tab (`Ctrl-t`)**: in the tree, `Ctrl-t` opens the
+  selected entry in a new foreground tab, leaving the current tab untouched — a file opens as a
+  preview, a directory becomes the new tab's root. `Enter`/`l` still open in the current tab. This
+  mirrors `Ctrl-t` in the Markdown preview ("open this in a new tab") and pairs with global `t` (new
+  empty tab). Bound in `[keys.tree]` as `open_in_new_tab`.
+
 ## [0.11.2] - 2026-07-10
 
 ### Changed

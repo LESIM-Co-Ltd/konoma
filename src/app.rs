@@ -5119,6 +5119,29 @@ impl App {
         Ok(())
     }
 
+    /// `Ctrl-t` in the tree: open the entry under the cursor in a new (foreground) tab, leaving the
+    /// current tab untouched. A file opens as a preview; a directory becomes the new tab's root
+    /// (mirroring `l`). No-op when the tree is empty.
+    pub fn tab_new_from_selection(&mut self) -> Result<()> {
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
+            return Ok(());
+        };
+        self.tab_new()?; // fresh Tree tab at the current root, now active
+        if entry.is_dir {
+            // Descend into the folder in the new tab (same as `l`); root changes, so drop stale state.
+            self.clear_for_root_change();
+            self.root = entry.path;
+            self.entries.clear();
+            self.selected = 0;
+            self.rebuild_tree()?;
+        } else {
+            // Reveal the file (so returning with `q` lands on it), then preview it.
+            let _ = self.reveal_path_deep(&entry.path);
+            self.enter_preview(&entry.path);
+        }
+        Ok(())
+    }
+
     /// Close the active tab. The last one is not closed.
     pub fn tab_close(&mut self) {
         if self.tabs.len() <= 1 {
