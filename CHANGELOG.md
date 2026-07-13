@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-13
+
 ### Added
 - **Duplicate a file or folder in place (`Space→D`).** Duplicates the cursor entry (or the whole
   selection) next to itself with a collision-free name — `note.md` → `note copy.md`, then
@@ -460,7 +462,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.0...v0.11.1
