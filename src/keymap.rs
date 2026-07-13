@@ -107,6 +107,7 @@ pub enum Action {
     FileCopy,
     FileCut,
     FilePaste,
+    FileDuplicate,
 
     // --- Tree:Visual サブ ---
     VisualCommit,
@@ -1473,6 +1474,11 @@ fn file_leader_default() -> LeaderMenu {
                 action: Action::FilePaste,
                 label: Msg::WkPaste,
             },
+            LeaderItem {
+                key: KeyPress::ch('D'),
+                action: Action::FileDuplicate,
+                label: Msg::WkDuplicate,
+            },
         ],
     }
 }
@@ -1492,6 +1498,7 @@ fn leader_label(a: Action) -> Msg {
         Action::FileCopy => Msg::CopyHint,
         Action::FileCut => Msg::CutHint,
         Action::FilePaste => Msg::WkPaste,
+        Action::FileDuplicate => Msg::WkDuplicate,
         Action::TableCopy(TableCopyKind::Cell) => Msg::WkCell,
         Action::TableCopy(TableCopyKind::Row) => Msg::WkRow,
         Action::TableCopy(TableCopyKind::Column) => Msg::WkColumn,
@@ -1602,6 +1609,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "file_copy" => Action::FileCopy,
         "file_cut" => Action::FileCut,
         "file_paste" => Action::FilePaste,
+        "file_duplicate" => Action::FileDuplicate,
         // Visual
         "visual_commit" => Action::VisualCommit,
         "visual_select_siblings" => Action::VisualSelectSiblings,
@@ -1755,6 +1763,7 @@ pub fn action_name(a: Action) -> String {
         Action::FileCopy => "file_copy",
         Action::FileCut => "file_cut",
         Action::FilePaste => "file_paste",
+        Action::FileDuplicate => "file_duplicate",
         Action::VisualCommit => "visual_commit",
         Action::VisualSelectSiblings => "visual_select_siblings",
         Action::VisualSelectAll => "visual_select_all",
@@ -2800,5 +2809,27 @@ mod tests {
             let a = action_from_str(s).unwrap_or_else(|| panic!("unknown action: {s}"));
             assert_eq!(action_name(a), s, "config 文字列が往復する");
         }
+    }
+
+    #[test]
+    fn file_duplicate_resolves_and_round_trips() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        // Space→ でファイル管理リーダーへ入る。
+        assert_eq!(
+            m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
+            Resolution::EnterLeader(LeaderId::File)
+        );
+        // Space→D = 複製(Tree と Visual は同じ File リーダーを共有)。
+        for sfc in [Surface::Tree, Surface::Visual] {
+            assert_eq!(
+                m.resolve(sfc, Some(LeaderId::File), KeyPress::ch('D')),
+                Resolution::Action(Action::FileDuplicate),
+                "{sfc:?} の Space→D が複製に解決する"
+            );
+        }
+        // 設定文字列の往復。
+        let a = action_from_str("file_duplicate").expect("file_duplicate は既知アクション");
+        assert_eq!(action_name(a), "file_duplicate");
+        assert_eq!(a, Action::FileDuplicate);
     }
 }

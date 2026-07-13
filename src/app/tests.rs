@@ -2272,6 +2272,86 @@ fn refresh_reloads_active_preview() {
 }
 
 #[test]
+fn out_of_root_watch_dir_targets_files_outside_the_root() {
+    // 真因の回帰: FSEvents 監視は app.root だけを再帰監視する。root 外に表示中のファイル
+    // (グローバルブックマーク先 / repo 全体の git ビュー)は変更イベントが来ず、AI 編集を検知できない。
+    // out_of_root_watch_dir が「root 外プレビューはその親ディレクトリを返す / root 内・ツリーは None」を検証。
+    let base = std::env::temp_dir().join("konoma_out_of_root_watch");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("root")).unwrap();
+    std::fs::create_dir_all(base.join("outside")).unwrap();
+    let root = base.join("root").canonicalize().unwrap();
+    let outside = base.join("outside").canonicalize().unwrap();
+    std::fs::write(root.join("inside.md"), b"# inside\n").unwrap();
+    std::fs::write(outside.join("note.md"), b"# outside\n").unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+
+    // ツリー表示中は常に追加監視しない。
+    assert_eq!(
+        app.out_of_root_watch_dir(),
+        None,
+        "ツリー表示中は追加監視しない"
+    );
+
+    // root 内ファイルのプレビュー → 再帰監視でカバー済 → None。
+    app.enter_preview(&root.join("inside.md"));
+    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.out_of_root_watch_dir(), None, "root 内は追加監視不要");
+
+    // root 外ファイルのプレビュー(ブックマーク先を模擬) → その親ディレクトリを追加監視対象に返す。
+    app.enter_preview(&outside.join("note.md"));
+    assert_eq!(
+        app.out_of_root_watch_dir().as_deref(),
+        Some(outside.as_path()),
+        "root 外プレビューはその親ディレクトリを監視対象に返す"
+    );
+
+    // ツリーへ戻ると None(監視は外れる)。
+    app.mode = Mode::Tree;
+    assert_eq!(app.out_of_root_watch_dir(), None);
+
+    std::fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
+    // 副次修正: refresh_fs で rebuild_tree が失敗しても、プレビュー再読込はスキップしない。
+    // (エージェントの一括操作中に展開中ディレクトリが一瞬読めなくなっても、プレビューは追従する)。
+    // 観測点: rebuild_tree が Err を返す状況でも、reload_preview が走って md_cache が無効化されること。
+    let base = std::env::temp_dir().join("konoma_refresh_tree_fail");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("root")).unwrap();
+    let root = base.join("root").canonicalize().unwrap();
+    std::fs::write(root.join("doc.md"), b"# v1\n").unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = idx;
+    app.tree_activate().unwrap();
+    assert!(matches!(app.mode, Mode::Preview));
+    let _ = app.decorated_lines(80);
+    assert!(app.md_cache.is_some(), "プレビューでキャッシュが張られる");
+
+    // root を存在しないパスへ差し替え → rebuild_tree(read_dir) が失敗する状況を作る。
+    app.root = base.join("does-not-exist");
+    std::fs::write(root.join("doc.md"), b"# v2 changed\n").unwrap(); // 外部編集
+
+    let result = app.refresh_fs(false);
+    assert!(
+        result.is_err(),
+        "ツリー再構築失敗は Err で伝播する(握り潰さない)"
+    );
+    assert!(
+        app.md_cache.is_none(),
+        "rebuild_tree 失敗でもプレビュー再読込は走る(md_cache 無効化)"
+    );
+    std::fs::remove_dir_all(&base).ok();
+}
+
+#[test]
 fn media_preview_reloads_only_when_file_changes() {
     // 画像/メディアのプレビューは、対象ファイルが変わった時だけ再ロードする(mtime ガード)。
     // 観測点: clear_image が進める media_gen と、基準時刻 preview_media_mtime。
@@ -3157,6 +3237,64 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
         app.git_status_for.as_deref(),
         Some(app.root.as_path()),
         "statuses は root 変更のたびに取り直す"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// Fix A(2026-07-13): プレビュー中に外部エージェントが git コミットし、その fs イベントを取りこぼしても
+// (FSEvents は本質的に取りこぼす)、ツリーへ戻れば git status を再検証して変更マーカーが陳腐化しない。
+// back_to_tree() が git_status_for を無効化 → 次の描画相当 refresh_git_if_needed が statuses を取り直す。
+#[cfg(feature = "git")]
+#[test]
+fn returning_to_tree_re_syncs_stale_git_status() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_back_to_tree_resync");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir.join("note.md"), b"v1\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    // 変更 → ツリーで M。
+    std::fs::write(dir.join("note.md"), b"v2\n").unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.refresh_git_if_needed(); // git_status_for=root, note.md=M
+    let note = dir.canonicalize().unwrap().join("note.md");
+    assert!(
+        app.git_status_of(&note).is_some(),
+        "変更ファイルは M として見える"
+    );
+
+    // プレビューへ入る。
+    app.mode = Mode::Preview;
+    app.preview_path = Some(note.clone());
+
+    // 外部でコミット(clean になる)。konoma には refresh を通さない = fs イベント取りこぼしの再現。
+    git(&["commit", "-qam", "external commit"]);
+    assert!(
+        app.git_status_of(&note).is_some(),
+        "取りこぼし再現: refresh 前は git_status がまだ古い(M のまま)"
+    );
+
+    // ツリーへ戻る → git_status_for 無効化。
+    app.back_to_tree();
+    assert!(
+        app.git_status_for.is_none(),
+        "back_to_tree が git status を無効化(次の描画で再取得)"
+    );
+    // 次の描画相当。
+    app.refresh_git_if_needed();
+    assert!(
+        app.git_status_of(&note).is_none(),
+        "ツリー復帰で再検証 → コミット済みなので M が消える(陳腐化解消)"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -5376,6 +5514,64 @@ fn op_base_dir_for_file_dir_and_empty() {
     app.entries.clear();
     assert_eq!(app.op_base_dir(), app.root, "エントリ無しは root");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn duplicate_selection_copies_file_and_dir_in_place() {
+    let base = std::env::temp_dir().join("konoma_duplicate_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("sub")).unwrap();
+    let root = base.canonicalize().unwrap();
+    std::fs::write(root.join("note.md"), b"hello").unwrap();
+    std::fs::write(root.join("sub").join("inner.txt"), b"x").unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+
+    // ファイル note.md にカーソル → その場に note copy.md ができ、内容は同一。
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("note.md"))
+        .unwrap();
+    app.selected = idx;
+    app.duplicate_selection().unwrap();
+    assert!(
+        root.join("note copy.md").exists(),
+        "note copy.md が同ディレクトリにできる"
+    );
+    assert_eq!(
+        std::fs::read(root.join("note copy.md")).unwrap(),
+        b"hello",
+        "複製の内容が元と同一"
+    );
+
+    // 2回目 → note copy 2.md(既存 unique_name 準拠の連番)。
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("note.md"))
+        .unwrap();
+    app.selected = idx;
+    app.duplicate_selection().unwrap();
+    assert!(
+        root.join("note copy 2.md").exists(),
+        "2回目は note copy 2.md"
+    );
+
+    // ディレクトリ sub にカーソル → 兄弟 sub copy/ が再帰複製される(中身ごと)。
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("sub") && e.is_dir)
+        .unwrap();
+    app.selected = idx;
+    app.duplicate_selection().unwrap();
+    assert!(root.join("sub copy").is_dir(), "sub copy/ が兄弟にできる");
+    assert!(
+        root.join("sub copy").join("inner.txt").exists(),
+        "ディレクトリの中身も再帰複製される"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
 }
 
 #[test]

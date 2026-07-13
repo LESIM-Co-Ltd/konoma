@@ -1508,6 +1508,10 @@ mod tests {
         let before = std::fs::metadata(&index).unwrap().modified().unwrap();
         let st = statuses(&dir);
         let ig = ignored(&dir);
+        // git2 の gutter diff(diff_tree_to_workdir_with_index)も update_index を立てないので
+        // index を書き戻さない。これが背景 git 読み取りをロックフリーに保つ前提であり、
+        // それゆえ `.git/*.lock` イベントを握り潰さずに済む(fs 監視の自己ループが起きない)。
+        let _diff = file_diff(&dir, &dir.join("a.txt"));
         let after = std::fs::metadata(&index).unwrap().modified().unwrap();
         assert_eq!(before, after, "読み取りで index を書き戻さない");
         assert!(

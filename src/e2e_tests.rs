@@ -280,6 +280,28 @@ fn e2e_file_create_via_dialog() {
 }
 
 #[test]
+fn e2e_file_duplicate_in_place() {
+    let dir = sandbox("file_duplicate");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    // notes.txt にカーソル → Space→D で複製 → notes copy.txt がその場にできる。
+    s.select("notes.txt");
+    s.key(' ');
+    s.key('D');
+    assert!(
+        dir.join("notes copy.txt").exists(),
+        "複製 notes copy.txt がディスクに存在"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("notes copy.txt")).unwrap(),
+        std::fs::read(dir.join("notes.txt")).unwrap(),
+        "複製の内容が元と同一"
+    );
+    s.see("notes copy.txt"); // ツリーに現れ(refresh+reveal)、選択される
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_file_rename_via_dialog() {
     let dir = sandbox("file_rename");
     seed_files(&dir);

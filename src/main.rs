@@ -168,27 +168,24 @@ fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<R
 }
 
 /// Classify the paths from an fs event. Returns `(meaningful, ignore_rules_changed)`:
-/// - `meaningful`: whether reloading is worthwhile. An event of only `.git/*.lock` (a transient
-///   lock from running git) is false. We swallow it to break the **self-feedback loop in which
-///   konoma's own `git status` creates the lock → the watcher picks it up → git runs again …**.
+/// - `meaningful`: whether reloading is worthwhile. Any non-empty event is meaningful — **including
+///   `.git/*.lock` churn from an external git operation**. konoma's own git reads take no locks (CLI
+///   reads pass `--no-optional-locks`; git2 diffs never set `update_index`), so a `.git` lock event can
+///   only come from an *external* git op (a commit/amend/reset by the user or an AI agent) whose result
+///   we must reflect. (Historically we swallowed lock-only events to break a self-feedback loop in which
+///   konoma's own `git status` created `.git/index.lock` → the watcher picked it up → git ran again.
+///   `--no-optional-locks` (2026-07-07) removed that loop at the source, so swallowing now only *hides*
+///   external commits — e.g. the stale change marker seen after an agent commits while you preview a file.)
 /// - `ignore_rules_changed`: whether `.gitignore` or `.git/info/exclude` changed (= the heavy
 ///   ignore set must be rebuilt). For other changes, `ignored` is left alone and only the cheap `statuses` is updated.
 fn classify_fs_paths(paths: &[PathBuf]) -> (bool, bool) {
     if paths.is_empty() {
         return (true, false); // パス不明のイベントは安全側(再読込する・ignored は触らない)
     }
-    let mut meaningful = false;
-    let mut ignore_rules = false;
-    for p in paths {
-        if is_git_lock(p) {
-            continue; // ノイズ: このパスは無視
-        }
-        meaningful = true;
-        if is_ignore_rule_file(p) {
-            ignore_rules = true;
-        }
-    }
-    (meaningful, ignore_rules)
+    // どのパス変更も再読込に値する(バーストは run ループが1回にまとめる)。無視ルールが
+    // 変わったイベントが含まれる時だけ、重い ignored セットの作り直しも要求する。
+    let ignore_rules = paths.iter().any(|p| is_ignore_rule_file(p));
+    (true, ignore_rules)
 }
 
 /// Paths from an fs event that follow mode may jump to: anything not under a `.git` directory
@@ -200,18 +197,6 @@ fn follow_candidates(paths: &[PathBuf]) -> Vec<PathBuf> {
         .filter(|p| !p.components().any(|c| c.as_os_str() == ".git"))
         .cloned()
         .collect()
-}
-
-/// Whether `p` is a lock file (`*.lock`) under `.git`. These are transient files created and removed
-/// on every git invocation, and reacting to them causes a self-feedback loop. True only when the path
-/// has a `.git` component and ends in `*.lock` (a user's `Cargo.lock` etc. is outside `.git`, so excluded).
-fn is_git_lock(p: &Path) -> bool {
-    let is_lock = p
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".lock"))
-        .unwrap_or(false);
-    is_lock && p.components().any(|c| c.as_os_str() == ".git")
 }
 
 /// Whether `p` is a file that holds ignore rules (a change requires recomputing the ignore set):
@@ -255,7 +240,8 @@ fn run(
     // ファイル監視: 現在の root 配下の変更でツリー/git status を自動更新する。
     // notify のコールバックは別スレッドから呼ばれるので、変更を std チャネルで run ループへ送る。
     // チャネルの bool = 「無視ルール(.gitignore / .git/info/exclude)が変わったか」。
-    // `.git/*.lock` 等の一過性ノイズは握り潰す(下記 classify_fs_paths。自己フィードバックループ対策)。
+    // 外部 git 操作の `.git/*.lock` churn も再読込対象(classify_fs_paths。konoma はロックフリー
+    // なので自己フィードバックループは起きない)。
     // チャネルの Vec<PathBuf> = フォローモード用の変更パス候補(.git 配下を除く)。
     let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(bool, Vec<PathBuf>)>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -269,6 +255,10 @@ fn run(
     .ok();
     let mut watched_root: Option<PathBuf> = None;
     rewatch(watcher.as_mut(), &mut watched_root, &app.root);
+    // Secondary watch: a file shown outside the tree root (a global-bookmark preview, or the repo-wide
+    // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
+    // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
+    let mut watched_extra: Option<PathBuf> = None;
 
     // ローディング: 裏でコード文法をウォームし、完了をこのチャネルで run ループへ通知。
     // indicator/progressive とも UI を止めず(スピナーが回り続ける)、完了で着色版に差し替える。
@@ -471,6 +461,12 @@ fn run(
         if watched_root.as_deref() != Some(app.root.as_path()) {
             rewatch(watcher.as_mut(), &mut watched_root, &app.root);
         }
+        // root 外に表示中のファイル(ブックマーク先/repo 全体の git ビュー)はその親ディレクトリも監視する。
+        // 表示ファイルが変わる/root 内へ戻る/ツリーへ戻ると None になり監視は外れる。
+        let want_extra = app.out_of_root_watch_dir();
+        if watched_extra.as_deref() != want_extra.as_deref() {
+            set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref());
+        }
     }
     Ok(())
 }
@@ -490,6 +486,28 @@ fn rewatch(
     }
     if w.watch(root, RecursiveMode::Recursive).is_ok() {
         *watched = Some(root.to_path_buf());
+    }
+}
+
+/// Add/replace/remove the **secondary, non-recursive** watch for a file shown outside the tree root
+/// (`App::out_of_root_watch_dir`). `want=None` removes it. Non-recursive so it never overlaps the
+/// recursive root watch (no duplicate events). Failure is non-fatal (that file just won't auto-refresh).
+fn set_extra_watch(
+    watcher: Option<&mut notify::RecommendedWatcher>,
+    watched: &mut Option<PathBuf>,
+    want: Option<&std::path::Path>,
+) {
+    use notify::{RecursiveMode, Watcher};
+    let Some(w) = watcher else {
+        return;
+    };
+    if let Some(old) = watched.take() {
+        let _ = w.unwatch(&old);
+    }
+    if let Some(dir) = want {
+        if w.watch(dir, RecursiveMode::NonRecursive).is_ok() {
+            *watched = Some(dir.to_path_buf());
+        }
     }
 }
 
@@ -880,6 +898,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::FilePaste => {
             commit_visual_if_needed(app, sfc);
             app.paste()?;
+        }
+        Action::FileDuplicate => {
+            commit_visual_if_needed(app, sfc);
+            app.duplicate_selection()?;
         }
         Action::VisualCommit => app.exit_visual_commit(),
         Action::VisualSelectSiblings => app.visual_select_scope(false),
@@ -1337,14 +1359,15 @@ mod tests {
     }
 
     #[test]
-    fn fs_event_classification_breaks_loop_and_detects_ignore_rules() {
+    fn fs_event_classification_reacts_to_git_locks_and_detects_ignore_rules() {
         let pb = |s: &str| vec![PathBuf::from(s)];
-        // `.git/*.lock` は握り潰す(meaningful=false)= 自己フィードバックループ断ち。
+        // `.git/*.lock` にも反応する(meaningful=true)。konoma はロックフリー(--no-optional-locks)
+        // なので、これは外部 git 操作(コミット等)の合図であり、握り潰すと変更マーカーが陳腐化する。
         assert_eq!(
             classify_fs_paths(&pb("/repo/.git/index.lock")),
-            (false, false)
+            (true, false)
         );
-        assert_eq!(classify_fs_paths(&pb("/r/.git/HEAD.lock")), (false, false));
+        assert_eq!(classify_fs_paths(&pb("/r/.git/HEAD.lock")), (true, false));
         // .git 本体(HEAD/refs/index)は反応する(外部 git 操作の追従)が ignored は触らない。
         assert_eq!(classify_fs_paths(&pb("/repo/.git/HEAD")), (true, false));
         assert_eq!(classify_fs_paths(&pb("/repo/.git/index")), (true, false));

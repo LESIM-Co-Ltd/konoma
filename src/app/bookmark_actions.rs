@@ -696,7 +696,10 @@ impl App {
         }
         self.diff_cache = None; // 作業ツリーが変わった可能性 → diff キャッシュを落とす(外部編集の追従)
         self.gutter_cache = None; // 同上: git 変更ガターも作業ツリー変更で作り直す
-        self.rebuild_tree()?;
+                                  // ツリー再構築は行うが、その一時的な失敗(エージェントが一括でファイルを書き替える最中に
+                                  // 展開中サブディレクトリが一瞬読めなくなる等)で、下のプレビュー/ビュー再読込を**スキップさせない**。
+                                  // それらは preview_path / git 状態だけで動き、新しいツリーには依存しない。ツリーの Err は末尾で返す。
+        let tree = self.rebuild_tree();
         // 変更ファイルのみフィルタ中は一覧を最新の statuses から作り直す(エージェントの編集に追従)。
         if self.changed_filter {
             self.refresh_git_if_needed();
@@ -711,7 +714,7 @@ impl App {
         if matches!(self.mode, Mode::Preview) {
             self.reload_preview();
         }
-        Ok(())
+        tree
     }
 
     /// Cheap git update: refetch only `statuses` + `branch`, **leaving the heavy `ignored` (ignore set) untouched**

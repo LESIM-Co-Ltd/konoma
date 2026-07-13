@@ -1571,6 +1571,52 @@ impl App {
         Ok(())
     }
 
+    /// `Space→D`=duplicate: copy each target **in place** (into its own parent directory) with a
+    /// collision-free name (`note copy.md`, then `note copy 2.md`). Operates on the selection, or the
+    /// cursor entry when none. Directories are duplicated recursively (as a sibling `dir copy`), and
+    /// symlinks are copied as links — both via `copy_into`. Never overwrites. The last new item is
+    /// revealed and selected so the result is visible.
+    pub fn duplicate_selection(&mut self) -> Result<()> {
+        let targets = self.op_targets();
+        if targets.is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoTarget).into());
+            return Ok(());
+        }
+        let (mut ok, mut last, mut err) = (0usize, None, None);
+        for src in &targets {
+            // 親ディレクトリ = 複製先(その場に複製)。ルート等で親が無ければ失敗扱い(クラッシュしない)。
+            let Some(dir) = src.parent() else {
+                err =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string());
+                continue;
+            };
+            match crate::fileops::copy_into(dir, src) {
+                Ok(p) => {
+                    ok += 1;
+                    last = Some(p);
+                }
+                Err(e) => err = Some(e.to_string()),
+            }
+        }
+        self.clear_selection();
+        self.refresh()?;
+        if let Some(p) = &last {
+            self.reveal_and_select(p)?;
+        }
+        self.flash = Some(match err {
+            Some(e) => format!(
+                "{} {ok} / {}: {e}",
+                crate::i18n::tr(self.lang, crate::i18n::Msg::Duplicated),
+                crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+            ),
+            None => format!(
+                "{} ({ok})",
+                crate::i18n::tr(self.lang, crate::i18n::Msg::Duplicated)
+            ),
+        });
+        Ok(())
+    }
+
     /// The selection listed in the **current sort order (tree display order)**. Used as the numbering order for sequential rename.
     /// Selections not present in entries (collapsed, etc.) are appended at the end in path order.
     fn selection_in_display_order(&self) -> Vec<PathBuf> {
@@ -2732,6 +2778,27 @@ impl App {
         self.image_center = center;
     }
 
+    /// The directory to watch **in addition** to the tree root so external (agent) edits to the
+    /// currently shown file are still detected. Returns the shown file's parent directory **only when
+    /// that file lives outside the watched root**: a global-bookmark target, or the repo-wide git view
+    /// when the root is a repo subdirectory. Files under the root are already covered by the recursive
+    /// root watch (so this returns `None` for them, and whenever no file is shown / not in Preview).
+    ///
+    /// This closes the gap where the FSEvents watcher only covers `app.root`: an out-of-root preview
+    /// or diff never received change events, so an AI/external edit left it stale (the user's own `e`
+    /// edit still reloaded via the editor-return path — hence "my edits show, the AI's don't").
+    /// Consumed by the run loop in `main.rs`, which adds a non-recursive watch on this directory.
+    pub fn out_of_root_watch_dir(&self) -> Option<PathBuf> {
+        if !matches!(self.mode, Mode::Preview) {
+            return None;
+        }
+        let p = self.preview_path.as_ref()?;
+        if p.starts_with(&self.root) {
+            return None; // already covered by the recursive root watch
+        }
+        p.parent().map(|d| d.to_path_buf())
+    }
+
     /// Whether in windowed (large file) mode. Used for the render and scroll branching.
     pub fn is_windowed(&self) -> bool {
         self.preview_win.is_some()
@@ -2943,6 +3010,13 @@ impl App {
 
     pub fn back_to_tree(&mut self) {
         self.mode = Mode::Tree;
+        // Re-verify git status when the tree becomes visible again. FSEvents is inherently lossy
+        // (bursts get coalesced, and an external commit can arrive as `.git/*.lock`-only churn), so
+        // an external git op during Preview may have left `git_status` stale. Invalidating here makes
+        // the next render's `refresh_git_if_needed` refetch the cheap statuses+branch (the heavy
+        // `ignored` set is kept, since the repo is unchanged) — so returning to the tree always shows
+        // fresh markers, instead of a stale change marker until you navigate across a directory (`h`/`l`).
+        self.git_status_for = None;
         self.preview_path = None;
         self.preview_kind = None;
         self.clear_image(); // graphics 状態を解放

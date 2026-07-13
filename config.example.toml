@@ -256,6 +256,7 @@ builtin = "pdf"
 #   移動         : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
 #   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref"(@相対パス) "copy_code_block"(md コードブロック)
 #   ファイル管理 : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
+#                  "file_duplicate"(Space→D: カーソル/選択をその場に複製＝note copy.md)
 #   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
 #                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"

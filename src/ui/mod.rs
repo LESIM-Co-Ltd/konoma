@@ -480,8 +480,8 @@ mod tests {
         let buf_text = |app: &mut App| -> String {
             // ヘルプ全節が折返し無く収まる高さで検証する(節が増えても画面外へ押し出されないように。
             // 実機の小さい端末ではスクロール(j/k)で下部を見る挙動が正)。
-            // Agent Watch(C/n・N/F)の3行追加に合わせて 50→54。
-            let mut term = Terminal::new(TestBackend::new(72, 54)).unwrap();
+            // Agent Watch(C/n・N/F)の3行追加に合わせて 50→54。Space→D 複製の1行追加で 54→55。
+            let mut term = Terminal::new(TestBackend::new(72, 55)).unwrap();
             term.draw(|f| render(f, app)).unwrap();
             term.backend()
                 .buffer()

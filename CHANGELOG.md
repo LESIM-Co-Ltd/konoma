@@ -6,6 +6,40 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Duplicate a file or folder in place (`Space→D`).** Duplicates the cursor entry (or the whole
+  selection) next to itself with a collision-free name — `note.md` → `note copy.md`, then
+  `note copy 2.md` — reusing the existing copy machinery, so folders are duplicated recursively and
+  symlinks are copied as links. The new item is revealed and selected. Bound in the `Space` file
+  leader as `file_duplicate`.
+
+### Fixed
+- **A stale git change marker after an external/agent commit now clears.** While you previewed a file,
+  an AI agent committing in the background could leave the tree's change marker (`M`, …) stuck until
+  you navigated across a directory (`h`/`l`). Two causes: (1) the watcher swallowed `.git/*.lock`-only
+  events to break an old self-feedback loop where konoma's own `git status` created `.git/index.lock`
+  — but since `--no-optional-locks` (0.9.0) konoma's git reads take no locks, so a `.git` lock event
+  now only signals an *external* git op, and swallowing it hid the agent's commit (FSEvents can
+  coalesce a commit down to lock-only churn); (2) returning to the tree did not re-check git status
+  (it only refetched on a directory change). konoma now reacts to `.git` lock churn (safe — it stays
+  lock-free, so no feedback loop) and re-verifies git status whenever the tree becomes visible again,
+  so the marker is fresh both live and on return. Idle CPU is unchanged.
+- **External/agent edits to a file shown outside the tree root are now detected.** The file watcher
+  only watched `app.root` recursively, and the preview reload fires on any event under it — so a file
+  displayed *outside* the root received no change events and its preview/diff went stale on an
+  external (AI) edit, with no recovery. This hit a global-bookmark preview (a bookmarked file usually
+  lives outside the current tree) and the repo-wide git view when the root is a repo subdirectory
+  (diffing a changed file above the root). Your own `e` edit still showed up (it reloads on editor
+  return), so the symptom was "my edits appear but the AI's don't". konoma now also watches the shown
+  file's directory (non-recursive) whenever it lives outside the root, updating the watch as the shown
+  file changes and dropping it on return to the tree. Idle CPU is unchanged (the watch is added only
+  when it changes).
+- **A preview reload is no longer skipped when the tree rebuild fails.** In `refresh_fs`, the preview
+  (and git-view) reload used to sit behind the tree rebuild's `?`, so a transient directory-read
+  failure — e.g. an expanded subdirectory briefly unreadable while an agent rewrites files — would
+  drop the preview refresh for that event. The reloads now run regardless (they only need
+  `preview_path` / git state, not a fresh tree); the tree error is still surfaced.
+
 ## [0.11.3] - 2026-07-10
 
 ### Added
