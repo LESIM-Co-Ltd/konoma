@@ -262,6 +262,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         0
     };
     let end = offset.saturating_add(visible).min(app.entries.len());
+    // 詳細セルは App 側の (path → cells) キャッシュを可視行分だけ先に埋める(プリパス)。
+    // 行ごとの stat(`items` 列は read_dir)がキー入力のたびに走るのを防ぎ、ツリー再構築で破棄される。
+    if show_details {
+        let vis: Vec<(std::path::PathBuf, bool)> = app.entries[offset..end]
+            .iter()
+            .map(|e| (e.path.clone(), e.is_dir))
+            .collect();
+        app.ensure_detail_cells(&vis, &detail_cols);
+    }
     let lines: Vec<Line> = app.entries[offset..end]
         .iter()
         .enumerate()
@@ -353,17 +362,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 if pad > 0 {
                     spans.push(Span::from(" ".repeat(pad)));
                 }
-                let meta = fileops::quick_meta(&e.path).unwrap_or(fileops::RowMeta {
-                    is_dir: e.is_dir,
-                    is_symlink: false,
-                    size: 0,
-                    mtime: None,
-                    mode: 0,
-                });
-                for id in &detail_cols {
+                let cells = app.detail_cells_get(&e.path);
+                for (ci, id) in detail_cols.iter().enumerate() {
                     let w = fileops::detail_column_width(id).unwrap();
-                    let cell = fileops::detail_cell(id, &e.path, &meta).unwrap_or_default();
-                    let (cell_t, _) = truncate_width(&cell, w);
+                    let cell = cells
+                        .and_then(|c| c.get(ci))
+                        .map(String::as_str)
+                        .unwrap_or("");
+                    let (cell_t, _) = truncate_width(cell, w);
                     spans.push(Span::from(format!("  {cell_t:>w$}")).dim());
                 }
             } else if filtering && !query.is_empty() {

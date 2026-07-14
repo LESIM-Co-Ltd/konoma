@@ -18,13 +18,21 @@ const CHUNK: usize = 64 * 1024;
 pub struct FileWindow {
     file: File,
     len: u64,
+    /// `(count, top)` memo for `last_page_top`. `len` is fixed for this instance (the preview
+    /// reopens the window when the file changes), so the answer varies only with `count` —
+    /// without this, every frame paid an EOF seek + backward scan just for the scroll clamp.
+    last_page: Option<(usize, u64)>,
 }
 
 impl FileWindow {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
-        Ok(Self { file, len })
+        Ok(Self {
+            file,
+            len,
+            last_page: None,
+        })
     }
 
     pub fn len(&self) -> u64 {
@@ -182,13 +190,22 @@ impl FileWindow {
         Ok(out)
     }
 
-    /// Line-start offset for displaying the last `count` lines (for `G`).
+    /// Line-start offset for displaying the last `count` lines (for `G` and the per-frame scroll
+    /// clamp). Memoized per `count` — see `last_page`.
     pub fn last_page_top(&mut self, count: usize) -> std::io::Result<u64> {
-        let last = self.last_line_start()?;
-        if count <= 1 {
-            return Ok(last);
+        if let Some((c, top)) = self.last_page {
+            if c == count {
+                return Ok(top);
+            }
         }
-        Ok(self.retreat(last, count - 1)?.0)
+        let last = self.last_line_start()?;
+        let top = if count <= 1 {
+            last
+        } else {
+            self.retreat(last, count - 1)?.0
+        };
+        self.last_page = Some((count, top));
+        Ok(top)
     }
 
     /// Line-start offset of the final (displayed) line. When the file ends with `\n`, no empty final line is created.

@@ -6509,3 +6509,125 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
         .sum();
     assert_eq!(n_links, targets.len());
 }
+
+#[test]
+fn md_row_prefix_matches_full_document_reflow() {
+    // 可視範囲スライス描画(md_layout/md_slice)の前提=「行ごとの line_count の総和 = 全文書の
+    // line_count」(ratatui の Wrap は行を跨いで状態を持たない)。これが崩れるとスクロール
+    // クランプとスライス開始位置が全文書描画とズレるので、多様な内容で固定する。
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    let dir = std::env::temp_dir().join("konoma_md_prefix_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut md = String::from("# Title\n\n");
+    for i in 0..40 {
+        md.push_str(&format!(
+            "Paragraph {i} with a [link{i}](https://example.com/{i}) and 日本語の長い文を混ぜて\
+             折返しを起こす。This keeps going long enough to wrap at narrow widths.\n\n"
+        ));
+    }
+    md.push_str("| a | b |\n|---|---|\n| 1 | 2 |\n\n- [ ] task\n\n```rust\nfn f() {}\n```\n");
+    std::fs::write(dir.join("doc.md"), md.as_bytes()).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    assert!(app.cfg.ui.wrap, "既定は wrap=on の前提");
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = idx;
+    app.tree_activate().unwrap();
+
+    let width = 46u16;
+    let lines = app.decorated_lines(width);
+    let full = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    let (total, _) = app.md_layout(width);
+    assert_eq!(total, full, "prefix 総和が全文書 reflow と一致しない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_slice_render_matches_full_document_render() {
+    // 描画等価性: 「可視スライス + 残余スクロール」(md_slice=新実装)の Paragraph 描画が、
+    // 「全文書 + グローバルスクロール」(旧実装相当)と(グリフ・スタイルとも)セル単位で一致する。
+    // フォーカス反転込み。ui::render への配線は既存 e2e(画面文字列)と REVERSED バッファテストが担保。
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join("konoma_md_slice_equiv_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut md = String::from("# Doc\n\n");
+    for i in 0..30 {
+        md.push_str(&format!(
+            "Line {i} [go{i}](./t{i}.txt) 長い日本語テキストで折返しを発生させる行 {i}。\
+             wrap wrap wrap wrap wrap wrap.\n\n- [ ] task {i}\n\n"
+        ));
+    }
+    std::fs::write(dir.join("doc.md"), md.as_bytes()).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let idx = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.selected = idx;
+    app.tree_activate().unwrap();
+
+    let (iw, ih) = (58u16, 18u16); // 枠の内側相当
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: iw,
+        height: ih,
+    };
+    // キャッシュ確立 → Tab フォーカスを1つ進めて反転の等価性も比較対象に含める。
+    let (total, _) = app.md_layout(iw);
+    app.md_focus_move(1);
+    // 参照: 旧実装相当=フル文書を decorate してそのままグローバルスクロールで描く。
+    let full = app.decorated_lines(iw);
+    let full = app.decorate_md_items(full);
+    let max_v = total.saturating_sub(ih as usize) as u16;
+    assert!(max_v > 17, "折返しでスクロール余地が出る前提");
+    for scroll in [0u16, 3, 17, max_v] {
+        let (slice, local) = app.md_slice(scroll, ih);
+        let mut act_term = Terminal::new(TestBackend::new(iw, ih)).unwrap();
+        act_term
+            .draw(|f| {
+                let para = Paragraph::new(Text::from(slice.clone()))
+                    .wrap(Wrap { trim: false })
+                    .scroll((local, 0));
+                f.render_widget(para, area);
+            })
+            .unwrap();
+        let actual = act_term.backend().buffer().clone();
+
+        let mut ref_term = Terminal::new(TestBackend::new(iw, ih)).unwrap();
+        ref_term
+            .draw(|f| {
+                let para = Paragraph::new(Text::from(full.clone()))
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0));
+                f.render_widget(para, area);
+            })
+            .unwrap();
+        let reference = ref_term.backend().buffer().clone();
+        for y in 0..ih {
+            for x in 0..iw {
+                let a = &actual[(x, y)];
+                let r = &reference[(x, y)];
+                assert_eq!(
+                    (a.symbol(), a.fg, a.bg, a.modifier),
+                    (r.symbol(), r.fg, r.bg, r.modifier),
+                    "scroll={scroll} cell({x},{y}) がフル描画と不一致"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

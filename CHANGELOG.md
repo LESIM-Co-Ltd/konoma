@@ -6,6 +6,34 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Large performance batch — identical rendering, much less work per keypress**
+  (all numbers measured on release builds):
+  - **Rendered Markdown/Mermaid/code previews now draw only the visible slice.** The decorated-line
+    cache precomputes link collapsing, Tab items, and the wrap layout (per-line reflow prefix sums)
+    once per file/width; each frame then clones only the on-screen lines and restyles only the
+    focused line, instead of deep-cloning and re-flowing the whole document on every keypress.
+    Scrolling a 5,000-line Markdown document: ~4.6 ms → ~0.1 ms per frame (~45×). Focus following
+    and editor line mapping now read the cached layout (O(1) instead of re-flowing).
+  - **Tree rebuilds are ~5× faster on large directories** (10k files: ~34 ms → ~6 ms per rebuild,
+    which runs on every file-system event). Sort keys are lowercased once per entry instead of on
+    every comparison, expanded-directory lookup is a hash set, and per-entry `stat` is skipped
+    unless the sort key needs it (symlinks still resolve like before).
+  - **Tab switching no longer deep-clones the restored tab.** The snapshot is moved out of the slot
+    (the active slot is never read while a tab is active), halving the copy cost of a switch.
+  - **Animated GIFs are capped at ~128 MiB of resident frames.** A pathological GIF (e.g. 1080p ×
+    hundreds of frames ≈ 500 MB+) is now downscaled in halving steps instead of ballooning memory;
+    every frame is kept, so the animation stays complete. Typical GIFs are untouched.
+  - **Windowed text previews cache more.** Plain-text windows are cached like highlighted ones
+    (no per-frame file re-read), and the end-of-file scroll clamp is memoized (no per-frame EOF
+    seek+scan).
+  - **Tree detail columns (`ui.details`) cache their cells** per tree generation, so the per-row
+    `stat` (and the `items` column's directory listing) no longer runs on every keypress.
+  - **Fenced code blocks in Markdown cache their finished highlight** (bounded LRU), so follow-mode
+    rebuilds and width changes re-highlight only fences that actually changed.
+  - **Release builds use a single codegen unit** (with the existing fat LTO) for a small
+    across-the-board speedup.
+
 ## [0.12.0] - 2026-07-13
 
 ### Added

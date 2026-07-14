@@ -844,8 +844,49 @@ fn decorate_code_blocks(
     out
 }
 
+/// Cache key for a finished code-block render: every input that shapes the output lines.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CodeBlockKey {
+    src: String,
+    lang: String,
+    w: usize,
+    code_bg: Option<Color>,
+    theme: String,
+    tab_width: usize,
+    wrap: bool,
+}
+
+/// Bounded LRU of finished code-block renders. A Markdown rebuild re-highlights every fence
+/// through syntect — the dominant rebuild cost for code-heavy documents — and follow mode
+/// rebuilds on every external edit while the fences mostly stay unchanged. Keyed by the full
+/// input (no hash truncation → no false hits); ~64 blocks bounds the resident memory.
+struct CodeBlockCache {
+    map: std::collections::HashMap<CodeBlockKey, (u64, Vec<Line<'static>>)>,
+    tick: u64,
+}
+
+const CODE_BLOCK_CACHE_CAP: usize = 64;
+
+fn code_block_cache() -> &'static std::sync::Mutex<CodeBlockCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<CodeBlockCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        std::sync::Mutex::new(CodeBlockCache {
+            map: std::collections::HashMap::new(),
+            tick: 0,
+        })
+    })
+}
+
+/// Current number of cached code-block renders (capacity-bound check in tests).
+#[cfg(test)]
+pub(crate) fn code_block_cache_len() -> usize {
+    code_block_cache().lock().map(|c| c.map.len()).unwrap_or(0)
+}
+
 /// Syntect-highlight the collected code body using the `lang` token and `theme`, then add a left gutter, background, and
 /// full-width padding to each line. If the body is empty (a fence with no content), no lines are added.
+/// The finished lines are cached (see `CodeBlockCache`) so re-rendering the same fence is a lookup.
 #[allow(clippy::too_many_arguments)]
 fn highlight_body(
     body: &[String],
@@ -860,6 +901,23 @@ fn highlight_body(
         return Vec::new();
     }
     let src = body.join("\n");
+    let key = CodeBlockKey {
+        src: src.clone(),
+        lang: lang.to_string(),
+        w,
+        code_bg,
+        theme: theme.to_string(),
+        tab_width,
+        wrap,
+    };
+    if let Ok(mut cache) = code_block_cache().lock() {
+        cache.tick += 1;
+        let tick = cache.tick;
+        if let Some((used, lines)) = cache.map.get_mut(&key) {
+            *used = tick;
+            return lines.clone();
+        }
+    }
     // タブ展開は **ガター/全幅パディングを付ける前** に行う(後だと幅計算が狂って帯が崩れる)。
     // 桁追跡はコード先頭(0桁)基準。ガター付与で全行が一律右シフトするので整列は保たれる。
     let hl = crate::preview::code::expand_tabs(
@@ -871,7 +929,8 @@ fn highlight_body(
     // 途切れる(ユーザー報告 2026-07-07)。全視覚行をここで確定させれば Paragraph は
     // 折返し不要になり、ガター/帯が必ず連続する。
     let content_w = w.saturating_sub(GUTTER_COLS).max(1);
-    hl.into_iter()
+    let out: Vec<Line<'static>> = hl
+        .into_iter()
         .flat_map(|line| {
             let styled: Vec<Span<'static>> = line
                 .spans
@@ -895,7 +954,26 @@ fn highlight_body(
                 pad_to_width(spans, w, code_bg)
             })
         })
-        .collect()
+        .collect();
+    if let Ok(mut cache) = code_block_cache().lock() {
+        let tick = cache.tick;
+        cache.map.insert(key, (tick, out.clone()));
+        // 上限超過は最も昔に使われたエントリから追い出す(有界 LRU)。
+        while cache.map.len() > CODE_BLOCK_CACHE_CAP {
+            let oldest = cache
+                .map
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => {
+                    cache.map.remove(&k);
+                }
+                None => break,
+            }
+        }
+    }
+    out
 }
 
 /// Render one text block via tui-markdown with panic isolation. On panic the block is split
@@ -2994,5 +3072,29 @@ plain body
             ],
             "remote のみ・fence 内は除外・順序保持: {urls:?}"
         );
+    }
+
+    #[test]
+    fn code_block_cache_hits_are_identical_and_bounded() {
+        // 同一フェンスの再ハイライトはキャッシュヒットになり、出力(グリフ・スタイル)が完全一致する。
+        let body: Vec<String> = vec!["fn main() {}".into(), "let x = 1;".into()];
+        let a = highlight_body(&body, "rust", 60, None, "TwoDark", 4, true);
+        let b = highlight_body(&body, "rust", 60, None, "TwoDark", 4, true);
+        assert_eq!(a.len(), b.len());
+        for (la, lb) in a.iter().zip(&b) {
+            assert_eq!(la.spans.len(), lb.spans.len());
+            for (sa, sb) in la.spans.iter().zip(&lb.spans) {
+                assert_eq!(
+                    (sa.content.as_ref(), sa.style),
+                    (sb.content.as_ref(), sb.style)
+                );
+            }
+        }
+        // 容量は有界: 上限より多くの異なるキーを流し込んでもエントリ数は CAP を超えない。
+        for i in 0..(CODE_BLOCK_CACHE_CAP + 20) {
+            let one = vec![format!("let v{i} = {i};")];
+            let _ = highlight_body(&one, "rust", 60, None, "TwoDark", 4, true);
+        }
+        assert!(code_block_cache_len() <= CODE_BLOCK_CACHE_CAP);
     }
 }

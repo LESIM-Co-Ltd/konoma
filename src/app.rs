@@ -25,8 +25,9 @@ mod git_view;
 mod md_tasks;
 mod paste_jump;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
+    #[default]
     Tree,
     Preview,
 }
@@ -325,7 +326,10 @@ struct Clipboard {
 /// The active tab's working state lives in App's fields as the source of truth, and is saved/loaded here on switch.
 /// It keeps not just the tree but also the **mode/preview state per tab**, restoring them on switch instead of dropping to Tree.
 /// The heavy image state (protocol/source image) is not carried over and is reloaded on restore (zoom/center are kept).
-#[derive(Clone)]
+/// `Default` exists only as the placeholder `load_active` leaves in the slot after moving the
+/// snapshot out — the active slot is never read (tab_label/tab_root use the live App fields)
+/// and the next save_active overwrites it.
+#[derive(Clone, Default)]
 struct TabState {
     root: PathBuf,
     open_dir: PathBuf,
@@ -654,6 +658,11 @@ pub struct App {
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
     /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
     md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
+    /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
+    /// Filled lazily for visible rows (render pre-pass) and dropped on every tree rebuild, so the
+    /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
+    /// on every keypress.
+    detail_cells_cache: std::collections::HashMap<PathBuf, Vec<String>>,
     /// Sender that offloads inline-image decoding to a background thread.
     md_img_tx: Option<std::sync::mpsc::Sender<MdImageResult>>,
     /// Remote inline-image URLs whose background download is in flight (deduplicates fetches).
@@ -830,15 +839,27 @@ pub enum TableCopyKind {
 }
 
 /// Cache of decorated preview content. The key is (path, display width).
+/// Everything derivable once per (path, width) lives here so a frame only clones the visible
+/// slice (`md_slice`) instead of re-cloning / re-flowing the whole document on every keypress.
 struct MdCache {
     path: PathBuf,
     width: u16,
+    /// Decorated lines with links already collapsed (label-only; URLs recovered into `items`) —
+    /// exactly what the renderer draws, minus the per-frame focus inversion.
     lines: Vec<Line<'static>>,
+    /// Tab-cycle items (links / task checkboxes / code-block headers) in document order,
+    /// built once from `lines`. Mirrored into `App::md_items` when the cache is (re)built.
+    items: Vec<MdItem>,
     /// Block-level inline images reserved within `lines` (Markdown only; empty otherwise).
     images: Vec<crate::preview::markdown::ImagePlacement>,
     /// Number of source lines in the file. Used with the on-screen wrapped-row count to map the scroll
     /// position back to an approximate source line, so `e` opens the editor near the top of the view.
     src_lines: usize,
+    /// Widest line in display cells (horizontal-scroll clamp for wrap=off).
+    max_line_cols: usize,
+    /// wrap=on: visual (post-wrap) start row of each line via ratatui's own per-line reflow;
+    /// `len = lines.len() + 1`, last element = total display rows. Empty when wrap=off or width=0.
+    row_prefix: Vec<usize>,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -862,11 +883,13 @@ struct GutterCache {
 /// `line`=index of the decorated line (for scrolling). Both are collected straight from the render
 /// result (links = underlined blue spans + collapsed targets, checkboxes = `task_marker_style` spans),
 /// so no source re-parsing is needed.
+#[derive(Clone)]
 struct MdItem {
     line: usize,
     kind: MdItemKind,
 }
 
+#[derive(Clone)]
 enum MdItemKind {
     /// A link; `target`=URL/relative path.
     Link { target: String },
@@ -883,6 +906,9 @@ struct WinCache {
     path: PathBuf,
     byte_top: u64,
     height: u16,
+    /// Whether `lines` carry syntax colors. Plain text is cached too (same key space); the flag
+    /// keeps a colored window from being mistaken for a plain one when the highlight state flips.
+    styled: bool,
     lines: Vec<Line<'static>>,
 }
 
@@ -1083,6 +1109,7 @@ impl App {
             gif_proto_key: None,
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
+            detail_cells_cache: std::collections::HashMap::new(),
             md_img_tx: None,
             md_remote_inflight: std::collections::HashSet::new(),
             md_remote_failed: std::collections::HashSet::new(),
@@ -1175,7 +1202,8 @@ impl App {
     /// A naive implementation for M0. Support for large directories will later be replaced with lazy loading.
     pub fn rebuild_tree(&mut self) -> Result<()> {
         let mut out = Vec::new();
-        let expanded_dirs: Vec<PathBuf> = self
+        // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
+        let expanded_dirs: std::collections::HashSet<PathBuf> = self
             .entries
             .iter()
             .filter(|e| e.is_dir && e.expanded)
@@ -1196,7 +1224,37 @@ impl App {
         }
         // entries を作り直したら visual_anchor(entries 添字)は stale。必ず無効化する。
         self.visual_anchor = None;
+        // 詳細セルのキャッシュも世代交代(fs が変わった可能性がある節目=ここで必ず破棄)。
+        self.detail_cells_cache.clear();
         Ok(())
+    }
+
+    /// Fill the detail-column cell cache for the given visible rows (tree render pre-pass).
+    /// A path already cached is skipped; the whole cache is dropped by `rebuild_tree` (the choke
+    /// point every fs change goes through), so cells are computed once per tree generation.
+    pub fn ensure_detail_cells(&mut self, rows: &[(PathBuf, bool)], cols: &[String]) {
+        for (path, is_dir) in rows {
+            if self.detail_cells_cache.contains_key(path) {
+                continue;
+            }
+            let meta = crate::fileops::quick_meta(path).unwrap_or(crate::fileops::RowMeta {
+                is_dir: *is_dir,
+                is_symlink: false,
+                size: 0,
+                mtime: None,
+                mode: 0,
+            });
+            let cells: Vec<String> = cols
+                .iter()
+                .map(|id| crate::fileops::detail_cell(id, path, &meta).unwrap_or_default())
+                .collect();
+            self.detail_cells_cache.insert(path.clone(), cells);
+        }
+    }
+
+    /// Cached detail cells for one row (filled by `ensure_detail_cells`).
+    pub fn detail_cells_get(&self, path: &Path) -> Option<&Vec<String>> {
+        self.detail_cells_cache.get(path)
     }
 
     /// Calls `rebuild_tree`, and on failure does not swallow it but reports via flash. Returns `true` on success.
@@ -2647,28 +2705,20 @@ impl App {
     /// The 0-based decorated (logical) line at the top of the current Markdown view, resolving wrapping
     /// so it matches what the renderer draws (`preview_scroll` is in post-wrap display rows).
     fn md_top_logical_line(&self) -> Option<usize> {
-        use ratatui::text::Text;
-        use ratatui::widgets::{Paragraph, Wrap};
         let c = self.md_cache.as_ref()?;
         if c.lines.is_empty() {
             return None;
         }
         let scroll = self.preview_scroll as usize;
-        if !self.cfg.ui.wrap || c.width == 0 {
+        if !self.cfg.ui.wrap || c.width == 0 || c.row_prefix.len() != c.lines.len() + 1 {
             return Some(scroll.min(c.lines.len() - 1));
         }
-        let mut acc = 0usize;
-        for (i, line) in c.lines.iter().enumerate() {
-            let h = Paragraph::new(Text::from(vec![line.clone()]))
-                .wrap(Wrap { trim: false })
-                .line_count(c.width)
-                .max(1);
-            if acc + h > scroll {
-                return Some(i);
-            }
-            acc += h;
-        }
-        Some(c.lines.len() - 1)
+        // prefix は各行の開始表示行(単調増加)。scroll を含む行 = pp(p <= scroll) - 1。
+        let i = c
+            .row_prefix
+            .partition_point(|&p| p <= scroll)
+            .saturating_sub(1);
+        Some(i.min(c.lines.len() - 1))
     }
 
     /// Refine the proportional editor-open estimate for rendered Markdown by content: take the longest
@@ -3017,6 +3067,10 @@ impl App {
         // `ignored` set is kept, since the repo is unchanged) — so returning to the tree always shows
         // fresh markers, instead of a stale change marker until you navigate across a directory (`h`/`l`).
         self.git_status_for = None;
+        // Same seam re-verification for the detail columns: their cells are cached per tree
+        // generation (Phase G) and a missed fs event would otherwise pin stale size/mtime until
+        // the next rebuild. Dropping here keeps them as robust as the git markers.
+        self.detail_cells_cache.clear();
         self.preview_path = None;
         self.preview_kind = None;
         self.clear_image(); // graphics 状態を解放
@@ -3067,30 +3121,129 @@ impl App {
         self.media_loading = false;
     }
 
-    /// Return the decorated lines for a Markdown/Mermaid/code preview (inside the frame of display width `width`).
-    /// If (path, width) matches, the cache is reused and regenerated only when it changes (avoids re-highlighting
-    /// /re-parsing on every scroll; rebuilt only on a width change = resize). The return value is cloned every frame for rendering.
-    /// For targets other than these, returns empty (the caller uses the text path).
-    pub fn decorated_lines(&mut self, width: u16) -> Vec<Line<'static>> {
+    /// Build (or reuse) the decorated cache for a Markdown/Mermaid/code preview at display width
+    /// `width`. On a miss (file/width change) this renders, collapses links, collects the Tab items,
+    /// and precomputes the wrap layout (row prefix sums via ratatui's own per-line reflow) — all the
+    /// per-document work, done once. Frames then only slice the visible range (`md_slice`).
+    fn ensure_md_cache(&mut self, width: u16) {
         let Some(path) = self.preview_path.clone() else {
-            return Vec::new();
+            return;
         };
-        let hit = matches!(&self.md_cache, Some(c) if c.path == path && c.width == width);
-        if !hit {
-            let (lines, images, remote, src_lines) = self.build_decorated(&path, width);
-            // Kick off background downloads for any remote images shown as "loading". Each completes
-            // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
-            for url in &remote {
-                self.ensure_remote_md_fetch(url);
-            }
-            self.md_cache = Some(MdCache {
-                path: path.clone(),
-                width,
-                lines,
-                images,
-                src_lines,
-            });
+        if matches!(&self.md_cache, Some(c) if c.path == path && c.width == width) {
+            return;
         }
+        let (raw, images, remote, src_lines) = self.build_decorated(&path, width);
+        // Kick off background downloads for any remote images shown as "loading". Each completes
+        // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
+        for url in &remote {
+            self.ensure_remote_md_fetch(url);
+        }
+        let (lines, targets) = collapse_links(raw, self.cfg.ui.icons);
+        let items = build_md_items(&lines, &targets);
+        let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        let row_prefix = if self.cfg.ui.wrap && width > 0 {
+            use ratatui::text::Text;
+            use ratatui::widgets::{Paragraph, Wrap};
+            let mut pre = Vec::with_capacity(lines.len() + 1);
+            let mut acc = 0usize;
+            pre.push(0);
+            for line in &lines {
+                acc += Paragraph::new(Text::from(vec![line.clone()]))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1);
+                pre.push(acc);
+            }
+            pre
+        } else {
+            Vec::new()
+        };
+        // Mirror the items into the live field (the same refresh decorate_md_items used to do per
+        // frame — items only change when the cache is rebuilt) and keep the focus index in range.
+        self.md_items = items.clone();
+        match self.focused_item {
+            Some(_) if self.md_items.is_empty() => self.focused_item = None,
+            Some(f) if f >= self.md_items.len() => {
+                self.focused_item = Some(self.md_items.len() - 1)
+            }
+            _ => {}
+        }
+        self.md_cache = Some(MdCache {
+            path,
+            width,
+            lines,
+            items,
+            images,
+            src_lines,
+            max_line_cols,
+            row_prefix,
+        });
+    }
+
+    /// Ensure the decorated cache for `width` and return (total display rows, widest line in cells).
+    /// The total is wrap-aware via the cached prefix sums, so the scroll clamp matches what the
+    /// renderer draws without re-laying-out the whole document every frame.
+    pub fn md_layout(&mut self, width: u16) -> (usize, usize) {
+        self.ensure_md_cache(width);
+        let Some(c) = &self.md_cache else {
+            return (0, 0);
+        };
+        let total = if self.cfg.ui.wrap {
+            c.row_prefix.last().copied().unwrap_or(c.lines.len())
+        } else {
+            c.lines.len()
+        };
+        (total, c.max_line_cols)
+    }
+
+    /// The visible slice of the decorated lines for the (already clamped) display-row `scroll`,
+    /// plus the residual scroll offset to pass to Paragraph (the first sliced line may start above
+    /// the viewport when wrapped). Only on-screen lines are cloned and the focus inversion touches
+    /// only the focused line — O(viewport) per frame instead of O(document).
+    pub fn md_slice(&self, scroll: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+        let Some(c) = &self.md_cache else {
+            return (Vec::new(), 0);
+        };
+        let s = scroll as usize;
+        let h = height.max(1) as usize;
+        let (lo, hi, local) = if self.cfg.ui.wrap && c.row_prefix.len() == c.lines.len() + 1 {
+            // 可視表示行 [s, s+h) にかかる論理行区間。prefix は各行の開始表示行(単調増加)。
+            let lo = c.row_prefix.partition_point(|&p| p <= s).saturating_sub(1);
+            let hi = c
+                .row_prefix
+                .partition_point(|&p| p < s + h)
+                .min(c.lines.len());
+            (lo, hi.max(lo), (s - c.row_prefix[lo]) as u16)
+        } else {
+            let lo = s.min(c.lines.len());
+            let hi = (s + h).min(c.lines.len());
+            (lo, hi, 0)
+        };
+        let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
+        // フォーカス中アイテムの行だけ反転する(画面外なら何もしない=見た目は全文反転と同一)。
+        if let Some(f) = self.focused_item {
+            if let Some(it) = c.items.get(f) {
+                if it.line >= lo && it.line < hi {
+                    let whole = matches!(it.kind, MdItemKind::CodeBlock);
+                    // 同一行内でのマーカー序数 = 自分より前で同じ行に載っている item の数。
+                    let first_on_line = c.items.partition_point(|x| x.line < it.line);
+                    let ordinal = f - first_on_line;
+                    out[it.line - lo] = invert_focused_line(&c.lines[it.line], ordinal, whole);
+                }
+            }
+        }
+        (out, local)
+    }
+
+    /// Test-only view of the cached decorated lines (link-collapsed form, the same lines the
+    /// renderer slices from). Production rendering goes through `md_layout` + `md_slice`.
+    /// NOTE: the return value is already collapsed — feeding it into `decorate_md_items` runs
+    /// `collapse_links` a second time, which finds no "(URL)" spans and leaves every rebuilt
+    /// link item with an empty target. Fine for render/inversion assertions; do NOT use that
+    /// combination to test link activation (use the cache built by `md_layout` instead).
+    #[cfg(test)]
+    pub fn decorated_lines(&mut self, width: u16) -> Vec<Line<'static>> {
+        self.ensure_md_cache(width);
         self.md_cache
             .as_ref()
             .map(|c| c.lines.clone())
@@ -4145,10 +4298,15 @@ impl App {
         let want_syntax = self.cfg.ui.syntax_highlight
             && syntax_kind
             && (!self.hl_pending || self.loading_is_indicator());
-        let mut content: Vec<Line<'static>> = if want_syntax {
+        // progressive 待ち中の素テキストだけはキャッシュしない(後で着色版に差し替わるため)。
+        // それ以外は素テキストでも (path, top, height) でキャッシュする=毎フレームのファイル
+        // 読み直しをしない。`styled` をキーに含め、着色版と素版を取り違えない。
+        let cacheable = want_syntax || !(self.cfg.ui.syntax_highlight && syntax_kind);
+        let mut content: Vec<Line<'static>> = if cacheable {
             let hit = matches!(
                 &self.win_cache,
                 Some(c) if c.path == path && c.byte_top == top && c.height == height
+                    && c.styled == want_syntax
             );
             if !hit {
                 let raw = self
@@ -4156,13 +4314,17 @@ impl App {
                     .as_mut()
                     .and_then(|w| w.read_lines(top, h).ok())
                     .unwrap_or_default();
-                let src = raw.join("\n");
-                let lines =
-                    crate::preview::code::highlight(&src, &path, &self.cfg.ui.theme.code_theme);
+                let lines = if want_syntax {
+                    let src = raw.join("\n");
+                    crate::preview::code::highlight(&src, &path, &self.cfg.ui.theme.code_theme)
+                } else {
+                    raw.into_iter().map(Line::from).collect()
+                };
                 self.win_cache = Some(WinCache {
                     path,
                     byte_top: top,
                     height,
+                    styled: want_syntax,
                     lines,
                 });
             }
@@ -4171,7 +4333,7 @@ impl App {
                 .map(|c| c.lines.clone())
                 .unwrap_or_default()
         } else {
-            // 素テキスト(キャッシュしない): off-switch / progressive 待ち中 / Text。
+            // progressive 待ち中の素テキスト(キャッシュしない=着色完了で差し替わる)。
             let raw = self
                 .preview_win
                 .as_mut()
@@ -4400,37 +4562,13 @@ impl App {
     /// before rendering). Since tui-markdown outputs the "label (URL)" form, `collapse_links` folds the
     /// accompanying URL (the URL is the hidden destination) and styles the label as a link plus (when
     /// configured) an icon. Checkbox markers are recognized by their dedicated style (`is_task_span`).
+    /// Test-only equivalent of the production path (`ensure_md_cache` + `md_slice`) over caller-
+    /// supplied lines: collapse links, rebuild `md_items`, and invert the focused item. Shares
+    /// `build_md_items` / `invert_focused_line` with the cache path so the two cannot drift.
+    #[cfg(test)]
     pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
-        // 畳んだリンク span とタスクマーカー span を出現順に走査して md_items を作る。
-        let mut items = Vec::new();
-        let mut k = 0usize;
-        for (li, line) in lines.iter().enumerate() {
-            for span in &line.spans {
-                if is_link_span(span) {
-                    let target = targets.get(k).cloned().unwrap_or_default();
-                    items.push(MdItem {
-                        line: li,
-                        kind: MdItemKind::Link { target },
-                    });
-                    k += 1;
-                } else if crate::preview::markdown::is_task_span(span) {
-                    if let Some(state) =
-                        crate::preview::markdown::task_span_state(span.content.as_ref())
-                    {
-                        items.push(MdItem {
-                            line: li,
-                            kind: MdItemKind::Task { state },
-                        });
-                    }
-                } else if crate::preview::markdown::is_code_header_span(span) {
-                    items.push(MdItem {
-                        line: li,
-                        kind: MdItemKind::CodeBlock,
-                    });
-                }
-            }
-        }
+        let items = build_md_items(&lines, &targets);
         // フォーカス添字を範囲内にクランプ。
         match self.focused_item {
             Some(_) if items.is_empty() => self.focused_item = None,
@@ -4442,49 +4580,21 @@ impl App {
         let Some(target_idx) = self.focused_item else {
             return lines;
         };
-        // フォーカス中アイテムを反転して強調。リンク/タスクは該当マーカー span のみ、
-        // コードブロックはヘッダ行全体を反転する(1 行なので明確なフォーカス手がかりになる)。
-        use ratatui::style::Modifier;
         let (target_line, whole_line) = {
             let it = &self.md_items[target_idx];
             (it.line, matches!(it.kind, MdItemKind::CodeBlock))
         };
-        let mut seen = 0usize;
+        let first_on_line = self.md_items.partition_point(|x| x.line < target_line);
+        let ordinal = target_idx - first_on_line;
         lines
             .into_iter()
             .enumerate()
             .map(|(li, line)| {
-                let style = line.style;
-                if whole_line && li == target_line {
-                    // コードブロック: ヘッダ行の全 span を反転。
-                    let spans = line
-                        .spans
-                        .into_iter()
-                        .map(|mut span| {
-                            span.style = span.style.add_modifier(Modifier::REVERSED);
-                            span
-                        })
-                        .collect::<Vec<_>>();
-                    return Line::from(spans).style(style);
+                if li == target_line {
+                    invert_focused_line(&line, ordinal, whole_line)
+                } else {
+                    line
                 }
-                let spans = line
-                    .spans
-                    .into_iter()
-                    .map(|mut span| {
-                        // md_items と同じ順でマーカーを数える(リンク/タスク/コードヘッダ)。
-                        if is_link_span(&span)
-                            || crate::preview::markdown::is_task_span(&span)
-                            || crate::preview::markdown::is_code_header_span(&span)
-                        {
-                            if seen == target_idx && !whole_line {
-                                span.style = span.style.add_modifier(Modifier::REVERSED);
-                            }
-                            seen += 1;
-                        }
-                        span
-                    })
-                    .collect::<Vec<_>>();
-                Line::from(spans).style(style)
             })
             .collect()
     }
@@ -4518,31 +4628,24 @@ impl App {
     }
 
     /// Visual (post-wrap) row offset of decorated line `line` plus its own wrapped height.
-    /// With wrap off this is just (line, 1). Uses the cached decorated lines and ratatui's own
-    /// reflow (`line_count`), so the numbers match what the renderer draws exactly.
+    /// With wrap off this is just (line, 1). Reads the cached per-line reflow prefix sums
+    /// (ratatui's own `line_count`, computed once at cache build), so the numbers match what
+    /// the renderer draws exactly — and the lookup is O(1) instead of re-flowing the document.
     fn md_visual_span(&self, line: usize) -> (usize, usize) {
-        use ratatui::text::Text;
-        use ratatui::widgets::{Paragraph, Wrap};
         if !self.cfg.ui.wrap {
             return (line, 1);
         }
         let Some(cache) = &self.md_cache else {
             return (line, 1);
         };
-        if cache.width == 0 || line >= cache.lines.len() {
+        if cache.width == 0
+            || line >= cache.lines.len()
+            || cache.row_prefix.len() != cache.lines.len() + 1
+        {
             return (line, 1);
         }
-        let top = if line == 0 {
-            0
-        } else {
-            Paragraph::new(Text::from(cache.lines[..line].to_vec()))
-                .wrap(Wrap { trim: false })
-                .line_count(cache.width)
-        };
-        let height = Paragraph::new(Text::from(vec![cache.lines[line].clone()]))
-            .wrap(Wrap { trim: false })
-            .line_count(cache.width)
-            .max(1);
+        let top = cache.row_prefix[line];
+        let height = (cache.row_prefix[line + 1] - top).max(1);
         (top, height)
     }
 
@@ -5007,8 +5110,11 @@ impl App {
 
     /// Load the active tab's snapshot into the working fields.
     /// **Also restores that tab's mode/preview** (does not drop to Tree). Images are restored by reloading.
+    /// The snapshot is **moved** out of the slot (no deep clone of entries/filter_pool/git vectors):
+    /// while a tab is active its slot is never read (tab_label/tab_root use the live App fields)
+    /// and every switch path calls save_active before the slot is needed again.
     fn load_active(&mut self) {
-        let t = self.tabs[self.active_tab].clone();
+        let t = std::mem::take(&mut self.tabs[self.active_tab]);
         self.root = t.root;
         self.open_dir = t.open_dir;
         self.entries = t.entries;
@@ -5336,6 +5442,70 @@ fn clamp_cursor(cur: usize, delta: i32, len: usize) -> usize {
 fn is_link_span(span: &Span<'static>) -> bool {
     use ratatui::style::{Color, Modifier};
     span.style.add_modifier.contains(Modifier::UNDERLINED) && span.style.fg == Some(Color::Blue)
+}
+
+/// Scan collapsed decorated lines for Tab-cycle items (links / task checkboxes / code-block
+/// headers) in document order. `targets` are the link URLs recovered by `collapse_links`, in the
+/// same order the link spans appear. Shared by the cache build and the test-only decorate path.
+fn build_md_items(lines: &[Line<'static>], targets: &[String]) -> Vec<MdItem> {
+    let mut items = Vec::new();
+    let mut k = 0usize;
+    for (li, line) in lines.iter().enumerate() {
+        for span in &line.spans {
+            if is_link_span(span) {
+                let target = targets.get(k).cloned().unwrap_or_default();
+                items.push(MdItem {
+                    line: li,
+                    kind: MdItemKind::Link { target },
+                });
+                k += 1;
+            } else if crate::preview::markdown::is_task_span(span) {
+                if let Some(state) =
+                    crate::preview::markdown::task_span_state(span.content.as_ref())
+                {
+                    items.push(MdItem {
+                        line: li,
+                        kind: MdItemKind::Task { state },
+                    });
+                }
+            } else if crate::preview::markdown::is_code_header_span(span) {
+                items.push(MdItem {
+                    line: li,
+                    kind: MdItemKind::CodeBlock,
+                });
+            }
+        }
+    }
+    items
+}
+
+/// Apply the focus inversion to one decorated line. `ordinal` = index of the focused marker span
+/// within this line (counting link/task/code-header spans in order); `whole_line`=code-block
+/// header (all spans inverted — one line, a clear focus cue). Other lines pass through untouched.
+fn invert_focused_line(line: &Line<'static>, ordinal: usize, whole_line: bool) -> Line<'static> {
+    use ratatui::style::Modifier;
+    let style = line.style;
+    let mut seen = 0usize;
+    let spans = line
+        .spans
+        .iter()
+        .cloned()
+        .map(|mut span| {
+            if whole_line {
+                span.style = span.style.add_modifier(Modifier::REVERSED);
+            } else if is_link_span(&span)
+                || crate::preview::markdown::is_task_span(&span)
+                || crate::preview::markdown::is_code_header_span(&span)
+            {
+                if seen == ordinal {
+                    span.style = span.style.add_modifier(Modifier::REVERSED);
+                }
+                seen += 1;
+            }
+            span
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(style)
 }
 
 /// Fold the accompanying URL of the "label (URL)" that tui-markdown emits, leaving **only the label** in link style (blue underline,
@@ -6228,46 +6398,56 @@ fn rel_from(base: &Path, target: &Path) -> Option<PathBuf> {
 }
 
 /// Append one directory's worth of entries to out. Recurse into expanded subdirectories.
-/// Bundles the decision info for one entry for sorting (stats the metadata only once).
+/// Bundles the decision info for one entry for sorting. Lowercased sort keys are precomputed
+/// once per entry (sort_by runs O(n log n) comparisons — lowercasing inside the comparator
+/// allocated two Strings per comparison). The stat is taken only when the sort key needs
+/// size/mtime, or when the entry is a symlink (is_dir must follow the link like fs::metadata).
 struct ChildMeta {
     path: PathBuf,
+    /// Lowercased file name (also the stable tiebreak for every sort key).
+    name_lower: String,
+    /// Lowercased extension; filled only when sorting by extension.
+    ext_lower: String,
     is_dir: bool,
     size: u64,
     mtime: Option<std::time::SystemTime>,
 }
 
-fn child_meta(path: PathBuf) -> ChildMeta {
-    let md = std::fs::metadata(&path).ok();
-    let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-    let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-    let mtime = md.as_ref().and_then(|m| m.modified().ok());
+fn child_meta(path: PathBuf, ft: Option<std::fs::FileType>, sort: Sort) -> ChildMeta {
+    let need_stat = matches!(sort.key, SortKey::Size | SortKey::Modified);
+    let is_symlink = ft.map(|t| t.is_symlink()).unwrap_or(true);
+    let (is_dir, size, mtime) = if need_stat || is_symlink {
+        // fs::metadata follows symlinks, so a symlink to a directory stays expandable.
+        let md = std::fs::metadata(&path).ok();
+        (
+            md.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+            md.as_ref().map(|m| m.len()).unwrap_or(0),
+            md.as_ref().and_then(|m| m.modified().ok()),
+        )
+    } else {
+        // DirEntry::file_type is free on macOS (readdir d_type) — no extra syscall.
+        (ft.map(|t| t.is_dir()).unwrap_or(false), 0, None)
+    };
+    let name_lower = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let ext_lower = if matches!(sort.key, SortKey::Ext) {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+    } else {
+        String::new()
+    };
     ChildMeta {
         path,
+        name_lower,
+        ext_lower,
         is_dir,
         size,
         mtime,
     }
-}
-
-/// Lowercase comparison of file names (a case-insensitive ordering).
-fn name_cmp(a: &Path, b: &Path) -> std::cmp::Ordering {
-    let an = a
-        .file_name()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let bn = b
-        .file_name()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    an.cmp(&bn)
-}
-
-/// The lowercase extension (empty if none).
-fn ext_lower(p: &Path) -> String {
-    p.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase()
 }
 
 /// Compare two entries according to the settings. dirs_first → key → reverse, finally stabilized by name.
@@ -6280,16 +6460,16 @@ fn sort_cmp(a: &ChildMeta, b: &ChildMeta, sort: Sort) -> std::cmp::Ordering {
         }
     }
     let mut ord = match sort.key {
-        SortKey::Name => name_cmp(&a.path, &b.path),
+        SortKey::Name => a.name_lower.cmp(&b.name_lower),
         SortKey::Size => a.size.cmp(&b.size),
         SortKey::Modified => a.mtime.cmp(&b.mtime),
-        SortKey::Ext => ext_lower(&a.path).cmp(&ext_lower(&b.path)),
+        SortKey::Ext => a.ext_lower.cmp(&b.ext_lower),
     };
     if sort.reverse {
         ord = ord.reverse();
     }
     // 同値は名前(昇順)で安定化して並びがブレないようにする。
-    ord.then_with(|| name_cmp(&a.path, &b.path))
+    ord.then_with(|| a.name_lower.cmp(&b.name_lower))
 }
 
 /// Take the title label for the graph base from refs (`%D`). From `(HEAD -> main, origin/main)`, etc.,
@@ -6309,15 +6489,18 @@ fn base_label_from(refs: &str, short: &str) -> String {
 fn build_dir(
     dir: &Path,
     depth: usize,
-    expanded_dirs: &[PathBuf],
+    expanded_dirs: &std::collections::HashSet<PathBuf>,
     show_hidden: bool,
     sort: Sort,
     out: &mut Vec<Entry>,
 ) -> Result<()> {
     let mut children: Vec<ChildMeta> = std::fs::read_dir(dir)?
         .filter_map(|r| r.ok())
-        .map(|e| e.path())
-        .filter(|p| {
+        .map(|e| {
+            let ft = e.file_type().ok();
+            (e.path(), ft)
+        })
+        .filter(|(p, _)| {
             if show_hidden {
                 return true;
             }
@@ -6326,13 +6509,13 @@ fn build_dir(
                 .map(|n| n.starts_with('.'))
                 .unwrap_or(false)
         })
-        .map(child_meta)
+        .map(|(p, ft)| child_meta(p, ft, sort))
         .collect();
 
     children.sort_by(|a, b| sort_cmp(a, b, sort));
 
     for c in children {
-        let expanded = c.is_dir && expanded_dirs.iter().any(|d| d == &c.path);
+        let expanded = c.is_dir && expanded_dirs.contains(&c.path);
         out.push(Entry {
             path: c.path.clone(),
             is_dir: c.is_dir,

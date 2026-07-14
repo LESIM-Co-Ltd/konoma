@@ -370,25 +370,12 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area); // 枠を除いた表示領域
 
-    // 装飾行を取得 (mermaid は inner 幅でフィット済みなので、後段で折返しても罫線が崩れない)。
-    // リンクを収集し、フォーカス中リンクは反転表示する (Markdown のみ。他種別は 0 件)。
-    let lines = app.decorated_lines(inner.width);
-    let lines = app.decorate_md_items(lines);
-    let logical_lines = lines.len();
-    let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
-
+    // 装飾キャッシュを確保し、総表示行数(折返し込み)と最長行幅を得る(mermaid は inner 幅で
+    // フィット済みなので、後段で折返しても罫線が崩れない)。行本体は下の md_slice が
+    // 可視範囲だけ返す=全文書の clone / 全 reflow を毎フレームやらない。
+    let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
-    let mut para = Paragraph::new(Text::from(lines)).block(block);
-    if wrap {
-        para = para.wrap(Wrap { trim: false });
-    }
 
-    // 総表示行数: 折返し時は ratatui に計算させ、非折返し時は論理行数。
-    let total_rows = if wrap {
-        para.line_count(inner.width)
-    } else {
-        logical_lines
-    };
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
     app.preview_scroll = app.preview_scroll.min(max_v);
     app.preview_viewport = inner.height;
@@ -404,7 +391,14 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.preview_hscroll = app.preview_hscroll.min(max_h);
 
-    let para = para.scroll((app.preview_scroll, app.preview_hscroll));
+    // 可視スライス(フォーカス反転済み)＋スライス先頭からの残余スクロール。折返しは行単位で
+    // 独立(ratatui の Wrap は行を跨がない)ため、スライスの描画結果は全文書と一致する。
+    let (lines, local_scroll) = app.md_slice(app.preview_scroll, inner.height);
+    let mut para = Paragraph::new(Text::from(lines)).block(block);
+    if wrap {
+        para = para.wrap(Wrap { trim: false });
+    }
+    let para = para.scroll((local_scroll, app.preview_hscroll));
     frame.render_widget(para, area);
 
     // Overlay block-level inline images (kitty graphics) over their reserved placeholder rows.

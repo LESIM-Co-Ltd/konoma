@@ -116,6 +116,9 @@ git = ["dep:git2"]
 [profile.release]
 opt-level = 3
 lto = true
+# 単一 codegen unit=LTO と合わせて最良の最適化(ビルドは遅くなるがリリース頻度なら許容)。
+# 注意: panic = "abort" は導入しない(markdown の catch_unwind panic 防御が壊れる)。
+codegen-units = 1
 
 # debug ビルドでも syntect/fancy-regex の正規表現コンパイルは重い(TS 等の巨大文法で数秒)。
 # 自分のコードはデバッグ可能なまま、これら依存クレートだけ最適化して初回ハイライトを実用域にする。
