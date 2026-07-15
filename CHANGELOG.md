@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-07-15
+
+### Changed
+- **crates.io metadata repositioned for discovery.** Keywords are now
+  `tui, file-manager, preview, ai, agent` (dropping the dead `kitty-graphics`
+  tag and the library-oriented `ratatui`), the description leads with the
+  AI pair-programming positioning and the headline features, and the crate
+  is additionally listed under the `filesystem` category. The README tagline
+  matches. No code changes.
+
 ## [0.14.0] - 2026-07-15
 
 ### Added
@@ -508,7 +518,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.3...v0.12.0

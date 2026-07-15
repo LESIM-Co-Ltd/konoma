@@ -1,6 +1,8 @@
 # konoma
 
-> Full-screen preview-focused terminal file browser.
+> Terminal file browser built for AI pair-programming — full-screen previews
+> (Markdown, images, PDF, CSV), a git suite, and an agent-watch mode that
+> follows your AI's edits.
 > macOS / Apple Silicon · Rust · MIT
 
 [![CI](https://github.com/LESIM-Co-Ltd/konoma/actions/workflows/ci.yml/badge.svg)](https://github.com/LESIM-Co-Ltd/konoma/actions/workflows/ci.yml)
