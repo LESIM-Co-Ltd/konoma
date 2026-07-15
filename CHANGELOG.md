@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-15
+
 ### Added
 - **Page through files without leaving the preview (`Ctrl-n` / `Ctrl-p`).** While previewing,
   jump straight to the next / previous **file** in tree display order — directories are skipped,
@@ -506,7 +508,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.11.2...v0.11.3
