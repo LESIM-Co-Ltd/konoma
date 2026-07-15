@@ -152,6 +152,12 @@ pub enum Action {
     PdfNextPage,
     PdfPrevPage,
 
+    // --- Preview: file paging (text/image/table 共通) ---
+    /// Preview the next/previous **file** in tree display order (directories are skipped,
+    /// wraps at the ends, and the tree cursor follows).
+    PreviewFileNext,
+    PreviewFilePrev,
+
     // --- Preview: table (csv/tsv) ---
     /// Copy the current cell / row / column of a CSV/TSV table (via the `y→` menu).
     TableCopy(TableCopyKind),
@@ -704,6 +710,10 @@ impl KeyMap {
         // TUI 定番(fzf/Telescope の Ctrl-t=新タブ)＋konoma の t=新規タブと一貫。Ctrl+英字は
         // 全端末＋tmux で確実(Ctrl+Enter と違い kitty protocol 不要)。リンク未フォーカスでは no-op。
         ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
+        // Ctrl-n/Ctrl-p=ツリー表示順で次/前のファイルをプレビュー(ファイル送り)。J/K は画像面の
+        // PDF ページ送りと衝突、Ctrl-j はレガシー端末/tmux で Enter(LF)と区別不能のため不採用。
+        ptext.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
+        ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
         // Y=キャレット行の @path#L 参照コピー(Claude Code へ場所を渡す)。選択中は範囲(visual 面の Y)。
         ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
@@ -754,6 +764,9 @@ impl KeyMap {
         pimg.insert(KeyPress::key(KeyCode::PageUp), run(Action::PdfPrevPage));
         pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        // Ctrl-n/Ctrl-p=ファイル送り(J/K は PDF ページ送りに割当済みなので Ctrl 側)。
+        pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
+        pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
         pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         pimg.insert(KeyPress::ch('m'), run(Action::MarkSet));
         pimg.insert(KeyPress::ch('\''), run(Action::MarkJump));
@@ -776,6 +789,9 @@ impl KeyMap {
         apply_scheme_paging(&mut ptbl, scheme);
         ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        // Ctrl-n/Ctrl-p=ファイル送り(text/image と同キー)。
+        ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
+        ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
         ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
         ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
@@ -1635,6 +1651,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "image_zoom_out" => Action::ImageZoomOut,
         "image_zoom_reset" => Action::ImageZoomReset,
         "pdf_next_page" => Action::PdfNextPage,
+        "preview_next_file" => Action::PreviewFileNext,
+        "preview_prev_file" => Action::PreviewFilePrev,
         "pdf_prev_page" => Action::PdfPrevPage,
         // Preview: table (csv/tsv)
         "table_copy_cell" => Action::TableCopy(TableCopyKind::Cell),
@@ -1786,6 +1804,8 @@ pub fn action_name(a: Action) -> String {
         Action::ImageZoomOut => "image_zoom_out",
         Action::ImageZoomReset => "image_zoom_reset",
         Action::PdfNextPage => "pdf_next_page",
+        Action::PreviewFileNext => "preview_next_file",
+        Action::PreviewFilePrev => "preview_prev_file",
         Action::PdfPrevPage => "pdf_prev_page",
         Action::TableCopy(TableCopyKind::Cell) => "table_copy_cell",
         Action::TableCopy(TableCopyKind::Row) => "table_copy_row",
@@ -1963,6 +1983,35 @@ mod tests {
         // config 文字列の双方向対応。
         assert_eq!(action_from_str("paste_jump"), Some(Action::PasteJump));
         assert_eq!(action_name(Action::PasteJump), "paste_jump");
+    }
+
+    #[test]
+    fn preview_file_paging_is_ctrl_n_p_on_preview_surfaces() {
+        // Ctrl-n/Ctrl-p=ツリー表示順のファイル送り(text/画像/テーブルの3面)。
+        // J/K は画像面の PDF ページ送りと衝突、Ctrl-j はレガシー端末で Enter(LF)と同一のため不採用。
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        for sfc in [
+            Surface::PreviewText,
+            Surface::PreviewImage,
+            Surface::PreviewTable,
+        ] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ctrl_ch('n')),
+                Resolution::Action(Action::PreviewFileNext),
+                "Ctrl-n が {sfc:?} で preview_next_file に解決する"
+            );
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ctrl_ch('p')),
+                Resolution::Action(Action::PreviewFilePrev),
+                "Ctrl-p が {sfc:?} で preview_prev_file に解決する"
+            );
+        }
+        // config 文字列の双方向対応。
+        assert_eq!(
+            action_from_str("preview_next_file"),
+            Some(Action::PreviewFileNext)
+        );
+        assert_eq!(action_name(Action::PreviewFilePrev), "preview_prev_file");
     }
 
     #[test]

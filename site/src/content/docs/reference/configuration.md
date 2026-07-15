@@ -62,9 +62,11 @@ copy_prefix = "y"
 | `graph_base_branches` | `[]` | Ordered list of preferred base branches for the graph, e.g. `["main", "develop"]`. The first one that exists becomes the base (pinned to lane 0); the array order becomes the display priority. |
 | `commit_meta_align` | `"right"` | Author/date column in git log & graph: `"right"` (aligned right-edge column) or `"inline"` (directly after the subject). |
 | `confirm_quit` | `true` | Ask before quitting (`q`/`y`/`Enter` = quit, `n`/`Esc` = cancel; `qq` quits quickly). `false` = quit immediately. |
+| `confirm_bookmark_overwrite` | `true` | Ask before a bookmark key (`m`) overwrites a **different** existing path (`y`/`Enter` = overwrite, `n`/`Esc` = cancel). Re-registering the same path or an unused key never prompts. `false` = overwrite silently. |
 | `csv_rainbow` | `true` | Rainbow column colors in CSV/TSV table previews. `false` = monochrome (alignment and navigation unchanged). |
 | `follow_view` | `"diff"` | How follow mode (`F`) opens a changed file: `"diff"` (full-screen git diff; untracked files show as all-added) or `"file"` (normal preview scrolled to the first changed hunk). Files without a diff and media always open as `"file"`. |
 | `busy_indicator` | `true` | Small spinner + job label at the top-right while background work runs (git-ignored scan, media decode, highlight warm-up, image fetches). Idle shows nothing and costs nothing. |
+| `restore_tabs` | `true` | Restore the previous tab set **per start directory**: each tab's root, tree cursor, and open preview come back on the next launch in the same directory. Saved on tab open/close/switch and on quit under `~/.config/konoma/sessions/`. `false` = always start fresh (nothing is read or written). |
 | `md_task_states` | `[" ", "x"]` | Task-checkbox states cycled by `Space` in a Markdown preview, in order. Each entry is exactly one character. E.g. `[" ", "/", "x"]` adds an Obsidian-style in-progress state (shown as `[/]`). Invalid configs fall back to the default. |
 
 ## `[ui.sort]` — default tree order
@@ -142,12 +144,23 @@ konoma never edits file contents itself; `e` delegates to your editor.
 command = "nvim"            # global default
 [editor.ext]
 md = "code -w"              # per-extension override (extension without the dot)
-rs = "nvim"
+rs = "nvim +{line} {path}"  # {line} = the preview line you were on
 ```
 
 Resolution order: `[editor.ext]` match → `editor.command` → `$VISUAL` → `$EDITOR` →
 `vim`. Values are command + args, whitespace-separated; `{path}` is substituted if
 present, otherwise the file path is appended.
+
+**Opening at the preview line.** Pressing `e` from a windowed preview (plain text, code,
+or raw Markdown via `R`) opens the editor at the caret line. Use a `{line}` token to place
+it explicitly (`code -g {path}:{line}`, `hx {path}:{line}`, `nvim +{line} {path}`). Without
+a `{line}` token, common editors are handled automatically — vim family (`+N`, plus `zt`
+to scroll that line to the top of the window), VS Code (`-g path:N`), and Sublime/Helix/Zed
+(`path:N`); other editors open at the top. Rendered Markdown reflows the source, so `e` opens
+at the line whose text is at the top of your view — it searches the source for the on-screen
+text and lands on it (`R` gives an exact caret open). If you have `Tab`-focused an item
+(link, checkbox, code block) that is on screen, `e` opens at that item's line instead.
+Mermaid and images always open at the top.
 
 ## `[git]` — git integration
 
@@ -186,13 +199,14 @@ Action names are snake_case strings — the full annotated list is in
 [`config.example.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.toml). The main groups:
 
 - **Movement**: `navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end`
-- **Tree**: `quit`, `close_tab_or_quit`, `tree_descend`, `tree_leave`, `tree_activate`, `filter_start`, `toggle_hidden`, `refresh`, `open_sort_menu`, `toggle_info`, `request_edit`, `cycle_path_style`, `set_anchor`, `reset_anchor`, `enter_visual`, `toggle_select`
+- **Tree**: `quit`, `close_tab_or_quit`, `tree_descend`, `tree_leave`, `tree_activate`, `filter_start`, `toggle_hidden`, `refresh`, `open_sort_menu`, `toggle_info`, `request_edit`, `cycle_path_style`, `set_anchor`, `reset_anchor`, `enter_visual`, `toggle_select`, `open_in_new_tab` (`Ctrl-t`: open the entry under the cursor in a new foreground tab)
 - **Bookmarks**: `mark_set` (`m`), `mark_jump` (`'` — opens the list; plain letters inside it jump), `bookmark_edit` (`ctrl-e`), `bookmark_delete` (`ctrl-d`), `bookmark_close`. `m`/`'` are bound in both the tree and previews (a preview bookmarks the shown file).
 - **Path copy** (`y` leader): `copy_name`, `copy_relative`, `copy_full`, `copy_parent`, `copy_at_ref` (`@relative/path` for AI chats)
-- **File management** (`Space` leader): `file_create`, `file_rename`, `file_delete`, `file_copy`, `file_cut`, `file_paste`
-- **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open`, `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `table_copy_cell/row/column`
+- **File management** (`Space` leader): `file_create`, `file_rename`, `file_delete`, `file_copy`, `file_cut`, `file_paste`, `file_duplicate` (`Space→D`: duplicate the cursor/selection in place, e.g. `note copy.md`)
+- **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab), `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends), `table_copy_cell/row/column`
 - **Agent Watch**: `toggle_follow` (`F`), `toggle_changed_filter` (`C`), `jump_next_change` (`n`), `jump_prev_change` (`N`)
 - **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`O`), `cycle_diff_layout`, `git_copy_*`, `branch_*`
+- **Paste-jump** (`global`): `paste_jump` (`P`) — reads a path or GitHub link from the clipboard and jumps there (reveal + preview). Understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and `#L123` / `:123` line anchors; switches root to the target's repository when it lies outside the current root.
 - **Tabs / app** (`global`): `tab_new` (`t`), `toggle_tab_list` (`T` — tab list; `tab_list_close` = `d` inside it), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`). `tab_close` has no default key (closing is `q` on the tree; rebind with `"w" = "tab_close"` if you want it back)
 - `noop` (alias `disabled`) removes a default binding.
 
@@ -210,6 +224,7 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
 | `~/.config/konoma/config.toml` | This configuration. |
 | `~/.config/konoma/bookmarks.toml` | Global (uppercase) bookmarks — absolute paths. |
 | `~/.config/konoma/bookmarks/<dir>.toml` | Local (lowercase) bookmarks, one file per start directory. |
+| `~/.config/konoma/sessions/<dir>.toml` | Tab session (`restore_tabs`), one file per start directory. |
 | `~/.cache/konoma/remote-images/` | Cache for remote images embedded in Markdown. |
 
 ## Fonts & terminal requirements

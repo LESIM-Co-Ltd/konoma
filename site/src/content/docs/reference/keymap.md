@@ -56,6 +56,7 @@ information contextually inside the app.
 | `R` | toggle rendered ⇄ raw source (Markdown/Mermaid) |
 | `v` / `V` | select by character / by line, then `y` copies |
 | `Y` | copy `@path#L12-34` reference |
+| `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` + letter / `'` | bookmark the previewed file / bookmark list |
 | `e` / `q` | external editor / back to tree |
 
@@ -66,6 +67,7 @@ information contextually inside the app.
 | `+` `-` / `0` `=` | zoom / reset to fit |
 | `h j k l` | pan |
 | `J` `K` | PDF page down / up |
+| `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
 
 ## CSV / TSV table preview
@@ -73,6 +75,7 @@ information contextually inside the app.
 | Key | Action |
 |---|---|
 | `h j k l` | move by cell |
+| `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `g` `G` / `0` `$` | first/last row / first/last column |
 | `y` → `c r C f` | copy cell / row / column / full path |
 | `m` `'` / `e` / `q` | bookmark / editor / back |

@@ -24,6 +24,7 @@ mod file_actions;
 mod git_view;
 mod md_tasks;
 mod paste_jump;
+mod session_actions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -474,6 +475,9 @@ pub struct App {
     sort_menu: bool,
     /// Bookmarks (M7 auxiliary). Lowercase a-z=local (per launch dir) / uppercase A-Z=global.
     pub bookmarks: crate::bookmarks::Bookmarks,
+    /// Tab-session persistence (`[ui] restore_tabs`). Attached by main like the loader senders;
+    /// `None` (tests) = tab operations never write session files.
+    session_store: Option<crate::session::SessionStore>,
     /// State of waiting for a letter after `m`/`'` (Set=register / Jump=jump).
     /// Waiting for the letter key after `m` (bookmark set). (`'` opens the list directly.)
     mark_set_pending: bool,
@@ -1040,6 +1044,7 @@ impl App {
             sort,
             sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
+            session_store: None,
             mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
@@ -1171,6 +1176,13 @@ impl App {
         // 最初のタブとして現在の状態を登録する。
         app.tabs.push(app.snapshot_tab());
         Ok(app)
+    }
+
+    /// Attach the per-project session store (`[ui] restore_tabs`). Called by main only, like the
+    /// loader senders — tests that need persistence attach a temp-based store explicitly, so plain
+    /// `App::new` (unit/e2e tests) never touches the real `~/.config`.
+    pub fn attach_session_store(&mut self, store: crate::session::SessionStore) {
+        self.session_store = Some(store);
     }
 
     /// Summarize startup keymap conflicts / ignored settings into one line (for the startup flash; i18n).
@@ -3055,6 +3067,36 @@ impl App {
             self.preview_cursor_col = usize::MAX;
         } else {
             self.preview_hscroll_end();
+        }
+    }
+
+    /// Page the preview to the next/previous **file** in tree display order (`dir`=+1/-1, wraps
+    /// at the ends). Directories are skipped; the tree cursor follows the shown file, so leaving
+    /// the preview lands where you are. The anchor is the previewed file's tree position, falling
+    /// back to the cursor when the previewed file is not in the tree (e.g. a global-bookmark
+    /// target outside the root). With no other file to go to, this is a no-op.
+    pub fn preview_jump_file(&mut self, dir: i32) {
+        if self.mode != Mode::Preview || self.entries.is_empty() {
+            return;
+        }
+        let anchor = self
+            .preview_path
+            .as_ref()
+            .and_then(|p| self.entries.iter().position(|e| e.path == *p))
+            .unwrap_or_else(|| self.selected.min(self.entries.len() - 1));
+        let n = self.entries.len() as i64;
+        let mut i = anchor as i64;
+        for _ in 0..n {
+            i = (i + dir as i64).rem_euclid(n);
+            if i as usize == anchor {
+                break; // 一周した=他にファイルが無い
+            }
+            if !self.entries[i as usize].is_dir {
+                self.selected = i as usize;
+                let path = self.entries[i as usize].path.clone();
+                self.enter_preview(&path);
+                return;
+            }
         }
     }
 
@@ -5296,6 +5338,8 @@ impl App {
         self.search_clear();
         self.tabs.push(self.snapshot_tab());
         self.active_tab = self.tabs.len() - 1;
+        // タブ集合が変わる節目でセッションを保存する(異常終了でも直近のタブ構成が残る)。
+        self.save_session();
         Ok(())
     }
 
@@ -5319,6 +5363,7 @@ impl App {
             let _ = self.reveal_path_deep(&entry.path);
             self.enter_preview(&entry.path);
         }
+        self.save_session();
         Ok(())
     }
 
@@ -5333,6 +5378,7 @@ impl App {
             self.active_tab = self.tabs.len() - 1;
         }
         self.load_active();
+        self.save_session();
     }
 
     /// Move tabs relatively (dir: +1=next / -1=previous). Wraps at the ends.
@@ -5345,6 +5391,7 @@ impl App {
         let n = self.tabs.len() as i32;
         self.active_tab = (self.active_tab as i32 + dir).rem_euclid(n) as usize;
         self.load_active();
+        self.save_session();
     }
 
     /// Select a tab by number (0-based). Out-of-range or the same tab is ignored.
@@ -5356,6 +5403,7 @@ impl App {
         self.save_active();
         self.active_tab = i;
         self.load_active();
+        self.save_session();
     }
 
     // --- タブ一覧オーバーレイ (`T`) ----------------------------------------
@@ -5402,6 +5450,7 @@ impl App {
             }
         }
         self.tab_list_sel = self.tab_list_sel.min(self.tabs.len() - 1);
+        self.save_session();
     }
     /// Root directory of tab `i` (for the tab list's path column).
     pub fn tab_root(&self, i: usize) -> std::path::PathBuf {

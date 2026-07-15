@@ -6,6 +6,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Page through files without leaving the preview (`Ctrl-n` / `Ctrl-p`).** While previewing,
+  jump straight to the next / previous **file** in tree display order — directories are skipped,
+  files inside expanded subfolders are included, the ends wrap around, and the tree cursor follows
+  (so `q` drops you on the file you were looking at). Works across all preview kinds (text/code,
+  Markdown, images, PDF, CSV/TSV tables — a PDF keeps `J`/`K` for its pages). Configurable as
+  `preview_next_file` / `preview_prev_file`.
+- **Reopen the previous tab set per project (`[ui] restore_tabs`, default on).** Launching konoma
+  in a directory restores the tabs that were open when it last exited there — each tab's root,
+  tree cursor, and full-screen preview (a tab left previewing a file reopens as that preview).
+  Sessions are saved on every tab open/close/switch and on quit, one file per start directory
+  under `~/.config/konoma/sessions/`. Deleted roots/files degrade safely to the nearest valid
+  state; set `restore_tabs = false` to always start fresh (nothing is read or written).
+
 ## [0.13.0] - 2026-07-14
 
 ### Changed

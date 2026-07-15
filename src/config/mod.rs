@@ -341,6 +341,11 @@ pub struct UiConfig {
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
     pub busy_indicator: bool,
+    /// Restore the previous tab set on startup, **per start directory** (default true). konoma records
+    /// each tab's root / cursor / previewed file into `~/.config/konoma/sessions/<start dir>.toml` on
+    /// every tab open/close/switch and on quit; launching konoma in the same directory reopens those
+    /// tabs. false = always start fresh (the session file is neither read nor written).
+    pub restore_tabs: bool,
 }
 
 impl UiConfig {
@@ -517,6 +522,7 @@ impl Default for UiConfig {
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],
             busy_indicator: true,
+            restore_tabs: true,
         }
     }
 }

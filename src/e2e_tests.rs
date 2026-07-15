@@ -2201,3 +2201,91 @@ fn e2e_tab_switch_reloads_tree_from_disk() {
     s.see("ZZ_NEW_FILE.txt");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn e2e_preview_file_paging_ctrl_n_p() {
+    // Ctrl-n/Ctrl-p=プレビュー中のファイル送り: ツリー表示順・ディレクトリはスキップ・端で wrap・
+    // 展開中サブフォルダ内のファイルも辿る・ツリーカーソルが追従する。
+    let dir = std::env::temp_dir().join("konoma_e2e_file_paging");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("mid")).unwrap();
+    std::fs::write(dir.join("a.txt"), b"alpha content\n").unwrap();
+    std::fs::write(dir.join("z.txt"), b"zulu content\n").unwrap();
+    std::fs::write(dir.join("mid/inner.txt"), b"inner content\n").unwrap();
+    let mut s = Sim::new(&dir);
+
+    // mid を展開(dirs_first 既定でツリー順は [mid, mid/inner.txt, a.txt, z.txt])。
+    s.enter();
+    s.key('j'); // inner.txt
+    s.key('j'); // a.txt
+    s.enter(); // a.txt をプレビュー
+    assert!(matches!(s.app.mode, Mode::Preview));
+    s.see("alpha content");
+
+    // 次ファイル: a.txt → z.txt。
+    s.ctrl('n');
+    s.see("zulu content");
+    assert!(s.app.preview_path.as_ref().unwrap().ends_with("z.txt"));
+
+    // さらに次: 末尾から wrap し、先頭の mid(ディレクトリ)はスキップして inner.txt へ。
+    s.ctrl('n');
+    s.see("inner content");
+    assert!(s.app.preview_path.as_ref().unwrap().ends_with("inner.txt"));
+
+    // 前ファイル: inner.txt の前は mid(スキップ)→ wrap で z.txt。
+    s.ctrl('p');
+    s.see("zulu content");
+    assert!(s.app.preview_path.as_ref().unwrap().ends_with("z.txt"));
+
+    // ツリーカーソルが追従している(q で戻ると z.txt の上)。
+    s.key('q');
+    assert!(matches!(s.app.mode, Mode::Tree));
+    assert!(s.app.entries[s.app.selected].path.ends_with("z.txt"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[ui] restore_tabs`: タブセッションが起動ディレクトリ毎に保存され、「再起動」で
+/// タブ構成(枚数・アクティブタブ・カーソル・プレビュー面)がそのまま復元される。
+#[test]
+fn e2e_session_restore_reopens_previous_tabs() {
+    let dir = sandbox("session_restore");
+    std::fs::write(dir.join("a.txt"), "alpha body\n").unwrap();
+    std::fs::write(dir.join("b.txt"), "beta body\n").unwrap();
+    let base = std::env::temp_dir().join("konoma_e2e_session_restore_base");
+    let _ = std::fs::remove_dir_all(&base);
+
+    // セッション1: a.txt をプレビュー → t で新タブ(ツリー) → b.txt にカーソル。
+    let mut s = Sim::new(&dir);
+    s.app
+        .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
+    s.select("a.txt");
+    s.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(s.app.mode, Mode::Preview));
+    s.key('t');
+    s.select("b.txt");
+    s.app.save_session(); // 終了時保存に相当(main が run 後に呼ぶ)
+    drop(s);
+
+    // 「再起動」: 同じ起動 dir の新しい Sim にストアを繋いで復元する(main の起動順と同じ)。
+    let mut s2 = Sim::new(&dir);
+    assert_eq!(s2.app.tab_count(), 1, "復元前は素の1タブ");
+    s2.app
+        .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
+    s2.app.restore_session();
+    s2.draw();
+    assert_eq!(s2.app.tab_count(), 2, "タブ数を復元");
+    assert_eq!(s2.app.active_tab_index(), 1, "アクティブタブを復元");
+    assert!(matches!(s2.app.mode, Mode::Tree));
+    assert!(
+        s2.app.entries[s2.app.selected].path.ends_with("b.txt"),
+        "ツリーカーソルを復元"
+    );
+    s2.see("a.txt"); // タブバーにプレビュータブ(タブ1)のラベルが出る
+                     // タブ1へ切替 = a.txt のプレビューが開き直っている(中身が画面に出る)。
+    s2.key('[');
+    assert!(matches!(s2.app.mode, Mode::Preview));
+    s2.see("alpha body");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&base).ok();
+}

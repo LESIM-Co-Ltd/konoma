@@ -123,7 +123,8 @@ impl Bookmarks {
     }
 }
 
-fn default_base() -> PathBuf {
+/// Config base (`$HOME/.config/konoma`). Shared with the tab-session files (`crate::session`).
+pub(crate) fn default_base() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -141,7 +142,8 @@ fn local_path(base: &Path, open_dir: &Path) -> PathBuf {
 
 /// Encode the start dir's absolute path into a file name (percent-encoding). Anything outside `[A-Za-z0-9._-]` becomes `%XX`.
 /// Only when it is extremely long (>200) is the tail replaced with a simple hash to avoid the file-name length (255) limit.
-fn encode_path(p: &Path) -> String {
+/// Shared with the tab-session files (`crate::session`), which key by start dir the same way.
+pub(crate) fn encode_path(p: &Path) -> String {
     let s = p.to_string_lossy();
     let mut out = String::with_capacity(s.len() + 8);
     for b in s.bytes() {

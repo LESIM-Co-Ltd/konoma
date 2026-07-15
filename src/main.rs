@@ -18,6 +18,7 @@ mod git;
 mod i18n;
 mod keymap;
 mod preview;
+mod session;
 #[cfg(test)]
 mod speed_tests;
 mod ui;
@@ -101,6 +102,7 @@ fn main() -> Result<()> {
     // 重い git ignored(無視セット・大規模 repo で ~800ms)を別スレッドで計算し、結果を run ループへ。
     let (ignored_tx, ignored_rx) = std::sync::mpsc::channel::<IgnoredResult>();
 
+    let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
     app.attach_media_loader(media_tx);
     app.attach_md_image_loader(md_img_tx);
@@ -127,6 +129,11 @@ fn main() -> Result<()> {
     // 注意: main 側に req_tx の clone を残さない。App を drop すれば全 Sender が消え、
     // ワーカーの recv が None を返して綺麗に終了できる。
 
+    // タブセッション([ui] restore_tabs): 前回この起動ディレクトリで開いていたタブ構成を復元する。
+    // 各ローダ/画像バックエンドを繋いだ後に行う(復元でプレビューを開き直すとメディアジョブが飛ぶため)。
+    app.attach_session_store(session::SessionStore::load(&start_dir));
+    app.restore_session();
+
     let result = run(
         &mut terminal,
         &mut app,
@@ -139,6 +146,9 @@ fn main() -> Result<()> {
             ignored: ignored_rx,
         },
     );
+
+    // 終了時にタブセッションを保存する(終了時点の最新状態が確定形。restore_tabs=false なら no-op)。
+    app.save_session();
 
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
@@ -933,6 +943,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ImageZoomReset => app.image_zoom_reset(),
         Action::PdfNextPage => app.pdf_next_page(),
         Action::PdfPrevPage => app.pdf_prev_page(),
+        Action::PreviewFileNext => app.preview_jump_file(1),
+        Action::PreviewFilePrev => app.preview_jump_file(-1),
         Action::TableCopy(kind) => app.table_copy(kind),
         Action::SortSet(k) => app.sort_menu_key(sort_key_char(k))?,
         Action::SortToggleReverse => app.sort_menu_key('r')?,

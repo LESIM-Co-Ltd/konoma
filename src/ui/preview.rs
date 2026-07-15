@@ -57,6 +57,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
             .row("y → f", l(crate::i18n::Msg::WkFull))
+            .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
             .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
             .row("e", l(crate::i18n::Msg::EditExternal))
             .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
@@ -70,6 +71,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             sec = sec.row("J / K  ·  PageDown / PageUp", l(crate::i18n::Msg::HintPage));
         }
         return vec![sec
+            .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
             .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
             .row("e", l(crate::i18n::Msg::EditExternal))
             .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
@@ -87,6 +89,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
+        .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
         .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
         .row(crate::ui::status::page_help(app), "")
@@ -102,6 +105,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "hjkl", crate::i18n::Msg::HintCell),
             hint(lang, "y", crate::i18n::Msg::CopyHint),
             hint(lang, "g/G", crate::i18n::Msg::HintEnds),
+            hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
             hint(lang, "e", crate::i18n::Msg::HintEdit),
@@ -120,6 +124,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             v.push(hint(lang, "J/K", crate::i18n::Msg::HintPage));
         }
         v.extend([
+            hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
             hint(lang, "e", crate::i18n::Msg::HintEdit),
@@ -146,6 +151,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         }
         v.extend([
             hint(lang, "R", crate::i18n::Msg::HintRawSource),
+            hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
             hint(lang, "e", crate::i18n::Msg::HintEdit),
@@ -183,6 +189,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         };
         v.push(hint(lang, "R", msg));
     }
+    v.push(hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump));
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));
     v.push(hint(lang, "e", crate::i18n::Msg::HintEdit));
