@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 
 use crate::bookmarks::{default_base, encode_path};
 
+/// `true` unless the value is the field default (`false`) — used to omit `false` bools from the TOML.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One saved tab: its tree root, the entry under the cursor, and — when the tab was left in
 /// Preview — the file that was being previewed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,6 +25,18 @@ pub struct SavedTab {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// The preview above was a full-screen git diff (Agent Watch follow / `d`), not a plain content
+    /// view. Restored by reopening the diff (falling back to a plain preview when there is no diff).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preview_diff: bool,
+    /// Hidden (dotfile) visibility was toggled on for this tab. Restored before the tree is rebuilt
+    /// so a saved dotfile cursor is revealable.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub show_hidden: bool,
+    /// Per-tab start dir for @-references (usually the launch dir, but a tab opened at a descended
+    /// root keeps that root). Persisted so restore reproduces the exact @-ref base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_dir: Option<String>,
 }
 
 /// The tab set that was open when konoma last exited in a start dir.
@@ -64,7 +81,10 @@ impl SessionStore {
         toml::from_str(&text).ok()
     }
 
-    /// Persist `sess` (the store fills in `dir`). Creates the parent directory as needed.
+    /// Persist `sess` (the store fills in `dir`). Creates the parent directory as needed. The write
+    /// is **atomic**: it goes to a sibling temp file and is then renamed into place, so a crash or
+    /// kill mid-write can never truncate an existing valid session (a half-written file parses as
+    /// `None` = the *whole* saved tab set would be silently lost, not just the in-flight change).
     pub fn write(&self, mut sess: SavedSession) -> Result<()> {
         sess.dir = self.dir.clone();
         if let Some(parent) = self.path.parent() {
@@ -72,7 +92,13 @@ impl SessionStore {
                 .with_context(|| format!("セッション保存先の作成: {}", parent.display()))?;
         }
         let text = toml::to_string(&sess).context("セッションの TOML 整形")?;
-        std::fs::write(&self.path, text)
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, text)
+            .with_context(|| format!("セッション一時保存: {}", tmp.display()))?;
+        // rename は同一ディレクトリ=同一 FS なのでアトミック(既存ファイルを瞬時に置換)。
+        std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("セッション保存: {}", self.path.display()))
     }
 }
@@ -97,11 +123,13 @@ mod tests {
                     root: "/tmp/a".into(),
                     cursor: Some("/tmp/a/x.txt".into()),
                     preview: None,
+                    ..Default::default()
                 },
                 SavedTab {
                     root: "/tmp/b".into(),
                     cursor: None,
                     preview: Some("/tmp/b/y.md".into()),
+                    ..Default::default()
                 },
             ],
         };
@@ -138,6 +166,43 @@ mod tests {
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(&store.path, "this is [not toml").unwrap();
         assert!(store.read().is_none(), "壊れたファイルはクラッシュせず無視");
+
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&proj).ok();
+    }
+
+    #[test]
+    fn write_replaces_in_place_and_leaves_no_temp() {
+        let base = std::env::temp_dir().join("konoma_session_atomic_test_base");
+        let _ = std::fs::remove_dir_all(&base);
+        let proj = std::env::temp_dir().join("konoma_session_atomic_test_proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let store = SessionStore::with_base(base.clone(), &proj);
+
+        let mk = |root: &str| SavedSession {
+            active: 0,
+            tabs: vec![SavedTab {
+                root: root.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        store.write(mk("/x")).unwrap();
+        // 2回目: temp 書き→rename で既存を瞬時に置換する。
+        store.write(mk("/y")).unwrap();
+        assert_eq!(
+            store.read().unwrap().tabs[0].root,
+            "/y",
+            "2回目の書込みが反映"
+        );
+
+        // アトミック書込みの temp ファイルを残さない。
+        let leftovers = std::fs::read_dir(base.join("sessions"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "temp ファイルを残さない");
 
         std::fs::remove_dir_all(&base).ok();
         std::fs::remove_dir_all(&proj).ok();

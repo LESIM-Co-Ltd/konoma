@@ -6,6 +6,24 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Tab-session restore (`restore_tabs`) fidelity and robustness.** Restoring a saved session
+  no longer:
+  - focuses the wrong tab when an earlier tab's directory was deleted (the active index is now
+    remapped across the dropped tabs, not just clamped);
+  - reopens a tab that was showing a full-screen git diff as a plain content preview (the diff
+    is persisted and reopened, falling back to a plain preview only when there is no diff);
+  - loses the tree cursor on a hidden (dotfile) entry (hidden-file visibility is now persisted
+    and applied before the tree is rebuilt);
+  - computes `@`-references from the wrong base in the second and later restored tabs
+    (each tab's start dir is persisted and restored);
+  - leaves (and re-saves) a broken empty tree when a saved root exists but is unreadable
+    (it rolls back to the launch directory);
+  - risks losing not-yet-restored tabs if killed mid-restore (per-tab writes during restore are
+    suppressed; one complete write happens at the end);
+  - risks losing the entire saved session to a truncated file on a crash mid-write (the session
+    file is now written atomically via a temp file + rename).
+
 ## [0.14.1] - 2026-07-15
 
 ### Changed

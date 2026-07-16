@@ -478,6 +478,10 @@ pub struct App {
     /// Tab-session persistence (`[ui] restore_tabs`). Attached by main like the loader senders;
     /// `None` (tests) = tab operations never write session files.
     session_store: Option<crate::session::SessionStore>,
+    /// True only while `restore_session` is rebuilding the saved tabs. Suppresses the per-op
+    /// `save_session` calls that `tab_new`/`tab_goto` would otherwise fire, so a crash mid-restore
+    /// cannot overwrite the on-disk session with a partial set; one complete write happens at the end.
+    session_restoring: bool,
     /// State of waiting for a letter after `m`/`'` (Set=register / Jump=jump).
     /// Waiting for the letter key after `m` (bookmark set). (`'` opens the list directly.)
     mark_set_pending: bool,
@@ -1045,6 +1049,7 @@ impl App {
             sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
             session_store: None,
+            session_restoring: false,
             mark_set_pending: false,
             bookmark_list: false,
             bookmark_list_sel: 0,
