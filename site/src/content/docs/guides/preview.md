@@ -13,8 +13,8 @@ goes back. `?` shows the keys for the current preview type.
 
 Rendered with headings, full-width rules, tables (with column alignment and
 inline styles), task lists, code fences (syntax-highlighted), Mermaid fences
-(drawn as Unicode diagrams), and inline images (local and remote, drawn as
-real pixels).
+(rendered as real diagram images), and inline images (local and remote, drawn
+as real pixels).
 
 - **Links**: `Tab` / `Shift-Tab` walk every link and checkbox in the document;
   `Enter` opens the focused link — local paths open inside konoma, URLs open in
@@ -24,6 +24,14 @@ real pixels).
   first, so it never clobbers a concurrent edit (e.g. by an AI agent). The
   states cycle through `ui.md_task_states` (default `[ ]` ⇄ `[x]`; add a
   custom in-progress state like `[/]` if you like).
+- **Mermaid diagrams**: ```` ```mermaid ```` fences render inline as real
+  images — laid out and rasterized fully in-process (no browser or Node),
+  dark-themed with a transparent background so they blend into the terminal.
+  `Tab` focuses a diagram; `+` / `-` zoom it in place (`h j k l` pan, `0`
+  fits), and `Enter` opens it full screen (`q` returns to the same spot).
+  Standalone `.mmd` files open full screen directly. `ui.mermaid = "text"`
+  keeps the legacy Unicode rendering; unsupported diagrams fall back to it
+  automatically.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
 
