@@ -341,6 +341,21 @@ pub struct UiConfig {
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
     pub busy_indicator: bool,
+    /// How mermaid diagrams render: `"image"` (default) rasterizes them in-process (pure Rust,
+    /// mermaid.js-quality) and shows them full-screen (standalone `.mmd`) or inline (```mermaid
+    /// fences in Markdown) with zoom/pan; `"text"` keeps the legacy Unicode box-drawing rendering.
+    /// Image mode degrades to text automatically when the terminal has no image protocol or a
+    /// diagram fails to render (principle #3).
+    pub mermaid: String,
+    /// Color theme for image-mode mermaid diagrams: `"dark"` (default; matches dark terminals),
+    /// `"light"`, `"classic"` (mermaid.js default), `"forest"`, `"neutral"`. The diagram background
+    /// is always transparent so it blends with the terminal.
+    pub mermaid_theme: String,
+    /// Max height (terminal rows) of an inline mermaid diagram inside Markdown (default 24).
+    /// Bigger = larger diagrams in the document flow (still width-capped and aspect-preserving;
+    /// a diagram taller than the viewport scrolls in bands like any inline image). 0/invalid
+    /// falls back to the default.
+    pub mermaid_rows: u16,
     /// Restore the previous tab set on startup, **per start directory** (default true). konoma records
     /// each tab's root / cursor / previewed file into `~/.config/konoma/sessions/<start dir>.toml` on
     /// every tab open/close/switch and on quit; launching konoma in the same directory reopens those
@@ -522,6 +537,9 @@ impl Default for UiConfig {
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],
             busy_indicator: true,
+            mermaid: "image".into(),
+            mermaid_theme: "dark".into(),
+            mermaid_rows: 24,
             restore_tabs: true,
         }
     }

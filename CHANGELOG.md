@@ -6,6 +6,29 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Mermaid diagrams render as real images (`[ui] mermaid`, default `"image"`).** Diagrams are
+  laid out and rasterized fully in-process (pure Rust — no browser, Node, or external tools),
+  at mermaid.js quality including CJK labels. Standalone `.mmd`/`.mermaid` files open full
+  screen with zoom/pan; ```mermaid fences inside Markdown render inline, join the `Tab` cycle,
+  and `Enter` opens the focused diagram full screen (`q` returns to the exact spot in the
+  document). Zooming re-rasterizes the diagram at the needed density on a worker thread, so it
+  stays sharp instead of blowing up pixels — SVG file previews gain the same sharp zoom.
+  Unsupported diagrams, render failures, and terminals without an image protocol degrade to the
+  legacy Unicode text rendering automatically; `mermaid = "text"` keeps it everywhere.
+  A focused inline diagram also zooms **in place**: `+`/`-` magnify within the reserved area
+  (the document layout never shifts), `hjkl` pan while zoomed, `0` fits — with the same
+  sharp re-rasterization, so zoomed diagrams stay crisp. The focused diagram is outlined with
+  a cyan frame, the view auto-scrolls to show the whole diagram, and `[ui] mermaid_rows`
+  (default 24) sets the target size of inline diagrams — including **scaling up** beyond the
+  base raster (the density follows automatically, so bigger stays sharp). The initial view
+  **fits the viewport**: in a window shorter than the target the diagram shrinks so the whole
+  block is visible without scrolling, and inline diagrams always fill their reserved area
+  centered (no off-center letterboxing). Diagrams use the
+  mermaid.js **dark theme by default with a transparent background**, so they blend into the
+  terminal instead of floating on a white card; `[ui] mermaid_theme` picks
+  `dark`/`light`/`classic`/`forest`/`neutral`.
+
 ## [0.14.2] - 2026-07-16
 
 ### Fixed

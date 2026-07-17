@@ -46,6 +46,10 @@ pub enum PreviewKind {
     /// Git diff preview (opened with Enter in the Git view; unified display, Zed-style coloring).
     /// Not produced from config rules; `open_git_diff` sets it directly.
     GitDiff(PathBuf),
+    /// Full-screen view of the Nth ```mermaid fence of the current Markdown preview (Enter on a
+    /// Tab-focused inline diagram). Not produced from config rules; `open_mermaid_fence` sets it.
+    /// The fence source is re-extracted by ordinal on load (count-guarded like code-block copy).
+    MermaidFence(usize),
     /// External command delegation. Expands {path}/{out} and runs a child process.
     Command {
         path: PathBuf,

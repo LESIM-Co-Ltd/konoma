@@ -81,8 +81,12 @@ fn main() -> Result<()> {
 
     // 画像が出せる端末なら、SVG のシステムフォント列挙(初回 ~数十ms)を起動の裏で先に温める
     // (初回 SVG 表示時の UI フリーズを隠す。構文ハイライトの warm_dir と同じ方針)。
+    // mermaid 画像モードならレンダラ側の遅延フォント計測も同様に温める(初回図表示の数十ms を隠す)。
     if picker.is_some() {
         std::thread::spawn(preview::svg::warm_fontdb);
+        if cfg.ui.mermaid != "text" {
+            std::thread::spawn(preview::markdown::warm_mermaid);
+        }
     }
 
     // リサイズ/エンコードのオフロード用チャネルとワーカースレッド。
@@ -286,6 +290,15 @@ fn run(
         if needs_redraw {
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
+            // インライン画像(kitty unicode placeholder)の表示位置が動いたフレームは、端末を
+            // フル再描画して旧位置の残骸を掃除する。placeholder 行は「画像 ID を前景色に符号化
+            // した文字列」を端末グリッドへ直接印字するが、ratatui の差分描画は空白→空白を
+            // 再送しないため、スクロール等で画像が動くと旧 ID 行が色付きバーとして取り残される
+            // (Ghostty 実機で青/ピンクのバーとして報告・ID が変わる毎に色も変わる)。
+            if app.take_md_overlay_moved() {
+                terminal.clear()?;
+                terminal.draw(|frame| ui::render(frame, app))?;
+            }
         }
 
         // 重いコードハイライト待ち(cold な言語の初回): 文法コンパイルを別スレッドへ逃がし UI を止めない。
@@ -696,6 +709,9 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
         },
         // 通常のテキスト/コードプレビュー、およびその行選択(visual)サブモード。
         // windowed のときは preview_scroll/to_top 等が行カーソルを動かす(視覚選択中は範囲が伸びる)。
+        // フォーカス中のインライン mermaid 図を**ズーム中**は hjkl/矢印を図のパンに割り当てる
+        // (等倍に戻せば通常スクロールに復帰。埋め込み地図の操作感)。
+        Surface::PreviewText | Surface::PreviewTextVisual if app.fence_pan_motion(m) => {}
         Surface::PreviewText | Surface::PreviewTextVisual => match m {
             Motion::Up => app.preview_scroll(-1),
             Motion::Down => app.preview_scroll(1),

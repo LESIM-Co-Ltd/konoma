@@ -65,6 +65,10 @@ resvg = "0.47"
 # md フェンスコードのハイライトは konoma 側で純 Rust syntect(下記)に統一する＝配布容易性(PRD §5)。
 tui-markdown = { version = "0.3.7", default-features = false }
 mermaid-text = "0.56"
+# mermaid → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。ラスタライズは konoma 側の
+# resvg に統一するので default features(cli/png=clap/同梱resvg)は切る。fontdb/ttf-parser は
+# 既存依存と同版=重複ビルドなし。画像化に失敗した図は mermaid-text のテキスト描画へ降格(原則#3)。
+mermaid-rs-renderer = { version = "0.3", default-features = false }
 # 拡張子付き単体コードファイルのハイライト用(md 内は tui-markdown が担当)。
 # 既定の onig バックエンドは oniguruma(C ライブラリ)を要求し配布容易性(PRD §5)に反するため、
 # default-features を切り純 Rust の fancy-regex(default-fancy) を使う(chafa を切ったのと同じ方針)。

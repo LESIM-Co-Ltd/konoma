@@ -472,6 +472,8 @@ pub enum Msg {
     PreviewTruncated,
     VideoThumbUnavailable,
     PdfPreviewUnavailable,
+    MermaidUnavailable,
+    DiagramOpenFailed,
 }
 
 /// English table.
@@ -858,6 +860,8 @@ fn en(msg: Msg) -> &'static str {
         PdfPreviewUnavailable => {
             "[pdf] cannot render — install poppler (pdftoppm), or use a kitty-graphics terminal"
         }
+        MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
+        DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
     }
 }
 
@@ -1239,6 +1243,8 @@ fn jp(msg: Msg) -> &'static str {
         PdfPreviewUnavailable => {
             "[PDF] 表示不可 — poppler(pdftoppm) を導入するか kitty graphics 対応端末を使ってください"
         }
+        MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
+        DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
     }
 }
 
@@ -1679,6 +1685,8 @@ mod tests {
         Msg::PreviewTruncated,
         Msg::VideoThumbUnavailable,
         Msg::PdfPreviewUnavailable,
+        Msg::MermaidUnavailable,
+        Msg::DiagramOpenFailed,
         Msg::QuitConfirm,
         Msg::StQuit,
         Msg::StQuitHint,

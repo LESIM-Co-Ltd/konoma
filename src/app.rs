@@ -399,10 +399,16 @@ struct TabState {
 
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
-    /// A still image (SVG raster result / single-frame GIF, etc.) → goes to image_src.
+    /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.
     Static(image::DynamicImage),
     /// All GIF frames (composited RGBA + delay) → goes to gif_frames.
     Gif(Vec<(image::DynamicImage, std::time::Duration)>),
+    /// A raster of a vector source (SVG file / mermaid diagram). The SVG is retained so zooming
+    /// re-rasterizes at the needed density (sharp zoom) instead of blowing up pixels.
+    Vector {
+        img: image::DynamicImage,
+        svg: std::sync::Arc<Vec<u8>>,
+    },
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -414,7 +420,7 @@ pub struct MediaResult {
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Rasterize an SVG (path, max-edge px).
+    /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
     Svg(PathBuf, u32),
     /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
     Gif(PathBuf),
@@ -422,6 +428,14 @@ enum MediaJob {
     Video(PathBuf),
     /// Rasterize page N (1-based) of a PDF (delegated to pdftocairo/pdftoppm/qlmanage/sips). Loaded one page at a time.
     Pdf(PathBuf, u32),
+    /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme).
+    /// None (unsupported diagram / parse failure) → the caller's text-diagram fallback shows.
+    Mermaid(PathBuf, u32, String),
+    /// Render mermaid source text (a ```mermaid fence opened full-screen) and rasterize it.
+    MermaidSrc(String, u32, String),
+    /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
+    /// the base for relative resources inside the SVG (mermaid output has none).
+    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
 }
 
 impl MediaJob {
@@ -429,7 +443,12 @@ impl MediaJob {
     fn run(self) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
-                crate::preview::svg::rasterize(&p, max_px).map(MediaPayload::Static)
+                let data = std::fs::read(&p).ok()?;
+                let img = crate::preview::svg::rasterize_bytes(&data, &p, max_px)?;
+                Some(MediaPayload::Vector {
+                    img,
+                    svg: std::sync::Arc::new(data),
+                })
             }
             MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
                 Some(frames) => Some(MediaPayload::Gif(frames)),
@@ -439,6 +458,24 @@ impl MediaJob {
             MediaJob::Video(p) => crate::preview::video::thumbnail(&p).map(MediaPayload::Static),
             MediaJob::Pdf(p, page) => {
                 crate::preview::pdf::render_page(&p, page).map(MediaPayload::Static)
+            }
+            MediaJob::Mermaid(p, max_px, theme) => {
+                let code = std::fs::read_to_string(&p).ok()?;
+                MediaJob::MermaidSrc(code, max_px, theme).run()
+            }
+            MediaJob::MermaidSrc(code, max_px, theme) => {
+                let svg = crate::preview::markdown::mermaid_to_svg(&code, &theme)?;
+                let data = svg.into_bytes();
+                let img =
+                    crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)?;
+                Some(MediaPayload::Vector {
+                    img,
+                    svg: std::sync::Arc::new(data),
+                })
+            }
+            MediaJob::SvgReraster(svg, p, max_px) => {
+                let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
+                Some(MediaPayload::Vector { img, svg })
             }
         }
     }
@@ -613,6 +650,31 @@ pub struct App {
     image_crop: Option<(u32, u32, u32, u32)>,
     /// The most recent visible fraction (0..1, w/h). Less than 1 = the image overflows the viewport and is clipped = pan is possible.
     image_vis_frac: (f64, f64),
+    /// SVG source of the current image preview when it is vector-backed (SVG file / mermaid diagram).
+    /// Zooming past the raster's density re-rasterizes this at the needed scale on a worker thread
+    /// ("sharp zoom"); raster images leave it None (pixel zoom only).
+    vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Logical (layout) pixel size of a vector-backed image = the dimensions of its **first** raster.
+    /// `image_layout` sizes/zooms against this identity, so swapping in a sharper raster changes only
+    /// pixel density, never the on-screen geometry (HiDPI-style backing store).
+    image_logical: Option<(u32, u32)>,
+    /// Where to return when closing a full-screen mermaid-fence view (`q`): the Markdown preview's
+    /// scroll offset and Tab-focus index at the moment the fence was opened.
+    fence_return: Option<(u16, Option<usize>)>,
+    /// Signature of the inline-image overlay drawn last frame (urls + screen rects). When it
+    /// changes (scroll/focus moved a diagram, or the document was left), the run loop clears the
+    /// terminal once to sweep orphaned kitty unicode-placeholder rows (they are printed into the
+    /// terminal grid and a blank-over-blank diff never repaints them).
+    md_overlay_last: Option<u64>,
+    /// Overlay signature seen during the current frame (None until the overlay draws).
+    md_overlay_seen: Option<u64>,
+    /// The overlay moved/vanished since the previous frame → the run loop full-redraws once.
+    md_overlay_moved: bool,
+    /// In-place zoom of the **focused** inline mermaid diagram (`+`/`-` while focused; 1.0 = fit).
+    /// The reserved cell area never changes — the zoom crops within it (embedded-map feel).
+    fence_zoom: f64,
+    /// Pan center of the in-place zoom (image-normalized [0,1]; hjkl while zoomed).
+    fence_center: (f64, f64),
 
     /// PDF: current page (1-based). Each page is rasterized on demand (one at a time) into image_src.
     pdf_page: u32,
@@ -868,6 +930,9 @@ struct MdCache {
     /// wrap=on: visual (post-wrap) start row of each line via ratatui's own per-line reflow;
     /// `len = lines.len() + 1`, last element = total display rows. Empty when wrap=off or width=0.
     row_prefix: Vec<usize>,
+    /// Effective mermaid target rows the cache was built with (fit-to-view). A viewport change
+    /// only invalidates documents that actually contain fence diagrams.
+    fence_rows: u16,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -905,6 +970,9 @@ enum MdItemKind {
     Task { state: char },
     /// A fenced code block (its header line is the focus target; `Enter` copies its raw source).
     CodeBlock,
+    /// An inline mermaid diagram (image mode); `ordinal`=fence index in document order.
+    /// `Enter` opens it full screen with zoom/pan.
+    MermaidFence { ordinal: usize },
 }
 
 /// Cache of highlighted lines for windowed reading.
@@ -940,6 +1008,27 @@ struct MdImgEntry {
     enc_inflight: bool,
     /// Decode or encode failed — do not retry; the placeholder/text fallback stays visible.
     failed: bool,
+    /// In-place zoom protocol for a **focused inline mermaid diagram** (`+`/`-` while focused):
+    /// a crop of the source encoded into the same (cols, rows) cell area (the layout never moves).
+    zoom_protocol: Option<Protocol>,
+    /// The (cols, rows, crop px rect) `zoom_protocol` was encoded for.
+    zoom_key: Option<(u16, u16, PxRect)>,
+    /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
+    /// density (sharp zoom, same mechanism as the full-screen vector zoom).
+    svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Layout size = the **first** raster's dimensions. The markdown layout (cells) is computed from
+    /// this, so a sharper re-raster never changes the reserved area (the user-visible size is fixed).
+    layout_px: Option<(u32, u32)>,
+    /// A sharpening re-raster is in flight (at most one per diagram).
+    reraster_inflight: bool,
+}
+
+/// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
+#[derive(PartialEq)]
+enum FenceSharpen {
+    NotNeeded,
+    Spawned,
+    AppliedSync,
 }
 
 /// Which protocol a background encode produces (so the result is stored in the right slot).
@@ -954,6 +1043,9 @@ enum MdEncodeKey {
         row_off: u16,
         vis_rows: u16,
     },
+    /// An in-place zoom crop of a focused inline mermaid diagram, encoded into the same
+    /// (cols, rows) area. Keyed by the pixel crop so pan/zoom/re-raster all re-encode naturally.
+    Zoom { cols: u16, rows: u16, crop: PxRect },
 }
 
 /// A request to encode an inline image (or a cropped band of it) off the UI thread (principle #4).
@@ -962,7 +1054,7 @@ pub struct MdEncodeRequest {
     key: MdEncodeKey,
     image: Arc<image::DynamicImage>,
     /// Pixel band to crop before encoding; None encodes the whole image.
-    crop: Option<(u32, u32, u32, u32)>,
+    crop: Option<PxRect>,
     cols: u16,
     rows: u16,
 }
@@ -988,9 +1080,16 @@ pub fn md_encode_worker(
             None => (*req.image).clone(),
         };
         let size = ratatui::layout::Size::new(req.cols, req.rows);
-        if let Ok(protocol) =
-            picker.new_protocol(img, size, Resize::Fit(Some(FilterType::Lanczos3)))
+        // フェンス図(ベクタ由来)は予約グリッドまで**拡大も**する(Scale): ラスタが小さくても
+        // 左上詰めの余白バンドを作らず領域を満たす=シャープさは密度追従の再ラスタが担う。
+        // 写真は従来どおり Fit(自然サイズ超に拡大しない=ぼやけさせない)。
+        let resize = if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy())
         {
+            Resize::Scale(Some(FilterType::Lanczos3))
+        } else {
+            Resize::Fit(Some(FilterType::Lanczos3))
+        };
+        if let Ok(protocol) = picker.new_protocol(img, size, resize) {
             if tx
                 .send(MdEncodeResult {
                     path: req.path,
@@ -1009,6 +1108,11 @@ pub fn md_encode_worker(
 pub struct MdImageResult {
     path: PathBuf,
     image: Result<image::DynamicImage, String>,
+    /// SVG source alongside a rendered mermaid fence (kept for in-place sharp zoom). None otherwise.
+    svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
+    /// replaced — the layout size and the decoration cache stay untouched.
+    reraster: bool,
 }
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
@@ -1099,6 +1203,14 @@ impl App {
             image_center: (0.5, 0.5),
             image_crop: None,
             image_vis_frac: (1.0, 1.0),
+            vector_svg: None,
+            image_logical: None,
+            fence_return: None,
+            fence_zoom: 1.0,
+            fence_center: (0.5, 0.5),
+            md_overlay_last: None,
+            md_overlay_seen: None,
+            md_overlay_moved: false,
             pdf_page: 1,
             pdf_pages: None,
             preview_media_mtime: None,
@@ -2518,6 +2630,9 @@ impl App {
         }
         self.start_media_load(&kind, path);
         self.preview_kind = Some(kind);
+        self.fence_return = None; // 通常のプレビュー遷移でフェンス復帰情報は用済み
+        self.fence_zoom = 1.0;
+        self.fence_center = (0.5, 0.5);
         self.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
         self.md_items.clear();
@@ -2820,7 +2935,10 @@ impl App {
                     | PreviewKind::Video(_)
                     | PreviewKind::Pdf(_)
             )
-        );
+        ) || (matches!(
+            self.preview_kind,
+            Some(PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
+        ) && self.mermaid_image_mode());
         if !is_media {
             return;
         }
@@ -3106,6 +3224,19 @@ impl App {
     }
 
     pub fn back_to_tree(&mut self) {
+        // 全画面フェンス表示からの `q` は「ツリーへ」ではなく「元の Markdown ビューへ」戻る
+        // (git diff の came_from_git_view と同じ、来た場所へ帰る流儀)。スクロール/フォーカスも復元。
+        if matches!(self.preview_kind, Some(PreviewKind::MermaidFence(_))) {
+            if let Some(md) = self.preview_path.clone() {
+                let ret = self.fence_return.take();
+                self.enter_preview(&md);
+                if let Some((scroll, focus)) = ret {
+                    self.preview_scroll = scroll;
+                    self.focused_item = focus;
+                }
+                return;
+            }
+        }
         self.mode = Mode::Tree;
         // Re-verify git status when the tree becomes visible again. FSEvents is inherently lossy
         // (bursts get coalesced, and an external commit can arrive as `.git/*.lock`-only churn), so
@@ -3156,6 +3287,8 @@ impl App {
         self.image_center = (0.5, 0.5);
         self.image_crop = None;
         self.image_vis_frac = (1.0, 1.0);
+        self.vector_svg = None;
+        self.image_logical = None;
         self.gif_frames = Vec::new();
         self.gif_idx = 0;
         self.gif_shown_at = None;
@@ -3176,15 +3309,37 @@ impl App {
         let Some(path) = self.preview_path.clone() else {
             return;
         };
-        if matches!(&self.md_cache, Some(c) if c.path == path && c.width == width) {
+        // fence 図の目標行数(fit-to-view)が変わったら、図を含む文書だけ作り直す(ビューポートの
+        // 高さ変化で全 md を毎回リビルドしない)。
+        let fence_rows = self.mermaid_fit_rows();
+        if matches!(&self.md_cache, Some(c) if c.path == path && c.width == width
+            && (c.fence_rows == fence_rows
+                || !c.images.iter().any(|p| crate::preview::markdown::is_mermaid_fence_url(&p.url))))
+        {
             return;
         }
-        let (raw, images, remote, src_lines) = self.build_decorated(&path, width);
+        let (raw, images, remote, fences, src_lines) = self.build_decorated(&path, width);
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
         for url in &remote {
             self.ensure_remote_md_fetch(url);
         }
+        // Kick off background renders for any ```mermaid fences not yet in the diagram cache
+        // (content-hash keyed). Completion invalidates md_cache (apply_md_image), so the loading
+        // line re-lays out into the real inline diagram — the remote-image pattern exactly.
+        // Synchronous completions (no loader tx = tests) land *before* we store the cache below,
+        // so the just-built decoration is already stale — rebuild once with the results in.
+        let mut resync = false;
+        for code in fences {
+            resync |= self.ensure_mermaid_fence_render(code);
+        }
+        let (raw, images, remote, src_lines) = if resync {
+            let (raw, images, remote, _fences, src_lines) = self.build_decorated(&path, width);
+            (raw, images, remote, src_lines)
+        } else {
+            (raw, images, remote, src_lines)
+        };
+        let _ = &remote;
         let (lines, targets) = collapse_links(raw, self.cfg.ui.icons);
         let items = build_md_items(&lines, &targets);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
@@ -3224,6 +3379,7 @@ impl App {
             src_lines,
             max_line_cols,
             row_prefix,
+            fence_rows,
         });
     }
 
@@ -3271,6 +3427,9 @@ impl App {
         if let Some(f) = self.focused_item {
             if let Some(it) = c.items.get(f) {
                 if it.line >= lo && it.line < hi {
+                    // コードブロックのみ行全体反転(ヘッダ帯が既に全幅)。フェンス図は
+                    // キャプション span だけ反転(行全体だと中央寄せのインデント空白まで
+                    // 反転して巨大な白バーになる=Ghostty 実機で捕まった)。
                     let whole = matches!(it.kind, MdItemKind::CodeBlock);
                     // 同一行内でのマーカー序数 = 自分より前で同じ行に載っている item の数。
                     let first_on_line = c.items.partition_point(|x| x.line < it.line);
@@ -3317,6 +3476,7 @@ impl App {
         Vec<Line<'static>>,
         Vec<crate::preview::markdown::ImagePlacement>,
         Vec<String>,
+        Vec<String>,
         usize,
     ) {
         let src = match crate::preview::text::load(path) {
@@ -3330,6 +3490,7 @@ impl App {
             Err(e) => {
                 return (
                     vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     0,
@@ -3383,6 +3544,46 @@ impl App {
                         ImageSlot::Unavailable
                     }
                 };
+                // ```mermaid フェンス: 画像モードならレンダ済みキャッシュ(内容ハッシュキー)を参照。
+                // 未着はローディング行、失敗/モードOFFはテキスト図(原則#3)。probe(空文字)は
+                // 「抽出するか」の代表判定なので、モードだけで答える。
+                let mermaid_on = self.mermaid_image_mode();
+                let fence_target_rows = self.mermaid_fit_rows();
+                let mermaid_slot = |code: &str| -> crate::preview::markdown::MermaidSlot {
+                    use crate::preview::markdown::MermaidSlot;
+                    if !mermaid_on {
+                        return MermaidSlot::Text;
+                    }
+                    if code.is_empty() {
+                        return MermaidSlot::Loading; // probe: 抽出ON
+                    }
+                    let Some(font) = font else {
+                        return MermaidSlot::Text;
+                    };
+                    let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
+                    match self.md_image_cache.get(&key) {
+                        Some(e) if e.failed => MermaidSlot::Text,
+                        Some(e) => match e.decoded.as_ref() {
+                            Some(img) => {
+                                use image::GenericImageView;
+                                // レイアウトは**初回ラスタの寸法**(layout_px)で固定: ズーム時の
+                                // シャープ再ラスタで密度が上がっても予約セル数=表示サイズ不変。
+                                let (pw, ph) = e.layout_px.unwrap_or_else(|| img.dimensions());
+                                let (cols, rows) = mermaid_cells(
+                                    pw,
+                                    ph,
+                                    font.width,
+                                    font.height,
+                                    avail,
+                                    fence_target_rows,
+                                );
+                                MermaidSlot::Image { cols, rows }
+                            }
+                            None => MermaidSlot::Loading,
+                        },
+                        None => MermaidSlot::Loading,
+                    }
+                };
                 let (lines, images) = crate::preview::markdown::render_markdown_with_images(
                     &src,
                     width,
@@ -3391,16 +3592,23 @@ impl App {
                     self.cfg.ui.icons,
                     &self.cfg.ui.md_task_state_chars(),
                     &slot_of,
+                    &mermaid_slot,
                 );
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
                 } else {
                     Vec::new()
                 };
-                (lines, images, remote, src_lines)
+                let fences = if mermaid_on {
+                    crate::preview::markdown::collect_mermaid_fences(&src)
+                } else {
+                    Vec::new()
+                };
+                (lines, images, remote, fences, src_lines)
             }
             Some(PreviewKind::Mermaid(_)) => (
                 crate::preview::markdown::render_mermaid_file(&src, width),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 src_lines,
@@ -3410,9 +3618,10 @@ impl App {
                 crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 src_lines,
             ),
-            _ => (Vec::new(), Vec::new(), Vec::new(), src_lines),
+            _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), src_lines),
         }
     }
 
@@ -3439,15 +3648,237 @@ impl App {
 
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
+        // フェンス図(合成キー)は寸法がここで初めて決まる=ローディング行→実配置に組み直すため
+        // 装飾キャッシュを無効化する(remote 画像の apply_remote_fetch と同じ流儀)。
+        // **シャープ化の再ラスタは除く**: ピクセル密度の差し替えだけで、レイアウト(予約セル数)は
+        // layout_px 固定なので装飾を組み直さない(=md 上の表示サイズは不変・ユーザー要件)。
+        if !res.reraster
+            && crate::preview::markdown::is_mermaid_fence_url(&res.path.to_string_lossy())
+        {
+            self.md_cache = None;
+        }
         let entry = self.md_image_cache.entry(res.path).or_default();
+        if res.reraster {
+            entry.reraster_inflight = false;
+        }
         match res.image {
             Ok(img) => {
+                use image::GenericImageView;
+                if entry.layout_px.is_none() {
+                    entry.layout_px = Some(img.dimensions());
+                }
                 entry.decoded = Some(Arc::new(img));
                 entry.failed = false;
+                if let Some(svg) = res.svg {
+                    entry.svg = Some(svg);
+                }
+                if res.reraster {
+                    // 高密度ラスタで再エンコードさせる: キーだけ無効化し、旧 protocol は
+                    // 新しいエンコードが届くまでの表示用に残す(消すと一瞬空白になる)。
+                    entry.proto_size = None;
+                    entry.clip_key = None;
+                    entry.zoom_key = None;
+                }
             }
+            // 再ラスタ失敗は現ラスタ据え置き(表示は生きたまま)。初回失敗のみテキスト降格。
+            Err(_) if res.reraster => {}
             Err(_) => entry.failed = true,
         }
         true
+    }
+
+    /// Drive the **in-place zoom** of the focused inline mermaid diagram: clamp the pan center,
+    /// kick a sharpening re-raster when the zoom outgrows the raster density (the layout size stays
+    /// fixed via `layout_px`), and request an encode of the current crop into the same (cols, rows)
+    /// cell area. All heavy work runs on worker threads; at most one of each is in flight.
+    pub fn ensure_md_fence_zoom(&mut self, url: &str, cols: u16, rows: u16) {
+        use image::GenericImageView;
+        let key_path = PathBuf::from(url);
+        let zoom = self.fence_zoom;
+        let font = self.picker.as_ref().map(|p| p.font_size());
+        let enc_tx = self.md_enc_tx.clone();
+        let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
+            return;
+        };
+        let Some(img) = entry.decoded.clone() else {
+            return;
+        };
+        let (sw, sh) = img.dimensions();
+        // シャープ化: 表示に必要な密度(セル×フォントpx×ズーム)が現ラスタを超えたら、保持 SVG を
+        // 高密度に再ラスタ(全画面のシャープズームと同じ・レイアウトは layout_px 固定で不変)。
+        if let Some(f) = font {
+            let disp = ((cols as f64 * f.width as f64).max(rows as f64 * f.height as f64) * zoom)
+                .ceil() as u32;
+            if self.fence_sharpen_if_needed(&key_path, disp) == FenceSharpen::AppliedSync {
+                // 同期フォールバック(テスト): 新しいラスタで最初からやり直す。
+                drop(img);
+                return self.ensure_md_fence_zoom(url, cols, rows);
+            }
+        }
+        // 現ラスタから可視窓を切り出す(比率ベース=再ラスタ後も同じ窓)。中心は端でクランプし書き戻す。
+        let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
+        let (crop, center) = fence_crop((sw, sh), f, self.fence_center);
+        self.fence_center = center;
+        let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
+            return;
+        };
+        let zkey = (cols, rows, crop);
+        if entry.zoom_key == Some(zkey) || entry.enc_inflight {
+            return;
+        }
+        let Some(tx) = enc_tx else { return };
+        entry.enc_inflight = true;
+        let _ = tx.send(MdEncodeRequest {
+            path: key_path,
+            key: MdEncodeKey::Zoom { cols, rows, crop },
+            image: img,
+            crop: Some(crop),
+            cols,
+            rows,
+        });
+    }
+
+    /// The protocol for the focused inline diagram's current zoom, if encoded for this (cols, rows).
+    /// While a fresh crop is still encoding, the previous zoom crop (or the unzoomed full protocol)
+    /// stays visible instead of blinking out.
+    pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&Protocol> {
+        let entry = self.md_image_cache.get(&PathBuf::from(url))?;
+        match entry.zoom_key {
+            Some((c, r, _)) if (c, r) == (cols, rows) => {
+                entry.zoom_protocol.as_ref().or(entry.protocol.as_ref())
+            }
+            _ => entry.protocol.as_ref(),
+        }
+    }
+
+    /// Kick a sharpening re-raster of a fence diagram when `needed_px` exceeds the current raster
+    /// density (shared by the unzoomed density follow-up and the in-place zoom). Returns what
+    /// happened so the synchronous test fallback can re-run with the fresh raster.
+    fn fence_sharpen_if_needed(&mut self, key_path: &PathBuf, needed_px: u32) -> FenceSharpen {
+        use image::GenericImageView;
+        let img_tx = self.md_img_tx.clone();
+        let Some(entry) = self.md_image_cache.get_mut(key_path) else {
+            return FenceSharpen::NotNeeded;
+        };
+        let (Some(img), Some(svg)) = (entry.decoded.as_ref(), entry.svg.clone()) else {
+            return FenceSharpen::NotNeeded;
+        };
+        let (sw, sh) = img.dimensions();
+        let cur = sw.max(sh);
+        if needed_px <= cur + cur / 8 || cur >= 4096 || entry.reraster_inflight {
+            return FenceSharpen::NotNeeded;
+        }
+        entry.reraster_inflight = true;
+        let target = needed_px.min(4096);
+        let kp = key_path.clone();
+        let job = move || {
+            let image =
+                crate::preview::svg::rasterize_bytes(&svg, Path::new("mermaid.svg"), target)
+                    .ok_or_else(|| "rasterize failed".to_string());
+            MdImageResult {
+                path: kp,
+                image,
+                svg: None,
+                reraster: true,
+            }
+        };
+        if let Some(tx) = img_tx {
+            std::thread::spawn(move || {
+                let _ = tx.send(job());
+            });
+            FenceSharpen::Spawned
+        } else {
+            let res = job();
+            self.apply_md_image(res);
+            FenceSharpen::AppliedSync
+        }
+    }
+
+    /// Keep an inline diagram's raster density up with its **display size** (called per visible
+    /// mermaid placement). `mermaid_rows` can size diagrams beyond the base raster (svg_max_px),
+    /// so without this a large setting would show upscaled-blurry pixels.
+    pub fn ensure_md_fence_density(&mut self, url: &str, cols: u16, rows: u16) {
+        let Some(f) = self.picker.as_ref().map(|p| p.font_size()) else {
+            return;
+        };
+        let needed =
+            ((cols as f64 * f.width as f64).max(rows as f64 * f.height as f64)).ceil() as u32;
+        let _ = self.fence_sharpen_if_needed(&PathBuf::from(url), needed);
+    }
+
+    /// Frame bookkeeping for the inline-image overlay (called by `ui::render`): reset at frame
+    /// start, recorded by the overlay, compared at frame end. A change after a drawn state marks
+    /// the frame "moved" so the run loop clears the terminal once (placeholder-orphan sweep).
+    pub fn begin_md_overlay_frame(&mut self) {
+        self.md_overlay_seen = None;
+    }
+
+    /// Record the overlay signature for this frame (urls + screen rects of drawn inline images).
+    pub fn note_md_overlay(&mut self, sig: u64) {
+        self.md_overlay_seen = Some(sig);
+    }
+
+    /// Compare this frame's overlay against the previous frame; latch "moved" on any change away
+    /// from a previously drawn state (position shift, or the images left the screen entirely).
+    pub fn finish_md_overlay_frame(&mut self) {
+        if self.md_overlay_last != self.md_overlay_seen {
+            if self.md_overlay_last.is_some() {
+                self.md_overlay_moved = true;
+            }
+            self.md_overlay_last = self.md_overlay_seen;
+        }
+    }
+
+    /// Whether the run loop should full-clear once to sweep orphaned placeholder rows (resets).
+    pub fn take_md_overlay_moved(&mut self) -> bool {
+        std::mem::take(&mut self.md_overlay_moved)
+    }
+
+    /// Ensure a background mermaid render is in flight (or cached) for one ```mermaid fence.
+    /// Keyed by content hash, so an edited fence renders fresh while unchanged fences reuse their
+    /// raster. With no loader tx (tests), renders synchronously so behavior stays observable.
+    /// Returns true when the render completed **synchronously** (no loader tx = tests): the caller
+    /// must rebuild its just-built decoration, which still shows the loading line.
+    fn ensure_mermaid_fence_render(&mut self, code: String) -> bool {
+        let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
+        if self.md_image_cache.contains_key(&key) {
+            return false;
+        }
+        self.md_image_cache
+            .insert(key.clone(), MdImgEntry::default());
+        let max_px = self.mermaid_px();
+        let theme = self.cfg.ui.mermaid_theme.clone();
+        let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
+            let Some(svg) = crate::preview::markdown::mermaid_to_svg(&code, &theme) else {
+                return (Err("mermaid render failed".to_string()), None);
+            };
+            let data = std::sync::Arc::new(svg.into_bytes());
+            let img =
+                crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)
+                    .ok_or_else(|| "rasterize failed".to_string());
+            (img, Some(data))
+        };
+        if let Some(tx) = self.md_img_tx.clone() {
+            std::thread::spawn(move || {
+                let (image, svg) = render();
+                let _ = tx.send(MdImageResult {
+                    path: key,
+                    image,
+                    svg,
+                    reraster: false,
+                });
+            });
+            false
+        } else {
+            let (image, svg) = render();
+            self.apply_md_image(MdImageResult {
+                path: key,
+                image,
+                svg,
+                reraster: false,
+            });
+            true
+        }
     }
 
     /// Apply a completed background encode: store the protocol in its full or clip slot. Returns redraw.
@@ -3469,6 +3900,10 @@ impl App {
             } => {
                 entry.clip_protocol = Some(res.protocol);
                 entry.clip_key = Some((cols, full_rows, row_off, vis_rows));
+            }
+            MdEncodeKey::Zoom { cols, rows, crop } => {
+                entry.zoom_protocol = Some(res.protocol);
+                entry.zoom_key = Some((cols, rows, crop));
             }
         }
         true
@@ -3530,16 +3965,27 @@ impl App {
         row_off: u16,
         vis_rows: u16,
     ) {
-        let base = self
-            .preview_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf());
-        let Some(path) = resolve_md_image_path(url, base.as_deref()) else {
-            return;
+        // フェンス図の合成キーはそのままキャッシュキー(デコードは ensure_mermaid_fence_render 済み)。
+        let path = if crate::preview::markdown::is_mermaid_fence_url(url) {
+            PathBuf::from(url)
+        } else {
+            let base = self
+                .preview_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            let Some(p) = resolve_md_image_path(url, base.as_deref()) else {
+                return;
+            };
+            p
         };
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
+            // フェンス図はここでは作れない(元コードが要る)。配置が在る以上キャッシュ済みのはずで、
+            // 来ない前提の防御(次の再装飾で ensure_mermaid_fence_render が作り直す)。
+            if crate::preview::markdown::is_mermaid_fence_url(url) {
+                return;
+            }
             self.md_image_cache
                 .insert(path.clone(), MdImgEntry::default());
             if let Some(tx) = self.md_img_tx.clone() {
@@ -3549,7 +3995,12 @@ impl App {
                     // Sniff the format from content (remote-cache files have no extension); rasterize SVG.
                     let image =
                         md_decode_image(&p, svg_max_px).ok_or_else(|| "decode failed".to_string());
-                    let _ = tx.send(MdImageResult { path: p, image });
+                    let _ = tx.send(MdImageResult {
+                        path: p,
+                        image,
+                        svg: None,
+                        reraster: false,
+                    });
                 });
             }
             return;
@@ -3622,12 +4073,16 @@ impl App {
         row_off: u16,
         vis_rows: u16,
     ) -> Option<&Protocol> {
-        let base = self
-            .preview_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf());
-        let path = resolve_md_image_path(url, base.as_deref())?;
+        let path = if crate::preview::markdown::is_mermaid_fence_url(url) {
+            PathBuf::from(url)
+        } else {
+            let base = self
+                .preview_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            resolve_md_image_path(url, base.as_deref())?
+        };
         let entry = self.md_image_cache.get(&path)?;
         // Exact match for the current position.
         if row_off == 0 && vis_rows >= full_rows {
@@ -3708,8 +4163,67 @@ impl App {
             PreviewKind::Pdf(_) => {
                 self.spawn_or_sync_media(MediaJob::Pdf(path.to_path_buf(), self.pdf_page))
             }
+            // 単体 .mmd/.mermaid: 画像モードなら純 Rust で SVG 化→ラスタライズ(別スレッド)。
+            // テキストモード/バックエンド無しは何もしない=装飾テキスト経路が描く(原則#3)。
+            PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {
+                self.spawn_or_sync_media(MediaJob::Mermaid(
+                    path.to_path_buf(),
+                    self.mermaid_px(),
+                    self.cfg.ui.mermaid_theme.clone(),
+                ))
+            }
+            // 全画面フェンス表示: md からフェンス本文を序数で取り直す(count-guard=コードコピーと同型)。
+            PreviewKind::MermaidFence(ord) => {
+                if let Some(code) = self.mermaid_fence_code(path, *ord) {
+                    self.spawn_or_sync_media(MediaJob::MermaidSrc(
+                        code,
+                        self.mermaid_px(),
+                        self.cfg.ui.mermaid_theme.clone(),
+                    ));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Whether mermaid renders as an image: config says so **and** the terminal has an image backend.
+    /// Everything else (config `"text"`, no backend, render failure) degrades to the text diagram.
+    pub fn mermaid_image_mode(&self) -> bool {
+        self.cfg.ui.mermaid != "text" && self.picker.is_some()
+    }
+
+    /// Base raster target (max edge px) for mermaid diagrams — same knob as SVG previews.
+    fn mermaid_px(&self) -> u32 {
+        self.cfg.ui.svg_max_px
+    }
+
+    /// Validated `[ui] mermaid_rows`: max rows of an inline diagram (0/invalid → default 24).
+    fn mermaid_rows_cap(&self) -> u16 {
+        match self.cfg.ui.mermaid_rows {
+            0 => 24,
+            v => v,
+        }
+    }
+
+    /// Effective target rows for an inline diagram: the `mermaid_rows` cap, shrunk so the whole
+    /// fence block (caption + diagram + bottom margin) fits the preview viewport — the initial
+    /// view shows the entire diagram without scrolling (fit-to-view). Viewport 0 (no render yet /
+    /// tests without a render pass) keeps the cap.
+    fn mermaid_fit_rows(&self) -> u16 {
+        let cap = self.mermaid_rows_cap();
+        if self.preview_viewport == 0 {
+            return cap;
+        }
+        cap.min(self.preview_viewport.saturating_sub(2)).max(4)
+    }
+
+    /// The Nth ```mermaid fence body of the Markdown file at `md`, re-extracted fresh so an external
+    /// edit between focusing and opening can't render a stale diagram (None = gone/shifted).
+    fn mermaid_fence_code(&self, md: &Path, ord: usize) -> Option<String> {
+        let src = std::fs::read_to_string(md).ok()?;
+        crate::preview::markdown::collect_mermaid_fences(&src)
+            .into_iter()
+            .nth(ord)
     }
 
     /// Run a media-load job on a separate thread (when media_tx is present). Otherwise run it synchronously.
@@ -3756,6 +4270,16 @@ impl App {
         match payload {
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
+            MediaPayload::Vector { img, svg } => {
+                use image::GenericImageView;
+                // 初回ラスタ到着=このサイズが論理(レイアウト)サイズ。以降のシャープ再ラスタは
+                // ピクセル密度だけを差し替える(clear_image が logical を消す=別ファイルでリセット)。
+                if self.image_logical.is_none() {
+                    self.image_logical = Some(img.dimensions());
+                }
+                self.vector_svg = Some(svg);
+                self.set_static_image(img);
+            }
         }
     }
 
@@ -3824,6 +4348,7 @@ impl App {
             self.image_center,
             inner,
             scale,
+            None, // GIF はラスタ実寸のまま(ベクタ由来でない)
         )?;
         let key = (self.gif_idx, crop_rect);
         // フレーム or crop(ズーム/パン/リサイズ)が変わったときだけ再エンコード。
@@ -4040,6 +4565,8 @@ impl App {
                         | PreviewKind::Svg(_)
                         | PreviewKind::Video(_)
                         | PreviewKind::Pdf(_)
+                        | PreviewKind::Mermaid(_)
+                        | PreviewKind::MermaidFence(_)
                 )
             )
     }
@@ -4098,20 +4625,87 @@ impl App {
     }
 
     /// Zoom (multiply the magnification by `factor`; clamped to 1.0–16.0). The actual crop is applied at render time.
+    /// With no full-screen image showing, `+`/`-` instead zoom the **focused inline mermaid diagram**
+    /// in place (the reserved area in the document never changes — the zoom crops within it).
     pub fn image_zoom_by(&mut self, factor: f64) {
         if self.image_src.is_none() && !self.is_gif_active() {
+            if self.focused_mermaid_ordinal().is_some() {
+                self.fence_zoom = (self.fence_zoom * factor).clamp(1.0, 16.0);
+            }
             return;
         }
         self.image_zoom = (self.image_zoom * factor).clamp(1.0, 16.0);
+        self.maybe_sharpen_vector();
     }
 
-    /// Reset to 1x (fit). Zoom=1 and recenter.
+    /// Sharp zoom for vector-backed previews (SVG / mermaid): when the zoom outgrows the current
+    /// raster's density, re-rasterize the retained SVG at the needed max-edge px on a worker thread
+    /// and swap it in on arrival (latest-wins via media_gen). The pixel zoom shows instantly in the
+    /// meantime, so this behaves like a map app: briefly soft, then crisp. The geometry never moves
+    /// because `image_layout` works in the logical size (`image_logical`), not the raster size.
+    /// Memory stays bounded by the rasterizer's HARD_MAX (4096px side ≈ 64 MiB RGBA).
+    fn maybe_sharpen_vector(&mut self) {
+        use image::GenericImageView;
+        let (Some(svg), Some(src), Some((lw, lh))) =
+            (&self.vector_svg, &self.image_src, self.image_logical)
+        else {
+            return;
+        };
+        let cur_side = src.dimensions().0.max(src.dimensions().1);
+        let want = ((lw.max(lh) as f64) * self.image_zoom).ceil() as u32;
+        // 現ラスタで足りている(+12% マージン)か、既に上限(4096)なら何もしない。
+        if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
+            return;
+        }
+        let base = self.preview_path.clone().unwrap_or_default();
+        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want));
+    }
+
+    /// Reset to 1x (fit). Zoom=1 and recenter. Applies to the focused inline diagram when no
+    /// full-screen image is showing (same dual role as `image_zoom_by`).
     pub fn image_zoom_reset(&mut self) {
         if self.image_src.is_none() && !self.is_gif_active() {
+            if self.focused_mermaid_ordinal().is_some() {
+                self.fence_zoom = 1.0;
+                self.fence_center = (0.5, 0.5);
+            }
             return;
         }
         self.image_zoom = 1.0;
         self.image_center = (0.5, 0.5);
+    }
+
+    /// Current in-place zoom of the focused inline diagram (renderer/footer cue).
+    pub fn fence_zoom_level(&self) -> f64 {
+        self.fence_zoom
+    }
+
+    /// hjkl/arrows while an inline diagram is focused **and zoomed**: pan the diagram instead of
+    /// scrolling the document; `0` fits (zoom reset — the image-view key). Returns true when
+    /// consumed. At 1x nothing is consumed, so all keys scroll/navigate the document as usual.
+    pub fn fence_pan_motion(&mut self, m: crate::keymap::Motion) -> bool {
+        use crate::keymap::Motion as M;
+        if self.fence_zoom <= 1.001 || self.focused_mermaid_ordinal().is_none() {
+            return false;
+        }
+        // 0 = フィット(全画面画像と同じキー)。ズーム中のみ奪う(等倍では従来の行頭のまま)。
+        if matches!(m, M::LineHome) {
+            self.fence_zoom = 1.0;
+            self.fence_center = (0.5, 0.5);
+            return true;
+        }
+        let (dx, dy) = match m {
+            M::Left => (-1.0, 0.0),
+            M::Right => (1.0, 0.0),
+            M::Up => (0.0, -1.0),
+            M::Down => (0.0, 1.0),
+            _ => return false,
+        };
+        // 1ステップ=可視窓の 1/4(全画面画像のパンと同じ感覚)。端のクランプは描画側の crop 計算。
+        let f = 1.0 / self.fence_zoom;
+        self.fence_center.0 = (self.fence_center.0 + dx * f * 0.25).clamp(0.0, 1.0);
+        self.fence_center.1 = (self.fence_center.1 + dy * f * 0.25).clamp(0.0, 1.0);
+        true
     }
 
     /// Pan. dx/dy are directions (-1/0/+1). Only clipped axes move the center, scaled by the visible fraction.
@@ -4141,6 +4735,7 @@ impl App {
             self.image_center,
             inner,
             scale,
+            self.image_logical,
         )?;
         // crop が変わったときだけプロトコル再構築(毎フレームの再エンコードを避ける)。
         let new_tp = if self.image_crop != Some(crop_rect) {
@@ -4658,19 +5253,54 @@ impl App {
             None if dir >= 0 => 0,
             None => n - 1,
         } as usize;
+        if self.focused_item != Some(next) {
+            // フォーカスが移ったらインライン図のズーム/パンは初期化(前の図の状態を持ち越さない)。
+            self.fence_zoom = 1.0;
+            self.fence_center = (0.5, 0.5);
+        }
         self.focused_item = Some(next);
         // フォーカス行を表示範囲に収める。preview_scroll は**表示行(折返し後)**の座標系
         // (描画側が para.line_count でクランプしている)なので、アイテムの論理行も
         // 表示行へ変換してから比較する(論理行のままだと折返しで乖離し、画面外の
         // フォーカスに追従しない — 2026-07-08 ユーザー報告)。
         let line = self.md_items[next].line;
-        let (top, height) = self.md_visual_span(line);
+        let (top, mut height) = self.md_visual_span(line);
+        // フェンス図: キャプションだけでなく**図ブロック全体**(キャプション+予約行+下マージン)を
+        // 可視域へ入れる(図が下に見切れたまま「フォーカスしたのに見えない」を防ぐ=ユーザー要望)。
+        if let MdItemKind::MermaidFence { ordinal } = self.md_items[next].kind {
+            if let Some((pl, pr)) = self.mermaid_placement(ordinal) {
+                let last = pl + pr as usize; // 下マージン行(placement.line + rows)
+                let (bt, bh) = self.md_visual_span(last);
+                height = (bt + bh).saturating_sub(top).max(height);
+            }
+        }
         let vh = self.preview_viewport.max(1) as usize;
         let scroll = self.preview_scroll as usize;
-        if top < scroll {
+        if height >= vh || top < scroll {
+            // ブロックが画面より大きい(先頭を出す) or 上に見切れている。
             self.preview_scroll = top as u16;
         } else if top + height > scroll + vh {
             self.preview_scroll = (top + height).saturating_sub(vh) as u16;
+        }
+    }
+
+    /// (line, rows) of the ordinal-th inline mermaid placement in the current decorated cache.
+    fn mermaid_placement(&self, ordinal: usize) -> Option<(usize, u16)> {
+        let cache = self.md_cache.as_ref()?;
+        cache
+            .images
+            .iter()
+            .filter(|p| crate::preview::markdown::is_mermaid_fence_url(&p.url))
+            .nth(ordinal)
+            .map(|p| (p.line, p.rows))
+    }
+
+    /// Ordinal of the focused inline mermaid diagram, if the focus is on one (border cue in the renderer).
+    pub fn focused_mermaid_ordinal(&self) -> Option<usize> {
+        let f = self.focused_item?;
+        match self.md_items.get(f)?.kind {
+            MdItemKind::MermaidFence { ordinal } => Some(ordinal),
+            _ => None,
         }
     }
 
@@ -4678,7 +5308,7 @@ impl App {
     /// With wrap off this is just (line, 1). Reads the cached per-line reflow prefix sums
     /// (ratatui's own `line_count`, computed once at cache build), so the numbers match what
     /// the renderer draws exactly — and the lookup is O(1) instead of re-flowing the document.
-    fn md_visual_span(&self, line: usize) -> (usize, usize) {
+    pub(crate) fn md_visual_span(&self, line: usize) -> (usize, usize) {
         if !self.cfg.ui.wrap {
             return (line, 1);
         }
@@ -4723,8 +5353,36 @@ impl App {
                 kind: MdItemKind::CodeBlock,
                 ..
             }) => Ok(()),
+            // インライン mermaid 図: 全画面(ズーム/パン付き)で開く。
+            Some(MdItem {
+                kind: MdItemKind::MermaidFence { ordinal },
+                ..
+            }) => {
+                let ord = *ordinal;
+                self.open_mermaid_fence(ord);
+                Ok(())
+            }
             None => Ok(()),
         }
+    }
+
+    /// Open the Nth ```mermaid fence of the current Markdown preview full screen (Enter on a
+    /// Tab-focused inline diagram). The Markdown view's scroll/focus are stashed so `q` returns
+    /// exactly where the reader was. Count-guarded re-extraction: if the file changed and the
+    /// fence is gone, flash instead of rendering a stale diagram (principle #3).
+    fn open_mermaid_fence(&mut self, ordinal: usize) {
+        let Some(md) = self.preview_path.clone() else {
+            return;
+        };
+        if self.mermaid_fence_code(&md, ordinal).is_none() {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::DiagramOpenFailed).into());
+            return;
+        }
+        self.fence_return = Some((self.preview_scroll, self.focused_item));
+        self.clear_image();
+        let kind = PreviewKind::MermaidFence(ordinal);
+        self.start_media_load(&kind, &md);
+        self.preview_kind = Some(kind);
     }
 
     /// Raw source of the focused code block, matched by ordinal against the on-screen headers. The
@@ -5527,6 +6185,15 @@ fn build_md_items(lines: &[Line<'static>], targets: &[String]) -> Vec<MdItem> {
                     line: li,
                     kind: MdItemKind::CodeBlock,
                 });
+            } else if crate::preview::markdown::is_mermaid_header_span(span) {
+                let ordinal = items
+                    .iter()
+                    .filter(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+                    .count();
+                items.push(MdItem {
+                    line: li,
+                    kind: MdItemKind::MermaidFence { ordinal },
+                });
             }
         }
     }
@@ -5550,6 +6217,7 @@ fn invert_focused_line(line: &Line<'static>, ordinal: usize, whole_line: bool) -
             } else if is_link_span(&span)
                 || crate::preview::markdown::is_task_span(&span)
                 || crate::preview::markdown::is_code_header_span(&span)
+                || crate::preview::markdown::is_mermaid_header_span(&span)
             {
                 if seen == ordinal {
                     span.style = span.style.add_modifier(Modifier::REVERSED);
@@ -6180,6 +6848,42 @@ fn md_image_cells(
     (cols as u16, rows as u16)
 }
 
+/// Cell box for an inline mermaid diagram: **fill to `target_rows`** (up- or downscale, keeping
+/// the aspect from the layout pixels), clamped by the available width. Unlike raster images
+/// (`md_image_cells`, never upscaled), diagrams are vector-backed — the raster follows the
+/// display size via sharpening re-rasters, so growing beyond the natural size stays crisp.
+fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u16) -> (u16, u16) {
+    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
+    let ar = (pw.max(1) as f64) / (ph.max(1) as f64); // px アスペクト
+    let mut rows = target_rows.max(1) as f64;
+    let mut cols = (rows * fh * ar / fw).round().max(1.0);
+    let avail = avail.max(1) as f64;
+    if cols > avail {
+        cols = avail;
+        rows = (cols * fw / ar / fh).round().max(1.0);
+    }
+    (cols as u16, rows as u16)
+}
+
+/// Source-pixel crop rectangle (x, y, w, h).
+type PxRect = (u32, u32, u32, u32);
+
+/// Crop window for the in-place zoom of an inline diagram. `f` is the visible fraction, i.e.
+/// 1/zoom, of the source; `center` is clamped so the window stays inside the image. Returns the
+/// crop px rect plus the clamped center. Fractions are scale-free, so the same zoom and center
+/// map onto a sharper re-raster unchanged.
+fn fence_crop(dims: (u32, u32), f: f64, center: (f64, f64)) -> (PxRect, (f64, f64)) {
+    let (sw, sh) = dims;
+    let f = f.clamp(0.0, 1.0);
+    let cx = center.0.clamp(f / 2.0, 1.0 - f / 2.0);
+    let cy = center.1.clamp(f / 2.0, 1.0 - f / 2.0);
+    let cw = ((sw as f64 * f).round() as u32).clamp(1, sw);
+    let ch = ((sh as f64 * f).round() as u32).clamp(1, sh);
+    let x0 = ((cx * sw as f64) as i64 - cw as i64 / 2).clamp(0, (sw - cw) as i64) as u32;
+    let y0 = ((cy * sh as f64) as i64 - ch as i64 / 2).clamp(0, (sh - ch) as i64) as u32;
+    ((x0, y0, cw, ch), (cx, cy))
+}
+
 /// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
 /// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
 /// `(target, crop_rect, center, frac)` (None if size 0).
@@ -6196,15 +6900,27 @@ fn image_layout(
     center: (f64, f64),
     inner: Rect,
     render_scale: f64,
-) -> Option<(Rect, (u32, u32, u32, u32), (f64, f64), (f64, f64))> {
+    logical: Option<(u32, u32)>,
+) -> Option<(Rect, PxRect, (f64, f64), (f64, f64))> {
     use image::GenericImageView;
     let (sw, sh) = src.dimensions();
     if sw == 0 || sh == 0 || inner.width == 0 || inner.height == 0 {
         return None;
     }
-    // z=1 のフィット表示サイズ(セル, 拡大しない)。
-    let natural = Resize::natural_size(src, font_size);
-    let base = centered_rect((natural.width, natural.height), inner, false);
+    // z=1 のフィット表示サイズ(セル, 拡大しない)。ベクタ由来のプレビューは **論理サイズ**
+    // (初回ラスタの寸法) で計るので、シャープなラスタへ差し替えても画面上の大きさ・切り出し窓は
+    // 一切動かない(HiDPI のバッキングストア方式。切り出し自体は比率で実ピクセルに写像される)。
+    let (nw, nh) = match logical {
+        Some((lw, lh)) if lw > 0 && lh > 0 => (
+            (lw as u16).div_ceil(font_size.width.max(1)),
+            (lh as u16).div_ceil(font_size.height.max(1)),
+        ),
+        _ => {
+            let n = Resize::natural_size(src, font_size);
+            (n.width, n.height)
+        }
+    };
+    let base = centered_rect((nw, nh), inner, false);
     // ズーム後の論理表示サイズ。
     let disp_w = (base.width as f64 * zoom).max(1.0);
     let disp_h = (base.height as f64 * zoom).max(1.0);

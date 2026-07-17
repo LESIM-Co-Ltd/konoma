@@ -7,6 +7,7 @@ fn item_target(it: &MdItem) -> &str {
         MdItemKind::Link { target } => target,
         MdItemKind::Task { .. } => panic!("expected a link item"),
         MdItemKind::CodeBlock => panic!("expected a link item"),
+        MdItemKind::MermaidFence { .. } => panic!("expected a link item"),
     }
 }
 
@@ -1689,6 +1690,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
             MdItemKind::Link { .. } => "link",
             MdItemKind::Task { .. } => "task",
             MdItemKind::CodeBlock => "code",
+            MdItemKind::MermaidFence { .. } => "mermaid",
         })
         .collect();
     assert_eq!(kinds, vec!["link", "code", "task"], "Link→Code→Task の順");
@@ -6629,5 +6631,745 @@ fn md_slice_render_matches_full_document_render() {
             }
         }
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- mermaid 画像レンダリング (v0.15 feature) --------------------------------
+
+/// Test picker: no terminal query (protocol Halfblocks, fixed 10x20 font — enough for layout).
+fn test_picker() -> ratatui_image::picker::Picker {
+    ratatui_image::picker::Picker::halfblocks()
+}
+
+#[test]
+fn standalone_mermaid_renders_as_image_with_vector_source() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_img_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph LR\n  A[start] --> B[end]\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    let _ = app.reveal_path_deep(&dir.join("d.mmd"));
+    app.enter_preview(&dir.join("d.mmd"));
+    // media_tx 無し=同期フォールバックで即ラスタ到着。
+    assert!(
+        app.image_src.is_some(),
+        "画像モードで .mmd がラスタ化される"
+    );
+    assert!(
+        app.vector_svg.is_some(),
+        "SVG ソースを保持(シャープズーム用)"
+    );
+    assert!(app.image_logical.is_some(), "論理サイズ=初回ラスタ寸法");
+    assert!(app.is_image_preview(), "IMAGE 面(ズーム/パンのキーが効く)");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn mermaid_text_mode_keeps_legacy_rendering() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_txt_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph LR\n  A --> B\n").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.ui.mermaid = "text".into();
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("d.mmd"));
+    assert!(app.image_src.is_none(), "text モードはラスタ化しない");
+    assert!(!app.is_image_preview(), "従来どおり装飾テキスト面");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn vector_zoom_rerasters_sharper_without_moving_geometry() {
+    use image::GenericImageView;
+    let dir = std::env::temp_dir().join("konoma_mermaid_zoom_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n  B --> C\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("d.mmd"));
+    let before = app.image_src.as_ref().unwrap().dimensions();
+    let logical = app.image_logical.unwrap();
+    assert_eq!(before, logical, "初回はラスタ寸法=論理寸法");
+
+    // ズームイン → 同期経路で即シャープ再ラスタ。ラスタは育つが論理サイズは不変
+    // (image_layout が論理で計る=画面上の大きさ・切り出しは動かない)。
+    app.image_zoom_by(2.0);
+    let after = app.image_src.as_ref().unwrap().dimensions();
+    assert!(
+        after.0 > before.0 || after.1 > before.1,
+        "ズームで密度が上がる: {before:?} -> {after:?}"
+    );
+    assert_eq!(app.image_logical.unwrap(), logical, "論理サイズは不変");
+    assert!(app.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_fence_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# title\n\n```mermaid\ngraph LR\n  A --> B\n```\n\ntail\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    // 装飾キャッシュ構築(同期フォールバック=フェンスも即レンダリング)。初回は Loading で
+    // 構築→到着で md_cache 無効化→再構築、の2パスを回す。
+    app.ensure_md_cache(80);
+    app.ensure_md_cache(80);
+    let imgs = app.md_images();
+    assert_eq!(imgs.len(), 1, "フェンスがインライン図 placement になる");
+    assert!(crate::preview::markdown::is_mermaid_fence_url(&imgs[0].url));
+    // Tab アイテムに図が載る。
+    let has_fence_item = app
+        .md_items
+        .iter()
+        .any(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }));
+    assert!(has_fence_item, "図が Tab 巡回に載る");
+
+    // フェンスへフォーカス → Enter → 全画面図(ズーム面)。
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.preview_scroll = 3;
+    app.md_activate_focused().unwrap();
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(0))),
+        "全画面フェンスビューへ"
+    );
+    assert!(app.image_src.is_some(), "図がラスタ化されている");
+    assert!(app.is_image_preview());
+
+    // q(back_to_tree)= md へ戻り、スクロール/フォーカスが復元される。
+    app.back_to_tree();
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::Markdown(_))),
+        "ツリーでなく md プレビューへ戻る"
+    );
+    assert!(matches!(app.mode, Mode::Preview));
+    assert_eq!(app.preview_scroll, 3, "スクロール位置を復元");
+    assert_eq!(app.focused_item, Some(idx), "フォーカスを復元");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn broken_fence_degrades_to_text_diagram() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_broken_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "```mermaid\nthis is not a diagram at all\n```\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(80);
+    app.ensure_md_cache(80);
+    assert!(
+        app.md_images().is_empty(),
+        "壊れた図は placement にならない"
+    );
+    // テキスト経路(生ソースの安全表示)に本文が残る=内容が欠落しない(原則#3)。
+    let joined: String = app
+        .md_cache
+        .as_ref()
+        .unwrap()
+        .lines
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    assert!(
+        joined.contains("not a diagram"),
+        "テキスト降格で内容が残る: {joined}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// フェンス図のフォーカスは「キャプション span だけ反転」: 中央寄せインデントの空白まで
+/// 反転すると巨大な白バーになる(Ghostty 実機で捕まった回帰)。描画バッファで決定的に確認。
+#[test]
+fn fence_focus_inverts_caption_span_only() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_mermaid_focus_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# t\n\n```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    // 2回描画: 1回目で同期レンダ→キャッシュ再構築、2回目で配置込みの描画。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .expect("フェンスが Tab アイテムに載る");
+    app.focused_item = Some(idx);
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let buf = term.backend().buffer();
+    let w = buf.area.width;
+    let y = (0..buf.area.height)
+        .find(|&y| {
+            (0..w)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains('◇')
+        })
+        .expect("キャプション行が描画されている");
+    let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+    let cap_start = match row.find('◇') {
+        Some(i) => row[..i].chars().count() as u16,
+        None => panic!("キャプション開始が無い; matched row {y}: {row:?}"),
+    };
+    // キャプション(チップ)は REVERSED、行の右側(枠線のみの領域)は REVERSED でない
+    // =行全体が反転する「白バー」の回帰を防ぐ(チップにはパディング空白を含む)。
+    assert!(
+        buf[(cap_start + 2, y)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "キャプションが反転していない"
+    );
+    assert!(
+        !buf[(w - 3, y)].modifier.contains(Modifier::REVERSED),
+        "行全体が反転している(白バー回帰)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// フェンス図へフォーカスすると**図ブロック全体**が可視域へスクロールし、フォーカス枠
+/// (キャプションをタイトルにした囲み)が画像の外側に描かれる(ユーザー要望 2026-07-17)。
+#[test]
+fn fence_focus_scrolls_block_and_draws_border() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_fence_scroll_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    let mut src = String::new();
+    for i in 0..30 {
+        src.push_str(&format!("filler line {i}\n\n"));
+    }
+    src.push_str("```mermaid\ngraph LR\n  A --> B\n```\n");
+    std::fs::write(&md, src).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert_eq!(app.preview_scroll, 0, "前提: 先頭表示・フェンスは画面外");
+
+    // Tab (唯一のアイテム=フェンス) → ブロック全体を見せる位置へスクロール。
+    app.md_focus_move(1);
+    let caption_line = app.md_items[app.focused_item.unwrap()].line;
+    assert!(
+        app.preview_scroll as usize >= caption_line.saturating_sub(2),
+        "図ブロックの先頭(キャプション)近くまでスクロールする: scroll={} caption={caption_line}",
+        app.preview_scroll
+    );
+
+    // 再描画でフォーカス枠(┌ 角とタイトル)が画像の外側に出る。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+    let w = buf.area.width;
+    let all: String = (0..buf.area.height)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+        .collect();
+    assert!(all.contains('┌'), "フォーカス枠の角が描かれる");
+    assert!(
+        all.contains("mermaid — Enter"),
+        "枠タイトルにキャプションが載る"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// フェンス図のエンコードは Resize::Scale=予約グリッドまで**拡大も**する(ラスタが小さくても
+/// 左上詰めの余白バンドを作らない)。写真は従来どおり Fit=自然サイズ超に拡大しない。
+/// 回帰 2026-07-17: Fit(縮小専用)だったため mermaid_rows/幅由来のグリッドがベースラスタより
+/// 大きいと図が左上に寄り右・下に空きバンドが出ていた(ユーザー報告「中央に表示されない」)。
+#[test]
+fn encode_worker_scales_fence_diagrams_up_to_grid() {
+    let picker = test_picker(); // font 10x20 / Halfblocks
+    let (req_tx, req_rx) = std::sync::mpsc::channel();
+    let (res_tx, res_rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
+    let img = std::sync::Arc::new(image::DynamicImage::new_rgba8(200, 100)); // 20x5 セル相当
+    let send = |path: &str| {
+        req_tx
+            .send(MdEncodeRequest {
+                path: std::path::PathBuf::from(path),
+                key: MdEncodeKey::Full { cols: 40, rows: 10 },
+                image: img.clone(),
+                crop: None,
+                cols: 40,
+                rows: 10,
+            })
+            .unwrap();
+    };
+    send("mermaid-fence://cafe"); // フェンス図 → グリッド(40x10)へ拡大
+    send("/tmp/photo.png"); // 写真 → 自然サイズ(20x5)のまま
+    drop(req_tx);
+    let fence = res_rx.recv().unwrap();
+    let photo = res_rx.recv().unwrap();
+    h.join().unwrap();
+    let fs = fence.protocol.size();
+    assert_eq!(
+        (fs.width, fs.height),
+        (40, 10),
+        "フェンスはグリッドを満たす"
+    );
+    let ps = photo.protocol.size();
+    assert_eq!((ps.width, ps.height), (20, 5), "写真は拡大しない");
+}
+
+/// インライン図の初期サイズは**表示領域にフィット**: 目標行数= min(mermaid_rows,
+/// ビューポート-2)。ビューポートが変わると図を含む文書だけ再レイアウトされ、
+/// 図の無い文書はリビルドされない(ユーザー要望 2026-07-17「最初は表示領域にフィット」)。
+#[test]
+fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_fit_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n  B --> C\n```\n").unwrap();
+    let plain = dir.join("plain.md");
+    std::fs::write(&plain, "# title\n\njust text\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(80);
+    app.ensure_md_cache(80);
+    // ビューポート未計測(0)=cap どおり。
+    assert_eq!(app.md_images()[0].rows, 24, "既定 cap=24");
+    // 低いビューポート → キャプション+マージン込みで収まる高さへ縮む。
+    app.preview_viewport = 10;
+    app.ensure_md_cache(80);
+    assert_eq!(app.md_images()[0].rows, 8, "vp10 → 8 行にフィット");
+    // 広いビューポート → cap へ戻る。
+    app.preview_viewport = 60;
+    app.ensure_md_cache(80);
+    assert_eq!(app.md_images()[0].rows, 24, "vp60 → cap 24");
+
+    // 図の無い文書はビューポート変化でリビルドされない(lines のポインタ不変)。
+    app.enter_preview(&plain);
+    app.ensure_md_cache(80);
+    let ptr0 = app.md_cache.as_ref().unwrap().lines.as_ptr();
+    app.preview_viewport = 12;
+    app.ensure_md_cache(80);
+    assert_eq!(
+        app.md_cache.as_ref().unwrap().lines.as_ptr(),
+        ptr0,
+        "図なし文書は vp 変化で再構築しない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// wrap 有効時、フェンスより上に折返し行があってもオーバーレイ(画像/フォーカス枠)が
+/// テキスト層とズレない。回帰 2026-07-17: 配置が論理行・スクロールが visual 行の混同で
+/// 画像が折返し分だけ上に描かれ、反転キャプション行に placeholder 行が重なって
+/// 「ID 色の一行バー」(Ghostty 実機・色は run 毎に変わる)として露出していた。
+#[test]
+fn fence_overlay_aligns_with_wrapped_text_layer() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_fence_wrap_align_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    // 先頭に 1 論理行で端末幅を大きく超える段落 → wrap で visual 行が論理行より数行増える。
+    let long = "wrap ".repeat(60);
+    std::fs::write(
+        &md,
+        format!("{long}\n\n```mermaid\ngraph LR\n  A --> B\n```\n\ntail\n"),
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    assert!(app.cfg.ui.wrap, "前提: 既定 wrap=on");
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(100, 45)).unwrap();
+    for _ in 0..3 {
+        term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    }
+
+    let caption_rows = |term: &Terminal<TestBackend>| -> Vec<u16> {
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .filter(|&y| {
+                let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                row.contains("mermaid — Enter")
+            })
+            .collect()
+    };
+    // 非フォーカス: テキスト層のキャプション行が見える=視覚座標の ground truth。
+    // (旧コードは画像バンドが折返し分上へズレてこの行を覆い、ここで既に落ちる)
+    let unfocused = caption_rows(&term);
+    assert_eq!(
+        unfocused.len(),
+        1,
+        "キャプション行が1行見える: {unfocused:?}"
+    );
+    let caption_row = unfocused[0];
+
+    // フェンスへフォーカス → フォーカス枠タイトルが同じ行に乗る(キャプションを覆う)。
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    let focused = caption_rows(&term);
+    assert_eq!(
+        focused,
+        vec![caption_row],
+        "フォーカス枠タイトルがテキスト層キャプションと同じ行(折返し分ズレない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// インライン mermaid 図のその場ズーム: +/-(image_zoom_by の二役)がフォーカス中の図に効き、
+/// レイアウト(予約セル)は不変・ズーム中は hjkl がパンに化け・フォーカス移動でリセットされる。
+#[test]
+fn fence_inplace_zoom_pans_and_keeps_layout() {
+    use crate::keymap::Motion;
+
+    let dir = std::env::temp_dir().join("konoma_fence_zoom_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "[a link](https://example.com)\n\n```mermaid\ngraph LR\n  A --> B\n```\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(80);
+    app.ensure_md_cache(80);
+    let imgs = app.md_images();
+    assert_eq!(imgs.len(), 1);
+    let (cols0, rows0) = (imgs[0].cols, imgs[0].rows);
+
+    // フェンスへフォーカス → +(zoom in)。全画面画像が無いので image_zoom_by は図に作用する。
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.image_zoom_by(2.0);
+    assert!(
+        (app.fence_zoom_level() - 2.0).abs() < 1e-9,
+        "図がズームされる"
+    );
+
+    // ズーム中は hjkl がパン(消費=true)・等倍では消費しない。
+    assert!(
+        app.fence_pan_motion(Motion::Right),
+        "ズーム中はパンに化ける"
+    );
+    assert!(app.fence_center.0 > 0.5, "中心が右へ動く");
+    // レイアウトは不変(予約セル数が変わらない=md 上の表示サイズ固定)。
+    app.ensure_md_cache(80);
+    let imgs = app.md_images();
+    assert_eq!(
+        (imgs[0].cols, imgs[0].rows),
+        (cols0, rows0),
+        "表示エリア不変"
+    );
+
+    // = でフィットへ・フォーカス移動でもリセット。
+    app.image_zoom_reset();
+    assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
+    assert!(
+        !app.fence_pan_motion(Motion::Right),
+        "等倍では通常スクロールへ"
+    );
+    app.image_zoom_by(3.0);
+    app.md_focus_move(1); // リンクへ移動
+    assert!(
+        (app.fence_zoom_level() - 1.0).abs() < 1e-9,
+        "フォーカス移動でズームはリセット"
+    );
+
+    // リンクにフォーカス中の + は no-op(図が非フォーカス)。
+    app.image_zoom_by(2.0);
+    assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// fence_crop: 可視率とクランプの純関数検証(比率ベース=再ラスタ後も同じ窓に写像される)。
+#[test]
+fn fence_crop_clamps_and_scales() {
+    // 2倍ズーム(f=0.5)・中央: 中央の半分窓。
+    let ((x, y, w, h), c) = fence_crop((800, 400), 0.5, (0.5, 0.5));
+    assert_eq!((w, h), (400, 200));
+    assert_eq!((x, y), (200, 100));
+    assert_eq!(c, (0.5, 0.5));
+    // 端へパン: 中心がクランプされ窓は画像内に収まる。
+    let ((x, _y, w, _h), c) = fence_crop((800, 400), 0.5, (1.0, 0.5));
+    assert_eq!(x + w, 800, "右端で止まる");
+    assert!((c.0 - 0.75).abs() < 1e-9, "中心は f/2 でクランプ");
+    // 4倍(f=0.25)で密度2倍のラスタ: 同じ比率窓が2倍の px に写る。
+    let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
+    let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
+    assert_eq!((x2, w2), (x1 * 2, w1 * 2));
+}
+
+/// `0`=フィット(ズーム中のみ消費・等倍では従来の行頭のまま)＋ `[ui] mermaid_rows` で
+/// インライン図の表示高さが変わる(0/不正は既定 24)。
+#[test]
+fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
+    use crate::keymap::Motion;
+
+    let dir = std::env::temp_dir().join("konoma_fence_rows_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n  B --> C\n```\n").unwrap();
+
+    // rows=10 の設定でロード。
+    let mut cfg = Config::default();
+    cfg.ui.mermaid_rows = 10;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(80);
+    app.ensure_md_cache(80);
+    let small = app.md_images()[0].rows;
+    assert!(small <= 10, "mermaid_rows=10 で高さが縮む: {small}");
+
+    // 既定(24)では大きくなる(縦長の図なので rows 上限が効く)。
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.picker = Some(test_picker());
+    app2.enter_preview(&md);
+    app2.ensure_md_cache(80);
+    app2.ensure_md_cache(80);
+    let default_rows = app2.md_images()[0].rows;
+    assert!(
+        default_rows > small,
+        "既定 24 の方が大きい: {default_rows} > {small}"
+    );
+
+    // 0(不正)は既定へフォールバック。
+    let mut cfg0 = Config::default();
+    cfg0.ui.mermaid_rows = 0;
+    let mut app3 = App::new(dir.clone(), cfg0).unwrap();
+    app3.picker = Some(test_picker());
+    app3.enter_preview(&md);
+    app3.ensure_md_cache(80);
+    app3.ensure_md_cache(80);
+    assert_eq!(app3.md_images()[0].rows, default_rows, "0 は既定 24 扱い");
+
+    // 0=フィット: ズーム中の LineHome は図のリセットとして消費・等倍では消費しない。
+    let idx = app2
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app2.focused_item = Some(idx);
+    app2.image_zoom_by(2.0);
+    assert!(
+        app2.fence_pan_motion(Motion::LineHome),
+        "ズーム中の 0=フィット"
+    );
+    assert!((app2.fence_zoom_level() - 1.0).abs() < 1e-9);
+    assert!(
+        !app2.fence_pan_motion(Motion::LineHome),
+        "等倍の 0 は消費しない(行頭のまま)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// mermaid_rows は**実表示サイズの目標**: ベースラスタの自然サイズを超えて拡大でき(ベクタ由来
+/// なので密度は再ラスタで追従=layout 不変のままシャープ)、テーマは dark 既定+背景透過。
+#[test]
+fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
+    // 純関数: 目標行数へ拡大する(自然サイズ非依存)・幅でクランプ。
+    let (c, r) = mermaid_cells(400, 800, 8, 16, 200, 40);
+    assert_eq!(r, 40, "目標行数まで拡大");
+    assert_eq!(
+        c, 40,
+        "アスペクト維持(400/800 → 40行×16px=640px 高, 幅320px=40セル)"
+    );
+    let (c2, r2) = mermaid_cells(1600, 400, 8, 16, 60, 40);
+    assert_eq!(c2, 60, "幅上限でクランプ");
+    assert!(r2 < 40, "幅クランプに合わせ行数も縮む: {r2}");
+
+    // テーマ: dark 既定は背景 fill="none"(透過)・白背景を持たない。
+    let svg = crate::preview::markdown::mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
+    assert!(svg.contains("fill=\"none\""), "背景透過");
+    assert!(
+        !svg.contains("fill=\"#FFFFFF\""),
+        "dark テーマに白背景が無い"
+    );
+
+    // 密度追従: mermaid_rows を大きくした表示サイズに合わせ、ensure_md_fence_density が
+    // 保持 SVG から高密度に再ラスタする(同期フォールバック)。layout(予約セル)は不変。
+    use image::GenericImageView;
+    let dir = std::env::temp_dir().join("konoma_mermaid_density_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n```\n").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.mermaid_rows = 60;
+    cfg.ui.svg_max_px = 300; // ベースラスタを小さく=密度不足を作る
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(120);
+    app.ensure_md_cache(120);
+    let p = app.md_images()[0].clone();
+    let key = std::path::PathBuf::from(&p.url);
+    let before = app.md_image_cache[&key]
+        .decoded
+        .as_ref()
+        .unwrap()
+        .dimensions();
+    app.ensure_md_fence_density(&p.url, p.cols, p.rows);
+    let e = &app.md_image_cache[&key];
+    let after = e.decoded.as_ref().unwrap().dimensions();
+    assert!(
+        after.0.max(after.1) > before.0.max(before.1),
+        "表示サイズに合わせ高密度化: {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        e.layout_px,
+        Some(before),
+        "layout_px は初回のまま(予約セル不変)"
+    );
+    // 再装飾してもセル数が変わらない(レイアウト固定)。
+    app.md_cache = None;
+    app.ensure_md_cache(120);
+    let p2 = &app.md_images()[0];
+    assert_eq!((p2.cols, p2.rows), (p.cols, p.rows), "セル数不変");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+/// mermaid_rows=100 のような大きい目標でも placement がその行数まで拡大する(幅が許す限り)。
+#[test]
+fn mermaid_rows_large_target_reaches_placement() {
+    let dir = std::env::temp_dir().join("konoma_probe_rows100");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "```mermaid\ngraph TD\n  A[a] --> B{b}\n  B --> C[c]\n```\n",
+    )
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.mermaid_rows = 100;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(148);
+    app.ensure_md_cache(148);
+    let p = &app.md_images()[0];
+    assert!(p.rows >= 90, "rows=100 target: got {}", p.rows);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// kitty placeholder 残骸掃除: インライン図の描画位置が動いたフレームだけ「フル再描画要求」が
+/// 立つ(静止中は立たない・図を離れたら一度立つ)。Ghostty の色付きバー(旧 ID 行の取り残し)対策。
+#[test]
+fn md_overlay_move_detection_requests_full_redraw() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_overlay_move_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    let mut src = String::new();
+    for i in 0..20 {
+        src.push_str(&format!("line {i}\n\n"));
+    }
+    src.push_str("```mermaid\ngraph LR\n  A --> B\n```\n");
+    std::fs::write(&md, src).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 初回(Loading→同期レンダ)
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 配置確定
+    let _ = app.take_md_overlay_moved(); // 出現までの遷移分を消費
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 静止フレーム
+    assert!(!app.take_md_overlay_moved(), "静止中は要求しない");
+
+    // スクロールで図が動く → 要求が立つ。
+    app.preview_scroll = app.preview_scroll.saturating_add(3);
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(app.take_md_overlay_moved(), "図が動いたら一度フル再描画");
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
+
+    // フォーカスの変化(スクロール無しでも) → 一度立つ(Ghostty の合成乱れをその場で修復)。
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(
+        app.take_md_overlay_moved(),
+        "フォーカス変化でも一度フル再描画"
+    );
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(!app.take_md_overlay_moved(), "フォーカス静止では立たない");
+
+    // プレビューを離れる(図が消える) → 一度立つ。
+    app.back_to_tree();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(app.take_md_overlay_moved(), "図が画面から消えたら掃除");
+
     std::fs::remove_dir_all(&dir).ok();
 }

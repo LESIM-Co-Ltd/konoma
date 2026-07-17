@@ -146,6 +146,14 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         if app.md_focused_code() {
             v.push(hint(lang, "y c", crate::i18n::Msg::HintCopyCode));
         }
+        // インライン mermaid 図にフォーカス中: その場ズーム(+/-)・ズーム中は hjkl=パン。
+        if app.focused_mermaid_ordinal().is_some() {
+            v.push(hint(lang, "+/-", crate::i18n::Msg::Zoom));
+            if app.fence_zoom_level() > 1.001 {
+                v.push(hint(lang, "hjkl", crate::i18n::Msg::HintPan));
+                v.push(hint(lang, "0", crate::i18n::Msg::HintFit));
+            }
+        }
         if app.md_has_tasks() {
             v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
         }
@@ -203,8 +211,11 @@ pub fn footer_hints(app: &App) -> Vec<String> {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    // SVG/GIF を別スレッドで読み込み中: 生 XML や空きを出さず「読み込み中…」を表示する。
+    // SVG/GIF/mermaid を別スレッドで読み込み中: 生 XML や空きを出さず「読み込み中…」を表示する。
+    // 既に表示できる画像がある間(PDF ページ送り・ズームのシャープ再ラスタ)は旧画像を出し続ける
+    // (全画面スピナーで置き換えるとズームのたびにちらつく)。
     if app.is_media_loading()
+        && !app.is_image_preview()
         && matches!(
             app.preview_kind,
             Some(
@@ -212,6 +223,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     | PreviewKind::Svg(_)
                     | PreviewKind::Video(_)
                     | PreviewKind::Pdf(_)
+                    | PreviewKind::Mermaid(_)
+                    | PreviewKind::MermaidFence(_)
             )
         )
     {
@@ -231,7 +244,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // (設計原則#3「未対応は安全に」のグレースフル降格)。
     if matches!(
         app.preview_kind,
-        Some(PreviewKind::Svg(_) | PreviewKind::Video(_) | PreviewKind::Pdf(_))
+        Some(
+            PreviewKind::Svg(_)
+                | PreviewKind::Video(_)
+                | PreviewKind::Pdf(_)
+                | PreviewKind::Mermaid(_)
+                | PreviewKind::MermaidFence(_)
+        )
     ) && app.is_image_preview()
     {
         render_image(frame, app, area);
@@ -279,6 +298,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Some(PreviewKind::Image(p)) => (format!("[image] {}", p.display()), false),
         // ラスタ化に失敗/端末非対応の SVG。生 XML をテキストとして見せる(安全なフォールバック)。
         Some(PreviewKind::Svg(p)) => (load_body(p, app.lang), true),
+        // 全画面フェンス表示でレンダリング失敗(未対応図種等)。案内を出す(q で md へ戻れる)。
+        Some(PreviewKind::MermaidFence(_)) => (
+            tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),
+            false,
+        ),
         // サムネイル抽出不可(ffmpeg 系不在/端末非対応/失敗)の動画。対象ファイル＋導入ヒントを表示。
         Some(PreviewKind::Video(p)) => (
             format!(
@@ -421,12 +445,47 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     if placements.is_empty() {
         return;
     }
+    // 描画位置+フォーカス状態の署名(変化検知用)。位置(スクロール/レイアウト)だけでなく
+    // **フォーカス/ズームの変化でも**フル再描画を発火させる: Ghostty ではフォーカス枠の描画
+    // フレームで隣接する placeholder 行の合成が乱れ、ID 色のバーが露出する事例があるため、
+    // 状態が変わるまさにそのフレームで端末グリッドを作り直す(乱れても即修復される)。
+    {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height,
+            app.preview_scroll,
+        )
+            .hash(&mut h);
+        app.focused_mermaid_ordinal().hash(&mut h);
+        ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut h);
+        for p in &placements {
+            let vis = app.md_visual_span(p.line).0;
+            (p.url.as_str(), vis, p.cols, p.rows).hash(&mut h);
+        }
+        let sig = h.finish();
+        app.note_md_overlay(sig);
+    }
+    let focused_mermaid = app.focused_mermaid_ordinal();
+    let mut mermaid_ord = 0usize;
     let scroll = app.preview_scroll as i32;
     let top_bound = inner.y as i32;
     let bottom_bound = (inner.y + inner.height) as i32;
     for p in placements {
-        let top = top_bound + p.line as i32 - scroll; // block's first row on screen
-                                                      // Visible screen band for this image (clipped to the viewport top/bottom).
+        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&p.url);
+        let this_focused = is_mermaid && focused_mermaid == Some(mermaid_ord);
+        if is_mermaid {
+            mermaid_ord += 1;
+        }
+        // p.line は装飾行(論理)の index、preview_scroll は折返し後の visual 行。wrap 時に
+        // 上流の折返し分だけ画像が上へズレる(＝反転キャプション行に megacell が重なり
+        // placeholder 行が ID 色のバーになる)ので、必ず visual 行へ変換してから引く。
+        let vis_line = app.md_visual_span(p.line).0 as i32;
+        let top = top_bound + vis_line - scroll; // block's first row on screen
+                                                 // Visible screen band for this image (clipped to the viewport top/bottom).
         let vis_top = top.max(top_bound);
         let vis_bottom = (top + p.rows as i32).min(bottom_bound);
         if vis_bottom <= vis_top {
@@ -445,6 +504,77 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             width: cols,
             height: vis_rows,
         };
+        // kitty の placeholder 行は「クリーンな SGR 状態で印字される」前提(megacell は fg=ID を
+        // 埋め込むだけで reverse/dim を解除しない)。下層テキストのスタイルをセルが継承すると
+        // 反転で背景=ID 色のバーが露出するため、画像領域のセルの**属性と fg** を必ず素に戻す。
+        // 背景色は保持する: 透過図はセル背景の上に合成されるので、消すとテーマ背景でなく
+        // 端末既定色のパネルが図の背後に浮く。
+        {
+            let buf = frame.buffer_mut();
+            for y in target.top()..target.bottom() {
+                for x in target.left()..target.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        let bg = cell.style().bg;
+                        let mut s = ratatui::style::Style::reset();
+                        if let Some(bg) = bg {
+                            s = s.bg(bg);
+                        }
+                        cell.set_style(s);
+                    }
+                }
+            }
+        }
+        // フォーカス中のフェンス図は**画像の外側**に選択枠を描く(キャプション行が上辺・下マージン
+        // 行が下辺・左右は空白列)。kitty graphics は画像をテキストの上に重ねるので、枠は画像領域の
+        // 外にある=実機でも必ず見える。ブロック全体が画面内のときだけ(部分枠は出さない。フォーカス
+        // 移動時は md_focus_move がブロック全体を可視域へスクロールする)。
+        if this_focused {
+            let btop = top - 1; // キャプション行
+            let bbot = top + p.rows as i32 + 1; // 下マージン行の次(排他)
+                                                // 枠幅=画像幅とタイトル幅の広い方(+角)。テキスト層のキャプション(中央寄せ)を
+                                                // 完全に覆う=タイトルが枠からはみ出したり、下の文字が枠の右に漏れたりしない。
+            let z = app.fence_zoom_level();
+            let title = if z > 1.001 {
+                format!(" ◇ mermaid  x{z:.1} — hjkl:pan  0:fit ")
+            } else {
+                " ◇ mermaid — Enter: full screen  +/-: zoom ".to_string()
+            };
+            let tw = Span::from(title.as_str()).width() as u16 + 2;
+            let bw = (cols + 2).max(tw).min(inner.width);
+            let bx = inner.x + (inner.width.saturating_sub(bw)) / 2;
+            if btop >= top_bound && bbot <= bottom_bound {
+                use ratatui::style::{Color as C, Modifier as M, Style as S};
+                // 四辺の選択枠(キャプション行=上辺タイトル・マージン行=下辺・側辺は画像の外の
+                // 空白列)。枠は「色付きバー」とは無関係(バーの真因は上の vis_line 変換と
+                // 画像領域の Style::reset を参照)。
+                let brect = Rect {
+                    x: bx,
+                    y: btop as u16,
+                    width: bw,
+                    height: (bbot - btop) as u16,
+                };
+                let border = Block::bordered()
+                    .border_style(S::new().fg(C::Cyan))
+                    .title(title)
+                    .title_style(S::new().fg(C::Cyan).add_modifier(M::REVERSED));
+                frame.render_widget(border, brect);
+            }
+        }
+        // フォーカス中フェンスのインプレースズーム: 予約エリアはそのまま、その中へ拡大クロップを
+        // 描く(ブロック全体が画面内のときのみ。部分スクロール中は通常表示に落とす)。
+        let zoomed =
+            this_focused && app.fence_zoom_level() > 1.001 && row_off == 0 && vis_rows >= p.rows;
+        // 表示サイズ(mermaid_rows)がベースラスタより大きい場合は高密度へ追従(非ズーム時も)。
+        if is_mermaid {
+            app.ensure_md_fence_density(&p.url, cols, p.rows);
+        }
+        if zoomed {
+            app.ensure_md_fence_zoom(&p.url, cols, p.rows);
+            if let Some(proto) = app.md_fence_zoom_proto(&p.url, cols, p.rows) {
+                frame.render_widget(Image::new(proto), target);
+                continue;
+            }
+        }
         app.ensure_md_image(&p.url, cols, p.rows, row_off, vis_rows);
         if let Some(proto) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
             frame.render_widget(Image::new(proto), target);

@@ -204,7 +204,26 @@ pub struct ImagePlacement {
 
 enum BlockPart {
     Text(String),
-    Image { alt: String, url: String },
+    Image {
+        alt: String,
+        url: String,
+    },
+    /// A top-level ```mermaid fence (only produced when the caller asked for fence extraction —
+    /// i.e. image-mode mermaid; in text mode fences stay in the text runs and render as today).
+    Mermaid {
+        code: String,
+    },
+}
+
+/// How the app wants one ```mermaid fence rendered (the image-mode analog of `ImageSlot`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MermaidSlot {
+    /// The rendered diagram raster is cached: reserve `cols`x`rows` cells and record a placement.
+    Image { cols: u16, rows: u16 },
+    /// The diagram is rendering on a worker thread: show a dim "loading" line until it arrives.
+    Loading,
+    /// Image mode off / no backend / render failed: draw the legacy Unicode text diagram.
+    Text,
 }
 
 /// How the app wants one block-level image rendered. The app decides this because it owns the image
@@ -226,6 +245,7 @@ pub enum ImageSlot {
 /// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
 /// degrades to a one-line text placeholder (design principle #3). Text runs are rendered by
 /// `render_markdown` unchanged, so all existing decoration behavior is preserved.
+#[allow(clippy::too_many_arguments)] // 既存7引数+mermaid スロット(呼び口は app 1箇所+テスト)
 pub fn render_markdown_with_images(
     src: &str,
     width: u16,
@@ -234,10 +254,15 @@ pub fn render_markdown_with_images(
     icons: bool,
     tasks: &[char],
     slot_of: &dyn Fn(&str) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
-    for part in split_block_images(src) {
+    // mermaid フェンスの抽出は「1つでも Image/Loading になり得る時」だけ(=Text 固定なら従来どおり
+    // テキスト run に残し、既存の描画・テストを一切変えない)。判定は空 probe で代表させる。
+    let fences_on = !matches!(mermaid_slot(""), MermaidSlot::Text);
+    let mut fence_ord = 0usize;
+    for part in split_block_parts(src, fences_on) {
         match part {
             BlockPart::Text(t) => {
                 out.extend(render_markdown_tasks(&t, width, code, theme, icons, tasks))
@@ -256,9 +281,68 @@ pub fn render_markdown_with_images(
                 ImageSlot::Loading => out.extend(image_loading_line(&alt, &url, width)),
                 ImageSlot::Unavailable => out.extend(image_text_fallback(&alt, &url, width)),
             },
+            BlockPart::Mermaid { code: fence } => {
+                let ord = fence_ord;
+                fence_ord += 1;
+                match mermaid_slot(&fence) {
+                    MermaidSlot::Image { cols, rows } => {
+                        let url = mermaid_fence_url(&fence);
+                        let mut ls = mermaid_placeholder_lines(cols, rows, width, ord);
+                        // 先頭はキャプション行(フォーカス番兵)。予約行=画像の重畳先はその次から。
+                        out.push(ls.remove(0));
+                        placements.push(ImagePlacement {
+                            url,
+                            alt: "mermaid".into(),
+                            line: out.len(),
+                            cols,
+                            rows,
+                        });
+                        out.extend(ls);
+                    }
+                    MermaidSlot::Loading => {
+                        out.extend(image_loading_line("mermaid", "diagram", width))
+                    }
+                    MermaidSlot::Text => out.extend(render_mermaid_block(&fence, width)),
+                }
+            }
         }
     }
     (out, placements)
+}
+
+/// Sentinel style of the caption line above an inline mermaid diagram. Doubles as the Tab-focus
+/// marker (`is_mermaid_header_span`) — same trick as the task-marker / code-header sentinels.
+fn mermaid_header_style() -> Style {
+    // DIM は付けない: フォーカスの REVERSED と重なると文字が背景に沈んで読めなくなる
+    // (Ghostty 実機で白バー化して捕まった)。Cyan+ITALIC+接頭辞で番兵として十分に一意。
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// Whether `span` is the caption/sentinel line of an inline mermaid diagram (Tab item collection).
+pub fn is_mermaid_header_span(span: &Span<'_>) -> bool {
+    span.style == mermaid_header_style() && span.content.starts_with("◇ mermaid")
+}
+
+/// Reserved rows for one inline mermaid diagram: a caption line (focusable sentinel) + blank rows
+/// the image overlays. `_ord` is the fence ordinal (document order) — recorded here for clarity;
+/// the item collector derives it by counting sentinels in order.
+fn mermaid_placeholder_lines(cols: u16, rows: u16, width: u16, _ord: usize) -> Vec<Line<'static>> {
+    let rows = rows.max(1);
+    let pad = (width.saturating_sub(cols) / 2) as usize;
+    let indent = " ".repeat(pad);
+    let mut lines = Vec::with_capacity(rows as usize + 2);
+    lines.push(Line::from(vec![
+        Span::raw(indent),
+        Span::styled("◇ mermaid — Enter: full screen", mermaid_header_style()),
+    ]));
+    for _ in 0..rows {
+        lines.push(Line::from(String::new()));
+    }
+    // 下マージン行: フォーカス枠の下辺を描く場所(予約域の外の本文行を上書きしないため)。
+    lines.push(Line::from(String::new()));
+    lines
 }
 
 /// Whether a Markdown image URL points at a remote resource fetched over HTTP(S).
@@ -285,17 +369,32 @@ pub fn collect_remote_image_urls(src: &str) -> Vec<String> {
 /// Split the source into text runs and standalone block-level images. Fence-aware: an image inside a
 /// ``` / ~~~ code fence stays in the surrounding text run (it is not treated as an image).
 fn split_block_images(src: &str) -> Vec<BlockPart> {
+    split_block_parts(src, false)
+}
+
+/// Split `src` into text runs, block-level images, and (when `mermaid_fences` is on) top-level
+/// ```mermaid fences. Fence tracking is shared, so a mermaid fence *inside* another code fence is
+/// never extracted (it is literal code), matching the segment renderer's rules.
+fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
-    // Open code fence, as (fence char byte, fence length).
+    // Open code fence, as (fence char byte, fence length). `mermaid` = collecting a diagram body.
     let mut open: Option<(u8, usize)> = None;
+    let mut mermaid: Option<String> = None;
     for line in src.split_inclusive('\n') {
         let bare = line.strip_suffix('\n').unwrap_or(line);
         match open {
             None => {
-                if let Some((fence, _info)) = parse_fence(bare) {
+                if let Some((fence, info)) = parse_fence(bare) {
                     open = Some((fence.ch, fence.len));
-                    text.push_str(line);
+                    if mermaid_fences && is_mermaid_info(&info) {
+                        if !text.is_empty() {
+                            parts.push(BlockPart::Text(std::mem::take(&mut text)));
+                        }
+                        mermaid = Some(String::new());
+                    } else {
+                        text.push_str(line);
+                    }
                 } else if let Some((alt, url)) = extract_block_image(bare) {
                     if !text.is_empty() {
                         parts.push(BlockPart::Text(std::mem::take(&mut text)));
@@ -306,15 +405,29 @@ fn split_block_images(src: &str) -> Vec<BlockPart> {
                 }
             }
             Some((ch, len)) => {
-                text.push_str(line);
                 let closing = parse_fence(bare)
                     .map(|(f, info)| f.ch == ch && f.len >= len && info.is_empty())
                     .unwrap_or(false);
+                match (&mut mermaid, closing) {
+                    (Some(code), true) => {
+                        parts.push(BlockPart::Mermaid {
+                            code: std::mem::take(code),
+                        });
+                        mermaid = None;
+                    }
+                    (Some(code), false) => code.push_str(line),
+                    (None, _) => text.push_str(line),
+                }
                 if closing {
                     open = None;
                 }
             }
         }
+    }
+    // 未クローズの mermaid フェンス: 生テキストとして安全に戻す(原則#3・欠落させない)。
+    if let Some(code) = mermaid {
+        text.push_str("```mermaid\n");
+        text.push_str(&code);
     }
     if !text.is_empty() {
         parts.push(BlockPart::Text(text));
@@ -1241,6 +1354,78 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
                 .to_string(),
         ),
     }
+}
+
+/// mermaid source → SVG string via the pure-Rust mermaid-rs-renderer (mermaid.js-quality layout;
+/// no browser/Node — PRD §5). Panic-safe like `render_mermaid_safe`: the crate is 0.x, so a panic
+/// (or an unsupported diagram → Err) returns None and the caller degrades to the Unicode text
+/// rendering (principle #3). Runs on worker threads only (layout costs a few ms per diagram).
+pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
+    use mermaid_rs_renderer::{RenderOptions, Theme};
+    let modern = Theme::modern();
+    let mut t = match theme {
+        "light" | "modern" => Theme::modern(),
+        "classic" | "mermaid" => Theme::mermaid_default(),
+        "forest" => Theme::forest(),
+        "neutral" => Theme::neutral(),
+        _ => Theme::dark(), // 既定: konoma のダーク基調に馴染む(mermaid-js dark 移植)
+    };
+    // 背景は描かない(fill="none")= kitty graphics では端末背景が透ける。図がテーマ色の
+    // 「白いカード」にならず、どの端末テーマにも馴染む(ユーザー指摘 2026-07-17)。
+    t.background = "none".to_string();
+    // フォント計測は**全テーマで modern に統一**する。テーマ毎にフォント(trebuchet 16 等)が違うと
+    // ラベル箱の実測サイズが変わり、経路探索が「大きく左へ迂回するリング」を選ぶ配置バグを実測で
+    // 再現・解消した(2026-07-17 ユーザー報告)。色はテーマのまま・レイアウトだけ検証済みの計測に固定。
+    t.font_family = modern.font_family.clone();
+    t.font_size = modern.font_size;
+    let opts = RenderOptions {
+        theme: t,
+        ..RenderOptions::default()
+    };
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mermaid_rs_renderer::render_with_options(code.trim_end_matches('\n'), opts)
+    }));
+    std::panic::set_hook(prev);
+    match caught {
+        Ok(Ok(svg)) => Some(svg),
+        _ => None,
+    }
+}
+
+/// Pre-warm the mermaid renderer's lazy text-measurer (its first call scans system fonts, tens of
+/// ms). Called from a startup thread so the first diagram render never pays it.
+pub fn warm_mermaid() {
+    let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
+}
+
+/// Synthetic inline-image key for a ```mermaid fence, derived from its content (FNV-1a 64).
+/// A changed fence gets a new key, so the rendered-diagram cache invalidates itself.
+pub fn mermaid_fence_url(code: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in code.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("mermaid-fence://{h:016x}")
+}
+
+/// Whether an inline-image URL is a synthetic mermaid-fence key (never a real file on disk).
+pub fn is_mermaid_fence_url(url: &str) -> bool {
+    url.starts_with("mermaid-fence://")
+}
+
+/// All top-level ```mermaid fence bodies in `src`, in document order (fences nested inside other
+/// code fences are not diagrams and are excluded — same fence rules as the block splitter).
+pub fn collect_mermaid_fences(src: &str) -> Vec<String> {
+    split_block_parts(src, true)
+        .into_iter()
+        .filter_map(|p| match p {
+            BlockPart::Mermaid { code } => Some(code),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Safe fallback display when rendering is impossible. Returns the note plus the raw source dimmed (no content is lost).
@@ -2981,6 +3166,7 @@ plain body
             false,
             DEFAULT_TASK_STATES,
             &slot_of,
+            &|_: &str| MermaidSlot::Text,
         );
         assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
     }
@@ -2997,6 +3183,7 @@ plain body
             false,
             DEFAULT_TASK_STATES,
             &slot_of,
+            &|_: &str| MermaidSlot::Text,
         );
         assert_eq!(imgs.len(), 1);
         let p = &imgs[0];
@@ -3025,6 +3212,7 @@ plain body
             false,
             DEFAULT_TASK_STATES,
             &slot_of,
+            &|_: &str| MermaidSlot::Text,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3044,6 +3232,7 @@ plain body
             false,
             DEFAULT_TASK_STATES,
             &slot_of,
+            &|_: &str| MermaidSlot::Text,
         );
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3096,5 +3285,107 @@ plain body
             let _ = highlight_body(&one, "rust", 60, None, "TwoDark", 4, true);
         }
         assert!(code_block_cache_len() <= CODE_BLOCK_CACHE_CAP);
+    }
+
+    // ---- mermaid 画像化 (v0.15 feature) ----------------------------------
+
+    /// SVG 互換の回帰テスト: mermaid-rs-renderer の SVG 出力が konoma 側の resvg/usvg で
+    /// そのままラスタライズできること(レンダラと usvg のバージョン乖離を封じる)。CJK 込み。
+    #[test]
+    fn mermaid_to_svg_output_rasterizes_with_konoma_resvg() {
+        let svg = mermaid_to_svg(
+            "graph TD\n  A[ツリー] -->|Enter| B{種別解決}\n  B --> C[プレビュー]",
+            "dark",
+        )
+        .expect("mermaid renders to SVG");
+        assert!(svg.contains("<svg"), "SVG らしい出力");
+        let img = crate::preview::svg::rasterize_bytes(
+            svg.as_bytes(),
+            std::path::Path::new("m.svg"),
+            400,
+        )
+        .expect("konoma の resvg でラスタライズできる");
+        assert!(img.width() > 0 && img.height() > 0);
+    }
+
+    /// レイアウト計測は全テーマで modern に固定される(dark のフォント計測差で
+    /// エッジが迂回リングを描く配置バグの回帰防止・2026-07-17 実測)。
+    #[test]
+    fn mermaid_dark_theme_uses_modern_font_metrics() {
+        let svg = mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
+        assert!(svg.contains("Inter"), "modern のフォントファミリで計測");
+        assert!(!svg.contains("trebuchet"), "dark 固有フォントは使わない");
+    }
+
+    #[test]
+    fn mermaid_to_svg_fails_safely_on_garbage() {
+        // 未対応/壊れた入力は None(呼び出し側がテキスト図へ降格)。パニックしない。
+        assert!(mermaid_to_svg("definitely not a diagram !!!", "dark").is_none());
+    }
+
+    #[test]
+    fn collect_mermaid_fences_top_level_only() {
+        let src = "# t\n```mermaid\ngraph LR\nA-->B\n```\n\n````md\n```mermaid\ninner\n```\n````\n";
+        let fences = collect_mermaid_fences(src);
+        assert_eq!(fences.len(), 1, "外側フェンス内の mermaid は抽出しない");
+        assert_eq!(fences[0], "graph LR\nA-->B\n");
+        // 閉じられていないフェンスは安全にテキストへ戻る(欠落しない)。
+        let unterminated = "```mermaid\ngraph LR\nA-->B\n";
+        assert!(collect_mermaid_fences(unterminated).is_empty());
+    }
+
+    #[test]
+    fn mermaid_slots_image_loading_text() {
+        let src = "before\n\n```mermaid\ngraph LR\nA-->B\n```\n\nafter\n";
+        let slot_img = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_| ImageSlot::Unavailable,
+            &slot_img,
+        );
+        assert_eq!(imgs.len(), 1, "フェンスが placement になる");
+        assert!(is_mermaid_fence_url(&imgs[0].url), "合成キー URL");
+        // キャプション行(フォーカス番兵)が予約行の直前にある。
+        let cap = &lines[imgs[0].line - 1];
+        assert!(
+            cap.spans.iter().any(is_mermaid_header_span),
+            "キャプション行に番兵 span"
+        );
+        // Loading: placement 無し・ローディング行あり。
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Loading,
+        );
+        assert!(imgs.is_empty());
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(joined.contains("loading"), "ローディング行: {joined}");
+        // Text: probe も Text = 抽出そのものが OFF → 従来のテキスト図(罫線)経路。
+        let (lines, imgs) = render_markdown_with_images(
+            src,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+        );
+        assert!(imgs.is_empty());
+        let joined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(
+            joined.contains('A') && joined.contains('B'),
+            "テキスト図として描画: {joined}"
+        );
     }
 }

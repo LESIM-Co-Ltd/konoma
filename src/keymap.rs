@@ -716,6 +716,11 @@ impl KeyMap {
         ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
         // Y=キャレット行の @path#L 参照コピー(Claude Code へ場所を渡す)。選択中は範囲(visual 面の Y)。
         ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
+        // +/-/= : フォーカス中のインライン mermaid 図をその場でズーム/リセット(表示エリアは不変)。
+        // 図が非フォーカスなら no-op(image_zoom_by 側のガード)。0 は行頭(LineHome)のまま温存。
+        ptext.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
+        ptext.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
+        ptext.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
         ptext.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);

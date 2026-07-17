@@ -23,6 +23,8 @@ use crate::app::{App, Mode, StatusbarLayout};
 
 /// Full-screen rendering per mode + status chrome (placement via `ui.statusbar`).
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // インライン画像オーバーレイの移動検知(フレーム跨ぎ): 開始で見取りをリセットし、末尾で比較。
+    app.begin_md_overlay_frame();
     // 設定 `ui.theme.bg` があれば全体背景を先に塗る。テキスト span の bg=None は既存セル背景を
     // 上書きしないので、この下地がそのまま全体背景になる ("none" のときは塗らず端末既定=透過維持)。
     if let Some(bg) = app.cfg.ui.theme.bg() {
@@ -124,6 +126,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.is_dialog() {
         dialog::render(frame, app, frame.area());
     }
+    // インライン画像が前フレームから動いた/消えたら、run ループが端末を一度フル再描画して
+    // kitty placeholder の残骸(旧 ID の色付き行)を掃除する。
+    app.finish_md_overlay_frame();
 }
 
 #[cfg(test)]
