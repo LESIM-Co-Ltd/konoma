@@ -57,3 +57,6 @@ Icon?
 /site/node_modules/
 /site/dist/
 /site/.astro/
+
+# ローカルに落ちた作業スクリーンショット(公開アセットは assets/ に置く)
+/スクリーンショット*.png
