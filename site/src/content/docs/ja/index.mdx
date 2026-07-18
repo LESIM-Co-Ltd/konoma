@@ -1,6 +1,6 @@
 ---
 title: konoma
-description: 全画面プレビュー特化のターミナルファイルブラウザ。AI コーディングエージェントの隣で使うために作られた macOS 用ツール。
+description: 全画面プレビュー特化のターミナルファイルブラウザ。AI コーディングエージェントの隣で使うために作られた macOS・Linux 用ツール。
 template: splash
 hero:
   title: 全画面で、すべてを見る。
@@ -86,7 +86,8 @@ cargo binstall konoma       # プレビルドバイナリ(要 cargo-binstall)
 cargo install konoma        # ソースからビルド
 ```
 
-主対象は macOS (Apple Silicon)です(Intel macOS・Linux x86_64 にもプレビルドあり)。
+主対象は macOS (Apple Silicon)です。Intel macOS・Linux x86_64 も CI で全テストが通り
+プレビルドも配布しています(Linux は実機ランタイム未検証のため beta)。
 画像プレビューには kitty graphics 対応端末([Ghostty](https://ghostty.org) など)が
 必要です。起動は:
 

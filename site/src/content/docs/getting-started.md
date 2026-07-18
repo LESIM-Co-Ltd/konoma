@@ -17,8 +17,9 @@ don't use cargo at all.
 
 **Requirements**
 
-- macOS on Apple Silicon is the primary target (Intel macOS works; Linux x86_64
-  builds are experimental; no Windows).
+- macOS on Apple Silicon is the primary target. Intel macOS works, and Linux
+  x86_64 builds and passes the full test suite in CI and ships prebuilt binaries
+  — beta, since its runtime isn't yet verified on a real Linux desktop. No Windows.
 - Image / SVG / video-thumbnail / PDF previews need a terminal with the **kitty
   graphics protocol** — [Ghostty](https://ghostty.org) or kitty. Text previews
   work in any terminal.

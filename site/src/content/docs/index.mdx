@@ -1,6 +1,6 @@
 ---
 title: konoma
-description: A full-screen preview-focused terminal file browser for macOS, built for working next to an AI coding agent.
+description: A full-screen preview-focused terminal file browser for macOS and Linux, built for working next to an AI coding agent.
 template: splash
 hero:
   title: See everything, full screen.
@@ -87,9 +87,10 @@ cargo binstall konoma       # prebuilt binary (needs cargo-binstall)
 cargo install konoma        # build from source
 ```
 
-macOS on Apple Silicon is the primary target (Intel macOS and Linux x86_64 have
-prebuilt binaries too). For image previews you need a terminal that speaks the
-kitty graphics protocol, such as [Ghostty](https://ghostty.org). Then:
+macOS on Apple Silicon is the primary target. Intel macOS and Linux x86_64 also
+build, pass the full test suite in CI, and ship prebuilt binaries (Linux is beta —
+runtime not yet verified on a real Linux desktop). For image previews you need a
+terminal that speaks the kitty graphics protocol, such as [Ghostty](https://ghostty.org). Then:
 
 ```sh
 konoma [DIR]

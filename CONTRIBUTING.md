@@ -1,7 +1,8 @@
 # Contributing to konoma
 
 Thanks for your interest! konoma is a full-screen-preview terminal file browser for
-macOS on Apple Silicon.
+macOS (Apple Silicon, the primary target) and Linux (`x86_64`, beta). CI runs the full
+clippy + test suite on both.
 
 ## Development
 

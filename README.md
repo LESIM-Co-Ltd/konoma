@@ -3,7 +3,7 @@
 > Terminal file browser built for AI pair-programming — full-screen previews
 > (Markdown, images, PDF, CSV), a git suite, and an agent-watch mode that
 > follows your AI's edits.
-> macOS / Apple Silicon · Rust · MIT
+> macOS & Linux · Rust · MIT
 
 [![CI](https://github.com/LESIM-Co-Ltd/konoma/actions/workflows/ci.yml/badge.svg)](https://github.com/LESIM-Co-Ltd/konoma/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/konoma.svg)](https://crates.io/crates/konoma)
@@ -82,11 +82,12 @@ Pre-release (feature-complete). The milestones below track what is implemented.
 
 ## Requirements
 
-- **macOS on Apple Silicon** is the primary target. macOS on Intel (`x86_64`) also has prebuilt binaries.
-  Linux (`x86_64`) builds in CI and has prebuilt binaries too, but is **experimental** — its runtime
-  (previews, clipboard, trash) is not yet verified. Windows is not supported.
-- A terminal that supports the **kitty graphics protocol** (e.g. [Ghostty](https://ghostty.org)) for image,
-  SVG, video-thumbnail, and PDF previews. Without it, text-based previews still work.
+- **macOS on Apple Silicon** is the primary, fully verified target. macOS on Intel (`x86_64`) has prebuilt
+  binaries too. **Linux (`x86_64`)** builds and passes the full clippy + test suite in CI on every push and
+  ships prebuilt binaries — but its runtime (the kitty-graphics previews, clipboard, and trash) has not yet
+  been verified on a real Linux desktop, so treat it as **beta**. Windows is not supported.
+- A terminal that supports the **kitty graphics protocol** (e.g. [Ghostty](https://ghostty.org), which runs
+  on macOS and Linux) for image, SVG, video-thumbnail, and PDF previews. Without it, text-based previews still work.
 
 ## Install
 
