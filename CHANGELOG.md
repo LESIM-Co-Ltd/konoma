@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-18
+
 ### Fixed
 - **Mermaid previews survive tab switches.** Returning to a tab that was showing a `.mmd`
   image (or a full-screen fence diagram) re-rasterizes it instead of silently degrading to
@@ -620,7 +622,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.0...v0.14.1
