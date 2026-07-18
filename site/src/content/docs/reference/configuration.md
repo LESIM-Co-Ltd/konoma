@@ -14,8 +14,9 @@ konoma reads a single TOML file:
 Everything is optional — **no config file is required**. A missing or broken file never
 prevents startup; konoma falls back to the defaults described below (invalid values fall
 back per-key). A fully commented example lives in
-[`config.example.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.toml) (Japanese inline comments); copy it as a
-starting point:
+[`config.example.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.toml); copy it as a
+starting point (a Japanese-annotated copy is at
+[`config.example.ja.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.ja.toml)):
 
 ```sh
 mkdir -p ~/.config/konoma
@@ -111,7 +112,7 @@ Built-in renderers (`builtin = "..."`):
 | Name | Renders |
 |---|---|
 | `markdown` | Decorated Markdown (headings, tables, links, task checkboxes, inline images, ```` ```mermaid ```` fences as diagrams). |
-| `mermaid` | Standalone `.mmd`/`.mermaid` files as Unicode box-drawing diagrams (pure Rust, no external tools). |
+| `mermaid` | Standalone `.mmd`/`.mermaid` files as diagrams. Renders as a real image by default (pure Rust, full-screen zoom/pan); `[ui] mermaid = "text"` switches to Unicode box-drawing. |
 | `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |
 | `video` | A representative frame extracted with `ffmpegthumbnailer`/`ffmpeg` (optional tools; a hint is shown if absent). No in-terminal playback — delegate to `mpv` via `command` if you want playback. |

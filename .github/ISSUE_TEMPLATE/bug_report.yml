@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in konoma is broken or behaves unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! konoma is macOS / Apple Silicon only — please confirm
+        that first. For a preview that shows `[can not preview]` on a format you expect
+        to work, that is usually a missing optional tool (poppler / ffmpeg) rather than
+        a bug; see the README's Optional tools section.
+  - type: input
+    id: version
+    attributes:
+      label: konoma version
+      description: The release tag or crate version (e.g. 0.15.0).
+      placeholder: "0.15.0"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: macOS version, chip, and terminal (e.g. Ghostty).
+      placeholder: "macOS 15.5 · M2 · Ghostty 1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        1. Opened konoma in a directory with …
+        2. Pressed …
+        3. Expected … but saw …
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        A file or directory layout that triggers it, if you can share one. For a
+        preview/rendering bug, attaching the exact file helps a lot.
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Config (`~/.config/konoma/config.toml`), a screenshot, or logs.
+    validations:
+      required: false

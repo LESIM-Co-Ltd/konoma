@@ -1,221 +1,230 @@
-# konoma 設定例。~/.config/konoma/config.toml に置く。
-# 無くてもデフォルトで動作する。
+# Example konoma config. Place it at ~/.config/konoma/config.toml.
+# Everything works with defaults, so the file is optional.
+# (A Japanese-annotated copy lives at config.example.ja.toml.)
 
 [ui]
 show_hidden = false
-# 表示言語。"auto"(既定) | "en" | "jp"。ヘルプ(?)・キーヒント・モード表示・メッセージ等に適用。
-# "auto" は OS の既定言語に追従 (macOS のシステム言語が日本語なら jp、それ以外は en)。
+# Display language. "auto" (default) | "en" | "jp". Applies to help (?), key hints, the mode chip, messages, etc.
+# "auto" follows the OS language (jp when macOS is set to Japanese, en otherwise).
 lang = "auto"
 tabbar = "auto"            # always | auto | hidden
-# ステータス系の配置。
-#   split  = コンテキスト(モード/パス/倍率)を上(タブと同じ行の右)・キーヒントを下 (既定)。
-#   bottom = コンテキストもキーヒントも下1行にまとめる。
-# キーヒントは「最も有用な順」に、表示幅へ入る分だけ自動表示し、続きは末尾 … で省略する。
+# Status-line layout.
+#   split  = context (mode / path / zoom) on top (right of the tab row), key hints on the bottom (default).
+#   bottom = put both the context and the key hints on a single bottom line.
+# Key hints are shown "most-useful first", as many as fit the width, with the rest elided with a trailing … .
 statusbar = "split"
-# ツリー行頭に Nerd Font アイコンを表示。要 Nerd Font。端末に "Symbols Nerd Font" を
-# フォールバック追加すれば普段のフォントのまま使える。豆腐(□)が出る/未導入なら false に。
-# アイコンは無色(端末の既定前景色を継承)。色は将来 git status のあるファイルにのみ使う。
+# Show Nerd Font icons at the start of each tree row. Requires a Nerd Font. Add "Symbols Nerd Font"
+# as a fallback in your terminal to keep your usual font. Set to false if you see tofu (□) / have no Nerd Font.
+# Icons are uncolored (they inherit the terminal's default foreground). Color is reserved for git-status files.
 icons = true
-# テキストプレビューの長い行の扱い。
-#   true  = 折返して全文を表示 (既定)。
-#   false = 折返さず h/l・←/→ で横スクロール (less 風)。
+# How long lines are handled in text previews.
+#   true  = wrap and show the whole line (default).
+#   false = do not wrap; scroll horizontally with h/l and ←/→ (less-style).
 wrap = true
-# コード/テキストプレビューに行番号ガターを表示するか。
-#   false = 表示しない (既定・最小表示)。
-#   true  = 行頭に行番号を表示 (淡色)。大きいファイルは less 風ウィンドウ読みで、
-#           G(末尾)時も総行数から正しい行番号を表示する。
+# Whether to show a line-number gutter in code/text previews.
+#   false = hidden (default, minimal display).
+#   true  = show line numbers at the start of each line (dim). Large files stream through a less-style
+#           windowed reader, and G (end) still shows the correct number derived from the total line count.
 line_numbers = false
-# エディタ風の git 変更ガター (Zed 風)。作業ツリーに変更のあるコード/テキストファイルの
-# プレビューで、左端に変更マーカーを出す:
-#   緑 ▌ = 追加行 / アンバー ▌ = 変更行 / 赤 ▔ = 直下の行の上端＝削除が起きた行間。
-#   true  = 表示 (既定。変更のないファイル/非 git リポジトリでは何も出さない)。
-#   false = 表示しない。
+# Editor-style git change gutter (Zed-style). For code/text previews of files with working-tree changes,
+# a change marker is drawn at the left edge:
+#   green ▌ = added line / amber ▌ = modified line / red ▔ = the top edge of the line below a deletion.
+#   true  = shown (default; nothing is drawn for unchanged files or outside a git repo).
+#   false = hidden.
 git_gutter = true
-# タブのタブストップ幅 (既定 4)。コード/テキストプレビューでタブを「可視マーカー(→)＋
-# 次タブストップまでの空白」に展開する桁数。端末はタブを桁揃えしないため、これでインデントが
-# 揃い、かつタブだと分かる。0 にすると展開しない(生のタブのまま=桁が崩れることがある)。
+# Tab stop width (default 4). In code/text previews, tabs expand to a "visible marker (→) plus spaces up to
+# the next tab stop". Terminals do not align tabs, so this keeps indentation aligned while still showing that
+# it is a tab. Set to 0 to keep raw tabs (columns may not line up).
 tab_width = 4
-# コードのシンタックスハイライトを行うか。
-#   true  = syntect で着色 (既定)。初回に言語ごと文法コンパイルが入る(下記 preview_loading で吸収)。
-#   false = 素テキスト表示で最速 (syntect を一切使わない)。重さが気になる/不要なら false。
+# Whether to syntax-highlight code.
+#   true  = color with syntect (default). The first open of a language compiles its grammar (absorbed by
+#           preview_loading below).
+#   false = plain text, fastest (syntect is never used). Use false if highlighting feels heavy / is unwanted.
 syntax_highlight = true
-# 重いコードプレビュー(初めて開く言語=文法コンパイルが要るとき)の待ちの見せ方。
-# ※ 一度開いた言語は温まるので即時表示=この設定に関係なく一瞬。
-#   indicator   = 画面中央にローディング表示を出してから本文を着色表示 (既定)。
-#   progressive = 本文を素テキストで即表示し、準備でき次第ハイライトへ差し替え (フリーズ無し)。
+# How the wait is shown for a heavy code preview (a language opened for the first time = grammar compile needed).
+# Note: an already-opened language is warm, so display is instant regardless of this setting.
+#   indicator   = show a loading indicator in the center, then render the colored body (default).
+#   progressive = show the body as plain text immediately, then swap to highlighted once ready (no freeze).
 preview_loading = "indicator"
-# タイトル(tree/preview)のパス表示の既定。p キーで relative→home→full を巡回。
-#   relative = 起動ディレクトリ名からの相対 (例: konoma/src/main.rs)。既定。
-#   home     = HOME からの相対 (例: ~/work/konoma)。
-#   full     = フルパス (例: /Users/me/work/konoma)。
+# Default path style in titles (tree/preview). The p key cycles relative → home → full.
+#   relative = relative to the launch directory name (e.g. konoma/src/main.rs). Default.
+#   home     = relative to HOME (e.g. ~/work/konoma).
+#   full     = full path (e.g. /Users/me/work/konoma).
 path_style = "relative"
-# プレビューのページ送りキー流儀(既定プロファイル)。j/k 行移動・矢印・PageUp/Down は両流儀共通。
-#   vim  = Ctrl-f/Ctrl-b でページ、Ctrl-d/Ctrl-u でハーフページ (既定)。
-#   less = Space/b でページ、d/u でハーフページ (※プレビュー系の面のみ。ツリーの Space は
-#          ファイル管理リーダーに割り当て済みのため less でも vim ページのまま)。
-# ※これは「ページ送りの既定プロファイル」。個別キーは下の【トップレベル】[keys.<面>] で
-#   上書きできる(そちらが優先・別物)。
+# Default page-turn key profile for previews. j/k line moves, arrows, and PageUp/Down are common to both.
+#   vim  = Ctrl-f/Ctrl-b page, Ctrl-d/Ctrl-u half-page (default).
+#   less = Space/b page, d/u half-page (preview surfaces only; the tree's Space is already the file-management
+#          leader, so even under less the tree keeps vim paging).
+# Note: this is the "default page-turn profile". Individual keys can be overridden under the top-level
+#   [keys.<surface>] sections below (those take precedence and are a separate thing).
 keys = "vim"
-# 画像プレビューの表示サイズスケール (0.1〜1.0)。表示矩形をこの倍率に縮めて表示する。
-# 既定 1.0 では「初期=画像サイズ(フィット)、+で拡大、viewport を超えたら hjkl でパン」。
-# 1.0 未満にすると表示が小さくなる代わりに、kitty への転送ピクセル(=表示/ズームの待ち時間)が減る。
-# 配置は常に中央・アスペクト比も正しい。速度が要るとき下げる(例 0.6 で転送 ≒ 1/3)。
-# GIF アニメ/全画像で共有(GIF の転送を軽くしたいときもこれ)。
+# Display-size scale for image previews (0.1–1.0). Shrinks the display rect by this factor.
+# At the default 1.0: "initial = image size (fit), + zooms in, pan with hjkl once it overflows the viewport".
+# Below 1.0 the display is smaller but fewer pixels are sent to kitty (= less zoom/display latency).
+# The image is always centered with correct aspect ratio. Lower it when you need speed (e.g. 0.6 ≈ 1/3 the transfer).
+# Shared by GIF animation and all images (also use this to make GIF transfers lighter).
 image_render_scale = 1.0
 
-# SVG ラスタライズの最大辺(px)。ベクタは無限解像度なので、この px まで拡大して描く
-# (小さい SVG もくっきり)。大きいほど鮮明だが描画・転送が重い。既定 800。
-# ★SVG 専用★: ラスタ画像/GIF はこの設定の影響を受けない(GIF の転送量は image_render_scale)。
+# Maximum edge (px) for SVG rasterization. Vectors are resolution-free, so they are rendered up to this many px
+# (small SVGs stay crisp). Larger is sharper but heavier to draw/transfer. Default 800.
+# SVG only: raster images / GIFs are unaffected (a GIF's transfer size is governed by image_render_scale).
 svg_max_px = 800
 
-# 詳細リスト表示: 各行の右に並べるメタ情報の列。空 [] (既定) で素の表示。
-# 指定できる列: "size"(サイズ) / "modified"(更新日時) / "perm"(権限 rwx) /
-#   "type"(file/dir/link) / "items"(ディレクトリの項目数。各 dir 行で read_dir するので
-#   ディレクトリが多い木では少し重い)。指定順に右へ並ぶ。
-# 長い名前は自動で切り詰め(…)、列は右寄せで縦に揃う。
-# 単体の全情報(symlink 先・絶対パス含む)は `i` のポップアップで見られる。
-details = []           # 例: ["type", "size", "modified"]
+# Detail-list columns: extra metadata shown to the right of each row. Empty [] (default) for a plain display.
+# Available columns: "size" / "modified" / "perm" (rwx) / "type" (file/dir/link) /
+#   "items" (number of entries in a directory; this read_dir's each dir row, so it is a bit heavy in trees
+#   with many directories). Columns appear left-to-right in the given order.
+# Long names are auto-truncated (…), and columns are right-aligned so they line up vertically.
+# All info for a single entry (symlink target, absolute path, …) is available in the `i` popup.
+details = []           # e.g. ["type", "size", "modified"]
 
-# コミットグラフ(o→g)で同時に描くローカルブランチの上限 (既定 12)。
-# ブランチが多いとレーン/色/凡例が溢れるため、起動時は 基準/優先＋HEAD＋最近コミット順で
-# 上限まで自動選択する。グラフ内 `b` のパネルで表示/非表示の切替＋優先順の並び替えができる
-# (Space:切替 / J/K:並替 / a:全部 / n:現在のみ / Enter:適用、HEAD は常に表示)。0 で無制限。
+# Maximum number of local branches drawn at once in the commit graph (o→g). Default 12.
+# With many branches the lanes/colors/legend overflow, so at startup they are auto-selected up to this limit,
+# ordered by base/priority + HEAD + recent commits. The graph's `b` panel toggles visibility and reorders
+# priority (Space:toggle / J/K:reorder / a:all / n:current only / Enter:apply; HEAD is always shown). 0 = unlimited.
 graph_max_branches = 12
 
-# コミットグラフの「基準/優先ブランチ」(順序つき・既定 [])。例: ["main", "develop"]
-# ① ここに挙げたブランチを優先的に表示(上限の先頭に置く)。
-# ② 左から最初に存在するものを「基準」= lane0 に左一直線で固定する。
-# ③ 並び順が凡例/パネルの表示順にも反映される(配列→HEAD→最近順)。
-# グラフ内 `b` パネルの J/K で当セッション限り並び替え可(config への書き戻しはしない)。
+# The graph's "base / priority branches" (ordered; default []). e.g. ["main", "develop"]
+# 1. Branches listed here are shown with priority (placed at the front of the limit).
+# 2. The first one that exists becomes the "base" = pinned to lane0 in a straight line.
+# 3. The order also drives the legend/panel display order (array → HEAD → recency).
+# The graph's `b` panel J/K reorders for the current session only (never written back to the config).
 graph_base_branches = []
 
-# log(o→l)/グラフ(o→g)のコミット行で、右側メタ情報(author・日付、グラフは short も)の寄せ方。
-#   "right"  (既定) … パネル右端に揃えて「列」にする。日付/著者が縦に揃い、新旧を一目で追える
-#                      (SourceTree / VS Code Git Graph 流)。狭い時は subject を末尾省略し、
-#                      さらに狭ければメタ自体を省く(非本質列を落とす)。
-#   "inline"        … subject の直後に続けて出す(従来表示。subject のすぐ隣にメタが並ぶ)。
+# In the log (o→l) / graph (o→g) commit rows, how the right-side metadata (author, date; also short hash in the
+# graph) is aligned.
+#   "right"  (default) … align to the panel's right edge as a "column". Dates/authors line up vertically so you
+#                        can scan new vs old at a glance (SourceTree / VS Code Git Graph style). When narrow, the
+#                        subject is truncated first, and if still narrow the metadata itself is dropped (a
+#                        non-essential column).
+#   "inline"           … place it right after the subject (the classic layout, metadata next to the subject).
 commit_meta_align = "right"
 
-# 終了確認。q(最上位ツリー)/ Q(どこからでも) でアプリ全体を終了するとき、確認ダイアログを出すか。
-#   true  (既定) … 「終了しますか?」を確認(q / y / Enter = 終了, n / Esc = 取消。qq で素早く抜ける)
-#   false        … 即終了(確認なし)
+# Quit confirmation. When q (top-level tree) / Q (from anywhere) quits the whole app, whether to confirm.
+#   true  (default) … ask "Quit?" (q / y / Enter = quit, n / Esc = cancel; qq exits quickly).
+#   false           … quit immediately (no confirmation).
 confirm_quit = true
 
-# ブックマーク上書き確認。m でブックマークを登録するとき、そのキーが既に**別のパス**を指していれば
-# 確認ダイアログを出す(誤って上書きするのを防ぐ)。同じパスの再登録・未使用キーは確認なしで登録。
-#   true  (既定) … 上書き前に確認(y / Enter = 上書き, n / Esc = 取消)
-#   false        … 確認なしで即上書き
+# Bookmark-overwrite confirmation. When m registers a bookmark and that key already points to a **different** path,
+# show a confirmation dialog (to avoid an accidental overwrite). Re-registering the same path or an unused key
+# registers without asking.
+#   true  (default) … confirm before overwriting (y / Enter = overwrite, n / Esc = cancel).
+#   false           … overwrite immediately without confirmation.
 confirm_bookmark_overwrite = true
 
-# CSV/TSV テーブルプレビューの列レインボー。列ごとに色を回して見分けやすくする(Rainbow CSV / csvlens 流)。
-#   true  (既定) … 列ごとに色付け。
-#   false        … 単色(整列・セル移動・コピーはそのまま)。
-# 操作: hjkl=セル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / y→ c:セル r:行 C:列 f:フルパス / q:戻る。
+# Rainbow columns in the CSV/TSV table preview. Rotates a color per column for easier scanning (Rainbow CSV /
+# csvlens style).
+#   true  (default) … color per column.
+#   false           … single color (alignment, cell moves, and copy are unchanged).
+# Keys: hjkl=move cell / g·G=first/last row / 0·$=first/last column / y→ c:cell r:row C:column f:full path / q:back.
 csv_rainbow = true
 
-# フォローモード(F)がジャンプ先ファイルをどう開くか。
-#   "diff" (既定) … そのファイルの全画面 git diff(何から何に変わったかがハンク単位で見える。
-#                    未追跡ファイルは全行追加の diff)。q で戻る・s でレイアウト切替。
-#   "file"        … 通常の全画面プレビュー(最初の変更ハンクの位置まで自動スクロール・変更行にガター)。
-# どちらでも、diff の無いファイル(変更なし/リポジトリ外)と画像/SVG/動画/PDF は通常プレビューで開く。
+# How follow mode (F) opens the file it jumps to.
+#   "diff" (default) … the file's full-screen git diff (what changed, hunk by hunk; an untracked file is an
+#                      all-added diff). q goes back, s cycles the layout.
+#   "file"           … a normal full-screen preview (auto-scrolls to the first changed hunk, gutter on changed lines).
+# Either way, files with no diff (unchanged / outside a repo) and images/SVG/video/PDF open as a normal preview.
 follow_view = "diff"
 
-# Markdown プレビューのタスクリスト(チェックボックス)で Space が巡回する状態の配列(巡回順)。
-# 各要素は 1 文字。既定 [" ", "x"] = GFM 標準の 未完 ⇄ 完了。
-# 例: [" ", "/", "x"] で Obsidian 流の「作業中 [/]」を挟む。標準状態は Nerd Font の
-# チェックボックスアイコン(ui.icons=false なら [ ]/[x])・カスタム状態は [/] のまま表示。
-# 操作: 装飾表示で Tab/⇧Tab=リンクとチェックボックスを巡回 → Space(または Enter)=トグル。
-# トグルは書込み前にファイルを照合し、外部で変わっていたら書かずに再読込する(安全側)。
-# 配列に無い状態のボックスは先頭状態へ正規化。不正な設定(2文字要素・1要素以下)は既定に戻る。
+# The states Space cycles through in Markdown task lists (checkboxes), in cycle order.
+# Each element is one character. Default [" ", "x"] = GFM-standard incomplete ⇄ done.
+# e.g. [" ", "/", "x"] inserts an Obsidian-style "in progress [/]". Standard states show the Nerd Font
+# checkbox icon (or [ ]/[x] when ui.icons=false); custom states are shown as [/].
+# Keys: in the decorated view, Tab/⇧Tab cycles links and checkboxes → Space (or Enter) toggles.
+# Toggling verifies the file before writing, and if it changed externally it reloads instead of writing (safe).
+# A box in a state not in the array is normalized to the first state. An invalid setting (2-char element,
+# ≤1 element) falls back to the default.
 md_task_states = [" ", "x"]
 
-# バックグラウンド処理インジケーター。git の無視ファイルスキャン・メディア読込・
-# ハイライト準備・インライン画像取得などが裏で走っている間、右上にスピナーと
-# ジョブ名(複数なら +n)を表示する。処理が無いときは何も出ない(=アイドル負荷ゼロ)。
-#   true  (既定) … 表示する
-#   false        … 表示しない(中央の「読み込み中…」等、個別の表示はそのまま)
+# Background-activity indicator. While something runs in the background (git ignore-file scan, media load,
+# highlight warm-up, inline-image fetch, …), a spinner and job name (+n when several) is shown at the top-right.
+# Nothing is shown when idle (= zero idle load).
+#   true  (default) … show it.
+#   false           … hide it (per-item displays like a centered "loading…" are unaffected).
 busy_indicator = true
 
-# mermaid 図の描画方法。
-#   "image" (既定) … 純 Rust で SVG 化→ラスタライズし、mermaid.js 品質の図として表示
-#                    (ブラウザ/Node 不要)。単体 .mmd は全画面(+/-:ズーム hjkl:パン)、
-#                    Markdown 内の ```mermaid フェンスはインライン画像＋Tab→Enter で全画面。
-#                    ズームはズーム率に合わせて裏で再ラスタライズ=拡大してもシャープ。
-#                    画像非対応端末・未対応の図・描画失敗は自動でテキスト描画へ降格(安全)。
-#   "text"          … 従来の Unicode 罫線テキスト描画のみ。
+# How mermaid diagrams are rendered.
+#   "image" (default) … rasterize them in-process (pure Rust SVG → raster), at mermaid.js quality (no browser/Node).
+#                       Standalone .mmd opens full screen (+/-:zoom hjkl:pan); ```mermaid fences inside Markdown
+#                       render as inline images with Tab→Enter to go full screen. Zooming re-rasterizes to match
+#                       the zoom level, so it stays sharp. Non-graphics terminals, unsupported diagrams, and render
+#                       failures degrade to text automatically (safe).
+#   "text"            … the classic Unicode box-drawing text rendering only.
 mermaid = "image"
 
-# mermaid 図の配色テーマ。背景は常に透過(端末の背景に馴染む)。
-#   "dark" (既定) … mermaid.js の dark テーマ(暗い端末向け)
-#   "light"       … モダンなライト配色 / "classic" … mermaid.js 既定 / "forest" / "neutral"
+# Color theme for mermaid diagrams. The background is always transparent (blends with the terminal).
+#   "dark" (default) … mermaid.js dark theme (for dark terminals).
+#   "light"          … a modern light palette / "classic" … mermaid.js default / "forest" / "neutral".
 mermaid_theme = "dark"
 
-# Markdown 内のインライン mermaid 図の表示高さの目標(行数・既定 24)。**拡大方向にも効く**:
-# 図はベクタ由来なので、大きくしても必要な密度へ自動再ラスタライズされシャープなまま
-# (幅は本文幅で頭打ち・縦横比維持)。初期表示は**ビューポートにもフィット**=窓が目標より
-# 低いときはブロック全体が見える高さへ縮む。
-# フォーカス中の図は表示エリアそのままに +/- でその場ズーム・0 でフィットできる。
-# 0 や不正値は既定 24 に戻る。
+# Target height (rows) of an inline mermaid diagram inside Markdown (default 24). It scales UP too:
+# diagrams are vector-backed, so growing beyond the base raster re-rasterizes at the needed density and stays
+# sharp (width-capped, aspect-preserving). The initial view also fits the viewport: when the window is shorter
+# than the target, it shrinks so the whole block is visible.
+# A focused diagram can be zoomed in place with +/- (reserved area unchanged) and fit with 0.
+# 0 or an invalid value falls back to the default 24.
 mermaid_rows = 24
 
-# タブセッションの自動保存/復元。起動ディレクトリ(プロジェクト)毎に、開いていたタブ構成
-# (各タブの root・カーソル位置・プレビュー中のファイル)を保存し、同じディレクトリで次に
-# 起動したとき復元する。プレビューのまま置いたタブはプレビューで開き直す(スクロール位置は先頭)。
-# 保存タイミング: タブの開閉/切替と終了時。保存先: ~/.config/konoma/sessions/(ディレクトリ毎に1ファイル)。
-#   true  (既定) … 復元する(前回の続きから始まる)
-#   false        … 常にまっさらな1タブで起動(セッションは読みも書きもしない)
+# Tab-session save/restore. Per launch directory (project), the open tab layout (each tab's root, cursor
+# position, and previewed file) is saved and restored the next time konoma starts in the same directory.
+# A tab left in preview reopens in preview (scroll starts at the top).
+# Save timing: tab open/close/switch and on exit. Saved to ~/.config/konoma/sessions/ (one file per directory).
+#   true  (default) … restore (pick up where you left off).
+#   false           … always start with a single blank tab (the session is neither read nor written).
 restore_tabs = true
 
-# ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
-# (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
+# Default tree sort (at startup). At runtime, switch with the `s` sort menu
+# (key n/s/m/e, r=reverse, .=dirs first).
 [ui.sort]
-key        = "name"    # 並び替えの基準: "name"(既定) | "size" | "modified" | "ext"
-reverse    = false     # 降順にするか (既定 false=昇順)
-dirs_first = true      # ディレクトリを先頭に固める (既定 true)。false=ファイルと混在
+key        = "name"    # sort key: "name" (default) | "size" | "modified" | "ext"
+reverse    = false     # descending? (default false = ascending)
+dirs_first = true      # keep directories at the top (default true). false = mixed with files
 
 [ui.theme]
-# 色は "#rrggbb" / 色名 ("black","lightblue" 等) / 端末インデックス ("8") / "none" で指定。
+# Colors are given as "#rrggbb" / a color name ("black","lightblue", …) / a terminal index ("8") / "none".
 #
-# アプリ全体の背景色。既定 "none" = 端末の既定背景のまま (端末側の透過設定もそのまま活きる)。
-#   色を指定すると全画面をその色で塗りつぶす (透過は無効化される)。
+# The app-wide background color. Default "none" = keep the terminal's default background (the terminal's own
+#   transparency setting stays active too).
+#   Specifying a color fills the whole screen with it (transparency is disabled).
 bg = "none"
 #
-# Markdown の「コード」の背景色 (inline code `...` とコードブロック ``` 共通)。
-#   "none" = 背景なし。inline code の箱を消し、太字/斜体/リンクと同じく前景色だけで表現
-#            (コードブロックは左ガター ▎ ＋色のみ)。見た目を揃えたい場合はこれ。
-# 既定はやや明るいスレート。背景を出したくない場合は code_bg = "none"。
+# Background color for Markdown "code" (shared by inline code `...` and code blocks ```).
+#   "none" = no background. Removes the inline-code box and renders it with the foreground color only, like
+#            bold/italic/links (code blocks keep the left gutter ▎ and color only). Use this for a flat look.
+# The default is a slightly bright slate. Set code_bg = "none" if you do not want a background.
 code_bg = "#2b303b"
-# コードブロック先頭の言語ラベル(バッジ)の寄せ。"right"(既定) または "left"。
+# Alignment of the language label (badge) at the top of a code block. "right" (default) or "left".
 code_label_align = "right"
-# 言語バッジの背景色。
-#   "auto"(既定) = code_bg を少し明るくした色(本文コードと区別)。
-#   "none"       = 背景なし(淡色テキストのみ)。
-#   任意の色     = "#rrggbb" / 色名 等。
+# Background color of the language badge.
+#   "auto" (default) = code_bg slightly brightened (to distinguish it from the code body).
+#   "none"           = no background (dim text only).
+#   any color        = "#rrggbb" / a color name / etc.
 code_label_bg = "auto"
-# コードのシンタックスハイライトのテーマ (two-face 同梱・単体コードと md フェンス共通)。
-# 既定 "TwoDark" = Zed の One Dark 配色。区切り(空白/-/_)と大文字小文字は無視・不明名は TwoDark。
-#   主な選択肢: "TwoDark"(=one-dark) / "OneHalfDark" / "Dracula" / "Nord" /
-#               "gruvbox-dark" / "gruvbox-light" / "Catppuccin Mocha"(Frappe/Latte/Macchiato) /
-#               "Monokai Extended" / "Solarized (dark)" / "Solarized (light)" /
-#               "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon" など。
+# Syntax-highlight theme for code (bundled with two-face; shared by standalone code and md fences).
+# Default "TwoDark" = Zed's One Dark palette. Separators (space/-/_) and case are ignored; unknown names → TwoDark.
+#   Main choices: "TwoDark" (=one-dark) / "OneHalfDark" / "Dracula" / "Nord" /
+#                 "gruvbox-dark" / "gruvbox-light" / "Catppuccin Mocha" (Frappe/Latte/Macchiato) /
+#                 "Monokai Extended" / "Solarized (dark)" / "Solarized (light)" /
+#                 "base16-ocean.dark" / "GitHub" / "zenburn" / "Sublime Snazzy" / "DarkNeon", etc.
 code_theme = "TwoDark"
 
-# プレビュールールは上から評価し、最初にマッチしたものを使う。
-# builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text")
-#   markdown=tui-markdown で装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
-#   mermaid =mermaid-text で .mmd/.mermaid 単体を Unicode 罫線図に描画(純Rust・外部不要)。
-#   image  =kitty graphics で全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
-#   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
-#   video  =ffmpegthumbnailer/ffmpeg で代表フレーム1枚を抽出しサムネイル表示(端末内再生はしない)。
-#          外部ツールは任意(不在ならヒント表示にフォールバック)。再生したい場合は下の command 例参照。
-#   pdf    =ページを1枚ずつラスタライズして画像表示(pdftocairo/pdftoppm/qlmanage/sips)。macOS は qlmanage/sips
-#          が常在するため事実上どの環境でも表示可。外部ツール全滅時のみヒント表示にフォールバック。
-#          複数ページは J/K(または PageDown/PageUp)で送る(poppler 必須=pdfinfo でページ数取得+任意ページ描画)。
-#   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
-#   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
-# command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
-# render_as: command 出力の扱い ("image" でPNG等を全画面画像表示)
-# detached: 別プロセスで開きTUIをブロックしない(動画等)
+# Preview rules are evaluated top to bottom; the first match wins.
+# builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text")
+#   markdown = decorated by tui-markdown (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
+#   mermaid  = a standalone .mmd/.mermaid shown as a diagram. Default is an image (mermaid-rs-renderer → resvg,
+#              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
+#   image    = full-screen display via kitty graphics (zoom/pan). GIFs animate automatically.
+#   svg      = rasterized to an image via resvg/usvg/tiny-skia (pure Rust, no external tools).
+#   video    = a representative frame extracted via ffmpegthumbnailer/ffmpeg, shown as a thumbnail (no in-terminal
+#              playback). The external tools are optional (a hint is shown if absent). To play, see the command example below.
+#   pdf      = each page rasterized to an image (pdftocairo/pdftoppm/qlmanage/sips). macOS always has qlmanage/sips,
+#              so it displays essentially anywhere. Falls back to a hint only if every tool is missing.
+#              Turn pages with J/K (or PageDown/PageUp) (multi-page needs poppler = pdfinfo for the count + per-page render).
+#   csv      = comma-separated shown as an aligned table (rainbow columns + cell cursor). hjkl=move cell / y→=cell/row/column copy.
+#   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
+# command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
+# render_as: how to treat the command's output ("image" shows a PNG etc. as a full-screen image).
+# detached: open in a separate process without blocking the TUI (video, etc.).
 
 [[preview.rules]]
 glob = "*.md"
@@ -223,24 +232,24 @@ builtin = "markdown"
 
 [[preview.rules]]
 glob = "*.{mmd,mermaid}"
-builtin = "mermaid"        # 内蔵(mermaid-text)で罫線描画。崩れる図は下のコマンド委譲に差し替え可
+builtin = "mermaid"        # Default = image rendering ([ui] mermaid). To delegate to an external tool, see the command example below.
 # command = "merman -i {path} -o {out}.png --scale 2"
 # render_as = "image"
 
 [[preview.rules]]
-glob = "*.svg"             # ラスタ画像より先に(infer は svg も image/* と判定するため順序が重要)
+glob = "*.svg"             # Before raster images (infer classifies svg as image/* too, so order matters).
 builtin = "svg"
 
 [[preview.rules]]
-mime = "image/*"           # png/jpg/webp/bmp... と GIF(自動アニメーション)
+mime = "image/*"           # png/jpg/webp/bmp... and GIF (auto-animated).
 builtin = "image"
 
 [[preview.rules]]
-glob = "*.csv"             # 整列テーブル(列レインボー＋セルカーソル)。色は [ui] csv_rainbow で切替
+glob = "*.csv"             # Aligned table (rainbow columns + cell cursor). Color via [ui] csv_rainbow.
 builtin = "csv"
 
 [[preview.rules]]
-glob = "*.tsv"             # タブ区切り版
+glob = "*.tsv"             # Tab-separated variant.
 builtin = "tsv"
 
 [[preview.rules]]
@@ -248,84 +257,85 @@ glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
 builtin = "code"
 
 [[preview.rules]]
-mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
+mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
 builtin = "video"
-# 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
+# To "play" in an external player instead of in the terminal, drop the above and replace with (delegation):
 # command = "mpv {path}"
-# detached = true          # 別プロセスで開き TUI をブロックしない
+# detached = true          # open in a separate process without blocking the TUI.
 
 [[preview.rules]]
-glob = "*.pdf"             # 既定: ページを1枚ずつラスタライズして全画面画像表示(J/K でページ送り・macOS は標準ツールで表示可)
+glob = "*.pdf"             # Default: rasterize each page to a full-screen image (turn pages with J/K; macOS built-in tools suffice).
 builtin = "pdf"
 
-# どのルールにもマッチしないファイルは [can not preview: <ext>] を全画面表示。
+# A file matching no rule shows [can not preview: <ext>] full screen.
 
-# ── キーバインド (FR-8) ──────────────────────────────────────────────────────
-# 【トップレベルのセクション】 — [ui] の中ではなく、ファイルの一番外側に書くこと。
-# (上の ui の keys="vim" とは別物。混同しやすいので注意)
+# ── Keybindings (FR-8) ───────────────────────────────────────────────────────
+# [Top-level sections] — write these at the outermost level of the file, NOT inside [ui].
+# (Distinct from the ui keys="vim" above — easy to confuse.)
 #
-# モデル: 「面(surface) ごとに キー → コマンド(action) を割り当てる」。内蔵の既定マップが
-# あり、ここで上書き/追加/無効化できる(書かなければ既定のまま)。helix 風の表記:
-#   [keys.<面>]
-#   <キー> = "<アクション>"
+# Model: "for each surface, map a key → a command (action)". There is a built-in default map, and here you can
+# override / add / disable (anything not written keeps its default). helix-style notation:
+#   [keys.<surface>]
+#   <key> = "<action>"
 #
-# ■ 面(surface)名 — 「今どの画面か」で別々のマップを持つ。snake_case:
-#   global        : どの面でも効く(タブ t/[/]/1-9・T=タブ一覧・ヘルプ ?)。w は既定未割当
-#                  (vim の単語移動と誤爆するため。閉じるはツリーの q。"w"="tab_close" で復活可)
-#   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
-#   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
-#   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
-#   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
+# ■ Surface names — a separate map per "which screen am I on". snake_case:
+#   global        : effective on any surface (tabs t/[/]/1-9, T=tab list, help ?). w is unbound by default
+#                  (it clashes with vim's word motion; close is the tree's q; restore with "w"="tab_close").
+#   tree          : the full-screen tree      tree_visual   : the tree's visual selection
+#   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff
+#   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
+#   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
 #
-# ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
-#   装飾 "ctrl-f"(別名 "c-f")・名前付き "tab enter esc up down left right home end pageup pagedown"。
-#   和音(リーダー)は空白区切り 2 トークン: "y f" = y の後に f、"space d" = Space の後に d。
-#   ※ Esc/Enter/Backspace/Delete/Tab/矢印・テキスト入力中の文字キーは固定(rebind 不可・無視)。
+# ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / '",
+#   modifiers "ctrl-f" (alias "c-f"), named "tab enter esc up down left right home end pageup pagedown".
+#   A chord (leader) is two space-separated tokens: "y f" = y then f, "space d" = Space then d.
+#   Note: Esc/Enter/Backspace/Delete/Tab/arrows, and character keys during text input, are fixed (cannot rebind).
 #
-# ■ アクション名(snake_case)の主なもの:
-#   移動         : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
-#   パスコピー   : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref"(@相対パス) "copy_code_block"(md コードブロック)
-#   ファイル管理 : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
-#                  "file_duplicate"(Space→D: カーソル/選択をその場に複製＝note copy.md)
-#   ツリー       : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
+# ■ Main action names (snake_case):
+#   Motion       : "navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end"
+#   Copy path    : "copy_name" "copy_relative" "copy_full" "copy_parent" "copy_at_ref" (@relative path) "copy_code_block" (md code block)
+#   File ops     : "file_create" "file_rename" "file_delete" "file_copy" "file_cut" "file_paste"
+#                  "file_duplicate" (Space→D: duplicate the cursor/selection in place = note copy.md)
+#   Tree         : "quit" "tree_descend" "tree_leave" "filter_start" "toggle_hidden" "refresh"
 #                  "open_sort_menu" "toggle_info" "request_edit" "cycle_path_style" "mark_set"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
-#                  "enter_visual" "toggle_select" "open_in_new_tab"(Ctrl-t: カーソル下を別タブで開く)
-#   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
-#                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
-#   パス移動     : "paste_jump"(P・global: クリップボードのパス/GitHub リンクを読んでその位置へ移動＝
-#                  reveal + preview。ローカル絶対/相対・GitHub blob/raw URL・#L123 / :123 行指定に対応。
-#                  現在の root 外なら対象の repo を root に切替。@path#L 参照もそのまま貼れる)
-#   ブックマーク : m=登録・'=一覧はツリーとプレビュー両面に既定割当(プレビュー中は表示中ファイルを登録)。
-#                  一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
-#                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
-#                  ※ j/k/q と global の t/T/F/Q はキー操作に取られるため、その文字のブックマークは
-#                    j/k + Enter で選んで開く(または当該キーを config で退避)。
-#   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
-#                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
-#                  "link_open"(Enter: リンクを同タブで開く) "open_link_new_tab"(Ctrl-t: リンクを別タブで開く)
-#                  "preview_next_file" "preview_prev_file"(Ctrl-n/Ctrl-p: ツリー表示順で次/前の
-#                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
+#                  "enter_visual" "toggle_select" "open_in_new_tab" (Ctrl-t: open the entry under the cursor in a new tab)
+#   Agent Watch  : "toggle_changed_filter" (C: show only changed files) "jump_next_change" (n) "jump_prev_change" (N)
+#                  "toggle_follow" (F, global: auto-jump to externally changed files = follow the AI's work)
+#   Path jump    : "paste_jump" (P, global: read a path/GitHub link from the clipboard and go to it = reveal +
+#                  preview. Handles local absolute/relative paths, GitHub blob/raw URLs, #L123 / :123 line anchors.
+#                  Outside the current root, switches the target's repo to root. @path#L references paste as-is too.)
+#   Bookmarks    : m=register, '=list are bound on both tree and preview by default (in preview, register the shown file).
+#                  Inside the list ('), a bare letter jumps to that bookmark (a-z local / A-Z global).
+#                  "bookmark_edit" (default ctrl-e) "bookmark_delete" (default ctrl-d) "bookmark_close" (q / ')
+#                  Note: j/k/q and global t/T/F/Q are taken by key actions, so a bookmark on those letters is opened
+#                    with j/k + Enter (or move the key elsewhere in the config).
+#   Preview      : "preview_back" "search_start" "search_next" "search_prev"
+#                  "preview_copy_selection_ref" (Y: copy the @path#L reference of the selection/caret)
+#                  "link_open" (Enter: open the link in the same tab) "open_link_new_tab" (Ctrl-t: open the link in a new tab)
+#                  "preview_next_file" "preview_prev_file" (Ctrl-n/Ctrl-p: preview the next/prev file in tree order
+#                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
-#   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
+#   Sort         : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
-#   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
+#   Disable      : "noop" (alias "disabled") = remove that key's default binding.
 #
-# ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。
-#   y     → パスコピー   (n=名前 r=相対 f=フル p=親 @=AI 向け @相対パス参照)
-#   Space → ファイル管理 (n=作成 r=改名 d=削除 c=コピー x=カット p=貼付) ※ツリー / ビジュアル
+# ■ Leaders (two-stage keys / which-key): pressing one shows the candidates in the footer.
+#   y     → copy path      (n=name r=relative f=full p=parent @=AI-oriented @relative-path reference)
+#   Space → file ops       (n=create r=rename d=delete c=copy x=cut p=paste) — tree / visual.
 #
-# ■ 衝突検知: 同じ面で既定の重要キーを奪う設定(リーダー prefix を単発で潰す・global の
-#   タブキーを別用途にする等)は起動時に検知し、フッターに通知して既定へ戻す(黙って壊さない)。
+# ■ Conflict detection: a setting that steals an important default key on a surface (a single key clobbering a
+#   leader prefix, repurposing a global tab key, …) is detected at startup, notified in the footer, and reverted
+#   to the default (it will not silently break things).
 #
-# 例(コメントを外して使う):
+# Example (uncomment to use):
 # [keys.tree]
-# d = "open_git_diff_cursor"   # カーソルの変更ファイル diff (既定)
-# "space d" = "file_delete"    # Space→d で削除 (既定)
-# "y f" = "copy_full"          # y→f でフルパスコピー (既定)
-# x = "noop"                   # x を無効化
+# d = "open_git_diff_cursor"   # diff of the changed file under the cursor (default)
+# "space d" = "file_delete"    # Space→d to delete (default)
+# "y f" = "copy_full"          # y→f to copy the full path (default)
+# x = "noop"                   # disable x
 #
 # [keys.preview_text]
 # "ctrl-f" = "navigate:page_down"
@@ -333,34 +343,35 @@ builtin = "pdf"
 # [keys.git_changes]
 # g = "git_open_graph"
 #
-# (後方互換) 旧 [keys] の copy_name/copy_full/copy_relative/copy_parent (suffix) は当面読み込み、
-# パスコピーの y リーダーへ反映する。**copy_prefix は無視** (新スキームでプレフィクスは y 固定)。
-# いずれも非推奨・新形式 [keys.<面>] を推奨。
+# (Backward compat) The old [keys] copy_name/copy_full/copy_relative/copy_parent (suffix) are still read for now
+# and mapped to the y copy leader. copy_prefix is ignored (the prefix is fixed to y in the new scheme).
+# All are deprecated — prefer the new [keys.<surface>] form.
 
-# 外部エディタ(`e` キーで起動)。**拡張子ごとに指定可能**。
-# 解決順: [editor.ext] の拡張子別 → command(全体既定) → $VISUAL → $EDITOR → vim。
-# 値はコマンド＋引数(空白区切り)。{path} があればそこへファイルパスを差し込み、無ければ末尾に追加。
-# {line} は「プレビューで見ていた行」に置換(text/code/生 Markdown[R] のキャレット行)。
-# {line} を書かなくても主要エディタは自動で行指定になる(vim 系=+N ＋ zt で対象行を画面先頭へスクロール /
-#  VS Code=-g path:N / Sublime・Helix=path:N)。
-# 装飾 Markdown は reflow で 1:1 対応が無いため、画面先頭に見えているテキストをソースから検索してその行で開く
-# (段落構造の文書なら画面に出ている見出し/段落にピタリ着地。厳密行が要るなら `R` で生ソースに)。
-# Tab で画面内のアイテム(リンク/チェックボックス/コードブロック)にフォーカスしていれば、そのアイテムの行で開く。Mermaid・画像は先頭で開く。
-# (注: 引数のクオートは未対応＝空白区切りのみ。複雑な起動はラッパースクリプトを指定。)
+# External editor (launched with the `e` key). Can be specified per extension.
+# Resolution order: [editor.ext] per-extension → command (overall default) → $VISUAL → $EDITOR → vim.
+# The value is a command + args (space-separated). {path} is where the file path is inserted; if absent it is appended.
+# {line} is replaced with "the line you were viewing" (the caret line in text/code/raw Markdown[R]).
+# Even without {line}, major editors get a line automatically (vim family = +N plus zt to scroll the line to the top /
+#  VS Code = -g path:N / Sublime, Helix = path:N).
+# Decorated Markdown has no 1:1 mapping (reflow), so it searches the source for the text visible at the top of the
+# screen and opens at that line (for structured docs it lands right on the visible heading/paragraph; for exact
+# lines, toggle to raw source with `R`).
+# If Tab has focused an on-screen item (link/checkbox/code block), it opens at that item's line. Mermaid and images open at the top.
+# (Note: quoting args is not supported — space-separated only. For complex launches, point at a wrapper script.)
 [editor]
-command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim にフォールバック。
+command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR → vim.
 
-# 拡張子別の割り当て(ドット無しのキー)。
+# Per-extension assignments (keys without the dot).
 [editor.ext]
 # rs  = "nvim"
-# md  = "code -w"            # GUI は終了待ちフラグ(-w/--wait)推奨
-# py  = "nvim +{line} {path}"  # {line} で開く行を明示(無くても vim/code 等は自動)
+# md  = "code -w"            # For GUI editors, a wait flag (-w/--wait) is recommended.
+# py  = "nvim +{line} {path}"  # {line} makes the open line explicit (vim/code etc. do it automatically anyway).
 # txt = "nano"
 
-# ── Git 連携 ───────────────────────────────────────────────────────────────
-# `o` で内蔵 Git ビュー(変更ハブ)を開く。外部 git ツールは変更ハブの中で `!` から起動する。
+# ── Git integration ──────────────────────────────────────────────────────────
+# `o` opens the built-in Git view (changes hub). An external git tool is launched from within the hub with `!`.
 [git]
-tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
-diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
-# main_branch: 【未実装/予約】基準ブランチ固定グラフ(リリース後・docs/GRAPH-BASE-SPEC.md)用。
-#              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
+tool        = "lazygit"   # The external git tool launched with `!` in the hub (command + args, space-separated). e.g. "tig status"
+diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
+# main_branch: [unimplemented / reserved] for the pinned-base-branch graph (post-release, docs/GRAPH-BASE-SPEC.md).
+#              Currently referenced nowhere = has no effect. It will be enabled when implemented.

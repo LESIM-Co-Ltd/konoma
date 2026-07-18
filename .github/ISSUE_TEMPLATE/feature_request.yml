@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        konoma has a deliberately narrow scope: **choose in the tree → preview full-screen**,
+        driven by config-based delegation. Out of scope: Linux/Windows, an in-app text editor
+        (it delegates to your `$EDITOR`), remote filesystems, and a plugin system. Requests
+        within that scope are very welcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The workflow or friction behind the request, not just the proposed feature.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What konoma would do, and how you'd interact with it (keys, config).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing keys/config or other tools you tried first.
+    validations:
+      required: false

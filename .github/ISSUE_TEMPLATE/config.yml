@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://lesim-co-ltd.github.io/konoma/
+    about: Guides, the configuration reference, and the keymap.
+  - name: Security report
+    url: https://github.com/LESIM-Co-Ltd/konoma/security/advisories/new
+    about: Report a vulnerability privately (do not open a public issue).

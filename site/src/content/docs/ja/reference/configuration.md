@@ -13,9 +13,11 @@ konoma は 1 つの TOML ファイルを読みます:
 
 すべて任意です — **設定ファイルが無くても動きます**。ファイルが無い/壊れていても
 起動は失敗せず、以下の既定値へフォールバックします(不正な値はキー単位で既定へ)。
-全キーに日本語コメント付きの実例が
+全キーにコメント付きの実例が
 [`config.example.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.toml)
-にあります。出発点としてコピーしてください:
+にあります(英語)。日本語コメント版は
+[`config.example.ja.toml`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/config.example.ja.toml)
+です。出発点としてコピーしてください:
 
 ```sh
 mkdir -p ~/.config/konoma
@@ -110,7 +112,7 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 | 名前 | 描画するもの |
 |---|---|
 | `markdown` | 装飾 Markdown(見出し・表・リンク・チェックボックス・インライン画像・```` ```mermaid ```` フェンスは図に)。 |
-| `mermaid` | 単体 `.mmd`/`.mermaid` を Unicode 罫線図に(純 Rust・外部ツール不要)。 |
+| `mermaid` | 単体 `.mmd`/`.mermaid` を図として表示。既定は実画像(純 Rust・全画面ズーム/パン)。`[ui] mermaid = "text"` で Unicode 罫線図に切替。 |
 | `image` | kitty graphics で全画面表示(ズーム/パン・GIF は自動アニメ)。 |
 | `svg` | プロセス内でラスタライズ(resvg・純 Rust)して画像表示。 |
 | `video` | `ffmpegthumbnailer`/`ffmpeg` で代表フレーム表示(任意ツール・無ければヒント)。再生したい場合は `command` で `mpv` へ。 |

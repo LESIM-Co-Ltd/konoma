@@ -34,6 +34,11 @@ cargo test --no-default-features
 - External tools (poppler, ffmpeg, git, …) must stay optional: the app should run and
   degrade gracefully when they are absent.
 
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating,
+you are expected to uphold it. To report a security issue, see [SECURITY.md](SECURITY.md).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the MIT license.

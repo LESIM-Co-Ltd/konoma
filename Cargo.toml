@@ -25,6 +25,7 @@ exclude = [
     "/about.toml",
     "/about.hbs",
     "/assets",
+    "/config.example.ja.toml",
 ]
 
 # cargo-binstall: fetch the prebuilt binary from the GitHub Release instead of

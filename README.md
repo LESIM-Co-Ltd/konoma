@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/LESIM-Co-Ltd/konoma/blob/main/LICENSE)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/hero-image.png" alt="konoma — full-screen image preview" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/demo.gif" alt="konoma tour — tree, full-screen image preview, Markdown, code with a git gutter, and the git graph" width="860">
 </p>
 
 Pick something in the tree, and preview it **full-screen**. konoma is a terminal
@@ -141,8 +141,9 @@ konoma never breaks when an external tool is missing — the relevant preview ju
 - **[CONFIGURATION.md](CONFIGURATION.md)** — full reference: every `[ui]` option,
   colors/themes, preview rules (built-in renderers & external-command delegation),
   external editor, git integration, and the complete keybinding model.
-- [`config.example.toml`](config.example.toml) — a fully commented example config
-  (Japanese inline comments); copy it as a starting point.
+- [`config.example.toml`](config.example.toml) — a fully commented example config;
+  copy it as a starting point. A Japanese-annotated copy is at
+  [`config.example.ja.toml`](config.example.ja.toml).
 
 ## License
 
