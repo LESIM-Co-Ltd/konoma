@@ -38,9 +38,49 @@ jobs:
       - name: Test (no default features)
         run: cargo test --no-default-features
 
-  # Verify konoma compiles and links on Linux and Windows in addition to macOS.
-  # This only checks buildability (not runtime behaviour): the image / PDF / video
-  # previews need a kitty-graphics-capable terminal, which is out of scope here.
+  # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
+  # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
+  # one live-OS-trash test is macOS-gated (freedesktop trash is environment-dependent on Linux).
+  check-linux:
+    name: clippy / test (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-check
+
+      # System libraries for the C-backed dependencies (libgit2 / arboard / trash).
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config cmake \
+            libssl-dev libssh2-1-dev zlib1g-dev \
+            libdbus-1-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: Test (default features)
+        run: cargo test
+
+      - name: Test (no default features)
+        run: cargo test --no-default-features
+
+  # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
+  # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma
+  # uses Unix-only std APIs (PermissionsExt::mode, std::os::unix::fs::symlink, OsStrExt::from_bytes)
+  # and Windows terminals do not implement the kitty graphics protocol the previews depend on.
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -48,13 +88,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: aarch64-apple-darwin }
           - { os: macos-14, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          # Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma uses
-          # Unix-only std APIs (PermissionsExt::mode, std::os::unix::fs::symlink,
-          # OsStrExt::from_bytes) and Windows terminals do not implement the kitty
-          # graphics protocol the previews depend on.
     steps:
       - uses: actions/checkout@v4
 
@@ -65,20 +99,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-
-      # Linux system libraries for the C-backed dependencies:
-      #   - libgit2 (git2): OpenSSL + libssh2 + zlib + pkg-config (+ cmake to be safe)
-      #   - arboard (clipboard): libxcb
-      #   - trash: libdbus
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config cmake \
-            libssl-dev libssh2-1-dev zlib1g-dev \
-            libdbus-1-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
       - name: Build (default features = git)
         run: cargo build --locked --target ${{ matrix.target }}

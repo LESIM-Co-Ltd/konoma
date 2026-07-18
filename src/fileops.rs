@@ -907,6 +907,10 @@ mod tests {
     }
 
     #[test]
+    // The real OS trash is environment-dependent on Linux (XDG dirs, cross-filesystem rules), so a
+    // headless CI runner can't reliably exercise it. macOS (the primary target) always can. On Linux
+    // the freedesktop path is used at runtime; only this live test is gated.
+    #[cfg(target_os = "macos")]
     fn move_to_trash_removes_from_original_then_cleanup() {
         // 元の場所から消えることを確認し、ゴミ箱側の痕跡はベストエフォートで掃除する。
         let dir = std::env::temp_dir().join("konoma_trash_live_test");

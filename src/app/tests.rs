@@ -1,6 +1,16 @@
 use super::*;
 use crate::config::Config;
 
+/// A unique temp directory per call (pid + a process-global counter). Tests that share a setup
+/// helper (e.g. `app_with_table`) must not reuse one fixed path, or parallel runs collide and
+/// flake — especially on a busy CI runner.
+fn unique_tmp(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
+}
+
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
     match &it.kind {
@@ -5998,7 +6008,7 @@ fn git_gutter_prepends_marker_only_when_changed() {
 
 /// Open a CSV as a table preview and set the cell cursor. 3 cols × 2 data rows.
 fn app_with_table() -> (App, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join("konoma_table_app_test");
+    let dir = unique_tmp("konoma_table_app_test");
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("t.csv");
     std::fs::write(&csv, "h1,h2,h3\na,b,c\nd,e,f\n").unwrap();
