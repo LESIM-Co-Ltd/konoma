@@ -18,8 +18,9 @@ tarball を直接ダウンロードできます。
 **動作要件**
 
 - 主対象は macOS (Apple Silicon)。Intel macOS も動作し、Linux x86_64 は
-  CI で全テストが通り(clippy + test 両 feature)プレビルドも配布 —
-  ただし実機ランタイム未検証のため beta 扱いです。Windows は非対応です。
+  CI で全テストが通り(clippy + test 両 feature)プレビルドも配布し、画像・PDF・
+  Markdown のプレビューが kitty graphics で描画されることを検証済み — macOS より
+  新しいため beta 扱いです。Windows は非対応です。
 - 画像 / SVG / 動画サムネイル / PDF のプレビューには **kitty graphics
   プロトコル**対応端末([Ghostty](https://ghostty.org) か kitty)が必要です。
   テキスト系プレビューはどの端末でも動きます。

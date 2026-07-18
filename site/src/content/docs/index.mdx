@@ -88,9 +88,10 @@ cargo install konoma        # build from source
 ```
 
 macOS on Apple Silicon is the primary target. Intel macOS and Linux x86_64 also
-build, pass the full test suite in CI, and ship prebuilt binaries (Linux is beta —
-runtime not yet verified on a real Linux desktop). For image previews you need a
-terminal that speaks the kitty graphics protocol, such as [Ghostty](https://ghostty.org). Then:
+build, pass the full test suite in CI, and ship prebuilt binaries; on Linux the image,
+PDF, and Markdown previews are verified to render via kitty graphics (still beta —
+newer than the macOS path). For image previews you need a terminal that speaks the
+kitty graphics protocol, such as [Ghostty](https://ghostty.org). Then:
 
 ```sh
 konoma [DIR]

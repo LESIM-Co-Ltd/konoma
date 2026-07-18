@@ -82,10 +82,12 @@ Pre-release (feature-complete). The milestones below track what is implemented.
 
 ## Requirements
 
-- **macOS on Apple Silicon** is the primary, fully verified target. macOS on Intel (`x86_64`) has prebuilt
-  binaries too. **Linux (`x86_64`)** builds and passes the full clippy + test suite in CI on every push and
-  ships prebuilt binaries — but its runtime (the kitty-graphics previews, clipboard, and trash) has not yet
-  been verified on a real Linux desktop, so treat it as **beta**. Windows is not supported.
+- **macOS on Apple Silicon** is the primary, most battle-tested target. macOS on Intel (`x86_64`) has
+  prebuilt binaries too. **Linux (`x86_64`)** builds and passes the full clippy + test suite in CI on every
+  push, ships prebuilt binaries, and its previews — images, PDF, and Markdown — are verified to render via
+  the kitty graphics protocol on Linux. It is newer than the macOS path (clipboard and trash use the
+  standard freedesktop mechanisms but have had less real-world use), so still consider it **beta**. Windows
+  is not supported.
 - A terminal that supports the **kitty graphics protocol** (e.g. [Ghostty](https://ghostty.org), which runs
   on macOS and Linux) for image, SVG, video-thumbnail, and PDF previews. Without it, text-based previews still work.
 
