@@ -88,6 +88,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
+        .row("+ / - / 0", l(crate::i18n::Msg::MermaidZoomHelp))
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
         .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
         .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
@@ -445,41 +446,27 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     if placements.is_empty() {
         return;
     }
-    // 描画位置+フォーカス状態の署名(変化検知用)。位置(スクロール/レイアウト)だけでなく
-    // **フォーカス/ズームの変化でも**フル再描画を発火させる: Ghostty ではフォーカス枠の描画
-    // フレームで隣接する placeholder 行の合成が乱れ、ID 色のバーが露出する事例があるため、
-    // 状態が変わるまさにそのフレームで端末グリッドを作り直す(乱れても即修復される)。
-    {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (
-            inner.x,
-            inner.y,
-            inner.width,
-            inner.height,
-            app.preview_scroll,
-        )
-            .hash(&mut h);
-        app.focused_mermaid_ordinal().hash(&mut h);
-        ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut h);
-        for p in &placements {
-            let vis = app.md_visual_span(p.line).0;
-            (p.url.as_str(), vis, p.cols, p.rows).hash(&mut h);
-        }
-        let sig = h.finish();
-        app.note_md_overlay(sig);
-    }
+    // 描画位置+フォーカス状態の署名(変化検知用)。**このフレームで実際に描いた**画像の画面上
+    // rect だけをハッシュする: 全画像が画面外の間は署名を記録しない=テキスト部分のスクロール
+    // 毎キーにフル再描画(placeholder 残骸掃除)を発火させない。掃除が要るのは placeholder が
+    // グリッドに実在した/するフレームだけ(出現・移動・退場)。位置だけでなく**フォーカス/
+    // ズームの変化でも**発火させる: Ghostty ではフォーカス枠の描画フレームで隣接 placeholder
+    // 行の合成が乱れることがあり、状態が変わるそのフレームでグリッドを作り直す(即修復)。
+    use std::hash::{Hash, Hasher};
+    let mut sig = std::collections::hash_map::DefaultHasher::new();
+    (inner.x, inner.y, inner.width, inner.height).hash(&mut sig);
     let focused_mermaid = app.focused_mermaid_ordinal();
-    let mut mermaid_ord = 0usize;
+    focused_mermaid.hash(&mut sig);
+    ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut sig);
+    let mut drawn = 0usize;
     let scroll = app.preview_scroll as i32;
     let top_bound = inner.y as i32;
     let bottom_bound = (inner.y + inner.height) as i32;
     for p in placements {
         let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&p.url);
-        let this_focused = is_mermaid && focused_mermaid == Some(mermaid_ord);
-        if is_mermaid {
-            mermaid_ord += 1;
-        }
+        // フォーカス照合は placement が運ぶ**ソース序数**(fence_ord)で行う。描画順の計数だと
+        // 上流に loading/テキスト降格のフェンスがある時 focused_mermaid_ordinal とずれる。
+        let this_focused = is_mermaid && p.fence_ord.is_some() && focused_mermaid == p.fence_ord;
         // p.line は装飾行(論理)の index、preview_scroll は折返し後の visual 行。wrap 時に
         // 上流の折返し分だけ画像が上へズレる(＝反転キャプション行に megacell が重なり
         // placeholder 行が ID 色のバーになる)ので、必ず visual 行へ変換してから引く。
@@ -504,6 +491,16 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             width: cols,
             height: vis_rows,
         };
+        // ここまで来た=このフレームで実際に描く画像。署名に画面上 rect を刻む。
+        (
+            p.url.as_str(),
+            target.x,
+            target.y,
+            target.width,
+            target.height,
+        )
+            .hash(&mut sig);
+        drawn += 1;
         // kitty の placeholder 行は「クリーンな SGR 状態で印字される」前提(megacell は fg=ID を
         // 埋め込むだけで reverse/dim を解除しない)。下層テキストのスタイルをセルが継承すると
         // 反転で背景=ID 色のバーが露出するため、画像領域のセルの**属性と fg** を必ず素に戻す。
@@ -534,10 +531,19 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
                                                 // 枠幅=画像幅とタイトル幅の広い方(+角)。テキスト層のキャプション(中央寄せ)を
                                                 // 完全に覆う=タイトルが枠からはみ出したり、下の文字が枠の右に漏れたりしない。
             let z = app.fence_zoom_level();
+            let lang = app.lang;
+            // 枠タイトルはテキスト層のキャプションを覆う(はみ出し防止)。affordance も i18n。
             let title = if z > 1.001 {
-                format!(" ◇ mermaid  x{z:.1} — hjkl:pan  0:fit ")
+                format!(
+                    " ◇ mermaid  x{z:.1} — {} ",
+                    tr(lang, crate::i18n::Msg::MermaidPanAffordance)
+                )
             } else {
-                " ◇ mermaid — Enter: full screen  +/-: zoom ".to_string()
+                format!(
+                    " ◇ mermaid — {}  {} ",
+                    tr(lang, crate::i18n::Msg::MermaidCaption),
+                    tr(lang, crate::i18n::Msg::MermaidZoomAffordance)
+                )
             };
             let tw = Span::from(title.as_str()).width() as u16 + 2;
             let bw = (cols + 2).max(tw).min(inner.width);
@@ -579,6 +585,11 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         if let Some(proto) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
             frame.render_widget(Image::new(proto), target);
         }
+    }
+    // 1 枚も描いていないフレームは記録しない(None)= 直前まで描いていた場合のみ「退場」として
+    // finish 側が 1 回だけ掃除を発火し、以後の画面外スクロールでは発火しない。
+    if drawn > 0 {
+        app.note_md_overlay(sig.finish());
     }
 }
 

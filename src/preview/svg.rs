@@ -77,9 +77,12 @@ pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicI
     if !(w0 > 0.0 && h0 > 0.0) {
         return None;
     }
-    // 小さい SVG は端末でくっきり出るよう最大辺を max_px まで拡大(縮小はしない)。
+    // 小さい SVG は端末でくっきり出るよう最大辺を max_px まで拡大する。自然サイズが HARD_MAX を
+    // 超える巨大図は**縮小して全体を収める**(等倍のまま per-axis clamp すると変換は等倍・pixmap
+    // だけ 4096px になり、右/下が無通知で切り落とされていた)。
     let target = (max_px.max(1) as f32).min(HARD_MAX_PX as f32);
-    let scale = (target / w0.max(h0)).max(1.0);
+    let m = w0.max(h0);
+    let scale = (target / m).max(1.0).min(HARD_MAX_PX as f32 / m);
     let pw = ((w0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
     let ph = ((h0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
 
@@ -122,6 +125,23 @@ mod tests {
             px[0] > 200 && px[1] < 60 && px[2] < 60,
             "fill should be red"
         );
+    }
+
+    #[test]
+    fn oversize_svg_shrinks_to_fit_instead_of_cropping() {
+        // 自然サイズ 8000x100(HARD_MAX=4096 超)。回帰 2026-07-18: scale が拡大専用
+        // (max(..,1.0) のみ)だったため等倍のまま 4096px の pixmap に描かれ、x>4096 の内容
+        // (この右端の青矩形)が無通知で切り落とされていた。縮小フィットで全体が収まること。
+        let wide: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8000" height="100"><rect width="8000" height="100" fill="#f00"/><rect x="7900" width="100" height="100" fill="#00f"/></svg>"##;
+        let img = rasterize_bytes(wide, Path::new("t.svg"), 800).expect("should rasterize");
+        assert!(img.width() <= HARD_MAX_PX, "最大辺は HARD_MAX 以下");
+        // アスペクト維持でおおよそ 4096x51。
+        assert!(img.width() >= 4000, "縮小フィット(切り落としでなく)");
+        let p = img.to_rgba8();
+        // 右端付近に青矩形が生きている=右側が欠落していない。
+        let px = p.get_pixel(img.width() - 5, img.height() / 2);
+        assert_eq!(px[3], 255, "右端まで描画されている");
+        assert!(px[2] > 200 && px[0] < 60, "右端の青矩形が残る: {px:?}");
     }
 
     #[test]

@@ -361,6 +361,14 @@ struct TabState {
     preview_cursor_col: usize,
     // Markdown/Mermaid の raw ソース表示(`R`)状態もタブごとに保持する。
     md_raw: bool,
+    // Markdown プレビューの Tab フォーカスと、インライン図のその場ズーム/全画面復帰情報も
+    // タブごとに保持する。タブ非依存のままだと、両タブが md プレビュー中の切替(enter_preview を
+    // 経ない唯一の経路)で前タブのフォーカス/ズームが別文書へ漏れ、hjkl が見えない図のパンに
+    // 化ける(image_zoom が TabState 保存されるのと同じ扱いに揃える)。
+    focused_item: Option<usize>,
+    fence_zoom: f64,
+    fence_center: (f64, f64),
+    fence_return: Option<(u16, Option<usize>)>,
     // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
     git_view: bool,
     git_view_sel: usize,
@@ -381,6 +389,16 @@ struct TabState {
     git_branch_filtering: bool,
     git_graph: Option<Vec<crate::git::GraphRow>>,
     git_graph_sel: usize,
+    // グラフ本体(git_graph)を保存する以上、それを装飾する派生状態(基準ピン・凡例・表示ブランチ・
+    // 優先順)も同じタブに保存しないと、別タブで基準/表示を変えて戻ったとき凡例や `base:` タイトルが
+    // 他タブのまま残る(load_active はグラフを再構築しない)。git_detail_meta/title を git_detail と
+    // 一緒に保存するのと同じ扱い。ピッカー(モーダル)の一時状態は保存せず復元時にリセットする。
+    git_graph_base: Option<String>,
+    git_graph_base_label: Option<String>,
+    git_graph_visible: std::collections::HashSet<String>,
+    git_graph_legend: Vec<crate::git::LegendEntry>,
+    git_graph_hidden: usize,
+    git_graph_order: Vec<String>,
     // --- タブ毎の選択 / 絞り込み / プレビュー検索 (#2/#6: タブ跨ぎのデータ損失 footgun 対策) ---
     // これらが TabState に無いと、タブAで選択 → 別タブ/別 dir で D/X/Y/P したとき、
     // 見えていない旧選択のファイルが操作対象になる(マーカー不可視で気付けない)。
@@ -658,6 +676,10 @@ pub struct App {
     /// `image_layout` sizes/zooms against this identity, so swapping in a sharper raster changes only
     /// pixel density, never the on-screen geometry (HiDPI-style backing store).
     image_logical: Option<(u32, u32)>,
+    /// A full-screen sharp-zoom re-raster is in flight (at most one — key-repeat `+` must not spawn
+    /// the same job a dozen times; the inline-fence analog is `MdImgEntry::reraster_inflight`).
+    /// Cleared when a media result arrives (`apply_media`) and by `clear_image` (generation bump).
+    vector_reraster_inflight: bool,
     /// Where to return when closing a full-screen mermaid-fence view (`q`): the Markdown preview's
     /// scroll offset and Tab-focus index at the moment the fence was opened.
     fence_return: Option<(u16, Option<usize>)>,
@@ -1063,7 +1085,10 @@ pub struct MdEncodeRequest {
 pub struct MdEncodeResult {
     path: PathBuf,
     key: MdEncodeKey,
-    protocol: Protocol,
+    /// None = the encode failed. The worker **always** sends a result: swallowing failures left
+    /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
+    /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
+    protocol: Option<Protocol>,
 }
 
 /// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
@@ -1075,31 +1100,38 @@ pub fn md_encode_worker(
     tx: std::sync::mpsc::Sender<MdEncodeResult>,
 ) {
     while let Ok(req) = rx.recv() {
-        let img = match req.crop {
-            Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
-            None => (*req.image).clone(),
-        };
-        let size = ratatui::layout::Size::new(req.cols, req.rows);
-        // フェンス図(ベクタ由来)は予約グリッドまで**拡大も**する(Scale): ラスタが小さくても
-        // 左上詰めの余白バンドを作らず領域を満たす=シャープさは密度追従の再ラスタが担う。
-        // 写真は従来どおり Fit(自然サイズ超に拡大しない=ぼやけさせない)。
-        let resize = if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy())
+        let (path, key) = (req.path.clone(), req.key);
+        let picker = &picker; // 借用: move クロージャがループ跨ぎで picker を消費しないように
+                              // リクエスト処理全体を panic 捕捉で包む: 1件の new_protocol/crop が panic しても
+                              // ワーカースレッドを殺さない(殺すと以後の全エンコードが止まり enc_inflight が恒久 latch)。
+        let protocol = crate::preview::markdown::catch_silent(move || {
+            let img = match req.crop {
+                Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
+                None => (*req.image).clone(),
+            };
+            let size = ratatui::layout::Size::new(req.cols, req.rows);
+            // フェンス図(ベクタ由来)は予約グリッドまで**拡大も**する(Scale): ラスタが小さくても
+            // 左上詰めの余白バンドを作らず領域を満たす=シャープさは密度追従の再ラスタが担う。
+            // 写真は従来どおり Fit(自然サイズ超に拡大しない=ぼやけさせない)。
+            let resize =
+                if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy()) {
+                    Resize::Scale(Some(FilterType::Lanczos3))
+                } else {
+                    Resize::Fit(Some(FilterType::Lanczos3))
+                };
+            // 失敗(Err)でも必ず結果を送り返す: 握り潰すと enc_inflight が立ちっぱなしになる。
+            picker.new_protocol(img, size, resize).ok()
+        })
+        .flatten();
+        if tx
+            .send(MdEncodeResult {
+                path,
+                key,
+                protocol,
+            })
+            .is_err()
         {
-            Resize::Scale(Some(FilterType::Lanczos3))
-        } else {
-            Resize::Fit(Some(FilterType::Lanczos3))
-        };
-        if let Ok(protocol) = picker.new_protocol(img, size, resize) {
-            if tx
-                .send(MdEncodeResult {
-                    path: req.path,
-                    key: req.key,
-                    protocol,
-                })
-                .is_err()
-            {
-                break;
-            }
+            break;
         }
     }
 }
@@ -1205,6 +1237,7 @@ impl App {
             image_vis_frac: (1.0, 1.0),
             vector_svg: None,
             image_logical: None,
+            vector_reraster_inflight: false,
             fence_return: None,
             fence_zoom: 1.0,
             fence_center: (0.5, 0.5),
@@ -2615,6 +2648,11 @@ impl App {
     }
 
     fn enter_preview(&mut self, path: &Path) {
+        // 同一ファイルへの再入(全画面フェンスからの `q` 復帰)か。この場合はインライン画像
+        // キャッシュを温存する: キーはフェンス=内容ハッシュ/画像=パスなので stale にならず、
+        // 捨てると全フェンスが Loading からやり直し=縮退レイアウトの 1 描画で復元スクロール/
+        // フォーカスがクランプされ「元の位置に戻る」約束が破れていた。
+        let same_file = self.preview_path.as_deref() == Some(path);
         self.preview_path = Some(path.to_path_buf());
         // 設定駆動でプレビュー種別を解決。未対応は CanNotPreview。
         let kind = self.cfg.resolve_preview(path);
@@ -2636,7 +2674,9 @@ impl App {
         self.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
         self.md_items.clear();
-        self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
+        if !same_file {
+            self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
+        }
         self.focused_item = None;
         self.preview_search = None;
         self.search_input = None;
@@ -2927,18 +2967,10 @@ impl App {
     /// The mtime guard avoids re-decoding / re-running external tools (pdftocairo/ffmpeg) on unrelated FS
     /// events. Zoom / pan / page are preserved across the reload.
     fn reload_media_if_changed(&mut self) {
-        let is_media = matches!(
-            self.preview_kind,
-            Some(
-                PreviewKind::Image(_)
-                    | PreviewKind::Svg(_)
-                    | PreviewKind::Video(_)
-                    | PreviewKind::Pdf(_)
-            )
-        ) || (matches!(
-            self.preview_kind,
-            Some(PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
-        ) && self.mermaid_image_mode());
+        let is_media = match &self.preview_kind {
+            Some(kind) => self.kind_loads_media(kind),
+            None => false,
+        };
         if !is_media {
             return;
         }
@@ -3279,6 +3311,20 @@ impl App {
         self.preview_visual_linewise = false;
     }
 
+    /// Whether this preview kind displays through the media (image) pipeline — and therefore needs
+    /// a `start_media_load` whenever its display state was dropped (tab restore / fs reload).
+    /// Mermaid kinds count only in image mode; in text mode they draw via the decorated path.
+    fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
+        matches!(
+            kind,
+            PreviewKind::Image(_)
+                | PreviewKind::Svg(_)
+                | PreviewKind::Video(_)
+                | PreviewKind::Pdf(_)
+        ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
+            && self.mermaid_image_mode())
+    }
+
     /// Release and reset the image display state (protocol, source image, zoom/pan).
     fn clear_image(&mut self) {
         self.image = None;
@@ -3299,6 +3345,11 @@ impl App {
         // 世代を進めて、別ファイルの読み込み中に届く前ファイルのメディア結果を陳腐化させる。
         self.media_gen = self.media_gen.wrapping_add(1);
         self.media_loading = false;
+        self.vector_reraster_inflight = false;
+        // 画像状態を捨てたら mtime の主張も捨てる(不変条件)。残すと「表示は無いのに mtime は
+        // 最新」の地雷になり、reload_media_if_changed が未変更と誤判定して再ロードを塞ぐ
+        // (タブ復帰で mermaid がテキスト図に劣化していた真因の一つ)。
+        self.preview_media_mtime = None;
     }
 
     /// Build (or reuse) the decorated cache for a Markdown/Mermaid/code preview at display width
@@ -3330,8 +3381,24 @@ impl App {
         // Synchronous completions (no loader tx = tests) land *before* we store the cache below,
         // so the just-built decoration is already stale — rebuild once with the results in.
         let mut resync = false;
-        for code in fences {
-            resync |= self.ensure_mermaid_fence_render(code);
+        for code in &fences {
+            if code.trim().is_empty() {
+                continue; // 空フェンス(書きかけ)は図にならない=レンダを起動しない
+            }
+            resync |= self.ensure_mermaid_fence_render(code.clone());
+        }
+        // 現在の文書に**もう存在しない**フェンスキーを回収する。キーは内容ハッシュなので、外部
+        // 編集(agent-watch の反復編集)でフェンスが変わるたび新キーが生まれ、旧キーの decoded
+        // ラスタ/protocol/SVG は誰も参照しないままファイル切替まで単調成長していた。
+        {
+            let live: std::collections::HashSet<PathBuf> = fences
+                .iter()
+                .map(|c| PathBuf::from(crate::preview::markdown::mermaid_fence_url(c)))
+                .collect();
+            self.md_image_cache.retain(|k, _| {
+                !crate::preview::markdown::is_mermaid_fence_url(&k.to_string_lossy())
+                    || live.contains(k)
+            });
         }
         let (raw, images, remote, src_lines) = if resync {
             let (raw, images, remote, _fences, src_lines) = self.build_decorated(&path, width);
@@ -3341,7 +3408,9 @@ impl App {
         };
         let _ = &remote;
         let (lines, targets) = collapse_links(raw, self.cfg.ui.icons);
-        let items = build_md_items(&lines, &targets);
+        // 描画済み mermaid placement のソース序数(文書順)を番兵の照合用に渡す。
+        let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
+        let items = build_md_items(&lines, &targets, &fence_ords);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let row_prefix = if self.cfg.ui.wrap && width > 0 {
             use ratatui::text::Text;
@@ -3593,6 +3662,7 @@ impl App {
                     &self.cfg.ui.md_task_state_chars(),
                     &slot_of,
                     &mermaid_slot,
+                    tr(self.lang, crate::i18n::Msg::MermaidCaption),
                 );
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
@@ -3648,6 +3718,13 @@ impl App {
 
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
+        // エントリはキック時(ensure_mermaid_fence_render / ensure_md_image)に必ず先置きされる。
+        // 無い=陳腐化した結果(ファイル切替でキャッシュ破棄済み/prune 済み)なので、復活させずに
+        // 捨てる(or_default だと旧図のラスタが再挿入されて次の enter_preview まで残留し、しかも
+        // 下の md_cache 無効化が**無関係な現文書**を 1 回無駄に全再構築していた)。
+        if !self.md_image_cache.contains_key(&res.path) {
+            return false;
+        }
         // フェンス図(合成キー)は寸法がここで初めて決まる=ローディング行→実配置に組み直すため
         // 装飾キャッシュを無効化する(remote 画像の apply_remote_fetch と同じ流儀)。
         // **シャープ化の再ラスタは除く**: ピクセル密度の差し替えだけで、レイアウト(予約セル数)は
@@ -3789,8 +3866,16 @@ impl App {
             FenceSharpen::Spawned
         } else {
             let res = job();
+            // 失敗は AppliedSync を名乗らない: 呼び元(ensure_md_fence_zoom)は AppliedSync で
+            // 「新しいラスタでやり直す」再帰をするため、失敗が続くと堂々巡りになる。成功時の
+            // 再帰は 1 回で必ず収束する(次パスは needed<=cur か 4096 上限で NotNeeded)。
+            let ok = res.image.is_ok();
             self.apply_md_image(res);
-            FenceSharpen::AppliedSync
+            if ok {
+                FenceSharpen::AppliedSync
+            } else {
+                FenceSharpen::NotNeeded
+            }
         }
     }
 
@@ -3860,7 +3945,10 @@ impl App {
         };
         if let Some(tx) = self.md_img_tx.clone() {
             std::thread::spawn(move || {
-                let (image, svg) = render();
+                // render()(rasterize_bytes=resvg)が panic してもスレッドを殺さず必ず結果を返す:
+                // 返さないとエントリが decoded=None && !failed のまま固着し busy が恒久 true になる。
+                let (image, svg) = crate::preview::markdown::catch_silent(render)
+                    .unwrap_or_else(|| (Err("mermaid render panicked".to_string()), None));
                 let _ = tx.send(MdImageResult {
                     path: key,
                     image,
@@ -3882,29 +3970,52 @@ impl App {
     }
 
     /// Apply a completed background encode: store the protocol in its full or clip slot. Returns redraw.
+    /// A failed encode (`protocol: None`) records the attempted key **without** touching the stored
+    /// protocols — the last good state stays visible and the same request is not retried every frame.
+    /// Only when nothing was ever encodable (no full protocol at all) does the entry degrade to the
+    /// text fallback (principle #3).
     pub fn apply_md_encode(&mut self, res: MdEncodeResult) -> bool {
         let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
             return false;
         };
         entry.enc_inflight = false;
-        match res.key {
-            MdEncodeKey::Full { cols, rows } => {
-                entry.protocol = Some(res.protocol);
+        let mut degrade = false;
+        match (res.key, res.protocol) {
+            (MdEncodeKey::Full { cols, rows }, Some(p)) => {
+                entry.protocol = Some(p);
                 entry.proto_size = Some((cols, rows));
             }
-            MdEncodeKey::Clip {
-                cols,
-                full_rows,
-                row_off,
-                vis_rows,
-            } => {
-                entry.clip_protocol = Some(res.protocol);
+            (MdEncodeKey::Full { cols, rows }, None) => {
+                entry.proto_size = Some((cols, rows));
+                if entry.protocol.is_none() {
+                    entry.failed = true;
+                    degrade = true;
+                }
+            }
+            (
+                MdEncodeKey::Clip {
+                    cols,
+                    full_rows,
+                    row_off,
+                    vis_rows,
+                },
+                p,
+            ) => {
+                if let Some(p) = p {
+                    entry.clip_protocol = Some(p);
+                }
                 entry.clip_key = Some((cols, full_rows, row_off, vis_rows));
             }
-            MdEncodeKey::Zoom { cols, rows, crop } => {
-                entry.zoom_protocol = Some(res.protocol);
+            (MdEncodeKey::Zoom { cols, rows, crop }, p) => {
+                if let Some(p) = p {
+                    entry.zoom_protocol = Some(p);
+                }
                 entry.zoom_key = Some((cols, rows, crop));
             }
+        }
+        if degrade {
+            // 新規に failed へ降格した画像はテキスト行へ再レイアウト(見えない空白のまま残さない)。
+            self.md_cache = None;
         }
         true
     }
@@ -3947,7 +4058,10 @@ impl App {
         self.md_remote_inflight.insert(url.to_string());
         let u = url.to_string();
         std::thread::spawn(move || {
-            let ok = fetch_remote_image(&u, &dest);
+            // ダウンロードが panic しても md_remote_inflight を残さない(残すと busy 固着):
+            // panic は取得失敗(ok=false)として必ず報告する。
+            let ok = crate::preview::markdown::catch_silent(|| fetch_remote_image(&u, &dest))
+                .unwrap_or(false);
             let _ = tx.send(RemoteFetch { url: u, ok });
         });
     }
@@ -3993,8 +4107,11 @@ impl App {
                 let svg_max_px = self.cfg.ui.svg_max_px;
                 std::thread::spawn(move || {
                     // Sniff the format from content (remote-cache files have no extension); rasterize SVG.
+                    // panic(病的画像/SVG)も捕捉して必ず結果を返す(返さないと busy 固着)。
                     let image =
-                        md_decode_image(&p, svg_max_px).ok_or_else(|| "decode failed".to_string());
+                        crate::preview::markdown::catch_silent(|| md_decode_image(&p, svg_max_px))
+                            .flatten()
+                            .ok_or_else(|| "decode failed".to_string());
                     let _ = tx.send(MdImageResult {
                         path: p,
                         image,
@@ -4090,7 +4207,9 @@ impl App {
                 return entry.protocol.as_ref();
             }
         } else if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
-            return entry.clip_protocol.as_ref();
+            // クリップのエンコードに失敗していた場合(clip_protocol 無しでキーだけ記録)は
+            // 全体 protocol へ降格(空白のまま残さない)。
+            return entry.clip_protocol.as_ref().or(entry.protocol.as_ref());
         }
         // Not yet encoded for this exact position: keep the last band (or the full image) visible.
         entry.clip_protocol.as_ref().or(entry.protocol.as_ref())
@@ -4243,10 +4362,11 @@ impl App {
         self.media_loading = true;
         let gen = self.media_gen;
         std::thread::spawn(move || {
-            let _ = tx.send(MediaResult {
-                gen,
-                payload: job.run(),
-            });
+            // job.run() が panic(resvg ラスタ/画像デコードの病的入力)してもスレッドを殺さず
+            // 必ず結果を返す: 返さないと media_loading が次のプレビュー遷移まで true 固着し、
+            // 「Loading…」表示のまま run ループが 16ms ポーリングを続ける(アイドル 0% が崩れる)。
+            let payload = crate::preview::markdown::catch_silent(move || job.run()).flatten();
+            let _ = tx.send(MediaResult { gen, payload });
         });
     }
 
@@ -4257,6 +4377,8 @@ impl App {
             return false; // 陳腐化: 既に別ファイルへ移っている
         }
         self.media_loading = false;
+        // 現世代の結果が届いた=再ラスタの inflight は解消(失敗 None でも解除して詰まらせない)。
+        self.vector_reraster_inflight = false;
         match result.payload {
             Some(payload) => {
                 self.apply_payload(payload);
@@ -4279,6 +4401,9 @@ impl App {
                 }
                 self.vector_svg = Some(svg);
                 self.set_static_image(img);
+                // ジョブ実行中にズームがさらに進んでいたら次の 1 本を出して収束させる
+                // (足りていれば/上限 4096 なら NotNeeded 側で即 return)。
+                self.maybe_sharpen_vector();
             }
         }
     }
@@ -4646,6 +4771,12 @@ impl App {
     /// Memory stays bounded by the rasterizer's HARD_MAX (4096px side ≈ 64 MiB RGBA).
     fn maybe_sharpen_vector(&mut self) {
         use image::GenericImageView;
+        // 1 本だけ: キーリピートの `+` 連打(ジョブ完了前に必要密度が伸び続ける)で同じ再ラスタを
+        // 多重 spawn しない(1 本 ~数百 ms・過渡 ~128MiB)。到着時(apply_media→apply_payload)に
+        // もう一度この関数が走り、その時点の最新ズームへ収束する。
+        if self.vector_reraster_inflight {
+            return;
+        }
         let (Some(svg), Some(src), Some((lw, lh))) =
             (&self.vector_svg, &self.image_src, self.image_logical)
         else {
@@ -4658,6 +4789,10 @@ impl App {
             return;
         }
         let base = self.preview_path.clone().unwrap_or_default();
+        // 同期フォールバック(media_tx 無し=テスト)は spawn しない=多重の余地が無いので立てない。
+        if self.media_tx.is_some() {
+            self.vector_reraster_inflight = true;
+        }
         self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want));
     }
 
@@ -4680,12 +4815,33 @@ impl App {
         self.fence_zoom
     }
 
+    /// Whether the focused inline diagram's reserved block is fully visible in the preview viewport
+    /// (mirrors the renderer's in-place-zoom condition: `row_off == 0 && vis_rows >= rows`).
+    /// Viewport 0 (no render pass yet — tests) counts as visible.
+    fn focused_fence_fully_visible(&self) -> bool {
+        let Some(ord) = self.focused_mermaid_ordinal() else {
+            return false;
+        };
+        let Some((line, rows)) = self.mermaid_placement(ord) else {
+            return false;
+        };
+        let vh = self.preview_viewport as usize;
+        if vh == 0 {
+            return true;
+        }
+        let (top, _) = self.md_visual_span(line);
+        let scroll = self.preview_scroll as usize;
+        top >= scroll && top + rows as usize <= scroll + vh
+    }
+
     /// hjkl/arrows while an inline diagram is focused **and zoomed**: pan the diagram instead of
     /// scrolling the document; `0` fits (zoom reset — the image-view key). Returns true when
     /// consumed. At 1x nothing is consumed, so all keys scroll/navigate the document as usual.
+    /// The diagram must also be on screen: after zooming and paging away (Ctrl-f/G), hjkl/j/k
+    /// would otherwise pan an invisible diagram and the keys would appear dead.
     pub fn fence_pan_motion(&mut self, m: crate::keymap::Motion) -> bool {
         use crate::keymap::Motion as M;
-        if self.fence_zoom <= 1.001 || self.focused_mermaid_ordinal().is_none() {
+        if self.fence_zoom <= 1.001 || !self.focused_fence_fully_visible() {
             return false;
         }
         // 0 = フィット(全画面画像と同じキー)。ズーム中のみ奪う(等倍では従来の行頭のまま)。
@@ -5210,7 +5366,7 @@ impl App {
     #[cfg(test)]
     pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
-        let items = build_md_items(&lines, &targets);
+        let items = build_md_items(&lines, &targets, &[]);
         // フォーカス添字を範囲内にクランプ。
         match self.focused_item {
             Some(_) if items.is_empty() => self.focused_item = None,
@@ -5284,14 +5440,15 @@ impl App {
         }
     }
 
-    /// (line, rows) of the ordinal-th inline mermaid placement in the current decorated cache.
+    /// (line, rows) of the inline mermaid placement whose **source ordinal** is `ordinal`
+    /// (placements carry it in `fence_ord`; counting rendered placements would drift as soon as
+    /// an earlier fence has no placement — loading or degraded to text).
     fn mermaid_placement(&self, ordinal: usize) -> Option<(usize, u16)> {
         let cache = self.md_cache.as_ref()?;
         cache
             .images
             .iter()
-            .filter(|p| crate::preview::markdown::is_mermaid_fence_url(&p.url))
-            .nth(ordinal)
+            .find(|p| p.fence_ord == Some(ordinal))
             .map(|p| (p.line, p.rows))
     }
 
@@ -5774,6 +5931,10 @@ impl App {
             preview_cursor_line: self.preview_cursor_line,
             preview_cursor_col: self.preview_cursor_col,
             md_raw: self.md_raw,
+            focused_item: self.focused_item,
+            fence_zoom: self.fence_zoom,
+            fence_center: self.fence_center,
+            fence_return: self.fence_return,
             git_view: self.git_view,
             git_view_sel: self.git_view_sel,
             git_view_entries: self.git_view_entries.clone(),
@@ -5793,6 +5954,12 @@ impl App {
             git_branch_filtering: self.git_branch_filtering,
             git_graph: self.git_graph.clone(),
             git_graph_sel: self.git_graph_sel,
+            git_graph_base: self.git_graph_base.clone(),
+            git_graph_base_label: self.git_graph_base_label.clone(),
+            git_graph_visible: self.git_graph_visible.clone(),
+            git_graph_legend: self.git_graph_legend.clone(),
+            git_graph_hidden: self.git_graph_hidden,
+            git_graph_order: self.git_graph_order.clone(),
             // 選択 / 絞り込み / プレビュー検索もタブ毎に保存する(切替で旧タブへ持ち越さない)。
             selection: self.selection.clone(),
             visual_anchor: self.visual_anchor,
@@ -5854,6 +6021,17 @@ impl App {
         self.git_branch_filtering = t.git_branch_filtering;
         self.git_graph = t.git_graph;
         self.git_graph_sel = t.git_graph_sel;
+        self.git_graph_base = t.git_graph_base;
+        self.git_graph_base_label = t.git_graph_base_label;
+        self.git_graph_visible = t.git_graph_visible;
+        self.git_graph_legend = t.git_graph_legend;
+        self.git_graph_hidden = t.git_graph_hidden;
+        self.git_graph_order = t.git_graph_order;
+        // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
+        self.git_graph_picker = false;
+        self.git_graph_picker_sel = 0;
+        self.git_graph_picker_set.clear();
+        self.git_graph_reordered = false;
         // 選択 / 絞り込み / プレビュー検索もそのタブの状態を復元する(entries も同時に復元するため
         // visual_anchor(entries 添字)は整合する)。load_active は rebuild_tree を呼ばない。
         self.selection = t.selection;
@@ -5873,13 +6051,10 @@ impl App {
         // 画像は重い状態(protocol/元画像/GIFフレーム)を持ち越さず、画像系プレビューなら再読込で復元する。
         self.clear_image();
         if let (Some(kind), Some(path)) = (self.preview_kind.clone(), self.preview_path.clone()) {
-            if matches!(
-                kind,
-                PreviewKind::Image(_)
-                    | PreviewKind::Svg(_)
-                    | PreviewKind::Video(_)
-                    | PreviewKind::Pdf(_)
-            ) {
+            // Mermaid(.mmd 画像モード)/全画面フェンスも媒体復元の対象(kind_loads_media)。
+            // 漏れると clear_image 後に誰も start_media_load を呼ばず、reload_media_if_changed も
+            // mtime 一致で早期 return するため、タブ復帰でテキスト図/偽エラーに劣化していた。
+            if self.kind_loads_media(&kind) {
                 // SVG/動画サムネ/GIF は別スレッドで読み込み開始(set_* は zoom/center を触らない)。
                 // 保存値を即セットしておけば、後から結果が届いても復元したズーム/中心が保たれる。
                 // GIF は先頭フレームから再生。
@@ -5894,6 +6069,14 @@ impl App {
         }
         // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
         self.md_raw = t.md_raw;
+        // Tab フォーカス/インライン図のズーム/全画面復帰情報はこのタブの保存値へ(前タブの値を
+        // 別文書に適用しない)。md_items は次描画の ensure_md_cache がこのタブの文書で再構築し、
+        // focused_item はその時に範囲へクランプされる(それまで旧文書の items を参照しないよう空に)。
+        self.md_items.clear();
+        self.focused_item = t.focused_item;
+        self.fence_zoom = t.fence_zoom;
+        self.fence_center = t.fence_center;
+        self.fence_return = t.fence_return;
         // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
         self.setup_windowed();
         // windowed プレビューの 2D キャレットを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
@@ -5973,6 +6156,12 @@ impl App {
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
+        // 新規タブは md フォーカス/インライン図ズームも素の状態から(TabState 複製対象)。
+        self.md_items.clear();
+        self.focused_item = None;
+        self.fence_zoom = 1.0;
+        self.fence_center = (0.5, 0.5);
+        self.fence_return = None;
         // 新規タブは git オーバーレイ無しの素の Tree から始める(現タブの git 状態は save_active で保持済み)。
         self.git_view = false;
         self.git_view_sel = 0;
@@ -5993,6 +6182,18 @@ impl App {
         self.git_branch_filtering = false;
         self.git_graph = None;
         self.git_graph_sel = 0;
+        // 新規タブはグラフの装飾状態(基準/凡例/表示ブランチ/優先順)とピッカーも素から始める
+        // (現タブのこれらは直前の save_active で TabState に保持済み)。次に開くとき再導出される。
+        self.git_graph_base = None;
+        self.git_graph_base_label = None;
+        self.git_graph_visible.clear();
+        self.git_graph_legend.clear();
+        self.git_graph_hidden = 0;
+        self.git_graph_order.clear();
+        self.git_graph_picker = false;
+        self.git_graph_picker_sel = 0;
+        self.git_graph_picker_set.clear();
+        self.git_graph_reordered = false;
         // 新規タブは選択 / 絞り込み / プレビュー検索を空から始める
         // (現タブのこれらは直前の save_active で TabState に保持済み)。
         self.selection.clear();
@@ -6158,8 +6359,14 @@ fn is_link_span(span: &Span<'static>) -> bool {
 
 /// Scan collapsed decorated lines for Tab-cycle items (links / task checkboxes / code-block
 /// headers) in document order. `targets` are the link URLs recovered by `collapse_links`, in the
-/// same order the link spans appear. Shared by the cache build and the test-only decorate path.
-fn build_md_items(lines: &[Line<'static>], targets: &[String]) -> Vec<MdItem> {
+/// same order the link spans appear. `fence_ords` are the **source** ordinals of the rendered
+/// mermaid placements in order (from `ImagePlacement::fence_ord`) — the k-th sentinel takes the
+/// k-th value. Shared by the cache build and the test-only decorate path.
+fn build_md_items(
+    lines: &[Line<'static>],
+    targets: &[String],
+    fence_ords: &[usize],
+) -> Vec<MdItem> {
     let mut items = Vec::new();
     let mut k = 0usize;
     for (li, line) in lines.iter().enumerate() {
@@ -6186,10 +6393,15 @@ fn build_md_items(lines: &[Line<'static>], targets: &[String]) -> Vec<MdItem> {
                     kind: MdItemKind::CodeBlock,
                 });
             } else if crate::preview::markdown::is_mermaid_header_span(span) {
-                let ordinal = items
+                let seen = items
                     .iter()
                     .filter(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
                     .count();
+                // 序数は placement 由来の**ソース順**(loading/失敗フェンス込みの通し番号)。
+                // 描画済み番兵の個数で代用すると、上流に番兵を出さないフェンス(テキスト降格/
+                // loading 中)があるとき Enter のソース再抽出とずれて**別の図**が開く。
+                // fence_ords が無い経路(テスト互換)のみ従来の計数にフォールバック。
+                let ordinal = fence_ords.get(seen).copied().unwrap_or(seen);
                 items.push(MdItem {
                     line: li,
                     kind: MdItemKind::MermaidFence { ordinal },
@@ -6814,8 +7026,45 @@ fn fetch_remote_image(url: &str, dest: &Path) -> bool {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
-    std::fs::rename(&tmp, dest).is_ok()
+    let ok = std::fs::rename(&tmp, dest).is_ok();
+    if ok {
+        prune_remote_cache(parent, MD_REMOTE_CACHE_MAX);
+    }
+    ok
 }
+
+/// Keep at most `keep` files in the remote-image cache directory, deleting the oldest (by mtime).
+/// The cache is content-addressed (one file per distinct URL) with no cleanup, so without this it
+/// grows unbounded over a machine's lifetime. Runs only after a **new** download (rare), so the
+/// directory scan is cheap. Best-effort: any IO error just leaves the cache as-is.
+fn prune_remote_cache(dir: &Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| {
+            let p = e.path();
+            // 進行中の一時ファイル(.part)は対象外。
+            if p.extension().is_some_and(|x| x == "part") {
+                return None;
+            }
+            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by_key(|(t, _)| *t); // oldest first
+    for (_, p) in files.iter().take(files.len() - keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Max files kept in the remote-image disk cache (`~/.cache/konoma/remote-images`).
+const MD_REMOTE_CACHE_MAX: usize = 256;
 
 /// Compute the display size in terminal cells for an image of `pw`x`ph` pixels, given the terminal
 /// font cell size (`fw`x`fh` px). The image is fit to `avail_cols` (never upscaled beyond its natural

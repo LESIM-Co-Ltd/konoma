@@ -447,6 +447,7 @@ pub enum Msg {
     HintPasteJump,
     HintNewTab,
     OpenLinkNewTabHelp,
+    MermaidZoomHelp,
     OpenInNewTabHelp,
     BookmarkOverwriteConfirm,
     StMarkOverwrite,
@@ -474,6 +475,9 @@ pub enum Msg {
     PdfPreviewUnavailable,
     MermaidUnavailable,
     DiagramOpenFailed,
+    MermaidCaption,
+    MermaidZoomAffordance,
+    MermaidPanAffordance,
 }
 
 /// English table.
@@ -615,7 +619,7 @@ fn en(msg: Msg) -> &'static str {
         TreeFileInfo => "file info (size/modified/permissions)",
         TreeFilter => "filter / recursive find (Esc to clear)",
         GitFilterByName => "filter by name",
-        FocusMdLink => "focus md link / checkbox / code block (y c = copy code)",
+        FocusMdLink => "focus md link / checkbox / code block / diagram (y c = copy code)",
         MdTaskToggleHelp => "toggle focused checkbox (writes to the file)",
         GitToolFailed => "git tool failed: ",
         GlobalApp => "global",
@@ -677,7 +681,7 @@ fn en(msg: Msg) -> &'static str {
         NotFound => "not found: ",
         NothingStaged => "nothing staged",
         OpenFailed => "open failed: ",
-        OpenLinkHint => "open link (URL=browser / local=konoma) / toggle checkbox",
+        OpenLinkHint => "open link (URL=browser / local=konoma) / toggle checkbox / open diagram full screen",
         Opened => "opened: ",
         OperationFailed => "operation failed: ",
         PanHint => "pan (when zoomed/clipped)",
@@ -777,6 +781,7 @@ fn en(msg: Msg) -> &'static str {
         HintPasteJump => "goto path",
         HintNewTab => "new tab",
         OpenLinkNewTabHelp => "open the focused link in a new tab",
+        MermaidZoomHelp => "zoom the focused diagram in place (hjkl pan while zoomed, 0 fits)",
         OpenInNewTabHelp => "open the entry under the cursor in a new tab",
         BookmarkOverwriteConfirm => "Overwrite bookmark",
         StMarkOverwrite => "OVERWRITE?",
@@ -862,6 +867,12 @@ fn en(msg: Msg) -> &'static str {
         }
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
         DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
+        // Inline-diagram caption/frame affordances. `MermaidCaption` keeps the word "Enter" so the
+        // caption is the same in both languages up to that point (the `◇ mermaid` prefix is a render
+        // sentinel and stays literal in code, so it is not translated here).
+        MermaidCaption => "Enter: full screen",
+        MermaidZoomAffordance => "+/-: zoom",
+        MermaidPanAffordance => "hjkl:pan  0:fit",
     }
 }
 
@@ -1004,7 +1015,7 @@ fn jp(msg: Msg) -> &'static str {
         TreeFileInfo => "ファイル情報 (サイズ/更新/権限)",
         TreeFilter => "絞り込み / 再帰検索 (Esc で解除)",
         GitFilterByName => "名前で絞り込み",
-        FocusMdLink => "Markdown リンク/チェックボックス/コードブロックをフォーカス (y c=コードをコピー)",
+        FocusMdLink => "Markdown リンク/チェックボックス/コードブロック/mermaid図をフォーカス (y c=コードをコピー)",
         MdTaskToggleHelp => "フォーカス中のチェックボックスをトグル(ファイルに書込み)",
         GitToolFailed => "git ツール起動失敗: ",
         GlobalApp => "グローバル",
@@ -1062,7 +1073,7 @@ fn jp(msg: Msg) -> &'static str {
         NotFound => "見つかりません: ",
         NothingStaged => "ステージ無し",
         OpenFailed => "起動失敗: ",
-        OpenLinkHint => "リンクを開く (URL=ブラウザ/ローカル=konoma)・チェックボックスはトグル",
+        OpenLinkHint => "リンクを開く (URL=ブラウザ/ローカル=konoma)・チェックボックスはトグル・mermaid図は全画面",
         Opened => "開きました: ",
         OperationFailed => "操作に失敗: ",
         PanHint => "パン(拡大して見切れた時)",
@@ -1162,6 +1173,7 @@ fn jp(msg: Msg) -> &'static str {
         HintPasteJump => "パス移動",
         HintNewTab => "別タブ",
         OpenLinkNewTabHelp => "フォーカス中のリンクを別タブで開く",
+        MermaidZoomHelp => "フォーカス中の図をその場でズーム(ズーム中 hjkl=パン・0=フィット)",
         OpenInNewTabHelp => "カーソル下のエントリを別タブで開く",
         BookmarkOverwriteConfirm => "ブックマークを上書き",
         StMarkOverwrite => "上書き?",
@@ -1245,6 +1257,9 @@ fn jp(msg: Msg) -> &'static str {
         }
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
         DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
+        MermaidCaption => "Enter: 全画面",
+        MermaidZoomAffordance => "+/-: ズーム",
+        MermaidPanAffordance => "hjkl:パン  0:フィット",
     }
 }
 
@@ -1669,6 +1684,7 @@ mod tests {
         Msg::HintPasteJump,
         Msg::HintNewTab,
         Msg::OpenLinkNewTabHelp,
+        Msg::MermaidZoomHelp,
         Msg::OpenInNewTabHelp,
         Msg::BookmarkOverwriteConfirm,
         Msg::StMarkOverwrite,
@@ -1687,6 +1703,9 @@ mod tests {
         Msg::PdfPreviewUnavailable,
         Msg::MermaidUnavailable,
         Msg::DiagramOpenFailed,
+        Msg::MermaidCaption,
+        Msg::MermaidZoomAffordance,
+        Msg::MermaidPanAffordance,
         Msg::QuitConfirm,
         Msg::StQuit,
         Msg::StQuitHint,

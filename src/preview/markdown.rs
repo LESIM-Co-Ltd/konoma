@@ -166,19 +166,55 @@ pub fn render_markdown_tasks(
     out
 }
 
+thread_local! {
+    /// This thread is inside a `silence_panics` section (its expected panics are caught and
+    /// must not print). Thread-local so other threads' panics keep their messages.
+    static PANIC_SILENCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f`, catching any panic and suppressing its message on **this** thread — returns
+/// `None` on panic. The shared safety net for background workers (media / image decode /
+/// fence render / encode): a worker that panics without reporting back would latch its
+/// in-flight flag on, keeping `md_images_loading()`/`media_loading` true forever (busy
+/// spinner + 16ms polling — idle CPU 0% broken). Wrapping the job here guarantees a result
+/// is always produced so the flag clears and the render side degrades (principle #3).
+pub(crate) fn catch_silent<T>(f: impl FnOnce() -> T) -> Option<T> {
+    silence_panics(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok())
+}
+
+/// Run `f` with panic **messages** suppressed on this thread (the caller still catches the
+/// unwind itself). A composite hook is installed process-wide **once** and consults the
+/// thread-local flag — the previous take_hook/set_hook swap around every call raced when
+/// several diagram renders ran concurrently (fence workers / media thread / warm-up): an
+/// interleaved restore could leave the silent hook installed forever, permanently losing
+/// panic messages for the whole process (a diagnostics hazard, not a crash).
+fn silence_panics<T>(f: impl FnOnce() -> T) -> T {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !PANIC_SILENCED.with(|c| c.get()) {
+                prev(info);
+            }
+        }));
+    });
+    PANIC_SILENCED.with(|c| c.set(true));
+    let r = f();
+    PANIC_SILENCED.with(|c| c.set(false));
+    r
+}
+
 /// Run tui-markdown on one text segment, catching panics (upstream can panic on some
 /// inputs, e.g. a loose list followed by a task item — seen in 0.3.7/0.3.8). Returns
 /// None on panic so the caller degrades that segment to plain text (principle #3).
 fn render_md_segment(src: &str, opts: &Options<KonomaStyles>) -> Option<Vec<Line<'static>>> {
     // 既定の panic hook は stderr に書き raw mode の画面を汚すので、捕捉中だけ黙らせる。
-    // (描画はメインスレッドのみ=フックの一時差し替えで実害なし。)
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        into_static_lines(tui_markdown::from_str_with_options(src, opts))
-    }));
-    std::panic::set_hook(prev);
-    r.ok()
+    silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            into_static_lines(tui_markdown::from_str_with_options(src, opts))
+        }))
+        .ok()
+    })
 }
 
 // ---- Inline images (MVP: block-level local images) ----
@@ -200,6 +236,12 @@ pub struct ImagePlacement {
     pub cols: u16,
     /// Display height in terminal cells (== number of reserved rows).
     pub rows: u16,
+    /// Source ordinal of the ```mermaid fence this placement renders — document order over **all**
+    /// fences (including ones currently loading or degraded to text); `None` for regular images.
+    /// This is the canonical fence ID: deriving it by counting rendered sentinels goes wrong as
+    /// soon as an earlier fence has no sentinel (failed/loading), and Enter would then re-extract
+    /// and open a different fence's source.
+    pub fence_ord: Option<usize>,
 }
 
 enum BlockPart {
@@ -255,6 +297,7 @@ pub fn render_markdown_with_images(
     tasks: &[char],
     slot_of: &dyn Fn(&str) -> ImageSlot,
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
@@ -275,6 +318,7 @@ pub fn render_markdown_with_images(
                         line: out.len(),
                         cols,
                         rows,
+                        fence_ord: None,
                     });
                     out.extend(image_placeholder_lines(cols, rows, &alt, width));
                 }
@@ -284,10 +328,17 @@ pub fn render_markdown_with_images(
             BlockPart::Mermaid { code: fence } => {
                 let ord = fence_ord;
                 fence_ord += 1;
+                // 空フェンス(書きかけの ```mermaid だけ)は図になり得ない: slot を経由せず
+                // テキスト描画へ。slot の空文字は「抽出 ON か」の probe と区別できないため、
+                // 従来は probe 応答の Loading を拾って永久に「loading」行のままだった。
+                if fence.trim().is_empty() {
+                    out.extend(render_mermaid_block(&fence, width));
+                    continue;
+                }
                 match mermaid_slot(&fence) {
                     MermaidSlot::Image { cols, rows } => {
                         let url = mermaid_fence_url(&fence);
-                        let mut ls = mermaid_placeholder_lines(cols, rows, width, ord);
+                        let mut ls = mermaid_placeholder_lines(cols, rows, width, mermaid_caption);
                         // 先頭はキャプション行(フォーカス番兵)。予約行=画像の重畳先はその次から。
                         out.push(ls.remove(0));
                         placements.push(ImagePlacement {
@@ -296,6 +347,7 @@ pub fn render_markdown_with_images(
                             line: out.len(),
                             cols,
                             rows,
+                            fence_ord: Some(ord),
                         });
                         out.extend(ls);
                     }
@@ -326,16 +378,23 @@ pub fn is_mermaid_header_span(span: &Span<'_>) -> bool {
 }
 
 /// Reserved rows for one inline mermaid diagram: a caption line (focusable sentinel) + blank rows
-/// the image overlays. `_ord` is the fence ordinal (document order) — recorded here for clarity;
-/// the item collector derives it by counting sentinels in order.
-fn mermaid_placeholder_lines(cols: u16, rows: u16, width: u16, _ord: usize) -> Vec<Line<'static>> {
+/// the image overlays. The fence's source ordinal travels in `ImagePlacement::fence_ord` (the
+/// item collector reads it from the k-th mermaid placement, matching sentinels in order).
+/// `caption` is the pre-translated affordance ("Enter: full screen"); the `◇ mermaid` prefix is
+/// kept literal so `is_mermaid_header_span` still recognizes the sentinel across languages.
+fn mermaid_placeholder_lines(
+    cols: u16,
+    rows: u16,
+    width: u16,
+    caption: &str,
+) -> Vec<Line<'static>> {
     let rows = rows.max(1);
     let pad = (width.saturating_sub(cols) / 2) as usize;
     let indent = " ".repeat(pad);
     let mut lines = Vec::with_capacity(rows as usize + 2);
     lines.push(Line::from(vec![
         Span::raw(indent),
-        Span::styled("◇ mermaid — Enter: full screen", mermaid_header_style()),
+        Span::styled(format!("◇ mermaid — {caption}"), mermaid_header_style()),
     ]));
     for _ in 0..rows {
         lines.push(Line::from(String::new()));
@@ -1339,12 +1398,11 @@ fn render_mermaid_block(code: &str, width: u16) -> Vec<Line<'static>> {
 /// To avoid polluting the screen with the panic message, silence the panic hook only during the call.
 /// Note: the failure note is English-only since it is rare diagnostics (the raw source is shown separately).
 fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, String> {
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mermaid_text::render_with_width(code, max_width)
-    }));
-    std::panic::set_hook(prev);
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mermaid_text::render_with_width(code, max_width)
+        }))
+    });
     match caught {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(e)) => Err(format!("cannot render mermaid: {e}")),
@@ -1382,12 +1440,11 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
         theme: t,
         ..RenderOptions::default()
     };
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mermaid_rs_renderer::render_with_options(code.trim_end_matches('\n'), opts)
-    }));
-    std::panic::set_hook(prev);
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mermaid_rs_renderer::render_with_options(code.trim_end_matches('\n'), opts)
+        }))
+    });
     match caught {
         Ok(Ok(svg)) => Some(svg),
         _ => None,
@@ -3167,6 +3224,7 @@ plain body
             DEFAULT_TASK_STATES,
             &slot_of,
             &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
         );
         assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
     }
@@ -3184,6 +3242,7 @@ plain body
             DEFAULT_TASK_STATES,
             &slot_of,
             &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
         );
         assert_eq!(imgs.len(), 1);
         let p = &imgs[0];
@@ -3213,6 +3272,7 @@ plain body
             DEFAULT_TASK_STATES,
             &slot_of,
             &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3233,6 +3293,7 @@ plain body
             DEFAULT_TASK_STATES,
             &slot_of,
             &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
         );
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3324,6 +3385,42 @@ plain body
     }
 
     #[test]
+    fn catch_silent_returns_none_on_panic_and_some_on_success() {
+        // ワーカーの安全網: panic は None(呼び出し側が失敗結果を送って inflight を解く)、
+        // 正常値は Some でそのまま返る。抑制フラグはどちらの経路でも残留しない。
+        assert_eq!(catch_silent(|| 42), Some(42));
+        let paniced: Option<i32> = catch_silent(|| panic!("worker blew up"));
+        assert_eq!(paniced, None);
+        PANIC_SILENCED.with(|c| assert!(!c.get(), "panic 経路でも抑制フラグが残らない"));
+        // 続けて通常の panic メッセージが出せる状態か(フックが黙らせ固定になっていない)。
+        assert_eq!(catch_silent(|| "ok"), Some("ok"));
+    }
+
+    #[test]
+    fn concurrent_mermaid_renders_keep_panic_hook_sane() {
+        // 回帰 2026-07-18: 旧実装は呼び出し毎に take_hook/set_hook を swap しており、フェンス
+        // ワーカーの並行レンダで復元順序が交錯すると「無音フック」が恒久残留し得た。
+        // 現実装は Once+thread-local: 並行実行後もこのスレッドの抑制フラグは倒れている。
+        let hs: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let code = if i % 2 == 0 {
+                        "garbage ]][[ not a diagram".to_string()
+                    } else {
+                        format!("graph LR\n  A{i} --> B{i}")
+                    };
+                    (mermaid_to_svg(&code, "dark").is_some(), i % 2 == 1)
+                })
+            })
+            .collect();
+        for h in hs {
+            let (got, expect) = h.join().unwrap();
+            assert_eq!(got, expect, "並行レンダでも成否は入力どおり");
+        }
+        PANIC_SILENCED.with(|c| assert!(!c.get(), "抑制フラグが残留しない"));
+    }
+
+    #[test]
     fn collect_mermaid_fences_top_level_only() {
         let src = "# t\n```mermaid\ngraph LR\nA-->B\n```\n\n````md\n```mermaid\ninner\n```\n````\n";
         let fences = collect_mermaid_fences(src);
@@ -3347,6 +3444,7 @@ plain body
             DEFAULT_TASK_STATES,
             &|_| ImageSlot::Unavailable,
             &slot_img,
+            "Enter: full screen",
         );
         assert_eq!(imgs.len(), 1, "フェンスが placement になる");
         assert!(is_mermaid_fence_url(&imgs[0].url), "合成キー URL");
@@ -3366,6 +3464,7 @@ plain body
             DEFAULT_TASK_STATES,
             &|_| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Loading,
+            "Enter: full screen",
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3380,6 +3479,7 @@ plain body
             DEFAULT_TASK_STATES,
             &|_| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3387,5 +3487,49 @@ plain body
             joined.contains('A') && joined.contains('B'),
             "テキスト図として描画: {joined}"
         );
+    }
+
+    /// キャプションは呼び出し側から渡された翻訳済み文字列を使うが、`◇ mermaid` プレフィックスは
+    /// 不変で番兵(is_mermaid_header_span)として認識され続ける(i18n 化してもフォーカス巡回が壊れない)。
+    #[test]
+    fn fence_caption_is_localizable_but_sentinel_survives() {
+        let src = "```mermaid\ngraph LR\nA-->B\n```\n";
+        let slot_img = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
+        let render = |caption: &str| {
+            render_markdown_with_images(
+                src,
+                60,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                DEFAULT_TASK_STATES,
+                &|_| ImageSlot::Unavailable,
+                &slot_img,
+                caption,
+            )
+        };
+        let (en, ei) = render("Enter: full screen");
+        let (ja, ji) = render("Enter: 全画面");
+        let cap_en = en[ei[0].line - 1].to_string();
+        let cap_ja = ja[ji[0].line - 1].to_string();
+        assert!(
+            cap_en.contains("Enter: full screen"),
+            "en キャプション: {cap_en}"
+        );
+        assert!(
+            cap_ja.contains("Enter: 全画面"),
+            "ja キャプション: {cap_ja}"
+        );
+        assert_ne!(cap_en, cap_ja, "言語でキャプションが変わる");
+        // どちらの言語でも番兵として認識される(プレフィックスが不変)。
+        for (lines, imgs) in [(en, ei), (ja, ji)] {
+            assert!(
+                lines[imgs[0].line - 1]
+                    .spans
+                    .iter()
+                    .any(is_mermaid_header_span),
+                "番兵 span が残る"
+            );
+        }
     }
 }

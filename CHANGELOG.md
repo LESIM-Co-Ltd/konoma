@@ -6,6 +6,63 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Mermaid previews survive tab switches.** Returning to a tab that was showing a `.mmd`
+  image (or a full-screen fence diagram) re-rasterizes it instead of silently degrading to
+  the Unicode text diagram / a false "cannot render" notice (the tab-restore path skipped
+  mermaid kinds, and a stale media mtime blocked the reload fallback).
+- **`Enter` on an inline diagram opens the right fence.** With an unsupported/broken fence
+  earlier in the document (rendered as text), the focused diagram's ordinal drifted and
+  `Enter` re-extracted a different fence's source — usually the broken one, showing a false
+  error. Fence ordinals are now carried per placement in source order.
+- **Diagram cache no longer grows unboundedly while an agent edits fences.** Fence rasters
+  are keyed by content hash; entries whose fence no longer exists in the document are pruned
+  on every re-decoration (previously they accumulated until you switched files).
+- **Tab focus and in-place diagram zoom/pan are per-tab.** They no longer leak into another
+  tab's document on switch (which could hijack `hjkl` for an invisible diagram), and are
+  restored when you come back — same treatment as the full-screen image zoom.
+- **`q` from a full-screen diagram returns instantly.** The inline-image cache is kept on
+  same-file re-entry, so all fences no longer re-render (and the restored scroll/focus can
+  no longer be clamped away by the transient loading layout).
+- **A failed image encode no longer freezes that image and pins the busy spinner.** The
+  encode worker now always reports back; a failure keeps the last good frame (or degrades
+  to text if nothing was ever shown) instead of latching the in-flight flag forever and
+  keeping the run loop polling at 16ms.
+- **Scrolling a Markdown document with off-screen images no longer full-clears the terminal
+  on every keypress.** The placeholder-orphan sweep now fires only when an actually drawn
+  image moves, appears with prior residue, or leaves the screen.
+- **Key-repeat `+` on a full-screen SVG/mermaid no longer spawns duplicate re-raster jobs**
+  (one in flight at a time, converging to the latest zoom on arrival).
+- **Diagrams larger than the 4096px raster cap are scaled down to fit** instead of being
+  silently cropped at the right/bottom edge.
+- **An empty ```` ```mermaid ```` fence no longer shows a stuck "loading" line** (it falls
+  through to the text path like any other non-renderable fence).
+- Zoomed inline diagrams scrolled off screen no longer consume `hjkl`/arrow keys (panning
+  applies only while the diagram is visible; scroll back and panning resumes).
+- Stale background render results (arriving after a file switch) are dropped instead of
+  resurrecting cache entries and invalidating the current document's layout.
+- The panic-message hook is now installed once with thread-local suppression, so concurrent
+  diagram renders can no longer race the global hook swap and permanently silence panic
+  messages.
+- **A crashing background worker no longer freezes a preview on "Loading…" with the run loop
+  polling at 16ms.** Media load, image decode, fence render, and remote fetch now run inside a
+  panic-catching net (like the encode worker), so a pathological/corrupt file that makes
+  resvg/`image` panic always reports back — the busy flag clears and the render degrades to
+  text (idle CPU stays 0%).
+- **git graph decoration (base pin, legend, visible branches, priority order) is now
+  per-tab**, matching the graph rows themselves — switching between two tabs both in graph
+  view no longer shows one tab's graph with the other tab's legend/`base:` title.
+- **The remote inline-image disk cache is now bounded** (`~/.cache/konoma/remote-images`,
+  256 newest files) instead of growing for the machine's lifetime.
+
+### Changed
+- The inline-diagram caption and focus frame are now localized (Japanese "Enter: 全画面" etc.).
+- `?` help, `docs/KEYMAP.md`, and the configuration reference now document the inline-diagram
+  keys (`Tab` focus, `Enter` full screen, `+`/`-`/`0` zoom, `hjkl` pan) and that the `mermaid`
+  builtin renders as an image by default.
+- `config.example.toml` now has English comments (the canonical, packaged copy). A
+  Japanese-annotated copy is kept alongside it as `config.example.ja.toml`.
+
 ## [0.15.0] - 2026-07-17
 
 ### Added

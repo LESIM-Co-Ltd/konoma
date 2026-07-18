@@ -201,7 +201,7 @@ mod tests {
         let tree = text(&a);
         assert!(tree.contains("Tree"), "Tree 節");
         assert!(tree.contains("Git status"), "Git 節");
-        assert!(!tree.contains("zoom"), "画像節は出さない");
+        assert!(!tree.contains("Preview: image"), "画像節は出さない");
         assert!(
             !tree.contains("horizontal scroll"),
             "テキスト専用節は出さない"
@@ -217,8 +217,10 @@ mod tests {
         let txt = text(&a);
         assert!(txt.contains("Preview: text"), "テキスト節");
         assert!(txt.contains("horizontal scroll"), "横スクロール行");
+        // 画像節の目印は専用タイトルで判定する(テキストプレビューにもインライン図の
+        // その場ズーム行があり "zoom" は共有語になったため)。
         assert!(
-            !txt.contains("Git status (row markers)") && !txt.contains("zoom"),
+            !txt.contains("Git status (row markers)") && !txt.contains("Preview: image"),
             "Tree/画像専用節は出さない"
         );
         // スクロール行は矢印付き表記 (h/l/← → 行に揃える #3)。

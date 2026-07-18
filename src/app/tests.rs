@@ -5748,6 +5748,46 @@ fn md_remote_cache_path_is_stable_and_url_specific() {
     }
 }
 
+/// リモート画像ディスクキャッシュは上限を超えたら古いものから削除される(無上限成長の防止)。
+/// `.part`(取得中の一時ファイル)は対象外。
+#[test]
+fn prune_remote_cache_keeps_newest_and_skips_part() {
+    let dir = std::env::temp_dir().join("konoma_prune_remote_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 5 個のキャッシュファイルを古い順の mtime で作る。
+    for i in 0..5 {
+        let p = dir.join(format!("img{i}"));
+        std::fs::write(&p, [i as u8]).unwrap();
+        let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64);
+        filetime_set(&p, t);
+    }
+    // 取得中の一時ファイルは残す。
+    std::fs::write(dir.join("busy.part"), b"x").unwrap();
+
+    prune_remote_cache(&dir, 2);
+
+    // 新しい 2 個(img3/img4)が残り、古い 3 個は消える。.part は温存。
+    assert!(
+        !dir.join("img0").exists() && !dir.join("img2").exists(),
+        "古いものは削除"
+    );
+    assert!(
+        dir.join("img3").exists() && dir.join("img4").exists(),
+        "新しい 2 個は残る"
+    );
+    assert!(dir.join("busy.part").exists(), ".part は対象外で残る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Set a file's mtime deterministically (test helper). `File::set_modified` is stable since 1.75
+/// (MSRV 1.92), so no external `filetime` crate is needed.
+fn filetime_set(path: &std::path::Path, t: std::time::SystemTime) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(t).unwrap();
+}
+
 #[test]
 fn md_image_dims_reads_raster_and_svg() {
     let dir = std::env::temp_dir().join("konoma_md_dims_test");
@@ -6946,13 +6986,16 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
     let fence = res_rx.recv().unwrap();
     let photo = res_rx.recv().unwrap();
     h.join().unwrap();
-    let fs = fence.protocol.size();
+    let fs = fence
+        .protocol
+        .expect("フェンスのエンコードは成功する")
+        .size();
     assert_eq!(
         (fs.width, fs.height),
         (40, 10),
         "フェンスはグリッドを満たす"
     );
-    let ps = photo.protocol.size();
+    let ps = photo.protocol.expect("写真のエンコードは成功する").size();
     assert_eq!((ps.width, ps.height), (20, 5), "写真は拡大しない");
 }
 
@@ -7315,8 +7358,10 @@ fn mermaid_rows_large_target_reaches_placement() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// kitty placeholder 残骸掃除: インライン図の描画位置が動いたフレームだけ「フル再描画要求」が
-/// 立つ(静止中は立たない・図を離れたら一度立つ)。Ghostty の色付きバー(旧 ID 行の取り残し)対策。
+/// kitty placeholder 残骸掃除: **実際に描いた**インライン図が動いたフレームだけ「フル再描画
+/// 要求」が立つ(静止中は立たない・図が現れた/消えたフレームで一度立つ)。Ghostty の色付きバー
+/// (旧 ID 行の取り残し)対策。回帰 2026-07-17: 署名が生スクロール値+全 placement を含んで
+/// いたため、図が**画面外**でも画像入り md はスクロール毎キーでフル clear+二重描画だった。
 #[test]
 fn md_overlay_move_detection_requests_full_redraw() {
     use ratatui::backend::TestBackend;
@@ -7339,15 +7384,35 @@ fn md_overlay_move_detection_requests_full_redraw() {
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
 
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 初回(Loading→同期レンダ)
-    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 配置確定
-    let _ = app.take_md_overlay_moved(); // 出現までの遷移分を消費
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 配置確定(図は下方=画面外)
+    let _ = app.take_md_overlay_moved();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 静止フレーム
     assert!(!app.take_md_overlay_moved(), "静止中は要求しない");
 
-    // スクロールで図が動く → 要求が立つ。
+    // 図が**画面外**にしか無い間のスクロールは要求しない(placeholder がグリッドに無い=
+    // 掃除する残骸が無い。ここが毎キー clear になっていたのが回帰)。
     app.preview_scroll = app.preview_scroll.saturating_add(3);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
-    assert!(app.take_md_overlay_moved(), "図が動いたら一度フル再描画");
+    assert!(
+        !app.take_md_overlay_moved(),
+        "画面外の図しか無い間のスクロールでは要求しない"
+    );
+
+    // 末尾まで送って図を画面内へ。出現フレームは要求しない(直前まで何も描いていない=
+    // グリッドに掃除すべき旧 placeholder が無い。掃除は「描いていた状態からの変化」のみ)。
+    app.preview_scroll = 500; // 描画側が末尾へクランプ
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(!app.take_md_overlay_moved(), "出現フレームは掃除不要");
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
+
+    // 図が見えている間のスクロール → 動いたフレームで立つ。
+    app.preview_scroll = app.preview_scroll.saturating_sub(1);
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(
+        app.take_md_overlay_moved(),
+        "見えている図が動いたら一度フル再描画"
+    );
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
 
@@ -7370,6 +7435,534 @@ fn md_overlay_move_detection_requests_full_redraw() {
     app.back_to_tree();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(app.take_md_overlay_moved(), "図が画面から消えたら掃除");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// タブ切替で .mmd(画像モード)が画像のまま復元される。回帰 2026-07-18: load_active の媒体
+/// 復元分岐に Mermaid 系が無く、さらに clear_image が preview_media_mtime を残すため
+/// reload_media_if_changed も「未変更」と誤判定して塞がれ、タブ復帰でテキスト罫線図に
+/// git グラフの装飾状態(基準ピン・表示ブランチ・優先順・凡例)はタブ毎に保存/復元される。
+/// 回帰 2026-07-18: git_graph(GraphRow)は保存されるのにこれら派生状態は非保存で、別タブで
+/// 基準/表示を変えて戻ると凡例や `base:` タイトルが他タブのまま残っていた(load_active は
+/// グラフを再構築しない)。新規タブへは持ち越さず、戻れば復元される。
+#[test]
+fn git_graph_decoration_state_is_per_tab() {
+    let dir = std::env::temp_dir().join("konoma_graph_pertab_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // タブ0のグラフ装飾状態を模擬(実グラフ構築なしで派生フィールドを直接セット)。
+    app.git_graph_base = Some("release/1.0".into());
+    app.git_graph_base_label = Some("release/1.0".into());
+    app.git_graph_visible = ["main".to_string(), "dev".to_string()]
+        .into_iter()
+        .collect();
+    app.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
+    app.git_graph_hidden = 3;
+
+    app.tab_new().unwrap(); // タブ1(素の Tree)
+    assert!(app.git_graph_base.is_none(), "新規タブへ基準ピンは漏れない");
+    assert!(
+        app.git_graph_visible.is_empty(),
+        "新規タブへ表示ブランチは漏れない"
+    );
+    assert!(app.git_graph_order.is_empty(), "新規タブへ優先順は漏れない");
+    assert_eq!(app.git_graph_hidden, 0, "新規タブの hidden は 0");
+
+    // タブ1で別の装飾状態にしてから戻る。
+    app.git_graph_base = Some("hotfix".into());
+    app.tab_goto(0);
+    assert_eq!(
+        app.git_graph_base.as_deref(),
+        Some("release/1.0"),
+        "タブ0の基準ピンが復元される"
+    );
+    assert_eq!(app.git_graph_hidden, 3, "タブ0の hidden が復元される");
+    assert!(
+        app.git_graph_visible.contains("main") && app.git_graph_visible.contains("dev"),
+        "タブ0の表示ブランチが復元される"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 無通知劣化していた(裏で別メディアを開いた時だけ偶然復活する非決定挙動)。
+#[test]
+fn tab_switch_restores_mermaid_image_preview() {
+    let dir = std::env::temp_dir().join("konoma_mermaid_tab_restore_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph LR\n  A --> B\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("d.mmd"));
+    assert!(app.image_src.is_some(), "前提: 画像モードでラスタ化される");
+
+    app.tab_new().unwrap(); // タブ2(素のツリー)へ
+    assert!(app.image_src.is_none(), "新規タブに画像は無い");
+    app.tab_cycle(1); // タブ1へ復帰
+    assert!(
+        app.image_src.is_some(),
+        "タブ復帰で .mmd が画像として再ロードされる"
+    );
+    assert!(app.is_image_preview(), "IMAGE 面のまま");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 全画面フェンス表示のままタブを離れて戻っても、図が画像のまま復元される
+/// (旧コードは偽の「cannot render」案内に落ちていた)。
+#[test]
+fn tab_switch_restores_fullscreen_fence_view() {
+    let dir = std::env::temp_dir().join("konoma_fence_tab_restore_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "intro\n\n```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .expect("フェンスが Tab アイテムに載る");
+    app.focused_item = Some(idx);
+    app.md_activate_focused().unwrap();
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(_))),
+        "全画面フェンスへ遷移"
+    );
+    assert!(app.image_src.is_some(), "前提: 全画面の図がラスタ化される");
+
+    app.tab_new().unwrap();
+    app.tab_cycle(1);
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(_))),
+        "タブ復帰でも全画面フェンスのまま"
+    );
+    assert!(app.image_src.is_some(), "図が画像として再ロードされる");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 上流に画像化できないフェンス(テキスト降格)があっても、Tab フォーカスの Enter は
+/// **その図のソース**を開く。回帰 2026-07-18: 序数を「描画済み番兵の計数」で導出していた
+/// ため、番兵を出さないフェンス(失敗/loading)の分だけソース再抽出とずれ、別の図
+/// (たいてい失敗した方=偽エラー表示)が全画面に開いていた。
+#[test]
+fn fence_ordinal_survives_failed_upstream_fence() {
+    let dir = std::env::temp_dir().join("konoma_fence_ordinal_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "```mermaid\ntotally ]] broken [[ not a diagram\n```\n\nmid\n\n```mermaid\ngraph LR\n  A --> B\n```\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+
+    // 描画されたフェンスは 1 つ(壊れた方はテキスト降格)で、その序数は**ソース順の 1**。
+    let fences: Vec<usize> = app
+        .md_items
+        .iter()
+        .filter_map(|it| match it.kind {
+            MdItemKind::MermaidFence { ordinal } => Some(ordinal),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fences, vec![1], "番兵の序数はソース順(失敗フェンス込み)");
+
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.md_activate_focused().unwrap();
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(1))),
+        "Enter は**正しい方**のフェンスを開く: {:?}",
+        app.preview_kind
+    );
+    assert!(
+        app.mermaid_fence_code(&md, 1)
+            .is_some_and(|c| c.contains("graph LR")),
+        "序数 1 の再抽出は有効な図のソース"
+    );
+    assert!(app.image_src.is_some(), "全画面の図がラスタ化される");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 編集で内容が変わったフェンスの旧キャッシュエントリは、次の再装飾で回収される。
+/// 回帰 2026-07-18: キーは内容ハッシュで evict は enter_preview(ファイル切替)のみだった
+/// ため、agent-watch の反復編集で旧ラスタ/protocol がファイル切替まで単調成長していた。
+#[test]
+fn stale_fence_cache_entries_are_pruned_on_rebuild() {
+    let dir = std::env::temp_dir().join("konoma_fence_prune_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    let v1 = "```mermaid\ngraph LR\n  A --> B\n```\n";
+    std::fs::write(&md, v1).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+    let code1 = crate::preview::markdown::collect_mermaid_fences(v1).remove(0);
+    let key1 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code1));
+    assert!(
+        app.md_image_cache.contains_key(&key1),
+        "前提: v1 がキャッシュ済み"
+    );
+
+    // 外部編集(内容変更)→ 再読込・再装飾。
+    let v2 = "```mermaid\ngraph TD\n  X --> Y\n```\n";
+    std::fs::write(&md, v2).unwrap();
+    app.reload_preview();
+    app.ensure_md_cache(100);
+    let code2 = crate::preview::markdown::collect_mermaid_fences(v2).remove(0);
+    let key2 = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code2));
+    assert!(
+        app.md_image_cache.contains_key(&key2),
+        "v2 はキャッシュ済み"
+    );
+    assert!(
+        !app.md_image_cache.contains_key(&key1),
+        "旧内容のエントリは prune される(単調成長しない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Tab フォーカスとインライン図のズーム/パンはタブ毎に複製される: 別タブへ漏れず、
+/// 戻れば復元される(image_zoom が TabState 保存されるのと同格)。
+#[test]
+fn fence_focus_and_zoom_are_per_tab() {
+    let dir = std::env::temp_dir().join("konoma_fence_per_tab_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    std::fs::write(&a, "```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
+    std::fs::write(&b, "```mermaid\ngraph TD\n  C --> D\n```\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&a);
+    app.ensure_md_cache(100);
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.image_zoom_by(2.0); // 全画面画像なし+フェンスフォーカス中 → fence_zoom に作用
+    assert!(app.fence_zoom > 1.9, "前提: タブ1でその場ズーム中");
+
+    app.tab_new().unwrap(); // タブ2
+    assert_eq!(app.focused_item, None, "新規タブへフォーカスは漏れない");
+    assert!(app.fence_zoom < 1.001, "新規タブへズームは漏れない");
+    app.enter_preview(&b);
+    app.ensure_md_cache(100);
+    assert_eq!(app.focused_item, None, "タブ2の文書は未フォーカスのまま");
+
+    app.tab_cycle(1); // タブ1へ復帰
+    assert_eq!(app.focused_item, Some(idx), "タブ1のフォーカスが復元される");
+    assert!(app.fence_zoom > 1.9, "タブ1のズームが復元される");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 全画面フェンスからの `q` 復帰はインライン画像キャッシュを温存する(同一ファイル再入)。
+/// 回帰 2026-07-18: enter_preview が無条件で md_image_cache を捨てるため、復帰のたび全フェンス
+/// を再レンダし、Loading の縮退レイアウト 1 描画で復元スクロール/フォーカスがクランプされ得た。
+#[test]
+fn fence_fullscreen_return_keeps_diagram_cache() {
+    let dir = std::env::temp_dir().join("konoma_fence_return_cache_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    let src = "intro\n\n```mermaid\ngraph LR\n  A --> B\n```\n";
+    std::fs::write(&md, src).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+    let code = crate::preview::markdown::collect_mermaid_fences(src).remove(0);
+    let key = std::path::PathBuf::from(crate::preview::markdown::mermaid_fence_url(&code));
+    let arc0 = app
+        .md_image_cache
+        .get(&key)
+        .and_then(|e| e.decoded.clone())
+        .expect("前提: フェンスがレンダ済み");
+
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.md_activate_focused().unwrap(); // Enter → 全画面
+    app.back_to_tree(); // q → md へ復帰
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::Markdown(_))),
+        "md ビューへ戻る"
+    );
+    let arc1 = app
+        .md_image_cache
+        .get(&key)
+        .and_then(|e| e.decoded.clone())
+        .expect("復帰後もキャッシュが残る");
+    assert!(
+        std::sync::Arc::ptr_eq(&arc0, &arc1),
+        "同じラスタを温存(再レンダしていない)"
+    );
+    assert_eq!(app.focused_item, Some(idx), "フォーカスも復元される");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// エンコード失敗(protocol=None)の結果でも enc_inflight が解除され、キーが記録されて同じ
+/// 要求を毎フレーム再試行しない。一度も成功していない Full の失敗のみテキスト降格。
+/// 回帰 2026-07-18: ワーカーが Err の結果を握り潰し、enc_inflight が永久 true=その画像の
+/// 再エンコード停止+md_images_loading() 恒久 true(busy スピナー+16ms ポーリング常駐)だった。
+#[test]
+fn failed_encode_clears_inflight_and_degrades_safely() {
+    let dir = std::env::temp_dir().join("konoma_encode_fail_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    // Full 失敗・protocol 未保持 → failed へ降格し busy は解ける。
+    let key = std::path::PathBuf::from("mermaid-fence://feedfeedfeedfeed");
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            enc_inflight: true,
+            ..Default::default()
+        },
+    );
+    assert!(app.md_images_loading(), "前提: inflight 中は busy");
+    let redraw = app.apply_md_encode(MdEncodeResult {
+        path: key.clone(),
+        key: MdEncodeKey::Full { cols: 10, rows: 5 },
+        protocol: None,
+    });
+    assert!(redraw);
+    {
+        let e = app.md_image_cache.get(&key).unwrap();
+        assert!(!e.enc_inflight, "inflight が解除される");
+        assert!(e.failed, "表示できる protocol が無ければテキスト降格");
+        assert_eq!(e.proto_size, Some((10, 5)), "キー記録=リトライループ防止");
+    }
+    assert!(!app.md_images_loading(), "busy が恒久化しない");
+
+    // Zoom 失敗は旧表示のまま(failed にしない)・キーだけ記録。
+    let key2 = std::path::PathBuf::from("mermaid-fence://cafecafecafecafe");
+    app.md_image_cache.insert(
+        key2.clone(),
+        MdImgEntry {
+            enc_inflight: true,
+            decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(8, 8))),
+            ..Default::default()
+        },
+    );
+    let crop = (0u32, 0u32, 4u32, 4u32);
+    app.apply_md_encode(MdEncodeResult {
+        path: key2.clone(),
+        key: MdEncodeKey::Zoom {
+            cols: 4,
+            rows: 2,
+            crop,
+        },
+        protocol: None,
+    });
+    let e2 = app.md_image_cache.get(&key2).unwrap();
+    assert!(!e2.enc_inflight);
+    assert!(!e2.failed, "ズーム失敗で図全体を殺さない");
+    assert_eq!(e2.zoom_key, Some((4, 2, crop)));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 全画面ベクタのシャープ再ラスタは同時 1 本(inflight ガード)。回帰 2026-07-18: ガードが
+/// 無く、`+` のキーリピートでジョブ完了前に同じ再ラスタを十数本 spawn し得た
+/// (1 本 ~数百 ms・過渡 ~128MiB。インライン側 reraster_inflight との非対称)。
+#[test]
+fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
+    use image::GenericImageView;
+    let dir = std::env::temp_dir().join("konoma_vector_inflight_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&dir.join("d.mmd"));
+    let before = app.image_src.as_ref().unwrap().dimensions();
+
+    // inflight 中はズームしても再ラスタを出さない(ラスタ寸法が変わらない)。
+    app.vector_reraster_inflight = true;
+    app.image_zoom_by(2.0);
+    let held = app.image_src.as_ref().unwrap().dimensions();
+    assert_eq!(held, before, "inflight 中は再ラスタしない");
+
+    // 解除後の次のズーム操作で追いつく(同期経路=即適用)。
+    app.vector_reraster_inflight = false;
+    app.image_zoom_by(1.1);
+    let after = app.image_src.as_ref().unwrap().dimensions();
+    assert!(
+        after.0 > before.0 || after.1 > before.1,
+        "解除後は最新ズームへ収束: {before:?} -> {after:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 空の ```mermaid フェンス(書きかけ)は「loading」行に固まらずテキスト経路へ落ち、
+/// 有効なフェンスのソース序数もずれない。回帰 2026-07-18: slot の空文字が「抽出 ON か」の
+/// probe と区別できず、probe 応答の Loading を拾って永久に loading 表示だった。
+#[test]
+fn empty_mermaid_fence_does_not_stick_on_loading() {
+    let dir = std::env::temp_dir().join("konoma_empty_fence_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "```mermaid\n```\n\nmid\n\n```mermaid\ngraph LR\n  A --> B\n```\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+
+    let joined: String = app
+        .md_cache
+        .as_ref()
+        .unwrap()
+        .lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    assert!(
+        !joined.contains("loading"),
+        "空フェンスが loading 行に固まらない: {joined}"
+    );
+    // 有効なフェンスは描画され、序数はソース順の 1(空フェンスが 0 を占有)。
+    let placements = app.md_images();
+    assert_eq!(placements.len(), 1);
+    assert_eq!(placements[0].fence_ord, Some(1), "序数はソース順");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// ズーム中でも図が**画面外**ならパンはキーを奪わない。回帰 2026-07-18: 消費条件が
+/// 「ズーム中+フォーカス有り」だけだったため、Ctrl-f/G で図を画面外へ送ると hjkl/j/k が
+/// 見えない図のパンに食われ、キーが死んだように見えた。
+#[test]
+fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
+    use crate::keymap::Motion as M;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_fence_pan_offscreen_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    let mut src = String::from("```mermaid\ngraph LR\n  A --> B\n```\n\n");
+    for i in 0..60 {
+        src.push_str(&format!("line {i}\n\n"));
+    }
+    std::fs::write(&md, src).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let idx = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+        .unwrap();
+    app.focused_item = Some(idx);
+    app.image_zoom_by(2.0);
+    assert!(app.fence_pan_motion(M::Down), "可視+ズーム中はパンを消費");
+
+    // 図を画面外へ(末尾へスクロール) → もう消費しない=文書スクロールに戻る。
+    app.preview_scroll = 500;
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(
+        !app.fence_pan_motion(M::Down),
+        "画面外の図のパンにキーを食わせない"
+    );
+    assert!(
+        !app.fence_pan_motion(M::LineHome),
+        "0 も奪わない(通常の行頭へ)"
+    );
+    assert!(app.fence_zoom > 1.9, "ズーム状態自体は保持(戻れば再開)");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// キャッシュに無いキーの decode 結果(ファイル切替/prune 後に遅れて届いた陳腐化結果)は
+/// 捨てられる: エントリを復活させず、現文書の md_cache も無効化しない。
+#[test]
+fn stale_md_image_result_is_dropped() {
+    let dir = std::env::temp_dir().join("konoma_stale_md_result_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# title\n\nplain text\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    app.ensure_md_cache(100);
+    assert!(app.md_cache.is_some());
+
+    let stale = std::path::PathBuf::from("mermaid-fence://deadbeefdeadbeef");
+    let redraw = app.apply_md_image(MdImageResult {
+        path: stale.clone(),
+        image: Ok(image::DynamicImage::new_rgba8(4, 4)),
+        svg: None,
+        reraster: false,
+    });
+    assert!(!redraw, "陳腐化結果は再描画も要求しない");
+    assert!(
+        !app.md_image_cache.contains_key(&stale),
+        "エントリを復活させない"
+    );
+    assert!(
+        app.md_cache.is_some(),
+        "無関係な現文書の装飾キャッシュを壊さない"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
