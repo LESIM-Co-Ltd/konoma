@@ -8,6 +8,11 @@ sidebar:
 これは「読みながら試す」ツアーです。konoma をターミナルで開いたまま、各ステップを
 実際に操作してください。覚えるキーは2つ — **`?` = いまの画面のヘルプ、`q` = 一段戻る。**
 
+:::note[まだ konoma が無い場合]
+何もインストールされていないマシンから始めるなら、[はじめる → ゼロからのセットアップ](../getting-started/#ゼロからのセットアップ)で
+端末・フォント・konoma 本体の導入手順(macOS / Linux)を説明しています。
+:::
+
 :::tip[konoma の中で読むのがおすすめ]
 このツアーの*インタラクティブ版*がリポジトリに同梱されています —
 [`samples/tutorial.ja.md`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/samples/tutorial.ja.md)

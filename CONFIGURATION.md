@@ -246,6 +246,10 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
   `Symbols Nerd Font Mono` as a fallback font in your terminal, or use an NF-bundled
   font (HackGen Console NF, UDEV Gothic NF, …). Without one, set `ui.icons = false`
   for plain-symbol fallbacks.
+- **CJK text** (the `jp` UI, or CJK filenames / file contents) needs the terminal
+  font to include CJK glyphs, or CJK shows as tofu (□) — konoma computes the display
+  widths correctly regardless; the glyphs come from the font. A Nerd-Font-patched CJK
+  font like HackGen Console NF or UDEV Gothic NF covers both icons and CJK in one font.
 - **Optional tools**: `poppler` (multi-page PDF), `ffmpegthumbnailer`/`ffmpeg` (video
   thumbnails), `git` + `lazygit` (git suite / external tool). Everything degrades
   gracefully when absent.

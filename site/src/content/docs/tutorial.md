@@ -9,6 +9,12 @@ This is a follow-along tour: keep konoma open in a terminal and try each step
 as you read. Two keys carry you through everything — **`?` shows help for the
 current screen, `q` goes back one level.**
 
+:::note[No konoma yet?]
+Starting from a machine with nothing installed? [Getting started → Set up from
+scratch](../getting-started/#set-up-from-scratch) walks you through the terminal,
+fonts, and konoma itself for macOS and Linux.
+:::
+
 :::tip[Best experienced inside konoma]
 The repository ships this tour as an *interactive* document —
 [`samples/tutorial.md`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/samples/tutorial.md)

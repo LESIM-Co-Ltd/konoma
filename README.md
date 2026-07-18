@@ -80,16 +80,23 @@ Pre-release (feature-complete). The milestones below track what is implemented.
 - [x] crates.io publish
 - [x] Prebuilt binaries and `cargo binstall` (macOS, Linux `x86_64`)
 
-## Requirements
+The gate for the full experience is the **terminal**, not the OS:
 
-- **macOS on Apple Silicon** is the primary, most battle-tested target. macOS on Intel (`x86_64`) has
-  prebuilt binaries too. **Linux (`x86_64`)** builds and passes the full clippy + test suite in CI on every
-  push, ships prebuilt binaries, and its previews — images, PDF, and Markdown — are verified to render via
-  the kitty graphics protocol on Linux. It is newer than the macOS path (clipboard and trash use the
-  standard freedesktop mechanisms but have had less real-world use), so still consider it **beta**. Windows
-  is not supported.
-- A terminal that supports the **kitty graphics protocol** (e.g. [Ghostty](https://ghostty.org), which runs
-  on macOS and Linux) for image, SVG, video-thumbnail, and PDF previews. Without it, text-based previews still work.
+- A terminal that speaks the **[kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**
+  — [Ghostty](https://ghostty.org), [kitty](https://sw.kovidgoyal.net/kitty/), [WezTerm](https://wezterm.org),
+  or Konsole — for the **image / PDF / SVG / video previews**. **Text previews** (Markdown, code, git diffs)
+  work in **any** terminal.
+- **OS**: konoma runs on **macOS and Linux** (Unix). Of the combinations, **macOS on Apple Silicon** is the
+  most battle-tested; Intel macOS works too, and **Linux (`x86_64`)** builds and passes the full test suite
+  in CI, ships prebuilt binaries, and has had its previews verified rendering via kitty graphics — still
+  **beta**, as it is newer than the macOS path. **Windows is not supported** (Unix-only APIs; no kitty
+  graphics in Windows terminals).
+- **Fonts**: **icons** need [Nerd Font](https://www.nerdfonts.com/) glyphs (or set `ui.icons = false`), and
+  **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
+  shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
+  **HackGen Console NF** covers both in one font.
+- **Optional tools** (all degrade gracefully): `poppler` (multi-page PDF), `ffmpeg` (video thumbnails),
+  `git` (git suite), `lazygit` (external git tool on `O`).
 
 ## Install
 
