@@ -129,6 +129,38 @@ follow_view = "diff"
 # 配列に無い状態のボックスは先頭状態へ正規化。不正な設定(2文字要素・1要素以下)は既定に戻る。
 md_task_states = [" ", "x"]
 
+# Markdown プレビューで裸の URL・メールを自動リンク化する(GFM autolink・GitHub と同じ)。素の
+# https://… / www.… / foo@bar.com がフォーカス可能なリンクになる(Tab で移動・Enter で開く)。
+# コード span / コードフェンス内はリンク化しない。false なら裸 URL は素テキストのまま。
+md_autolink = true
+
+# GitHub 形式のアラートを色付きコールアウト箱(アイコン+ラベル)で描く(素の引用でなく)。
+# 認識するマーカー(大小無視+一般的な別名): [!NOTE] [!TIP] [!IMPORTANT] [!WARNING] [!CAUTION]。
+# false なら通常の引用として描く(マーカーはそのまま残る)。
+#   > [!NOTE]
+#   > 本文をここに。
+md_alerts = true
+
+# Markdown プレビューで :shortcode: 絵文字を実 Unicode 絵文字に変換する(GitHub と同じ・:rocket: → 🚀)。
+# Unicode を持たない GitHub 独自ショートコード(:shipit: 等)は素テキストのまま。コード内も変換しない。
+# 端末/フォントで絵文字幅が桁揃えを崩す場合は false に。
+md_emoji = true
+
+# 先頭の YAML front matter(--- ... --- が文書の最初)を認識し、罫線+生YAML でなく
+# コンパクトな dim メタデータ block として表示する。既定 true。false なら先頭 --- と YAML を
+# 通常の Markdown として描く。
+md_frontmatter = true
+
+# GFM 脚注を描く: text[^1] の参照は上付き番号になり、[^1]: ... の定義は末尾の番号付き脚注節に
+# まとめられる。既定 true。false ならそのままリテラル表示。
+md_footnotes = true
+
+# GitHub は描くが Markdown エンジンが剥がす一般的なインライン HTML を描く: <del>/<s>/<strike> は
+# 打消し線・<kbd> はインラインコードのキーキャップ・<sup>/<sub> は Unicode(対応する文字のみ)・
+# <br> はハード改行。既定 true。(<mark>/<ins> は端末で忠実に描けず、どちらでもテキストのみ残る。)
+# false なら全てのタグが剥がされる。
+md_inline_html = true
+
 # バックグラウンド処理インジケーター。git の無視ファイルスキャン・メディア読込・
 # ハイライト準備・インライン画像取得などが裏で走っている間、右上にスピナーと
 # ジョブ名(複数なら +n)を表示する。処理が無いときは何も出ない(=アイドル負荷ゼロ)。

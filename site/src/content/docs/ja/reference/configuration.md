@@ -73,6 +73,12 @@ copy_prefix = "y"
 | `mermaid_rows` | `24` | Markdown 内インライン mermaid 図の表示高さの目標(行数)。**拡大方向にも効く**=ベクタ由来なので必要密度へ自動再ラスタライズされシャープなまま(幅は本文幅で頭打ち・縦横比維持)。初期表示は**ビューポートにもフィット**=窓が目標より低いときは全体が見える高さへ縮む。0/不正値は既定に戻る。 |
 | `restore_tabs` | `true` | **起動ディレクトリ毎**に前回のタブ構成(各タブの root・ツリーカーソル・プレビュー)を保存し、同じディレクトリでの次回起動時に復元。保存はタブの開閉/切替と終了時、保存先は `~/.config/konoma/sessions/`。`false` で常にまっさらに起動(読みも書きもしない)。 |
 | `md_task_states` | `[" ", "x"]` | Markdown チェックボックスで `Space` が巡回する状態(順序どおり・各要素1文字)。例 `[" ", "/", "x"]` で Obsidian 流の作業中状態(`[/]` 表示)。不正な設定は既定へ。 |
+| `md_autolink` | `true` | Markdown プレビューで裸の URL・メールを自動リンク化(GFM autolink・GitHub と同じ)。素の `https://…` / `www.…` / `foo@bar.com` がフォーカス可能なリンクに(`Tab` で移動・`Enter` で開く)。コード span / コードフェンス内はリンク化しない。`false` で素テキストのまま。 |
+| `md_alerts` | `true` | GitHub 形式のアラートを色付きコールアウト箱(アイコン+ラベル)で描く(素の引用でなく)。マーカー(大小無視+一般的な別名): `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`。`false` で通常の引用(マーカーはそのまま)。 |
+| `md_emoji` | `true` | Markdown プレビューで `:shortcode:` 絵文字を実 Unicode に変換(GitHub と同じ・`:rocket:` → 🚀)。Unicode を持たない GitHub 独自ショートコード(`:shipit:` 等)とコード内はそのまま。絵文字幅が桁揃えを崩す場合は `false`。 |
+| `md_frontmatter` | `true` | 先頭の YAML front matter(`---` … `---` が文書の最初)を認識し、罫線+生YAML でなくコンパクトな dim メタデータ block として表示。`false` なら通常の Markdown として描く。 |
+| `md_footnotes` | `true` | GFM 脚注を描く: `text[^1]` の参照は上付き番号になり、`[^1]: …` の定義は末尾の番号付き脚注節にまとまる。`false` ならリテラル表示。 |
+| `md_inline_html` | `true` | Markdown エンジンが剥がす一般的なインライン HTML を描く: `<del>`/`<s>`/`<strike>`=打消し線・`<kbd>`=インラインコードのキーキャップ・`<sup>`/`<sub>`=Unicode(対応する文字のみ)・`<br>`=ハード改行。(`<mark>`/`<ins>` はどちらでもテキストのみ。)`false` なら全タグを剥がす。 |
 
 ## `[ui.sort]` — ツリーの既定並び順
 

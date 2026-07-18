@@ -6,6 +6,28 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Bare URL & email autolinking in Markdown previews** (GFM autolink). A plain `https://…`,
+  `www.…`, or `foo@bar.com` now becomes a focusable link (`Tab` to it, `Enter` opens it), like
+  GitHub. Never applied inside code spans or code fences. Toggle with `[ui] md_autolink`.
+- **GitHub-style alerts.** `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`
+  (case-insensitive, plus common aliases, with an optional inline title) render as colored
+  callout boxes with an icon and label instead of a plain blockquote. Toggle with `[ui] md_alerts`.
+- **Emoji shortcodes.** `:rocket:`, `:sparkles:`, `:+1:`, … are converted to real Unicode emoji
+  in Markdown previews, like GitHub. Shortcodes with no Unicode equivalent (GitHub-custom like
+  `:shipit:`) and shortcodes inside code stay literal. Toggle with `[ui] md_emoji`.
+- **In-page anchor jumps.** A Markdown link to a heading (`[x](#slug)`) now scrolls the preview to
+  that heading instead of flashing "not supported" (GitHub-style slugs, with duplicate
+  disambiguation). Works via `Tab` + `Enter` like any other link.
+- **YAML front matter** is recognized (`---` … `---` at the very start) and shown as a compact dim
+  metadata block instead of a rule + raw YAML. Toggle with `[ui] md_frontmatter`.
+- **GFM footnotes.** `text[^1]` references render as superscript numbers and the `[^1]: …`
+  definitions are collected into a numbered footnotes section at the end. Toggle with
+  `[ui] md_footnotes`.
+- **Inline HTML** that GitHub renders but the Markdown engine strips: `<del>`/`<s>`/`<strike>` as
+  strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode, `<br>` as a hard line
+  break. Toggle with `[ui] md_inline_html`.
+
 ## [0.15.1] - 2026-07-18
 
 ### Fixed

@@ -1786,6 +1786,263 @@ fn links_collapse_to_label_only_with_optional_icon() {
 }
 
 #[test]
+fn find_bare_links_covers_urls_www_email_and_trims() {
+    let links_of = |s: &str| -> Vec<(String, String)> {
+        find_bare_links(s)
+            .into_iter()
+            .map(|(a, b, t)| (s[a..b].to_string(), t))
+            .collect()
+    };
+    // https: the whole URL, target == text.
+    assert_eq!(
+        links_of("see https://example.com/path here"),
+        vec![(
+            "https://example.com/path".into(),
+            "https://example.com/path".into()
+        )]
+    );
+    // Trailing sentence punctuation is trimmed off the link.
+    assert_eq!(
+        links_of("go to https://example.com."),
+        vec![("https://example.com".into(), "https://example.com".into())]
+    );
+    // An unbalanced closing paren is trimmed…
+    assert_eq!(
+        links_of("(see https://example.com)"),
+        vec![("https://example.com".into(), "https://example.com".into())]
+    );
+    // …but balanced parens inside the URL are kept (Wikipedia-style).
+    assert_eq!(
+        links_of("https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+        vec![(
+            "https://en.wikipedia.org/wiki/Rust_(programming_language)".into(),
+            "https://en.wikipedia.org/wiki/Rust_(programming_language)".into()
+        )]
+    );
+    // www. keeps its text but the target gains an http:// prefix.
+    assert_eq!(
+        links_of("visit www.example.com today"),
+        vec![("www.example.com".into(), "http://www.example.com".into())]
+    );
+    // Email → mailto: target.
+    assert_eq!(
+        links_of("mail me@example.com please"),
+        vec![("me@example.com".into(), "mailto:me@example.com".into())]
+    );
+    // Must not start mid-word (preceded by an alphanumeric byte).
+    assert!(links_of("xhttps://example.com").is_empty());
+    // CJK immediately before is a valid boundary.
+    assert_eq!(links_of("見るhttps://example.com").len(), 1);
+    // CJK punctuation right after a URL ends the run (no ASCII space needed) — konoma's CJK audience.
+    assert_eq!(
+        links_of("見るhttps://example.com、と"),
+        vec![("https://example.com".into(), "https://example.com".into())]
+    );
+    assert_eq!(
+        links_of("（https://example.com）"),
+        vec![("https://example.com".into(), "https://example.com".into())]
+    );
+    // A bare @ without a dotted domain is not an email.
+    assert!(links_of("a@b").is_empty());
+    // Two links, in document order.
+    let two = links_of("http://a.com and me@b.org");
+    assert_eq!(two.len(), 2);
+    assert_eq!(two[0].0, "http://a.com");
+    assert_eq!(two[1].1, "mailto:me@b.org");
+}
+
+#[test]
+fn autolink_bare_urls_links_plain_text_not_code_and_keeps_order() {
+    use ratatui::style::{Color, Modifier, Style};
+    let blue = Style::new()
+        .fg(Color::Blue)
+        .add_modifier(Modifier::UNDERLINED);
+    let code = Style::new().bg(Color::Rgb(40, 40, 40)); // inline code carries a background
+    let lines = vec![
+        // Existing collapsed link (target "u0") followed by a bare URL on the same line.
+        Line::from(vec![
+            Span::styled("docs", blue),
+            Span::raw(" and https://bare.example"),
+        ]),
+        // A URL inside a code span (bg set) must never be auto-linked.
+        Line::from(vec![
+            Span::raw("code "),
+            Span::styled("https://nope.example", code),
+        ]),
+    ];
+    let (out, targets) = autolink_bare_urls(lines, vec!["u0".to_string()]);
+    // Targets stay in document order: existing link first, then the bare URL.
+    assert_eq!(
+        targets,
+        vec!["u0".to_string(), "https://bare.example".to_string()]
+    );
+    assert_eq!(
+        out[0].spans.iter().filter(|s| is_link_span(s)).count(),
+        2,
+        "existing link + newly auto-linked URL"
+    );
+    assert_eq!(
+        out[1].spans.iter().filter(|s| is_link_span(s)).count(),
+        0,
+        "a URL inside a code span must not be auto-linked"
+    );
+}
+
+#[test]
+fn bare_url_becomes_a_focusable_md_item() {
+    let dir = std::env::temp_dir().join("konoma_autolink_item_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // A plain paragraph line with a bare URL (as tui-markdown emits: one raw span).
+    let lines = vec![Line::from(Span::raw(
+        "visit https://konoma.example for docs",
+    ))];
+    let _ = app.decorate_md_items(lines);
+    assert_eq!(app.md_items.len(), 1, "the bare URL is a Tab item");
+    match &app.md_items[0].kind {
+        MdItemKind::Link { target } => assert_eq!(target, "https://konoma.example"),
+        _ => panic!("expected a link item"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn md_autolink_false_leaves_bare_urls_plain() {
+    let dir = std::env::temp_dir().join("konoma_autolink_off_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.md_autolink = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let lines = vec![Line::from(Span::raw("visit https://konoma.example"))];
+    let _ = app.decorate_md_items(lines);
+    assert!(app.md_items.is_empty(), "autolink off = no link item");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn github_slug_matches_common_headings() {
+    assert_eq!(github_slug("Web parity demo"), "web-parity-demo");
+    // Punctuation dropped; the surrounding spaces still become hyphens (GitHub keeps consecutive).
+    assert_eq!(github_slug("Foo & Bar"), "foo--bar");
+    // `-` and `_` are kept; letters lowercased.
+    assert_eq!(github_slug("Under_score-Dash"), "under_score-dash");
+    assert_eq!(github_slug("  Trim Me  "), "trim-me");
+    // CJK letters are kept (headings in Japanese anchor too).
+    assert_eq!(github_slug("コード block"), "コード-block");
+}
+
+#[test]
+fn compute_md_anchors_from_headings_with_dedup() {
+    use crate::preview::markdown::{render_markdown, CodeStyle};
+    let md = "# Intro\n\n## Setup\n\ntext\n\n## Setup\n\nmore\n";
+    let lines = render_markdown(md, 60, CodeStyle::default(), "TwoDark", false);
+    let slugs: Vec<String> = compute_md_anchors(&lines)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    // GitHub disambiguates duplicate slugs with -1, -2, …
+    assert_eq!(
+        slugs,
+        vec![
+            "intro".to_string(),
+            "setup".to_string(),
+            "setup-1".to_string()
+        ]
+    );
+}
+
+#[test]
+fn replace_emoji_shortcodes_converts_known_keeps_unknown() {
+    let rocket = emojis::get_by_shortcode("rocket").unwrap().as_str();
+    let tada = emojis::get_by_shortcode("tada").unwrap().as_str();
+    assert_eq!(
+        replace_emoji_shortcodes("ship it :rocket:"),
+        Some(format!("ship it {rocket}"))
+    );
+    // Multiple shortcodes with surrounding text.
+    assert_eq!(
+        replace_emoji_shortcodes("a :rocket: b :tada:"),
+        Some(format!("a {rocket} b {tada}"))
+    );
+    // GitHub-custom shortcode with no Unicode equivalent stays literal.
+    assert_eq!(replace_emoji_shortcodes(":shipit:"), None);
+    // Non-shortcode colons (a clock time) are untouched.
+    assert_eq!(replace_emoji_shortcodes("meet at 10:30"), None);
+    assert_eq!(replace_emoji_shortcodes("plain text"), None);
+}
+
+#[test]
+fn substitute_emoji_skips_code_spans() {
+    use ratatui::style::{Color, Style};
+    let code = Style::new().bg(Color::Rgb(40, 40, 40)); // inline code carries a background
+    let lines = vec![Line::from(vec![
+        Span::raw("say :rocket: "),
+        Span::styled(":rocket:", code),
+    ])];
+    let out = substitute_emoji(lines);
+    assert!(
+        !out[0].spans[0].content.contains(":rocket:"),
+        "plain-text shortcode is converted"
+    );
+    assert_eq!(
+        out[0].spans[1].content.as_ref(),
+        ":rocket:",
+        "shortcode inside a code span stays literal"
+    );
+}
+
+#[test]
+fn md_emoji_false_leaves_shortcodes() {
+    let dir = std::env::temp_dir().join("konoma_emoji_off_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.md_emoji = false;
+    let app = App::new(dir.clone(), cfg).unwrap();
+    let (lines, _) = app.postprocess_md(vec![Line::from(Span::raw("hi :rocket:"))]);
+    let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(joined.contains(":rocket:"), "emoji off keeps the shortcode");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// Regression: with `code_bg = "none"` (a supported theme setting) inline code has NO background —
+// only `fg(White)` — and code-block lines have no fill either, only the `▎` gutter. Autolink/emoji
+// must still leave code content literal, keying off the style/gutter rather than a background.
+#[test]
+fn autolink_and_emoji_skip_code_without_background() {
+    use ratatui::style::{Color, Style};
+    let white = Style::new().fg(Color::White); // inline code when code_bg = "none"
+    let gutter = Style::new().fg(Color::Cyan); // code-block gutter (CODE_GUTTER_FG = Cyan)
+
+    // Inline code (fg White, no bg): a URL and a shortcode inside it stay literal.
+    let inline = vec![Line::from(vec![
+        Span::raw("see "),
+        Span::styled("https://x.example :rocket:", white),
+    ])];
+    let (out, targets) = autolink_bare_urls(inline.clone(), vec![]);
+    assert!(targets.is_empty(), "no link created inside inline code");
+    assert_eq!(out[0].spans.iter().filter(|s| is_link_span(s)).count(), 0);
+    let em = substitute_emoji(inline);
+    assert!(
+        em[0].spans[1].content.contains(":rocket:"),
+        "shortcode stays literal in inline code"
+    );
+
+    // Code-block line (first span is the `▎` gutter): the whole line is skipped.
+    let block = vec![Line::from(vec![
+        Span::styled("▎ ", gutter),
+        Span::raw("curl https://y.example # :tada:"),
+    ])];
+    let (_, btargets) = autolink_bare_urls(block.clone(), vec![]);
+    assert!(btargets.is_empty(), "no link created inside a code block");
+    let bem = substitute_emoji(block);
+    let joined: String = bem[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        joined.contains(":tada:"),
+        "shortcode stays literal in code block"
+    );
+}
+
+#[test]
 fn decorate_links_highlights_focused() {
     use ratatui::style::{Color, Modifier, Style};
     let dir = std::env::temp_dir().join("konoma_links_hl_test");
@@ -4693,12 +4950,16 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     app.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
     app.mode = Mode::Preview;
 
-    // アンカー(#) は未対応の旨を flash。
+    // アンカー(#) は、該当見出しが無ければ「見つからない」旨を flash(未対応ではない)。
+    // ここでは md_cache 未構築(描画していない)ので anchors は空 → NotFound 扱い。
     app.open_link_target("#section").unwrap();
-    assert_eq!(
-        app.flash.as_deref(),
-        Some(tr(app.lang, crate::i18n::Msg::AnchorsUnsupported)),
-        "アンカーは未対応通知"
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap()
+            .contains(tr(app.lang, crate::i18n::Msg::AnchorNotFound)),
+        "アンカー未一致は見出し無し通知: {:?}",
+        app.flash
     );
 
     // 実在しないローカルパスは NotFound 通知。

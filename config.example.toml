@@ -136,6 +136,38 @@ follow_view = "diff"
 # ≤1 element) falls back to the default.
 md_task_states = [" ", "x"]
 
+# Auto-link bare URLs and emails in Markdown previews (GFM autolink), like GitHub: a plain
+# https://…, www.…, or foo@bar.com becomes a focusable link (Tab to it, Enter opens it). Links
+# inside code spans / code fences are never auto-linked. false leaves bare URLs as plain text.
+md_autolink = true
+
+# Render GitHub-style alerts as colored callout boxes with an icon and label, instead of a plain
+# blockquote. Recognized markers (case-insensitive, plus common aliases): [!NOTE] [!TIP]
+# [!IMPORTANT] [!WARNING] [!CAUTION]. false renders them as ordinary blockquotes (marker kept literal).
+#   > [!NOTE]
+#   > Body text here.
+md_alerts = true
+
+# Convert :shortcode: emoji to real Unicode emoji in Markdown previews, like GitHub (:rocket: → 🚀).
+# Shortcodes with no Unicode equivalent (GitHub-custom like :shipit:) are left as text. Inside code
+# they stay literal. Set false if emoji width upsets column alignment in your terminal/font.
+md_emoji = true
+
+# Recognize leading YAML front matter (--- ... --- at the very start) and show it as a compact dim
+# metadata block instead of a rule + raw YAML. Default true. false renders the leading --- and YAML
+# as ordinary Markdown.
+md_frontmatter = true
+
+# Render GFM footnotes: text[^1] references become superscript numbers and the [^1]: ... definitions
+# are collected into a numbered footnotes section at the end. Default true. false leaves them literal.
+md_footnotes = true
+
+# Render common inline HTML that GitHub shows but the Markdown engine strips: <del>/<s>/<strike> as
+# strikethrough, <kbd> as an inline-code keycap, <sup>/<sub> as Unicode (when the text maps), <br> as
+# a hard line break. Default true. (<mark>/<ins> have no faithful terminal form — only their text is
+# kept either way.) false leaves all these tags to be stripped.
+md_inline_html = true
+
 # Background-activity indicator. While something runs in the background (git ignore-file scan, media load,
 # highlight warm-up, inline-image fetch, …), a spinner and job name (+n when several) is shown at the top-right.
 # Nothing is shown when idle (= zero idle load).

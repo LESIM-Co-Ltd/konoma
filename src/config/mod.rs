@@ -337,6 +337,31 @@ pub struct UiConfig {
     /// character; e.g. `[" ", "/", "x"]` adds an Obsidian-style "in progress" state (shown as `[/]`).
     /// A state not in the list normalizes to the first entry on toggle. Invalid config falls back to the default.
     pub md_task_states: Vec<String>,
+    /// Auto-link bare URLs and emails in Markdown previews (GFM autolink), the way GitHub does: a plain
+    /// `https://…`, `www.…`, or `foo@bar.com` becomes a focusable link (Tab to it, Enter opens it). Default
+    /// true. Links inside code spans / code fences are never auto-linked. false keeps them as plain text.
+    pub md_autolink: bool,
+    /// Render GitHub-style alerts (`> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`, and
+    /// their common aliases) as colored callout boxes with an icon and label, instead of a plain blockquote.
+    /// Default true. false renders them as ordinary blockquotes (the `[!TYPE]` marker stays literal).
+    pub md_alerts: bool,
+    /// Convert `:shortcode:` emoji (e.g. `:rocket:` → 🚀) to real Unicode emoji in Markdown previews, the way
+    /// GitHub does. Default true. Shortcodes without a Unicode equivalent (GitHub-custom like `:shipit:`) are
+    /// left as text. false leaves every `:shortcode:` untouched (useful if emoji width upsets column alignment).
+    pub md_emoji: bool,
+    /// Recognize leading YAML front matter (`---` … `---` at the very start) and render it as a compact
+    /// dim metadata block instead of a thematic break + raw YAML text. Default true. false renders the
+    /// leading `---` and the YAML as ordinary Markdown.
+    pub md_frontmatter: bool,
+    /// Render GFM footnotes: `text[^1]` references become superscript numbers and the `[^1]: …`
+    /// definitions are collected into a numbered footnotes section at the end. Default true. false
+    /// leaves `[^1]` and its definition as literal text.
+    pub md_footnotes: bool,
+    /// Render common inline HTML that GitHub shows but tui-markdown strips: `<del>`/`<s>`/`<strike>`
+    /// as strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode (when the text
+    /// maps), and `<br>` as a hard line break. Default true. `<mark>`/`<ins>` have no faithful
+    /// terminal form and keep only their text either way. false leaves all these tags to be stripped.
+    pub md_inline_html: bool,
     /// Show a small spinner + job label at the top-right while background work is in flight
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
@@ -536,6 +561,12 @@ impl Default for UiConfig {
             csv_rainbow: true,
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],
+            md_autolink: true,
+            md_alerts: true,
+            md_emoji: true,
+            md_frontmatter: true,
+            md_footnotes: true,
+            md_inline_html: true,
             busy_indicator: true,
             mermaid: "image".into(),
             mermaid_theme: "dark".into(),
@@ -708,6 +739,9 @@ fn dirs_config_path() -> Option<std::path::PathBuf> {
     p.push(".config/konoma/config.toml");
     Some(p)
 }
+
+#[cfg(test)]
+mod parity_tests;
 
 #[cfg(test)]
 mod tests {

@@ -81,6 +81,11 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-fan
 # 自前で列幅(全角=2幅)を測り罫線描画する。全角を正しく測れるので CJK でも崩れない。
 unicode-width = "0.2"
 
+# Markdown プレビューの `:shortcode:` 絵文字(GitHub の gemoji 相当)を Unicode 絵文字に変換する。
+# 純 Rust・gemoji 準拠のルックアップ表を同梱(外部依存なし=配布容易性 PRD §5 を維持)。
+# Unicode を持たない GitHub 独自ショートコードはそのまま素通しする(原則#3)。
+emojis = "0.9"
+
 # 設定
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

@@ -108,7 +108,9 @@ pub fn render_markdown(
 pub(crate) const DEFAULT_TASK_STATES: &[char] = &[' ', 'x'];
 
 /// `render_markdown` plus the configured task-list states (`ui.md_task_states`): custom state
-/// chars (e.g. `/`) are also recognized as toggleable task markers.
+/// chars (e.g. `/`) are also recognized as toggleable task markers. Test-only shorthand — production
+/// calls `render_markdown_tasks_opts` (with the `ui.md_alerts` flag) via `render_markdown_with_images`.
+#[cfg(test)]
 pub fn render_markdown_tasks(
     src: &str,
     width: u16,
@@ -117,7 +119,21 @@ pub fn render_markdown_tasks(
     icons: bool,
     tasks: &[char],
 ) -> Vec<Line<'static>> {
-    let opts = Options::new(KonomaStyles { code_bg: code.bg });
+    // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on.
+    render_markdown_tasks_opts(src, width, code, theme, icons, tasks, true)
+}
+
+/// Like [`render_markdown_tasks`], with the GitHub-alert (`> [!NOTE]` …) rendering gated by
+/// `alerts` (`ui.md_alerts`). When off, an alert blockquote renders as an ordinary blockquote.
+fn render_markdown_tasks_opts(
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    alerts: bool,
+) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for seg in split_segments(src) {
         match seg {
@@ -125,45 +141,74 @@ pub fn render_markdown_tasks(
                 if text.trim().is_empty() {
                     continue;
                 }
-                // tui-markdown は GFM 表を1行に潰すため、表ブロックだけ先に横取りして
-                // 自前で罫線描画する。残りのテキストは従来どおり tui-markdown へ。
-                for part in split_tables(&text) {
-                    match part {
-                        MdPart::Text(t) => {
-                            if t.trim().is_empty() {
-                                continue;
+                if alerts {
+                    // GitHub alerts are blockquotes led by `> [!TYPE]`; pull them out first (like
+                    // tables/HTML) and draw a colored callout box, rendering the rest normally.
+                    for ap in split_alerts(&text) {
+                        match ap {
+                            AlertPart::Text(t) => {
+                                render_md_text(&mut out, &t, width, code, theme, icons, tasks)
                             }
-                            // HTML ブロック(<details> 等)は tui-markdown が中身ごと捨てるため、
-                            // 先に横取りしてタグを剥いだテキストで見せる(原則#3)。
-                            for hp in split_html_blocks(&t) {
-                                match hp {
-                                    HtmlPart::Text(t2) => {
-                                        if t2.trim().is_empty() {
-                                            continue;
-                                        }
-                                        // from_str_with_options は借用した Text<'_> を返すので即 'static へ複製。
-                                        // tui-markdown は特定入力(例: loose リスト内のタスク項目)で
-                                        // panic する(0.3.7/0.3.8 で確認)。原則#3=クラッシュさせない:
-                                        // 捕捉し、二分割の再帰で**最小の失敗ブロックだけ**を素の
-                                        // テキストへ降格する(丸ごと降格だと実在の文書が全編
-                                        // 無装飾になる — 2026-07-07 ユーザー報告)。
-                                        render_text_block_safe(
-                                            &mut out, &t2, &opts, width, code, theme, icons, tasks,
-                                            0,
-                                        );
-                                    }
-                                    HtmlPart::Html(h) => out.extend(render_html_block(&h)),
-                                }
-                            }
+                            AlertPart::Alert { kind, title, body } => out.extend(render_alert(
+                                kind, &title, &body, width, code, theme, icons, tasks,
+                            )),
                         }
-                        MdPart::Table(raw) => out.extend(render_table(&raw, width, icons)),
                     }
+                } else {
+                    render_md_text(&mut out, &text, width, code, theme, icons, tasks);
                 }
             }
             Segment::Mermaid(code) => out.extend(render_mermaid_block(&code, width)),
         }
     }
     out
+}
+
+/// The tables → HTML-block → tui-markdown pipeline for one Markdown text run. Shared by the top
+/// level and by GitHub-alert bodies (so an alert's content is rendered like any other Markdown).
+fn render_md_text(
+    out: &mut Vec<Line<'static>>,
+    text: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+) {
+    let opts = Options::new(KonomaStyles { code_bg: code.bg });
+    // tui-markdown は GFM 表を1行に潰すため、表ブロックだけ先に横取りして
+    // 自前で罫線描画する。残りのテキストは従来どおり tui-markdown へ。
+    for part in split_tables(text) {
+        match part {
+            MdPart::Text(t) => {
+                if t.trim().is_empty() {
+                    continue;
+                }
+                // HTML ブロック(<details> 等)は tui-markdown が中身ごと捨てるため、
+                // 先に横取りしてタグを剥いだテキストで見せる(原則#3)。
+                for hp in split_html_blocks(&t) {
+                    match hp {
+                        HtmlPart::Text(t2) => {
+                            if t2.trim().is_empty() {
+                                continue;
+                            }
+                            // from_str_with_options は借用した Text<'_> を返すので即 'static へ複製。
+                            // tui-markdown は特定入力(例: loose リスト内のタスク項目)で
+                            // panic する(0.3.7/0.3.8 で確認)。原則#3=クラッシュさせない:
+                            // 捕捉し、二分割の再帰で**最小の失敗ブロックだけ**を素の
+                            // テキストへ降格する(丸ごと降格だと実在の文書が全編
+                            // 無装飾になる — 2026-07-07 ユーザー報告)。
+                            render_text_block_safe(
+                                out, &t2, &opts, width, code, theme, icons, tasks, 0,
+                            );
+                        }
+                        HtmlPart::Html(h) => out.extend(render_html_block(&h)),
+                    }
+                }
+            }
+            MdPart::Table(raw) => out.extend(render_table(&raw, width, icons)),
+        }
+    }
 }
 
 thread_local! {
@@ -298,6 +343,7 @@ pub fn render_markdown_with_images(
     slot_of: &dyn Fn(&str) -> ImageSlot,
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
     mermaid_caption: &str,
+    alerts: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
@@ -307,9 +353,9 @@ pub fn render_markdown_with_images(
     let mut fence_ord = 0usize;
     for part in split_block_parts(src, fences_on) {
         match part {
-            BlockPart::Text(t) => {
-                out.extend(render_markdown_tasks(&t, width, code, theme, icons, tasks))
-            }
+            BlockPart::Text(t) => out.extend(render_markdown_tasks_opts(
+                &t, width, code, theme, icons, tasks, alerts,
+            )),
             BlockPart::Image { alt, url } => match slot_of(&url) {
                 ImageSlot::Inline { cols, rows } => {
                     placements.push(ImagePlacement {
@@ -840,6 +886,27 @@ pub(crate) fn is_code_header_span(span: &Span<'_>) -> bool {
         && span.content.as_ref().starts_with('▎')
 }
 
+/// Whether this span is styled as inline code (`` `…` ``). `KonomaStyles::code()` uses `fg(White)`
+/// (plus an optional background), so post-passes (autolink / emoji) can skip inline-code content
+/// **regardless of whether `ui.theme.code_bg` is set** — GitHub never links or emoji-substitutes
+/// inside code. (`HEAD_FG`/heading colors are Cyan, so this does not catch headings.)
+pub(crate) fn is_inline_code_span(span: &Span<'_>) -> bool {
+    span.style.fg == Some(Color::White)
+}
+
+/// Whether this decorated line is a fenced code-block line (body or header). Such lines carry the
+/// `▎` gutter (fg `CODE_GUTTER_FG`), so autolink/emoji can skip the whole line even when `code_bg`
+/// is `none` (no background to key off of) — a URL/`:shortcode:` inside a code block must stay
+/// literal. Scans **all** spans (not just the first) because inside a GitHub alert every body line
+/// is prefixed with the `▌ ` bar, so a fenced line there is `[▌ ][▎ …]` and the gutter is the
+/// second span. Requiring the gutter fg also keeps a user's plain `▎` text (fg `None`) from being
+/// mistaken for code.
+pub(crate) fn is_code_line(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .any(|s| s.content.starts_with('▎') && s.style.fg == Some(CODE_GUTTER_FG))
+}
+
 /// Raw inner text of each fenced code block (```` ``` ```` / `~~~`), in document order, skipping
 /// `mermaid` fences (they are diverted to diagram rendering and produce no code-block header).
 /// Used by the "copy focused code block" action: the Nth entry maps to the Nth focusable block.
@@ -1279,6 +1346,31 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
         }
     }
     out
+}
+
+/// The heading text of a decorated heading line, or None if the line is not a heading. After
+/// `decorate_headings` the `#` markers are gone; a heading is recognized by its `HEAD_FG` foreground
+/// (headings are the only such lines except the full-width rule under H1/H2 and the code gutter,
+/// both excluded here). Used to build in-page anchor (`[x](#slug)`) jump targets from what's drawn.
+pub(crate) fn heading_text(line: &Line<'_>) -> Option<String> {
+    // tui-markdown puts the heading color on the LINE style (the spans keep fg=None). The full-width
+    // rule under an H1/H2 is the opposite (span fg = HEAD_FG, line fg = None), so keying off the line
+    // fg selects headings and excludes the rule.
+    if line.style.fg != Some(HEAD_FG) {
+        return None;
+    }
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if text.starts_with('▎') {
+        return None; // a code line
+    }
+    let t = text.trim();
+    // A heading inside a GitHub alert carries the "▌ " callout bar as its first span; drop it so the
+    // slug is the heading's own text (otherwise the space after the bar yields a leading "-").
+    let t = t.strip_prefix('▌').map(str::trim_start).unwrap_or(t);
+    if t.is_empty() || t.chars().all(|c| c == '━' || c == '─') {
+        return None;
+    }
+    Some(t.to_string())
 }
 
 /// If the line is a heading (its first span is exactly the form "#".."###### "), return its level.
@@ -1725,6 +1817,500 @@ fn render_html_block(raw: &str) -> Vec<Line<'static>> {
         out.push(Line::from(""));
     }
     out
+}
+
+// ---- GitHub alerts (`> [!NOTE]` … callouts) ----
+
+/// One of the five GitHub alert types (`> [!NOTE]` etc.). A handful of common Obsidian aliases map
+/// onto the nearest GitHub type so those documents render too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    fn parse(s: &str) -> Option<AlertKind> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "note" | "info" => Some(AlertKind::Note),
+            "tip" | "hint" => Some(AlertKind::Tip),
+            "important" => Some(AlertKind::Important),
+            "warning" | "attention" => Some(AlertKind::Warning),
+            "caution" | "danger" | "error" => Some(AlertKind::Caution),
+            _ => None,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
+    fn color(self) -> Color {
+        match self {
+            AlertKind::Note => Color::Blue,
+            AlertKind::Tip => Color::Green,
+            AlertKind::Important => Color::Magenta,
+            AlertKind::Warning => Color::Yellow,
+            AlertKind::Caution => Color::Red,
+        }
+    }
+    /// A Nerd Font glyph (classic FontAwesome block, same source as `ui/icons.rs`, so it is present
+    /// in Symbols Nerd Font). Only used when `ui.icons` is on.
+    fn icon(self) -> char {
+        match self {
+            AlertKind::Note => '\u{f05a}',      // nf-fa-info_circle
+            AlertKind::Tip => '\u{f0eb}',       // nf-fa-lightbulb_o
+            AlertKind::Important => '\u{f0a1}', // nf-fa-bullhorn
+            AlertKind::Warning => '\u{f071}',   // nf-fa-exclamation_triangle
+            AlertKind::Caution => '\u{f06a}',   // nf-fa-exclamation_circle
+        }
+    }
+}
+
+enum AlertPart {
+    Text(String),
+    Alert {
+        kind: AlertKind,
+        title: String,
+        body: String,
+    },
+}
+
+/// Parse a GitHub-alert header line (`> [!NOTE]`, optionally with a trailing Obsidian-style title).
+/// Returns the type and the (possibly empty) title. None if the line is not an alert header.
+fn parse_alert_header(line: &str) -> Option<(AlertKind, String)> {
+    let rest = line.trim_start().strip_prefix('>')?.trim_start();
+    let rest = rest.strip_prefix("[!")?;
+    let close = rest.find(']')?;
+    let kind = AlertKind::parse(&rest[..close])?;
+    Some((kind, rest[close + 1..].trim().to_string()))
+}
+
+/// A blockquote continuation line (`> …` or a bare `>`), whitespace-tolerant.
+fn is_blockquote_line(line: &str) -> bool {
+    line.trim_start().starts_with('>')
+}
+
+/// Strip one level of blockquote marker (`>` and one optional following space) from a line.
+fn strip_blockquote(line: &str) -> String {
+    let l = line.trim_start();
+    let l = l.strip_prefix('>').unwrap_or(l);
+    l.strip_prefix(' ').unwrap_or(l).to_string()
+}
+
+/// Partition Markdown into plain-text runs and GitHub alerts. An alert starts at a `> [!TYPE]`
+/// header and captures the following blockquote lines as its (marker-stripped) body.
+fn split_alerts(md: &str) -> Vec<AlertPart> {
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let lines: Vec<&str> = md.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some((kind, title)) = parse_alert_header(lines[i]) {
+            if !text.is_empty() {
+                parts.push(AlertPart::Text(std::mem::take(&mut text)));
+            }
+            i += 1;
+            let mut body = String::new();
+            while i < lines.len() && is_blockquote_line(lines[i]) {
+                body.push_str(&strip_blockquote(lines[i]));
+                body.push('\n');
+                i += 1;
+            }
+            parts.push(AlertPart::Alert { kind, title, body });
+        } else {
+            text.push_str(lines[i]);
+            text.push('\n');
+            i += 1;
+        }
+    }
+    if !text.is_empty() {
+        parts.push(AlertPart::Text(text));
+    }
+    parts
+}
+
+/// Render a GitHub alert as a colored callout box: a header (`icon Label` in the type's color, bold)
+/// and the Markdown body, every line carrying a colored left bar (`▌`). The body is rendered by the
+/// shared Markdown pipeline, so links, code, lists etc. inside an alert work like anywhere else.
+#[allow(clippy::too_many_arguments)]
+fn render_alert(
+    kind: AlertKind,
+    title: &str,
+    body: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+) -> Vec<Line<'static>> {
+    let color = kind.color();
+    let bar = || Span::styled("▌ ".to_string(), Style::new().fg(color));
+    let mut out = Vec::new();
+    // Header: bar + optional icon + label (+ optional Obsidian-style title), all in the alert color.
+    let mut header = vec![bar()];
+    if icons {
+        header.push(Span::styled(
+            format!("{} ", kind.icon()),
+            Style::new().fg(color),
+        ));
+    }
+    let label = if title.is_empty() {
+        kind.label().to_string()
+    } else {
+        format!("{} — {}", kind.label(), title)
+    };
+    header.push(Span::styled(
+        label,
+        Style::new().fg(color).add_modifier(Modifier::BOLD),
+    ));
+    out.push(Line::from(header));
+    // Body via the shared pipeline (width reduced by the 2-col bar), each line bar-prefixed.
+    let inner = width.saturating_sub(2);
+    let mut body_lines = Vec::new();
+    render_md_text(&mut body_lines, body, inner, code, theme, icons, tasks);
+    for bl in body_lines {
+        let style = bl.style;
+        let mut spans = vec![bar()];
+        spans.extend(bl.spans);
+        out.push(Line::from(spans).style(style));
+    }
+    out
+}
+
+// ---- Inline HTML (`<kbd>`, `<del>`, `<sup>`, `<sub>`, `<br>`) ----
+
+/// Superscript form of a char, or None if it has no clean superscript.
+fn sup_char(c: char) -> Option<char> {
+    Some(match c {
+        '0'..='9' => ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'][c as usize - '0' as usize],
+        '+' => '⁺',
+        '-' => '⁻',
+        '=' => '⁼',
+        '(' => '⁽',
+        ')' => '⁾',
+        'n' => 'ⁿ',
+        'i' => 'ⁱ',
+        _ => return None,
+    })
+}
+
+/// Subscript form of a char, or None if it has no clean subscript.
+fn sub_char(c: char) -> Option<char> {
+    Some(match c {
+        '0'..='9' => ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'][c as usize - '0' as usize],
+        '+' => '₊',
+        '-' => '₋',
+        '=' => '₌',
+        '(' => '₍',
+        ')' => '₎',
+        _ => return None,
+    })
+}
+
+/// Map every char through `f`; return the mapped string only if ALL chars mapped, else the original
+/// (so `<sup>2</sup>` becomes `²` but `<sup>note</sup>` keeps its text rather than mangling it).
+fn map_all_or_keep(inner: &str, f: impl Fn(char) -> Option<char>) -> String {
+    match inner.chars().map(f).collect::<Option<String>>() {
+        Some(s) => s,
+        None => inner.to_string(),
+    }
+}
+
+/// Replace `<tag>inner</tag>` pairs (no attributes) in `s` with `f(inner)`. Case-sensitive, literal.
+fn replace_tag_pair(s: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(o) = rest.find(&open) {
+        let after = o + open.len();
+        let Some(c) = rest[after..].find(&close) else {
+            break;
+        };
+        out.push_str(&rest[..o]);
+        out.push_str(&f(&rest[after..after + c]));
+        rest = &rest[after + c + close.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Convert the common inline HTML that GitHub renders (but tui-markdown strips) into Markdown/Unicode
+/// it renders faithfully: `<del>/<s>/<strike>` → strikethrough, `<kbd>` → an inline-code keycap,
+/// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a hard line break. Fence-aware; a no-op
+/// per line without any of these tags. `<mark>`/`<ins>` have no faithful terminal form and are left
+/// to tui-markdown (their tags are stripped, text kept).
+pub fn process_inline_html(src: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in src.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence || !line.contains('<') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut s = line.to_string();
+        s = replace_tag_pair(&s, "kbd", |i| format!("`{i}`"));
+        s = replace_tag_pair(&s, "del", |i| format!("~~{i}~~"));
+        s = replace_tag_pair(&s, "s", |i| format!("~~{i}~~"));
+        s = replace_tag_pair(&s, "strike", |i| format!("~~{i}~~"));
+        s = replace_tag_pair(&s, "sup", |i| map_all_or_keep(i, sup_char));
+        s = replace_tag_pair(&s, "sub", |i| map_all_or_keep(i, sub_char));
+        for br in ["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<BR />"] {
+            s = s.replace(br, "  \n");
+        }
+        out.push_str(&s);
+        out.push('\n');
+    }
+    out
+}
+
+// ---- Footnotes (`text[^1]` … `[^1]: definition`) ----
+
+/// Superscript form of a number (`12` → `¹²`), for rendering a footnote reference marker.
+fn to_superscript(n: usize) -> String {
+    const SUP: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    n.to_string()
+        .chars()
+        .map(|c| SUP[c.to_digit(10).unwrap_or(0) as usize])
+        .collect()
+}
+
+/// If the line is a footnote definition `[^id]: text`, return `(id, text)`.
+fn parse_footnote_def(line: &str) -> Option<(String, String)> {
+    let t = line.trim_start();
+    let rest = t.strip_prefix("[^")?;
+    let close = rest.find(']')?;
+    let id = &rest[..close];
+    if id.is_empty() || id.contains('[') {
+        return None;
+    }
+    let after = rest[close + 1..].strip_prefix(':')?;
+    Some((id.to_string(), after.trim().to_string()))
+}
+
+/// Scan `line` for footnote references `[^id]`, returning the ids in order.
+fn find_footnote_refs(line: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut i = 0;
+    while i < line.len() {
+        if line[i..].starts_with("[^") {
+            if let Some(close) = line[i + 2..].find(']') {
+                let id = &line[i + 2..i + 2 + close];
+                if !id.is_empty() && !id.contains('[') {
+                    ids.push(id.to_string());
+                    i += 2 + close + 1;
+                    continue;
+                }
+            }
+        }
+        i += line[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    ids
+}
+
+/// Replace footnote references `[^id]` in `line` with a superscript number (only ids present in
+/// `num`; an undefined reference is left literal, matching GitHub).
+fn replace_footnote_refs(line: &str, num: &std::collections::HashMap<String, usize>) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < line.len() {
+        if line[i..].starts_with("[^") {
+            if let Some(close) = line[i + 2..].find(']') {
+                let id = &line[i + 2..i + 2 + close];
+                if !id.is_empty() && !id.contains('[') {
+                    if let Some(&n) = num.get(id) {
+                        out.push_str(&to_superscript(n));
+                        i += 2 + close + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        let ch_len = line[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+/// Rewrite `src` so GFM footnotes render: references `[^id]` become superscript numbers (ordered by
+/// first appearance), the `[^id]: …` definitions are pulled out of the body, and a numbered
+/// footnotes section is appended after a rule. Fence-aware — refs/defs inside a code fence are left
+/// verbatim. A no-op (returns `src` unchanged) when there are no definitions. Single-line
+/// definitions only.
+pub fn process_footnotes(src: &str) -> String {
+    use std::collections::HashMap;
+    let lines: Vec<&str> = src.lines().collect();
+    // Pass 1: collect definitions (fence-aware) and mark their lines.
+    let mut defs: Vec<(String, String)> = Vec::new();
+    let mut is_def = vec![false; lines.len()];
+    let mut in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some((id, text)) = parse_footnote_def(line) {
+            defs.push((id, text));
+            is_def[i] = true;
+        }
+    }
+    if defs.is_empty() {
+        return src.to_string();
+    }
+    let def_ids: std::collections::HashSet<&str> = defs.iter().map(|(id, _)| id.as_str()).collect();
+    // Pass 2: number by first reference appearance (fence-aware, defs excluded).
+    let mut num: HashMap<String, usize> = HashMap::new();
+    let mut next = 1usize;
+    in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || is_def[i] {
+            continue;
+        }
+        for id in find_footnote_refs(line) {
+            if def_ids.contains(id.as_str()) && !num.contains_key(&id) {
+                num.insert(id, next);
+                next += 1;
+            }
+        }
+    }
+    if num.is_empty() {
+        return src.to_string(); // definitions present but never referenced → leave as-is
+    }
+    // Pass 3: rebuild the body (drop def lines, replace refs; fences verbatim).
+    let mut out = String::new();
+    in_fence = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if is_def[i] {
+            continue;
+        }
+        out.push_str(&replace_footnote_refs(line, &num));
+        out.push('\n');
+    }
+    // Append the footnotes section, numbered by reference order.
+    let mut items: Vec<(usize, &str)> = num
+        .iter()
+        .map(|(id, &n)| {
+            let text = defs
+                .iter()
+                .find(|(did, _)| did == id)
+                .map(|(_, t)| t.as_str())
+                .unwrap_or("");
+            (n, text)
+        })
+        .collect();
+    items.sort_by_key(|(n, _)| *n);
+    out.push_str("\n---\n\n");
+    for (n, text) in items {
+        out.push_str(&format!("{n}. {text}\n"));
+    }
+    out
+}
+
+// ---- YAML front matter (leading `---` … `---`) ----
+
+/// Split off leading YAML front matter (a `---` fence on the very first line, closed by `---` or
+/// `...` on its own line). Returns `(Some(inner), body)` when present, else `(None, src)`. Only the
+/// document start is considered, matching GitHub — a later `---` is an ordinary thematic break.
+pub fn strip_front_matter(src: &str) -> (Option<String>, String) {
+    let lines: Vec<&str> = src.lines().collect();
+    if lines.first().map(|l| l.trim_end()) != Some("---") {
+        return (None, src.to_string());
+    }
+    let Some(rel) = lines[1..]
+        .iter()
+        .position(|l| matches!(l.trim_end(), "---" | "..."))
+    else {
+        return (None, src.to_string()); // no closing fence → not front matter
+    };
+    let close = rel + 1;
+    let inner = lines[1..close].join("\n");
+    let body = lines[close + 1..].join("\n");
+    (Some(inner), body)
+}
+
+/// Render front matter as a compact dim metadata block: top-level `key: value` lines get an accented
+/// key, other lines are dimmed as-is, and a full-width dim rule closes the block. Recognizing it this
+/// way also stops the leading `---` from being drawn as a thematic break and the YAML from being
+/// misparsed.
+pub fn render_front_matter(inner: &str, width: u16) -> Vec<Line<'static>> {
+    let key_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::DIM);
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut out = Vec::new();
+    for raw in inner.lines() {
+        let line = raw.trim_end();
+        if line.trim().is_empty() {
+            out.push(Line::from(String::new()));
+            continue;
+        }
+        // Top-level `key: value` (not indented) → accent the key.
+        if !line.starts_with([' ', '\t']) {
+            if let Some(colon) = line.find(':') {
+                if colon > 0 {
+                    return_split_key(&mut out, line, colon, key_style, dim);
+                    continue;
+                }
+            }
+        }
+        out.push(Line::from(Span::styled(line.to_string(), dim)));
+    }
+    out.push(Line::from(Span::styled(
+        "─".repeat(width as usize),
+        Style::new().fg(TABLE_BORDER_FG),
+    )));
+    out.push(Line::from(String::new()));
+    out
+}
+
+fn return_split_key(
+    out: &mut Vec<Line<'static>>,
+    line: &str,
+    colon: usize,
+    key_style: Style,
+    dim: Style,
+) {
+    let (k, v) = line.split_at(colon); // v starts at ':'
+    out.push(Line::from(vec![
+        Span::styled(k.to_string(), key_style),
+        Span::styled(v.to_string(), dim),
+    ]));
 }
 
 /// Whether the line is a GFM table delimiter row (e.g. `|---|:--:|`). Contains `-` and `|`, with only spaces/`-`/`:`/`|` as characters.
@@ -3225,6 +3811,7 @@ plain body
             &slot_of,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
+            true,
         );
         assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
     }
@@ -3243,6 +3830,7 @@ plain body
             &slot_of,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
+            true,
         );
         assert_eq!(imgs.len(), 1);
         let p = &imgs[0];
@@ -3273,6 +3861,7 @@ plain body
             &slot_of,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
+            true,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3294,6 +3883,7 @@ plain body
             &slot_of,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
+            true,
         );
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3445,6 +4035,7 @@ plain body
             &|_| ImageSlot::Unavailable,
             &slot_img,
             "Enter: full screen",
+            true,
         );
         assert_eq!(imgs.len(), 1, "フェンスが placement になる");
         assert!(is_mermaid_fence_url(&imgs[0].url), "合成キー URL");
@@ -3465,6 +4056,7 @@ plain body
             &|_| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Loading,
             "Enter: full screen",
+            true,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3480,6 +4072,7 @@ plain body
             &|_| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
+            true,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3506,6 +4099,7 @@ plain body
                 &|_| ImageSlot::Unavailable,
                 &slot_img,
                 caption,
+                true,
             )
         };
         let (en, ei) = render("Enter: full screen");
@@ -3531,5 +4125,232 @@ plain body
                 "番兵 span が残る"
             );
         }
+    }
+
+    #[test]
+    fn parse_alert_header_recognizes_types_and_aliases() {
+        assert_eq!(parse_alert_header("> [!NOTE]").unwrap().0, AlertKind::Note);
+        assert_eq!(
+            parse_alert_header("> [!warning]").unwrap().0,
+            AlertKind::Warning
+        );
+        // Alias + trailing Obsidian-style title.
+        let (k, title) = parse_alert_header("> [!danger] Watch out").unwrap();
+        assert_eq!(k, AlertKind::Caution);
+        assert_eq!(title, "Watch out");
+        // Not alerts.
+        assert!(parse_alert_header("> just a quote").is_none());
+        assert!(parse_alert_header("> [!NOPE]").is_none());
+        assert!(parse_alert_header("[!NOTE]").is_none()); // needs the blockquote marker
+    }
+
+    #[test]
+    fn split_alerts_captures_body_and_surrounding_text() {
+        let md = "intro\n\n> [!TIP]\n> be **bold**\n> line two\n\nafter\n";
+        let parts = split_alerts(md);
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(&parts[0], AlertPart::Text(t) if t.contains("intro")));
+        match &parts[1] {
+            AlertPart::Alert { kind, body, .. } => {
+                assert_eq!(*kind, AlertKind::Tip);
+                assert!(body.contains("be **bold**") && body.contains("line two"));
+                assert!(!body.contains('>'), "blockquote markers stripped from body");
+            }
+            _ => panic!("expected an alert"),
+        }
+        assert!(matches!(&parts[2], AlertPart::Text(t) if t.contains("after")));
+    }
+
+    #[test]
+    fn render_alert_makes_a_colored_callout_not_literal_marker() {
+        let md = "> [!WARNING]\n> careful with [docs](./x.md)\n";
+        // alerts on
+        let on =
+            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined: String = on
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined.contains("Warning"),
+            "callout shows the label: {joined:?}"
+        );
+        assert!(
+            !joined.contains("[!WARNING]"),
+            "the raw marker is gone: {joined:?}"
+        );
+        // Header line carries the alert color (yellow for Warning) and a left bar.
+        assert!(
+            on[0]
+                .spans
+                .iter()
+                .any(|s| s.content.contains('▌') && s.style.fg == Some(Color::Yellow)),
+            "colored left bar on the header"
+        );
+        // The body's Markdown still renders (the link label survives as a span).
+        let has_link_label = on
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.contains("docs"));
+        assert!(has_link_label, "alert body Markdown is rendered");
+
+        // alerts off → ordinary blockquote, the marker stays literal.
+        let off =
+            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, false);
+        let joined_off: String = off
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined_off.contains("[!WARNING]"),
+            "alerts off keeps the raw marker: {joined_off:?}"
+        );
+    }
+
+    #[test]
+    fn process_inline_html_converts_common_tags() {
+        assert!(process_inline_html("<del>gone</del>\n").contains("~~gone~~"));
+        assert!(process_inline_html("<s>x</s>\n").contains("~~x~~"));
+        assert!(process_inline_html("<strike>y</strike>\n").contains("~~y~~"));
+        assert!(process_inline_html("<kbd>Ctrl</kbd>\n").contains("`Ctrl`"));
+        assert!(process_inline_html("H<sub>2</sub>O and x<sup>2</sup>\n").contains("H₂O and x²"));
+        // Non-mappable sup content keeps its text rather than mangling it.
+        assert!(process_inline_html("<sup>note</sup>\n").contains("note"));
+        // <br> → a hard line break (two trailing spaces + newline).
+        assert!(process_inline_html("a<br>b\n").contains("a  \nb"));
+    }
+
+    #[test]
+    fn process_inline_html_leaves_fences_untouched() {
+        let out = process_inline_html("```\n<kbd>x</kbd>\n```\n");
+        assert!(
+            out.contains("<kbd>x</kbd>"),
+            "tags inside a fence stay literal"
+        );
+    }
+
+    #[test]
+    fn to_superscript_single_and_multi_digit() {
+        assert_eq!(to_superscript(1), "¹");
+        assert_eq!(to_superscript(10), "¹⁰");
+        assert_eq!(to_superscript(12), "¹²");
+    }
+
+    #[test]
+    fn process_footnotes_superscripts_refs_and_appends_section() {
+        let src = "See note.[^a] And another.[^b]\n\n[^a]: first def\n[^b]: second def\n";
+        let out = process_footnotes(src);
+        // Referenced in order a, b → numbered 1, 2 (superscript).
+        assert!(out.contains("See note.¹"), "out = {out:?}");
+        assert!(out.contains("And another.²"));
+        // Definition lines are pulled out of the body into a numbered section.
+        assert!(!out.contains("[^a]:"));
+        assert!(out.contains("1. first def"));
+        assert!(out.contains("2. second def"));
+        assert!(
+            out.contains("---"),
+            "a rule separates the footnotes section"
+        );
+    }
+
+    #[test]
+    fn process_footnotes_leaves_fences_and_undefined_refs() {
+        let src = "text[^1] and [^nodef]\n\n```\ncode [^1] here\n```\n\n[^1]: def one\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("text¹"), "defined ref superscripted");
+        assert!(out.contains("[^nodef]"), "undefined ref stays literal");
+        assert!(
+            out.contains("code [^1] here"),
+            "ref inside a fence untouched"
+        );
+    }
+
+    #[test]
+    fn process_footnotes_no_definitions_is_noop() {
+        let src = "just [^1] with no definition\n";
+        assert_eq!(process_footnotes(src), src);
+    }
+
+    #[test]
+    fn heading_inside_alert_strips_bar_for_anchor() {
+        // A heading inside a GitHub alert keeps the line's HEAD_FG but gains a "▌ " bar span. Its
+        // anchor text must drop the bar (else the slug gets a spurious leading "-").
+        let md = "> [!NOTE]\n> ## Sub Heading\n> body\n";
+        let lines = render_markdown_tasks_opts(
+            md,
+            60,
+            NO_CODE,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
+        let ht = lines.iter().find_map(heading_text);
+        assert_eq!(ht.as_deref(), Some("Sub Heading"));
+    }
+
+    #[test]
+    fn strip_front_matter_extracts_leading_block_only() {
+        let (fm, body) =
+            strip_front_matter("---\ntitle: Hi\ntags: [a, b]\n---\n# Heading\n\nbody\n");
+        assert_eq!(fm.as_deref(), Some("title: Hi\ntags: [a, b]"));
+        assert!(body.starts_with("# Heading"), "body = {body:?}");
+        // A closing `...` also terminates front matter.
+        assert_eq!(
+            strip_front_matter("---\nk: v\n...\nrest\n").0.as_deref(),
+            Some("k: v")
+        );
+        // No leading fence → none.
+        assert_eq!(strip_front_matter("# not front matter\n").0, None);
+        // Leading `---` but no closing fence → an ordinary thematic break, not front matter.
+        assert_eq!(strip_front_matter("---\njust text, no close\n").0, None);
+    }
+
+    #[test]
+    fn render_front_matter_accents_keys_and_closes_with_rule() {
+        let lines = render_front_matter("title: Hi\n  nested: x\nplain", 20);
+        // Top-level key is accented (Cyan + DIM); the `: value` stays dim.
+        assert!(lines[0].spans[0].content.starts_with("title"));
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Cyan));
+        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::DIM));
+        // A dim rule closes the block.
+        assert!(lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('─'))));
+        // The block never carries the heading line-color, so anchors won't treat it as a heading.
+        assert!(lines.iter().all(|l| l.style.fg != Some(HEAD_FG)));
+    }
+
+    #[test]
+    fn alert_body_code_fence_is_detected_as_code_line() {
+        // A code fence inside an alert: every body line gets the `▌ ` bar, so the `▎` gutter is the
+        // *second* span. is_code_line must still flag it, or autolink/emoji would rewrite the code
+        // content (GitHub keeps it verbatim). Uses NO_CODE = the code_bg="none" scenario.
+        let md = "> [!NOTE]\n> ```sh\n> curl https://x.example # :tada:\n> ```\n";
+        let lines = render_markdown_tasks_opts(
+            md,
+            60,
+            NO_CODE,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
+        let code_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("curl")))
+            .expect("the fenced body line is present");
+        assert!(
+            is_code_line(code_line),
+            "an alert-wrapped code line is detected as code: {:?}",
+            code_line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        );
+        // A plain body line that merely starts with `▎` (fg None) is NOT a code line.
+        let fake = Line::from(vec![Span::raw("▎ see https://x.com")]);
+        assert!(!is_code_line(&fake), "plain ▎ text is not a code line");
     }
 }

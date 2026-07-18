@@ -955,6 +955,8 @@ struct MdCache {
     /// Effective mermaid target rows the cache was built with (fit-to-view). A viewport change
     /// only invalidates documents that actually contain fence diagrams.
     fence_rows: u16,
+    /// In-page anchor map (GitHub slug → decorated logical-line index) for `[x](#slug)` jumps.
+    anchors: Vec<(String, usize)>,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -3028,6 +3030,19 @@ impl App {
         self.focused_item
     }
 
+    /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
+    /// exactly which URLs became focusable links — e.g. that a URL inside code did NOT).
+    #[cfg(test)]
+    pub fn md_link_targets(&self) -> Vec<String> {
+        self.md_items
+            .iter()
+            .filter_map(|it| match &it.kind {
+                MdItemKind::Link { target } => Some(target.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
     /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
@@ -3407,10 +3422,11 @@ impl App {
             (raw, images, remote, src_lines)
         };
         let _ = &remote;
-        let (lines, targets) = collapse_links(raw, self.cfg.ui.icons);
+        let (lines, targets) = self.postprocess_md(raw);
         // 描画済み mermaid placement のソース序数(文書順)を番兵の照合用に渡す。
         let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
         let items = build_md_items(&lines, &targets, &fence_ords);
+        let anchors = compute_md_anchors(&lines);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let row_prefix = if self.cfg.ui.wrap && width > 0 {
             use ratatui::text::Text;
@@ -3449,7 +3465,28 @@ impl App {
             max_line_cols,
             row_prefix,
             fence_rows,
+            anchors,
         });
+    }
+
+    /// Scroll the current Markdown preview so the heading matching `slug` (a GitHub-style in-page
+    /// anchor, minus the leading `#`) is at the top of the view. Returns false if there is no such
+    /// heading (so the caller can flash). Keeps the decorated view (unlike a raw-source line jump).
+    fn md_scroll_to_anchor(&mut self, slug: &str) -> bool {
+        let target = slug.trim().to_lowercase();
+        let Some(logical) = self.md_cache.as_ref().and_then(|c| {
+            c.anchors
+                .iter()
+                .find(|(s, _)| *s == target)
+                .map(|(_, i)| *i)
+        }) else {
+            return false;
+        };
+        let (row, _) = self.md_visual_span(logical);
+        // The draw path clamps preview_scroll against the document height, so an anchor near the
+        // end simply scrolls as far as it can.
+        self.preview_scroll = row.min(u16::MAX as usize) as u16;
+        true
     }
 
     /// Ensure the decorated cache for `width` and return (total display rows, widest line in cells).
@@ -3578,6 +3615,32 @@ impl App {
                     tab_width: self.cfg.ui.tab_width,
                     wrap: self.cfg.ui.wrap,
                 };
+                // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
+                // metadata block is prepended to the result below (and image line indices offset).
+                let (fm_lines, src) = if self.cfg.ui.md_frontmatter {
+                    match crate::preview::markdown::strip_front_matter(&src) {
+                        (Some(fm), body) => (
+                            crate::preview::markdown::render_front_matter(&fm, width),
+                            body,
+                        ),
+                        (None, body) => (Vec::new(), body),
+                    }
+                } else {
+                    (Vec::new(), src)
+                };
+                // Footnotes: rewrite `[^1]` refs to superscripts and pull `[^1]: …` defs into a
+                // section at the end (fence-aware; no-op without definitions).
+                let src = if self.cfg.ui.md_footnotes {
+                    crate::preview::markdown::process_footnotes(&src)
+                } else {
+                    src
+                };
+                // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode tui-markdown renders.
+                let src = if self.cfg.ui.md_inline_html {
+                    crate::preview::markdown::process_inline_html(&src)
+                } else {
+                    src
+                };
                 // Decide how to render each image URL. A local file or a cached remote fetch resolves to
                 // a path → Inline (with its display size in cells). An uncached remote URL is Loading
                 // (a fetch is kicked off separately, in `decorated_lines`) unless it has already failed.
@@ -3653,7 +3716,7 @@ impl App {
                         None => MermaidSlot::Loading,
                     }
                 };
-                let (lines, images) = crate::preview::markdown::render_markdown_with_images(
+                let (mut lines, mut images) = crate::preview::markdown::render_markdown_with_images(
                     &src,
                     width,
                     code,
@@ -3663,6 +3726,7 @@ impl App {
                     &slot_of,
                     &mermaid_slot,
                     tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                    self.cfg.ui.md_alerts,
                 );
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
@@ -3674,6 +3738,15 @@ impl App {
                 } else {
                     Vec::new()
                 };
+                // Prepend the front-matter metadata block, shifting image placements down past it.
+                if !fm_lines.is_empty() {
+                    for p in &mut images {
+                        p.line += fm_lines.len();
+                    }
+                    let mut all = fm_lines;
+                    all.extend(lines);
+                    lines = all;
+                }
                 (lines, images, remote, fences, src_lines)
             }
             Some(PreviewKind::Mermaid(_)) => (
@@ -5363,9 +5436,29 @@ impl App {
     /// Test-only equivalent of the production path (`ensure_md_cache` + `md_slice`) over caller-
     /// supplied lines: collapse links, rebuild `md_items`, and invert the focused item. Shares
     /// `build_md_items` / `invert_focused_line` with the cache path so the two cannot drift.
+    /// Post-process decorated Markdown lines just before caching/rendering: collapse the `label
+    /// (URL)` links tui-markdown emits, then (when `ui.md_autolink`) auto-link bare URLs/emails, then
+    /// (when `ui.md_emoji`) convert `:shortcode:` emoji. Shared by the cache build (`ensure_md_cache`)
+    /// and the test-only decorate path so link/emoji collection cannot drift between them. Emoji runs
+    /// last so width-affecting substitutions are reflected in the caller's reflow/`row_prefix`.
+    fn postprocess_md(&self, lines: Vec<Line<'static>>) -> (Vec<Line<'static>>, Vec<String>) {
+        let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
+        let (lines, targets) = if self.cfg.ui.md_autolink {
+            autolink_bare_urls(lines, targets)
+        } else {
+            (lines, targets)
+        };
+        let lines = if self.cfg.ui.md_emoji {
+            substitute_emoji(lines)
+        } else {
+            lines
+        };
+        (lines, targets)
+    }
+
     #[cfg(test)]
     pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-        let (lines, targets) = collapse_links(lines, self.cfg.ui.icons);
+        let (lines, targets) = self.postprocess_md(lines);
         let items = build_md_items(&lines, &targets, &[]);
         // フォーカス添字を範囲内にクランプ。
         match self.focused_item {
@@ -5636,8 +5729,14 @@ impl App {
         if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
             return self.open_external(t);
         }
-        if t.starts_with('#') {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::AnchorsUnsupported).into());
+        if let Some(anchor) = t.strip_prefix('#') {
+            if !self.md_scroll_to_anchor(anchor) {
+                self.flash = Some(format!(
+                    "{}{}",
+                    tr(self.lang, crate::i18n::Msg::AnchorNotFound),
+                    t
+                ));
+            }
             return Ok(());
         }
         let path_part = t.split('#').next().unwrap_or(t);
@@ -5704,8 +5803,8 @@ impl App {
             return self.open_external(t);
         }
         if t.starts_with('#') {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::AnchorsUnsupported).into());
-            return Ok(());
+            // A same-document anchor makes no sense in a new tab — scroll in place instead.
+            return self.open_link_target(t);
         }
         // タブを作る前に、現在の md ファイルの位置基準でローカルパスを解決しておく。
         let resolved = self.resolve_link_local(t);
@@ -6362,6 +6461,49 @@ fn is_link_span(span: &Span<'static>) -> bool {
 /// same order the link spans appear. `fence_ords` are the **source** ordinals of the rendered
 /// mermaid placements in order (from `ImagePlacement::fence_ord`) — the k-th sentinel takes the
 /// k-th value. Shared by the cache build and the test-only decorate path.
+/// Slugify a heading's text the way GitHub does for `#anchor` links: lowercase, drop punctuation
+/// except `-`/`_`, spaces → `-` (consecutive spaces → consecutive `-`, not collapsed). Unicode
+/// letters/digits are kept (CJK headings anchor too). Used to match `[x](#slug)` link targets.
+fn github_slug(text: &str) -> String {
+    let mut s = String::new();
+    for c in text.trim().chars() {
+        if c.is_alphanumeric() {
+            s.extend(c.to_lowercase());
+        } else if c == ' ' {
+            s.push('-');
+        } else if c == '-' || c == '_' {
+            s.push(c);
+        }
+    }
+    s
+}
+
+/// Build the in-page anchor map (slug → decorated logical-line index) from the rendered lines, in
+/// document order, with GitHub's duplicate-slug disambiguation (`slug`, `slug-1`, `slug-2`, …).
+fn compute_md_anchors(lines: &[Line<'static>]) -> Vec<(String, usize)> {
+    use std::collections::HashMap;
+    let mut anchors = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(text) = crate::preview::markdown::heading_text(line) else {
+            continue;
+        };
+        let base = github_slug(&text);
+        if base.is_empty() {
+            continue;
+        }
+        let n = counts.entry(base.clone()).or_insert(0);
+        let slug = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{n}")
+        };
+        *n += 1;
+        anchors.push((slug, i));
+    }
+    anchors
+}
+
 fn build_md_items(
     lines: &[Line<'static>],
     targets: &[String],
@@ -6498,6 +6640,311 @@ fn collapse_links(lines: Vec<Line<'static>>, icons: bool) -> (Vec<Line<'static>>
         out.push(Line::from(new).style(style));
     }
     (out, targets)
+}
+
+/// Trim trailing punctuation from a matched URL run, GFM-style: drop a trailing run of
+/// `? ! . , : * _ ~ ' "` and any `)` that has no matching `(` inside the run (iteratively).
+fn trim_url_end(s: &str) -> &str {
+    let mut end = s.len();
+    loop {
+        let sub = &s[..end];
+        let Some(last) = sub.chars().last() else {
+            break;
+        };
+        if "?!.,:*_~'\"".contains(last) {
+            end -= last.len_utf8();
+            continue;
+        }
+        if last == ')' && sub.matches(')').count() > sub.matches('(').count() {
+            end -= 1;
+            continue;
+        }
+        break;
+    }
+    &s[..end]
+}
+
+/// A character that ends a bare-URL run: whitespace, `<`, or CJK/fullwidth punctuation. The last set
+/// matters for konoma's CJK audience — Japanese text often abuts a URL with no ASCII space
+/// (`https://x.example、と`), and GFM's "stop only at whitespace/`<`" would swallow the trailing
+/// characters into the link. Stopping at these keeps the URL clean.
+fn is_url_stop(c: char) -> bool {
+    c.is_whitespace()
+        || c == '<'
+        || matches!(
+            c,
+            '、' | '。'
+                | '，'
+                | '．'
+                | '！'
+                | '？'
+                | '；'
+                | '：'
+                | '（'
+                | '）'
+                | '「'
+                | '」'
+                | '『'
+                | '』'
+                | '【'
+                | '】'
+                | '〈'
+                | '〉'
+                | '《'
+                | '》'
+                | '…'
+                | '・'
+                | '〜'
+                | '”'
+                | '“'
+        )
+}
+
+/// Match a bare URL autolink at the start of `rest` (`http://…`, `https://…`, or `www.…`). Returns
+/// the matched byte length and the target to open (`www.` gains an `http://` prefix). The run stops
+/// at whitespace / `<` / CJK punctuation (`is_url_stop`), then trailing punctuation is trimmed. None
+/// if `rest` does not start a URL.
+fn match_bare_url(rest: &str) -> Option<(usize, String)> {
+    let is_www = rest.starts_with("www.");
+    if !(is_www || rest.starts_with("http://") || rest.starts_with("https://")) {
+        return None;
+    }
+    let run_end = rest.find(is_url_stop).unwrap_or(rest.len());
+    let run = trim_url_end(&rest[..run_end]);
+    // Need a host after the scheme (or after `www.` a further alphanumeric char).
+    let valid = if is_www {
+        run.len() > 4 && run[4..].contains(|c: char| c.is_ascii_alphanumeric())
+    } else {
+        run.find("://").is_some_and(|p| run.len() > p + 3)
+    };
+    if !valid {
+        return None;
+    }
+    let target = if is_www {
+        format!("http://{run}")
+    } else {
+        run.to_string()
+    };
+    Some((run.len(), target))
+}
+
+fn is_email_local(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-')
+}
+fn is_email_domain(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '-')
+}
+
+/// Match a bare email autolink at the start of `rest` (`local@domain.tld`). Returns the matched byte
+/// length and a `mailto:` target. Requires a non-empty local part, an `@`, and a domain with a dot
+/// whose last label is ≥2 ASCII letters. Trailing `.`/`-` are trimmed from the domain.
+fn match_bare_email(rest: &str) -> Option<(usize, String)> {
+    let local_len: usize = rest
+        .chars()
+        .take_while(|&c| is_email_local(c))
+        .map(char::len_utf8)
+        .sum();
+    if local_len == 0 || !rest[local_len..].starts_with('@') {
+        return None;
+    }
+    let after_at = &rest[local_len + 1..];
+    let mut dom_len: usize = after_at
+        .chars()
+        .take_while(|&c| is_email_domain(c))
+        .map(char::len_utf8)
+        .sum();
+    // Trim trailing '.'/'-' from the domain.
+    while dom_len > 0 && matches!(after_at.as_bytes()[dom_len - 1], b'.' | b'-') {
+        dom_len -= 1;
+    }
+    let domain = &after_at[..dom_len];
+    let tld_ok = domain
+        .rsplit_once('.')
+        .is_some_and(|(_, tld)| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
+    if !tld_ok {
+        return None;
+    }
+    let end = local_len + 1 + dom_len;
+    Some((end, format!("mailto:{}", &rest[..end])))
+}
+
+/// Find bare autolinkable spans (GFM autolink literals) in `text`: `http(s)://…`, `www.…`, and
+/// `local@domain.tld` emails. Returns `(start_byte, end_byte, target)` in document order,
+/// non-overlapping. A pragmatic subset of GFM §6.9: a match may start only at the beginning or after
+/// a non-alphanumeric byte, the run stops at whitespace/`<`, and trailing punctuation (plus
+/// unbalanced `)`) is trimmed. `www.` gets an `http://` prefix; emails a `mailto:` prefix.
+fn find_bare_links(text: &str) -> Vec<(usize, usize, String)> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut out: Vec<(usize, usize, String)> = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let boundary_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        if boundary_ok {
+            let rest = &text[i..];
+            if let Some((len, target)) = match_bare_url(rest).or_else(|| match_bare_email(rest)) {
+                out.push((i, i + len, target));
+                i += len.max(1);
+                continue;
+            }
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
+/// Post-pass over collapsed lines: turn bare URLs/emails in plain-text spans into link spans, and
+/// interleave their targets into `targets` in document order (so `build_md_items` pairs each link
+/// span with the right URL). Skips spans that already carry a link, a background (inline code / code
+/// fence content), or a konoma sentinel (task / code-header / mermaid / hidden-target) — matching
+/// GitHub, which never auto-links inside code.
+fn autolink_bare_urls(
+    lines: Vec<Line<'static>>,
+    in_targets: Vec<String>,
+) -> (Vec<Line<'static>>, Vec<String>) {
+    use ratatui::style::{Color, Modifier, Style};
+    let link_style = Style::new()
+        .fg(Color::Blue)
+        .add_modifier(Modifier::UNDERLINED);
+    let mut out_lines = Vec::with_capacity(lines.len());
+    let mut out_targets = Vec::new();
+    let mut ti = 0usize;
+    for line in lines {
+        // Code-block lines never auto-link (a URL in a fence stays literal). Keep as-is; for any
+        // existing link span (none in practice) carry its target through 1:1 so the k-th link span
+        // in `out_lines` still maps to `out_targets[k]` — no drift if a code line ever holds a link.
+        if crate::preview::markdown::is_code_line(&line) {
+            for span in &line.spans {
+                if is_link_span(span) {
+                    out_targets.push(in_targets.get(ti).cloned().unwrap_or_default());
+                    ti += 1;
+                }
+            }
+            out_lines.push(line);
+            continue;
+        }
+        let style = line.style;
+        let mut new: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+        for span in line.spans {
+            // Existing link span → keep as-is; it owns the next input target (preserve order).
+            if is_link_span(&span) {
+                out_targets.push(in_targets.get(ti).cloned().unwrap_or_default());
+                ti += 1;
+                new.push(span);
+                continue;
+            }
+            // Never auto-link inside code (inline code / bg-filled code) or over a konoma sentinel.
+            if span.style.bg.is_some()
+                || crate::preview::markdown::is_inline_code_span(&span)
+                || crate::preview::markdown::is_task_span(&span)
+                || crate::preview::markdown::is_code_header_span(&span)
+                || crate::preview::markdown::is_mermaid_header_span(&span)
+                || crate::preview::markdown::is_hidden_link_target(&span)
+            {
+                new.push(span);
+                continue;
+            }
+            let text = span.content.into_owned();
+            let matches = find_bare_links(&text);
+            if matches.is_empty() {
+                new.push(Span::styled(text, span.style));
+                continue;
+            }
+            let mut pos = 0usize;
+            for (s, e, url) in matches {
+                if s > pos {
+                    new.push(Span::styled(text[pos..s].to_string(), span.style));
+                }
+                new.push(Span::styled(text[s..e].to_string(), link_style));
+                out_targets.push(url);
+                pos = e;
+            }
+            if pos < text.len() {
+                new.push(Span::styled(text[pos..].to_string(), span.style));
+            }
+        }
+        out_lines.push(Line::from(new).style(style));
+    }
+    (out_lines, out_targets)
+}
+
+/// Replace `:shortcode:` runs in `text` with Unicode emoji (gemoji names, e.g. `:rocket:` → 🚀).
+/// Returns `None` when nothing changed (so the caller reuses the original span untouched). A
+/// shortcode with no Unicode mapping (GitHub-custom like `:shipit:`) and non-shortcode `:` (times,
+/// ratios) are left exactly as they were.
+fn replace_emoji_shortcodes(text: &str) -> Option<String> {
+    if !text.contains(':') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut changed = false;
+    let mut rest = text;
+    while let Some(start) = rest.find(':') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find(':') {
+            let code = &after[..end];
+            let looks_like_code = !code.is_empty()
+                && code
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'));
+            if looks_like_code {
+                if let Some(e) = emojis::get_by_shortcode(code) {
+                    out.push_str(e.as_str());
+                    changed = true;
+                    rest = &after[end + 1..];
+                    continue;
+                }
+            }
+            // Not a known shortcode: keep this `:` and resume scanning right after it.
+            out.push(':');
+            rest = after;
+        } else {
+            out.push(':');
+            out.push_str(after);
+            rest = "";
+        }
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
+/// Post-pass over decorated Markdown lines: convert `:shortcode:` emoji to Unicode in plain-text
+/// spans. Skips spans that carry a background (inline code / code fence), a link, or a konoma
+/// sentinel (task / code-header / mermaid / hidden-target) — matching GitHub, which never converts
+/// shortcodes inside code, and keeping Tab-item spans byte-stable.
+fn substitute_emoji(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            // Code-block lines keep their `:shortcode:` literal (a fence is verbatim).
+            if crate::preview::markdown::is_code_line(&line) {
+                return line;
+            }
+            let style = line.style;
+            let spans = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    if span.style.bg.is_some()
+                        || is_link_span(&span)
+                        || crate::preview::markdown::is_inline_code_span(&span)
+                        || crate::preview::markdown::is_task_span(&span)
+                        || crate::preview::markdown::is_code_header_span(&span)
+                        || crate::preview::markdown::is_mermaid_header_span(&span)
+                        || crate::preview::markdown::is_hidden_link_target(&span)
+                    {
+                        return span;
+                    }
+                    match replace_emoji_shortcodes(span.content.as_ref()) {
+                        Some(new) => Span::styled(new, span.style),
+                        None => span,
+                    }
+                })
+                .collect::<Vec<_>>();
+            Line::from(spans).style(style)
+        })
+        .collect()
 }
 
 /// Within line `line` (multiple colored spans), highlight the parts matching `query` (substring, case-insensitive)

@@ -59,6 +59,37 @@ fn main() {
 
 <!-- この HTML コメントは表示されない -->
 
+## アラート（GitHub 形式）
+
+`> [!TYPE]` の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（`[ui] md_alerts`）。
+
+> [!NOTE]
+> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma
+
+> [!TIP] 独自タイトル
+> ヒント。本文の中では **装飾** も [リンク](images.md) も普通に効く。
+
+> [!WARNING]
+> 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。
+
+## 自動リンクと絵文字
+
+裸の URL・メールは自動でリンクになる（`[ui] md_autolink`）: https://example.com や www.rust-lang.org 、
+メール foo@example.com 。ショートコード絵文字も変換される（`[ui] md_emoji`）: :rocket: :sparkles: :+1: 。
+どちらも `インラインコード` や コードブロック内ではそのまま（GitHub と同じ）。
+
+## ページ内リンク・脚注・インライン HTML
+
+見出しへのリンクはその位置までスクロールする（既定 ON）: [Mermaid の節へ](#mermaidmd-内フェンス図に合成)。
+（GitHub と同じ slug 規則。CJK 見出しもアンカーになる。）
+
+脚注（`[ui] md_footnotes`）: 参照は上付き番号になり[^demo]、定義は末尾の脚注節にまとまる。
+
+インライン HTML（`[ui] md_inline_html`）: <kbd>Ctrl</kbd>+<kbd>C</kbd> でコピー、H<sub>2</sub>O、
+x<sup>2</sup>、<del>非推奨</del> は打消し線。<br>で改行も効く。
+
+[^demo]: これが脚注の定義。文書のどこに書いてもよい。
+
 ## 画像（インライン表示）
 
 行単位（画像だけの行）の `![alt](path)` は、文書の流れの中に**実ピクセルで**描画される

@@ -160,6 +160,30 @@ fn canon(dir: &std::path::Path) -> std::path::PathBuf {
     dir.canonicalize().unwrap()
 }
 
+/// A config with `code_bg = "none"` — the real setting that broke the first bg-based code
+/// detection (inline code / code blocks then have no background, only `fg(White)` / the `▎` gutter).
+/// Tests must exercise this so a bg-only skip can never regress unnoticed again.
+#[cfg(test)]
+fn cfg_code_bg_none() -> Config {
+    let mut cfg = Config::default();
+    cfg.ui.theme.code_bg = "none".into();
+    cfg
+}
+
+/// Write `name.md` with `body` in a fresh sandbox, open it in a Sim under `cfg` (tree → preview),
+/// and return the Sim (at the Markdown preview) plus the sandbox dir. Runs the full render pipeline,
+/// so `md_link_targets()` and the drawn screen reflect autolink/emoji/alerts exactly as live.
+#[cfg(test)]
+fn md_preview(cfg: Config, name: &str, body: &str) -> (Sim, std::path::PathBuf) {
+    let dir = sandbox(name);
+    std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg);
+    s.select(&format!("{name}.md"));
+    s.enter();
+    (s, dir)
+}
+
 // =============================================================================
 // ツリー: 移動・絞り込み・隠しファイル・ソート
 // =============================================================================
@@ -1487,6 +1511,260 @@ fn e2e_md_thematic_break_becomes_rule_and_fenced_dashes_kept() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// =============================================================================
+// Markdown web パリティ Phase 1: 裸URL自動リンク / GitHub Alerts / 絵文字
+// (全経路を code_bg="none" と既定の両方で通す = 合成 span でなく本物の描画)
+// =============================================================================
+
+#[test]
+fn e2e_markdown_autolink_and_emoji_full_pipeline() {
+    // The full source → decorated spans → postprocess_md path. Prose URLs/emails/www become
+    // focusable links and shortcodes convert; anything inside inline code or a code fence stays
+    // verbatim — under BOTH code_bg settings (this is the regression the first, synthetic-span
+    // unit tests missed: they never ran under code_bg="none" nor through the real render).
+    let body = concat!(
+        "Prose url https://prose.example here.\n\n",
+        "Prose mail me@prose.example here.\n\n",
+        "Prose www www.prose.example here.\n\n",
+        "Prose emoji :rocket: here.\n\n",
+        "Inline `https://in-code.example` and `:sparkles:` stay literal.\n\n",
+        "```sh\ncurl https://in-fence.example  # :tada:\n```\n",
+    );
+    for (label, cfg) in [
+        ("code_bg_set", Config::default()),
+        ("code_bg_none", cfg_code_bg_none()),
+    ] {
+        let (mut s, dir) = md_preview(cfg, "autolink_emoji", body);
+        // Exactly the three prose links, in document order — never the in-code / in-fence URLs.
+        assert_eq!(
+            s.app.md_link_targets(),
+            vec![
+                "https://prose.example".to_string(),
+                "mailto:me@prose.example".to_string(),
+                "http://www.prose.example".to_string(),
+            ],
+            "[{label}] only prose url/email/www linked; code URLs excluded"
+        );
+        // They are actually Tab-navigable (the point of autolinking).
+        s.tab();
+        assert_eq!(
+            s.app.focused_item(),
+            Some(0),
+            "[{label}] Tab reaches the first link"
+        );
+        // Prose emoji converted; every code shortcode stays literal.
+        s.see("🚀");
+        s.dont_see(":rocket:");
+        s.see(":sparkles:");
+        s.see(":tada:");
+        // In-code / in-fence URLs remain visible as plain text (just not links, asserted above).
+        s.see("https://in-code.example");
+        s.see("https://in-fence.example");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[test]
+fn e2e_markdown_alert_callout_and_nested_code_fence() {
+    // Alerts render as a labeled callout (not the raw `[!NOTE]`). The body's prose URL links, but a
+    // code fence INSIDE the alert keeps its URL/shortcode verbatim (Finding 1: alert body lines are
+    // bar-prefixed, so the code gutter is the 2nd span — is_code_line must scan all spans).
+    let body = concat!(
+        "> [!NOTE]\n",
+        "> Docs https://alert-prose.example here.\n",
+        "> ```sh\n",
+        "> curl https://alert-fence.example # :tada:\n",
+        "> ```\n",
+    );
+    for (label, cfg) in [
+        ("code_bg_set", Config::default()),
+        ("code_bg_none", cfg_code_bg_none()),
+    ] {
+        let (s, dir) = md_preview(cfg, "alert_code", body);
+        s.see("Note"); // callout label
+        s.dont_see("[!NOTE]"); // raw marker gone
+        assert_eq!(
+            s.app.md_link_targets(),
+            vec!["https://alert-prose.example".to_string()],
+            "[{label}] only the alert prose URL links, not the fenced one"
+        );
+        s.see(":tada:"); // fenced shortcode literal
+        s.see("https://alert-fence.example"); // visible as text, not a link
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[test]
+fn e2e_markdown_alert_all_five_types_and_aliases() {
+    // All five GitHub types plus an alias render a callout label; none leak the raw marker.
+    let body = concat!(
+        "> [!NOTE]\n> n\n\n",
+        "> [!TIP]\n> t\n\n",
+        "> [!IMPORTANT]\n> i\n\n",
+        "> [!WARNING]\n> w\n\n",
+        "> [!CAUTION]\n> c\n\n",
+        "> [!danger] Aliased\n> d\n",
+    );
+    let (s, dir) = md_preview(Config::default(), "alert_types", body);
+    for label in ["Note", "Tip", "Important", "Warning", "Caution"] {
+        s.see(label);
+    }
+    s.see("Caution — Aliased"); // danger alias → Caution, with its inline title
+    s.dont_see("[!");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_autolink_emoji_alerts_toggle_off() {
+    // With the three toggles off: bare URL stays plain, shortcode literal, alert stays a blockquote.
+    let body = concat!(
+        "> [!WARNING]\n> careful\n\n",
+        "Prose https://x.example :rocket: here.\n",
+    );
+    let mut cfg = cfg_code_bg_none();
+    cfg.ui.md_autolink = false;
+    cfg.ui.md_emoji = false;
+    cfg.ui.md_alerts = false;
+    let (s, dir) = md_preview(cfg, "md_toggles_off", body);
+    assert!(s.app.md_link_targets().is_empty(), "autolink off: no links");
+    s.see(":rocket:"); // emoji off: literal
+    s.see("https://x.example"); // not a link
+    s.see("[!WARNING]"); // alerts off: raw marker kept
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_inline_html_renders() {
+    let body = "Press <kbd>Ctrl</kbd>. H<sub>2</sub>O. <del>old</del> new.\n";
+    let (s, dir) = md_preview(Config::default(), "inline_html", body);
+    s.see("Ctrl"); // <kbd> content, rendered as an inline-code keycap
+    s.see("H₂O"); // <sub> → Unicode subscript
+    s.see("new"); // surrounding text intact
+    s.dont_see("<kbd>"); // raw tags gone
+    s.dont_see("<sub>");
+    s.dont_see("<del>");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_footnotes_render_superscript_and_section() {
+    let body = "A claim.[^src] More text.\n\n[^src]: The evidence.\n";
+    let (s, dir) = md_preview(Config::default(), "footnotes", body);
+    s.see("¹"); // superscript reference marker
+    s.dont_see("[^src]"); // raw reference and definition are gone
+    s.see("The evidence."); // definition text in the footnotes section
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_footnotes_off_stays_literal() {
+    let body = "A claim.[^src]\n\n[^src]: The evidence.\n";
+    let mut cfg = Config::default();
+    cfg.ui.md_footnotes = false;
+    let (s, dir) = md_preview(cfg, "footnotes_off", body);
+    s.see("[^src]"); // literal, unprocessed
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_front_matter_renders_as_metadata() {
+    // Leading `---`…`---` is shown as a metadata block; the body (and its heading anchors) render
+    // normally after it. Anchor jump on a heading defined below the front matter still resolves.
+    let body = concat!(
+        "---\n",
+        "title: My Doc\n",
+        "author: Me\n",
+        "---\n",
+        "[to section](#real-heading)\n\n",
+        "# Real Heading\n\n",
+        "body text\n",
+    );
+    let (mut s, dir) = md_preview(Config::default(), "frontmatter", body);
+    s.see("title"); // metadata key
+    s.see("My Doc"); // metadata value
+    s.see("author");
+    s.see("Real Heading"); // body heading still renders
+                           // The anchor (computed from the body heading, past the front matter offset) resolves.
+    assert_eq!(
+        s.app.md_link_targets(),
+        vec!["#real-heading".to_string()],
+        "the in-page anchor link is present"
+    );
+    s.tab();
+    s.enter();
+    assert!(
+        s.app.flash.is_none(),
+        "anchor resolves (no 'not found' flash)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_front_matter_off_leaves_body_intact() {
+    let body = "---\ntitle: My Doc\n---\n# H\n\nbody\n";
+    let mut cfg = Config::default();
+    cfg.ui.md_frontmatter = false;
+    let (s, dir) = md_preview(cfg, "frontmatter_off", body);
+    // Recognition off: the title line and body both still render (no crash, old behavior).
+    s.see("title");
+    s.see("body");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_anchor_jump_scrolls_to_heading() {
+    // An in-page anchor `[x](#slug)` scrolls the decorated preview to the matching heading (it used
+    // to flash "not supported"). Filler pushes the target well below the fold.
+    let mut body = String::from("[go to target](#the-target)\n\n");
+    for i in 0..40 {
+        body.push_str(&format!("line {i}\n\n"));
+    }
+    body.push_str("## The Target\n\ndestination text\n");
+    let (mut s, dir) = md_preview(Config::default(), "anchor_jump", &body);
+    assert_eq!(s.app.preview_scroll, 0, "starts at the top");
+    s.tab(); // focus the anchor link
+    assert_eq!(s.app.focused_item(), Some(0));
+    s.enter(); // jump
+    assert!(
+        s.app.preview_scroll > 0,
+        "scrolled down toward the heading (was {})",
+        s.app.preview_scroll
+    );
+    s.see("The Target");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_anchor_jump_unknown_slug_flashes() {
+    let body = "[bad](#nope)\n\n# Real Heading\n\nbody\n";
+    let (mut s, dir) = md_preview(Config::default(), "anchor_bad", body);
+    s.tab();
+    s.enter();
+    // Unknown anchor: a "no heading" flash, and no scroll.
+    assert!(
+        s.screen().contains("nope") || s.app.flash.is_some(),
+        "unknown anchor flashes"
+    );
+    assert_eq!(s.app.preview_scroll, 0, "no scroll for a missing anchor");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_markdown_autolink_cjk_and_trailing_punctuation() {
+    // Byte-boundary safety: a bare URL right after CJK, and trailing sentence punctuation trimmed.
+    let body = "見るhttps://cjk.example、と (https://paren.example) を確認。\n";
+    let (s, dir) = md_preview(cfg_code_bg_none(), "autolink_cjk", body);
+    assert_eq!(
+        s.app.md_link_targets(),
+        vec![
+            "https://cjk.example".to_string(),
+            "https://paren.example".to_string(),
+        ],
+        "CJK boundary + paren-wrapped URL both link, punctuation trimmed"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_md_task_markers_render_ascii_or_nf_by_icons() {
     // タスク `- [ ]` / `- [x]` は、ui.icons=false なら ASCII ブラケット、true なら NF グリフ。
@@ -2288,4 +2566,1618 @@ fn e2e_session_restore_reopens_previous_tabs() {
 
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&base).ok();
+}
+
+// =============================================================================
+// 追加 E2E バッチ (2026-07-18): カバレッジ薄/欠落領域を大量に補完。
+// Sim ハーネス経由で source→実描画の全経路を回し、クリップボード非依存の pub アクセサで照合。
+// =============================================================================
+
+/// Write `file` with `body` in a fresh sandbox `dir_name`, open it (tree → preview) under `cfg`,
+/// and return the Sim plus the sandbox dir. Like `md_preview` but for any single file.
+fn text_preview(cfg: Config, dir_name: &str, file: &str, body: &str) -> (Sim, std::path::PathBuf) {
+    let dir = sandbox(dir_name);
+    std::fs::write(dir.join(file), body).unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg);
+    s.select(file);
+    s.enter();
+    (s, dir)
+}
+
+// ---- プレビュー内テキスト検索 (`/` 起動・n/N 移動・大小無視・一致なし・Esc・CJK) ----
+
+#[test]
+fn e2e_search_opens_input_shows_prompt_and_query() {
+    let dir = sandbox("search_open_input");
+    std::fs::write(dir.join("f.txt"), "needle at top\nplain line\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    assert!(s.app.is_windowed());
+    s.key('/');
+    assert!(s.app.is_searching());
+    assert_eq!(s.app.search_input(), Some(""));
+    s.keys("needle");
+    assert_eq!(s.app.search_input(), Some("needle"));
+    s.see("/needle");
+    s.enter();
+    assert!(!s.app.is_searching());
+    assert_eq!(s.app.preview_search_query(), Some("needle"));
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_backspace_edits_query() {
+    let dir = sandbox("search_backspace");
+    std::fs::write(dir.join("f.txt"), "needle here\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("need");
+    assert_eq!(s.app.search_input(), Some("need"));
+    s.press(KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(s.app.search_input(), Some("nee"));
+    s.keys("dle");
+    assert_eq!(s.app.search_input(), Some("needle"));
+    s.esc();
+    assert!(!s.app.is_searching());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_esc_during_input_cancels_no_search() {
+    let dir = sandbox("search_esc_input");
+    std::fs::write(dir.join("f.txt"), "needle here\nmore\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("needle");
+    assert!(s.app.is_searching());
+    s.esc();
+    assert!(!s.app.is_searching());
+    assert_eq!(s.app.preview_search_query(), None);
+    assert_eq!(s.app.search_status(), None);
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_commit_populates_status_and_jumps_to_first() {
+    let dir = sandbox("search_commit");
+    let body = "x MARK a\nfiller one\nfiller two\ny MARK b\nfiller three\nz MARK c\n";
+    std::fs::write(dir.join("f.txt"), body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("MARK");
+    s.enter();
+    assert!(!s.app.is_searching());
+    assert_eq!(s.app.preview_search_query(), Some("MARK"));
+    assert_eq!(s.app.search_status(), Some((1, 3)));
+    s.see("x MARK a");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_next_prev_cycle_with_wrap() {
+    let dir = sandbox("search_cycle");
+    let body = "a MARK a\nfiller\nfiller\nb MARK b\nfiller\nc MARK c\n";
+    std::fs::write(dir.join("f.txt"), body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("MARK");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 3)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 3)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((3, 3)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((1, 3)));
+    s.key('N');
+    assert_eq!(s.app.search_status(), Some((3, 3)));
+    s.key('N');
+    assert_eq!(s.app.search_status(), Some((2, 3)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_scroll_follows_current_match() {
+    let dir = sandbox("search_follow");
+    let mut body = String::new();
+    for i in 0..300 {
+        if i == 10 || i == 150 || i == 290 {
+            body.push_str(&format!("MARK line {i}\n"));
+        } else {
+            body.push_str(&format!("filler {i}\n"));
+        }
+    }
+    std::fs::write(dir.join("big.txt"), &body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("big.txt");
+    s.enter();
+    s.key('/');
+    s.keys("MARK");
+    s.enter();
+    s.see("MARK line 10");
+    s.dont_see("MARK line 150");
+    s.key('n');
+    s.see("MARK line 150");
+    s.dont_see("MARK line 10");
+    s.key('n');
+    s.see("MARK line 290");
+    s.key('n');
+    s.see("MARK line 10");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_case_insensitive_matches() {
+    let dir = sandbox("search_ci");
+    std::fs::write(
+        dir.join("f.txt"),
+        "hello line\nWORLD marker here\nbye line\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("world");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    s.see("WORLD marker here");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_no_match_flash_and_empty_status() {
+    let dir = sandbox("search_no_match");
+    std::fs::write(dir.join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("zzzznope");
+    s.enter();
+    assert_eq!(s.app.preview_search_query(), Some("zzzznope"));
+    assert_eq!(s.app.search_status(), None);
+    assert!(s
+        .app
+        .flash
+        .as_deref()
+        .is_some_and(|m| m.contains("no match")));
+    s.key('n');
+    assert_eq!(s.app.search_status(), None);
+    s.key('N');
+    assert_eq!(s.app.search_status(), None);
+    s.esc();
+    assert_eq!(s.app.preview_search_query(), None);
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_esc_clears_then_second_esc_returns_to_tree() {
+    let dir = sandbox("search_esc_two");
+    std::fs::write(dir.join("f.txt"), "alpha\nbeta marker\ngamma\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("marker");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    s.esc();
+    assert_eq!(s.app.preview_search_query(), None);
+    assert_eq!(s.app.mode, Mode::Preview);
+    s.esc();
+    assert_eq!(s.app.mode, Mode::Tree);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_counts_multiple_occurrences_per_line() {
+    let dir = sandbox("search_multi_occ");
+    std::fs::write(
+        dir.join("f.txt"),
+        "one TARGET two TARGET end\nfiller line\nTARGET solo\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("TARGET");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 3)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 3)));
+    s.see("one TARGET two TARGET end");
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((3, 3)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_works_in_code_preview() {
+    let dir = sandbox("search_code");
+    std::fs::write(
+        dir.join("code.rs"),
+        "fn alpha() {}\nfn beta() {}\nlet x = 1;\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("code.rs");
+    s.enter();
+    assert!(s.app.is_windowed());
+    s.key('/');
+    s.keys("fn");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 2)));
+    s.see("fn alpha()");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_rejected_on_decorated_markdown_preview() {
+    let (mut s, dir) = md_preview(
+        Config::default(),
+        "doc",
+        "# Title\n\nsome needle text here\n",
+    );
+    assert!(!s.app.is_windowed());
+    s.key('/');
+    assert!(!s.app.is_searching());
+    assert_eq!(s.app.preview_search_query(), None);
+    assert!(s
+        .app
+        .flash
+        .as_deref()
+        .is_some_and(|m| m.contains("code/text")));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_empty_query_enter_is_noop() {
+    let dir = sandbox("search_empty");
+    std::fs::write(dir.join("f.txt"), "alpha\nbeta\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    assert!(s.app.is_searching());
+    s.enter();
+    assert!(!s.app.is_searching());
+    assert_eq!(s.app.preview_search_query(), None);
+    assert_eq!(s.app.search_status(), None);
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_cjk_query_matches_without_crash() {
+    let dir = sandbox("search_cjk");
+    std::fs::write(
+        dir.join("jp.txt"),
+        "リンゴ みかん\nぶどう みかん\nバナナ だけ\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("jp.txt");
+    s.enter();
+    assert!(s.app.is_windowed());
+    s.key('/');
+    s.keys("みかん");
+    s.enter();
+    // NOTE: the on-screen text isn't asserted here — the TestBackend renders each full-width CJK
+    // glyph as a cell plus a blank continuation cell, so `screen()` inserts spaces between the
+    // characters. The functional path (match found, `n` cycles) is what matters and is CJK-safe.
+    assert_eq!(s.app.search_status(), Some((1, 2)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 2)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_search_second_query_replaces_first() {
+    let dir = sandbox("search_replace");
+    std::fs::write(
+        dir.join("f.txt"),
+        "MARK aaa\nfiller\nMARK bbb\nSPOT ccc\nfiller\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('/');
+    s.keys("MARK");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 2)));
+    assert_eq!(s.app.preview_search_query(), Some("MARK"));
+    s.key('/');
+    assert!(s.app.is_searching());
+    s.keys("SPOT");
+    s.enter();
+    assert_eq!(s.app.preview_search_query(), Some("SPOT"));
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    s.see("SPOT ccc");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- preview 2D caret + visual selection (v/V) + Y reference ----
+// caret line は selection_ref_string() (@path#L{n}) 経由、caret col は preview_selection() で照合。
+
+#[test]
+fn e2e_visual_block_caret_drawn_and_moves() {
+    use ratatui::style::Modifier;
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_caret_cell",
+        "caret.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    assert!(s.app.is_windowed());
+    s.see("alpha");
+    let reversed = |s: &Sim| -> Vec<(usize, usize)> {
+        let buf = s.term.backend().buffer();
+        let w = buf.area.width as usize;
+        buf.content()
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.modifier.contains(Modifier::REVERSED))
+            .map(|(i, _)| (i % w, i / w))
+            .collect()
+    };
+    let before = reversed(&s);
+    assert_eq!(before.len(), 1, "one block-caret cell: {before:?}");
+    s.key('j');
+    let after = reversed(&s);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].0, before[0].0);
+    assert_eq!(after[0].1, before[0].1 + 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_caret_line_tracks_jk_and_gg() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_line_nav",
+        "nav.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    let refstr = |s: &Sim| s.app.selection_ref_string().unwrap();
+    assert_eq!(refstr(&s), "@nav.txt#L1");
+    s.key('j');
+    assert_eq!(refstr(&s), "@nav.txt#L2");
+    s.key('j');
+    assert_eq!(refstr(&s), "@nav.txt#L3");
+    s.key('j');
+    assert_eq!(refstr(&s), "@nav.txt#L3");
+    s.key('k');
+    assert_eq!(refstr(&s), "@nav.txt#L2");
+    s.key('G');
+    assert_eq!(refstr(&s), "@nav.txt#L3");
+    s.key('g');
+    assert_eq!(refstr(&s), "@nav.txt#L1");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_v_enters_charwise_state() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_v_char",
+        "v.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    assert!(!s.app.is_preview_visual());
+    s.key('v');
+    assert!(s.app.is_preview_visual());
+    assert!(!s.app.preview_visual_linewise());
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 0)
+        }
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_bigv_enters_linewise_state() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_V_line",
+        "vv.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('V');
+    assert!(s.app.is_preview_visual());
+    assert!(s.app.preview_visual_linewise());
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 0 }
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_charwise_range_grows_with_l() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_grow_l",
+        "gl.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('v');
+    s.key('l');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 1)
+        }
+    );
+    s.key('l');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 2)
+        }
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_charwise_range_grows_across_lines() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_grow_j",
+        "gj.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('v');
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (1, 0)
+        }
+    );
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (2, 0)
+        }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@gj.txt#L1-3")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_linewise_range_grows_with_j() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_lw_grow",
+        "lw.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('V');
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 1 }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@lw.txt#L1-2")
+    );
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 2 }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@lw.txt#L1-3")
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_col_home_and_end_bound_selection() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_home_end",
+        "he.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('v');
+    s.key('$');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 4)
+        }
+    );
+    s.key('0');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 0)
+        }
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_gg_extend_linewise_to_ends() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_gg_line",
+        "gg.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('V');
+    s.key('G');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 2 }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@gg.txt#L1-3")
+    );
+    s.key('g');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 0 }
+    );
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@gg.txt#L1"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_cancel_with_esc() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_esc",
+        "esc.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('v');
+    s.key('l');
+    assert!(s.app.is_preview_visual());
+    s.esc();
+    assert!(!s.app.is_preview_visual());
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_cancel_with_v_bigv_q_toggles() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_toggles",
+        "tg.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('v');
+    assert!(s.app.is_preview_visual());
+    s.key('v');
+    assert!(!s.app.is_preview_visual());
+    assert_eq!(s.app.mode, Mode::Preview);
+    s.key('v');
+    assert!(s.app.is_preview_visual());
+    s.key('V');
+    assert!(!s.app.is_preview_visual());
+    assert_eq!(s.app.mode, Mode::Preview);
+    s.key('v');
+    assert!(s.app.is_preview_visual());
+    s.key('q');
+    assert!(!s.app.is_preview_visual());
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_ref_caret_line_and_charwise_span() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_ref_char",
+        "rc.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@rc.txt#L1"));
+    s.key('j');
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@rc.txt#L2"));
+    s.key('v');
+    s.key('j');
+    assert!(matches!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char { .. }
+    ));
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@rc.txt#L2-3")
+    );
+    s.key('Y');
+    assert!(!s.app.is_preview_visual());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_ref_linewise_span() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_ref_line",
+        "rl.txt",
+        "alpha\nbeta\ngamma\n",
+    );
+    s.key('V');
+    s.key('j');
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Line { lo: 0, hi: 2 }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@rl.txt#L1-3")
+    );
+    s.key('Y');
+    assert!(!s.app.is_preview_visual());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_selection_in_code_preview() {
+    let mut cfg = Config::default();
+    cfg.ui.syntax_highlight = false;
+    let (mut s, dir) = text_preview(cfg, "visual_code", "code.rs", "fn one() {}\nfn two() {}\n");
+    assert!(s.app.is_windowed());
+    s.see("fn one");
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@code.rs#L1"));
+    s.key('j');
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@code.rs#L2"));
+    s.key('k');
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@code.rs#L1"));
+    s.key('v');
+    assert!(s.app.is_preview_visual() && !s.app.preview_visual_linewise());
+    s.key('l');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 1)
+        }
+    );
+    s.esc();
+    assert!(!s.app.is_preview_visual());
+    assert_eq!(s.app.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_selection_in_raw_markdown() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_rawmd",
+        "doc.md",
+        "# Heading\nalpha line\nbeta line\n",
+    );
+    assert!(!s.app.is_windowed());
+    assert!(!s.app.is_md_raw());
+    s.key('v');
+    assert!(!s.app.is_preview_visual());
+    s.key('R');
+    assert!(s.app.is_windowed());
+    assert!(s.app.is_md_raw() && s.app.is_raw_source());
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@doc.md#L1"));
+    s.key('v');
+    assert!(s.app.is_preview_visual());
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 0)
+        }
+    );
+    s.key('j');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (1, 0)
+        }
+    );
+    assert_eq!(
+        s.app.selection_ref_string().as_deref(),
+        Some("@doc.md#L1-2")
+    );
+    s.esc();
+    assert!(!s.app.is_preview_visual());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_visual_cjk_charwise_no_panic() {
+    let (mut s, dir) = text_preview(
+        Config::default(),
+        "visual_cjk",
+        "cjk.txt",
+        "あいう\nかきくけ\n",
+    );
+    assert!(s.app.is_windowed());
+    assert_eq!(s.app.selection_ref_string().as_deref(), Some("@cjk.txt#L1"));
+    s.key('v');
+    s.key('l');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 1)
+        }
+    );
+    s.key('l');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 2)
+        }
+    );
+    s.key('$');
+    assert_eq!(
+        s.app.preview_selection(),
+        crate::app::PreviewSelection::Char {
+            start: (0, 0),
+            end: (0, 2)
+        }
+    );
+    s.key('y');
+    assert!(!s.app.is_preview_visual());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- git: commit / stage・unstage / diff layout / log・graph・branches / copy / changed n/N ----
+// すべて #[cfg(feature = "git")]。リポジトリ生成は既存 seed_repo パターンを踏襲。
+
+#[cfg(feature = "git")]
+fn seed_repo_history(dir: &std::path::Path) {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "alphacommit"]);
+    std::fs::write(dir.join("a.rs"), "fn a() { 1 }\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "betacommit"]);
+    std::fs::write(dir.join("a.rs"), "fn a() { 22 }\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "gammacommit"]);
+    run(&["branch", "feature-x"]);
+}
+
+#[cfg(feature = "git")]
+fn staged_of(app: &App, name: &str) -> Option<bool> {
+    app.git_view_entries()
+        .iter()
+        .find(|e| e.path.ends_with(name))
+        .map(|e| e.staged)
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_stage_then_commit_appears_in_log() {
+    let dir = sandbox("git_commit_flow");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    assert!(s.app.is_git_view());
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
+    s.key('s');
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
+    s.key('c');
+    assert!(s.app.is_dialog());
+    s.keys("ZZCOMMITSUBJECT");
+    s.enter();
+    let commits = crate::git::log(&s.app.root, 200);
+    assert!(
+        commits.iter().any(|c| c.summary == "ZZCOMMITSUBJECT"),
+        "commit in log: {:?}",
+        commits
+            .iter()
+            .map(|c| c.summary.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(s.app.is_git_view());
+    assert_eq!(staged_of(&s.app, "a.rs"), None);
+    assert!(staged_of(&s.app, "new.txt").is_some());
+    s.key('l');
+    assert!(s.app.is_git_log());
+    s.see("ZZCOMMITSUBJECT");
+    s.see("init");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_stage_unstage_roundtrip() {
+    let dir = sandbox("git_stage_unstage");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
+    s.key('s');
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
+    s.key('u');
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_stage_all_then_unstage_all() {
+    let dir = sandbox("git_stage_all");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    assert!(!s.app.git_view_entries().is_empty());
+    assert!(s.app.git_view_entries().iter().any(|e| !e.staged));
+    s.key('S');
+    assert!(s.app.git_view_entries().iter().all(|e| e.staged));
+    s.key('U');
+    assert!(s.app.git_view_entries().iter().all(|e| !e.staged));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_diff_layout_toggle_cycles_in_preview() {
+    let dir = sandbox("git_diff_layout");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a.rs");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview());
+    s.see("diff");
+    assert!(!s.app.diff_is_split(200));
+    s.key('s');
+    s.see("side-by-side");
+    assert!(s.app.diff_is_split(1) && s.app.diff_is_split(200));
+    s.key('s');
+    s.see("diff: auto");
+    assert!(!s.app.diff_is_split(50) && s.app.diff_is_split(200));
+    s.key('s');
+    s.see("diff: unified");
+    assert!(!s.app.diff_is_split(200));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktree_diff_toggle_layout_and_back() {
+    let dir = sandbox("git_worktree_detail");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('d');
+    assert!(s.app.is_git_detail());
+    s.see("Uncommitted changes");
+    s.dont_see("⇆");
+    s.key('s');
+    s.see("side-by-side");
+    s.see("⇆");
+    s.key('q');
+    assert!(!s.app.is_git_detail());
+    assert!(s.app.is_git_view());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_log_navigate_open_detail_and_back() {
+    let dir = sandbox("git_log_nav");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('l');
+    assert!(s.app.is_git_log());
+    s.see("gammacommit");
+    s.see("betacommit");
+    s.see("alphacommit");
+    let top = s.app.git_log_selected_id().expect("top id");
+    s.key('j');
+    let second = s.app.git_log_selected_id().expect("second id");
+    assert_ne!(top, second);
+    // Derive the selected commit's subject rather than assuming a specific ordering.
+    let second_subj = crate::git::commit_meta(&s.app.root, &second)
+        .and_then(|m| m.message.lines().next().map(str::to_string))
+        .expect("second subject");
+    s.enter();
+    assert!(s.app.is_git_detail());
+    s.see(&second_subj); // Enter opens the selected commit's detail
+    s.key('q');
+    assert!(s.app.is_git_log());
+    assert_eq!(
+        s.app.git_log_selected_id().as_deref(),
+        Some(second.as_str())
+    );
+    s.key('l');
+    assert!(s.app.is_git_detail());
+    s.see(&second_subj); // `l` also opens the same commit's detail
+    s.key('q');
+    assert!(s.app.is_git_log());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_graph_navigates_commit_rows() {
+    let dir = sandbox("git_graph_nav");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('g');
+    assert!(s.app.is_git_graph());
+    s.see("●");
+    s.key('g');
+    let top = s
+        .app
+        .git_graph_selected_row()
+        .and_then(|r| r.commit.clone())
+        .expect("top commit");
+    s.key('G');
+    let bottom = s
+        .app
+        .git_graph_selected_row()
+        .and_then(|r| r.commit.clone())
+        .expect("bottom commit");
+    assert_ne!(top, bottom);
+    s.key('g');
+    s.key('j');
+    let after_j = s
+        .app
+        .git_graph_selected_row()
+        .and_then(|r| r.commit.clone());
+    assert!(
+        after_j.is_some() && after_j.as_deref() != Some(top.as_str()),
+        "j: {after_j:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_graph_set_base_keeps_selection_then_clear() {
+    let dir = sandbox("git_graph_base2");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('g');
+    s.dont_see("⌖ base:");
+    assert!(s.app.git_graph_base_label().is_none());
+    s.key('g');
+    let sel_before = s
+        .app
+        .git_graph_selected_row()
+        .and_then(|r| r.commit.clone())
+        .expect("commit");
+    s.key('s');
+    s.see("⌖ base:");
+    assert!(s.app.git_graph_base_label().is_some());
+    assert_eq!(
+        s.app
+            .git_graph_selected_row()
+            .and_then(|r| r.commit.clone()),
+        Some(sel_before)
+    );
+    s.key('x');
+    s.dont_see("⌖ base:");
+    assert!(s.app.git_graph_base_label().is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_graph_picker_current_only_then_all() {
+    let dir = sandbox("git_graph_picker2");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('g');
+    s.key('b');
+    assert!(s.app.is_git_graph_picker());
+    let feature_on = |app: &App| -> Option<bool> {
+        app.git_graph_picker_items()
+            .into_iter()
+            .find(|(name, _, _)| name == "feature-x")
+            .map(|(_, _, on)| on)
+    };
+    assert_eq!(feature_on(&s.app), Some(true));
+    s.key('n');
+    assert_eq!(feature_on(&s.app), Some(false));
+    s.key('a');
+    assert_eq!(feature_on(&s.app), Some(true));
+    s.key('q');
+    assert!(!s.app.is_git_graph_picker());
+    assert!(s.app.is_git_graph());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_branches_filter_narrows_and_clears() {
+    let dir = sandbox("git_branches_filter");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('b');
+    assert!(s.app.is_git_branches());
+    assert_eq!(s.app.git_branch_view().len(), 2);
+    s.key('/');
+    assert!(s.app.git_branch_filtering());
+    s.keys("feature");
+    let view = s.app.git_branch_view();
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].name, "feature-x");
+    s.see("feature-x");
+    s.esc();
+    assert!(!s.app.git_branch_filtering());
+    assert_eq!(s.app.git_branch_view().len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_branch_create_switches_to_it() {
+    let dir = sandbox("git_branch_create");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('b');
+    s.key('n');
+    assert!(s.app.is_dialog());
+    s.keys("createdbr");
+    s.enter();
+    let branches = crate::git::branches(&s.app.root);
+    let created = branches.iter().find(|b| b.name == "createdbr");
+    assert!(created.is_some());
+    assert!(created.unwrap().is_current);
+    assert!(s.app.is_git_view());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_branch_delete_removes_feature_branch() {
+    let dir = sandbox("git_branch_delete");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('b');
+    s.key('g');
+    assert_eq!(
+        s.app.git_branch_view()[s.app.git_branch_sel()].name,
+        "feature-x"
+    );
+    s.key('d');
+    assert!(s.app.is_dialog());
+    s.key('y');
+    assert!(!crate::git::branches(&s.app.root)
+        .iter()
+        .any(|b| b.name == "feature-x"));
+    assert!(!s
+        .app
+        .git_branch_view()
+        .iter()
+        .any(|b| b.name == "feature-x"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_copy_leader_all_subkeys_consume_from_log() {
+    let dir = sandbox("git_copy_subkeys");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('l');
+    assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
+    s.see("init");
+    let id = s.app.git_log_selected_id().expect("selected id");
+    let meta = crate::git::commit_meta(&s.app.root, &id).expect("commit_meta");
+    assert_eq!(meta.message.lines().next(), Some("init"));
+    assert_eq!(meta.author, "t");
+    assert_eq!(meta.short.len(), 7);
+    assert_eq!(meta.id.len(), 40);
+    assert!(meta.id.starts_with(&meta.short));
+    assert!(!meta.date.is_empty());
+    for sub in ['s', 'h', 't', 'm', 'a', 'd'] {
+        s.key('y');
+        assert_eq!(
+            s.app.pending_leader,
+            Some(crate::keymap::LeaderId::GitCopy),
+            "sub={sub}"
+        );
+        s.key(sub);
+        assert_eq!(s.app.pending_leader, None, "y->{sub}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_copy_leader_opens_in_graph_and_detail() {
+    let dir = sandbox("git_copy_surfaces");
+    seed_repo_history(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('g');
+    s.key('g');
+    assert_eq!(s.app.surface(), crate::keymap::Surface::GitGraph);
+    s.key('y');
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::GitCopy));
+    s.esc();
+    assert_eq!(s.app.pending_leader, None);
+    s.enter();
+    assert_eq!(s.app.surface(), crate::keymap::Surface::GitDetail);
+    s.key('y');
+    assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::GitCopy));
+    s.esc();
+    assert_eq!(s.app.pending_leader, None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_changed_filter_n_jumps_between_changed_files() {
+    let dir = sandbox("git_changed_nN");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('C');
+    assert!(s.app.changed_filter());
+    s.see("a.rs");
+    s.see("new.txt");
+    s.select("a.rs");
+    assert!(s.app.entries[s.app.selected].path.ends_with("a.rs"));
+    s.key('n');
+    assert!(s.app.entries[s.app.selected].path.ends_with("new.txt"));
+    s.key('n');
+    assert!(s.app.entries[s.app.selected].path.ends_with("a.rs"));
+    s.key('N');
+    assert!(s.app.entries[s.app.selected].path.ends_with("new.txt"));
+    s.key('C');
+    assert!(!s.app.changed_filter());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- ツリーソート (size/modified/ext) + 絞り込みの端 ----
+
+#[test]
+fn e2e_sort_by_size_orders_ascending() {
+    let dir = sandbox("sort_size");
+    std::fs::write(dir.join("aaa.txt"), vec![b'a'; 300]).unwrap();
+    std::fs::write(dir.join("bbb.txt"), vec![b'b'; 30]).unwrap();
+    std::fs::write(dir.join("ccc.txt"), vec![b'c'; 150]).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    let names: Vec<&str> = s
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["aaa.txt", "bbb.txt", "ccc.txt"]);
+    s.key('s');
+    s.key('s');
+    assert!(!s.app.is_sort_menu());
+    let names: Vec<&str> = s
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["bbb.txt", "ccc.txt", "aaa.txt"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_sort_by_modified_orders_ascending() {
+    let dir = sandbox("sort_mod");
+    fn set_mtime(p: &std::path::Path, secs: u64) {
+        std::fs::write(p, b"x\n").unwrap();
+        let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+    set_mtime(&dir.join("m_a.txt"), 2_000_000_000);
+    set_mtime(&dir.join("m_b.txt"), 1_000_000_000);
+    set_mtime(&dir.join("m_c.txt"), 1_500_000_000);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('s');
+    s.key('m');
+    assert!(!s.app.is_sort_menu());
+    let names: Vec<&str> = s
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["m_b.txt", "m_c.txt", "m_a.txt"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_sort_by_ext_orders_ascending() {
+    let dir = sandbox("sort_ext");
+    std::fs::write(dir.join("zzz.aaa"), b"1\n").unwrap();
+    std::fs::write(dir.join("aaa.zzz"), b"2\n").unwrap();
+    std::fs::write(dir.join("mmm.mmm"), b"3\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    let names: Vec<&str> = s
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["aaa.zzz", "mmm.mmm", "zzz.aaa"]);
+    s.key('s');
+    s.key('e');
+    assert!(!s.app.is_sort_menu());
+    let names: Vec<&str> = s
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["zzz.aaa", "mmm.mmm", "aaa.zzz"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_tree_filter_no_matches_shows_empty_list() {
+    let dir = sandbox("filter_nomatch");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    let all = s.app.entries.len();
+    s.key('/');
+    s.keys("qzqzqznope");
+    assert!(s.app.is_filtering());
+    assert!(s.app.entries.is_empty(), "{}", s.screen());
+    s.dont_see("notes.txt");
+    s.enter();
+    assert!(s.app.entries.is_empty());
+    s.esc();
+    assert_eq!(s.app.entries.len(), all);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_tree_filter_is_case_insensitive() {
+    let dir = sandbox("filter_case");
+    seed_files(&dir);
+    std::fs::write(dir.join("UPPER.TXT"), "X\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.key('/');
+    s.keys("README");
+    s.see("readme.md");
+    assert!(s.app.entries.iter().any(|e| e.path.ends_with("readme.md")));
+    assert!(!s.app.entries.iter().any(|e| e.path.ends_with("UPPER.TXT")));
+    for _ in 0..8 {
+        s.press(KeyCode::Backspace, KeyModifiers::NONE);
+    }
+    s.keys("upper");
+    s.see("UPPER.TXT");
+    assert!(s.app.entries.iter().any(|e| e.path.ends_with("UPPER.TXT")));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- CSV/テーブルのコピー (y→c/r/C/f) ----
+
+#[test]
+fn e2e_table_copy_leader_sub_keys_consume_and_flash() {
+    let dir = sandbox("table_copy_wiring");
+    std::fs::write(dir.join("data.csv"), "name,qty\napple,3\nkiwi,7\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("data.csv");
+    s.enter();
+    s.see("TABLE");
+    s.key('j');
+    s.key('l');
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    for sub in ['c', 'r', 'C'] {
+        s.app.flash = None;
+        s.key('y');
+        assert_eq!(
+            s.app.pending_leader,
+            Some(crate::keymap::LeaderId::TableCopy)
+        );
+        s.key(sub);
+        assert_eq!(s.app.pending_leader, None, "sub={sub}");
+        assert!(s.app.flash.is_some(), "sub={sub}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_table_copy_full_path_value() {
+    let dir = sandbox("table_copy_path");
+    std::fs::write(dir.join("data.csv"), "name,qty\napple,3\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("data.csv");
+    s.enter();
+    s.see("TABLE");
+    let csv = s.app.preview_path.clone().expect("preview path");
+    assert_eq!(
+        s.app.copy_string_for(crate::app::CopyKind::Full),
+        Some(csv.display().to_string())
+    );
+    s.key('y');
+    assert_eq!(
+        s.app.pending_leader,
+        Some(crate::keymap::LeaderId::TableCopy)
+    );
+    s.key('f');
+    assert_eq!(s.app.pending_leader, None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- プレビューからのブックマーク (m / ') ----
+
+#[test]
+fn e2e_bookmark_set_from_preview_targets_shown_file() {
+    let root = sandbox("bm_preview_target");
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    seed_files(&proj);
+    let proj = canon(&proj);
+    let mut s = Sim::new(&proj);
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
+    s.select("notes.txt");
+    s.keys("ma");
+    s.see("bookmarked");
+    s.select("readme.md");
+    s.key('\'');
+    s.see("Bookmarks");
+    s.key('a');
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(s
+        .app
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("notes.txt")));
+    assert!(s.app.entries[s.app.selected].path.ends_with("readme.md"));
+    s.keys("mx");
+    assert!(
+        s.app
+            .bookmarks
+            .get('x')
+            .is_some_and(|p| p.ends_with("notes.txt")),
+        "{:?}",
+        s.app.bookmarks.get('x')
+    );
+    assert!(!s
+        .app
+        .bookmarks
+        .get('x')
+        .is_some_and(|p| p.ends_with("readme.md")));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn e2e_bookmark_list_enter_jumps_to_file() {
+    let root = sandbox("bm_list_enter");
+    let proj = root.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(proj.join("a.txt"), "ALPHA_BODY\n").unwrap();
+    std::fs::write(proj.join("b.txt"), "BETA_BODY\n").unwrap();
+    let proj = canon(&proj);
+    let mut s = Sim::new(&proj);
+    s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
+    s.select("a.txt");
+    s.keys("ma");
+    s.select("b.txt");
+    s.keys("mb");
+    s.select("b.txt");
+    s.enter();
+    assert_eq!(s.app.mode, Mode::Preview);
+    s.see("BETA_BODY");
+    s.key('\'');
+    s.see("Bookmarks");
+    assert_eq!(s.app.bookmark_list_sel(), 0);
+    s.enter();
+    assert!(!s.app.is_bookmark_list());
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(
+        s.app
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("a.txt")),
+        "{:?}",
+        s.app.preview_path
+    );
+    s.see("ALPHA_BODY");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// ---- Paste-jump (P) の端 ----
+
+#[test]
+fn e2e_pastejump_hash_line_fragment_scrolls() {
+    let dir = sandbox("pastejump_hash");
+    let mut body = String::new();
+    for i in 1..=60 {
+        if i == 1 {
+            body.push_str("LINE_ONE_ZZ\n");
+        } else if i == 40 {
+            body.push_str("LINE_FORTY_ZZ\n");
+        } else {
+            body.push_str(&format!("plain line {i}\n"));
+        }
+    }
+    std::fs::write(dir.join("deep.txt"), body).unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+    s.app.paste_jump_from("deep.txt#L40");
+    s.draw();
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(s
+        .app
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("deep.txt")));
+    s.see("LINE_FORTY_ZZ");
+    s.dont_see("LINE_ONE_ZZ");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_pastejump_at_ref_relative_opens() {
+    let dir = sandbox("pastejump_atref");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/target.txt"), "AT_REF_BODY\nsecond line\n").unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+    s.app.paste_jump_from("@sub/target.txt");
+    s.draw();
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(s
+        .app
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("sub/target.txt")));
+    s.see("AT_REF_BODY");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_pastejump_no_line_opens_at_top() {
+    let dir = sandbox("pastejump_top");
+    let mut body = String::new();
+    for i in 1..=60 {
+        if i == 1 {
+            body.push_str("TOP_MARKER_LINE\n");
+        } else if i == 50 {
+            body.push_str("DEEP_MARKER_LINE\n");
+        } else {
+            body.push_str(&format!("filler line {i}\n"));
+        }
+    }
+    std::fs::write(dir.join("top.txt"), body).unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+    s.app.paste_jump_from("top.txt");
+    s.draw();
+    assert_eq!(s.app.mode, Mode::Preview);
+    assert!(s
+        .app
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("top.txt")));
+    s.see("TOP_MARKER_LINE");
+    s.dont_see("DEEP_MARKER_LINE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_pastejump_non_github_url_unrecognized() {
+    let dir = sandbox("pastejump_nongithub");
+    seed_files(&dir);
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+    assert_eq!(s.app.mode, Mode::Tree);
+    assert!(s.app.preview_path.is_none());
+    s.app.paste_jump_from("https://example.com/some/file.rs");
+    s.draw();
+    assert_eq!(s.app.mode, Mode::Tree);
+    assert!(s.app.preview_path.is_none());
+    assert!(s.app.flash.is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- ファイル操作の端 ----
+
+#[cfg(target_os = "macos")]
+#[test]
+fn e2e_fileop_delete_trash_removes_file() {
+    let dir = sandbox("fileop_trash");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("notes.txt");
+    s.key(' ');
+    s.key('d');
+    assert!(s.app.is_dialog());
+    s.key('y');
+    assert!(!dir.join("notes.txt").exists());
+    assert!(!s.app.is_dialog());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_fileop_rename_to_existing_name_fails() {
+    let dir = sandbox("fileop_rename_exist");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("notes.txt");
+    s.key(' ');
+    s.key('r');
+    for _ in 0..40 {
+        s.press(KeyCode::Backspace, KeyModifiers::NONE);
+    }
+    s.keys("data.csv");
+    s.enter();
+    assert!(dir.join("notes.txt").exists());
+    assert!(dir.join("data.csv").exists());
+    assert!(!s.app.is_dialog());
+    assert!(s.app.flash.is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_fileop_create_targets_cursor_file_parent() {
+    let dir = sandbox("fileop_create_subdir");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/inner.txt"), "x\n").unwrap();
+    std::fs::write(dir.join("root_file.txt"), "y\n").unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+    s.select("sub");
+    s.enter();
+    s.select("sub/inner.txt");
+    s.key(' ');
+    s.key('n');
+    s.keys("made.txt");
+    s.enter();
+    assert!(dir.join("sub/made.txt").exists());
+    assert!(!dir.join("made.txt").exists());
+    std::fs::remove_dir_all(&dir).ok();
 }
