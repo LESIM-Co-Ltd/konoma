@@ -829,6 +829,19 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Down => app.tab_list_move(1),
             _ => {}
         },
+        Surface::Outline => match m {
+            Motion::Up => app.outline_move(-1),
+            Motion::Down => app.outline_move(1),
+            Motion::Top => {
+                let d = -(app.outline_sel() as i32);
+                app.outline_move(d);
+            }
+            Motion::Bottom => {
+                let d = (app.md_outline().len() as i32 - 1) - app.outline_sel() as i32;
+                app.outline_move(d);
+            }
+            _ => {}
+        },
         Surface::Help => match m {
             Motion::Up => app.help_scroll_by(-1),
             Motion::Down => app.help_scroll_by(1),
@@ -967,6 +980,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::SortToggleDirsFirst => app.sort_menu_key('.')?,
         Action::ToggleTabList => app.toggle_tab_list(),
         Action::TabListClose => app.tab_list_close_selected(),
+        Action::ToggleOutline => app.toggle_outline(),
         Action::BookmarkJump => app.bookmark_list_jump(),
         Action::BookmarkEdit => app.bookmark_list_edit(),
         Action::BookmarkDelete => app.bookmark_list_delete(),
@@ -1159,6 +1173,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::Info => app.toggle_info(),
         Surface::Bookmarks => app.close_bookmark_list(),
         Surface::Tabs => app.toggle_tab_list(),
+        Surface::Outline => app.toggle_outline(),
         Surface::Tree => {
             // クエリありの Esc は絞り込み解除、無ければ選択クリア (旧 tree 挙動)。
             if app.filter_query().is_some() {
@@ -1210,6 +1225,7 @@ fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
         Surface::PreviewText => app.md_activate_focused()?,
         Surface::Bookmarks => app.bookmark_list_jump(),
         Surface::Tabs => app.tab_list_activate(),
+        Surface::Outline => app.outline_jump(),
         #[cfg(feature = "git")]
         Surface::GitChanges => {
             if let Some(p) = app.git_view_selected() {

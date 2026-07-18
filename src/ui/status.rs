@@ -78,6 +78,7 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::Mark => (Msg::StMark, Color::Yellow, false),
         InternalMode::Bookmarks => (Msg::StBookmarks, Color::Yellow, false),
         InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
+        InternalMode::Outline => (Msg::StOutline, Color::Yellow, false),
         InternalMode::Info => (Msg::StInfo, Color::DarkGray, true),
         InternalMode::Create => (Msg::StCreate, Color::Green, false),
         InternalMode::Rename => (Msg::StRename, Color::Cyan, false),

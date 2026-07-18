@@ -8,6 +8,7 @@ pub mod git;
 pub mod help;
 pub mod icons;
 pub mod info;
+pub mod outline;
 pub mod preview;
 pub mod status;
 pub mod tab_list;
@@ -117,6 +118,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // タブ一覧オーバーレイ(`T`)。
     if app.is_tab_list() {
         tab_list::render(frame, app, frame.area());
+    }
+    // 見出しアウトラインオーバーレイ(`o`)。
+    if app.is_outline() {
+        outline::render(frame, app, frame.area());
     }
     // ファイル情報ポップアップ。
     if app.is_info() {

@@ -54,6 +54,7 @@ information contextually inside the app.
 | `Enter` | open focused link / toggle focused checkbox |
 | `Space` | toggle focused checkbox |
 | `R` | toggle rendered ⇄ raw source (Markdown/Mermaid) |
+| `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
 | `v` / `V` | select by character / by line, then `y` copies |
 | `Y` | copy `@path#L12-34` reference |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |

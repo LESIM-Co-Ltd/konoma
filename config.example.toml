@@ -347,6 +347,7 @@ builtin = "pdf"
 #                  "link_open" (Enter: open the link in the same tab) "open_link_new_tab" (Ctrl-t: open the link in a new tab)
 #                  "preview_next_file" "preview_prev_file" (Ctrl-n/Ctrl-p: preview the next/prev file in tree order
 #                    = file paging. Directories are skipped; wraps at the ends.)
+#                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
 #   Sort         : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"

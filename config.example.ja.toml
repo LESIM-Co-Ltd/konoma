@@ -339,6 +339,7 @@ builtin = "pdf"
 #                  "link_open"(Enter: リンクを同タブで開く) "open_link_new_tab"(Ctrl-t: リンクを別タブで開く)
 #                  "preview_next_file" "preview_prev_file"(Ctrl-n/Ctrl-p: ツリー表示順で次/前の
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
+#                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
 #   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"

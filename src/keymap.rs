@@ -252,6 +252,7 @@ pub enum Action {
     // --- タブ一覧 (`T`) ---
     ToggleTabList,
     TabListClose,
+    ToggleOutline,
     // --- Bookmark 一覧 ---
     BookmarkJump,
     BookmarkEdit,
@@ -293,6 +294,8 @@ pub enum Surface {
     Bookmarks,
     /// Tab-list overlay (`T`): j/k + Enter switch, `w` closes the selected tab.
     Tabs,
+    /// Heading-outline overlay (`o` in a Markdown preview): j/k + Enter jump to a heading.
+    Outline,
     Info,
     #[cfg(feature = "git")]
     GitDetail,
@@ -728,6 +731,8 @@ impl KeyMap {
         // ブックマーク: プレビュー中のファイルを m で登録・' で一覧(ツリーと同じ action)。
         ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
+        // 見出しアウトライン(Markdown プレビュー)。o で開閉。
+        ptext.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
         per_surface.insert(Surface::PreviewText, ptext);
 
         // --- Preview: text/code visual selection (v charwise / V linewise) ---
@@ -944,6 +949,16 @@ impl KeyMap {
         tl.insert(KeyPress::ch('d'), run(Action::TabListClose));
         tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
         per_surface.insert(Surface::Tabs, tl);
+
+        // --- 見出しアウトライン一覧 (`o` で開閉。Enter=ジャンプ は固定キー) ---
+        let mut outline: ContextMap = HashMap::new();
+        outline.insert(KeyPress::ch('j'), nav(Motion::Down));
+        outline.insert(KeyPress::ch('k'), nav(Motion::Up));
+        outline.insert(KeyPress::ch('g'), nav(Motion::Top));
+        outline.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+        outline.insert(KeyPress::ch('q'), run(Action::ToggleOutline));
+        outline.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
+        per_surface.insert(Surface::Outline, outline);
 
         // --- Info ---
         let mut info: ContextMap = HashMap::new();
@@ -1242,6 +1257,7 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "sort" => Surface::Sort,
         "bookmarks" => Surface::Bookmarks,
         "tabs" => Surface::Tabs,
+        "outline" => Surface::Outline,
         "info" => Surface::Info,
         "help" => Surface::Help,
         #[cfg(feature = "git")]
@@ -1673,6 +1689,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         // Bookmark
         "toggle_tab_list" => Action::ToggleTabList,
         "tab_list_close" => Action::TabListClose,
+        "toggle_outline" => Action::ToggleOutline,
         "bookmark_jump" => Action::BookmarkJump,
         "bookmark_edit" => Action::BookmarkEdit,
         "bookmark_delete" => Action::BookmarkDelete,
@@ -1823,6 +1840,7 @@ pub fn action_name(a: Action) -> String {
         Action::SortToggleDirsFirst => "sort_toggle_dirs_first",
         Action::ToggleTabList => "toggle_tab_list",
         Action::TabListClose => "tab_list_close",
+        Action::ToggleOutline => "toggle_outline",
         Action::BookmarkJump => "bookmark_jump",
         Action::BookmarkEdit => "bookmark_edit",
         Action::BookmarkDelete => "bookmark_delete",
@@ -2400,6 +2418,31 @@ mod tests {
             Resolution::Action(Action::ToggleTabList),
             "global の割当へ戻る"
         );
+    }
+
+    #[test]
+    fn outline_key_resolves_and_action_round_trips() {
+        let m = KeyMap::from_config(KeyScheme::Vim, &KeysFileConfig::default());
+        // `o` in a Markdown/text preview opens the outline.
+        assert_eq!(
+            m.resolve(Surface::PreviewText, None, KeyPress::ch('o')),
+            Resolution::Action(Action::ToggleOutline)
+        );
+        // In the outline overlay: j/k move, o/q close.
+        assert_eq!(
+            m.resolve(Surface::Outline, None, KeyPress::ch('j')),
+            Resolution::Action(Action::Navigate(Motion::Down))
+        );
+        assert_eq!(
+            m.resolve(Surface::Outline, None, KeyPress::ch('q')),
+            Resolution::Action(Action::ToggleOutline)
+        );
+        // config string round-trip.
+        assert_eq!(
+            action_from_str("toggle_outline"),
+            Some(Action::ToggleOutline)
+        );
+        assert_eq!(action_name(Action::ToggleOutline), "toggle_outline");
     }
 
     // §10.8 固定キー rebind 拒否。

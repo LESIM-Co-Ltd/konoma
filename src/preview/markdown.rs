@@ -1373,6 +1373,28 @@ pub(crate) fn heading_text(line: &Line<'_>) -> Option<String> {
     Some(t.to_string())
 }
 
+/// Best-effort heading level (1–4) of a decorated heading line, for outline indentation. After
+/// `decorate_headings` the level survives only in the line style: H1/H2 are bold (told apart by the
+/// full-width rule that follows — `━` = H1, `─` = H2), H3 is bold+italic, H4–H6 are dim+italic
+/// (collapsed to 4). `next` is the line after `line` (the rule line for H1/H2).
+pub(crate) fn heading_level_hint(line: &Line<'_>, next: Option<&Line<'_>>) -> u8 {
+    let m = line.style.add_modifier;
+    if m.contains(Modifier::DIM) {
+        return 4;
+    }
+    if m.contains(Modifier::ITALIC) {
+        return 3;
+    }
+    let rule: String = next
+        .map(|n| n.spans.iter().map(|s| s.content.as_ref()).collect())
+        .unwrap_or_default();
+    if rule.starts_with('━') {
+        1
+    } else {
+        2
+    }
+}
+
 /// If the line is a heading (its first span is exactly the form "#".."###### "), return its level.
 fn heading_level(line: &Line) -> Option<u8> {
     let content = line.spans.first()?.content.as_ref();
@@ -4269,6 +4291,20 @@ plain body
     fn process_footnotes_no_definitions_is_noop() {
         let src = "just [^1] with no definition\n";
         assert_eq!(process_footnotes(src), src);
+    }
+
+    #[test]
+    fn heading_level_hint_infers_levels_from_style() {
+        let md = "# H1\n\n## H2\n\n### H3\n\n#### H4\n\n##### H5\n";
+        let lines = render_markdown(md, 40, NO_CODE, "TwoDark", false);
+        let levels: Vec<u8> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| heading_text(l).is_some())
+            .map(|(i, l)| heading_level_hint(l, lines.get(i + 1)))
+            .collect();
+        // H1/H2/H3 distinct; H4/H5 both collapse to 4.
+        assert_eq!(levels, vec![1, 2, 3, 4, 4]);
     }
 
     #[test]

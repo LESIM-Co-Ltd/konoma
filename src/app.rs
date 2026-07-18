@@ -58,6 +58,7 @@ pub enum InternalMode {
     Mark,
     Bookmarks,
     Tabs,
+    Outline,
     Info,
     Create,
     Rename,
@@ -791,6 +792,9 @@ pub struct App {
     /// Tab-list overlay (`T`). App-global (not per-tab).
     tab_list: bool,
     tab_list_sel: usize,
+    /// Heading-outline overlay (`o` in a Markdown preview): jump to any heading.
+    outline_open: bool,
+    outline_sel: usize,
 
     /// git status (FR-7). Absolute path → kind. Cached per root and re-fetched when root changes.
     git_status: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
@@ -1284,6 +1288,8 @@ impl App {
             active_tab: 0,
             tab_list: false,
             tab_list_sel: 0,
+            outline_open: false,
+            outline_sel: 0,
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
@@ -1582,6 +1588,9 @@ impl App {
         if self.is_tab_list() {
             return Some(InternalMode::Tabs);
         }
+        if self.is_outline() {
+            return Some(InternalMode::Outline);
+        }
         if self.is_info() {
             return Some(InternalMode::Info);
         }
@@ -1673,6 +1682,9 @@ impl App {
         }
         if self.is_tab_list() {
             return S::Tabs;
+        }
+        if self.is_outline() {
+            return S::Outline;
         }
         if self.is_info() {
             return S::Info;
@@ -2680,6 +2692,7 @@ impl App {
             self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
         }
         self.focused_item = None;
+        self.outline_open = false; // 新規プレビューでアウトラインオーバーレイは閉じる
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
@@ -6131,6 +6144,8 @@ impl App {
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();
         self.git_graph_reordered = false;
+        // 見出しアウトラインオーバーレイもタブ跨ぎで持ち越さない。
+        self.outline_open = false;
         // 選択 / 絞り込み / プレビュー検索もそのタブの状態を復元する(entries も同時に復元するため
         // visual_anchor(entries 添字)は整合する)。load_active は rebuild_tree を呼ばない。
         self.selection = t.selection;
@@ -6236,6 +6251,8 @@ impl App {
     /// preserved by `save_active`, so it is not lost.
     pub fn tab_new(&mut self) -> Result<()> {
         self.save_active();
+        // 見出しアウトラインオーバーレイは新タブへ持ち越さない(空タブ上の空オーバーレイを防ぐ)。
+        self.outline_open = false;
         let root = self.root.clone();
         self.open_dir = root.clone();
         self.root = root;
@@ -6367,6 +6384,73 @@ impl App {
         self.active_tab = i;
         self.load_active();
         self.save_session();
+    }
+
+    // --- 見出しアウトラインオーバーレイ (`o` in a Markdown preview) --------
+    pub fn is_outline(&self) -> bool {
+        self.outline_open
+    }
+
+    /// Heading outline of the current Markdown preview: `(level, text, decorated-line-index)` in
+    /// document order. Built from the decorated cache, so it reflects exactly what is on screen
+    /// (front matter stripped, footnotes/inline-HTML processed). Empty for non-Markdown previews.
+    pub(crate) fn md_outline(&self) -> Vec<(u8, String, usize)> {
+        let Some(c) = &self.md_cache else {
+            return Vec::new();
+        };
+        c.anchors
+            .iter()
+            .filter_map(|(_slug, line)| {
+                let l = c.lines.get(*line)?;
+                let text = crate::preview::markdown::heading_text(l)?;
+                let level = crate::preview::markdown::heading_level_hint(l, c.lines.get(*line + 1));
+                Some((level, text, *line))
+            })
+            .collect()
+    }
+
+    /// `o`: open/close the heading outline. Opening selects the heading of the current section
+    /// (the last one at or above the viewport top). Flashes and stays closed if there are no
+    /// headings (e.g. a non-Markdown preview or a document without any).
+    pub fn toggle_outline(&mut self) {
+        if self.outline_open {
+            self.outline_open = false;
+            return;
+        }
+        let items = self.md_outline();
+        if items.is_empty() {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::OutlineEmpty).into());
+            return;
+        }
+        // Select the current section: the last heading at or above the top of the view.
+        let top = self.md_top_logical_line().unwrap_or(0);
+        self.outline_sel = items
+            .iter()
+            .rposition(|(_, _, line)| *line <= top)
+            .unwrap_or(0);
+        self.outline_open = true;
+    }
+
+    pub fn outline_sel(&self) -> usize {
+        self.outline_sel
+    }
+
+    pub fn outline_move(&mut self, delta: i32) {
+        let n = self.md_outline().len();
+        if n == 0 {
+            return;
+        }
+        self.outline_sel = (self.outline_sel as i32 + delta).rem_euclid(n as i32) as usize;
+    }
+
+    /// Enter in the outline: scroll the preview to the selected heading and close the overlay.
+    pub fn outline_jump(&mut self) {
+        let line = self.md_outline().get(self.outline_sel).map(|(_, _, l)| *l);
+        self.outline_open = false;
+        if let Some(line) = line {
+            let (row, _) = self.md_visual_span(line);
+            self.preview_scroll = row.min(u16::MAX as usize) as u16;
+        }
     }
 
     // --- タブ一覧オーバーレイ (`T`) ----------------------------------------

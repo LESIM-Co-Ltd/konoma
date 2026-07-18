@@ -7,6 +7,9 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Heading outline / jump panel.** Press `o` in a Markdown preview to open an outline of the
+  document's headings (indented by level); `j`/`k`/`g`/`G` move, `Enter` scrolls the preview to the
+  selected heading, `o`/`q`/`Esc` close.
 - **Bare URL & email autolinking in Markdown previews** (GFM autolink). A plain `https://…`,
   `www.…`, or `foo@bar.com` now becomes a focusable link (`Tab` to it, `Enter` opens it), like
   GitHub. Never applied inside code spans or code fences. Toggle with `[ui] md_autolink`.

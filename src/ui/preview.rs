@@ -85,6 +85,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
         .row("Y", l(crate::i18n::Msg::AtRefHelp))
         .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
+        .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
         .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
@@ -159,6 +160,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
         }
         v.extend([
+            hint(lang, "o", crate::i18n::Msg::HintOutline),
             hint(lang, "R", crate::i18n::Msg::HintRawSource),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
@@ -198,6 +200,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         };
         v.push(hint(lang, "R", msg));
     }
+    // NOTE: the outline (`o`) is only meaningful for the *decorated* Markdown view (raw source has no
+    // heading cache), so its footer hint lives in the decorated-Markdown branch above — not here.
     v.push(hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump));
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));

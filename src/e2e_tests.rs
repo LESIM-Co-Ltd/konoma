@@ -1712,6 +1712,83 @@ fn e2e_markdown_front_matter_off_leaves_body_intact() {
 }
 
 #[test]
+fn e2e_outline_lists_headings_and_jumps() {
+    // `o` opens a heading outline; Enter on a heading scrolls the preview there.
+    let mut body = String::from("# Top Heading\n\nintro\n\n");
+    for i in 0..40 {
+        body.push_str(&format!("filler line {i}\n\n"));
+    }
+    body.push_str("## Deep Section\n\ndeep body text\n");
+    let (mut s, dir) = md_preview(Config::default(), "outline_jump", &body);
+    assert_eq!(s.app.preview_scroll, 0);
+    s.key('o');
+    assert!(s.app.is_outline(), "o opens the outline");
+    s.see("Top Heading");
+    s.see("Deep Section");
+    // On open the selection is the current section (Top, at scroll 0); j → the deep heading.
+    assert_eq!(s.app.outline_sel(), 0);
+    s.key('j');
+    assert_eq!(s.app.outline_sel(), 1);
+    s.enter();
+    assert!(!s.app.is_outline(), "Enter closes the outline");
+    assert!(s.app.preview_scroll > 0, "jumped down to the deep heading");
+    s.see("Deep Section");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_outline_toggle_and_esc_close() {
+    let (mut s, dir) = md_preview(
+        Config::default(),
+        "outline_toggle",
+        "# A\n\nx\n\n## B\n\ny\n",
+    );
+    s.key('o');
+    assert!(s.app.is_outline());
+    s.key('o'); // o again closes
+    assert!(!s.app.is_outline());
+    s.key('o');
+    assert!(s.app.is_outline());
+    s.esc(); // Esc also closes
+    assert!(!s.app.is_outline());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_outline_closes_on_new_tab() {
+    // The outline overlay is app-global; opening a new tab (`t`, inherited from global while the
+    // overlay is up) must close it, or an empty overlay would linger over the fresh tab.
+    let (mut s, dir) = md_preview(
+        Config::default(),
+        "outline_newtab",
+        "# A\n\nx\n\n## B\n\ny\n",
+    );
+    s.key('o');
+    assert!(s.app.is_outline());
+    s.key('t'); // global new tab
+    assert!(!s.app.is_outline(), "a new tab closes the outline overlay");
+    assert_eq!(s.app.mode, Mode::Tree, "the new tab is a fresh tree");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_outline_empty_flashes_on_plain_text() {
+    // A plain-text (windowed, non-Markdown) preview has no heading outline: `o` flashes, no overlay.
+    let dir = sandbox("outline_empty");
+    std::fs::write(dir.join("f.txt"), "# not a markdown heading\njust text\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("f.txt");
+    s.enter();
+    s.key('o');
+    assert!(
+        !s.app.is_outline(),
+        "no overlay opens for a non-Markdown preview"
+    );
+    assert!(s.app.flash.is_some(), "a 'no headings' flash is shown");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_markdown_anchor_jump_scrolls_to_heading() {
     // An in-page anchor `[x](#slug)` scrolls the decorated preview to the matching heading (it used
     // to flash "not supported"). Filler pushes the target well below the fold.
