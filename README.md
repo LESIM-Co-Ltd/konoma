@@ -46,9 +46,19 @@ in-between split view.
 </table>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown.png" alt="Markdown and Mermaid rendering" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown.png" alt="Inline images, a Mermaid diagram, and LaTeX math rendered in a Markdown preview" width="860">
 </p>
-<p align="center"><b>Markdown &amp; Mermaid</b></p>
+<p align="center"><b>Markdown</b> — inline images, Mermaid diagrams, and LaTeX math, rendered right in the preview</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-richtext.png" alt="Headings, tables, syntax-highlighted code, and interactive task lists in a Markdown preview" width="860">
+</p>
+<p align="center"><b>Rich text</b> — headings, tables, syntax-highlighted code, and interactive task lists</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-alerts.png" alt="GitHub-style alerts, autolinks, emoji, footnotes, and inline HTML in a Markdown preview" width="860">
+</p>
+<p align="center"><b>GitHub-flavored</b> — alerts, autolinks, emoji, footnotes, and inline HTML</p>
 
 ## Features
 
