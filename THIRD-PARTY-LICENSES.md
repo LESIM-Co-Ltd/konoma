@@ -4510,7 +4510,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.15.1
+- konoma 0.16.0
 
 ```
 MIT License
@@ -6316,4 +6316,5 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 ```
+
 

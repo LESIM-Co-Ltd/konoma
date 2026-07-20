@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-20
+
 ### Added
 - **Heading outline / jump panel.** Press `o` in a Markdown preview to open an outline of the
   document's headings (indented by level); `j`/`k`/`g`/`G` move, `Enter` scrolls the preview to the
@@ -38,8 +40,17 @@ All notable changes to konoma are documented in this file. The format is based o
   rasterized images via RaTeX (pure Rust, KaTeX quality — no browser/Node), rasterized in-process by
   the same resvg path as SVG/mermaid. A terminal cannot place an image mid-text, so inline math is
   lifted onto its own line; display math is centered. Currency (`$5 and $10`), code spans/fences, and
-  escaped `\$` are never mistaken for math. Toggle with `[ui] math` (`"image"` / `"text"`); non-graphics
+  escaped `\$` are never mistaken for math. Equations are painted in `[ui] math_color` (default a light
+  gray) over a transparent background so they read on a dark terminal (RaTeX paints pure black); set a
+  dark color on a light terminal. Toggle rendering with `[ui] math` (`"image"` / `"text"`); non-graphics
   terminals and render failures degrade to the raw LaTeX automatically.
+
+### Changed
+- **The bundled `samples/` are now English by default.** The walkthrough demos (`markdown.md`,
+  `links.md`, `long-lines.txt`) are English; the Japanese versions live alongside them with a `.ja`
+  suffix (`markdown.ja.md`, `links.ja.md`, `long-lines.ja.txt`), matching the existing
+  `tutorial.md` / `tutorial.ja.md` convention. `japanese.txt` and the full-width cells in
+  `sample.csv` stay as deliberate CJK-width demos.
 
 ## [0.15.1] - 2026-07-18
 
@@ -657,7 +668,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.1...v0.14.2
