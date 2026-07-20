@@ -17,6 +17,9 @@ and are covered by the project's MIT license.
   long-value truncation).
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
+- The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix
+  (`markdown.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`). `japanese.txt` and the
+  full-width cells in `sample.csv` stay as CJK demos (they exercise konoma's CJK-width handling).
 
 If you add new sample files, only commit material you have the right to redistribute
 under MIT (your own work, CC0, or public domain).

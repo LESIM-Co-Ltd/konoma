@@ -1,33 +1,33 @@
 # Link navigation demo
 
-`Tab` / `⇧Tab` でリンクをフォーカス、`Enter` で開く。
-（URL=ブラウザ / ローカルファイル=konoma プレビュー / ディレクトリ=そこへ移動）
+`Tab` / `⇧Tab` focuses a link, `Enter` opens it.
+(URL = browser / local file = konoma preview / directory = jump there)
 
-## ローカルリンク（konoma 内で開く）
+## Local links (open inside konoma)
 
-- コード: [hello.rs](./code/hello.rs) ／ [config.toml](./code/config.toml)
-- テキスト: [japanese.txt](./japanese.txt)
-- ディレクトリ: [code/](./code)
-- 別の Markdown: [markdown.md](./markdown.md)
+- Code: [hello.rs](./code/hello.rs) / [config.toml](./code/config.toml)
+- Text: [japanese.txt](./japanese.txt)
+- Directory: [code/](./code)
+- Another Markdown file: [markdown.md](./markdown.md)
 
-## 外部リンク（ブラウザで開く）
+## External links (open in the browser)
 
 - [ratatui](https://ratatui.rs)
 - [Rust](https://www.rust-lang.org)
-- 自動リンク: <https://github.com>
+- Autolink: <https://github.com>
 
-## 表の中のリンク
+## Links inside a table
 
-セル内のリンクもラベルだけが表示され、`Tab`/`Enter` が段落リンクと同じように効く。
+Links in a cell show only their label, and `Tab`/`Enter` work just like paragraph links.
 
-| 種別 | リンク | 備考 |
-|------|--------|------|
-| ローカル | [hello.rs](./code/hello.rs) | konoma 内で開く |
-| 外部 | [ratatui](https://ratatui.rs) | ブラウザで開く |
-| title 付き | [japanese.txt](./japanese.txt "日本語サンプル") | title は URL に混ざらない |
-| 1セルに複数 | [markdown.md](./markdown.md) と [code/](./code) | 順にフォーカスできる |
-| CJK 混在 | 前置き [README](./README.md) 後置き | 桁揃えが崩れない |
+| Kind | Link | Note |
+|------|------|------|
+| local | [hello.rs](./code/hello.rs) | opens inside konoma |
+| external | [ratatui](https://ratatui.rs) | opens in the browser |
+| with title | [japanese.txt](./japanese.txt "Japanese sample") | the title is not mixed into the URL |
+| many in one cell | [markdown.md](./markdown.md) and [code/](./code) | focus them in order |
+| CJK mix | 日本語 before [README](./README.md) after | column alignment stays intact |
 
-## 存在しないリンク（エラー表示）
+## A broken link (shows an error)
 
 - [missing](./does-not-exist.md)

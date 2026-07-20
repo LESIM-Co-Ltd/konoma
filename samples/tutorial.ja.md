@@ -18,7 +18,7 @@
 Markdown のリンクはフォーカスできます。`Tab` を何度か押すと、フォーカス（反転表示）が
 文書内のリンクとチェックボックスを順に巡回します。試してみてください:
 
-- [markdown.md](./markdown.md) — Markdown 描画の見本（表・コード・Mermaid・画像）
+- [markdown.ja.md](./markdown.ja.md) — Markdown 描画の見本（表・コード・Mermaid・画像）
 - [sample.csv](./sample.csv) — 整列テーブルで開く: `h j k l` でセル移動、
   `y` でセル/行/列コピー
 - [sample.png](./sample.png) — 画像プレビュー: `+`/`-` ズーム、`h j k l` パン

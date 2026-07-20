@@ -1,9 +1,9 @@
 # Code highlighting samples
 
-シンタックスハイライト確認用のサンプル集。各ファイルは konoma の既定 `code` ルール
-(`*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}`) にマッチし、純 Rust の syntect で着色される。
+A set of files for checking syntax highlighting. Each one matches konoma's default `code`
+rule (`*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}`) and is colored by pure-Rust syntect.
 
-| ファイル | 種別 |
+| File | Kind |
 |------------------|------------------------|
 | `hello.rs`       | Rust |
 | `script.py`      | Python |
@@ -12,21 +12,21 @@
 | `main.go`        | Go |
 | `calc.c`         | C |
 | `widget.cpp`     | C++ |
-| `types.h`        | C ヘッダ |
-| `build.sh`       | シェルスクリプト |
-| `config.toml`    | TOML 設定 |
-| `config.yaml`    | YAML 設定 |
-| `ci.yml`         | YAML 設定 (.yml) |
-| `data.json`      | JSON データ |
-| `large_generated.rs` | **1MB超の生成 Rust**（less 風ウィンドウ読みの確認用・連番マーカー入り） |
+| `types.h`        | C header |
+| `build.sh`       | Shell script |
+| `config.toml`    | TOML config |
+| `config.yaml`    | YAML config |
+| `ci.yml`         | YAML config (.yml) |
+| `data.json`      | JSON data |
+| `large_generated.rs` | **generated Rust over 1 MB** (for testing less-style windowed reading; numbered markers) |
 
 ```sh
 cargo run -- samples/code
 ```
 
-`large_generated.rs`(約1.8MB/52512行)は閾値(256KiB)超なので **less 風ウィンドウ読み**で開く。
-`j`/`Space`/`G` で末尾まで辿れ、タイトルの `[NN%]` が進捗を示す。一時用途なら削除してよい:
-`rm samples/code/large_generated.rs`
+`large_generated.rs` (~1.8 MB / 52512 lines) is over the threshold (256 KiB), so it opens with
+**less-style windowed reading**. `j`/`Space`/`G` scroll to the end, and the `[NN%]` in the title
+shows progress. Delete it if you only need it temporarily: `rm samples/code/large_generated.rs`
 
-各ファイルを開いて、キーワード・文字列・コメント・数値が色分けされることを確認する。
-この README 自体の Markdown コードフェンスも同じ syntect 経路で着色される。
+Open each file and confirm that keywords, strings, comments, and numbers are colored.
+This README's own Markdown code fence is colored through the same syntect path.

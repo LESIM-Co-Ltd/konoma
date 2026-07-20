@@ -1,140 +1,141 @@
-# Markdown プレビューのデモ
+# Markdown preview demo
 
-これは **太字** と *斜体* と `inline code`、そして [リンク](https://example.com) の例です。
+This shows **bold**, *italic*, `inline code`, and a [link](https://example.com).
 
-## リスト
+## Lists
 
-- 箇条書き1
-- 箇条書き2
-  - ネスト
-1. 番号付き1
-2. 番号付き2
+- Bullet 1
+- Bullet 2
+  - Nested
+1. Numbered 1
+2. Numbered 2
 
-## 引用とコード
+## Quotes and code
 
-> 引用ブロック。lightline 的な軽量プレビューでも装飾が効くことを確認する。
+> A blockquote. Styling works even in a lightweight preview.
 
 ```rust
 fn main() {
-    let msg = "syntect ハイライトが効くはず";
+    let msg = "syntect highlighting should work";
     println!("{msg}");
 }
 ```
 
-## 表
+## Tables
 
-| 種別 | ライブラリ | 依存 |
-|------|------------|------|
+| Kind | Library | Depends on |
+|------|---------|------------|
 | md   | tui-markdown | ratatui-core |
-| 図   | mermaid-text | unicode-width |
+| diagram | mermaid-text | unicode-width |
 
-### 表のインライン装飾・整列・エスケープ
+### Inline styling, alignment, and escapes in tables
 
-`:---:`=中央 / `---:`=右寄せ、セル内の装飾記法、`\|`=リテラルの縦棒。
+`:---:` = center / `---:` = right-align, inline styling inside cells, `\|` = a literal pipe.
 
-| 左寄せ | 中央 | 右寄せ |
-|:-------|:----:|-------:|
-| **太字** | *斜体* | `code` |
-| ~~打消し~~ | a \| b | 123 |
+| Left | Center | Right |
+|:-----|:------:|------:|
+| **bold** | *italic* | `code` |
+| ~~strike~~ | a \| b | 123 |
 
-## 水平線とタスクリスト
+## Horizontal rule and task list
 
-水平線（`---`）は全幅の罫線になる:
+A horizontal rule (`---`) becomes a full-width line:
 
 ---
 
-- [ ] 未完了タスク（Nerd Font のチェックボックスアイコンで表示。`ui.icons = false` なら `[ ]`）
-- [x] 完了タスク（同・チェック済みアイコン。`ui.icons = false` なら `[x]`）
+- [ ] An open task (rendered with the Nerd Font checkbox icon; `[ ]` when `ui.icons = false`)
+- [x] A done task (checked icon; `[x]` when `ui.icons = false`)
 
-チェックボックスは操作できる: `Tab` でフォーカス（リンクと同じ巡回）→ `Space` か `Enter` で
-トグル＝このファイルに書き戻る。`[ui] md_task_states` で `[" ", "/", "x"]` のような
-カスタム状態の巡回もできる（`[/]` のままブラケット表示）。
+Checkboxes are interactive: `Tab` to focus (same cycle as links), then `Space` or `Enter`
+toggles it — written back to this file. `[ui] md_task_states` can cycle custom states like
+`[" ", "/", "x"]` (shown as `[/]` in brackets).
 
-## HTML ブロック
+## HTML blocks
 
-`<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に
-フォーカス → `Space` か `Enter` で開閉。既定は GitHub と同じく `open` 属性を尊重
-（`[ui] md_details` で常時開閉も選べる）。
+`<details>` becomes a collapsible section with a `▸`/`▾` marker: `Tab` focuses the summary,
+then `Space` or `Enter` opens/closes it. By default the `open` attribute is honored like
+GitHub (`[ui] md_details` can force it always open/closed).
 
 <details>
-<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>
-中身は Markdown として描画される。**太字**やリストも効く:
+<summary>Closed details (like "click to expand" — open with Tab→Space)</summary>
+The body is rendered as Markdown. **Bold** and lists work too:
 
-- 折りたたみの中の項目
-- もう一つの項目
+- an item inside the fold
+- another item
 </details>
 
 <details open>
-<summary>open 属性つき details（最初から開いている）</summary>
-`<details open>` は既定（`md_details = "auto"`）で最初から展開表示される。
+<summary>Details with the open attribute (expanded from the start)</summary>
+`<details open>` starts expanded by default (`md_details = "auto"`).
 </details>
 
-<!-- この HTML コメントは表示されない -->
+<!-- This HTML comment is not shown -->
 
-## アラート（GitHub 形式）
+## Alerts (GitHub-style)
 
-`> [!TYPE]` の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（`[ui] md_alerts`）。
+A `> [!TYPE]` blockquote renders as a colored callout box (icon + label) (`[ui] md_alerts`).
 
 > [!NOTE]
-> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma
+> Supplementary info. A bare URL is autolinked too: https://github.com/LESIM-Co-Ltd/konoma
 
-> [!TIP] 独自タイトル
-> ヒント。本文の中では **装飾** も [リンク](images.md) も普通に効く。
+> [!TIP] Custom title
+> A tip. **Styling** and [links](images.md) work normally in the body.
 
 > [!WARNING]
-> 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。
+> Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some aliases too).
 
-## 自動リンクと絵文字
+## Autolinks and emoji
 
-裸の URL・メールは自動でリンクになる（`[ui] md_autolink`）: https://example.com や www.rust-lang.org 、
-メール foo@example.com 。ショートコード絵文字も変換される（`[ui] md_emoji`）: :rocket: :sparkles: :+1: 。
-どちらも `インラインコード` や コードブロック内ではそのまま（GitHub と同じ）。
+Bare URLs and emails become links (`[ui] md_autolink`): https://example.com or www.rust-lang.org ,
+email foo@example.com . Emoji shortcodes are converted too (`[ui] md_emoji`): :rocket: :sparkles: :+1: .
+Neither is touched inside `inline code` or code blocks (same as GitHub).
 
-## ページ内リンク・脚注・インライン HTML
+## In-page links, footnotes, inline HTML
 
-見出しへのリンクはその位置までスクロールする（既定 ON）: [Mermaid の節へ](#mermaidmd-内フェンス図に合成)。
-（GitHub と同じ slug 規則。CJK 見出しもアンカーになる。）
+A link to a heading scrolls there (on by default): [Jump to the Mermaid section](#mermaid-fenced-diagram-in-markdown).
+(Same slug rules as GitHub. CJK headings become anchors too.)
 
-脚注（`[ui] md_footnotes`）: 参照は上付き番号になり[^demo]、定義は末尾の脚注節にまとまる。
+Footnotes (`[ui] md_footnotes`): a reference becomes a superscript number[^demo], and the
+definitions are collected into a footnotes section at the end.
 
-インライン HTML（`[ui] md_inline_html`）: <kbd>Ctrl</kbd>+<kbd>C</kbd> でコピー、H<sub>2</sub>O、
-x<sup>2</sup>、<del>非推奨</del> は打消し線。<br>で改行も効く。
+Inline HTML (`[ui] md_inline_html`): <kbd>Ctrl</kbd>+<kbd>C</kbd> to copy, H<sub>2</sub>O,
+x<sup>2</sup>, <del>deprecated</del> is struck through. A <br>line break works too.
 
-[^demo]: これが脚注の定義。文書のどこに書いてもよい。
+[^demo]: This is the footnote definition. It can go anywhere in the document.
 
-## 画像（インライン表示）
+## Images (inline)
 
-行単位（画像だけの行）の `![alt](path)` は、文書の流れの中に**実ピクセルで**描画される
-（kitty graphics）。画像はテキストと一緒にスクロールする。ローカル画像もリモート
-（`http(s)://`）画像も表示でき、リモートは裏で取得して届くまで「loading」行を出す。
+A line that is just `![alt](path)` is drawn **in real pixels** in the document flow
+(kitty graphics). The image scrolls with the text. Local images and remote (`http(s)://`)
+images both work; a remote one shows a "loading" line until it arrives in the background.
 
-![konoma のサンプル画像](sample.png)
+![konoma sample image](sample.png)
 
-リモート画像・SVG バッジ・取得失敗時のテキスト降格まで含む網羅デモは
-[`images.md`](images.md) にある。
+A full demo covering remote images, an SVG badge, and text fallback on a failed fetch is in
+[`images.md`](images.md).
 
-## Mermaid（md 内フェンス→図に合成）
+## Mermaid (fenced diagram in Markdown)
 
 ```mermaid
 graph TD
-  A[ツリー] -->|Enter| B{種別解決}
+  A[Tree] -->|Enter| B{Resolve kind}
   B -->|.md| C[tui-markdown]
   B -->|mermaid fence| D[mermaid-text]
-  C --> E[全画面プレビュー]
+  C --> E[Full-screen preview]
   D --> E
 ```
 
-## 数式（LaTeX → 画像）
+## Math (LaTeX → image)
 
-インライン数式 $E = mc^2$ や $H_2O$ は、文中に置けないので**自前の行に持ち上がって**
-画像で描かれる（`[ui] math`）。ディスプレイ数式は中央寄せ:
+Inline math $E = mc^2$ and $H_2O$ cannot sit mid-line in a terminal, so they are **lifted
+onto their own line** and drawn as images (`[ui] math`). Display math is centered:
 
 $$
 \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
 $$
 
-通貨（`$5` や `$10`）・コード内の `` `$x$` ``・エスケープ `\$` は数式と誤認しない。
-RaTeX（純 Rust・KaTeX 品質）でラスタライズするのでブラウザも Node も要らない。
-`math = "text"` にすると生の LaTeX テキストのまま表示する。
+Currency (`$5` and `$10`), `` `$x$` `` inside code, and escaped `\$` are never mistaken for
+math. RaTeX (pure Rust, KaTeX quality) rasterizes them, so no browser or Node is needed.
+Set `math = "text"` to show the raw LaTeX instead.
 
-終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。
+That's the end — here is a long paragraph to exercise wrapping: the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog.
