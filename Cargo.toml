@@ -53,6 +53,9 @@ image = "0.25"
 # chafa(C)/onig(C) を避けたのと同じ方針で、外部ライブラリ不要＝配布容易性(PRD §5)を維持。
 # default features に text/system-fonts/raster-images 等を含む(SVG 内テキスト/埋め込み画像対応)。
 resvg = "0.47"
+# usvg と同じ SVG 色パーサ。`[ui] math_color` を **usvg が実際に受理する色か**で検証する
+# (valid ⟺ usvg が fill を黒フォールバックしない)ため直接依存として明示(既に resvg 経由で推移依存)。
+svgtypes = "0.16"
 
 # Markdown / Mermaid / コードハイライト
 # 当初候補の ratatui-markdown(0.3.6) は ratatui ^0.29 依存で、画像プレビューが要求する

@@ -4183,9 +4183,12 @@ impl App {
         self.md_image_cache
             .insert(key.clone(), MdImgEntry::default());
         let max_px = self.math_px();
+        // グリフ色(サニタイズ済み)を worker へ move。RaTeX の既定は純黒=ダーク端末で不可視のため、
+        // 端末背景に映える色で塗る(config `[ui] math_color`・既定は明るいグレー)。
+        let color = self.cfg.ui.math_color().to_string();
         let render =
             move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display) else {
+                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display, &color) else {
                     return (Err("math render failed".to_string()), None);
                 };
                 let data = std::sync::Arc::new(svg.into_bytes());
@@ -4327,8 +4330,10 @@ impl App {
         row_off: u16,
         vis_rows: u16,
     ) {
-        // フェンス図の合成キーはそのままキャッシュキー(デコードは ensure_mermaid_fence_render 済み)。
-        let path = if crate::preview::markdown::is_mermaid_fence_url(url) {
+        // 合成キー(フェンス図・数式)はそのままキャッシュキー(デコードは ensure_mermaid_fence_render /
+        // ensure_math_render 済み)。実ファイル画像だけディスク解決する。数式 `math://` を実ファイル扱い
+        // すると resolve が None を返し、エンコードを一度も要求せず予約行が空白のまま残っていた。
+        let path = if crate::preview::markdown::is_synthetic_md_url(url) {
             PathBuf::from(url)
         } else {
             let base = self
@@ -4343,9 +4348,10 @@ impl App {
         };
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
-            // フェンス図はここでは作れない(元コードが要る)。配置が在る以上キャッシュ済みのはずで、
-            // 来ない前提の防御(次の再装飾で ensure_mermaid_fence_render が作り直す)。
-            if crate::preview::markdown::is_mermaid_fence_url(url) {
+            // 合成キー(フェンス図・数式)はここでは作れない(元の code/latex が要る)。配置が在る以上
+            // キャッシュ済みのはずで、来ない前提の防御(次の再装飾で ensure_mermaid_fence_render /
+            // ensure_math_render が作り直す)。`math://` を実ファイルとしてデコードさせない。
+            if crate::preview::markdown::is_synthetic_md_url(url) {
                 return;
             }
             self.md_image_cache
@@ -4438,7 +4444,7 @@ impl App {
         row_off: u16,
         vis_rows: u16,
     ) -> Option<&Protocol> {
-        let path = if crate::preview::markdown::is_mermaid_fence_url(url) {
+        let path = if crate::preview::markdown::is_synthetic_md_url(url) {
             PathBuf::from(url)
         } else {
             let base = self

@@ -8073,6 +8073,53 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 数式インライン画像 `math://…` が予約行だけで**空白**になっていた(ユーザー報告 2026-07-20)。
+/// 真因: ensure_md_image / md_image_proto が mermaid フェンスの合成キーしか特別扱いせず、`math://`
+/// を実ファイルパスとして resolve_md_image_path に渡していた=常に None を返し、**エンコードを一度も
+/// 要求せず** protocol も返らない=予約セルが空白のまま。is_synthetic_md_url でフェンスと数式の両方を
+/// 合成キーとして扱い、URL をそのままキャッシュキーにする。ここでは「デコード済みの数式に対して
+/// ensure_md_image がエンコード要求を積むこと」を検証する(旧実装は早期 return で何も積まない=空白)。
+#[test]
+fn math_inline_image_requests_encode_via_synthetic_key() {
+    use crate::preview::markdown::{is_synthetic_md_url, math_url};
+    // 合成キーの分類: フェンスと数式は合成、実ファイル/リモートは実ファイル。
+    assert!(is_synthetic_md_url(&math_url("E=mc^2", false)));
+    assert!(is_synthetic_md_url("mermaid-fence://feedfeed"));
+    assert!(!is_synthetic_md_url("figure.png"));
+    assert!(!is_synthetic_md_url("https://example.com/x.svg"));
+
+    let dir = std::env::temp_dir().join("konoma_math_encode_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    // エンコードワーカーの受け口を張る(ensure_md_image はここへ MdEncodeRequest を積む)。
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_encoder(tx);
+
+    // ensure_math_render→apply_md_image 後の状態を再現: decoded + layout_px を持つ合成キーのエントリ。
+    let url = math_url("E=mc^2", false);
+    let key = std::path::PathBuf::from(&url);
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48))),
+            layout_px: Some((120, 48)),
+            ..Default::default()
+        },
+    );
+
+    // 予約行(cols=12, rows=2)全表示。数式はエンコードを要求しなければならない(旧実装は空白)。
+    app.ensure_md_image(&url, 12, 2, 0, 2);
+    let req = rx
+        .try_recv()
+        .expect("数式はエンコードを要求する(math:// を合成キーとして解決)");
+    assert_eq!(req.path, key, "math:// を実ファイルでなく合成キーで解決");
+    assert!(matches!(req.key, MdEncodeKey::Full { cols: 12, rows: 2 }));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 全画面ベクタのシャープ再ラスタは同時 1 本(inflight ガード)。回帰 2026-07-18: ガードが
 /// 無く、`+` のキーリピートでジョブ完了前に同じ再ラスタを十数本 spawn し得た
 /// (1 本 ~数百 ms・過渡 ~128MiB。インライン側 reraster_inflight との非対称)。

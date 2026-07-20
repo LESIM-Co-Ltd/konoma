@@ -384,6 +384,34 @@ fn cfg_ui_mermaid_theme_default_and_parse() {
     );
 }
 
+/// `math_color`: default light gray; validated against usvg's own color parser (`svgtypes::Color`) so a
+/// value that passes is one usvg renders — never one it silently falls back to *black* for (invisible on
+/// dark = the "blank equation" bug). A real color passes; a typo / `none` / `currentColor` / a
+/// fully-transparent color falls back to the default. Regression 2026-07-20: the old alphabetic-only
+/// check let `wihte`/`none`/`transparent` through → usvg fell back to black → equations blanked again.
+#[test]
+fn cfg_ui_math_color_default_and_sanitize() {
+    let d = Config::default();
+    assert_eq!(d.ui.math_color, "#d0d0d0");
+    assert_eq!(d.ui.math_color(), "#d0d0d0");
+    let mk =
+        |v: &str| -> Config { toml::from_str(&format!("[ui]\nmath_color = \"{v}\"\n")).unwrap() };
+    // Real colors pass through verbatim (usvg re-parses them identically).
+    assert_eq!(mk("#111").ui.math_color(), "#111"); // 3-digit hex
+    assert_eq!(mk("#1a2b3c").ui.math_color(), "#1a2b3c"); // 6-digit hex
+    assert_eq!(mk("white").ui.math_color(), "white"); // CSS name
+    assert_eq!(mk("black").ui.math_color(), "black"); // valid on a light terminal
+    assert_eq!(mk("rgb(0,0,0)").ui.math_color(), "rgb(0,0,0)"); // functional notation
+                                                                // Invalid / dangerous values fall back to the default so they can never blank equations.
+    assert_eq!(mk("wihte").ui.math_color(), "#d0d0d0"); // typo → usvg would fall back to BLACK
+    assert_eq!(mk("gary").ui.math_color(), "#d0d0d0"); // typo → default
+    assert_eq!(mk("#gggggg").ui.math_color(), "#d0d0d0"); // non-hex → default
+    assert_eq!(mk("none").ui.math_color(), "#d0d0d0"); // paint keyword, not a color → default
+    assert_eq!(mk("currentColor").ui.math_color(), "#d0d0d0"); // no DOM context → default
+    assert_eq!(mk("transparent").ui.math_color(), "#d0d0d0"); // alpha 0 would blank → default
+    assert_eq!(mk("").ui.math_color(), "#d0d0d0"); // empty → default
+}
+
 /// String fields have NO validation/fallback at parse time — an unrecognized value is stored
 /// verbatim (the consumer decides how to interpret/fall back).
 #[test]

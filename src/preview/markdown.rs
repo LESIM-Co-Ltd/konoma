@@ -1740,6 +1740,15 @@ pub fn is_math_url(url: &str) -> bool {
     url.starts_with("math://")
 }
 
+/// Whether an inline-image URL is a **synthetic** in-cache key — a mermaid fence or a math expression,
+/// both keyed in `md_image_cache` under the URL itself — rather than a real file path. The overlay's
+/// `ensure_md_image`/`md_image_proto` must use such a URL directly as the cache key and skip filesystem
+/// resolution (which would fail for a `mermaid-fence://`/`math://` scheme and leave the reserved rows
+/// blank). Every real inline image (local path / `http(s)://` / `data:`) is *not* synthetic.
+pub fn is_synthetic_md_url(url: &str) -> bool {
+    is_mermaid_fence_url(url) || is_math_url(url)
+}
+
 /// All math expressions in `src`, in document order, as (latex, display). Mirrors the render path
 /// (`split_block_parts` → `split_math` per text run) so the extracted set matches what is drawn and
 /// the caller can kick off exactly those renders. Fence/code-span aware (math inside a code fence or

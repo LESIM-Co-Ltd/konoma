@@ -211,6 +211,13 @@ mermaid_rows = 24
 #   "text"            … leave the raw LaTeX ($...$) as plain text (no rendering).
 math = "image"
 
+# Glyph color for image-mode math. RaTeX paints equations pure black, invisible on a dark terminal;
+# konoma is dark-terminal-first, so equations are recolored to this over a transparent background
+# (the terminal shows through, like mermaid). On a LIGHT terminal, set a dark color (e.g. "#202020").
+# Accepts any color usvg parses (#hex, rgb(...), or a CSS color name); an unrecognized or
+# fully-transparent value falls back to the default (a typo can't silently blank equations).
+math_color = "#d0d0d0"
+
 # Tab-session save/restore. Per launch directory (project), the open tab layout (each tab's root, cursor
 # position, and previewed file) is saved and restored the next time konoma starts in the same directory.
 # A tab left in preview reopens in preview (scroll starts at the top).

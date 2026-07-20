@@ -372,6 +372,13 @@ pub struct UiConfig {
     /// plain text. Image mode degrades to the raw LaTeX automatically when the terminal has no image
     /// protocol or an expression fails to render (principle #3).
     pub math: String,
+    /// Glyph color for image-mode math (default `"#d0d0d0"`, a light gray). RaTeX paints equations pure
+    /// black, which is invisible on a dark terminal; konoma is dark-terminal-first, so equations are
+    /// recolored to this over a transparent background (the terminal shows through, like mermaid). On a
+    /// light terminal set a dark color (e.g. `"#202020"` or `"black"`). Accepts any color usvg parses
+    /// (`#hex`, `rgb(…)`, or a CSS color name); an unrecognized or fully-transparent value falls back to
+    /// the default, so a typo can't silently blank equations (see `UiConfig::math_color`).
+    pub math_color: String,
     /// Show a small spinner + job label at the top-right while background work is in flight
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
@@ -415,6 +422,25 @@ impl UiConfig {
             chars
         } else {
             crate::preview::markdown::DEFAULT_TASK_STATES.to_vec()
+        }
+    }
+
+    /// The math glyph color, sanitized against the **same parser usvg uses** (`svgtypes::Color`), so a
+    /// value that passes here is one usvg will render — never one it silently falls back to *black* for
+    /// (which is invisible on a dark terminal = the very "blank equation" bug). A `#hex`, `rgb(…)`, or a
+    /// real CSS color name (`black`, `white`, …) passes; a typo (`wihte`), `none`, `currentColor`, or a
+    /// fully-transparent color falls back to the light-gray default. Returning the *original* string is
+    /// safe because usvg re-parses it identically.
+    pub fn math_color(&self) -> &str {
+        use std::str::FromStr;
+        let c = self.math_color.trim();
+        let visible = svgtypes::Color::from_str(c)
+            .map(|col| col.alpha != 0)
+            .unwrap_or(false);
+        if visible {
+            c
+        } else {
+            "#d0d0d0"
         }
     }
 }
@@ -581,6 +607,7 @@ impl Default for UiConfig {
             busy_indicator: true,
             mermaid: "image".into(),
             math: "image".into(),
+            math_color: "#d0d0d0".into(),
             mermaid_theme: "dark".into(),
             mermaid_rows: 24,
             restore_tabs: true,

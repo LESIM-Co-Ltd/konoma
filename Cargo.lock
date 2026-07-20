@@ -1424,6 +1424,7 @@ dependencies = [
  "ratex-types",
  "resvg",
  "serde",
+ "svgtypes",
  "syntect",
  "tokio",
  "toml",
