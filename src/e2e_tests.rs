@@ -1465,22 +1465,31 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
 }
 
 #[test]
-fn e2e_md_html_details_block_rescued() {
-    // tui-markdown が捨てる <details> ブロックの中身テキストを、タグを剥いで表示する。
+fn e2e_md_html_details_collapse_and_toggle() {
+    // <details>(open 無し)は既定で折りたたみ: summary は出るが本文は隠れる。Tab で summary に
+    // フォーカス→Space/Enter で展開すると本文が出る。タグは剥がれる。
     let dir = sandbox("md_html_details");
     seed_files(&dir);
     std::fs::write(
         dir.join("html.md"),
-        "before text\n\n<details>\n<summary>Summary text</summary>\nhidden body line\n</details>\n\nafter text\n",
+        "before text\n\n<details>\n<summary>Summary text</summary>\n\nhidden body line\n\n</details>\n\nafter text\n",
     )
     .unwrap();
     let mut s = Sim::new(&canon(&dir));
     s.select("html.md");
     s.enter();
-    s.see("Summary text"); // <summary> の中身が残る
-    s.see("hidden body line"); // <details> 本文が残る
+    s.see("Summary text"); // <summary> は常に出る
+    s.dont_see("hidden body line"); // 既定は折りたたみ=本文は隠れる
     s.dont_see("<summary>"); // タグは剥がれている
     s.dont_see("<details>");
+    // Tab で summary にフォーカス → Space で展開。
+    s.tab();
+    assert_eq!(s.app.focused_item(), Some(0), "summary が Tab アイテム");
+    s.key(' ');
+    s.see("hidden body line"); // 展開して本文が出る
+                               // 再度トグルで折りたたみ。
+    s.enter();
+    s.dont_see("hidden body line");
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -79,6 +79,7 @@ copy_prefix = "y"
 | `md_frontmatter` | `true` | 先頭の YAML front matter(`---` … `---` が文書の最初)を認識し、罫線+生YAML でなくコンパクトな dim メタデータ block として表示。`false` なら通常の Markdown として描く。 |
 | `md_footnotes` | `true` | GFM 脚注を描く: `text[^1]` の参照は上付き番号になり、`[^1]: …` の定義は末尾の番号付き脚注節にまとまる。`false` ならリテラル表示。 |
 | `md_inline_html` | `true` | Markdown エンジンが剥がす一般的なインライン HTML を描く: `<del>`/`<s>`/`<strike>`=打消し線・`<kbd>`=インラインコードのキーキャップ・`<sup>`/`<sub>`=Unicode(対応する文字のみ)・`<br>`=ハード改行。(`<mark>`/`<ins>` はどちらでもテキストのみ。)`false` なら全タグを剥がす。 |
+| `md_details` | `"auto"` | `<details>` の初期表示。`"auto"` は GitHub と同じく open 属性を尊重(`<details>` 折りたたみ / `<details open>` 展開)・`"open"` 常に展開・`"closed"` 常に折りたたみ。いずれも `Tab` で `<summary>` にフォーカス→`Space`/`Enter` でトグル。 |
 
 ## `[ui.sort]` — ツリーの既定並び順
 

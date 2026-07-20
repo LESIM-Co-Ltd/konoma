@@ -640,6 +640,9 @@ pub struct App {
     md_items: Vec<MdItem>,
     /// Index of the focused item (within md_items). None=nothing selected.
     focused_item: Option<usize>,
+    /// Per-`<details>`-block open override (ordinal → open), set by `Space`/`Enter` on the summary.
+    /// Absent = the default (from the `open` attribute + `ui.md_details`). Reset on file/tab change.
+    details_open: std::collections::HashMap<usize, bool>,
 
     /// In-preview search (`/`, less style). Some=search is active (the query). Highlights matches and moves with n/N.
     /// Currently only Code/Text (windowed) previews are supported.
@@ -961,6 +964,9 @@ struct MdCache {
     fence_rows: u16,
     /// In-page anchor map (GitHub slug → decorated logical-line index) for `[x](#slug)` jumps.
     anchors: Vec<(String, usize)>,
+    /// Effective open/closed state of each `<details>` block (document order) as rendered — the base
+    /// a `Space`/`Enter` toggle flips.
+    details_states: Vec<bool>,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -1001,6 +1007,9 @@ enum MdItemKind {
     /// An inline mermaid diagram (image mode); `ordinal`=fence index in document order.
     /// `Enter` opens it full screen with zoom/pan.
     MermaidFence { ordinal: usize },
+    /// A `<details>` summary line; `ordinal`=details-block index in document order.
+    /// `Enter`/`Space` toggle it collapsed ⇄ expanded.
+    Details { ordinal: usize },
 }
 
 /// Cache of highlighted lines for windowed reading.
@@ -1229,6 +1238,7 @@ impl App {
             gutter_cache: None,
             md_items: Vec::new(),
             focused_item: None,
+            details_open: std::collections::HashMap::new(),
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
@@ -2693,6 +2703,7 @@ impl App {
         }
         self.focused_item = None;
         self.outline_open = false; // 新規プレビューでアウトラインオーバーレイは閉じる
+        self.details_open.clear(); // <details> の開閉状態は文書ごと=別ファイルでリセット
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
@@ -3479,7 +3490,29 @@ impl App {
             row_prefix,
             fence_rows,
             anchors,
+            details_states: crate::preview::markdown::current_details_states(),
         });
+    }
+
+    /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute:
+    /// `"open"`/`"closed"` force it; `"auto"` (or anything else) honors the attribute like GitHub.
+    fn details_default_open(&self, open_attr: bool) -> bool {
+        match self.cfg.ui.md_details.as_str() {
+            "open" => true,
+            "closed" => false,
+            _ => open_attr,
+        }
+    }
+
+    /// `Space`/`Enter` on a focused `<details>` summary: flip its open state and rebuild the cache.
+    pub fn toggle_details(&mut self, ordinal: usize) {
+        let cur = self
+            .md_cache
+            .as_ref()
+            .and_then(|c| c.details_states.get(ordinal).copied())
+            .unwrap_or(true);
+        self.details_open.insert(ordinal, !cur);
+        self.md_cache = None; // 再構築で開閉を反映
     }
 
     /// Scroll the current Markdown preview so the heading matching `slug` (a GitHub-style in-page
@@ -3654,6 +3687,20 @@ impl App {
                 } else {
                     src
                 };
+                // <details> の各ブロックの実効開閉状態を計算し、renderer(thread-local)へ渡す＋
+                // ensure_md_cache が MdCache に載せられるよう stash する(トグルの基準値)。
+                let details_states: Vec<bool> =
+                    crate::preview::markdown::collect_details_open(&src)
+                        .iter()
+                        .enumerate()
+                        .map(|(ord, &attr)| {
+                            self.details_open
+                                .get(&ord)
+                                .copied()
+                                .unwrap_or_else(|| self.details_default_open(attr))
+                        })
+                        .collect();
+                crate::preview::markdown::set_details_open(details_states);
                 // Decide how to render each image URL. A local file or a cached remote fetch resolves to
                 // a path → Inline (with its display size in cells). An uncached remote URL is Loading
                 // (a fetch is kicked off separately, in `decorated_lines`) unless it has already failed.
@@ -5625,6 +5672,15 @@ impl App {
                 self.open_mermaid_fence(ord);
                 Ok(())
             }
+            // <details> の summary: 折りたたみをトグル。
+            Some(MdItem {
+                kind: MdItemKind::Details { ordinal },
+                ..
+            }) => {
+                let ord = *ordinal;
+                self.toggle_details(ord);
+                Ok(())
+            }
             None => Ok(()),
         }
     }
@@ -5726,6 +5782,21 @@ impl App {
                 .focused_item
                 .and_then(|f| self.md_items.get(f))
                 .is_some_and(|it| matches!(it.kind, MdItemKind::Task { .. }))
+    }
+
+    /// The ordinal of the focused `<details>` summary, if one is focused (drives the Space fixed key
+    /// and the footer hint). None when not focused on a details summary.
+    pub fn md_focused_details(&self) -> Option<usize> {
+        if self.is_raw_source() {
+            return None;
+        }
+        match self.focused_item.and_then(|f| self.md_items.get(f)) {
+            Some(MdItem {
+                kind: MdItemKind::Details { ordinal },
+                ..
+            }) => Some(*ordinal),
+            _ => None,
+        }
     }
 
     /// Whether the rendered Markdown preview has any task checkboxes (drives the footer hint).
@@ -6146,6 +6217,8 @@ impl App {
         self.git_graph_reordered = false;
         // 見出しアウトラインオーバーレイもタブ跨ぎで持ち越さない。
         self.outline_open = false;
+        // <details> の開閉状態も文書ごと=タブ跨ぎで持ち越さない。
+        self.details_open.clear();
         // 選択 / 絞り込み / プレビュー検索もそのタブの状態を復元する(entries も同時に復元するため
         // visual_anchor(entries 添字)は整合する)。load_active は rebuild_tree を呼ばない。
         self.selection = t.selection;
@@ -6632,6 +6705,15 @@ fn build_md_items(
                     line: li,
                     kind: MdItemKind::MermaidFence { ordinal },
                 });
+            } else if crate::preview::markdown::is_details_header_span(span) {
+                let ordinal = items
+                    .iter()
+                    .filter(|it| matches!(it.kind, MdItemKind::Details { .. }))
+                    .count();
+                items.push(MdItem {
+                    line: li,
+                    kind: MdItemKind::Details { ordinal },
+                });
             }
         }
     }
@@ -6656,6 +6738,7 @@ fn invert_focused_line(line: &Line<'static>, ordinal: usize, whole_line: bool) -
                 || crate::preview::markdown::is_task_span(&span)
                 || crate::preview::markdown::is_code_header_span(&span)
                 || crate::preview::markdown::is_mermaid_header_span(&span)
+                || crate::preview::markdown::is_details_header_span(&span)
             {
                 if seen == ordinal {
                     span.style = span.style.add_modifier(Modifier::REVERSED);

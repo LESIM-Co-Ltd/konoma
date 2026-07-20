@@ -52,9 +52,21 @@ fn main() {
 
 ## HTML ブロック
 
+`<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に
+フォーカス → `Space` か `Enter` で開閉。既定は GitHub と同じく `open` 属性を尊重
+（`[ui] md_details` で常時開閉も選べる）。
+
 <details>
-<summary>details の要約行</summary>
-折りたたみの中身もタグを除いたテキストとして表示される（黙って消えない）。
+<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>
+中身は Markdown として描画される。**太字**やリストも効く:
+
+- 折りたたみの中の項目
+- もう一つの項目
+</details>
+
+<details open>
+<summary>open 属性つき details（最初から開いている）</summary>
+`<details open>` は既定（`md_details = "auto"`）で最初から展開表示される。
 </details>
 
 <!-- この HTML コメントは表示されない -->

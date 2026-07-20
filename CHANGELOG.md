@@ -30,6 +30,10 @@ All notable changes to konoma are documented in this file. The format is based o
 - **Inline HTML** that GitHub renders but the Markdown engine strips: `<del>`/`<s>`/`<strike>` as
   strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode, `<br>` as a hard line
   break. Toggle with `[ui] md_inline_html`.
+- **Collapsible `<details>`.** `<details>`/`<summary>` blocks render as a collapsible section with
+  a `▸`/`▾` disclosure marker; `Tab` focuses the summary and `Space`/`Enter` toggles it open/closed.
+  By default the `open` attribute is honored like GitHub (`<details>` collapsed, `<details open>`
+  expanded); force a start state with `[ui] md_details` (`"auto"` / `"open"` / `"closed"`).
 
 ## [0.15.1] - 2026-07-18
 

@@ -362,6 +362,10 @@ pub struct UiConfig {
     /// maps), and `<br>` as a hard line break. Default true. `<mark>`/`<ins>` have no faithful
     /// terminal form and keep only their text either way. false leaves all these tags to be stripped.
     pub md_inline_html: bool,
+    /// How `<details>` blocks start out. `"auto"` (default) honors the `open` attribute like GitHub
+    /// (`<details>` collapsed, `<details open>` expanded); `"open"` always starts expanded; `"closed"`
+    /// always collapsed. Either way `Tab` focuses the `<summary>` and `Space`/`Enter` toggle it.
+    pub md_details: String,
     /// Show a small spinner + job label at the top-right while background work is in flight
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
@@ -567,6 +571,7 @@ impl Default for UiConfig {
             md_frontmatter: true,
             md_footnotes: true,
             md_inline_html: true,
+            md_details: "auto".into(),
             busy_indicator: true,
             mermaid: "image".into(),
             mermaid_theme: "dark".into(),

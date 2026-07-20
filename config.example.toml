@@ -168,6 +168,12 @@ md_footnotes = true
 # kept either way.) false leaves all these tags to be stripped.
 md_inline_html = true
 
+# How <details> blocks start out. Either way Tab focuses the <summary> and Space/Enter toggle it.
+#   "auto"   (default) … honor the `open` attribute like GitHub (<details> collapsed, <details open> expanded)
+#   "open"             … always start expanded
+#   "closed"           … always start collapsed
+md_details = "auto"
+
 # Background-activity indicator. While something runs in the background (git ignore-file scan, media load,
 # highlight warm-up, inline-image fetch, …), a spinner and job name (+n when several) is shown at the top-right.
 # Nothing is shown when idle (= zero idle load).

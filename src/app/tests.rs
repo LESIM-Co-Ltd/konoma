@@ -18,6 +18,7 @@ fn item_target(it: &MdItem) -> &str {
         MdItemKind::Task { .. } => panic!("expected a link item"),
         MdItemKind::CodeBlock => panic!("expected a link item"),
         MdItemKind::MermaidFence { .. } => panic!("expected a link item"),
+        MdItemKind::Details { .. } => panic!("expected a link item"),
     }
 }
 
@@ -1701,6 +1702,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
             MdItemKind::Task { .. } => "task",
             MdItemKind::CodeBlock => "code",
             MdItemKind::MermaidFence { .. } => "mermaid",
+            MdItemKind::Details { .. } => "details",
         })
         .collect();
     assert_eq!(kinds, vec!["link", "code", "task"], "Link→Code→Task の順");

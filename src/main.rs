@@ -1295,6 +1295,13 @@ fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option
             app.md_toggle_focused_task();
             false
         }
+        // <details> の summary にフォーカス中は Space で折りたたみをトグル(Enter と同じ)。
+        KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_details().is_some() => {
+            if let Some(ord) = app.md_focused_details() {
+                app.toggle_details(ord);
+            }
+            false
+        }
         _ => return Ok(None),
     };
     Ok(Some(done))

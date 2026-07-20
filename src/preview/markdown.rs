@@ -119,6 +119,9 @@ pub fn render_markdown_tasks(
     icons: bool,
     tasks: &[char],
 ) -> Vec<Line<'static>> {
+    // Reset the per-render `<details>` state so tests are deterministic (production seeds it via
+    // `set_details_open` before every draw). Empty = every block honors its own `open` attribute.
+    set_details_open(Vec::new());
     // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on.
     render_markdown_tasks_opts(src, width, code, theme, icons, tasks, true)
 }
@@ -164,9 +167,37 @@ fn render_markdown_tasks_opts(
     out
 }
 
-/// The tables → HTML-block → tui-markdown pipeline for one Markdown text run. Shared by the top
-/// level and by GitHub-alert bodies (so an alert's content is rendered like any other Markdown).
+/// One Markdown text run: pull out collapsible `<details>` blocks first (they span blank lines, so
+/// the plain HTML-block splitter can't keep them whole), then render the rest through the normal
+/// tables → HTML → tui-markdown pipeline. Shared by the top level and by GitHub-alert bodies.
 fn render_md_text(
+    out: &mut Vec<Line<'static>>,
+    text: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+) {
+    for part in split_details(text) {
+        match part {
+            DetailsPart::Text(t) => render_md_text_inner(out, &t, width, code, theme, icons, tasks),
+            DetailsPart::Details {
+                open_attr,
+                summary,
+                body,
+            } => {
+                let open = next_details_open(open_attr);
+                out.extend(render_details(
+                    open, &summary, &body, width, code, theme, icons, tasks,
+                ));
+            }
+        }
+    }
+}
+
+/// The tables → HTML-block → tui-markdown pipeline for one Markdown text run (no `<details>`).
+fn render_md_text_inner(
     out: &mut Vec<Line<'static>>,
     text: &str,
     width: u16,
@@ -480,6 +511,11 @@ fn split_block_images(src: &str) -> Vec<BlockPart> {
 /// Split `src` into text runs, block-level images, and (when `mermaid_fences` is on) top-level
 /// ```mermaid fences. Fence tracking is shared, so a mermaid fence *inside* another code fence is
 /// never extracted (it is literal code), matching the segment renderer's rules.
+///
+/// Known limitation: this runs over the whole source *before* `<details>` extraction, so a block-level
+/// image or a ```mermaid fence placed inside a `<details>` body is pulled out here and rendered
+/// outside the collapsible region (always visible, un-indented) rather than folded with the block.
+/// Regular text, code fences and inline images inside `<details>` fold correctly.
 fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
@@ -1997,7 +2033,7 @@ fn render_alert(
     // Body via the shared pipeline (width reduced by the 2-col bar), each line bar-prefixed.
     let inner = width.saturating_sub(2);
     let mut body_lines = Vec::new();
-    render_md_text(&mut body_lines, body, inner, code, theme, icons, tasks);
+    render_md_text_inner(&mut body_lines, body, inner, code, theme, icons, tasks);
     for bl in body_lines {
         let style = bl.style;
         let mut spans = vec![bar()];
@@ -2005,6 +2041,224 @@ fn render_alert(
         out.push(Line::from(spans).style(style));
     }
     out
+}
+
+// ---- Collapsible `<details>` blocks ----
+
+// Per-render open state, set by the app before drawing (single-threaded draw path, like the panic
+// silencer). `open[k]` = whether the k-th `<details>` block in the document is expanded; the render
+// consumes them in order via `ord`. Missing entries default to expanded (safe).
+thread_local! {
+    static DETAILS: std::cell::RefCell<(usize, Vec<bool>)> =
+        const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// Set the effective open/closed state of each `<details>` block (document order) and reset the
+/// render cursor. Called by the app just before it renders a Markdown preview.
+pub fn set_details_open(open: Vec<bool>) {
+    DETAILS.with(|d| *d.borrow_mut() = (0, open));
+}
+
+/// The effective `<details>` open states currently set (for the app to store in the cache).
+pub fn current_details_states() -> Vec<bool> {
+    DETAILS.with(|d| d.borrow().1.clone())
+}
+
+/// The next `<details>` block's effective open state (falls back to its `open` attribute, then true).
+fn next_details_open(open_attr: bool) -> bool {
+    DETAILS.with(|d| {
+        let mut d = d.borrow_mut();
+        let ord = d.0;
+        let v = d.1.get(ord).copied().unwrap_or(open_attr);
+        d.0 = ord + 1;
+        v
+    })
+}
+
+enum DetailsPart {
+    Text(String),
+    Details {
+        open_attr: bool,
+        summary: String,
+        body: String,
+    },
+}
+
+/// If the line opens a `<details>` block, return its `open` attribute. Case-insensitive; matches
+/// `<details>` and `<details open …>` (a well-formed opening tag on its own line).
+fn details_open_tag(line: &str) -> Option<bool> {
+    let t = line.trim();
+    let lower = t.to_ascii_lowercase();
+    let rest = lower.strip_prefix("<details")?;
+    if !(rest.is_empty() || rest.starts_with('>') || rest.starts_with(' ')) {
+        return None; // e.g. "<detailsx" is a different tag
+    }
+    Some(rest.contains("open"))
+}
+
+fn is_details_close(line: &str) -> bool {
+    line.trim().eq_ignore_ascii_case("</details>")
+}
+
+/// Split off `<details>` … `</details>` blocks (spanning blank lines) from a text run, extracting the
+/// `<summary>` and the body. Non-details text is returned verbatim for the normal pipeline.
+/// Fence-aware (a `<details>` inside a code fence is left as text) so the block count and order match
+/// `collect_details_open`, which seeds the per-ordinal open state.
+fn split_details(md: &str) -> Vec<DetailsPart> {
+    let lines: Vec<&str> = md.lines().collect();
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            text.push_str(lines[i]);
+            text.push('\n');
+            i += 1;
+            continue;
+        }
+        if !in_fence {
+            if let Some(open_attr) = details_open_tag(lines[i]) {
+                if !text.is_empty() {
+                    parts.push(DetailsPart::Text(std::mem::take(&mut text)));
+                }
+                i += 1;
+                let mut block = Vec::new();
+                while i < lines.len() && !is_details_close(lines[i]) {
+                    block.push(lines[i]);
+                    i += 1;
+                }
+                if i < lines.len() {
+                    i += 1; // skip </details>
+                }
+                let (summary, body) = extract_summary_body(&block.join("\n"));
+                parts.push(DetailsPart::Details {
+                    open_attr,
+                    summary,
+                    body,
+                });
+                continue;
+            }
+        }
+        text.push_str(lines[i]);
+        text.push('\n');
+        i += 1;
+    }
+    if !text.is_empty() {
+        parts.push(DetailsPart::Text(text));
+    }
+    parts
+}
+
+/// Pull the `<summary>` text and the remaining body out of a details block's inner content. Tags in
+/// the summary are stripped; the body keeps its Markdown. A missing summary yields an empty string
+/// (the renderer supplies a default label).
+fn extract_summary_body(inner: &str) -> (String, String) {
+    let lower = inner.to_ascii_lowercase();
+    if let (Some(s), Some(e)) = (lower.find("<summary"), lower.find("</summary>")) {
+        // The `>` that closes the opening `<summary …>` tag must sit before `</summary>`. Bound the
+        // search to `[s, e)`: a malformed `<summary` with no `>` of its own would otherwise match the
+        // `>` inside `</summary>` (past `e`), giving an inverted slice range that panics. When the
+        // opening tag never closes, fall back to no-summary (the whole inner becomes the body).
+        if s < e {
+            if let Some(gt) = inner[s..e].find('>') {
+                let sum = strip_inline_html_tags(inner[s + gt + 1..e].trim());
+                let body = inner[e + "</summary>".len()..].trim().to_string();
+                return (sum, body);
+            }
+        }
+    }
+    (String::new(), inner.trim().to_string())
+}
+
+/// Remove any inline HTML tags from `s`, keeping the text (for a `<summary>` label).
+fn strip_inline_html_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&rest[..lt]);
+        match rest[lt..].find('>') {
+            Some(gt) => rest = &rest[lt + gt + 1..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+/// Sentinel style of a `<details>` summary line's marker (the Tab-focus target that toggles the
+/// block). Cyan + bold + italic is unique among konoma's marker sentinels (task = bold, code header
+/// = italic, mermaid = italic), and detection also requires the `▸`/`▾` prefix.
+pub(crate) fn details_marker_style() -> Style {
+    Style::new()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD | Modifier::ITALIC)
+}
+
+/// Whether `span` is a `<details>` summary marker (`▸`/`▾` + `details_marker_style`).
+pub(crate) fn is_details_header_span(span: &Span<'_>) -> bool {
+    span.style == details_marker_style()
+        && (span.content.starts_with('▸') || span.content.starts_with('▾'))
+}
+
+/// Render a `<details>` block: a summary line marked `▾`/`▸` (a Tab-focus toggle), and — when open —
+/// its Markdown body indented under a colored left bar (like an alert). `summary` empty → "Details".
+#[allow(clippy::too_many_arguments)]
+fn render_details(
+    open: bool,
+    summary: &str,
+    body: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let arrow = if open { '▾' } else { '▸' };
+    let label = if summary.trim().is_empty() {
+        "Details"
+    } else {
+        summary.trim()
+    };
+    out.push(Line::from(vec![
+        Span::styled(format!("{arrow} "), details_marker_style()),
+        Span::styled(label.to_string(), Style::new().add_modifier(Modifier::BOLD)),
+    ]));
+    if open && !body.trim().is_empty() {
+        let bar = || Span::styled("▏ ".to_string(), Style::new().fg(TABLE_BORDER_FG));
+        let inner = width.saturating_sub(2);
+        let mut body_lines = Vec::new();
+        render_md_text_inner(&mut body_lines, body, inner, code, theme, icons, tasks);
+        for bl in body_lines {
+            let style = bl.style;
+            let mut spans = vec![bar()];
+            spans.extend(bl.spans);
+            out.push(Line::from(spans).style(style));
+        }
+    }
+    out
+}
+
+/// The `open` attribute of every top-level `<details>` block in `src`, in document order. Derived
+/// from `split_details` itself so the collect order is identical to the split/render order and to the
+/// `MdItemKind::Details` ordinals — a nested `<details>` is swallowed into its parent's body and not
+/// counted separately (counting it here, as a flat tag scan did, drifted the per-ordinal open state
+/// so a later block read the wrong slot). Fence-aware via `split_details`. Used by the app to seed
+/// the default open state.
+pub fn collect_details_open(src: &str) -> Vec<bool> {
+    split_details(src)
+        .into_iter()
+        .filter_map(|p| match p {
+            DetailsPart::Details { open_attr, .. } => Some(open_attr),
+            DetailsPart::Text(_) => None,
+        })
+        .collect()
 }
 
 // ---- Inline HTML (`<kbd>`, `<del>`, `<sup>`, `<sub>`, `<br>`) ----
@@ -3097,20 +3351,127 @@ mod tests {
     }
 
     #[test]
+    fn details_open_tag_and_split_details() {
+        assert_eq!(details_open_tag("<details>"), Some(false));
+        assert_eq!(details_open_tag("<details open>"), Some(true));
+        assert_eq!(details_open_tag("  <DETAILS OPEN>"), Some(true));
+        assert_eq!(details_open_tag("<detailsx>"), None);
+        assert_eq!(details_open_tag("plain"), None);
+        // Extract a block that spans a blank line; summary + body separated, tags stripped.
+        let md =
+            "intro\n\n<details open>\n<summary>Sum</summary>\n\nbody line\n\n</details>\n\ntail\n";
+        let parts = split_details(md);
+        assert_eq!(parts.len(), 3, "Text / Details / Text");
+        match &parts[1] {
+            DetailsPart::Details {
+                open_attr,
+                summary,
+                body,
+            } => {
+                assert!(*open_attr);
+                assert_eq!(summary, "Sum");
+                assert!(body.contains("body line"));
+            }
+            _ => panic!("expected a details part"),
+        }
+        // Fence-aware: a <details> inside a code fence is left as text.
+        let fenced = "```\n<details>\n<summary>x</summary>\n</details>\n```\n";
+        assert!(split_details(fenced)
+            .iter()
+            .all(|p| matches!(p, DetailsPart::Text(_))));
+    }
+
+    #[test]
+    fn details_config_modes_force_open_or_closed() {
+        // `set_details_open` overrides the per-block open state (what `ui.md_details` "open"/"closed"
+        // produce). Here the source is a plain <details> (attr = collapsed by default).
+        let md = "<details>\n<summary>Sum</summary>\n\nthe body\n\n</details>\n";
+        let shown = |states: Vec<bool>| -> bool {
+            set_details_open(states);
+            let lines =
+                render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+            let all: String = lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                .collect();
+            all.contains("the body")
+        };
+        assert!(shown(vec![true]), "forced open → body shown");
+        assert!(!shown(vec![false]), "forced closed → body hidden");
+    }
+
+    #[test]
+    fn malformed_summary_tag_does_not_panic() {
+        // A `<summary` opening tag that never closes with its own `>` must not panic (the `>` in
+        // `</summary>` sits past `e`; bounding the search to [s,e) avoids the inverted-range slice).
+        // Regression for a full-screen crash on typo'd / half-written HTML in a Markdown file.
+        for md in [
+            "<details>\n<summary attr\n</summary>\nbody\n</details>\n",
+            "<details>\n<summary bad</summary>tail\n</details>\n",
+            "<details>\n<summary>日本語 attr\n</summary>\n本文\n</details>\n",
+        ] {
+            let _ = render_markdown(md, 40, BG, "TwoDark", false); // must not panic
+        }
+        // Direct: unclosed opening tag falls back to no-summary (whole inner becomes the body).
+        let (sum, body) = extract_summary_body("<summary attr\nbody");
+        assert_eq!(sum, "");
+        assert!(body.contains("body"));
+    }
+
+    #[test]
+    fn nested_details_do_not_drift_later_block_open_state() {
+        // A `<details>` nested inside another is swallowed into the parent's body (split_details stops
+        // at the first `</details>`) and must NOT be counted as its own block — otherwise the flat tag
+        // scan yielded [false, false, true] while only 2 top-level blocks render, so the later
+        // `<details open>` read slot 1 (the nested block's `false`) and drew collapsed.
+        let md = "<details>\n<summary>A</summary>\n<details>\n<summary>Nested</summary>\n</details>\n</details>\n\n<details open>\n<summary>C</summary>\nc body\n</details>\n";
+        assert_eq!(
+            collect_details_open(md),
+            vec![false, true],
+            "top-level only: outer(closed) + C(open)"
+        );
+        // End-to-end: the C summary line renders expanded (▾), honoring its `open` attribute.
+        set_details_open(collect_details_open(md));
+        let lines =
+            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let c_arrow = lines.iter().find_map(|l| {
+            let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            joined
+                .contains(" C")
+                .then(|| joined.chars().next().unwrap_or(' '))
+        });
+        assert_eq!(
+            c_arrow,
+            Some('▾'),
+            "C honors <details open> → expanded marker"
+        );
+    }
+
+    #[test]
     fn html_block_text_survives_and_autolink_untouched() {
-        // <details> 等の HTML ブロックはタグを剥いだテキストで残す(従来は中身ごと消えた)。
-        // コメントは丸ごと非表示・段落内 <b> は従来どおり tui-markdown・autolink は誤検知しない。
-        let md = "before\n\n<details>\n<summary>Summary text</summary>\nhidden body\n</details>\n\n<!-- secret comment -->\n\nsee <https://ratatui.rs> end\n";
+        // <details>(open 無し)は既定で折りたたみ: summary は残り本文は隠れる(GitHub 流)。
+        // <details open> は展開して本文が出る。コメントは非表示・autolink は誤検知しない。
+        let md = "before\n\n<details>\n<summary>Summary text</summary>\nhidden body\n</details>\n\n<details open>\n<summary>Open Summary</summary>\nvisible body\n</details>\n\n<!-- secret comment -->\n\nsee <https://ratatui.rs> end\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let all: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
             .collect();
+        // Collapsed <details>: summary shown, body hidden.
         assert!(
             all.iter().any(|t| t.contains("Summary text")),
-            "summary が残る: {all:?}"
+            "折りたたみ summary は残る: {all:?}"
         );
-        assert!(all.iter().any(|t| t.contains("hidden body")), "本文が残る");
+        assert!(
+            all.iter().all(|t| !t.contains("hidden body")),
+            "折りたたみ既定で本文は隠れる: {all:?}"
+        );
+        // <details open>: summary + body both shown.
+        assert!(all.iter().any(|t| t.contains("Open Summary")));
+        assert!(
+            all.iter().any(|t| t.contains("visible body")),
+            "open は展開して本文が出る: {all:?}"
+        );
         assert!(
             all.iter().all(|t| !t.contains('<')),
             "タグは剥がす: {all:?}"

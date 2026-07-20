@@ -85,6 +85,7 @@ copy_prefix = "y"
 | `md_frontmatter` | `true` | Recognize leading YAML front matter (`---` … `---` at the very start) and show it as a compact dim metadata block instead of a rule + raw YAML. `false` renders it as ordinary Markdown. |
 | `md_footnotes` | `true` | Render GFM footnotes: `text[^1]` references become superscript numbers and the `[^1]: …` definitions are collected into a numbered footnotes section at the end. `false` leaves them literal. |
 | `md_inline_html` | `true` | Render common inline HTML the Markdown engine strips: `<del>`/`<s>`/`<strike>` as strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode (when the text maps), `<br>` as a hard line break. (`<mark>`/`<ins>` keep only their text either way.) `false` strips all of them. |
+| `md_details` | `"auto"` | How `<details>` blocks start out. `"auto"` honors the `open` attribute like GitHub (`<details>` collapsed, `<details open>` expanded); `"open"` always expanded; `"closed"` always collapsed. Either way `Tab` focuses the `<summary>` and `Space`/`Enter` toggle it. |
 
 ## `[ui.sort]` — default tree order
 

@@ -161,6 +161,12 @@ md_footnotes = true
 # false なら全てのタグが剥がされる。
 md_inline_html = true
 
+# <details> ブロックの初期表示。いずれも Tab で <summary> にフォーカス→Space/Enter でトグル。
+#   "auto"   (既定) … GitHub と同じく open 属性を尊重(<details> は折りたたみ / <details open> は展開)
+#   "open"          … 常に展開で開始
+#   "closed"        … 常に折りたたみで開始
+md_details = "auto"
+
 # バックグラウンド処理インジケーター。git の無視ファイルスキャン・メディア読込・
 # ハイライト準備・インライン画像取得などが裏で走っている間、右上にスピナーと
 # ジョブ名(複数なら +n)を表示する。処理が無いときは何も出ない(=アイドル負荷ゼロ)。

@@ -91,6 +91,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
         .row("+ / - / 0", l(crate::i18n::Msg::MermaidZoomHelp))
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
+        .row("Space / ↵", l(crate::i18n::Msg::HintDetailsToggle))
         .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
         .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
         .row("e", l(crate::i18n::Msg::EditExternalEnv))
@@ -156,7 +157,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
                 v.push(hint(lang, "0", crate::i18n::Msg::HintFit));
             }
         }
-        if app.md_has_tasks() {
+        if app.md_has_tasks() || app.md_focused_details().is_some() {
             v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
         }
         v.extend([
