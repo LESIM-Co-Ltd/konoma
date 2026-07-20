@@ -203,6 +203,14 @@ mermaid_theme = "dark"
 # 0 or an invalid value falls back to the default 24.
 mermaid_rows = 24
 
+# How LaTeX math is rendered.
+#   "image" (default) … rasterize $...$ / $$...$$ in-process via RaTeX (pure Rust, KaTeX quality, no browser/Node)
+#                       and show each as an inline image. A terminal cannot place an image mid-text, so inline
+#                       math is lifted onto its own line; display math ($$...$$, \[...\]) is centered.
+#                       Non-graphics terminals and render failures degrade to the raw LaTeX text automatically.
+#   "text"            … leave the raw LaTeX ($...$) as plain text (no rendering).
+math = "image"
+
 # Tab-session save/restore. Per launch directory (project), the open tab layout (each tab's root, cursor
 # position, and previewed file) is saved and restored the next time konoma starts in the same directory.
 # A tab left in preview reopens in preview (scroll starts at the top).

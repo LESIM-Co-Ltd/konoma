@@ -34,6 +34,12 @@ All notable changes to konoma are documented in this file. The format is based o
   a `▸`/`▾` disclosure marker; `Tab` focuses the summary and `Space`/`Enter` toggles it open/closed.
   By default the `open` attribute is honored like GitHub (`<details>` collapsed, `<details open>`
   expanded); force a start state with `[ui] md_details` (`"auto"` / `"open"` / `"closed"`).
+- **LaTeX math rendering.** `$…$` / `\(…\)` (inline) and `$$…$$` / `\[…\]` (display) render as
+  rasterized images via RaTeX (pure Rust, KaTeX quality — no browser/Node), rasterized in-process by
+  the same resvg path as SVG/mermaid. A terminal cannot place an image mid-text, so inline math is
+  lifted onto its own line; display math is centered. Currency (`$5 and $10`), code spans/fences, and
+  escaped `\$` are never mistaken for math. Toggle with `[ui] math` (`"image"` / `"text"`); non-graphics
+  terminals and render failures degrade to the raw LaTeX automatically.
 
 ## [0.15.1] - 2026-07-18
 

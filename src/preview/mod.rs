@@ -8,6 +8,7 @@ pub mod command;
 pub mod gitdiff;
 pub mod image;
 pub mod markdown;
+pub mod math;
 pub mod pdf;
 pub mod svg;
 pub mod table;

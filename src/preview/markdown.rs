@@ -331,6 +331,29 @@ enum BlockPart {
     Mermaid {
         code: String,
     },
+    /// A LaTeX math expression lifted out of a text run (only when the caller asked for math
+    /// extraction — image-mode math). `display` = block `$$…$$`/`\[…\]` (vs inline `$…$`/`\(…\)`).
+    Math {
+        latex: String,
+        display: bool,
+    },
+}
+
+/// One piece of a text run after math extraction (used to lift inline `$…$` onto its own line).
+enum MathPart {
+    Text(String),
+    Math { latex: String, display: bool },
+}
+
+/// How the app wants one math expression rendered (the math analog of `MermaidSlot`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MathSlot {
+    /// The rendered equation raster is cached: reserve `cols`x`rows` cells and record a placement.
+    Image { cols: u16, rows: u16 },
+    /// The equation is rendering on a worker thread: show a dim "loading" line until it arrives.
+    Loading,
+    /// Image mode off / no backend / render failed: show the raw LaTeX text (design principle #3).
+    Raw,
 }
 
 /// How the app wants one ```mermaid fence rendered (the image-mode analog of `ImageSlot`).
@@ -363,7 +386,7 @@ pub enum ImageSlot {
 /// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
 /// degrades to a one-line text placeholder (design principle #3). Text runs are rendered by
 /// `render_markdown` unchanged, so all existing decoration behavior is preserved.
-#[allow(clippy::too_many_arguments)] // 既存7引数+mermaid スロット(呼び口は app 1箇所+テスト)
+#[allow(clippy::too_many_arguments)] // 既存7引数+mermaid/math スロット(呼び口は app 1箇所+テスト)
 pub fn render_markdown_with_images(
     src: &str,
     width: u16,
@@ -375,6 +398,8 @@ pub fn render_markdown_with_images(
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
     mermaid_caption: &str,
     alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
@@ -382,7 +407,26 @@ pub fn render_markdown_with_images(
     // テキスト run に残し、既存の描画・テストを一切変えない)。判定は空 probe で代表させる。
     let fences_on = !matches!(mermaid_slot(""), MermaidSlot::Text);
     let mut fence_ord = 0usize;
-    for part in split_block_parts(src, fences_on) {
+    // In math image mode, lift math out of each text run onto its own part (inline `$…$` becomes its
+    // own image line). Mermaid fences are already extracted, so math scanning only sees text runs.
+    let parts: Vec<BlockPart> = if math_on {
+        split_block_parts(src, fences_on)
+            .into_iter()
+            .flat_map(|p| match p {
+                BlockPart::Text(t) => split_math(&t)
+                    .into_iter()
+                    .map(|mp| match mp {
+                        MathPart::Text(s) => BlockPart::Text(s),
+                        MathPart::Math { latex, display } => BlockPart::Math { latex, display },
+                    })
+                    .collect::<Vec<_>>(),
+                other => vec![other],
+            })
+            .collect()
+    } else {
+        split_block_parts(src, fences_on)
+    };
+    for part in parts {
         match part {
             BlockPart::Text(t) => out.extend(render_markdown_tasks_opts(
                 &t, width, code, theme, icons, tasks, alerts,
@@ -434,9 +478,52 @@ pub fn render_markdown_with_images(
                     MermaidSlot::Text => out.extend(render_mermaid_block(&fence, width)),
                 }
             }
+            BlockPart::Math { latex, display } => match math_slot(&latex, display) {
+                MathSlot::Image { cols, rows } => {
+                    placements.push(ImagePlacement {
+                        url: math_url(&latex, display),
+                        alt: "math".into(),
+                        line: out.len(),
+                        cols,
+                        rows,
+                        fence_ord: None,
+                    });
+                    out.extend(math_placeholder_lines(cols, rows, width, display));
+                }
+                MathSlot::Loading => out.extend(image_loading_line("math", "equation", width)),
+                MathSlot::Raw => out.extend(math_raw_lines(&latex, display)),
+            },
         }
     }
     (out, placements)
+}
+
+/// Reserved rows for one math image: `rows` blank lines the image overlays, centered for display math
+/// and left-aligned for inline math. No focusable caption (math images are not Tab targets).
+fn math_placeholder_lines(cols: u16, rows: u16, width: u16, display: bool) -> Vec<Line<'static>> {
+    let rows = rows.max(1);
+    let pad = if display {
+        (width.saturating_sub(cols) / 2) as usize
+    } else {
+        0
+    };
+    let indent = " ".repeat(pad);
+    let mut lines = Vec::with_capacity(rows as usize);
+    for _ in 0..rows {
+        lines.push(Line::from(indent.clone()));
+    }
+    lines
+}
+
+/// Raw-LaTeX fallback for a math expression that could not be rendered (design principle #3): the
+/// source with its delimiters, dimmed, so nothing is lost and the reader sees exactly what was written.
+fn math_raw_lines(latex: &str, display: bool) -> Vec<Line<'static>> {
+    let text = if display {
+        format!("$$ {} $$", latex.trim())
+    } else {
+        format!("${}$", latex.trim())
+    };
+    vec![Line::from(Span::from(text).dim())]
 }
 
 /// Sentinel style of the caption line above an inline mermaid diagram. Doubles as the Tab-focus
@@ -1633,6 +1720,264 @@ pub fn collect_mermaid_fences(src: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+// ---- LaTeX math extraction ($…$, $$…$$, \(…\), \[…\]) ----
+
+/// Synthetic inline-image key for a math expression, derived from its LaTeX + display flag (FNV-1a
+/// 64). The `d`/`i` prefix separates display and inline renders of the same source (different rasters).
+pub fn math_url(latex: &str, display: bool) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in latex.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("math://{}{h:016x}", if display { "d" } else { "i" })
+}
+
+/// Whether an inline-image URL is a synthetic math key (never a real file on disk).
+pub fn is_math_url(url: &str) -> bool {
+    url.starts_with("math://")
+}
+
+/// All math expressions in `src`, in document order, as (latex, display). Mirrors the render path
+/// (`split_block_parts` → `split_math` per text run) so the extracted set matches what is drawn and
+/// the caller can kick off exactly those renders. Fence/code-span aware (math inside a code fence or
+/// `` `code span` `` is not extracted).
+pub fn collect_math_exprs(src: &str) -> Vec<(String, bool)> {
+    split_block_parts(src, false)
+        .into_iter()
+        .flat_map(|p| match p {
+            BlockPart::Text(t) => split_math(&t)
+                .into_iter()
+                .filter_map(|mp| match mp {
+                    MathPart::Math { latex, display } => Some((latex, display)),
+                    MathPart::Text(_) => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// UTF-8 byte length of the char whose leading byte is `b` (for advancing a byte cursor over text).
+fn utf8_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b >> 5 == 0b110 {
+        2
+    } else if b >> 4 == 0b1110 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Emit the accumulated text (if any) then one math part.
+fn flush_math(out: &mut Vec<MathPart>, buf: &mut String, latex: &str, display: bool) {
+    if !buf.is_empty() {
+        out.push(MathPart::Text(std::mem::take(buf)));
+    }
+    out.push(MathPart::Math {
+        latex: latex.trim().to_string(),
+        display,
+    });
+}
+
+/// Split a text run into literal text and math expressions, lifting each math onto its own part (the
+/// caller renders each as its own image line). Supports `$$…$$` / `\[…\]` (display, may span lines) and
+/// `$…$` / `\(…\)` (inline, same line). Fence- and inline-code-aware: a `$` inside a ``` fence or a
+/// `` `code span` `` is literal. Escaped `\$` is literal. A currency-style `$5 and $10` is not
+/// mistaken for math (an inline closing `$` may not be preceded by whitespace nor followed by a digit).
+fn split_math(text: &str) -> Vec<MathPart> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut in_fence: Option<(u8, usize)> = None;
+    let mut i = 0;
+    while i < lines.len() {
+        let raw = lines[i];
+        let bare = raw.strip_suffix('\n').unwrap_or(raw);
+        if let Some((ch, len)) = in_fence {
+            buf.push_str(raw);
+            if let Some((f, info)) = parse_fence(bare) {
+                if f.ch == ch && f.len >= len && info.is_empty() {
+                    in_fence = None;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if let Some((f, _info)) = parse_fence(bare) {
+            in_fence = Some((f.ch, f.len));
+            buf.push_str(raw);
+            i += 1;
+            continue;
+        }
+        // Multi-line display opener: a line that is exactly `$$` or `\[` (collect to the matching close).
+        let trimmed = bare.trim();
+        if trimmed == "$$" || trimmed == "\\[" {
+            let closer = if trimmed == "$$" { "$$" } else { "\\]" };
+            let mut body = String::new();
+            let mut j = i + 1;
+            let mut found = false;
+            while j < lines.len() {
+                let bj = lines[j].strip_suffix('\n').unwrap_or(lines[j]);
+                if bj.trim() == closer {
+                    found = true;
+                    break;
+                }
+                body.push_str(lines[j]);
+                j += 1;
+            }
+            if found && !body.trim().is_empty() {
+                flush_math(&mut out, &mut buf, &body, true);
+                i = j + 1; // skip the closer line
+                continue;
+            }
+            // No close (or empty): fall through and treat the line as ordinary text.
+        }
+        scan_inline_math(bare, &mut out, &mut buf);
+        buf.push('\n');
+        i += 1;
+    }
+    if !buf.is_empty() {
+        out.push(MathPart::Text(buf));
+    }
+    out
+}
+
+/// Scan one line for inline / single-line math, appending literal text to `buf` and lifting each math
+/// expression via `flush_math`. Skips `` `code spans` `` (their `$` is literal) and honors `\$` escapes.
+fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
+    let bytes = line.as_bytes();
+    let n = line.len();
+    let mut i = 0;
+    while i < n {
+        let c = bytes[i];
+        // Inline code span: copy the whole `…` region literally (a `$` inside is not math).
+        if c == b'`' {
+            let start = i;
+            let mut run = 0;
+            while i < n && bytes[i] == b'`' {
+                run += 1;
+                i += 1;
+            }
+            let mut j = i;
+            let mut close = None;
+            while j < n {
+                if bytes[j] == b'`' {
+                    let mut r = 0;
+                    while j < n && bytes[j] == b'`' {
+                        r += 1;
+                        j += 1;
+                    }
+                    if r == run {
+                        close = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            match close {
+                Some(end) => {
+                    buf.push_str(&line[start..end]);
+                    i = end;
+                }
+                None => buf.push_str(&line[start..i]), // unmatched backticks: literal
+            }
+            continue;
+        }
+        if c == b'\\' && i + 1 < n {
+            match bytes[i + 1] {
+                b'(' => {
+                    if let Some((content, end)) = find_close(line, i + 2, "\\)") {
+                        flush_math(out, buf, content, false);
+                        i = end;
+                        continue;
+                    }
+                }
+                b'[' => {
+                    if let Some((content, end)) = find_close(line, i + 2, "\\]") {
+                        flush_math(out, buf, content, true);
+                        i = end;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            // Escaped char (`\$`, `\\`, `\あ`, …): keep the backslash + the WHOLE next char literally.
+            // Advancing a fixed 2 bytes would split a multibyte char (`\あ`) and panic on a non-boundary
+            // slice — and leave `i` mid-char so the tail slice below panics next iteration too.
+            let end = (i + 1 + utf8_len(bytes[i + 1])).min(n);
+            buf.push_str(&line[i..end]);
+            i = end;
+            continue;
+        }
+        if c == b'$' {
+            if i + 1 < n && bytes[i + 1] == b'$' {
+                if let Some((content, end)) = find_close(line, i + 2, "$$") {
+                    if !content.trim().is_empty() {
+                        flush_math(out, buf, content, true);
+                        i = end;
+                        continue;
+                    }
+                }
+                buf.push('$');
+                i += 1;
+                continue;
+            }
+            if let Some((content, end)) = find_inline_dollar(line, i + 1) {
+                flush_math(out, buf, content, false);
+                i = end;
+                continue;
+            }
+            buf.push('$');
+            i += 1;
+            continue;
+        }
+        let len = utf8_len(c);
+        buf.push_str(&line[i..(i + len).min(n)]);
+        i += len;
+    }
+}
+
+/// Find `needle` starting at byte `from`; return (content before it, index past it). ASCII needle.
+fn find_close<'a>(line: &'a str, from: usize, needle: &str) -> Option<(&'a str, usize)> {
+    let rel = line.get(from..)?.find(needle)?;
+    let pos = from + rel;
+    Some((&line[from..pos], pos + needle.len()))
+}
+
+/// Find the closing `$` of an inline `$…$` starting at byte `from`, applying the currency guard:
+/// content is non-empty, the first content char is not whitespace, the last is not whitespace, and the
+/// char after the closing `$` is not an ASCII digit. Returns (content, index past the closing `$`).
+fn find_inline_dollar(line: &str, from: usize) -> Option<(&str, usize)> {
+    let bytes = line.as_bytes();
+    let n = line.len();
+    if from >= n || bytes[from].is_ascii_whitespace() || bytes[from] == b'$' {
+        return None; // empty or opens with a space (or is `$$`, handled by the caller)
+    }
+    let mut j = from;
+    while j < n {
+        match bytes[j] {
+            // Skip an escaped char (`\$` does not close). Advance past the backslash + the WHOLE next
+            // char: a fixed +2 would land mid-char on `\あ`, desyncing `j` and dropping the closing `$`.
+            b'\\' => j += 1 + bytes.get(j + 1).map_or(0, |&b| utf8_len(b)),
+            b'$' => {
+                let content = &line[from..j];
+                let last_ok = !bytes[j - 1].is_ascii_whitespace();
+                let after_digit = bytes.get(j + 1).is_some_and(|b| b.is_ascii_digit());
+                if last_ok && !after_digit && !content.is_empty() {
+                    return Some((content, j + 1));
+                }
+                return None; // closes like currency: not math
+            }
+            _ => j += utf8_len(bytes[j]),
+        }
+    }
+    None
 }
 
 /// Safe fallback display when rendering is impossible. Returns the note plus the raw source dimmed (no content is lost).
@@ -3401,6 +3746,118 @@ mod tests {
     }
 
     #[test]
+    fn math_inline_and_display_detection() {
+        // Inline $…$ and \(…\); display $$…$$ (single + multi-line) and \[…\]. In document order.
+        let src = "before $x^2$ mid \\(a+b\\) end\n\n$$E = mc^2$$\n\n\\[ \\int f \\]\n\ntail\n";
+        let m = collect_math_exprs(src);
+        assert_eq!(
+            m,
+            vec![
+                ("x^2".to_string(), false),
+                ("a+b".to_string(), false),
+                ("E = mc^2".to_string(), true),
+                ("\\int f".to_string(), true),
+            ]
+        );
+        // Multi-line display block ($$ on its own lines).
+        let ml = collect_math_exprs("$$\n\\sum_{i} i\n$$\n");
+        assert_eq!(ml, vec![("\\sum_{i} i".to_string(), true)]);
+    }
+
+    #[test]
+    fn math_currency_and_code_are_not_mistaken() {
+        // Currency: a `$` whose partner is followed by a digit / preceded by space is not math.
+        assert!(collect_math_exprs("it costs $5 and $10 total\n").is_empty());
+        assert!(collect_math_exprs("give me $ 5 $ please\n").is_empty()); // opens with a space
+                                                                          // Inside inline code / a code fence, `$x$` is literal (not math).
+        assert!(collect_math_exprs("use `$x$` inline\n").is_empty());
+        assert!(collect_math_exprs("```\n$x^2$\n```\n").is_empty());
+        // Escaped \$ is a literal dollar, not a delimiter.
+        assert!(collect_math_exprs("cost \\$5 and \\$10\n").is_empty());
+    }
+
+    #[test]
+    fn math_cjk_and_url_key_are_safe() {
+        // CJK around inline math must not panic or corrupt byte offsets.
+        let m = collect_math_exprs("質量エネルギー $E=mc^2$ と水\n");
+        assert_eq!(m, vec![("E=mc^2".to_string(), false)]);
+        // A backslash immediately before a multibyte char (`\あ`, `\🎉`, Windows-path-like) must not
+        // panic on a non-char-boundary slice — regression for the byte-boundary crash in the scanner.
+        for s in [
+            "\\あ",
+            "価格は\\円です\n",
+            "path C:\\ユーザー\\x done \\🎉\n",
+            "$a\\あ$ and text\n", // the `\` skip inside an inline-math scan
+            "\\",                 // trailing backslash at end of line
+        ] {
+            let _ = collect_math_exprs(s); // must not panic
+        }
+        // The synthetic key separates display vs inline of the same LaTeX (different rasters).
+        assert_ne!(math_url("x^2", true), math_url("x^2", false));
+        assert!(is_math_url(&math_url("x", false)));
+        assert!(!is_math_url("mermaid-fence://abc"));
+    }
+
+    #[test]
+    fn math_renders_image_placeholder_or_raw_fallback() {
+        // With math_on, a rendered expr reserves image rows + a placement; a failed one shows raw LaTeX.
+        let img_slot = |_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 };
+        let (_lines, imgs) = render_markdown_with_images(
+            "text $x^2$ more\n",
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &img_slot,
+            true,
+        );
+        assert_eq!(imgs.len(), 1, "one math placement");
+        assert!(is_math_url(&imgs[0].url));
+        // Raw fallback: the raw LaTeX with delimiters is shown (nothing is lost).
+        let (raw_lines, raw_imgs) = render_markdown_with_images(
+            "text $x^2$ more\n",
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            true,
+        );
+        assert!(raw_imgs.is_empty());
+        let joined: String = raw_lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(joined.contains("$x^2$"), "raw LaTeX shown: {joined:?}");
+        // math_on = false: the `$…$` stays inline as ordinary text (no placement, no lifting).
+        let (_l, off_imgs) = render_markdown_with_images(
+            "text $x^2$ more\n",
+            40,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        assert!(off_imgs.is_empty(), "math off: no placements");
+    }
+
+    #[test]
     fn malformed_summary_tag_does_not_panic() {
         // A `<summary` opening tag that never closes with its own `>` must not panic (the `>` in
         // `</summary>` sits past `e`; bounding the search to [s,e) avoids the inverted-range slice).
@@ -4195,6 +4652,8 @@ plain body
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert!(imgs.is_empty(), "fence 内の画像を誤検出: {imgs:?}");
     }
@@ -4214,6 +4673,8 @@ plain body
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert_eq!(imgs.len(), 1);
         let p = &imgs[0];
@@ -4245,6 +4706,8 @@ plain body
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -4267,6 +4730,8 @@ plain body
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -4419,6 +4884,8 @@ plain body
             &slot_img,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert_eq!(imgs.len(), 1, "フェンスが placement になる");
         assert!(is_mermaid_fence_url(&imgs[0].url), "合成キー URL");
@@ -4440,6 +4907,8 @@ plain body
             &|_: &str| MermaidSlot::Loading,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -4456,6 +4925,8 @@ plain body
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
         );
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -4483,6 +4954,8 @@ plain body
                 &slot_img,
                 caption,
                 true,
+                &|_: &str, _: bool| MathSlot::Raw,
+                false,
             )
         };
         let (en, ei) = render("Enter: full screen");

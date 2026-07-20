@@ -3408,7 +3408,7 @@ impl App {
         {
             return;
         }
-        let (raw, images, remote, fences, src_lines) = self.build_decorated(&path, width);
+        let (raw, images, remote, fences, math, src_lines) = self.build_decorated(&path, width);
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
         for url in &remote {
@@ -3426,21 +3426,35 @@ impl App {
             }
             resync |= self.ensure_mermaid_fence_render(code.clone());
         }
-        // 現在の文書に**もう存在しない**フェンスキーを回収する。キーは内容ハッシュなので、外部
-        // 編集(agent-watch の反復編集)でフェンスが変わるたび新キーが生まれ、旧キーの decoded
+        // 数式も同型: latex+display キーで未着のものをレンダ起動(mermaid フェンスと同じ経路)。
+        for (latex, display) in &math {
+            if latex.trim().is_empty() {
+                continue;
+            }
+            resync |= self.ensure_math_render(latex.clone(), *display);
+        }
+        // 現在の文書に**もう存在しない**フェンス/数式キーを回収する。キーは内容ハッシュなので、外部
+        // 編集(agent-watch の反復編集)で内容が変わるたび新キーが生まれ、旧キーの decoded
         // ラスタ/protocol/SVG は誰も参照しないままファイル切替まで単調成長していた。
         {
-            let live: std::collections::HashSet<PathBuf> = fences
+            let mut live: std::collections::HashSet<PathBuf> = fences
                 .iter()
                 .map(|c| PathBuf::from(crate::preview::markdown::mermaid_fence_url(c)))
                 .collect();
+            live.extend(
+                math.iter()
+                    .map(|(l, d)| PathBuf::from(crate::preview::markdown::math_url(l, *d))),
+            );
             self.md_image_cache.retain(|k, _| {
-                !crate::preview::markdown::is_mermaid_fence_url(&k.to_string_lossy())
+                let s = k.to_string_lossy();
+                !(crate::preview::markdown::is_mermaid_fence_url(&s)
+                    || crate::preview::markdown::is_math_url(&s))
                     || live.contains(k)
             });
         }
         let (raw, images, remote, src_lines) = if resync {
-            let (raw, images, remote, _fences, src_lines) = self.build_decorated(&path, width);
+            let (raw, images, remote, _fences, _math, src_lines) =
+                self.build_decorated(&path, width);
             (raw, images, remote, src_lines)
         } else {
             (raw, images, remote, src_lines)
@@ -3620,6 +3634,7 @@ impl App {
     /// Read the file with a cap and generate decorated lines (plus inline-image placements and the list
     /// of remote image URLs to fetch) according to its kind. A read failure becomes a single safe line.
     /// Only Markdown yields image placements / remote URLs.
+    #[allow(clippy::type_complexity)] // (lines, images, remote urls, mermaid fences, math exprs, src line count)
     fn build_decorated(
         &self,
         path: &Path,
@@ -3629,6 +3644,7 @@ impl App {
         Vec<crate::preview::markdown::ImagePlacement>,
         Vec<String>,
         Vec<String>,
+        Vec<(String, bool)>,
         usize,
     ) {
         let src = match crate::preview::text::load(path) {
@@ -3642,6 +3658,7 @@ impl App {
             Err(e) => {
                 return (
                     vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -3776,6 +3793,32 @@ impl App {
                         None => MermaidSlot::Loading,
                     }
                 };
+                // 数式($…$ / $$…$$): 画像モードならレンダ済みキャッシュ(latex+display ハッシュキー)を
+                // 参照。未着はローディング、失敗/未対応/フォント無しは生 LaTeX テキストへ降格(原則#3)。
+                // インライン式は自前の行に持ち上がる(mermaid フェンスと同型の合成キー画像)。
+                let math_on = font.is_some() && self.math_image_mode();
+                let math_slot =
+                    |latex: &str, display: bool| -> crate::preview::markdown::MathSlot {
+                        use crate::preview::markdown::MathSlot;
+                        let Some(font) = font else {
+                            return MathSlot::Raw;
+                        };
+                        let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
+                        match self.md_image_cache.get(&key) {
+                            Some(e) if e.failed => MathSlot::Raw,
+                            Some(e) => match (e.decoded.as_ref(), e.layout_px) {
+                                // layout_px は数式では SVG の**内在サイズ(単位)**を持つ(ラスタ px でなく)。
+                                // em 高さ→行数、内在アスペクト→桁数を導き、テキストと釣り合うサイズに。
+                                (Some(_), Some((uw, uh))) => {
+                                    let (cols, rows) =
+                                        math_cells(uw, uh, font.width, font.height, avail, display);
+                                    MathSlot::Image { cols, rows }
+                                }
+                                _ => MathSlot::Loading,
+                            },
+                            None => MathSlot::Loading,
+                        }
+                    };
                 let (mut lines, mut images) = crate::preview::markdown::render_markdown_with_images(
                     &src,
                     width,
@@ -3787,6 +3830,8 @@ impl App {
                     &mermaid_slot,
                     tr(self.lang, crate::i18n::Msg::MermaidCaption),
                     self.cfg.ui.md_alerts,
+                    &math_slot,
+                    math_on,
                 );
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
@@ -3795,6 +3840,11 @@ impl App {
                 };
                 let fences = if mermaid_on {
                     crate::preview::markdown::collect_mermaid_fences(&src)
+                } else {
+                    Vec::new()
+                };
+                let math = if math_on {
+                    crate::preview::markdown::collect_math_exprs(&src)
                 } else {
                     Vec::new()
                 };
@@ -3807,10 +3857,11 @@ impl App {
                     all.extend(lines);
                     lines = all;
                 }
-                (lines, images, remote, fences, src_lines)
+                (lines, images, remote, fences, math, src_lines)
             }
             Some(PreviewKind::Mermaid(_)) => (
                 crate::preview::markdown::render_mermaid_file(&src, width),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -3822,9 +3873,17 @@ impl App {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
                 src_lines,
             ),
-            _ => (Vec::new(), Vec::new(), Vec::new(), Vec::new(), src_lines),
+            _ => (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                src_lines,
+            ),
         }
     }
 
@@ -3858,13 +3917,13 @@ impl App {
         if !self.md_image_cache.contains_key(&res.path) {
             return false;
         }
-        // フェンス図(合成キー)は寸法がここで初めて決まる=ローディング行→実配置に組み直すため
-        // 装飾キャッシュを無効化する(remote 画像の apply_remote_fetch と同じ流儀)。
+        // フェンス図・数式(合成キー)は寸法がここで初めて決まる=ローディング行→実配置に組み直す
+        // ため装飾キャッシュを無効化する(remote 画像の apply_remote_fetch と同じ流儀)。
         // **シャープ化の再ラスタは除く**: ピクセル密度の差し替えだけで、レイアウト(予約セル数)は
         // layout_px 固定なので装飾を組み直さない(=md 上の表示サイズは不変・ユーザー要件)。
-        if !res.reraster
-            && crate::preview::markdown::is_mermaid_fence_url(&res.path.to_string_lossy())
-        {
+        let url_str = res.path.to_string_lossy().to_string();
+        let is_math = crate::preview::markdown::is_math_url(&url_str);
+        if !res.reraster && (crate::preview::markdown::is_mermaid_fence_url(&url_str) || is_math) {
             self.md_cache = None;
         }
         let entry = self.md_image_cache.entry(res.path).or_default();
@@ -3875,7 +3934,17 @@ impl App {
             Ok(img) => {
                 use image::GenericImageView;
                 if entry.layout_px.is_none() {
-                    entry.layout_px = Some(img.dimensions());
+                    // 数式は SVG の**内在サイズ(単位)**を layout_px に載せる(ラスタ px でなく): em 高さから
+                    // 行数、内在アスペクトから桁数を導いてテキストと釣り合うサイズにするため(math_cells)。
+                    // 内在サイズが取れない時のみラスタ寸法へフォールバック。フェンス/通常画像は従来どおり。
+                    entry.layout_px = if is_math {
+                        res.svg
+                            .as_deref()
+                            .and_then(|d| crate::preview::svg::intrinsic_size_bytes(d))
+                            .or_else(|| Some(img.dimensions()))
+                    } else {
+                        Some(img.dimensions())
+                    };
                 }
                 entry.decoded = Some(Arc::new(img));
                 entry.failed = false;
@@ -4082,6 +4151,52 @@ impl App {
                 // 返さないとエントリが decoded=None && !failed のまま固着し busy が恒久 true になる。
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
                     .unwrap_or_else(|| (Err("mermaid render panicked".to_string()), None));
+                let _ = tx.send(MdImageResult {
+                    path: key,
+                    image,
+                    svg,
+                    reraster: false,
+                });
+            });
+            false
+        } else {
+            let (image, svg) = render();
+            self.apply_md_image(MdImageResult {
+                path: key,
+                image,
+                svg,
+                reraster: false,
+            });
+            true
+        }
+    }
+
+    /// Ensure a background render is in flight (or cached) for one math expression, keyed by latex +
+    /// display so an edited equation renders fresh while unchanged ones reuse their raster. Mirrors
+    /// `ensure_mermaid_fence_render`; the SVG is kept so `apply_md_image` can record its intrinsic (em)
+    /// size for layout. Returns true on a synchronous completion (no loader tx = tests).
+    fn ensure_math_render(&mut self, latex: String, display: bool) -> bool {
+        let key = PathBuf::from(crate::preview::markdown::math_url(&latex, display));
+        if self.md_image_cache.contains_key(&key) {
+            return false;
+        }
+        self.md_image_cache
+            .insert(key.clone(), MdImgEntry::default());
+        let max_px = self.math_px();
+        let render =
+            move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
+                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display) else {
+                    return (Err("math render failed".to_string()), None);
+                };
+                let data = std::sync::Arc::new(svg.into_bytes());
+                let img = crate::preview::svg::rasterize_bytes(&data, Path::new("math.svg"), max_px)
+                    .ok_or_else(|| "rasterize failed".to_string());
+                (img, Some(data))
+            };
+        if let Some(tx) = self.md_img_tx.clone() {
+            std::thread::spawn(move || {
+                let (image, svg) = crate::preview::markdown::catch_silent(render)
+                    .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
                 let _ = tx.send(MdImageResult {
                     path: key,
                     image,
@@ -4447,6 +4562,18 @@ impl App {
     /// Base raster target (max edge px) for mermaid diagrams — same knob as SVG previews.
     fn mermaid_px(&self) -> u32 {
         self.cfg.ui.svg_max_px
+    }
+
+    /// Whether math ($…$ / $$…$$) renders as an image (`[ui] math` != "text" and a graphics backend).
+    /// Off → math stays as raw LaTeX inline (the delimiters are left in the text).
+    pub fn math_image_mode(&self) -> bool {
+        self.cfg.ui.math != "text" && self.picker.is_some()
+    }
+
+    /// Raster target (max edge px) for a math equation. Generous so the once-rendered raster stays
+    /// crisp when the encode worker fits it into the (usually small) reserved cell area.
+    fn math_px(&self) -> u32 {
+        1024
     }
 
     /// Validated `[ui] mermaid_rows`: max rows of an inline diagram (0/invalid → default 24).
@@ -7724,6 +7851,32 @@ fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u1
     if cols > avail {
         cols = avail;
         rows = (cols * fw / ar / fh).round().max(1.0);
+    }
+    (cols as u16, rows as u16)
+}
+
+/// Cell box for an inline math image, sized proportionally from the SVG's intrinsic **em** units
+/// (RaTeX renders at 40 units/em) so equations sit at roughly text scale: em-height → rows, intrinsic
+/// aspect → cols. Display math gets a touch more height than inline. Clamped to the available width
+/// (aspect preserved) and a sane row cap. Vector-backed, so the once-rendered raster is fit crisply.
+fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> (u16, u16) {
+    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
+    let em_h = (uh.max(1) as f64) / 40.0;
+    let rows_per_em = if display { 1.5 } else { 1.3 };
+    let mut rows = (em_h * rows_per_em).round().max(1.0);
+    let ar = (uw.max(1) as f64) / (uh.max(1) as f64);
+    let mut cols = (rows * fh * ar / fw).round().max(1.0);
+    let avail = avail.max(1) as f64;
+    if cols > avail {
+        cols = avail;
+        rows = (cols * fw / ar / fh).round().max(1.0);
+    }
+    // 極端に高い式(行列など)が画面を埋め尽くさないための上限。
+    let maxr = 24.0;
+    if rows > maxr {
+        let s = maxr / rows;
+        rows = maxr;
+        cols = (cols * s).round().max(1.0);
     }
     (cols as u16, rows as u16)
 }

@@ -366,6 +366,12 @@ pub struct UiConfig {
     /// (`<details>` collapsed, `<details open>` expanded); `"open"` always starts expanded; `"closed"`
     /// always collapsed. Either way `Tab` focuses the `<summary>` and `Space`/`Enter` toggle it.
     pub md_details: String,
+    /// How LaTeX math renders: `"image"` (default) rasterizes `$…$` / `$$…$$` in-process via RaTeX
+    /// (pure Rust, KaTeX-quality) and shows each as an inline image — inline math is lifted onto its
+    /// own line since a terminal cannot place an image mid-text. `"text"` leaves the raw LaTeX as
+    /// plain text. Image mode degrades to the raw LaTeX automatically when the terminal has no image
+    /// protocol or an expression fails to render (principle #3).
+    pub math: String,
     /// Show a small spinner + job label at the top-right while background work is in flight
     /// (git-ignored scan, media decode, highlight warm-up, inline image fetches). Default true.
     /// The indicator only animates while something is running — idle stays at zero redraws.
@@ -574,6 +580,7 @@ impl Default for UiConfig {
             md_details: "auto".into(),
             busy_indicator: true,
             mermaid: "image".into(),
+            math: "image".into(),
             mermaid_theme: "dark".into(),
             mermaid_rows: 24,
             restore_tabs: true,

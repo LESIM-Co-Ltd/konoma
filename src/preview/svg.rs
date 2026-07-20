@@ -61,6 +61,22 @@ pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
     Some((w.ceil() as u32, h.ceil() as u32))
 }
 
+/// Intrinsic size (rounded up) of an in-memory SVG, without rasterizing. Same as `intrinsic_size` but
+/// from bytes — used for a synthesized SVG (e.g. a RaTeX math render) whose em units drive layout.
+pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
+    let opt = usvg::Options {
+        fontdb: shared_fontdb(),
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_data(data, &opt).ok()?;
+    let size = tree.size();
+    let (w, h) = (size.width(), size.height());
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    Some((w.ceil() as u32, h.ceil() as u32))
+}
+
 /// Rasterize directly from a byte slice (for tests / future embedding). `max_px` = target px for the max side.
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
     let opt = usvg::Options {

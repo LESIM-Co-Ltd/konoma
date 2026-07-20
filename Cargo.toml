@@ -118,6 +118,16 @@ notify = "8.2.0"
 # Finder の「戻す」に対応した正規ゴミ箱へ送る。外部バイナリ不要・コンパイル時依存のみ
 # (notify/git2 と同じ方針＝配布容易性を損なわない)。
 trash = "5"
+# LaTeX 数式 → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。KaTeX 構文を parse→layout→
+# DisplayList→SVG し、ラスタライズは konoma 側の resvg に統一する(mermaid/SVG と同経路)。ratex-svg の
+# `embed-fonts` feature が KaTeX TTF(ratex-katex-fonts)を同梱し、グリフを standalone な `<path>`
+# アウトラインで出力するので resvg は外部フォント不要で描ける。ab_glyph/base64/fancy-regex 等はすべて
+# 純 Rust=外部 C 依存なし。数式化に失敗した式は生 LaTeX テキストへ降格(原則#3)。
+ratex-parser = "0.1"
+ratex-layout = "0.1"
+ratex-svg = { version = "0.1", default-features = false, features = ["embed-fonts"] }
+# MathStyle(Display=ブロック / Text=インライン)を渡すため(ratex-layout は再エクスポートしない・推移依存)。
+ratex-types = "0.1"
 
 [features]
 default = ["git"]
