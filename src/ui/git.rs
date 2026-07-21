@@ -662,6 +662,9 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("j / k", l(crate::i18n::Msg::GitMoveCommit))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("Enter / l", l(crate::i18n::Msg::GitDetail))
+            .row("s", l(crate::i18n::Msg::GraphSetBaseHelp))
+            .row("x / 0", l(crate::i18n::Msg::GraphClearBaseHelp))
+            .row("b", l(crate::i18n::Msg::GraphBranchesHelp))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
     } else if app.is_git_branches() {
         HelpSection::new(l(crate::i18n::Msg::GitBranchesLabel))

@@ -687,6 +687,21 @@ impl App {
     /// `.git/info/exclude`) rarely change, so this is called with `true` only when they actually change, also rebuilding
     /// `ignored`. This avoids a few-hundred-ms freeze per event on large repositories.
     pub fn refresh_fs(&mut self, recompute_ignored: bool) -> Result<()> {
+        // 変更パス不明 = 安全側(プレビューも再読込)。
+        self.refresh_fs_changed(recompute_ignored, &[])
+    }
+
+    /// `refresh_fs` の**変更パスを知っている**版。`changed` が空でなければ、現プレビューが
+    /// その変更の影響を受けるときだけ再読込する（`preview_affected_by` 参照）。
+    ///
+    /// 目的: エージェントが `src/` を書き換え続けている間に、無関係な `docs/foo.md` の装飾を
+    /// 毎イベント作り直す（＝Markdown 全文の再レンダ / CSV 全体の再パース）のを避ける。
+    /// ツリー再構築・git status・変更フィルタ・git ビューは従来どおり毎回追従する。
+    pub fn refresh_fs_changed(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+    ) -> Result<()> {
         if recompute_ignored {
             self.git_status_for = None; // 次の描画で statuses+branch を再計算
             self.git_ignored_dirty = true; // 重い ignored も作り直す(無視ルール変更/明示 refresh)。
@@ -711,10 +726,35 @@ impl App {
         if self.is_git_view() {
             self.git_view_reload();
         }
-        if matches!(self.mode, Mode::Preview) {
+        if matches!(self.mode, Mode::Preview) && self.preview_affected_by(changed) {
             self.reload_preview();
         }
         tree
+    }
+
+    /// Whether the current preview must be re-read because of this FS event.
+    ///
+    /// `changed` carries the non-`.git` paths from the event (the watcher strips repository
+    /// internals). **An empty slice therefore means "unknown or `.git`-only"** — a commit, a
+    /// checkout, or an event we could not attribute — and always reloads, so git diff previews and
+    /// change gutters never go stale.
+    ///
+    /// Otherwise only the previewed file itself matters. Inline Markdown images are deliberately not
+    /// considered: `md_image_cache` is keyed by path and only cleared when switching files, so those
+    /// are not re-decoded by a reload either — gating here does not make them any staler.
+    fn preview_affected_by(&self, changed: &[std::path::PathBuf]) -> bool {
+        if changed.is_empty() {
+            return true;
+        }
+        // git の diff 表示は「ファイル + git 状態」の関数。同じイベントに `.git` の変更が
+        // 混ざっていても(=ここには現れない)取りこぼさないよう、常に追従させる。
+        if self.is_git_diff_preview() {
+            return true;
+        }
+        let Some(cur) = self.preview_path.as_deref() else {
+            return true;
+        };
+        changed.iter().any(|p| p == cur)
     }
 
     /// Cheap git update: refetch only `statuses` + `branch`, **leaving the heavy `ignored` (ignore set) untouched**

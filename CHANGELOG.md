@@ -6,6 +6,52 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Search inside rendered Markdown.** `/` now works in a decorated Markdown preview instead of
+  refusing with "code/text preview only". It searches the rendered lines — what you actually see —
+  scrolls each hit into view with a few lines of context, highlights every match on screen
+  (current one in orange, the rest in yellow), and `n` / `N` walk through them. You no longer have
+  to switch to raw source (`R`) to find something.
+- **Search inside CSV/TSV tables.** `/` searches the cells (case-insensitive) and moves the cell
+  cursor to the first match; `n` / `N` step through the matches in reading order and wrap at the
+  ends; matching cells are underlined so you can see the rest at a glance. Same keys as the
+  code/text preview search.
+- **`0` also clears the pinned base branch in the git graph** (alongside the existing `x`), and the
+  graph's `s` / `x` / `0` / `b` keys now appear in the `?` help.
+
+### Fixed
+- **A table search's highlights no longer leak to another tab.** The set of matching cells was not
+  carried in per-tab state, so switching from a table where a search was active to another table
+  could highlight cells at the old match coordinates. It is now rebuilt from that tab's own search
+  on switch.
+- **`Esc` did nothing in a CSV/TSV table preview.** It now clears an active search, and otherwise
+  returns to the tree — the same two-step behaviour as the text and image previews.
+- **The git graph's keys could not be rebound.** All eight graph actions (`git_graph_set_base`,
+  `git_graph_clear_base`, `git_graph_open_picker` and the five picker actions) were missing from the
+  config parser, so `[keys.git_graph]` entries for them were rejected as unknown — contradicting the
+  documented "every command is rebindable". A new test walks every default binding and asserts it
+  round-trips through the config parser, so this class of gap cannot reappear silently.
+
+### Changed
+- **Full-screen images transfer far less data on kitty terminals.** konoma now transmits still
+  images (PNG/JPG/SVG/PDF/video-thumbnail) with its own kitty-graphics path that **zlib-compresses
+  the pixels** (`o=z`) instead of sending raw RGBA. konoma's own work to show an image was already
+  ~37 ms; the multi-second wait was the terminal receiving several MB of escape data. Compression
+  cuts that transfer 2× for photos and ~50× for the screenshots and diagrams typical of AI
+  pair-programming — the whole point of the tool. Zoom/pan and the fit geometry are unchanged, and
+  non-kitty terminals (sixel/iTerm2/halfblocks) are unaffected. See
+  `docs/PERF-IMAGE-TRANSFER-2026-07.md` for the measurements.
+- **Previews are no longer rebuilt on unrelated file changes.** A filesystem event used to re-read
+  and re-render whatever was on screen no matter which file changed, so an agent writing to `src/`
+  repeatedly re-rendered an unrelated Markdown document (or re-parsed a large CSV). The preview now
+  reloads only when the previewed file itself changed, when the change cannot be attributed (a
+  commit, a checkout, a `.git`-only event), or when a git diff is on screen — external edits to what
+  you are looking at still appear immediately.
+- **The published crate is much smaller** — 6.1 MiB / 127 files down to 2.7 MiB / 99 files. The
+  documentation site (`site/`, published to GitHub Pages) and a 1.8 MB auto-generated 52k-line
+  scrolling-performance sample are no longer packaged. Nothing that konoma reads at build or run
+  time was removed.
+
 ## [0.16.0] - 2026-07-20
 
 ### Added

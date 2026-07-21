@@ -439,6 +439,83 @@ fn e2e_csv_table_cell_navigation() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 装飾 Markdown の検索を **キー入力経由**で通す。装飾表示のまま(raw に切替えず)一致行へ
+/// スクロールし、n で次の一致へ動くこと。CJK 本文でも壊れないこと。
+#[test]
+fn e2e_decorated_markdown_search() {
+    let dir = sandbox("md_search");
+    let mut src = String::from("# Guide\n\n");
+    for i in 0..30 {
+        src.push_str(&format!("padding paragraph {i}\n\n"));
+    }
+    src.push_str("the **haystack** contains a needle here\n\n");
+    for i in 30..60 {
+        src.push_str(&format!("padding paragraph {i}\n\n"));
+    }
+    src.push_str("日本語の行にも needle があります\n");
+    std::fs::write(dir.join("guide.md"), &src).unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("guide.md");
+    s.enter();
+    s.key('/');
+    s.keys("needle");
+    s.enter();
+    assert_eq!(
+        s.app.search_status(),
+        Some((1, 2)),
+        "装飾 md で 2 件見つかる"
+    );
+    assert!(!s.app.is_raw_source(), "装飾表示のまま検索できる");
+    s.see("needle");
+
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 2)), "n で 2 件目へ");
+    s.see("needle"); // CJK 行の一致も画面に出る
+
+    s.key('q');
+    assert_eq!(s.app.mode, Mode::Tree);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 表内検索を **キー入力経由**で通す(`/` → クエリ → Enter → n/N)。単体テストは App の
+/// メソッドを直接叩くので、keymap の bind 漏れ・入力面の横取りはここでしか捕まらない。
+#[test]
+fn e2e_table_search_jumps_to_matching_cell() {
+    let dir = sandbox("table_search");
+    std::fs::write(
+        dir.join("data.csv"),
+        "name,city\nalice,kyoto\nbob,osaka\ncarol,kyoto\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("data.csv");
+    s.enter();
+    s.see("TABLE");
+    assert_eq!(s.app.table_cursor(), (0, 0));
+
+    s.key('/');
+    s.keys("kyoto");
+    s.enter();
+    assert_eq!(s.app.table_cursor(), (0, 1), "最初の一致セルへ");
+    assert_eq!(s.app.search_status(), Some((1, 2)), "2 件中 1 件目");
+
+    s.key('n');
+    assert_eq!(s.app.table_cursor(), (2, 1), "n で次の一致セルへ");
+    s.key('n');
+    assert_eq!(s.app.table_cursor(), (0, 1), "wrap して先頭へ");
+
+    // Esc は「検索解除 → もう一度でツリーへ」(text プレビューと同じ流儀)。
+    // 実機で Esc が無反応=強調が消せない不具合を見つけたのでここで固定する。
+    s.esc();
+    assert_eq!(s.app.preview_search_query(), None, "Esc で検索が解除される");
+    assert!(!s.app.table_cell_is_hit(0, 1), "一致の強調も消える");
+    assert_eq!(s.app.mode, Mode::Preview, "1回目の Esc では表に留まる");
+    s.esc();
+    assert_eq!(s.app.mode, Mode::Tree, "2回目の Esc でツリーへ戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_preview_search_moves_between_matches() {
     let dir = sandbox("preview_search");
@@ -2900,7 +2977,12 @@ fn e2e_search_works_in_code_preview() {
         "fn alpha() {}\nfn beta() {}\nlet x = 1;\n",
     )
     .unwrap();
-    let mut s = Sim::new(&canon(&dir));
+    // ハイライトを切って実行順に依存させない: 文法が cold だとプレビューは "loading…" を出し、
+    // この検索テストは「他のテストが .rs を温めていたか」で結果が変わってしまう(単独実行だと落ちた)。
+    // 検索の検証にシンタックス着色は不要なので、確定的に本文が出る設定で回す。
+    let mut cfg = Config::default();
+    cfg.ui.syntax_highlight = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg);
     s.select("code.rs");
     s.enter();
     assert!(s.app.is_windowed());
@@ -2912,22 +2994,38 @@ fn e2e_search_works_in_code_preview() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 装飾 Markdown でも `/` が使える(以前は「コード/テキストのみ」と拒否していた)。
+/// 検索対象は装飾行なので、`R` の生ソースへ切替えずに一致を強調できる。
 #[test]
-fn e2e_search_rejected_on_decorated_markdown_preview() {
+fn e2e_search_works_on_decorated_markdown_preview() {
     let (mut s, dir) = md_preview(
         Config::default(),
         "doc",
         "# Title\n\nsome needle text here\n",
     );
-    assert!(!s.app.is_windowed());
+    assert!(!s.app.is_windowed(), "装飾 md は窓読みではない");
     s.key('/');
-    assert!(!s.app.is_searching());
+    assert!(s.app.is_searching(), "装飾 md でも検索入力に入れる");
+    s.keys("needle");
+    s.enter();
+    assert_eq!(s.app.preview_search_query(), Some("needle"));
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    assert!(!s.app.is_raw_source(), "raw ソースに切替わらない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 検索モデルを持たない面(画像など)では従来どおり拒否して flash で知らせる。
+#[test]
+fn e2e_search_rejected_on_media_preview() {
+    let dir = sandbox("search_media");
+    std::fs::copy("samples/sample.svg", dir.join("pic.svg")).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("pic.svg");
+    s.enter();
+    s.key('/');
+    assert!(!s.app.is_searching(), "画像プレビューでは検索に入らない");
     assert_eq!(s.app.preview_search_query(), None);
-    assert!(s
-        .app
-        .flash
-        .as_deref()
-        .is_some_and(|m| m.contains("code/text")));
+    assert!(s.app.flash.is_some(), "拒否理由を flash で知らせる");
     std::fs::remove_dir_all(&dir).ok();
 }
 

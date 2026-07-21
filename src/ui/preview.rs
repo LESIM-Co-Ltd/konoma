@@ -55,6 +55,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("h j k l / arrows", l(crate::i18n::Msg::TableMoveHelp))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
+            .row("/  n / N", l(crate::i18n::Msg::TableSearchHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
             .row("y → f", l(crate::i18n::Msg::WkFull))
             .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
@@ -106,6 +107,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     if app.is_table_preview() {
         return vec![
             hint(lang, "hjkl", crate::i18n::Msg::HintCell),
+            hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "y", crate::i18n::Msg::CopyHint),
             hint(lang, "g/G", crate::i18n::Msg::HintEnds),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
@@ -831,8 +833,18 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // 静止画: 描画直前に (zoom, center, inner) から crop と表示矩形を確定。
-    // z=1=フィット, 拡大で大きく, viewport を超えたら見切れ＋パン(中央寄せ)。別スレッドでリサイズ/エンコード。
+    // z=1=フィット, 拡大で大きく, viewport を超えたら見切れ＋パン(中央寄せ)。
     let target = app.prepare_image(inner);
+    // kitty 端末: konoma 自前の圧縮転送(o=z)経路。crop 変化時に構築済みの KittyImage を
+    // フレームバッファへ直接描く(転送1回＋以降 placeholder のみ)。転送量が数十分の一。
+    if app.uses_kitty_image() {
+        match (target, app.kitty_image_ref()) {
+            (Some(target), Some(ki)) => ki.render(target, frame.buffer_mut()),
+            _ => fallback(frame),
+        }
+        return;
+    }
+    // その他端末(sixel/iterm2/halfblocks): ratatui-image の非同期 StatefulImage。
     match (target, app.image.as_mut()) {
         (Some(target), Some(state)) => {
             // 最近傍(None)だと縮小でエイリアス・拡大でブロックノイズになり高解像度ソースでも粗く見える。

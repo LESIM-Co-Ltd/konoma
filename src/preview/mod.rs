@@ -7,6 +7,7 @@ pub mod code;
 pub mod command;
 pub mod gitdiff;
 pub mod image;
+pub mod kitty;
 pub mod markdown;
 pub mod math;
 pub mod pdf;

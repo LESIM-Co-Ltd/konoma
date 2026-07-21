@@ -645,13 +645,17 @@ pub struct App {
     details_open: std::collections::HashMap<usize, bool>,
 
     /// In-preview search (`/`, less style). Some=search is active (the query). Highlights matches and moves with n/N.
-    /// Currently only Code/Text (windowed) previews are supported.
+    /// Supported in Code/Text (windowed) and table previews — see `search_target`.
     preview_search: Option<String>,
     /// Editing buffer for the search query. Some=input mode (intercepts keys, runs on Enter).
     search_input: Option<String>,
     /// For each occurrence: (line-head byte offset, 0-based line number, byte column within the line). The result of `find_all_matches`.
     /// Multiple occurrences on one line become separate elements (so `n`/`N` move per occurrence).
+    /// **Table previews reuse this slot as `(0, data row, column)`** — cell coordinates in reading order.
     search_matches: Vec<(u64, usize, usize)>,
+    /// The matching table cells as a set, for O(1) lookup while rendering (mirrors `search_matches`).
+    /// Kept separate so a large result set does not turn cell drawing into a linear scan.
+    table_search_hits: std::collections::HashSet<(usize, usize)>,
     /// Index of the current match (within search_matches).
     search_idx: usize,
 
@@ -661,6 +665,15 @@ pub struct App {
     picker: Option<Picker>,
     img_tx: Option<UnboundedSender<ResizeRequest>>,
     pub image: Option<ThreadProtocol>,
+    /// On a kitty-graphics terminal, still images take konoma's own transmit path instead of
+    /// ratatui-image's `image`/`ThreadProtocol`: the pixels are **zlib-compressed** (`o=z`), which
+    /// shrinks the terminal transfer 2×–50× (the real latency; see docs/PERF-IMAGE-TRANSFER-2026-07).
+    /// `use_kitty` is set from the picker's protocol type; on other terminals (sixel/iterm2/
+    /// halfblocks) `kitty_image` stays None and the `image` path is used unchanged.
+    use_kitty: bool,
+    kitty_is_tmux: bool,
+    /// The prepared compressed image for the current crop (None until built / on non-kitty terminals).
+    kitty_image: Option<crate::preview::kitty::KittyImage>,
     /// The source image (decoded). Zoom/pan crops this at render time and rebuilds the protocol
     /// (because ratatui-image has no offset pan).
     image_src: Option<image::DynamicImage>,
@@ -924,6 +937,21 @@ pub enum GitCopyKind {
     Author,
     /// Date.
     Date,
+}
+
+/// What the in-preview search (`/`) searches, which decides how matches are found and how `n`/`N`
+/// move. Each preview kind addresses positions differently, so the search plumbing routes on this
+/// instead of testing preview fields in several places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchTarget {
+    /// Code/Text and raw (`R`) Markdown: byte offsets into the file, moved via the read window.
+    Windowed,
+    /// CSV/TSV: (data row, column) cell coordinates, moved via the cell cursor.
+    Table,
+    /// Decorated Markdown/Mermaid: indices into the **decorated** lines, moved by scrolling.
+    Markdown,
+    /// Media and diffs — no search model (`/` flashes a hint).
+    Unsupported,
 }
 
 /// CSV/TSV table copy kind (chosen after `y` in the table preview).
@@ -1242,10 +1270,14 @@ impl App {
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
+            table_search_hits: std::collections::HashSet::new(),
             search_idx: 0,
             picker: None,
             img_tx: None,
             image: None,
+            use_kitty: false,
+            kitty_is_tmux: false,
+            kitty_image: None,
             image_src: None,
             image_zoom: 1.0,
             image_center: (0.5, 0.5),
@@ -2707,6 +2739,7 @@ impl App {
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
+        self.table_search_hits.clear();
         self.search_idx = 0;
         self.setup_windowed(); // 大きい Code/Text なら less 風ウィンドウ読みに切替
                                // windowed プレビューの 2D キャレット/選択を先頭へリセット。
@@ -3337,6 +3370,7 @@ impl App {
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
+        self.table_search_hits.clear();
         self.search_idx = 0;
         self.came_from_git_view = false;
         self.table_data = None;
@@ -3367,6 +3401,7 @@ impl App {
     /// Release and reset the image display state (protocol, source image, zoom/pan).
     fn clear_image(&mut self) {
         self.image = None;
+        self.kitty_image = None;
         self.image_src = None;
         self.image_zoom = 1.0;
         self.image_center = (0.5, 0.5);
@@ -3589,6 +3624,28 @@ impl App {
             (lo, hi, 0)
         };
         let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
+        // 検索中は可視行の一致箇所を強調(現在の一致=オレンジ / 他=黄色)。窓読みと同じ見た目・
+        // 同じ関数を使う。可視範囲だけに掛けるので文書サイズに依らず O(viewport)。
+        if let Some(q) = self.preview_search.as_deref() {
+            let cur = self.search_matches.get(self.search_idx).copied();
+            for (i, line) in out.iter_mut().enumerate() {
+                let li = lo + i;
+                // この行に一致が無ければ触らない(clone/再構築を避ける)。
+                if !self.search_matches.iter().any(|(_, l, _)| *l == li) {
+                    continue;
+                }
+                // 現在の一致がこの行なら、行内での出現順位を渡してその 1 つだけオレンジに。
+                let rank = cur.and_then(|(_, cl, _)| {
+                    (cl == li).then(|| {
+                        self.search_matches[..self.search_idx]
+                            .iter()
+                            .filter(|(_, l, _)| *l == li)
+                            .count()
+                    })
+                });
+                *line = highlight_query_in_line(std::mem::take(line), q, rank);
+            }
+        }
         // フォーカス中アイテムの行だけ反転する(画面外なら何もしない=見た目は全文反転と同一)。
         if let Some(f) = self.focused_item {
             if let Some(it) = c.items.get(f) {
@@ -3889,6 +3946,14 @@ impl App {
 
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
+        // Use konoma's own compressed transmit only on a kitty-graphics terminal; other protocols
+        // (sixel/iterm2/halfblocks) keep the ratatui-image path. tmux is detected via $TMUX (the
+        // picker's own is_tmux is private), matching how the escapes must be passthrough-wrapped.
+        self.use_kitty = matches!(
+            picker.protocol_type(),
+            ratatui_image::picker::ProtocolType::Kitty
+        );
+        self.kitty_is_tmux = std::env::var_os("TMUX").is_some();
         self.picker = Some(picker);
         self.img_tx = Some(tx);
     }
@@ -5159,26 +5224,87 @@ impl App {
             scale,
             self.image_logical,
         )?;
-        // crop が変わったときだけプロトコル再構築(毎フレームの再エンコードを避ける)。
-        let new_tp = if self.image_crop != Some(crop_rect) {
-            let (x0, y0, cw, ch) = crop_rect;
-            let crop = src.crop_imm(x0, y0, cw, ch);
-            let proto = picker.new_resize_protocol(crop);
-            // src/picker/img_tx の借用はこの式で完結(tp は所有値)→以降 self を変更可。
-            Some(ThreadProtocol::new(
-                self.img_tx.as_ref()?.clone(),
-                Some(proto),
-            ))
+        let crop_changed = self.image_crop != Some(crop_rect);
+        if self.use_kitty {
+            // konoma-native compressed transmit. Rebuild when the crop OR the display cell size
+            // changes; on a static image at a fixed terminal size this runs once (open), then every
+            // frame just re-emits cheap placeholders. The cell-size check matters because at fit zoom
+            // a **terminal resize** changes the display area without changing the crop — ratatui-image
+            // re-encodes on area change internally, so konoma's path must too or the image would keep
+            // its pre-resize size until the next zoom/pan.
+            let size_changed = self
+                .kitty_image
+                .as_ref()
+                .is_none_or(|k| k.cell_size() != (target.width, target.height));
+            if crop_changed || size_changed {
+                let built = self.build_kitty_image(crop_rect, target, picker.font_size());
+                self.kitty_image = built; // None = build failed → render falls back safely
+            }
         } else {
-            None
-        };
-        if let Some(tp) = new_tp {
-            self.image = Some(tp);
+            // ratatui-image path (sixel/iterm2/halfblocks, or kitty when disabled): rebuild the
+            // ThreadProtocol only on crop change to avoid a per-frame re-encode.
+            let new_tp = if crop_changed {
+                let (x0, y0, cw, ch) = crop_rect;
+                let crop = src.crop_imm(x0, y0, cw, ch);
+                let proto = picker.new_resize_protocol(crop);
+                Some(ThreadProtocol::new(
+                    self.img_tx.as_ref()?.clone(),
+                    Some(proto),
+                ))
+            } else {
+                None
+            };
+            if let Some(tp) = new_tp {
+                self.image = Some(tp);
+            }
         }
         self.image_center = center;
         self.image_vis_frac = frac;
         self.image_crop = Some(crop_rect);
         Some(target)
+    }
+
+    /// Crop, resize to the display cell area at native font resolution, and build the compressed
+    /// (`o=z`) kitty image. Runs on the render thread only when the crop changes (open / zoom / pan),
+    /// so its ~30–50 ms cost is not paid per frame. Returns None if there is no image or the target
+    /// is empty (render then falls back safely).
+    fn build_kitty_image(
+        &self,
+        crop_rect: (u32, u32, u32, u32),
+        target: Rect,
+        font: ratatui_image::FontSize,
+    ) -> Option<crate::preview::kitty::KittyImage> {
+        let src = self.image_src.as_ref()?;
+        let (cols, rows) = (target.width, target.height);
+        if cols == 0 || rows == 0 {
+            return None;
+        }
+        // Native resolution: one image pixel per screen pixel = cols/rows cells × the font cell size.
+        let px_w = u32::from(cols) * u32::from(font.width.max(1));
+        let px_h = u32::from(rows) * u32::from(font.height.max(1));
+        let (x0, y0, cw, ch) = crop_rect;
+        let crop = src.crop_imm(x0, y0, cw, ch);
+        let resized = crop
+            .resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        let id = crate::preview::kitty::next_id();
+        Some(crate::preview::kitty::KittyImage::build(
+            &resized,
+            cols,
+            rows,
+            id,
+            self.kitty_is_tmux,
+        ))
+    }
+
+    /// Whether still images are drawn via konoma's own compressed kitty transmit (kitty terminal).
+    pub fn uses_kitty_image(&self) -> bool {
+        self.use_kitty
+    }
+
+    /// The prepared compressed kitty image for the current crop, if built.
+    pub fn kitty_image_ref(&self) -> Option<&crate::preview::kitty::KittyImage> {
+        self.kitty_image.as_ref()
     }
 
     /// Page the text preview by one page (dir: +1=next page / -1=previous page).
@@ -5529,13 +5655,105 @@ impl App {
         }
     }
 
-    /// Start a search (`/`). Currently only Code/Text (windowed) previews are supported. Enters input mode.
+    /// Which preview the in-preview search (`/`) runs against. Each target has its own way of
+    /// locating matches and of moving to one, so `search_commit` / `jump_to_match` branch on this.
+    fn search_target(&self) -> SearchTarget {
+        if self.preview_win.is_some() {
+            // Code/Text と `R` の生 Markdown（バイトオフセットで窓を動かす）。
+            SearchTarget::Windowed
+        } else if self.table_data.is_some() {
+            SearchTarget::Table
+        } else if self.md_cache.is_some() {
+            // 装飾 Markdown / Mermaid。検索対象は**画面に出ている装飾行**であって
+            // ソースではない(装飾は行を増減させるので、ソース行番号では位置を指せない)。
+            SearchTarget::Markdown
+        } else {
+            SearchTarget::Unsupported
+        }
+    }
+
+    /// Case-insensitive scan of the **decorated** Markdown lines — the same lines the renderer
+    /// slices from — so a hit is always something visible on screen. Positions are
+    /// `(0, logical line, byte column)`; `n`/`N` then scroll that line into view.
+    ///
+    /// Non-ASCII queries whose byte length changes under `to_lowercase` are skipped for that line,
+    /// matching `highlight_query_in_line` so the highlight and the match list never disagree.
+    fn md_search_scan(&mut self, q: &str) {
+        self.search_matches.clear();
+        let needle = q.to_lowercase();
+        let Some(c) = self.md_cache.as_ref() else {
+            return;
+        };
+        for (li, line) in c.lines.iter().enumerate() {
+            let full: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let lower = full.to_lowercase();
+            if lower.len() != full.len() {
+                continue;
+            }
+            let mut i = 0usize;
+            while let Some(rel) = lower[i..].find(&needle) {
+                let s = i + rel;
+                self.search_matches.push((0, li, s));
+                i = s + needle.len().max(1);
+                if i >= lower.len() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Scroll the decorated Markdown view to a search hit on logical line `line`.
+    ///
+    /// A hit that is already fully on screen does not move the view (searching for something you
+    /// can see should not jolt the page). Otherwise the line is placed near the top with a few
+    /// lines of context above — the same affordance as `follow_scroll_to_first_change`. Note this
+    /// deliberately differs from `md_focus_move`'s minimal-scroll rule: with minimal scrolling the
+    /// same hit lands at the top or the bottom depending on which way you arrived, so `n` `n` `n`
+    /// wrapping back around would not return to the same view.
+    fn md_scroll_line_into_view(&mut self, line: usize) {
+        const CONTEXT_ROWS: usize = 3;
+        let (top, height) = self.md_visual_span(line);
+        let vh = self.preview_viewport.max(1) as usize;
+        let scroll = self.preview_scroll as usize;
+        let fully_visible = top >= scroll && top + height <= scroll + vh;
+        if fully_visible {
+            return;
+        }
+        self.preview_scroll = top.saturating_sub(CONTEXT_ROWS) as u16;
+    }
+
+    /// Start a search (`/`). Supported in Code/Text (windowed) and table previews. Enters input mode.
     pub fn start_search(&mut self) {
-        if self.preview_win.is_none() {
+        if matches!(self.search_target(), SearchTarget::Unsupported) {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::SearchCodeTextOnly).into());
             return;
         }
         self.search_input = Some(String::new());
+    }
+
+    /// Case-insensitive cell scan for a table preview, in reading order (row-major).
+    /// Only data cells are searched: the cell cursor addresses data rows, so a header-only hit
+    /// would have nowhere to jump to.
+    fn table_search_scan(&mut self, q: &str) {
+        self.table_search_hits.clear();
+        self.search_matches.clear();
+        let needle = q.to_lowercase();
+        let Some(t) = self.table_data.as_ref() else {
+            return;
+        };
+        for r in 0..t.nrows() {
+            for c in 0..t.ncols {
+                if t.cell(r, c).to_lowercase().contains(&needle) {
+                    self.search_matches.push((0, r, c));
+                    self.table_search_hits.insert((r, c));
+                }
+            }
+        }
+    }
+
+    /// Whether this data cell matched the active search (renderer lookup — O(1) per cell).
+    pub fn table_cell_is_hit(&self, row: usize, col: usize) -> bool {
+        self.table_search_hits.contains(&(row, col))
     }
 
     pub fn search_input_push(&mut self, c: char) {
@@ -5556,27 +5774,57 @@ impl App {
         if q.is_empty() {
             self.preview_search = None;
             self.search_matches.clear();
+            self.table_search_hits.clear();
             return;
         }
         const CAP: usize = 5000;
-        let matches = self
-            .preview_win
-            .as_mut()
-            .and_then(|w| w.find_all_matches(&q, CAP).ok())
-            .unwrap_or_default();
+        let target = self.search_target();
+        match target {
+            SearchTarget::Table => self.table_search_scan(&q),
+            SearchTarget::Markdown => {
+                self.table_search_hits.clear();
+                self.md_search_scan(&q);
+            }
+            _ => {
+                self.table_search_hits.clear();
+                self.search_matches = self
+                    .preview_win
+                    .as_mut()
+                    .and_then(|w| w.find_all_matches(&q, CAP).ok())
+                    .unwrap_or_default();
+            }
+        }
         self.preview_search = Some(q);
-        self.search_matches = matches;
         if self.search_matches.is_empty() {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::NoMatch).into());
             return;
         }
-        // 現在の表示位置(byte_top)以降の最初の出現へ。無ければ先頭へ巡回。
-        let top = self.preview_byte_top;
-        self.search_idx = self
-            .search_matches
-            .iter()
-            .position(|(off, _, _)| *off >= top)
-            .unwrap_or(0);
+        self.search_idx = match target {
+            // 表: いま居るセル以降の最初の一致へ(読み順)。無ければ先頭へ巡回。
+            SearchTarget::Table => {
+                let (cr, cc) = (self.table_cur_row, self.table_cur_col);
+                self.search_matches
+                    .iter()
+                    .position(|(_, r, c)| (*r, *c) >= (cr, cc))
+                    .unwrap_or(0)
+            }
+            // 装飾 md: いま見えている先頭の論理行以降の最初の一致へ。無ければ先頭へ巡回。
+            SearchTarget::Markdown => {
+                let from = self.md_top_logical_line().unwrap_or(0);
+                self.search_matches
+                    .iter()
+                    .position(|(_, line, _)| *line >= from)
+                    .unwrap_or(0)
+            }
+            // 窓読み: 現在の表示位置(byte_top)以降の最初の出現へ。無ければ先頭へ巡回。
+            _ => {
+                let top = self.preview_byte_top;
+                self.search_matches
+                    .iter()
+                    .position(|(off, _, _)| *off >= top)
+                    .unwrap_or(0)
+            }
+        };
         self.jump_to_match();
     }
 
@@ -5595,15 +5843,28 @@ impl App {
         self.preview_search = None;
         self.search_input = None;
         self.search_matches.clear();
+        self.table_search_hits.clear();
         self.search_idx = 0;
     }
 
     /// Bring the line of the current occurrence to the top of the display (updates the line-head byte and line number). For moves within the same line,
     /// the top does not change, and only the highlight color (orange) moves to that occurrence (the column is referenced by the render side).
     fn jump_to_match(&mut self) {
-        if let Some(&(off, line, _col)) = self.search_matches.get(self.search_idx) {
-            self.preview_byte_top = off;
-            self.preview_top_line = line;
+        let Some(&(off, a, b)) = self.search_matches.get(self.search_idx) else {
+            return;
+        };
+        match self.search_target() {
+            // 表: (行, 列) はセル座標。カーソルを移すと描画側がスクロールして追従する。
+            SearchTarget::Table => {
+                self.table_cur_row = a;
+                self.table_cur_col = b;
+            }
+            // 装飾 md: 一致した論理行を可視域へ(装飾表示のまま=raw に切替えない)。
+            SearchTarget::Markdown => self.md_scroll_line_into_view(a),
+            _ => {
+                self.preview_byte_top = off;
+                self.preview_top_line = a;
+            }
         }
     }
 
@@ -6364,6 +6625,17 @@ impl App {
         self.search_input = t.search_input;
         self.search_matches = t.search_matches;
         self.search_idx = t.search_idx;
+        // `table_search_hits` は `search_matches` から導出される描画用の集合。TabState には持たず
+        // (二重管理を避ける)、復元した search_matches から作り直す。表以外は空にする — さもないと
+        // 別タブの一致セル座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
+        self.table_search_hits = if matches!(self.preview_kind, Some(PreviewKind::Table { .. })) {
+            self.search_matches
+                .iter()
+                .map(|&(_, r, c)| (r, c))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         // 装飾キャッシュは持ち越さない (decorated_lines が再生成)。
         self.md_cache = None;
         // 復元した diff プレビューはフォロー由来の印を持ち越さない(セッションはタブ横断の概念でない)。

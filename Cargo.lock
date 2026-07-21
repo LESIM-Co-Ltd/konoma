@@ -1406,9 +1406,11 @@ version = "0.16.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64",
  "crossterm",
  "csv",
  "emojis",
+ "flate2",
  "git2",
  "globset",
  "image",

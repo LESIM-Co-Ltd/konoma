@@ -365,6 +365,9 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
+#   Git グラフ   : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
+#                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
+#                  "git_graph_picker_move_up" "git_graph_picker_move_down"
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
 # ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。

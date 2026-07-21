@@ -78,6 +78,7 @@ information contextually inside the app.
 | `h j k l` | move by cell |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `g` `G` / `0` `$` | first/last row / first/last column |
+| `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
 
@@ -90,7 +91,7 @@ information contextually inside the app.
 | Hub: `l` / `g` / `b` | log / commit graph / branches |
 | Diff: `s` / `n` `N` / `x` | layout unified⇄split⇄auto / next/prev changed file / discard |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
-| Graph: `s` / `x` / `b` | pin base branch / unpin / branch picker |
+| Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |
 | Branches: `Enter` / `n` / `d` / `/` | checkout / create / delete / filter |
 
 ## Tab list (`T`)

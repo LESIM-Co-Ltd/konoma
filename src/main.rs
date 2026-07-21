@@ -444,16 +444,20 @@ fn run(
         // 重い ignored セットも作り直す。それ以外は安い statuses+branch だけ更新する。
         let mut fs_changed = false;
         let mut ignore_rules_changed = false;
+        // このバーストで変わったパス(監視側が `.git` 配下を除いて送ってくる)。空 = `.git` のみ
+        // または不明で、その場合 `refresh_fs_changed` は安全側=プレビューも再読込する。
+        let mut changed_paths: Vec<PathBuf> = Vec::new();
         while let Ok((b, paths)) = fs_rx.try_recv() {
             fs_changed = true;
             ignore_rules_changed |= b;
             // フォローモード: 有効ターゲットをセッション一覧(n/N レビューの母集合)へ記録しつつ、
             // 最後の1つを保留ターゲットに(latest-wins)。無効パスは dwell 枠を消費しない。
-            if app.follow_enabled() {
-                for p in paths {
-                    if app.follow_note_change(&p) {
-                        pending_follow = Some(p);
-                    }
+            for p in paths {
+                if app.follow_enabled() && app.follow_note_change(&p) {
+                    pending_follow = Some(p.clone());
+                }
+                if !changed_paths.contains(&p) {
+                    changed_paths.push(p);
                 }
             }
         }
@@ -461,7 +465,7 @@ fn run(
             // 一覧 + git status に加え、refresh_fs() がアクティブな派生ビューも一元的に取り直す
             // (Preview モードなら現プレビューを再読込 → 外部エディタでの編集でプレビューが古いまま
             //  残る既知バグを解消。Git ビューなら変更一覧を更新)。
-            let _ = app.refresh_fs(ignore_rules_changed);
+            let _ = app.refresh_fs_changed(ignore_rules_changed, &changed_paths);
             needs_redraw = true;
         }
         // フォローの切替判定(ドレイン外=毎ループ)。dwell 中に来たターゲットは保留され、明けた時点の
@@ -1182,7 +1186,9 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
                 app.clear_selection();
             }
         }
-        Surface::PreviewText | Surface::PreviewImage => {
+        // 表も検索を持つので text/image と同じ流儀にする(以前は Esc が無反応だった＝検索の
+        // 強調が消せず、ツリーにも戻れなかった)。
+        Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable => {
             // 検索が効いていれば解除、無ければツリーへ戻る。
             if app.preview_search_query().is_some() {
                 app.search_clear();

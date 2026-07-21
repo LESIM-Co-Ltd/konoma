@@ -26,6 +26,11 @@ exclude = [
     "/about.hbs",
     "/assets",
     "/config.example.ja.toml",
+    # ドキュメントサイト(Astro Starlight)。公開先は GitHub Pages なので crate に同梱しない。
+    "/site",
+    # 窓読みスクロールの手動性能確認用に自動生成した 52k 行(1.8MB)。テスト・doc から参照されない
+    # ローカル専用の生成物なので同梱しない(手元には残す)。
+    "/samples/code/large_generated.rs",
 ]
 
 # cargo-binstall: fetch the prebuilt binary from the GitHub Release instead of
@@ -49,6 +54,11 @@ crossterm = "0.29"
 # tokio=非同期リサイズ・デコードのオフロード(FR-4 の非ブロッキング描画用)。
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults", "tokio"] }
 image = "0.25"
+# 全画面画像の kitty graphics 転送を konoma 自前で行い、RGBA を **zlib 圧縮(kitty `o=z`)** して送る
+# (ratatui-image は非圧縮 RGBA を送る＝スクショ/図で転送量が数十倍になる)。両者とも既に推移依存として
+# ツリーに在り重複ビルドなし。詳細は docs/PERF-IMAGE-TRANSFER-2026-07.md。
+flate2 = "1"
+base64 = "0.22"
 # SVG プレビュー: 純 Rust(usvg/tiny-skia/rustybuzz/fontdb)でラスタライズ→既存の画像経路へ流す。
 # chafa(C)/onig(C) を避けたのと同じ方針で、外部ライブラリ不要＝配布容易性(PRD §5)を維持。
 # default features に text/system-fonts/raster-images 等を含む(SVG 内テキスト/埋め込み画像対応)。

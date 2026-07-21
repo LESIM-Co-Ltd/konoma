@@ -8286,3 +8286,394 @@ fn stale_md_image_result_is_dropped() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 外部でファイルが**縮小**されたとき、窓読みプレビューのスクロール位置が新しい EOF を越えたまま
+/// 残らないこと。エージェントがログを truncate する / ファイルを書き直す、という Agent Watch の
+/// 日常操作で起きる。`preview_byte_top` は旧ファイルの末尾ページを指したままになり得るので、
+/// 再読込→描画の経路でクランプされる必要がある。
+#[test]
+fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
+    let dir = unique_tmp("konoma_shrink_clamp");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("log.txt");
+    let long: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(&f, &long).unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("log.txt"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    app.preview_viewport = 5;
+    // 末尾へ = byte_top は 200 行ファイルの最終ページ(短縮後のファイル長より大きい)。
+    app.preview_to_bottom();
+    let _ = app.windowed_lines(5, 80);
+    let deep_top = app.preview_byte_top;
+    assert!(deep_top > 0, "末尾へスクロールできている");
+
+    // 外部で 3 行に切り詰め(エージェントの truncate 相当)。
+    std::fs::write(&f, "a\nb\nc\n").unwrap();
+    let new_len = std::fs::metadata(&f).unwrap().len();
+    assert!(deep_top > new_len, "旧 top は新しい EOF を越えている(前提)");
+
+    // FS イベント相当の再読込 → 描画。
+    app.reload_preview();
+    let lines = app.windowed_lines(5, 80);
+
+    assert!(
+        app.preview_byte_top <= new_len,
+        "縮小後もスクロール位置が EOF を越えている: top={} len={new_len}",
+        app.preview_byte_top
+    );
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
+    assert!(
+        text.contains('a') && text.contains('c'),
+        "縮小後の中身が描かれていない: {text:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// FS イベントでのプレビュー再読込が、**変更パスに応じて**行われること。
+///
+/// 目的: エージェントが `src/` を書き換え続けている間、無関係な `docs/foo.md` の装飾を毎イベント
+/// 作り直さない(Markdown 全文の再レンダは重い)。一方で、表示中ファイル自身の変更・`.git` のみの
+/// 変更(= 空リストで届く)・変更パス不明は必ず追従する。
+#[test]
+fn preview_reloads_only_for_relevant_fs_changes() {
+    let dir = unique_tmp("konoma_refresh_scope");
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let md = dir.join("docs/note.md");
+    std::fs::write(&md, "# Title\n\nbody one\n").unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "fn a() {}\n").unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let md = root.join("docs/note.md");
+    let other = root.join("src/lib.rs");
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.preview_kind = Some(app.cfg.resolve_preview(&md));
+    app.preview_path = Some(md.clone());
+    app.mode = Mode::Preview;
+    app.preview_viewport = 20;
+
+    // 装飾キャッシュを作る。
+    let _ = app.decorated_lines(80);
+    assert!(app.md_cache.is_some(), "装飾キャッシュができている");
+
+    // (1) 無関係なファイルの変更 → キャッシュは保持される(再レンダしない)。
+    app.refresh_fs_changed(false, std::slice::from_ref(&other))
+        .unwrap();
+    assert!(
+        app.md_cache.is_some(),
+        "無関係な src/lib.rs の変更で装飾キャッシュを捨てている"
+    );
+
+    // (2) 表示中ファイル自身の変更 → 再読込する(外部エディタ/エージェントの編集に追従)。
+    std::fs::write(&md, "# Title\n\nbody two\n").unwrap();
+    app.refresh_fs_changed(false, std::slice::from_ref(&md))
+        .unwrap();
+    assert!(
+        app.md_cache.is_none(),
+        "表示中ファイルが変わったのに再読込していない"
+    );
+    let text: String = app
+        .decorated_lines(80)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
+    assert!(
+        text.contains("body two"),
+        "新しい内容が反映されない: {text:?}"
+    );
+
+    // (3) 空リスト(= `.git` のみの変更 / 不明) → 安全側で必ず再読込する。
+    let _ = app.decorated_lines(80);
+    assert!(app.md_cache.is_some());
+    app.refresh_fs_changed(false, &[]).unwrap();
+    assert!(
+        app.md_cache.is_none(),
+        "変更パス不明(.git のみ等)は安全側で再読込すべき"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 表内検索: `/` で一致セルへカーソルが飛び、`n`/`N` が読み順で巡回(端は wrap)すること。
+/// 大文字小文字は無視し、一致セルは描画側が引ける集合にも載る。
+#[test]
+fn table_search_moves_cursor_through_matching_cells() {
+    let dir = unique_tmp("konoma_table_search");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("t.csv");
+    // 3 列 × 4 行。"apple" は (0,0) / (1,2) / (3,1) の 3 セルに出る(大小混在)。
+    std::fs::write(
+        &csv,
+        "h1,h2,h3\napple,x,y\nq,r,APPLE\nz,z,z\nw,Apple pie,v\n",
+    )
+    .unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    let csv = dir.canonicalize().unwrap().join("t.csv");
+    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.preview_path = Some(csv);
+    app.mode = Mode::Preview;
+    app.load_table();
+    assert_eq!(app.table_data().map(|t| t.nrows()), Some(4));
+
+    app.start_search();
+    for c in "apple".chars() {
+        app.search_input_push(c);
+    }
+    app.search_commit();
+
+    assert_eq!(
+        app.search_status(),
+        Some((1, 3)),
+        "大小無視で 3 セル一致し、1件目に居る"
+    );
+    assert_eq!(app.table_cursor(), (0, 0), "最初の一致セルへ移動");
+    assert!(
+        app.table_cell_is_hit(0, 0) && app.table_cell_is_hit(1, 2) && app.table_cell_is_hit(3, 1)
+    );
+    assert!(!app.table_cell_is_hit(2, 0), "非一致セルは含まない");
+
+    app.search_next(1);
+    assert_eq!(app.table_cursor(), (1, 2), "読み順で次の一致へ");
+    app.search_next(1);
+    assert_eq!(app.table_cursor(), (3, 1));
+    app.search_next(1);
+    assert_eq!(app.table_cursor(), (0, 0), "末尾から先頭へ wrap");
+    app.search_next(-1);
+    assert_eq!(app.table_cursor(), (3, 1), "N は逆順(先頭から末尾へ wrap)");
+
+    // Esc 相当: 解除で一致集合も消える(描画に取り残さない)。
+    app.search_clear();
+    assert!(!app.table_cell_is_hit(0, 0), "解除で一致ハイライトが消える");
+    assert_eq!(app.search_status(), None);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 一致が無いときは flash を出し、カーソルを動かさない(表を見失わせない)。
+#[test]
+fn table_search_without_match_keeps_cursor() {
+    let (mut app, _csv) = app_with_table();
+    app.table_cursor_move(1, 1);
+    let before = app.table_cursor();
+    app.start_search();
+    for c in "zzz-not-here".chars() {
+        app.search_input_push(c);
+    }
+    app.search_commit();
+    assert_eq!(app.table_cursor(), before, "一致なしでカーソルは不動");
+    assert!(app.flash.is_some(), "一致なしを flash で知らせる");
+    assert_eq!(app.search_status(), None);
+}
+
+/// 装飾 Markdown のプレビュー内検索。ソースではなく**画面に出ている装飾行**を検索し、
+/// 一致行を可視域へスクロールする(`R` の生ソースに切替えない)。`n`/`N` は文書順で巡回。
+#[test]
+fn decorated_markdown_search_scrolls_to_matches() {
+    let dir = unique_tmp("konoma_md_search");
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    // 見出し + 詰め物 + 遠く離れた 2 箇所の "needle"。
+    let mut src = String::from("# Title\n\n");
+    for i in 0..40 {
+        src.push_str(&format!("filler line {i}\n\n"));
+    }
+    src.push_str("first needle here\n\n");
+    for i in 40..80 {
+        src.push_str(&format!("filler line {i}\n\n"));
+    }
+    src.push_str("second needle there\n");
+    std::fs::write(&md, &src).unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    let md = dir.canonicalize().unwrap().join("doc.md");
+    app.preview_kind = Some(app.cfg.resolve_preview(&md));
+    app.preview_path = Some(md);
+    app.mode = Mode::Preview;
+    app.preview_viewport = 10;
+    let _ = app.md_layout(80); // 装飾キャッシュを張る(実描画と同じ経路)
+
+    // 装飾 md でも検索を開始できる(以前は「コード/テキストのみ」と拒否していた)。
+    app.start_search();
+    assert!(app.search_input().is_some(), "装飾 md で検索入力に入れる");
+    for c in "needle".chars() {
+        app.search_input_push(c);
+    }
+    app.search_commit();
+
+    assert_eq!(
+        app.search_status(),
+        Some((1, 2)),
+        "2 件見つかり 1 件目に居る"
+    );
+    assert!(!app.is_raw_source(), "検索のために raw ソースへ切替えない");
+    let first_scroll = app.preview_scroll;
+    assert!(first_scroll > 0, "1 件目まで下へスクロールした");
+
+    app.search_next(1);
+    let second_scroll = app.preview_scroll;
+    assert!(
+        second_scroll > first_scroll,
+        "n で後方の一致へさらにスクロール: {first_scroll} → {second_scroll}"
+    );
+    app.search_next(1);
+    assert_eq!(app.preview_scroll, first_scroll, "wrap して 1 件目へ戻る");
+
+    // 一致が可視域に入り、かつ強調されている(現在の一致=オレンジ背景)。
+    let (lines, _) = app.md_slice(app.preview_scroll, 10);
+    let hit = lines.iter().any(|l| {
+        l.spans
+            .iter()
+            .any(|s| s.content.contains("needle") && s.style.bg.is_some())
+    });
+    assert!(hit, "一致箇所が背景色で強調されている");
+
+    // 一致なしはカーソル位置を動かさず flash で知らせる。
+    let before = app.preview_scroll;
+    app.start_search();
+    for c in "zzz-absent".chars() {
+        app.search_input_push(c);
+    }
+    app.search_commit();
+    assert_eq!(app.preview_scroll, before, "一致なしでスクロールしない");
+    assert_eq!(app.search_status(), None);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// kitty 端末では prepare_image が **端末リサイズ(fit ズームで crop 不変・領域だけ変化)**でも
+/// KittyImage を作り直すこと。作り直さないと、リサイズ後も画像が旧サイズのまま残る(回帰)。
+#[test]
+fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
+    let dir = std::env::temp_dir().join("konoma_kitty_resize_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir, Config::default()).unwrap();
+    // viewport より**大きい**ソース(4000x3000px=400x150セル @ font10x20)。fit で viewport に
+    // 縮小されるので、端末リサイズ=表示サイズ変化=穴が顕在化する(小画像は自然サイズで不変)。
+    app.image_src = Some(image::DynamicImage::new_rgb8(4000, 3000));
+    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(rx));
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    app.attach_image_backend(picker, tx);
+    assert!(app.uses_kitty_image(), "kitty 経路が有効");
+
+    // 最初の描画準備: fit で viewport(200x40)に収まる KittyImage。
+    let r1 = app.prepare_image(inner(200, 40)).unwrap();
+    let size1 = app.kitty_image_ref().map(|k| k.cell_size());
+    assert_eq!(size1, Some((r1.width, r1.height)), "表示セルサイズで構築");
+
+    // 同じ領域で再度 prepare しても作り直さないこと(静止画=毎フレーム構築しない)を、
+    // **観測可能な不変量**で判定する: render は transmitted を立て、以後 o=z を再送しない。
+    // 作り直せば transmitted が false に戻り o=z が再送される。ポインタ比較はフィールドの
+    // アドレスが不変なので作り直しを検出できない(レビュー指摘)。
+    let area1 = ratatui::layout::Rect::new(0, 0, r1.width.min(50), r1.height);
+    let render_syms = |app: &App, area| {
+        let mut b = ratatui::buffer::Buffer::empty(area);
+        app.kitty_image_ref().unwrap().render(area, &mut b);
+        b.content.iter().map(|c| c.symbol()).collect::<String>()
+    };
+    assert!(
+        render_syms(&app, area1).contains("o=z"),
+        "初回 render で転送"
+    );
+    app.prepare_image(inner(200, 40)).unwrap(); // 領域不変
+    assert!(
+        !render_syms(&app, area1).contains("o=z"),
+        "領域不変なら作り直さない=転送を再送しない"
+    );
+
+    // 端末が大きくなった(crop は fit のまま (0,0,sw,sh) 不変・領域だけ拡大)→ 作り直す。
+    let r2 = app.prepare_image(inner(300, 60)).unwrap();
+    let size2 = app.kitty_image_ref().map(|k| k.cell_size());
+    assert_ne!(size1, size2, "リサイズで表示サイズが変わる");
+    assert_eq!(
+        size2,
+        Some((r2.width, r2.height)),
+        "新しい表示サイズで再構築"
+    );
+    // 作り直した=新しい KittyImage は未転送 → o=z を再送する。
+    let area2 = ratatui::layout::Rect::new(0, 0, r2.width.min(50), r2.height);
+    assert!(
+        render_syms(&app, area2).contains("o=z"),
+        "リサイズ後の新 KittyImage は転送を送る"
+    );
+}
+
+/// 非 kitty 端末(halfblocks/sixel/iterm2)では kitty 経路を使わず、従来の image(ThreadProtocol)を使う。
+#[test]
+fn non_kitty_terminal_keeps_ratatui_image_path() {
+    let mut app = app_with_image(); // halfblocks
+    app.attach_image_backend(
+        ratatui_image::picker::Picker::halfblocks(),
+        app.img_tx.clone().unwrap(),
+    );
+    assert!(
+        !app.uses_kitty_image(),
+        "halfblocks は kitty 経路を使わない"
+    );
+    app.prepare_image(inner(200, 40)).unwrap();
+    assert!(app.kitty_image_ref().is_none(), "KittyImage は作らない");
+    assert!(app.image.is_some(), "従来の ThreadProtocol 経路を使う");
+}
+
+/// タブ切替で表内検索の一致ハイライトが別タブに漏れないこと。`table_search_hits` は `search_matches`
+/// から導出される描画用集合だが TabState に無く、load_active が復元しないと前タブの座標が居残り、
+/// 表 renderer(`table_cell_is_hit` を無条件参照)が別タブのセルを誤って強調する(レビュー指摘の複製漏れ)。
+#[test]
+fn table_search_hits_do_not_leak_across_tabs() {
+    let dir = unique_tmp("konoma_tab_table_search");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.csv"), "h1,h2\nfoo,bar\nfoo,baz\n").unwrap();
+    std::fs::write(dir.join("b.csv"), "h1,h2\nq,w\ne,r\n").unwrap();
+    let root = dir.canonicalize().unwrap();
+
+    // タブ0: a.csv を開いて "foo" を検索(一致セルができる)。
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    let a = root.join("a.csv");
+    app.preview_kind = Some(app.cfg.resolve_preview(&a));
+    app.preview_path = Some(a);
+    app.mode = Mode::Preview;
+    app.load_table();
+    app.start_search();
+    for c in "foo".chars() {
+        app.search_input_push(c);
+    }
+    app.search_commit();
+    assert!(app.table_cell_is_hit(0, 0), "タブ0 で foo が一致");
+
+    // タブ1を新規作成(空タブ)し、そこで b.csv を検索なしで開く。
+    app.tab_new().unwrap();
+    let b = root.join("b.csv");
+    app.preview_kind = Some(app.cfg.resolve_preview(&b));
+    app.preview_path = Some(b);
+    app.mode = Mode::Preview;
+    app.load_table();
+    assert!(
+        !app.table_cell_is_hit(0, 0),
+        "新タブ(検索なし)に前タブの一致が漏れていない"
+    );
+
+    // タブ0へ戻る → 一致が復元され、タブ1へ再度切替 → 漏れない。
+    app.tab_cycle(-1);
+    assert!(
+        app.table_cell_is_hit(0, 0),
+        "タブ0 に戻ると一致が復元される"
+    );
+    app.tab_cycle(1);
+    assert!(
+        !app.table_cell_is_hit(0, 0),
+        "タブ1 へ切替で前タブの一致が漏れない(load_active が再構築)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

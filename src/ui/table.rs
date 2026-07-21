@@ -118,11 +118,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    // データ行。カーソルセルは反転。
+    // データ行。カーソルセルは反転。検索中の一致セルは下線 + 太字で示す(列レインボーの色を
+    // 潰さないよう、背景ではなく修飾で差をつける)。現在の一致はカーソルがそこに居るので反転で分かる。
     for r in top..row_end {
         lines.push(compose_line(&cols, |col, w| {
             let text = fit_to_width(t.cell(r, col), w);
             let mut style = Style::default().fg(column_color(app, col));
+            if app.table_cell_is_hit(r, col) {
+                style = style
+                    .add_modifier(Modifier::UNDERLINED)
+                    .add_modifier(Modifier::BOLD);
+            }
             if r == cur_row && col == cur_col {
                 style = style.add_modifier(Modifier::REVERSED);
             }

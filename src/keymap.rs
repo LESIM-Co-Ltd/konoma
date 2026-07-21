@@ -802,6 +802,10 @@ impl KeyMap {
         // Ctrl-n/Ctrl-p=ファイル送り(text/image と同キー)。
         ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
+        // 表内検索(text プレビューと同じ `/` n N)。一致セルへカーソルが飛ぶ。
+        ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
+        ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
+        ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
         ptbl.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::TableCopy));
         ptbl.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
@@ -866,6 +870,8 @@ impl KeyMap {
             let mut ggraph = glog.clone();
             ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
             ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
+            // `0` でも解除できる(vim の「行頭=起点へ戻る」感覚。`x` と併用・どちらも同じ Action)。
+            ggraph.insert(KeyPress::ch('0'), run(Action::GitGraphClearBase));
             ggraph.insert(KeyPress::ch('b'), run(Action::GitGraphOpenPicker));
             per_surface.insert(Surface::GitGraph, ggraph);
             per_surface.insert(Surface::GitLog, glog);
@@ -1727,6 +1733,24 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "git_open_selected_diff" => Action::GitOpenSelectedDiff,
         #[cfg(feature = "git")]
         "git_open_detail" => Action::GitOpenDetail,
+        // グラフの基準固定とブランチ表示パネル。`action_name` にはあったが here が抜けており、
+        // config から再割り当てできなかった(`keymap_actions_round_trip` が再発を検知する)。
+        #[cfg(feature = "git")]
+        "git_graph_set_base" => Action::GitGraphSetBase,
+        #[cfg(feature = "git")]
+        "git_graph_clear_base" => Action::GitGraphClearBase,
+        #[cfg(feature = "git")]
+        "git_graph_open_picker" => Action::GitGraphOpenPicker,
+        #[cfg(feature = "git")]
+        "git_graph_picker_toggle" => Action::GitGraphPickerToggle,
+        #[cfg(feature = "git")]
+        "git_graph_picker_all" => Action::GitGraphPickerAll,
+        #[cfg(feature = "git")]
+        "git_graph_picker_current_only" => Action::GitGraphPickerCurrentOnly,
+        #[cfg(feature = "git")]
+        "git_graph_picker_move_up" => Action::GitGraphPickerMoveUp,
+        #[cfg(feature = "git")]
+        "git_graph_picker_move_down" => Action::GitGraphPickerMoveDown,
         #[cfg(feature = "git")]
         "branch_filter_start" => Action::BranchFilterStart,
         #[cfg(feature = "git")]
@@ -2928,5 +2952,85 @@ mod tests {
         let a = action_from_str("file_duplicate").expect("file_duplicate は既知アクション");
         assert_eq!(action_name(a), "file_duplicate");
         assert_eq!(a, Action::FileDuplicate);
+    }
+
+    /// グラフの基準解除は `x` と `0` の両方で効く(`0` は「起点へ戻る」感覚の別名)。
+    /// `s`(基準設定)と `b`(ブランチパネル)は従来どおりで、log 面には基準キーが漏れない。
+    #[cfg(feature = "git")]
+    #[test]
+    fn graph_base_clears_with_x_and_zero() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        for k in ['x', '0'] {
+            assert_eq!(
+                m.resolve(Surface::GitGraph, None, KeyPress::ch(k)),
+                Resolution::Action(Action::GitGraphClearBase),
+                "グラフの `{k}` が基準解除に解決する"
+            );
+        }
+        assert_eq!(
+            m.resolve(Surface::GitGraph, None, KeyPress::ch('s')),
+            Resolution::Action(Action::GitGraphSetBase)
+        );
+        // log 面はグラフ専用の基準キーを持たない(`0` も `x` も未割当)。
+        for k in ['x', '0', 's'] {
+            assert_eq!(
+                m.resolve(Surface::GitLog, None, KeyPress::ch(k)),
+                Resolution::Unbound,
+                "log 面に `{k}` は割り当てない"
+            );
+        }
+        // 設定文字列の往復。
+        let a = action_from_str("git_graph_clear_base").expect("既知アクション");
+        assert_eq!(action_name(a), "git_graph_clear_base");
+        assert_eq!(a, Action::GitGraphClearBase);
+    }
+
+    /// **既定でキーに割り当てられている全アクション**が `action_name` → `action_from_str` で
+    /// 往復すること＝「全コマンドが `[keys.*]` で再割り当てできる」という約束の機械的な検査。
+    ///
+    /// 個別テストは「自分が足したアクション」しか見ないので、片側だけ足した配線漏れを取り逃す。
+    /// 実際、グラフの基準固定/ブランチパネル 8 アクションは `action_name` にだけ在って
+    /// `action_from_str` に無く、config から再割り当てできなかった(2026-07-20 に本テストで検出)。
+    #[test]
+    fn keymap_actions_round_trip() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        let mut actions: Vec<Action> = Vec::new();
+        let mut collect = |b: &Binding| {
+            if let Binding::Run(a) = b {
+                actions.push(*a);
+            }
+        };
+        for ctx in m.per_surface.values() {
+            ctx.values().for_each(&mut collect);
+        }
+        m.global.values().for_each(&mut collect);
+        for menu in m.leaders.values() {
+            actions.extend(menu.items.iter().map(|i| i.action));
+        }
+        assert!(!actions.is_empty(), "既定キーマップが空ではない");
+
+        // 意図的な例外: `tab_goto` は数字キー 1-9 に固定で、config で変えようとすると
+        // `apply_binding` が明示的に警告を出して無視する(§1.2)。よって往復しないのが正しい。
+        // 新たな例外を足すときは、ここに理由を書いて初めて許される。
+        const FIXED_KEY_ACTIONS: &[&str] = &["tab_goto"];
+
+        let mut missing: Vec<String> = Vec::new();
+        for a in actions {
+            let name = action_name(a).to_string();
+            if FIXED_KEY_ACTIONS.contains(&name.as_str()) {
+                continue;
+            }
+            match action_from_str(&name) {
+                // 往復して同じアクションに戻ること(別名に化けない)。
+                Some(back) if back == a => {}
+                _ => missing.push(name),
+            }
+        }
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "action_from_str に無い(=config で再割り当てできない)アクション: {missing:?}"
+        );
     }
 }
