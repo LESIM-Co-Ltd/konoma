@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-21
+
 ### Added
 - **Search inside rendered Markdown.** `/` now works in a decorated Markdown preview instead of
   refusing with "code/text preview only". It searches the rendered lines — what you actually see —
@@ -714,7 +716,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.14.2...v0.15.0
