@@ -50,7 +50,14 @@ impl App {
             }
         };
         // 書込み前の照合: 個数と対象マーカーの現状態が画面表示と一致するときだけ書く。
-        let locs = crate::preview::markdown::task_source_locs(&src, &states);
+        // `<details>` の開閉は実行時状態。描画に使ったのと同じ開閉列を渡さないと、閉じたブロックの
+        // 本文まで数えてしまい個数が合わなくなる(直近の描画が md_cache に記録している)。
+        let details_states: Vec<bool> = self
+            .md_cache
+            .as_ref()
+            .map(|c| c.details_states.clone())
+            .unwrap_or_default();
+        let locs = crate::preview::markdown::task_source_locs(&src, &states, &details_states);
         let ok = locs.len() == total
             && locs
                 .get(ordinal)

@@ -10128,6 +10128,129 @@ fn changed_filter_survives_returning_from_another_repo() {
     );
     std::fs::remove_dir_all(&base).ok();
 }
+
+/// Drive the real preview pipeline over the whole task corpus and toggle **every** checkbox in every
+/// document, asserting the write is byte-exact: one state character flips and nothing else in the file
+/// moves. Counting parity (in `markdown::task_scan_parity_tests`) only proves the renderer and the
+/// scanner agree on *how many* boxes there are; this proves the Nth box on screen edits the Nth box in
+/// the source — the property that actually matters when a document mixes alerts, details and tables.
+#[test]
+fn md_task_toggle_is_byte_exact_across_the_corpus() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_task_corpus_roundtrip"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+
+    for (name, src) in crate::preview::markdown::task_corpus::cases() {
+        // 何個のチェックボックスが画面に出るかは、その文書を一度開いて数える。
+        std::fs::write(&f, src).unwrap();
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.selected = app
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("doc.md"))
+            .unwrap();
+        app.tree_activate().unwrap();
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+        let task_items: Vec<usize> = app
+            .md_items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
+            .map(|(i, _)| i)
+            .collect();
+
+        for (nth, &item_idx) in task_items.iter().enumerate() {
+            // 毎回、元の内容から開き直す(前のトグルの影響を持ち込まない)。
+            std::fs::write(&f, src).unwrap();
+            let mut app = App::new(root.clone(), Config::default()).unwrap();
+            app.selected = app
+                .entries
+                .iter()
+                .position(|e| e.path.ends_with("doc.md"))
+                .unwrap();
+            app.tree_activate().unwrap();
+            let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+            term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+            app.focused_item = Some(item_idx);
+            app.flash = None;
+            app.md_toggle_focused_task();
+
+            let after = std::fs::read_to_string(&f).unwrap();
+            assert!(
+                app.flash.is_none(),
+                "{name} #{nth}: トグルが拒否された(flash={:?})\n--- src ---\n{src}",
+                app.flash
+            );
+            // 変わったのは1文字だけで、その位置は「nth 番目のタスクの状態文字」であること。
+            let diff: Vec<usize> = src
+                .char_indices()
+                .zip(after.char_indices())
+                .filter(|((_, a), (_, b))| a != b)
+                .map(|((i, _), _)| i)
+                .collect();
+            assert_eq!(
+                src.chars().count(),
+                after.chars().count(),
+                "{name} #{nth}: 文字数が変わった(1文字置換のはず)\n--- after ---\n{after}"
+            );
+            assert_eq!(
+                diff.len(),
+                1,
+                "{name} #{nth}: 変更が1文字でない(位置={diff:?})\n--- after ---\n{after}"
+            );
+            let locs = crate::preview::markdown::task_source_locs(src, &[' ', 'x'], &[]);
+            let loc = &locs[nth];
+            // 期待位置は**製品と同じ行分割**(`split('\n')`)で求める。`str::lines()` は CRLF の
+            // `\r` を落とすので、それで数えると CRLF 文書で1バイトずれる(テスト側の落とし穴)。
+            let line_start: usize = src.split('\n').take(loc.line).map(|l| l.len() + 1).sum();
+            assert_eq!(
+                diff[0],
+                line_start + loc.state_off,
+                "{name} #{nth}: 別の位置を書き換えた\n--- after ---\n{after}"
+            );
+            // オフセット計算に依存しない照合: 書き戻し後に読み直すと、**その1個だけ**状態が変わり
+            // 他のチェックボックスは元のまま。
+            let after_locs = crate::preview::markdown::task_source_locs(&after, &[' ', 'x'], &[]);
+            assert_eq!(
+                after_locs.len(),
+                locs.len(),
+                "{name} #{nth}: 書き戻しでチェックボックスの個数が変わった"
+            );
+            for (i, (b, a)) in locs.iter().zip(after_locs.iter()).enumerate() {
+                if i == nth {
+                    assert_ne!(
+                        b.state, a.state,
+                        "{name} #{nth}: 対象の状態が変わっていない"
+                    );
+                } else {
+                    assert_eq!(
+                        b.state, a.state,
+                        "{name} #{nth}: 別のタスク #{i} を書き換えた"
+                    );
+                }
+            }
+            // 行構造(改行の種類・行数)は不変。
+            assert_eq!(
+                src.matches("\r\n").count(),
+                after.matches("\r\n").count(),
+                "{name} #{nth}: CRLF が壊れた"
+            );
+            assert_eq!(
+                src.ends_with('\n'),
+                after.ends_with('\n'),
+                "{name} #{nth}: 末尾改行が変わった"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Moving the root out of a repository must drop that repository's ignore set. The "already computing"
 /// guard compared `git_ignored_pending == wd`, and for a non-repo root **both are None**, so the guard
 /// always fired and the clearing branch below it was never reached — the previous repo's ignored paths

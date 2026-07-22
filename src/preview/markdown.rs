@@ -1041,12 +1041,61 @@ pub(crate) fn is_code_line(line: &Line<'_>) -> bool {
 /// `mermaid` fences (they are diverted to diagram rendering and produce no code-block header).
 /// Used by the "copy focused code block" action: the Nth entry maps to the Nth focusable block.
 /// The caller cross-checks the count against the on-screen headers before copying (safe fallback).
-pub(crate) fn code_block_source_locs(src: &str) -> Vec<String> {
+pub(crate) fn code_block_source_locs(src: &str, details_open: &[bool]) -> Vec<String> {
+    code_block_source_locs_inner(src, details_open, false)
+}
+
+/// `mermaid_is_code`: inside a GitHub alert the mermaid image pipeline does not run — the alert body is
+/// rendered by the shared text path, which draws a ```mermaid fence as an ordinary **code block**. The
+/// scanner has to agree, or a document with a diagram inside a note refuses every `y c` copy.
+fn code_block_source_locs_inner(
+    src: &str,
+    details_open: &[bool],
+    mermaid_is_code: bool,
+) -> Vec<String> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
+    let mut details_idx = 0usize;
     let mut i = 0;
     while i < lines.len() {
         let t = lines[i].trim_start();
+        // アラート本文は `>` を剥がした Markdown として描かれるので、中のフェンスも**画面では
+        // コードブロック**になる。剥がしてから同じ規則で拾わないと、画面のヘッダ数と合わず
+        // `y c` のコピーが(その文書の全ブロックで)拒否される。剥がした本文がそのままコピー内容。
+        if parse_alert_header(lines[i]).is_some() {
+            i += 1;
+            let mut body = String::new();
+            while i < lines.len() && is_blockquote_line(lines[i]) {
+                body.push_str(&strip_blockquote(lines[i]));
+                body.push('\n');
+                i += 1;
+            }
+            out.extend(code_block_source_locs_inner(&body, &[], true));
+            continue;
+        }
+        // `<details>` は**開いているブロックの本文だけ**が描かれる(閉じていれば中のフェンスは
+        // 画面に出ない)。開閉は実行時状態なので呼び出し側から受け取る。
+        if let Some(open_attr) = details_open_tag(lines[i]) {
+            let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
+            details_idx += 1;
+            i += 1;
+            let mut body = Vec::new();
+            while i < lines.len() && !is_details_close(lines[i]) {
+                body.push(lines[i]);
+                i += 1;
+            }
+            if i < lines.len() {
+                i += 1; // `</details>`
+            }
+            if open {
+                out.extend(code_block_source_locs_inner(
+                    &body.join("\n"),
+                    &[],
+                    mermaid_is_code,
+                ));
+            }
+            continue;
+        }
         let fence = if t.starts_with("```") {
             Some('`')
         } else if t.starts_with("~~~") {
@@ -1070,7 +1119,7 @@ pub(crate) fn code_block_source_locs(src: &str) -> Vec<String> {
         if i < lines.len() {
             i += 1; // closing fence
         }
-        if !is_mermaid {
+        if !is_mermaid || mermaid_is_code {
             out.push(body.join("\n"));
         }
     }
@@ -1092,10 +1141,11 @@ pub(crate) struct TaskLoc {
 /// to the next blank line) and GFM table blocks. This keeps the Nth checkbox on screen aligned
 /// with the Nth `TaskLoc`, so a toggle edits the right line. Pathological documents could still
 /// disagree — the caller cross-checks count and current state before writing.
-pub(crate) fn task_source_locs(src: &str, tasks: &[char]) -> Vec<TaskLoc> {
+pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool]) -> Vec<TaskLoc> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
     let mut fence: Option<char> = None;
+    let mut details_idx = 0usize;
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -1115,6 +1165,66 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char]) -> Vec<TaskLoc> {
         if t.starts_with("~~~") {
             fence = Some('~');
             i += 1;
+            continue;
+        }
+        // GitHub alert(`> [!NOTE]` …): 描画側(`split_alerts`→`render_alert`)は `>` を剥がした本文を
+        // 通常の Markdown として描くので、中のタスクは**画面ではチェックボックスになる**。
+        // ここでも同じように `>` を剥がして拾わないと、画面と個数が合わずトグルが全部中止される。
+        if parse_alert_header(line).is_some() {
+            i += 1;
+            while i < lines.len() && is_blockquote_line(lines[i]) {
+                let raw = lines[i];
+                let stripped = strip_blockquote(raw);
+                let body = stripped.trim_start();
+                if let Some(state) = task_prefix_state(body, tasks) {
+                    // `state_off` は**元の行**でのバイト位置。`>` 接頭辞ぶんを足して求める。
+                    let prefix = raw.len() - stripped.len();
+                    let indent = stripped.len() - body.len();
+                    out.push(TaskLoc {
+                        line: i,
+                        state_off: prefix + indent + 3,
+                        state,
+                    });
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // `<details>`: 描画側は**開いているブロックの本文だけ**を Markdown として描く(閉じていれば
+        // 本文は画面に出ない)。開閉状態は実行時なので呼び出し側から受け取り、閉じているブロックの
+        // 本文は数えない(数えると閉じた details を含む文書全体でトグルが中止される)。
+        if let Some(open_attr) = details_open_tag(line) {
+            // フォールバックは**レンダラと同じ**(`next_details_open`)＝タグの `open` 属性。
+            // 本番は呼び出し側が全ブロック分を渡すのでここには落ちてこないが、ズレたときに
+            // 描画と食い違わない側へ倒す。
+            let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
+            details_idx += 1;
+            i += 1;
+            let mut body = Vec::new();
+            while i < lines.len() && !is_details_close(lines[i]) {
+                body.push(i);
+                i += 1;
+            }
+            if i < lines.len() {
+                i += 1; // `</details>` を飛ばす
+            }
+            if open {
+                for &bi in &body {
+                    let raw = lines[bi];
+                    let bt = raw.trim_start();
+                    // `<summary>` 行は見出しとして描かれるのでタスクにならない。
+                    if bt.starts_with("<summary") {
+                        continue;
+                    }
+                    if let Some(state) = task_prefix_state(bt, tasks) {
+                        out.push(TaskLoc {
+                            line: bi,
+                            state_off: (raw.len() - bt.len()) + 3,
+                            state,
+                        });
+                    }
+                }
+            }
             continue;
         }
         if is_html_block_start(line) {
@@ -4184,7 +4294,7 @@ mod tests {
 - [/] custom
 本文 [ ] は対象外
 ";
-        let locs = task_source_locs(src, &[' ', '/', 'x']);
+        let locs = task_source_locs(src, &[' ', '/', 'x'], &[]);
         let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
         assert_eq!(
             got,
@@ -4208,7 +4318,7 @@ mod tests {
         // が `-` しか認識しないと、`*`/`+` タスクは描画されるのに再スキャンで見つからず、トグルの
         // 個数照合が外れて全トグルが「file changed on disk」でキャンセルされる(ユーザー報告 2026-07-22)。
         let src = "- [ ] dash\n* [ ] star\n+ [x] plus\n  * [ ] nested star\n";
-        let locs = task_source_locs(src, &[' ', 'x']);
+        let locs = task_source_locs(src, &[' ', 'x'], &[]);
         let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
         assert_eq!(
             got,
@@ -4461,7 +4571,7 @@ graph TD
 plain body
 ~~~
 ";
-        let blocks = code_block_source_locs(src);
+        let blocks = code_block_source_locs(src, &[]);
         assert_eq!(
             blocks,
             vec!["fn a() {}".to_string(), "plain body".to_string()],
@@ -5283,5 +5393,329 @@ plain body
         // A plain body line that merely starts with `▎` (fg None) is NOT a code line.
         let fake = Line::from(vec![Span::raw("▎ see https://x.com")]);
         assert!(!is_code_line(&fake), "plain ▎ text is not a code line");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod task_corpus {
+    /// Documents exercising every construct that the renderer treats specially, each paired with the
+    /// number of checkboxes a user actually sees. The whole point is that the *write-back scanner* must
+    /// agree with the *renderer* on this number for every one of them: when they disagree the safety
+    /// check cancels every toggle in the document ("file changed on disk"), so one stray construct
+    /// breaks an entire file. Instances are cheap to add here; the class is what is being pinned.
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("plain dash", "- [ ] a\n- [x] b\n"),
+            ("bullet star", "* [ ] a\n* [x] b\n"),
+            ("bullet plus", "+ [ ] a\n+ [x] b\n"),
+            ("upper X", "- [X] a\n"),
+            ("mixed bullets", "- [ ] a\n* [ ] b\n+ [x] c\n"),
+            ("nested two levels", "- [ ] a\n  - [ ] b\n    - [x] c\n"),
+            ("ordered list sibling", "1. plain\n2. also\n\n- [ ] task\n"),
+            ("heading between", "- [ ] a\n\n## H\n\n- [ ] b\n"),
+            ("alert NOTE", "> [!NOTE]\n> - [ ] a\n"),
+            ("alert TIP", "> [!TIP]\n> - [ ] a\n> - [x] b\n"),
+            ("alert IMPORTANT", "> [!IMPORTANT]\n> - [ ] a\n"),
+            ("alert WARNING", "> [!WARNING]\n> - [x] a\n"),
+            ("alert CAUTION", "> [!CAUTION]\n> - [ ] a\n"),
+            ("alert titled", "> [!NOTE] My title\n> - [ ] a\n"),
+            ("alert nested list", "> [!NOTE]\n> - [ ] a\n>   - [ ] b\n"),
+            ("alert then plain", "> [!NOTE]\n> - [ ] in\n\n- [ ] out\n"),
+            ("plain then alert", "- [ ] out\n\n> [!NOTE]\n> - [ ] in\n"),
+            ("two alerts", "> [!NOTE]\n> - [ ] a\n\n> [!TIP]\n> - [ ] b\n"),
+            ("plain blockquote", "> - [ ] quoted\n"),
+            (
+                "details closed",
+                "<details>\n<summary>S</summary>\n\n- [ ] hidden\n\n</details>\n",
+            ),
+            (
+                "details open",
+                "<details open>\n<summary>S</summary>\n\n- [ ] shown\n\n</details>\n",
+            ),
+            (
+                "details closed then plain",
+                "<details>\n<summary>S</summary>\n\n- [ ] hidden\n\n</details>\n\n- [ ] after\n",
+            ),
+            (
+                "details open then plain",
+                "<details open>\n<summary>S</summary>\n\n- [ ] shown\n\n</details>\n\n- [ ] after\n",
+            ),
+            ("fence backtick", "```\n- [ ] not a task\n```\n\n- [ ] real\n"),
+            ("fence tilde", "~~~\n- [ ] not a task\n~~~\n\n- [ ] real\n"),
+            (
+                "fence with language",
+                "```rust\n// - [ ] no\n```\n\n- [ ] real\n",
+            ),
+            (
+                "table then task",
+                "| a | b |\n|---|---|\n| 1 | 2 |\n\n- [ ] after table\n",
+            ),
+            ("html block then task", "<div>hi</div>\n\n- [ ] after html\n"),
+            ("inline code lookalike", "- [ ] real `- [ ] fake`\n"),
+            ("link in task", "- [ ] see [docs](./d.md)\n"),
+            ("cjk", "- [ ] 日本語のタスク\n- [x] 全角　スペース\n"),
+            ("emphasis in task", "- [ ] **bold** and *em*\n"),
+            ("no trailing newline", "- [ ] a\n- [x] b"),
+            ("crlf", "- [ ] a\r\n- [x] b\r\n"),
+            ("front matter", "---\ntitle: t\n---\n\n- [ ] a\n"),
+            ("footnote", "- [ ] a[^1]\n\n[^1]: note\n"),
+            ("empty doc", ""),
+            ("no tasks", "# just text\n\nparagraph\n"),
+            (
+                "everything",
+                "# Doc\n\n- [ ] top\n\n> [!NOTE] Heads up\n> - [ ] in alert\n> - [x] done\n\n\
+                 | a | b |\n|---|---|\n| 1 | 2 |\n\n```\n- [ ] fenced\n```\n\n\
+                 <details>\n<summary>More</summary>\n\n- [ ] collapsed\n\n</details>\n\n- [x] bottom\n",
+            ),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod task_scan_parity_tests {
+    use super::*;
+
+    /// Count the checkboxes actually drawn on screen (the sentinel marker spans the app counts).
+    pub(super) fn rendered_tasks(src: &str) -> usize {
+        set_details_open(Vec::new());
+        let lines = render_markdown_tasks(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+        );
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_task_span(s))
+            .count()
+    }
+
+    /// The write-back scanner must find **exactly** the checkboxes the renderer draws, for every
+    /// construct. When the two disagree the safety check in `md_tasks` cancels *every* toggle in the
+    /// document with "file changed on disk", so a single stray construct breaks the whole file.
+    ///
+    /// Regressions this pins: a task inside a GitHub alert (`> [!NOTE]`) is rendered as a checkbox —
+    /// the renderer strips the `>` — but the scanner matched only `-`/`*`/`+` at line start and found
+    /// none. A task inside a **collapsed** `<details>` was the mirror image: not drawn, but counted.
+    #[test]
+    fn scanner_counts_exactly_what_the_renderer_draws() {
+        for (name, src) in task_corpus::cases() {
+            set_details_open(Vec::new());
+            let drawn = rendered_tasks(src);
+            let scanned = task_source_locs(src, &[' ', 'x'], &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: 画面のチェックボックス数と書き戻しスキャナの数が食い違う\
+                 (この文書ではトグルが全部中止される)\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// Count the code-block headers actually drawn (the sentinel the app counts for `y c`).
+    fn rendered_code_blocks(src: &str) -> usize {
+        set_details_open(Vec::new());
+        let lines = render_markdown_tasks(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+        );
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_code_header_span(s))
+            .count()
+    }
+
+    /// `y c` (copy focused code block) resolves the source by **ordinal with a count guard**, exactly
+    /// like the checkbox toggle — so it has exactly the same failure mode: if the scanner and the
+    /// renderer disagree on how many code blocks a document has, every copy in that document is
+    /// refused ("code block copy unavailable"). A fence inside a `> [!NOTE]` alert was drawn but not
+    /// scanned; a fence inside a collapsed `<details>` was scanned but not drawn.
+    #[test]
+    fn code_block_scanner_counts_exactly_what_the_renderer_draws() {
+        let cases: &[(&str, &str)] = &[
+            ("plain fence", "```rust\nfn a(){}\n```\n"),
+            ("two fences", "```\na\n```\n\n```\nb\n```\n"),
+            ("tilde fence", "~~~\na\n~~~\n"),
+            ("in alert", "> [!NOTE]\n> ```rust\n> fn a(){}\n> ```\n"),
+            (
+                "alert then plain",
+                "> [!NOTE]\n> ```\n> in\n> ```\n\n```\nout\n```\n",
+            ),
+            (
+                "details closed",
+                "<details>\n<summary>S</summary>\n\n```\nhidden\n```\n\n</details>\n",
+            ),
+            (
+                "details open",
+                "<details open>\n<summary>S</summary>\n\n```\nshown\n```\n\n</details>\n",
+            ),
+            (
+                "mermaid is not a code block",
+                "```mermaid\nflowchart TD\nA-->B\n```\n\n```\nreal\n```\n",
+            ),
+            (
+                "fence with tasks around",
+                "- [ ] t\n\n```\ncode\n```\n\n- [x] u\n",
+            ),
+            // アラート内では mermaid 画像化が走らず**通常のコードブロック**として描かれる。
+            (
+                "mermaid inside an alert is a code block",
+                "> [!NOTE]\n> ```mermaid\n> flowchart TD\n> A-->B\n> ```\n",
+            ),
+            (
+                "mermaid in alert + plain fence",
+                "> [!NOTE]\n> ```mermaid\n> A-->B\n> ```\n\n```\nreal\n```\n",
+            ),
+        ];
+        for (name, src) in cases {
+            set_details_open(Vec::new());
+            let drawn = rendered_code_blocks(src);
+            let scanned = code_block_source_locs(src, &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: 画面のコードブロック数とコピー用スキャナの数が食い違う\
+                 (この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// The text handed to the clipboard for a fence inside an alert must be the **code**, with the
+    /// alert's `>` prefix removed — copying `> fn a(){}` would paste something that does not compile.
+    #[test]
+    fn alert_code_block_is_copied_without_the_quote_prefix() {
+        let src = "> [!NOTE]\n> ```rust\n> fn a() {}\n> let x = 1;\n> ```\n";
+        let blocks = code_block_source_locs(src, &[]);
+        assert_eq!(blocks.len(), 1, "アラート内のフェンスを1件拾う");
+        assert_eq!(
+            blocks[0], "fn a() {}\nlet x = 1;",
+            "`>` を剥がした素のコードがコピーされる"
+        );
+    }
+
+    /// Every located offset must point at the state character itself — inside an alert the `>` prefix
+    /// shifts every column, and a wrong offset would corrupt the line instead of toggling it.
+    #[test]
+    fn every_located_offset_points_at_its_state_char() {
+        for (name, src) in task_corpus::cases() {
+            let lines: Vec<&str> = src.lines().collect();
+            for loc in task_source_locs(src, &[' ', 'x'], &[]) {
+                let line = lines[loc.line];
+                assert!(
+                    line.is_char_boundary(loc.state_off),
+                    "{name}: state_off が文字境界でない: {line:?}"
+                );
+                assert_eq!(
+                    line[loc.state_off..].chars().next(),
+                    Some(loc.state),
+                    "{name}: state_off が状態文字を指していない: {line:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fence_and_math_extraction_tests {
+    use super::*;
+
+    /// Both consumers of the mermaid fence list — the render pass that places the diagrams and
+    /// `App::mermaid_fence_code`, which re-reads the file when you press Enter to open one full screen
+    /// — index into `collect_mermaid_fences` by ordinal. They agree by construction (one function), so
+    /// what has to be pinned is the **extraction contract itself**: change it on one side of a release
+    /// and Enter silently opens a different diagram.
+    #[test]
+    fn mermaid_fence_extraction_is_source_ordered_and_stable() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("single", "```mermaid\nA-->B\n```\n", &["A-->B\n"]),
+            (
+                "two in order",
+                "```mermaid\nfirst\n```\n\ntext\n\n```mermaid\nsecond\n```\n",
+                &["first\n", "second\n"],
+            ),
+            (
+                "non-mermaid fences are skipped",
+                "```rust\nfn a(){}\n```\n\n```mermaid\ndiagram\n```\n",
+                &["diagram\n"],
+            ),
+            (
+                "info string with attributes",
+                "```mermaid theme=dark\nbody\n```\n",
+                &["body\n"],
+            ),
+            ("tilde fence", "~~~mermaid\ntilde\n~~~\n", &["tilde\n"]),
+            ("unterminated is dropped", "```mermaid\nno close\n", &[]),
+            ("empty body", "```mermaid\n```\n", &[""]),
+            (
+                "multi-line body kept verbatim",
+                "```mermaid\nflowchart TD\n  A-->B\n```\n",
+                &["flowchart TD\n  A-->B\n"],
+            ),
+            (
+                "inside an alert: not image-ized, so not listed",
+                "> [!NOTE]\n> ```mermaid\n> A-->B\n> ```\n",
+                &[],
+            ),
+        ];
+        for (name, src, want) in cases {
+            let got = collect_mermaid_fences(src);
+            assert_eq!(
+                got,
+                want.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                "{name}: mermaid フェンスの抽出結果が期待と違う\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// The math list is indexed the same way (each expression becomes an inline image keyed by its
+    /// ordinal), so its extraction contract gets the same treatment — including the cases that must
+    /// **not** be treated as math, because a false positive silently replaces text with a picture.
+    #[test]
+    fn math_extraction_covers_delimiters_and_rejects_lookalikes() {
+        let display = |s: &str| (s.to_string(), true);
+        let inline = |s: &str| (s.to_string(), false);
+        // (name, source, expected expressions as (latex, is_display))
+        type MathCase = (&'static str, &'static str, Vec<(String, bool)>);
+        let cases: &[MathCase] = &[
+            ("inline dollars", "a $x+1$ b\n", vec![inline("x+1")]),
+            ("display same line", "$$x+1$$\n", vec![display("x+1")]),
+            (
+                "display on its own lines",
+                "$$\n x+1\n$$\n",
+                vec![display("x+1")],
+            ),
+            // 既知の制限: 開き `$$` と同じ行に本文が始まり、閉じが次行にある「密着形」は数式として
+            // 扱わず生の LaTeX のまま表示する(壊すのでなく素通し=原則#3)。変えるなら意図的に。
+            (
+                "display tight form is not math (known limit)",
+                "$$x+1\n$$\n",
+                vec![],
+            ),
+            ("inline paren", "a \\(y\\) b\n", vec![inline("y")]),
+            ("display bracket", "\\[z\\]\n", vec![display("z")]),
+            (
+                "two inline",
+                "$a$ and $b$\n",
+                vec![inline("a"), inline("b")],
+            ),
+            ("currency is not math", "costs $5 and $7 today\n", vec![]),
+            ("escaped dollar", "\\$not math\\$\n", vec![]),
+            ("inside inline code", "`$x$`\n", vec![]),
+            ("inside a fence", "```\n$x$\n```\n", vec![]),
+            ("empty is not math", "$$\n", vec![]),
+        ];
+        for (name, src, want) in cases {
+            let got = collect_math_exprs(src);
+            assert_eq!(
+                &got, want,
+                "{name}: 数式抽出が期待と違う\n--- src ---\n{src}"
+            );
+        }
     }
 }

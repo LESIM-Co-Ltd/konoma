@@ -7,10 +7,43 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Checkboxes inside a `> [!NOTE]` alert can be toggled, and no longer break the whole document.**
+  The renderer strips the `>` and draws an alert's body as normal Markdown, so its task list appears as
+  real checkboxes — but the scanner that writes a toggle back only matched lines beginning with
+  `-`/`*`/`+` and never found them. The counts disagreed, so the safety check cancelled **every** toggle
+  in the file with "file changed on disk — reloaded", including the plain checkboxes outside the alert.
+  A task inside a **collapsed** `<details>` was the mirror image: not drawn, but counted. The scanner now
+  follows the same block rules as the renderer (alert bodies with the `>` stripped; a `<details>` body
+  only while it is open).
+
+  This is the third time the same class of bug has surfaced (the first was `*` and `+` bullets in
+  0.18.1), so the tests now pin the **class**: a 40-document corpus covering every construct the
+  renderer treats specially asserts that the scanner finds exactly the checkboxes the renderer draws;
+  a second pass toggles **every** checkbox in **every** corpus document through the real preview
+  pipeline and asserts the write is byte-exact — one state character flips, the target is the Nth box
+  in the source, no other box moves, and CRLF and a missing trailing newline survive; and end-to-end
+  tests drive the real keys (Tab/Space) over documents mixing plain, alert and collapsed-`<details>`
+  checkboxes. Reverting any of the three fixes (bullets, alerts, details) turns several of them red.
+- **Copying a code block (`y c`) works in documents containing an alert or a collapsed `<details>`.**
+  The copy resolves the source by ordinal with the same count guard as the checkbox toggle, and had the
+  same defect: a fence inside a `> [!NOTE]` was drawn but never scanned, and a fence inside a collapsed
+  `<details>` was scanned but never drawn — so **every** copy in such a document was refused with
+  "code block copy unavailable". A fence inside an alert now also copies the code itself, without the
+  `>` quote prefix that would have been pasted before. (A ```mermaid fence inside an alert is not
+  turned into a diagram — the alert body goes through the plain text path — so it is treated as an
+  ordinary code block, and the scanner agrees.)
 - **Leaving a git repository for an ordinary directory now drops that repository's ignore set.** The
   "already computing" guard compared the pending workdir with the target workdir, and for a non-repo
   root **both are `None`**, so the guard always fired and the clearing branch was never reached — the
   previous repository's ignored paths stayed applied to an unrelated tree.
+
+### Tests
+- Pinned the extraction contracts that are indexed **by ordinal**, since a drift there is silent and
+  total: the mermaid fence list (both the render pass and "open this diagram full screen" index into
+  it), the math expression list (including the look-alikes that must *not* become pictures — currency,
+  escaped dollars, code), and the alignment between link spans and their targets across inline,
+  reference, autolink, table-cell, alert, anchor and CJK forms (a drift there would make every link in
+  a document open the wrong place while looking correct).
 
 ### Changed
 - **Switching tabs in a git repository no longer waits for `git status`.** The whole-worktree scan is

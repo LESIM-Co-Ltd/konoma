@@ -4365,3 +4365,180 @@ fn e2e_fileop_create_targets_cursor_file_parent() {
     assert!(!dir.join("made.txt").exists());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The user-facing shape of the alert regression: a document that mixes plain checkboxes with a
+/// checklist inside a `> [!NOTE]`, driven by **real keystrokes**. Before the fix every Space in this
+/// document — including on the plain checkboxes outside the alert — was refused with
+/// "file changed on disk — reloaded (toggle cancelled)" because the write-back scanner never saw the
+/// alert's tasks and so disagreed with the screen about how many there were.
+#[test]
+fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
+    let dir = sandbox("md_task_alert");
+    let body = "# Checklist\n\n- [ ] plain one\n\n> [!NOTE]\n> - [ ] inside alert\n> - [ ] second in alert\n\n- [ ] after alert\n";
+    std::fs::write(dir.join("todo.md"), body).unwrap();
+    let mut s = Sim::with_config(&canon(&dir), Config::default());
+    s.select("todo.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
+
+    // 1つ目(アラート外)。
+    s.tab();
+    s.key(' ');
+    assert!(read().contains("- [x] plain one"), "外側1: {}", read());
+    s.dont_see("file changed on disk");
+
+    // 2つ目・3つ目(アラート内) — ここが以前は全く効かなかった。
+    s.tab();
+    s.key(' ');
+    assert!(
+        read().contains("> - [x] inside alert"),
+        "アラート内1: {}",
+        read()
+    );
+    s.tab();
+    s.key(' ');
+    assert!(
+        read().contains("> - [x] second in alert"),
+        "アラート内2: {}",
+        read()
+    );
+
+    // 4つ目(アラートの後ろ) — 序数がアラートを跨いでもズレない。
+    s.tab();
+    s.key(' ');
+    assert!(read().contains("- [x] after alert"), "外側2: {}", read());
+    s.dont_see("file changed on disk");
+
+    // 他の行は壊れていない(見出し・アラートヘッダは不変)。
+    let out = read();
+    assert!(
+        out.contains("# Checklist") && out.contains("> [!NOTE]"),
+        "{out}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Custom `ui.md_task_states` must cycle inside an alert too — the state char is written back through
+/// the same path, and the alert's `>` prefix shifts every column on the line.
+#[test]
+fn e2e_task_custom_states_cycle_inside_an_alert() {
+    let dir = sandbox("md_task_alert_states");
+    std::fs::write(dir.join("todo.md"), "> [!TIP]\n> - [ ] cycle me\n").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.md_task_states = vec![" ".into(), "/".into(), "x".into()];
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("todo.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
+    s.tab();
+    for want in ["> - [/] cycle me", "> - [x] cycle me", "> - [ ] cycle me"] {
+        s.key(' ');
+        assert!(read().contains(want), "期待 {want}: {}", read());
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A collapsed `<details>` hides its checkboxes, so Space on the visible ones must still work: the
+/// scanner must not count the hidden ones (it used to, which cancelled every toggle in the file).
+#[test]
+fn e2e_task_toggle_works_with_a_collapsed_details_block() {
+    let dir = sandbox("md_task_details");
+    std::fs::write(
+        dir.join("todo.md"),
+        "- [ ] visible\n\n<details>\n<summary>Hidden</summary>\n\n- [ ] collapsed\n\n</details>\n",
+    )
+    .unwrap();
+    let mut s = Sim::with_config(&canon(&dir), Config::default());
+    s.select("todo.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
+    s.tab(); // 折りたたみ見出しか可視タスクのいずれか
+    s.key(' ');
+    let out = read();
+    assert!(
+        out.contains("- [x] visible") || out.contains("- [ ] collapsed"),
+        "可視タスクがトグルできる(全キャンセルされない): {out}"
+    );
+    s.dont_see("file changed on disk");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Link spans and their targets are produced by two passes — `collapse_links` rewrites the rendered
+/// spans, and the item list zips the Nth link span with the Nth collected target. If the two ever fall
+/// out of step **every** link in the document points somewhere else (Enter opens the wrong file), and
+/// nothing on screen looks wrong. This walks a corpus of every link form konoma renders and asserts the
+/// Nth focusable link carries exactly the Nth URL in document order.
+#[test]
+fn e2e_link_targets_stay_aligned_with_document_order() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "inline",
+            "[a](./a.md) and [b](./b.md)\n",
+            &["./a.md", "./b.md"],
+        ),
+        (
+            "with title",
+            "[a](./a.md \"T\") [b](./b.md)\n",
+            &["./a.md", "./b.md"],
+        ),
+        (
+            "reference style",
+            "[a][r1] [b][r2]\n\n[r1]: ./a.md\n[r2]: ./b.md\n",
+            &["./a.md", "./b.md"],
+        ),
+        (
+            "autolink angle",
+            "<https://x.example/1> then [b](./b.md)\n",
+            &["https://x.example/1", "./b.md"],
+        ),
+        (
+            "bare url autolinked",
+            "see https://x.example/2 and [b](./b.md)\n",
+            &["https://x.example/2", "./b.md"],
+        ),
+        (
+            "url inside code is not a link",
+            "`https://x.example/no` but [b](./b.md)\n",
+            &["./b.md"],
+        ),
+        (
+            "url inside a fence is not a link",
+            "```\nhttps://x.example/no\n```\n\n[b](./b.md)\n",
+            &["./b.md"],
+        ),
+        (
+            "link inside a table cell",
+            "| a | b |\n|---|---|\n| [x](./x.md) | [y](./y.md) |\n",
+            &["./x.md", "./y.md"],
+        ),
+        (
+            "link inside an alert",
+            "> [!NOTE]\n> [in](./in.md)\n\n[out](./out.md)\n",
+            &["./in.md", "./out.md"],
+        ),
+        (
+            "heading anchor plus file",
+            "[h](#section) [f](./f.md)\n",
+            &["#section", "./f.md"],
+        ),
+        (
+            "cjk label",
+            "[日本語のリンク](./ja.md) [b](./b.md)\n",
+            &["./ja.md", "./b.md"],
+        ),
+        (
+            "emphasis around link",
+            "**[bold](./x.md)** and *[em](./y.md)*\n",
+            &["./x.md", "./y.md"],
+        ),
+    ];
+    for (name, body, want) in cases {
+        let (s, dir) = md_preview(cfg_code_bg_none(), "links", body);
+        assert_eq!(
+            s.app.md_link_targets(),
+            want.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            "{name}: リンクの並び/対応がソース順とズレている(Enter が別の宛先を開く)\n--- src ---\n{body}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

@@ -6383,7 +6383,14 @@ impl App {
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
             .count();
         let src = std::fs::read_to_string(self.preview_path.as_ref()?).ok()?;
-        let blocks = crate::preview::markdown::code_block_source_locs(&src);
+        // `<details>` の開閉は描画時の実効状態(md_cache が保持)。渡さないと閉じたブロック内の
+        // フェンスまで数えて個数ガードが外れる。
+        let details_states: Vec<bool> = self
+            .md_cache
+            .as_ref()
+            .map(|c| c.details_states.clone())
+            .unwrap_or_default();
+        let blocks = crate::preview::markdown::code_block_source_locs(&src, &details_states);
         // 画面上のヘッダ数とソースのブロック数が一致するときだけ信頼して写す。
         (blocks.len() == total)
             .then(|| blocks.get(ordinal).cloned())
