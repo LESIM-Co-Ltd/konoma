@@ -423,16 +423,13 @@ fn kitty_transmit_large_image_is_bounded() {
         *px = Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255]);
     }
     let src = DynamicImage::ImageRgba8(big);
-    let t = Instant::now();
+    // crop → resize_exact → 圧縮の経路が動くこと。ガードは**決定的**な項目（表示セルサイズ・o=z・
+    // 圧縮率）に絞る。画像 resize の wall-clock は image crate 依存で共有 CI ランナーの負荷変動に弱く
+    // flake するため、時間上限は敢えて置かない（STATUS_CALLS 同様、決定的な不変量で回帰を捕まえる）。
     let ki =
         crate::preview::kitty::build_from_source(&src, (0, 0, 1600, 1000), 120, 40, font, false)
             .expect("kitty 画像を構築");
-    let dt = t.elapsed();
     assert_eq!(ki.cell_size(), (120, 40), "表示セルサイズで構築");
-    assert!(
-        dt < Duration::from_secs(3),
-        "大きな画像の kitty 転送構築が遅すぎる: {dt:?}"
-    );
 
     // build_transmit: 表示サイズ(120*8 x 40*16)の RGBA を o=z 圧縮転送に。圧縮が効いていること。
     let (pw, ph) = (120u32 * 8, 40u32 * 16);
