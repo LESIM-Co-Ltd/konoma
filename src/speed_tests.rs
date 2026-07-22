@@ -156,3 +156,77 @@ fn decode_gif_sample_is_bounded() {
         "sample.gif のデコードが遅すぎる: {dt:?}"
     );
 }
+
+// GUARDS: refresh_git_if_needed must NOT re-run `git status` (a whole-worktree scan) on every
+// `h`/`l` root change within the same repo — the per-workdir cache reuses it. Asserted by counting
+// actual `git::statuses` calls (deterministic): a lost cache re-scans on every move, which measured
+// ~2.1s for 40 moves on this repo vs ~3ms reused. (A wall-clock-only bound flakes on git's warm/cold
+// timing, so the call count is the primary guard.)
+#[cfg(feature = "git")]
+#[test]
+#[ignore] // 重い(多数ファイルの git リポジトリを作る)。cargo test -- --ignored で実行。
+fn same_repo_navigation_does_not_rescan_git_status() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_speed_status_cache");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    // 多数ファイル = 1 回の `git status` スキャンが測定可能な時間になる。
+    for i in 0..4000 {
+        std::fs::write(dir.join(format!("f{i:04}.txt")), b"x\n").unwrap();
+    }
+    let repo = git2::Repository::init(&dir).unwrap();
+    {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "T").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+        c.set_str("commit.gpgsign", "false").ok();
+    }
+    let git = |a: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(a)
+            .output()
+            .unwrap();
+    };
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    for i in 0..200 {
+        std::fs::write(dir.join(format!("f{i:04}.txt")), b"y\n").unwrap(); // 変更 = status 非空
+    }
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed(); // 初回スキャンでキャッシュ確立(タイマ外)。
+    assert!(
+        app.git_has_changes(),
+        "変更が status に反映(スキャンが走った)"
+    );
+
+    // **決定的な**ガード: 同一 repo 内で root を 40 回往復しても `git::statuses`(全 worktree の
+    // スキャン)を1回も呼び直さない(workdir キャッシュ流用)。wall-clock 比較は git のウォーム/
+    // コールド差でブレて回帰を見逃す(実測: キャッシュ喪失時は 40 スキャン=約2.1s、流用時は約3ms)
+    // ので、実呼び出し回数で判定する。
+    crate::git::STATUS_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let t = Instant::now();
+    for i in 0..40 {
+        app.root = if i % 2 == 0 {
+            root.join("sub")
+        } else {
+            root.clone()
+        };
+        app.refresh_git_if_needed();
+    }
+    let dt = t.elapsed();
+
+    assert_eq!(
+        crate::git::STATUS_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "同一 repo の 40 往復で git status を再スキャンした(workdir キャッシュ喪失)"
+    );
+    // 参考の緩い上限(スキャンが40回走れば秒単位=必ず超える)。
+    assert!(
+        dt < Duration::from_secs(1),
+        "同一 repo 往復が遅すぎる: {dt:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

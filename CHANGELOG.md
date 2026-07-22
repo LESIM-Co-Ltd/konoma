@@ -6,6 +6,22 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **`h`/`l` navigation is no longer slow in large git repos.** Moving the root with `h`/`l` re-ran a
+  full `git status` (a whole-worktree scan) every time — 0.3 s+ on a large repo, on every keypress.
+  But `git status` is run from the repo's working directory, so its result is identical anywhere in
+  the same repo; it is now cached per working directory and reused across `h`/`l` (the same treatment
+  the heavy ignore-set already had). Status stays correct: a working-file change, a commit or
+  checkout (the `.git` directory is now also watched when the tree root is a subdirectory, so
+  external git operations are seen), switching tabs, or returning to the tree all re-verify it.
+
+### Changed
+- **Zooming and panning a full-screen image no longer hitches.** The resize + compression for the
+  kitty transfer (~50 ms) now runs on a worker thread instead of the render thread, so rapid `+`/`-`
+  and `hjkl` stay responsive — the current image keeps showing until the sharper one for the new
+  zoom/pan arrives (latest-wins). The very first frame when a file opens still builds synchronously
+  so the image appears at once. Idle CPU stays at zero.
+
 ## [0.17.0] - 2026-07-21
 
 ### Added

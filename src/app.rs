@@ -437,6 +437,16 @@ pub struct MediaResult {
     payload: Option<MediaPayload>,
 }
 
+/// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
+type KittyGeom = ((u32, u32, u32, u32), u16, u16);
+
+/// Result of an async kitty image build (resize + `o=z` compress) from a worker thread. Matched by
+/// `gen` (latest-wins): a build superseded by a newer zoom/pan is discarded. None = build failed.
+pub struct KittyResult {
+    gen: u64,
+    image: Option<crate::preview::kitty::KittyImage>,
+}
+
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
     /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
@@ -674,9 +684,23 @@ pub struct App {
     kitty_is_tmux: bool,
     /// The prepared compressed image for the current crop (None until built / on non-kitty terminals).
     kitty_image: Option<crate::preview::kitty::KittyImage>,
+    /// Offloads the kitty resize+compress (~30–50 ms) to a worker thread so rapid zoom/pan does not
+    /// hitch the UI. The **first** build after opening a file stays synchronous (so the image appears
+    /// without a blank frame); subsequent rebuilds (zoom/pan/resize) go async and the previous image
+    /// keeps showing until the new one arrives. None in tests → everything runs synchronously.
+    kitty_tx: Option<std::sync::mpsc::Sender<KittyResult>>,
+    /// Latest-wins generation for async kitty builds: only the newest spawn's result is applied.
+    kitty_gen: u64,
+    /// The (crop, cols, rows) the current kitty image (or in-flight build) targets. Prevents
+    /// re-spawning the same build every frame while the geometry is unchanged.
+    kitty_want: Option<KittyGeom>,
+    /// The geometry the **currently shown** kitty image was actually built for. A build is in flight
+    /// exactly when this differs from `kitty_want` (covers pan, where the cell size is unchanged).
+    kitty_shown: Option<KittyGeom>,
     /// The source image (decoded). Zoom/pan crops this at render time and rebuilds the protocol
-    /// (because ratatui-image has no offset pan).
-    image_src: Option<image::DynamicImage>,
+    /// (because ratatui-image has no offset pan). Held in an `Arc` so the async kitty-build worker
+    /// can share it without copying the (potentially large) pixels.
+    image_src: Option<std::sync::Arc<image::DynamicImage>>,
     /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
     pub image_zoom: f64,
     /// Display center (image-normalized coordinates [0,1]). Moved by pan. Default is the center.
@@ -818,8 +842,15 @@ pub struct App {
     /// Since it is a heavy computation, it is cached **per repo (workdir)** (`git_ignored_for`), so moving root to a
     /// subdirectory within the same repository does not rebuild it.
     git_ignored: std::collections::HashSet<PathBuf>,
-    /// The root at which `git_status`/`git_branch` were computed. If it differs from the current root, a (cheap) re-fetch is needed.
+    /// The root at which `git_status`/`git_branch` were computed. If it differs from the current root, a re-fetch is *considered* (but see `git_status_workdir`).
     git_status_for: Option<PathBuf>,
+    /// The **repo workdir** `git_status`/`git_branch` cover. `git status` is run from the workdir, so its
+    /// result is identical anywhere within the same repo — moving root with `l`/`h` reuses it instead of
+    /// re-running a full worktree scan (slow on large repos). Same idea as `git_ignored_for` for the ignore set.
+    git_status_workdir: Option<PathBuf>,
+    /// The cached `git_status` may be stale (a file changed, a commit/checkout happened, ignore rules
+    /// changed): force a recompute on the next `refresh_git_if_needed` even if the workdir is unchanged.
+    git_status_dirty: bool,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -1278,6 +1309,10 @@ impl App {
             use_kitty: false,
             kitty_is_tmux: false,
             kitty_image: None,
+            kitty_tx: None,
+            kitty_gen: 0,
+            kitty_want: None,
+            kitty_shown: None,
             image_src: None,
             image_zoom: 1.0,
             image_center: (0.5, 0.5),
@@ -1335,6 +1370,8 @@ impl App {
             git_status: std::collections::HashMap::new(),
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
+            git_status_workdir: None,
+            git_status_dirty: false,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,
@@ -3075,6 +3112,24 @@ impl App {
         p.parent().map(|d| d.to_path_buf())
     }
 
+    /// The repo's `.git` directory to watch **non-recursively** when the tree root is a *subdirectory*
+    /// of the repo (so the parent `.git` sits above `root` and is not covered by the recursive root
+    /// watch). Without this, an external git op that touches only `.git` (a commit of already-staged
+    /// files, an external checkout) fires no event under the subdir, so the cached `git status` /
+    /// branch would linger stale — the per-workdir status cache no longer re-verifies on `h`/`l`.
+    /// `.git/index` and `.git/HEAD` are direct children, so a non-recursive watch catches the signals
+    /// that change status/branch. Returns None when root *is* the repo root (`.git` already watched)
+    /// or outside any repo. konoma's own reads are lock-free (`--no-optional-locks`), so this does not
+    /// create a self-feedback loop.
+    pub fn git_dir_watch(&self) -> Option<PathBuf> {
+        let wd = crate::git::workdir(&self.root)?;
+        if self.root == wd {
+            return None; // root is the repo root → `.git` is already under the recursive watch
+        }
+        let git = wd.join(".git");
+        git.is_dir().then_some(git)
+    }
+
     /// Whether in windowed (large file) mode. Used for the render and scroll branching.
     pub fn is_windowed(&self) -> bool {
         self.preview_win.is_some()
@@ -3348,7 +3403,10 @@ impl App {
         // the next render's `refresh_git_if_needed` refetch the cheap statuses+branch (the heavy
         // `ignored` set is kept, since the repo is unchanged) — so returning to the tree always shows
         // fresh markers, instead of a stale change marker until you navigate across a directory (`h`/`l`).
+        // Mark dirty too, so the per-workdir status cache (reused across `h`/`l` in the same repo) is
+        // bypassed for this deliberate re-verify — otherwise the stale markers would linger.
         self.git_status_for = None;
+        self.git_status_dirty = true;
         // Same seam re-verification for the detail columns: their cells are cached per tree
         // generation (Phase G) and a missed fs event would otherwise pin stale size/mtime until
         // the next rebuild. Dropping here keeps them as robust as the git markers.
@@ -3402,6 +3460,11 @@ impl App {
     fn clear_image(&mut self) {
         self.image = None;
         self.kitty_image = None;
+        // Discard any in-flight kitty build from the file we are leaving (gen bump) and clear the
+        // wanted geometry so the next image triggers a fresh (synchronous first) build.
+        self.kitty_gen = self.kitty_gen.wrapping_add(1);
+        self.kitty_want = None;
+        self.kitty_shown = None;
         self.image_src = None;
         self.image_zoom = 1.0;
         self.image_center = (0.5, 0.5);
@@ -3961,6 +4024,12 @@ impl App {
     /// Attach the sending end that offloads heavy media loading (SVG/GIF) to a separate thread.
     pub fn attach_media_loader(&mut self, tx: std::sync::mpsc::Sender<MediaResult>) {
         self.media_tx = Some(tx);
+    }
+
+    /// Attach the sender that offloads the kitty resize+compress (zoom/pan) to a worker thread.
+    /// Without it (tests), kitty builds run synchronously.
+    pub fn attach_kitty_loader(&mut self, tx: std::sync::mpsc::Sender<KittyResult>) {
+        self.kitty_tx = Some(tx);
     }
 
     /// Attach the sender that offloads inline Markdown image decoding to a background thread.
@@ -4567,8 +4636,15 @@ impl App {
     /// zoom/center are left untouched (enter_preview has the preceding clear_image set defaults, and tab restore has already
     /// overwritten them with the restored values; so that a late asynchronous result does not break the restored zoom/center).
     fn set_static_image(&mut self, img: image::DynamicImage) {
-        self.image_src = Some(img);
+        self.image_src = Some(std::sync::Arc::new(img));
         self.image_crop = None; // 次の描画(prepare_image)でプロトコルを構築させる
+                                // kitty 経路の「再ビルドせよ」合図。ズームでなく**ピクセルだけ差し替わる**(PDF ページ送り /
+                                // 動画の再サムネ)経路は crop も表示セルも不変=`kitty_want` が変わらず、前ラスタが居残る。
+                                // ここで want/shown を無効化し在り得る in-flight を陳腐化(gen bump)＝差し替えは必ず再ビルドされる。
+                                // (SVG reraster は crop_rect 変化で別途再ビルドされ、fresh/reload は clear_image 経由で二重でも無害。)
+        self.kitty_gen = self.kitty_gen.wrapping_add(1);
+        self.kitty_want = None;
+        self.kitty_shown = None;
     }
 
     /// Common processing to set all GIF frames into the display state (used from both the synchronous and asynchronous paths).
@@ -5226,19 +5302,16 @@ impl App {
         )?;
         let crop_changed = self.image_crop != Some(crop_rect);
         if self.use_kitty {
-            // konoma-native compressed transmit. Rebuild when the crop OR the display cell size
-            // changes; on a static image at a fixed terminal size this runs once (open), then every
-            // frame just re-emits cheap placeholders. The cell-size check matters because at fit zoom
-            // a **terminal resize** changes the display area without changing the crop — ratatui-image
-            // re-encodes on area change internally, so konoma's path must too or the image would keep
-            // its pre-resize size until the next zoom/pan.
-            let size_changed = self
-                .kitty_image
-                .as_ref()
-                .is_none_or(|k| k.cell_size() != (target.width, target.height));
-            if crop_changed || size_changed {
-                let built = self.build_kitty_image(crop_rect, target, picker.font_size());
-                self.kitty_image = built; // None = build failed → render falls back safely
+            // konoma-native compressed transmit. Request a rebuild only when the wanted geometry —
+            // the crop (zoom/pan) or the display cell size (a terminal resize at fit) — changes;
+            // otherwise the current/in-flight image already targets it, so a static image just
+            // re-emits cheap placeholders every frame. The cell-size part matters because at fit zoom
+            // a resize changes the area without the crop, and ratatui-image re-encodes on area change
+            // internally, so konoma's path must too.
+            let want = (crop_rect, target.width, target.height);
+            if self.kitty_want != Some(want) {
+                self.kitty_want = Some(want);
+                self.request_kitty_build(crop_rect, target, picker.font_size());
             }
         } else {
             // ratatui-image path (sixel/iterm2/halfblocks, or kitty when disabled): rebuild the
@@ -5264,37 +5337,73 @@ impl App {
         Some(target)
     }
 
-    /// Crop, resize to the display cell area at native font resolution, and build the compressed
-    /// (`o=z`) kitty image. Runs on the render thread only when the crop changes (open / zoom / pan),
-    /// so its ~30–50 ms cost is not paid per frame. Returns None if there is no image or the target
-    /// is empty (render then falls back safely).
-    fn build_kitty_image(
-        &self,
+    /// Build the compressed kitty image for the given crop/target. The **first** build after opening
+    /// a file (or after a failure left `kitty_image` None) runs synchronously so the image appears
+    /// without a blank frame. Subsequent builds (zoom/pan/resize) run on a worker thread so rapid
+    /// input does not hitch — the previous image keeps showing until the new one arrives (`apply_kitty`).
+    /// With no `kitty_tx` (tests), everything runs synchronously.
+    fn request_kitty_build(
+        &mut self,
         crop_rect: (u32, u32, u32, u32),
         target: Rect,
         font: ratatui_image::FontSize,
-    ) -> Option<crate::preview::kitty::KittyImage> {
-        let src = self.image_src.as_ref()?;
+    ) {
+        let Some(src) = self.image_src.clone() else {
+            return; // no source yet → render falls back
+        };
         let (cols, rows) = (target.width, target.height);
-        if cols == 0 || rows == 0 {
-            return None;
+        let is_tmux = self.kitty_is_tmux;
+        // Every build bumps the generation so a stale async result is discarded by `apply_kitty`.
+        self.kitty_gen = self.kitty_gen.wrapping_add(1);
+
+        // Synchronous: the very first build (nothing to show yet) or when there is no worker channel.
+        if self.kitty_image.is_none() || self.kitty_tx.is_none() {
+            self.kitty_image = crate::preview::kitty::build_from_source(
+                &src, crop_rect, cols, rows, font, is_tmux,
+            );
+            self.kitty_shown = self.kitty_want; // now showing the wanted geometry
+            return;
         }
-        // Native resolution: one image pixel per screen pixel = cols/rows cells × the font cell size.
-        let px_w = u32::from(cols) * u32::from(font.width.max(1));
-        let px_h = u32::from(rows) * u32::from(font.height.max(1));
-        let (x0, y0, cw, ch) = crop_rect;
-        let crop = src.crop_imm(x0, y0, cw, ch);
-        let resized = crop
-            .resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3)
-            .to_rgba8();
-        let id = crate::preview::kitty::next_id();
-        Some(crate::preview::kitty::KittyImage::build(
-            &resized,
-            cols,
-            rows,
-            id,
-            self.kitty_is_tmux,
-        ))
+
+        // Async: keep the previous image visible; the newest spawn's result wins.
+        let tx = self.kitty_tx.clone().unwrap();
+        let gen = self.kitty_gen;
+        std::thread::spawn(move || {
+            // A pathological image must not kill the worker (else nothing is ever sent and the
+            // previous image lingers); catch and report a failed build instead.
+            let image = crate::preview::markdown::catch_silent(move || {
+                crate::preview::kitty::build_from_source(&src, crop_rect, cols, rows, font, is_tmux)
+            })
+            .flatten();
+            let _ = tx.send(KittyResult { gen, image });
+        });
+    }
+
+    /// Apply a completed async kitty build. Stale results (superseded by a newer zoom/pan) and failed
+    /// builds are dropped, keeping whatever image is currently shown rather than blanking it.
+    pub fn apply_kitty(&mut self, result: KittyResult) -> bool {
+        if result.gen != self.kitty_gen {
+            return false; // superseded by a newer geometry
+        }
+        // Either way the newest generation has now settled — mark the wanted geometry as shown so
+        // `kitty_build_pending()` clears. Otherwise a failed build (None) would leave it stuck true,
+        // spinning the run loop at 16 ms forever (until the next geometry change). On failure the
+        // previous image simply stays; on success we swap in the new one.
+        self.kitty_shown = self.kitty_want;
+        match result.image {
+            Some(ki) => {
+                self.kitty_image = Some(ki);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether an async kitty build is in flight: the wanted geometry differs from what is shown.
+    /// Covers pan (same cell size, different crop). The run loop polls faster while this is true so
+    /// the result is picked up promptly.
+    pub fn kitty_build_pending(&self) -> bool {
+        self.use_kitty && self.kitty_want != self.kitty_shown
     }
 
     /// Whether still images are drawn via konoma's own compressed kitty transmit (kitty terminal).
@@ -6692,6 +6801,11 @@ impl App {
         // (root が変われば次の描画の refresh_git_if_needed が workdir 単位キャッシュで面倒を見る＝
         // 巨大 repo の性能対策[[git-watch-feedback-loop-perf]]を壊さない)。プレビューの表示位置は
         // reload_preview が保持する(スクロール/ズーム/テーブルカーソル)。
+        // タブは背面に居た間 fs 監視の対象外なので、そのタブの git status は外部変更を取りこぼして
+        // いる可能性がある(同一 repo の別タブなら workdir 単位キャッシュで流用され陳腐化が居残る)。
+        // 切替=再検証の節目として dirty を立て、次の描画の refresh_git_if_needed に取り直させる
+        // (back_to_tree と同型。h/l 連打は dirty を立てないので最適化は保たれる)。
+        self.git_status_dirty = true;
         let _ = self.refresh_fs(false);
     }
 

@@ -560,17 +560,29 @@ impl App {
     /// **heavy `ignored` (~800ms on large repos) is offloaded to a separate thread** (the "don't block the UI" principle). Rendering stays responsive, and
     /// only the dimming based on ignore rules appears after the result arrives (`apply_ignored`).
     pub fn refresh_git_if_needed(&mut self) {
-        if self.git_status_for.as_deref() == Some(self.root.as_path()) {
+        // 同一 root かつ dirty でなければ何もしない。dirty(再検証要求)は同一 root でも取り直す。
+        if self.git_status_for.as_deref() == Some(self.root.as_path()) && !self.git_status_dirty {
             return;
         }
-        // 安い statuses/branch は root が変わるたびに取り直す(表示外の変更も上に戻った時に追従)。
-        self.git_status = crate::git::statuses(&self.root);
-        self.git_branch = crate::git::branch(&self.root);
+        let wd = crate::git::workdir(&self.root);
+        // statuses/branch は **workdir から** `git status` を回す=同一リポジトリ内ならどのサブディレクトリでも
+        // 結果は同一。よって **workdir が同じで dirty でなければ再計算せず流用**する(`l`/`h` 潜行のたびに
+        // 全 worktree を走査する `git status` が同期実行されるのを回避=大 repo での h/l の重さの主因)。
+        // dirty(ファイル変更/コミット/チェックアウト/無視ルール変更)や別 repo への移動時のみ取り直す。
+        // ignored の Phase G(workdir 単位キャッシュ)と同型。
+        let status_reusable = self.git_status_workdir.is_some()
+            && self.git_status_workdir == wd
+            && !self.git_status_dirty;
+        if !status_reusable {
+            self.git_status = crate::git::statuses(&self.root);
+            self.git_branch = crate::git::branch(&self.root);
+            self.git_status_workdir = wd.clone();
+            self.git_status_dirty = false;
+        }
         self.git_status_for = Some(self.root.clone());
 
         // 重い ignored(無視セット)は **repo(workdir)が変わった時だけ** 作り直す。同一リポジトリ内の
         // サブディレクトリへ潜っても無視ルールは同一なので流用する(`l` 潜行時の再計算を回避)。
-        let wd = crate::git::workdir(&self.root);
         let different_repo = self.git_ignored_for != wd;
         let need = self.git_ignored_dirty || different_repo;
         // 同一 workdir の計算が既に走行中なら待つ(無視ルール変更 dirty の時はそれより新しい結果が要る)。
@@ -704,6 +716,7 @@ impl App {
     ) -> Result<()> {
         if recompute_ignored {
             self.git_status_for = None; // 次の描画で statuses+branch を再計算
+            self.git_status_dirty = true; // 無視ルール変更で status 出力も変わり得る=workdir キャッシュを無効化
             self.git_ignored_dirty = true; // 重い ignored も作り直す(無視ルール変更/明示 refresh)。
                                            // 旧セットは反映まで維持(別スレッド計算・チラつき回避)。
         } else {
@@ -766,5 +779,8 @@ impl App {
         }
         self.git_status = crate::git::statuses(&self.root);
         self.git_branch = crate::git::branch(&self.root);
+        // このリポジトリの最新 status を持った=workdir キャッシュを更新し dirty を解消。
+        self.git_status_workdir = crate::git::workdir(&self.root);
+        self.git_status_dirty = false;
     }
 }

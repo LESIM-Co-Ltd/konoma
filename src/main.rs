@@ -37,8 +37,8 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, IgnoredResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult, RemoteFetch,
-    SortKey,
+    App, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult,
+    RemoteFetch, SortKey,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -96,6 +96,8 @@ fn main() -> Result<()> {
 
     // 重いメディア(SVG ラスタライズ / GIF 全フレームデコード)を別スレッドで読み、結果を run ループへ。
     let (media_tx, media_rx) = std::sync::mpsc::channel::<MediaResult>();
+    // kitty 画像の resize+圧縮(ズーム/パン)を別スレッドで行い、結果を run ループへ(初回は同期)。
+    let (kitty_tx, kitty_rx) = std::sync::mpsc::channel::<KittyResult>();
     // インライン Markdown 画像のデコードを別スレッドで行い、結果を run ループへ。
     let (md_img_tx, md_img_rx) = std::sync::mpsc::channel::<MdImageResult>();
     // リモート(http(s)) Markdown 画像の curl ダウンロード完了を run ループへ通知する。
@@ -109,6 +111,7 @@ fn main() -> Result<()> {
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
     app.attach_media_loader(media_tx);
+    app.attach_kitty_loader(kitty_tx);
     app.attach_md_image_loader(md_img_tx);
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
@@ -144,6 +147,7 @@ fn main() -> Result<()> {
         resp_rx,
         WorkerRx {
             media: media_rx,
+            kitty: kitty_rx,
             md_img: md_img_rx,
             md_remote: md_remote_rx,
             md_enc: md_enc_res_rx,
@@ -239,6 +243,7 @@ fn is_ignore_rule_file(p: &Path) -> bool {
 /// Background-worker result receivers drained each iteration of the run loop.
 struct WorkerRx {
     media: std::sync::mpsc::Receiver<MediaResult>,
+    kitty: std::sync::mpsc::Receiver<KittyResult>,
     md_img: std::sync::mpsc::Receiver<MdImageResult>,
     md_remote: std::sync::mpsc::Receiver<RemoteFetch>,
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
@@ -273,6 +278,10 @@ fn run(
     // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
     // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
     let mut watched_extra: Option<PathBuf> = None;
+    // root が repo のサブディレクトリのときは親の `.git` が再帰監視の外に出る。外部 git 操作
+    // (作業ファイルを触らない commit / 外部 checkout)を拾えるよう `.git` を非再帰監視する
+    // (`App::git_dir_watch`)。root が repo root のときは再帰監視に含まれるので None。
+    let mut watched_git: Option<PathBuf> = None;
 
     // ローディング: 裏でコード文法をウォームし、完了をこのチャネルで run ループへ通知。
     // indicator/progressive とも UI を止めず(スピナーが回り続ける)、完了で着色版に差し替える。
@@ -316,11 +325,13 @@ fn run(
         // し続ける」。保留中のイベントを**一括で処理してから 1 回だけ描画**する(最終状態へ収束)。
         // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする。
         // 別スレッドのメディア読み込み待ちの間も、結果を即反映できるようこまめに起きる。
-        let poll_timeout = if app.is_media_loading() || app.md_images_loading() {
-            Duration::from_millis(16)
-        } else {
-            app.gif_poll_timeout().unwrap_or(Duration::from_millis(100))
-        };
+        let poll_timeout =
+            if app.is_media_loading() || app.md_images_loading() || app.kitty_build_pending() {
+                // 別スレッド待ち(メディア/kitty ビルド)の間はこまめに起きて結果を即反映する。
+                Duration::from_millis(16)
+            } else {
+                app.gif_poll_timeout().unwrap_or(Duration::from_millis(100))
+            };
         if event::poll(poll_timeout)? {
             let mut quit = false;
             loop {
@@ -400,6 +411,13 @@ fn run(
         // 別スレッドのメディア読み込み(SVG/GIF)完了を反映(複数あれば全部・古い世代は破棄)。
         while let Ok(result) = rx.media.try_recv() {
             if app.apply_media(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // 別スレッドの kitty 画像ビルド(ズーム/パンの resize+圧縮)完了を反映(最新世代のみ適用)。
+        while let Ok(result) = rx.kitty.try_recv() {
+            if app.apply_kitty(result) {
                 needs_redraw = true;
             }
         }
@@ -493,6 +511,11 @@ fn run(
         let want_extra = app.out_of_root_watch_dir();
         if watched_extra.as_deref() != want_extra.as_deref() {
             set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref());
+        }
+        // サブディレクトリ root のとき、親 repo の `.git` を非再帰監視して外部 git 操作を拾う。
+        let want_git = app.git_dir_watch();
+        if watched_git.as_deref() != want_git.as_deref() {
+            set_extra_watch(watcher.as_mut(), &mut watched_git, want_git.as_deref());
         }
     }
     Ok(())

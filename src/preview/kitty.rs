@@ -62,7 +62,8 @@ pub struct KittyImage {
     /// The full transmit escape (compressed pixels + virtual-placement header), sent on first render.
     transmit: String,
     /// Set once the transmit has been written into a frame; subsequent frames emit placeholders only.
-    transmitted: std::rc::Rc<std::cell::Cell<bool>>,
+    /// `Arc<AtomicBool>` (not `Rc<Cell>`) so a `KittyImage` built on the async worker thread is `Send`.
+    transmitted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Display size in cells (the image was resized to exactly this many cells).
     cols: u16,
     rows: u16,
@@ -80,7 +81,7 @@ impl KittyImage {
         let [id_extra, r, g, b] = id.to_be_bytes();
         Self {
             transmit,
-            transmitted: std::rc::Rc::new(std::cell::Cell::new(false)),
+            transmitted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cols,
             rows,
             id_color: format!("\x1b[38;2;{r};{g};{b}m"),
@@ -88,8 +89,8 @@ impl KittyImage {
         }
     }
 
-    /// Display size in cells this image was built (resized) for. Used to detect a terminal resize
-    /// that changed the fit area without changing the crop (`prepare_image` then rebuilds).
+    /// Display size in cells this image was built (resized) for. Test-only inspection.
+    #[cfg(test)]
     pub fn cell_size(&self) -> (u16, u16) {
         (self.cols, self.rows)
     }
@@ -107,7 +108,10 @@ impl KittyImage {
         }
 
         // Transmit only on the first render of this image.
-        let mut seq: Option<&str> = if self.transmitted.replace(true) {
+        let already = self
+            .transmitted
+            .swap(true, std::sync::atomic::Ordering::SeqCst);
+        let mut seq: Option<&str> = if already {
             None
         } else {
             Some(self.transmit.as_str())
@@ -153,6 +157,31 @@ impl KittyImage {
             }
         }
     }
+}
+
+/// Crop `src` to `crop_rect` (source px), resize to the display cell area at native font
+/// resolution, and build the compressed (`o=z`) `KittyImage`. Pure and `Send`-friendly, so it runs
+/// either on the render thread (first build) or a worker (zoom/pan). None if the target is empty.
+pub fn build_from_source(
+    src: &image::DynamicImage,
+    crop_rect: (u32, u32, u32, u32),
+    cols: u16,
+    rows: u16,
+    font: ratatui_image::FontSize,
+    is_tmux: bool,
+) -> Option<KittyImage> {
+    if cols == 0 || rows == 0 {
+        return None;
+    }
+    // Native resolution: one image pixel per screen pixel = cols/rows cells × the font cell size.
+    let px_w = u32::from(cols) * u32::from(font.width.max(1));
+    let px_h = u32::from(rows) * u32::from(font.height.max(1));
+    let (x0, y0, cw, ch) = crop_rect;
+    let resized = src
+        .crop_imm(x0, y0, cw, ch)
+        .resize_exact(px_w, px_h, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    Some(KittyImage::build(&resized, cols, rows, next_id(), is_tmux))
 }
 
 /// Build the kitty transmit escape for `img`, **zlib-compressed** (`o=z`), with a virtual

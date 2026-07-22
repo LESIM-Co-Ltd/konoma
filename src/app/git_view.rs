@@ -52,6 +52,7 @@ impl App {
             self.git_view_sel = self.git_view_entries.len().saturating_sub(1);
         }
         self.git_status_for = None; // ツリーの git status も次回再取得
+        self.git_status_dirty = true; // git 操作で status が変わった=workdir キャッシュを無効化
     }
     /// `s` in the Git view = stage. Flashes success/failure and rebuilds the list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]

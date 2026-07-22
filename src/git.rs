@@ -9,6 +9,12 @@ use std::path::{Path, PathBuf};
 
 use ratatui::style::Color;
 
+/// Test-only counter of actual `statuses()` invocations, so a speed guard can assert the per-workdir
+/// status cache reuses the result across `h`/`l` instead of re-scanning the whole worktree.
+/// Only the `git`-feature `statuses` increments it and the guard is `git`-gated, so scope it to both.
+#[cfg(all(test, feature = "git"))]
+pub static STATUS_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Git status of a single file (or a directory rollup).
 /// When the `git` feature is disabled the status is always empty, so no variant is ever constructed (warning suppressed).
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -75,6 +81,8 @@ impl FileStatus {
 /// Only repo discovery uses git2 (discover is lightweight because it does not compute status).
 #[cfg(feature = "git")]
 pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
+    #[cfg(test)]
+    STATUS_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     use std::os::unix::ffi::OsStrExt;
     let mut map = HashMap::new();
     let Some(workdir) = git2::Repository::discover(root)

@@ -1031,7 +1031,7 @@ fn app_with_image() -> App {
     let dir = std::env::temp_dir().join("konoma_img_state_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
-    app.image_src = Some(image::DynamicImage::new_rgb8(400, 300));
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
     app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     // tx は drop されないようリーク(テスト終了まで生存)。
@@ -4902,7 +4902,7 @@ fn attach_and_detach_image_backend_set_and_clear_state() {
         app.picker.is_some() && app.img_tx.is_some(),
         "attach で両方載る"
     );
-    app.image_src = Some(image::DynamicImage::new_rgb8(4, 4));
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4)));
     app.detach_image_backend();
     assert!(app.img_tx.is_none(), "detach で tx を落とす(ワーカー終了)");
     assert!(app.image_src.is_none(), "detach で画像状態も解放");
@@ -5925,7 +5925,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     // render_image の静止画フォールバック分岐を通す。
     let mut app = app_with_kitty();
     app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
-    app.image_src = Some(image::DynamicImage::new_rgb8(20, 10));
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
     app.mode = Mode::Preview;
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
     term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
@@ -8558,7 +8558,9 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     let mut app = App::new(dir, Config::default()).unwrap();
     // viewport より**大きい**ソース(4000x3000px=400x150セル @ font10x20)。fit で viewport に
     // 縮小されるので、端末リサイズ=表示サイズ変化=穴が顕在化する(小画像は自然サイズで不変)。
-    app.image_src = Some(image::DynamicImage::new_rgb8(4000, 3000));
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
+        4000, 3000,
+    )));
     app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
@@ -8675,5 +8677,377 @@ fn table_search_hits_do_not_leak_across_tabs() {
         "タブ1 へ切替で前タブの一致が漏れない(load_active が再構築)"
     );
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// kitty ビルドの非同期経路: 初回(開いた瞬間)は同期で即表示、以降のズームは worker へ逃がし、
+/// 旧画像を見せたまま結果到着で差し替える。stale(古い世代)は破棄する。
+#[test]
+fn kitty_zoom_builds_async_and_latest_wins() {
+    let dir = std::env::temp_dir().join("konoma_kitty_async_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
+        4000, 3000,
+    )));
+    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(irx));
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    app.attach_image_backend(picker, itx);
+    // 実チャネルを付ける(worker が結果を送る)。
+    let (ktx, krx) = std::sync::mpsc::channel();
+    app.attach_kitty_loader(ktx);
+
+    // 初回は同期: prepare 直後に kitty_image ができ、pending でない。worker には何も送られない。
+    let r1 = app.prepare_image(inner(200, 40)).unwrap();
+    assert!(app.kitty_image_ref().is_some(), "初回は同期で即表示");
+    assert!(!app.kitty_build_pending(), "初回同期後は in-flight でない");
+    let size1 = app.kitty_image_ref().unwrap().cell_size();
+    assert_eq!(size1, (r1.width, r1.height));
+    assert!(krx.try_recv().is_err(), "初回は worker を使わない(同期)");
+
+    // ズーム: 以降は非同期。kitty_image は旧サイズのまま、pending=true。
+    app.image_zoom = 4.0;
+    app.prepare_image(inner(200, 40)).unwrap();
+    assert!(app.kitty_build_pending(), "ズーム後は build in-flight");
+    assert_eq!(
+        app.kitty_image_ref().unwrap().cell_size(),
+        size1,
+        "結果到着まで旧画像を見せ続ける(ちらつかせない)"
+    );
+
+    // worker の結果を受けて適用 → 新サイズへ差し替え、pending 解消。
+    let res = krx.recv().expect("worker sends a result");
+    assert!(app.apply_kitty(res), "最新世代の結果を適用");
+    assert!(!app.kitty_build_pending(), "適用後は in-flight でない");
+    let size2 = app.kitty_image_ref().unwrap().cell_size();
+    assert_ne!(size1, size2, "ズームで表示サイズが変わった");
+
+    // 連続ズーム(2 spawn)→ 最新世代のみ適用、古い世代は破棄(スレッドは並行=到着順は非決定的
+    // なので「先着=古い」とは限らない。gen で判定するので順序に依らず最新の1つだけが適用される)。
+    app.image_zoom = 6.0;
+    app.prepare_image(inner(200, 40)).unwrap();
+    app.image_zoom = 8.0;
+    app.prepare_image(inner(200, 40)).unwrap();
+    let a = krx.recv().unwrap();
+    let b = krx.recv().unwrap();
+    let applied = u32::from(app.apply_kitty(a)) + u32::from(app.apply_kitty(b));
+    assert_eq!(applied, 1, "2つの結果のうち最新世代の1つだけが適用される");
+    assert!(!app.kitty_build_pending());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PDF ページ送り/動画再サムネ回帰: `set_static_image` は同じ表示サイズのラスタをその場で差し替える。
+/// kitty 経路は geometry(kitty_want)で再ビルドを判定するので、同寸法だと want が変わらず**前ページの
+/// ピクセルが居残る**。差し替え時に kitty geometry を無効化して必ず再ビルドさせる必要がある。
+#[test]
+fn kitty_rebuilds_on_same_size_image_swap() {
+    let dir = std::env::temp_dir().join("konoma_kitty_swap_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
+    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
+    let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(irx));
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    app.attach_image_backend(picker, itx); // kitty_tx なし=同期ビルド
+
+    let r = app.prepare_image(inner(200, 40)).unwrap();
+    let area = ratatui::layout::Rect::new(0, 0, r.width.min(40), r.height);
+    let render_syms = |app: &App| {
+        let mut b = ratatui::buffer::Buffer::empty(area);
+        app.kitty_image_ref().unwrap().render(area, &mut b);
+        b.content.iter().map(|c| c.symbol()).collect::<String>()
+    };
+    assert!(render_syms(&app).contains("o=z"), "初回 render で転送");
+    assert!(
+        !render_syms(&app).contains("o=z"),
+        "同一画像の再 render は転送しない"
+    );
+
+    // ページ2を同寸法(800x600)でその場差し替え(pdf_goto→apply_media→set_static_image と同じ)。
+    app.set_static_image(image::DynamicImage::new_rgb8(800, 600));
+    app.prepare_image(inner(200, 40)).unwrap();
+    assert!(
+        render_syms(&app).contains("o=z"),
+        "同寸法の差し替えでも kitty 画像が再ビルドされる(前ページが居残らない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 非同期 kitty ビルドが失敗(worker panic → None)しても `kitty_build_pending` が永続 true にならない
+/// こと。永続すると run ループが 16ms ポーリングを続けアイドル CPU 0% が崩れる(レビュー LOW 指摘)。
+#[test]
+fn kitty_failed_build_clears_pending() {
+    let dir = std::env::temp_dir().join("konoma_kitty_fail_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
+        4000, 3000,
+    )));
+    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(irx));
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    app.attach_image_backend(picker, itx);
+    let (ktx, krx) = std::sync::mpsc::channel();
+    app.attach_kitty_loader(ktx);
+    Box::leak(Box::new(krx)); // 実 worker の結果は使わない(失敗を注入する)
+
+    // 初回同期 → ズームで非同期ビルド in-flight(pending=true)。
+    app.prepare_image(inner(200, 40)).unwrap();
+    app.image_zoom = 4.0;
+    app.prepare_image(inner(200, 40)).unwrap();
+    assert!(app.kitty_build_pending(), "ズーム後は in-flight");
+
+    // 現世代のビルド失敗(None)を注入 → 適用は false だが pending は解消する。
+    let gen = app.kitty_gen;
+    assert!(
+        !app.apply_kitty(KittyResult { gen, image: None }),
+        "失敗は適用しない"
+    );
+    assert!(
+        !app.kitty_build_pending(),
+        "失敗しても pending は解消(16ms ビジーポーリング防止)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 大 repo での `h`/`l` の重さの主因: `git status`(全 worktree スキャン)が同一リポジトリ内の
+/// root 変更のたびに同期実行されていた。`git status` は workdir から回すので結果は同一 → workdir が
+/// 同じで dirty でなければ再計算せず流用する(ignored の Phase G と同型)。dirty / 別 repo なら取り直す。
+#[cfg(feature = "git")]
+#[test]
+fn same_repo_navigation_reuses_status_without_recompute() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_status_workdir_cache");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // 変更 = status 非空
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed(); // 初回: statuses 計算 + workdir キャッシュ確立
+    assert!(
+        app.git_status_of(&root.join("a.txt")).is_some(),
+        "変更が見える"
+    );
+
+    // status を再計算したか観測するためのセンチネル(実在しない偽エントリ)を差し込む。
+    // 再計算が走れば git_status が丸ごと置き換わりセンチネルは消える(白箱: 直接フィールド操作)。
+    let sentinel = root.join("__sentinel_not_a_real_file__");
+    app.git_status
+        .insert(sentinel.clone(), crate::git::FileStatus::Modified);
+
+    // 同一 repo のサブディレクトリへ潜る(root 変更・workdir 不変・dirty でない)→ 再計算しない。
+    app.root = root.join("sub");
+    app.refresh_git_if_needed();
+    assert!(
+        app.git_status_of(&sentinel).is_some(),
+        "同一 workdir の潜行は status を再計算しない(センチネル残存=キャッシュ流用)"
+    );
+
+    // dirty(外部コミット等の再検証)→ 取り直す(センチネル消失)。
+    app.git_status_dirty = true;
+    app.refresh_git_if_needed();
+    assert!(
+        app.git_status_of(&sentinel).is_none(),
+        "dirty 指定で status を再計算(センチネル消失)"
+    );
+    // 実データは正しく取得できている(サブディレクトリからでも workdir 全体の変更が見える)。
+    assert!(
+        app.git_status_of(&root.join("a.txt")).is_some(),
+        "再計算後も a.txt の変更は見える"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// workdir 単位の status キャッシュが **別 repo へ移ったら取り直す**こと(親 repo の status を
+/// 入れ子 repo に流用しない)。`descend_into_nested_different_repo_recomputes_ignored_set` の
+/// statuses 版=キャッシュの正しさの核心。
+#[cfg(feature = "git")]
+#[test]
+fn descend_into_nested_different_repo_recomputes_status() {
+    let dir = std::env::temp_dir().join("konoma_status_reuse_diff_repo");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    init_git_repo(&dir); // 外側 repoA
+    init_git_repo(&dir.join("inner")); // 入れ子の別 repoB
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed();
+    let wd_a = app.git_status_workdir.clone();
+    assert!(wd_a.is_some(), "外側 repo の status workdir が確立");
+
+    // 再計算を観測するためのセンチネル(実在しない偽エントリ)。取り直せば消える。
+    let sentinel = root.join("__status_sentinel__");
+    app.git_status
+        .insert(sentinel.clone(), crate::git::FileStatus::Modified);
+
+    // inner(別 repo)へ潜行。
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("inner"))
+        .expect("inner エントリが無い");
+    app.selected = i;
+    app.tree_descend().unwrap();
+    app.refresh_git_if_needed();
+
+    assert_ne!(
+        app.git_status_workdir, wd_a,
+        "別 repo: workdir が変わったので status キャッシュキーも変わる"
+    );
+    assert!(
+        app.git_status_of(&sentinel).is_none(),
+        "別 repo へ移ると status を作り直す(親 repo の status を流用しない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 画像Aのズームで非同期ビルド(gen=N)が飛んだ後に**別ファイルへ切替**えると、遅れて届いた gen=N の
+/// 結果は破棄されること(clear_image が gen を bump)。破棄しないと A の画像が B に紛れ込む。
+#[test]
+fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
+    let dir = std::env::temp_dir().join("konoma_kitty_switch_race");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
+        4000, 3000,
+    )));
+    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
+    let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(irx));
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    app.attach_image_backend(picker, itx);
+    let (ktx, krx) = std::sync::mpsc::channel();
+    app.attach_kitty_loader(ktx);
+
+    // Aを開き(初回同期)、ズームで非同期ビルド gen=N を飛ばす。
+    app.prepare_image(inner(200, 40)).unwrap();
+    app.image_zoom = 4.0;
+    app.prepare_image(inner(200, 40)).unwrap();
+    let stale = krx.recv().expect("Aのズームの worker 結果"); // gen=N の結果
+
+    // 別ファイルBへ切替(clear_image が gen を bump=陳腐化)。
+    app.clear_image();
+
+    // 遅れて届いた A の gen=N 結果は破棄され、B(まだ画像なし)に紛れ込まない。
+    assert!(
+        !app.apply_kitty(stale),
+        "切替後に届いた旧ファイルのビルド結果は破棄される"
+    );
+    assert!(
+        app.kitty_image_ref().is_none(),
+        "破棄されたので画像は入らない(clear_image で None のまま)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `git_dir_watch`: root が repo のサブディレクトリのとき親 `.git` を監視対象に返し、repo root や
+/// 非 repo では None(再帰監視に含まれる/監視不要)。サブディレクトリ root で外部 git 操作を拾う穴埋め。
+#[cfg(feature = "git")]
+#[test]
+fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
+    let dir = std::env::temp_dir().join("konoma_git_dir_watch");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    init_git_repo(&dir);
+    let root = dir.canonicalize().unwrap();
+
+    // repo root: `.git` は再帰監視下 → None。
+    let app_root = App::new(root.clone(), Config::default()).unwrap();
+    assert_eq!(app_root.git_dir_watch(), None, "repo root は追加監視不要");
+
+    // サブディレクトリ root: 親 `.git` は非監視 → その `.git` を返す。
+    let app_sub = App::new(root.join("src"), Config::default()).unwrap();
+    assert_eq!(
+        app_sub.git_dir_watch(),
+        Some(root.join(".git")),
+        "subdir root は親 .git を監視対象に返す"
+    );
+
+    // 非 repo: None。
+    let plain = std::env::temp_dir().join("konoma_git_dir_watch_norepo");
+    let _ = std::fs::remove_dir_all(&plain);
+    std::fs::create_dir_all(&plain).unwrap();
+    let app_plain = App::new(plain.canonicalize().unwrap(), Config::default()).unwrap();
+    assert_eq!(app_plain.git_dir_watch(), None, "非 repo は監視不要");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&plain).ok();
+}
+
+/// タブ切替(load_active)は git status の再検証の節目: 背面タブが監視外で取りこぼした外部変更に
+/// 追従するため dirty を立て、切替後の描画で status を取り直す(同一 repo の**別サブディレクトリ**
+/// タブでも陳腐化しない)。両タブが別 subdir=切替先 root が git_status_for と異なるので、dirty が
+/// 無いと workdir キャッシュを流用して陳腐化が居残る(この構成で dirty を分離検証する)。
+#[cfg(feature = "git")]
+#[test]
+fn tab_switch_re_verifies_git_status() {
+    let dir = std::env::temp_dir().join("konoma_tab_switch_status");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("subx")).unwrap();
+    std::fs::create_dir_all(dir.join("suby")).unwrap();
+    init_git_repo(&dir);
+    let root = dir.canonicalize().unwrap();
+
+    let descend = |app: &mut App, name: &str| {
+        let i = app
+            .entries
+            .iter()
+            .position(|e| e.is_dir && e.path.ends_with(name))
+            .unwrap_or_else(|| panic!("{name} エントリが無い"));
+        app.selected = i;
+        app.tree_descend().unwrap();
+    };
+
+    // タブ0を subx に。status を確立(git_status_for=subx)。
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    descend(&mut app, "subx");
+    app.refresh_git_if_needed();
+
+    // タブ1を作り、suby へ移動して refresh(git_status_for=suby へ更新・workdir 同一で流用)。
+    app.tab_new().unwrap();
+    app.tree_leave().unwrap(); // repo root へ
+    descend(&mut app, "suby");
+    app.refresh_git_if_needed();
+
+    // 再計算を観測するセンチネルを今の git_status に仕込む。
+    let sentinel = root.join("__tab_status_sentinel__");
+    app.git_status
+        .insert(sentinel.clone(), crate::git::FileStatus::Modified);
+
+    // タブ0(subx)へ戻る。切替先 root(subx) != git_status_for(suby) なので、dirty が無いと
+    // workdir キャッシュを流用してセンチネルが残る。dirty があれば取り直して消える。
+    app.tab_cycle(-1);
+    app.refresh_git_if_needed(); // 切替後の描画相当
+
+    assert!(
+        app.git_status_of(&sentinel).is_none(),
+        "タブ切替で status を再検証(センチネル消失=キャッシュ流用しない)"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
