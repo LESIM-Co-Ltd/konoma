@@ -48,11 +48,20 @@ impl TableData {
     }
 }
 
+// Test-only counter of full-file parses, **thread-local** so tests running in parallel don't see each
+// other's work (a process-wide counter proved flaky for exactly that reason).
+#[cfg(test)]
+thread_local! {
+    pub static PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Parse a CSV/TSV file with the given delimiter byte (`b','` for CSV, `b'\t'` for TSV).
 ///
 /// Reads byte records and lossily decodes to UTF-8, so a stray non-UTF-8 byte degrades to `�`
 /// rather than failing the whole preview (principle #3). The first record becomes the header.
 pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
+    #[cfg(test)]
+    PARSE_CALLS.with(|c| c.set(c.get() + 1));
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .flexible(true) // 可変列数(ragged)を許容。短い行は表示側でパディング。

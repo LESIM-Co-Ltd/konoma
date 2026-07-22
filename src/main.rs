@@ -40,7 +40,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
     App, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult,
-    RemoteFetch, SortKey,
+    RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -109,6 +109,9 @@ fn main() -> Result<()> {
     let (md_enc_res_tx, md_enc_res_rx) = std::sync::mpsc::channel::<MdEncodeResult>();
     // 重い git ignored(無視セット・大規模 repo で ~800ms)を別スレッドで計算し、結果を run ループへ。
     let (ignored_tx, ignored_rx) = std::sync::mpsc::channel::<IgnoredResult>();
+    // フル `git status`(全 worktree 走査)も別スレッドへ。小さい repo でも ~5ms、大きい repo では
+    // 数百 ms かかり、タブ切替/ディレクトリ移動のたびに UI を止めていた。
+    let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
@@ -117,6 +120,7 @@ fn main() -> Result<()> {
     app.attach_md_image_loader(md_img_tx);
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
+    app.attach_status_loader(status_tx);
     // 設定の読み込みエラー + キーマップ衝突/無視した設定を起動時メッセージで知らせる
     // (黙って既定に戻ると気づけないため)。両方あれば結合して 1 行に出す。
     let km_report = app.keymap_report();
@@ -154,6 +158,7 @@ fn main() -> Result<()> {
             md_remote: md_remote_rx,
             md_enc: md_enc_res_rx,
             ignored: ignored_rx,
+            status: status_rx,
         },
     );
 
@@ -250,6 +255,7 @@ struct WorkerRx {
     md_remote: std::sync::mpsc::Receiver<RemoteFetch>,
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
+    status: std::sync::mpsc::Receiver<StatusResult>,
 }
 
 fn run(
@@ -449,6 +455,14 @@ fn run(
         // 反映で暗転表示(gitignore 除外の dim)が現れるため再描画する。
         while let Ok(result) = rx.ignored.try_recv() {
             if app.apply_ignored(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // 別スレッドの `git status` 完了を反映(複数あれば全部・古い世代は破棄)。
+        // 反映でツリーの変更マーカー/ブランチ名が更新されるため再描画する。
+        while let Ok(result) = rx.status.try_recv() {
+            if app.apply_statuses(result) {
                 needs_redraw = true;
             }
         }

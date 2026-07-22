@@ -532,6 +532,37 @@ pub struct IgnoredResult {
     set: std::collections::HashSet<PathBuf>,
 }
 
+/// One decoded media payload kept across a tab switch (see `App::media_cache`).
+struct MediaCache {
+    path: PathBuf,
+    mtime: Option<std::time::SystemTime>,
+    /// File size alongside the mtime. Archive extraction and `cp -p` / `rsync -a` **preserve the mtime**,
+    /// so mtime alone would keep serving the old picture; the size catches the common case of those.
+    len: Option<u64>,
+    /// PDF page the image belongs to (1 for every other kind), so paging is not confused with a hit.
+    page: u32,
+    /// Which mermaid fence inside the document this render belongs to. A full-screen fence keeps
+    /// `preview_path` pointing at the **Markdown file**, so without this two fences of the same document
+    /// look identical to the cache and switching tabs would show the other diagram.
+    fence_ord: Option<usize>,
+    src: std::sync::Arc<image::DynamicImage>,
+    logical: Option<(u32, u32)>,
+    vector_svg: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+/// Result of `git status` + branch computed on a separate thread. Staleness is judged by `gen` exactly like
+/// [`IgnoredResult`], so a scan that finishes after the user has already moved on is discarded.
+///
+/// `git status` is a **whole-worktree scan**: even on a tiny repository it costs ~5ms (process spawn +
+/// repo discovery), and it grows with the working tree. Running it on the UI thread made every tab switch
+/// pay that cost synchronously, which is why it is offloaded here (design principle #4 "never block the UI").
+pub struct StatusResult {
+    gen: u64,
+    workdir: Option<PathBuf>,
+    statuses: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
+    branch: Option<String>,
+}
+
 pub struct App {
     pub mode: Mode,
     pub root: PathBuf,
@@ -759,6 +790,14 @@ pub struct App {
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
+    /// The decoded media of the tab we most recently switched **away from**, so switching back does not
+    /// redo the work that produced it. That work is not just an image decode: SVG/mermaid are
+    /// rasterized and PDF/video shell out to `pdftocairo` / `ffmpeg`, which costs hundreds of
+    /// milliseconds. Exactly **one** slot, holding an `Arc` clone of the source image that was already
+    /// in memory, so the extra footprint is bounded to a single image. Animated GIFs are never cached
+    /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
+    /// externally edited file is always re-read.
+    media_cache: Option<MediaCache>,
 
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
@@ -864,6 +903,16 @@ pub struct App {
     /// The cached `git_status` may be stale (a file changed, a commit/checkout happened, ignore rules
     /// changed): force a recompute on the next `refresh_git_if_needed` even if the workdir is unchanged.
     git_status_dirty: bool,
+    /// The root for which `git status` is being computed on a separate thread (guard against duplicate
+    /// dispatch). None = not computing. Keyed by **root** (never None while in flight), so the
+    /// `pending == target` comparison can't be satisfied by two `None`s the way `git_ignored_pending` can.
+    git_status_pending: Option<PathBuf>,
+    /// Generation of the `statuses` computation. Incremented on dispatch; a result is applied only if it
+    /// still matches (discards scans superseded by a newer root/tab change).
+    git_status_gen: u64,
+    /// Sender returning results from the worker computing `statuses`+`branch` in the background.
+    /// If not attached (tests), `spawn_or_sync_statuses` falls back to computing synchronously.
+    status_tx: Option<std::sync::mpsc::Sender<StatusResult>>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -1343,6 +1392,7 @@ impl App {
             pdf_page: 1,
             pdf_pages: None,
             preview_media_mtime: None,
+            media_cache: None,
             table_data: None,
             table_cur_row: 0,
             table_cur_col: 0,
@@ -1385,6 +1435,9 @@ impl App {
             git_status_for: None,
             git_status_workdir: None,
             git_status_dirty: false,
+            git_status_pending: None,
+            git_status_gen: 0,
+            status_tx: None,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,
@@ -2205,7 +2258,7 @@ impl App {
             match crate::git::create_branch(&self.root, bname) {
                 Ok(()) => {
                     self.refresh()?;
-                    self.refresh_git_if_needed(); // ブランチ名/状態のキャッシュを即更新
+                    self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
                     self.close_git_branches(); // 作成＆切替済み → 一覧を閉じて Git ビューへ
                     self.flash = Some(format!(
                         "{}: {bname}",
@@ -2880,7 +2933,8 @@ impl App {
     /// a stuck spinner): git-ignored scan / media decode / syntax-highlight warm-up / inline images.
     pub fn busy_jobs(&self) -> Vec<crate::i18n::Msg> {
         let mut v = Vec::new();
-        if self.git_ignored_pending.is_some() {
+        // 無視セットと status はどちらも「git のスキャン中」= 同じラベルで表す(片方でも走っていれば出す)。
+        if self.git_ignored_pending.is_some() || self.git_status_pending.is_some() {
             v.push(crate::i18n::Msg::BusyGitScan);
         }
         if self.media_loading {
@@ -3458,6 +3512,87 @@ impl App {
     /// Whether this preview kind displays through the media (image) pipeline — and therefore needs
     /// a `start_media_load` whenever its display state was dropped (tab restore / fs reload).
     /// Mermaid kinds count only in image mode; in text mode they draw via the decorated path.
+    /// Remember the media currently on screen before a tab switch discards it, so switching back can
+    /// reuse it. Skips animated GIFs (frames live in separate state) and anything without a source image.
+    fn stash_media_cache(&mut self) {
+        if !self.gif_frames.is_empty() {
+            return;
+        }
+        let (Some(path), Some(src)) = (self.preview_path.clone(), self.image_src.clone()) else {
+            return;
+        };
+        // 1枠とはいえ「見た画像を1枚ずっと抱える」ので、病的に大きいものは諦めて捨てる
+        // (再デコードの方が、数百 MB を常駐させ続けるより安い)。**実バイト数**で見る:
+        // 画素数だけだと 16bit PNG(8B/px)や HDR/EXR(12B/px)が上限をすり抜けて数百 MiB 常駐する。
+        const MAX_CACHED_BYTES: usize = 128 * 1024 * 1024;
+        if src.as_bytes().len() > MAX_CACHED_BYTES {
+            self.media_cache = None; // 旧エントリも道連れにしない
+            return;
+        }
+        let meta = std::fs::metadata(&path).ok();
+        self.media_cache = Some(MediaCache {
+            path,
+            mtime: self.preview_media_mtime,
+            len: meta.map(|m| m.len()),
+            page: self.pdf_page.max(1),
+            fence_ord: self.preview_fence_ord(),
+            src,
+            logical: self.image_logical,
+            vector_svg: self.vector_svg.clone(),
+        });
+    }
+
+    /// Release the one-slot media cache if it belongs to the preview currently on screen (the tab that
+    /// is about to be closed). Without this, closing the only media tab leaves its image resident with
+    /// nothing able to reuse it.
+    fn drop_media_cache_for_active(&mut self) {
+        let cur = self.preview_path.as_deref();
+        if matches!((&self.media_cache, cur), (Some(c), Some(p)) if c.path == p) {
+            self.media_cache = None;
+        }
+        // 表示中のメディアそのものも、このタブが閉じられるので退避対象にしない。
+        if self.image_src.is_some() && cur.is_some() {
+            self.media_cache = match self.media_cache.take() {
+                Some(c) if Some(c.path.as_path()) != cur => Some(c),
+                _ => None,
+            };
+        }
+    }
+
+    /// The mermaid-fence ordinal of the current preview, if it is a full-screen fence.
+    fn preview_fence_ord(&self) -> Option<usize> {
+        match &self.preview_kind {
+            Some(PreviewKind::MermaidFence(ord)) => Some(*ord),
+            _ => None,
+        }
+    }
+
+    /// Restore the stashed media for `path` if it is an exact match and the file has not changed since.
+    /// Returns true when the caller can skip re-loading the media entirely.
+    fn restore_media_cache(&mut self, path: &Path, page: u32) -> bool {
+        let len = std::fs::metadata(path).ok().map(|m| m.len());
+        let fence = self.preview_fence_ord();
+        let hit = matches!(&self.media_cache, Some(c)
+            if c.path == path
+                && c.page == page
+                && c.fence_ord == fence
+                && c.mtime == file_mtime(path)
+                && c.mtime.is_some()
+                && c.len == len);
+        if !hit {
+            return false;
+        }
+        let c = self.media_cache.as_ref().expect("checked above");
+        self.image_logical = c.logical;
+        self.vector_svg = c.vector_svg.clone();
+        self.preview_media_mtime = c.mtime;
+        // Arc の中身は共有なので画像は複製しない。protocol は直前の `clear_image` が落としており、
+        // `image_crop = None` が次の描画での作り直しの合図になる(kitty 側の残像掃除も clear_image が担当)。
+        self.image_src = Some(c.src.clone());
+        self.image_crop = None;
+        true
+    }
+
     fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
         matches!(
             kind,
@@ -6675,6 +6810,9 @@ impl App {
 
     /// Save the current working state to the active tab.
     fn save_active(&mut self) {
+        // このタブのメディアはこの後 clear_image で捨てられる。1枠だけ退避しておき、戻ってきた時に
+        // デコード/ラスタライズ/外部ツール起動をやり直さずに済ませる。
+        self.stash_media_cache();
         let snap = self.snapshot_tab();
         self.tabs[self.active_tab] = snap;
     }
@@ -6775,10 +6913,21 @@ impl App {
                 // PDF は保存ページを start_media_load の前に戻す(その世代でそのページをラスタライズする)。
                 self.pdf_page = t.pdf_page.max(1);
                 self.pdf_pages = t.pdf_pages;
-                self.start_media_load(&kind, &path);
+                // 直前に見ていたタブへ戻る等、同じファイル・同じ mtime・同じページなら、退避した
+                // デコード済み画像をそのまま使う(PDF/動画の外部ツール起動やラスタライズをやり直さない)。
+                let reused = self.restore_media_cache(&path, self.pdf_page);
+                if !reused {
+                    self.start_media_load(&kind, &path);
+                }
                 self.image_zoom = t.image_zoom;
                 self.image_center = t.image_center;
                 self.image_crop = None;
+                if reused {
+                    // 復元は apply_payload を通らないので、そこで走るはずのシャープ再ラスタが
+                    // 起動しない。再ラスタ中にタブを離れた SVG/mermaid がボケたまま戻るのを防ぐ
+                    // (ズーム復元後に呼ぶ＝必要密度は復元後の値で判定される)。
+                    self.maybe_sharpen_vector();
+                }
             }
         }
         // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
@@ -6819,7 +6968,9 @@ impl App {
         // 切替=再検証の節目として dirty を立て、次の描画の refresh_git_if_needed に取り直させる
         // (back_to_tree と同型。h/l 連打は dirty を立てないので最適化は保たれる)。
         self.git_status_dirty = true;
-        let _ = self.refresh_fs(false);
+        // プレビュー本体は上で既にディスクから組み直しているので、ここでは**再読込しない**
+        // (従来は refresh_fs → reload_preview が同じ仕事を繰り返し、CSV タブは全行パースが2回走っていた)。
+        let _ = self.refresh_fs_after_tab_switch();
     }
 
     pub fn tab_count(&self) -> usize {
@@ -6958,6 +7109,9 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::CantCloseLastTab).into());
             return;
         }
+        // 閉じるタブのメディアはもう誰も戻ってこない。1枠のキャッシュが握り続けると、
+        // どのタブとも無関係な画像が常駐したままになる。
+        self.drop_media_cache_for_active();
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
@@ -7096,6 +7250,13 @@ impl App {
         if i == self.active_tab {
             self.tab_close();
         } else {
+            // 閉じる(非アクティブ)タブのメディアをキャッシュが握っていたら手放す。
+            if let Some(t) = self.tabs.get(i) {
+                let closing = t.preview_path.clone();
+                if matches!((&self.media_cache, &closing), (Some(c), Some(p)) if &c.path == p) {
+                    self.media_cache = None;
+                }
+            }
             self.tabs.remove(i);
             if self.active_tab > i {
                 self.active_tab -= 1;

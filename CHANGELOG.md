@@ -6,6 +6,37 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Switching tabs in a git repository no longer waits for `git status`.** The whole-worktree scan is
+  now run on a worker thread and applied when it arrives, instead of blocking the UI. Every tab switch
+  used to force a fresh synchronous scan — it deliberately invalidated the per-workdir cache that makes
+  `h`/`l` instant, because a backgrounded tab can miss file-system events and must be re-validated.
+  That re-validation still happens; it just no longer holds up the keypress. Depending on which tab you
+  land on, the scan ran either inside the key handler (freezing the keystroke itself) or during the
+  tree draw. Measured on a real 4-tab session: switching to a tree tab in a git repo went from
+  **~11.3ms to ~1.5ms**, and the cost no longer grows with the size of the repository — a scan costs
+  ~5ms even on a six-file repo and hundreds of milliseconds on a large working tree.
+  While a scan is in flight the previously known statuses stay on screen (no blinking markers) and the
+  top-right busy indicator shows the git scan. Commands that *answer* from the status — `d` (open diff),
+  `C` (changed-only filter), `n`/`N` (jump to change), and the branch label right after a checkout —
+  still resolve synchronously, so they never report "no changes" merely because a scan is still running.
+  Re-validation requests that arrive while a scan is running are coalesced into a single follow-up scan
+  rather than starting one per file-system event.
+- **Switching tabs no longer rebuilds the preview twice.** `load_active` reopens the file itself and then
+  handed off to the generic filesystem-refresh path, whose `reload_preview()` repeated the same work — a
+  table tab re-parsed the whole CSV on every switch, a text tab reopened its window reader. External
+  edits still reload the preview exactly as before; only the redundant second pass on tab switch is gone.
+- **Returning to an image / PDF / SVG / video tab no longer re-decodes it.** Every switch used to redo
+  the work that produced the picture: an image decode, an SVG or mermaid rasterization, or a
+  `pdftocairo` / `ffmpeg` run — the last two costing hundreds of milliseconds. The most recently left
+  tab's decoded image is now kept in a single slot and reused when you switch back, keyed on path, size,
+  modification time, PDF page and mermaid-fence index. A tool that rewrites a file while preserving both
+  its mtime and its size (rare, but `cp -p` of an identically sized file would) can still show the
+  previous picture until you reopen it. Images over 128 MiB are not kept, and closing a tab releases its
+  cached image. The kitty image itself is still rebuilt and re-transmitted
+  for the new display geometry (measured ~26-33 ms to build plus ~62 ms to encode a 417 KB transfer);
+  reusing that as well would need the terminal-side image to be tracked across tabs and is not done.
+
 ## [0.18.1] - 2026-07-22
 
 ### Fixed

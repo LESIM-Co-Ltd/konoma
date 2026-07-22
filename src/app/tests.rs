@@ -9447,3 +9447,684 @@ fn tab_switch_re_verifies_git_status() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The whole-worktree `git status` scan must run on a **worker thread**, never on the UI thread.
+/// Regression guard for "switching tabs in a git repo freezes for the duration of `git status`":
+/// `refresh_git_if_needed` used to call `crate::git::statuses()` inline, so every root/tab change paid
+/// the full scan synchronously (~5ms even on a 6-file repo, hundreds of ms on a large one).
+#[cfg(feature = "git")]
+#[test]
+fn git_status_scan_is_offloaded_to_a_worker_thread() {
+    let dir = std::env::temp_dir().join("konoma_status_async_offload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("changed.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+
+    app.refresh_git_if_needed();
+
+    // 旧実装はこの時点で statuses を同期計算し workdir まで埋めていた(=UI が止まっていた)。
+    assert!(
+        app.git_status_pending.is_some(),
+        "別スレッドへ計算を投げているはず"
+    );
+    assert!(
+        app.git_status_workdir.is_none(),
+        "UI スレッドでは status を計算しない(旧実装ならここで Some になり落ちる)"
+    );
+
+    // ワーカーの結果を受け取って適用すると、初めて反映される。
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_statuses(res), "現世代の結果は適用される");
+    assert!(
+        app.git_status_workdir.is_some(),
+        "適用後は workdir が埋まる"
+    );
+    assert!(app.git_status_pending.is_none(), "適用で pending が解ける");
+    assert!(
+        app.git_status_of(&dir.join("changed.txt")).is_some(),
+        "未追跡ファイルの変更マーカーが反映される"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Switching tabs must still **re-validate** git status (background tabs miss FS events), but must not
+/// block the keypress to do it. Guards both halves: a scan is requested, yet the previously known
+/// statuses are still in place right after the switch (proving nothing was computed inline).
+#[cfg(feature = "git")]
+#[test]
+fn tab_switch_requests_git_status_without_blocking() {
+    let dir = std::env::temp_dir().join("konoma_status_async_tabswitch");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("first.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    // 初期状態を確定させる(first.txt だけが見えている)。
+    app.refresh_git_if_needed();
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("初回スキャン");
+    assert!(app.apply_statuses(res));
+    assert!(app.git_status_of(&dir.join("first.txt")).is_some());
+
+    // 裏で別のファイルが増える(= 切替時に取り直すべき変化)。
+    std::fs::write(dir.join("second.txt"), b"y").unwrap();
+
+    // 同一 root の2枚目のタブを作って切り替える。
+    app.tab_new().unwrap();
+    app.tab_cycle(1);
+
+    assert!(
+        app.git_status_pending.is_some(),
+        "タブ切替は再検証を要求する(背面タブは fs イベントを取りこぼすため)"
+    );
+    assert!(
+        app.git_status_of(&dir.join("second.txt")).is_none(),
+        "切替の時点ではまだ同期計算していない(旧実装なら既に second.txt が見えて落ちる)"
+    );
+
+    // ワーカーの結果が届いて初めて新しいファイルが見える。
+    let mut applied = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            applied |= app.apply_statuses(res);
+            if app.git_status_pending.is_none() {
+                break;
+            }
+        }
+    }
+    assert!(applied, "切替で投げたスキャンが適用される");
+    assert!(
+        app.git_status_of(&dir.join("second.txt")).is_some(),
+        "再検証の結果、裏で増えたファイルが反映される"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A scan that finishes after the user already moved on must be discarded (generation guard), so a slow
+/// scan of the previous root can never overwrite the status of the root now on screen.
+#[cfg(feature = "git")]
+#[test]
+fn stale_git_status_result_is_discarded() {
+    let dir = std::env::temp_dir().join("konoma_status_async_stale");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    init_git_repo(&dir);
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed();
+    let stale_gen = app.git_status_gen;
+
+    // 別 root へ移って新しい世代のスキャンを投げる。
+    app.git_status_dirty = true;
+    app.root = dir.join("sub");
+    app.refresh_git_if_needed();
+    assert_ne!(stale_gen, app.git_status_gen, "世代が進む");
+
+    let sentinel = dir.join("__sentinel__");
+    let stale = crate::app::StatusResult {
+        gen: stale_gen,
+        workdir: Some(dir.clone()),
+        statuses: std::collections::HashMap::from([(
+            sentinel.clone(),
+            crate::git::FileStatus::Modified,
+        )]),
+        branch: Some("stale".into()),
+    };
+    assert!(!app.apply_statuses(stale), "古い世代の結果は捨てる");
+    assert!(
+        app.git_status_of(&sentinel).is_none(),
+        "捨てた結果で status を汚染しない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The render path must not re-dispatch a scan on every frame while one is in flight, and must not
+/// re-scan at all once the result has landed (the per-workdir cache = Phase G).
+#[cfg(feature = "git")]
+#[test]
+fn repeated_renders_dispatch_at_most_one_git_status_scan() {
+    let dir = std::env::temp_dir().join("konoma_status_async_norekick");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+
+    // 結果を**まだ適用せず**に描画相当を 20 回繰り返す(=スキャン走行中の描画)。
+    for _ in 0..20 {
+        app.refresh_git_if_needed();
+    }
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1本目の結果");
+    // 投げた本数はチャネルに届く結果数で数える(STATUS_CALLS はプロセス共有で並列テストを拾う)。
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "走行中は描画のたびに git status を投げ直してはいけない"
+    );
+    assert!(app.apply_statuses(res));
+
+    // 適用後にさらに描画しても再スキャンしない(workdir 単位キャッシュ=Phase G)。
+    for _ in 0..20 {
+        app.refresh_git_if_needed();
+    }
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "適用後も描画のたびに再スキャンしてはいけない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Re-validation requests that arrive while a scan is running must be **coalesced** into a single
+/// follow-up scan, not spawn one scan per event. The synchronous implementation was self-throttling
+/// (the next event waited for the scan); the async one is not, so without coalescing an agent writing
+/// files would stack up one whole-worktree scan per FS event — worst exactly on the large repos this
+/// change is meant to help.
+#[cfg(feature = "git")]
+#[test]
+fn concurrent_refresh_requests_are_coalesced_into_one_rescan() {
+    let dir = std::env::temp_dir().join("konoma_status_async_coalesce");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed(); // 1本目を走らせる(未適用のまま=走行中)
+
+    // 走行中に fs イベントが 10 連続で来る(エージェントの書き込みバースト相当)。
+    for i in 0..10 {
+        std::fs::write(dir.join(format!("burst_{i}.txt")), b"y").unwrap();
+        app.refresh_fs(false).unwrap();
+    }
+    // 投げたスキャン本数は「チャネルに届く結果の数」で数える(プロセス共有の STATUS_CALLS は
+    // 並列実行される他テストの git 呼び出しを拾ってしまうため使わない)。
+    let first = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1本目");
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "走行中の再検証要求はスレッドを増やさない(合体させる)"
+    );
+
+    // 1本目の結果を適用 → 溜まっていた要求を**1回だけ**引き継いで再スキャンする。
+    app.apply_statuses(first);
+    let second = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("合体した再スキャンが1本走る");
+    app.apply_statuses(second);
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "10 イベントぶんの要求は 1 回の再スキャンに合体される(何本も走らない)"
+    );
+    assert!(
+        app.git_status_of(&dir.join("burst_9.txt")).is_some(),
+        "合体後の再スキャンで最新の変更まで反映される(バーストの最後を取りこぼさない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `C` (changed-only filter) derives its entry list from the statuses, so the list must be rebuilt when
+/// an async scan lands — a repaint alone cannot fix it. Guards the Agent Watch live-update path.
+#[cfg(feature = "git")]
+#[test]
+fn changed_filter_list_follows_async_status_results() {
+    let dir = std::env::temp_dir().join("konoma_status_async_changedfilter");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("first.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter(); // `C`: 同期契約なのでその場で一覧が立つ
+    assert!(app.changed_filter, "変更ファイルのみ表示になる");
+    assert!(app.entries.iter().any(|e| e.path.ends_with("first.txt")));
+
+    // エージェントが新規ファイルを作る → fs イベント(非同期スキャンを投げるだけ)。
+    std::fs::write(dir.join("agent_new.txt"), b"y").unwrap();
+    app.refresh_fs(false).unwrap();
+    // 結果が届いて初めて一覧に載る。
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res);
+    assert!(
+        app.entries
+            .iter()
+            .any(|e| e.path.ends_with("agent_new.txt")),
+        "非同期スキャンの到着で C の一覧が作り直される(再描画だけでは直らない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Commands that answer *from* the status (`d` = open diff) must not report "no changes" merely because
+/// a background scan is still running: that reads as a broken feature rather than a slow one.
+#[cfg(feature = "git")]
+#[test]
+fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
+    let dir = std::env::temp_dir().join("konoma_status_async_opendiff");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("tracked.txt"), b"one\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    std::fs::write(dir.join("tracked.txt"), b"one\ntwo\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx); // 以後 status は非同期(=押した瞬間はまだ届いていない)
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("tracked.txt"))
+        .unwrap();
+
+    app.tree_open_git_diff();
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::GitDiff(_))),
+        "スキャン走行中でも `d` は diff を開く(flash={:?})",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A landing scan result must not rewind `git_status_for` to the root the scan *started* at. Within one
+/// repo `l`/`h` take the cache-reuse path (no new generation), so the result can land after the root has
+/// moved; writing the old root back made the next FS event's `refresh_git_status_only` early-return and
+/// **drop a whole re-validation** — the last write of an agent's burst could then stay invisible until
+/// the next tab switch.
+#[cfg(feature = "git")]
+#[test]
+fn landing_status_result_keeps_tracking_the_current_root() {
+    use std::sync::atomic::Ordering;
+    let dir = std::env::temp_dir().join("konoma_status_async_rootrewind");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("sub").join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    // 1度適用して workdir キャッシュを確立(以後 `l` は流用パス=世代が進まない)。
+    app.refresh_git_if_needed();
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("初回");
+    assert!(app.apply_statuses(res));
+
+    // 再検証を要求してスキャンを走らせ(未適用のまま)、その最中に `l` で sub へ潜る。
+    app.git_status_dirty = true;
+    app.refresh_git_if_needed(); // kick(この時点の root = repo root)
+    let i = app
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("sub"))
+        .expect("sub");
+    app.selected = i;
+    app.tree_descend().unwrap();
+    app.refresh_git_if_needed(); // 同一 repo=流用パス(世代は進まない)
+    assert!(app.root.ends_with("sub"));
+
+    // 走行中だった結果が今ここで届く。
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("走行中だった結果");
+    app.apply_statuses(res);
+
+    // 直後の fs イベントが再検証を投げられること(旧実装は early return で丸ごと落としていた)。
+    crate::git::STATUS_CALLS.store(0, Ordering::SeqCst);
+    std::fs::write(dir.join("sub").join("burst.txt"), b"y").unwrap();
+    app.refresh_fs(false).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "結果適用の直後でも fs イベントの再検証は投げられる(取りこぼさない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Switching to a tab must build its preview **once**. `load_active` rebuilds the preview from disk
+/// itself, and then used to hand off to the generic FS-refresh path, whose `reload_preview()` repeated
+/// the same work — a table tab re-parsed the whole CSV twice on every switch.
+#[test]
+fn tab_switch_parses_a_table_preview_only_once() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_tabswitch_single_parse"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut csv = String::from("a,b,c\n");
+    for i in 0..200 {
+        csv.push_str(&format!("{i},x,y\n"));
+    }
+    std::fs::write(dir.join("data.csv"), &csv).unwrap();
+    std::fs::write(dir.join("other.txt"), b"plain\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // タブ1 = data.csv のプレビュー、タブ2 = ツリー。
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("data.csv"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    assert!(matches!(app.preview_kind, Some(PreviewKind::Table { .. })));
+    app.tab_new().unwrap();
+
+    // タブ1(表)へ戻る = load_active が走る。
+    crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
+    app.tab_cycle(1);
+    assert!(
+        matches!(app.preview_kind, Some(PreviewKind::Table { .. })),
+        "表タブへ戻っている"
+    );
+    assert_eq!(
+        crate::preview::table::PARSE_CALLS.with(|c| c.get()),
+        1,
+        "タブ切替での CSV 全行パースは1回だけ(旧実装は load_active と reload_preview で2回)"
+    );
+    assert!(app.table_data.is_some(), "表の中身は復元されている");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it
+/// (an image decode, an SVG/mermaid rasterization, or a `pdftocairo`/`ffmpeg` run costing hundreds of
+/// milliseconds). Reuse is keyed on `(path, mtime, page)`, so an externally edited file is still re-read.
+#[test]
+fn returning_to_a_media_tab_reuses_the_decoded_image() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("pic.png");
+    std::fs::write(&img, b"not-a-real-png").unwrap(); // 中身は使わない(デコード結果は下で直接入れる)
+    std::fs::write(dir.join("note.txt"), b"x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // 画像プレビュー相当の状態を作る(picker 無しでもデコード済み状態を再現できる)。
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("pic.png"))
+        .unwrap();
+    app.mode = Mode::Preview;
+    app.preview_path = Some(img.clone());
+    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    let decoded = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
+    app.image_src = Some(decoded.clone());
+    app.preview_media_mtime = crate::app::file_mtime(&img);
+
+    // 別タブへ移り、戻る。
+    app.tab_new().unwrap();
+    app.tab_cycle(1);
+
+    assert!(
+        app.image_src.is_some(),
+        "戻ったタブの画像が復元されている(旧実装は毎回デコードし直していた)"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(app.image_src.as_ref().unwrap(), &decoded),
+        "同一のデコード済み画像を再利用している(作り直していない)"
+    );
+
+    // 外部でファイルが変わったら再利用しない(古い絵を出さない)。
+    app.tab_cycle(1); // 退避
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(&img, b"changed-bytes").unwrap();
+    app.tab_cycle(1); // 画像タブへ戻る
+    assert!(
+        app.image_src.is_none()
+            || !std::sync::Arc::ptr_eq(app.image_src.as_ref().unwrap(), &decoded),
+        "mtime が変わったら退避分を使い回さない(外部編集に追従)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The one-slot media cache must not turn into a hidden hundreds-of-megabytes resident buffer. The cap
+/// is measured in **bytes, not pixels**: a 16-bit image is 8 bytes per pixel (HDR/EXR is 12), so a
+/// pixel-count cap lets exactly the heaviest formats through.
+#[test]
+fn oversized_media_is_not_cached() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_cap"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("huge.png");
+    std::fs::write(&img, b"x").unwrap();
+    std::fs::write(dir.join("note.txt"), b"x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.mode = Mode::Preview;
+    app.preview_path = Some(img.clone());
+    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.preview_media_mtime = crate::app::file_mtime(&img);
+    // 17M 画素 = 画素数だけ見れば「32MP 上限」を通ってしまうが、16bit(8B/px)なので 136MB。
+    // バッファは 1 行に寄せてメモリを実寸のまま扱う(幅だけ極端に大きい画像)。
+    let huge = image::DynamicImage::ImageRgba16(image::ImageBuffer::new(17_000_000, 1));
+    assert!(
+        huge.as_bytes().len() > 128 * 1024 * 1024,
+        "テスト前提: 128MiB を超えるバッファ"
+    );
+    app.image_src = Some(std::sync::Arc::new(huge));
+
+    app.tab_new().unwrap(); // save_active 経由で退避が走る
+    assert!(
+        app.media_cache.is_none(),
+        "バイト上限超えの画像は退避しない(画素数だけの判定では素通りしていた)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A full-screen mermaid fence keeps `preview_path` pointing at the Markdown file, so the media cache
+/// must also key on which fence it is. Otherwise two tabs showing different diagrams of the *same*
+/// document swap pictures on switch.
+#[test]
+fn media_cache_distinguishes_mermaid_fences_of_one_document() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_fence"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(
+        &doc,
+        "# d\n\n```mermaid\nflowchart TD\nA-->B\n```\n\n```mermaid\nflowchart TD\nC-->D\n```\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.mode = Mode::Preview;
+    app.preview_path = Some(doc.clone());
+    app.preview_media_mtime = crate::app::file_mtime(&doc);
+    // フェンス#1 を全画面表示している状態で、その図を退避させる。
+    app.preview_kind = Some(PreviewKind::MermaidFence(1));
+    let fence1 = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
+    app.image_src = Some(fence1.clone());
+    app.tab_new().unwrap(); // save_active → stash(fence_ord=1)
+
+    // 別タブが**同じ文書のフェンス#0**を開いている状態に戻る。
+    app.mode = Mode::Preview;
+    app.preview_path = Some(doc.clone());
+    app.preview_kind = Some(PreviewKind::MermaidFence(0));
+    app.image_src = None;
+    let restored = app.restore_media_cache(&doc, 1);
+    assert!(
+        !restored && app.image_src.is_none(),
+        "別のフェンスの図を使い回さない(序数までキーに含める)"
+    );
+    // 同じフェンスなら再利用する。
+    app.preview_kind = Some(PreviewKind::MermaidFence(1));
+    assert!(app.restore_media_cache(&doc, 1), "同一フェンスは再利用");
+    assert!(std::sync::Arc::ptr_eq(
+        app.image_src.as_ref().unwrap(),
+        &fence1
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Closing a tab must release its cached image — otherwise the one slot keeps an image that no tab can
+/// ever reuse (a silent resident buffer).
+#[test]
+fn closing_a_media_tab_releases_its_cached_image() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_close"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("pic.png");
+    std::fs::write(&img, b"x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.mode = Mode::Preview;
+    app.preview_path = Some(img.clone());
+    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.preview_media_mtime = crate::app::file_mtime(&img);
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
+        image::RgbaImage::new(4, 4),
+    )));
+
+    app.tab_new().unwrap(); // 退避される
+    assert!(app.media_cache.is_some(), "前提: 退避されている");
+    app.tab_cycle(1); // 画像タブへ戻る
+    app.tab_close(); // そのタブを閉じる
+    assert!(
+        app.media_cache.is_none(),
+        "閉じたタブの画像は手放す(誰も再利用できない常駐を残さない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `cp -p` / `rsync -a` / archive extraction **preserve the mtime**, so the cache must also compare the
+/// file size; otherwise switching back keeps showing the previous picture.
+#[test]
+fn media_cache_misses_when_size_changes_under_the_same_mtime() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_mtime"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("pic.png");
+    std::fs::write(&img, b"original").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.mode = Mode::Preview;
+    app.preview_path = Some(img.clone());
+    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.preview_media_mtime = crate::app::file_mtime(&img);
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
+        image::RgbaImage::new(4, 4),
+    )));
+    app.tab_new().unwrap(); // 退避
+
+    // 中身とサイズを変え、mtime だけ元に戻す(cp -p 相当)。
+    let stamp = std::fs::metadata(&img).unwrap().modified().unwrap();
+    std::fs::write(&img, b"replaced-with-different-size").unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
+    f.set_modified(stamp).unwrap();
+    drop(f);
+    assert_eq!(
+        crate::app::file_mtime(&img),
+        Some(stamp),
+        "mtime は同一に戻った"
+    );
+
+    app.image_src = None;
+    assert!(
+        !app.restore_media_cache(&img, 1),
+        "mtime が同じでもサイズが違えば使い回さない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Switching back to a tab that has the changed-only filter (`C`) on, from a tab in a **different**
+/// repository, must not silently drop the filter. The status scan for the returning repo is still in
+/// flight at that moment, so rebuilding the list from the (momentarily empty) statuses concluded "no
+/// changes", turned the filter off and flashed a false "no changed files".
+#[cfg(feature = "git")]
+#[test]
+fn changed_filter_survives_returning_from_another_repo() {
+    let base = std::env::temp_dir().join(unique_tmp("konoma_changed_filter_two_repos"));
+    let _ = std::fs::remove_dir_all(&base);
+    let (a, b) = (base.join("repo_a"), base.join("repo_b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    init_git_repo(&a);
+    init_git_repo(&b);
+    std::fs::write(a.join("changed.txt"), b"x").unwrap();
+    std::fs::write(b.join("other.txt"), b"y").unwrap();
+    let (a, b) = (a.canonicalize().unwrap(), b.canonicalize().unwrap());
+
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter(); // `C` は同期契約なので即座に一覧が立つ
+    assert!(app.changed_filter, "前提: 変更ファイルのみ表示");
+
+    // 別 repo のタブへ移り、そこで status を確定させる。
+    app.tab_new().unwrap();
+    app.root = b.clone();
+    app.open_dir = b.clone();
+    app.rebuild_tree().unwrap();
+    app.refresh_git_if_needed();
+    while let Ok(res) = rx.try_recv() {
+        app.apply_statuses(res);
+    }
+
+    // repo A のタブへ戻る(この時点で A の status は走行中)。
+    app.tab_cycle(1);
+    assert!(
+        app.changed_filter,
+        "スキャン走行中でもフィルタは維持される(旧実装は解除+偽 flash)"
+    );
+    assert_ne!(
+        app.flash.as_deref(),
+        Some("no changed files"),
+        "嘘の「変更なし」を出さない"
+    );
+
+    // 結果が届けば一覧が作り直される。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while app.git_status_pending.is_some() && std::time::Instant::now() < deadline {
+        if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            app.apply_statuses(res);
+        }
+    }
+    assert!(app.changed_filter, "到着後もフィルタは生きている");
+    assert!(
+        app.entries.iter().any(|e| e.path.ends_with("changed.txt")),
+        "到着した status で一覧が作り直される"
+    );
+    std::fs::remove_dir_all(&base).ok();
+}

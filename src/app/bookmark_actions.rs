@@ -382,7 +382,7 @@ impl App {
             self.rebuild_tree_notify();
             return;
         }
-        self.refresh_git_if_needed();
+        self.ensure_git_status_now(); // `C` は status から答えを出す=走行中なら待つ(偽の「変更なし」を出さない)
         if self.changed_paths().is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
             return;
@@ -431,7 +431,7 @@ impl App {
             self.diff_jump_changed(dir);
             return;
         }
-        self.refresh_git_if_needed();
+        self.ensure_git_status_now(); // `n`/`N` も status から答えを出す
         let paths = self.changed_paths();
         if paths.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
@@ -484,7 +484,7 @@ impl App {
         let paths = if self.diff_follow_scope {
             self.follow_session_paths()
         } else {
-            self.refresh_git_if_needed();
+            self.ensure_git_status_now();
             self.changed_paths()
         };
         if paths.is_empty() {
@@ -573,14 +573,20 @@ impl App {
         let status_reusable = self.git_status_workdir.is_some()
             && self.git_status_workdir == wd
             && !self.git_status_dirty;
-        if !status_reusable {
-            self.git_status = crate::git::statuses(&self.root);
-            self.git_branch = crate::git::branch(&self.root);
-            self.git_status_workdir = wd.clone();
-            self.git_status_dirty = false;
+        if status_reusable {
+            // 同一 repo かつ再検証要求なし: 既存の status をそのまま流用する(`l`/`h` 潜行の最適化)。
+            self.git_status_for = Some(self.root.clone());
+        } else {
+            // フル `git status`(全 worktree 走査)は**別スレッドへ**逃がす。到着まで直前の status を
+            // 見せ続けるので、ツリーは即座に描ける(原則「UI をブロックしない」)。
+            self.kick_status_refresh(wd.clone());
         }
-        self.git_status_for = Some(self.root.clone());
+        self.refresh_ignored_if_needed(wd);
+    }
 
+    /// The `ignored` half of `refresh_git_if_needed`, split out so the synchronous
+    /// `ensure_git_status_now` can reuse it without also going through the async status dispatch.
+    fn refresh_ignored_if_needed(&mut self, wd: Option<PathBuf>) {
         // 重い ignored(無視セット)は **repo(workdir)が変わった時だけ** 作り直す。同一リポジトリ内の
         // サブディレクトリへ潜っても無視ルールは同一なので流用する(`l` 潜行時の再計算を回避)。
         let different_repo = self.git_ignored_for != wd;
@@ -617,6 +623,150 @@ impl App {
     /// Attach the Sender of the worker that computes `ignored` in the background (called by main at startup).
     pub fn attach_git_loader(&mut self, tx: std::sync::mpsc::Sender<IgnoredResult>) {
         self.ignored_tx = Some(tx);
+    }
+
+    /// Attach the Sender of the worker that computes `statuses`+`branch` in the background (called by main at startup).
+    pub fn attach_status_loader(&mut self, tx: std::sync::mpsc::Sender<crate::app::StatusResult>) {
+        self.status_tx = Some(tx);
+    }
+
+    /// Request a `git status` refresh for the current root, **without blocking**.
+    ///
+    /// Within the same repository the previous statuses are deliberately **kept on screen until the new
+    /// ones arrive**: entries are keyed by absolute path, so nothing shifts under the cursor and the
+    /// markers don't blink off on every root/tab change. Moving to a **different repo** does clear them,
+    /// because `git_branch` (the tree title) and `git_has_changes()` (the gutter column) are *not*
+    /// path-keyed and would otherwise show the previous repository's branch for the length of a scan.
+    fn kick_status_refresh(&mut self, wd: Option<PathBuf>) {
+        // 同一 root のスキャンが既に走行中なら **新たに spawn しない**。再検証要求(dirty)は立てたまま
+        // 残し、結果到着時(`apply_statuses`)に1回だけ引き継いで再実行する = **要求の合体**。
+        // 同期実行だった頃はスキャン所要時間が次の要求を自然に律速していたが、非同期化でその律速が
+        // 消えるため、ここで合体させないと fs イベント毎に全 worktree 走査が積み上がる
+        // (エージェントが書き続ける大 repo ほど悪化する = この修正が狙った状況そのもの)。
+        if self.git_status_pending.as_deref() == Some(self.root.as_path()) {
+            return;
+        }
+        // 別 repo へ移ったら、パスキーでない派生表示(ブランチ名/ガター列の有無)が前の repo のまま
+        // 残らないよう捨てる。同一 repo 内(`l`/`h`)ではここを通らないのでチラつかない。
+        if self.git_status_workdir != wd {
+            self.git_status.clear();
+            self.git_branch = None;
+            self.git_status_workdir = None;
+        }
+        self.git_status_gen = self.git_status_gen.wrapping_add(1);
+        self.git_status_pending = Some(self.root.clone());
+        // 要求はこの世代の計算が引き受けた。以後の再検証要求は次の世代で拾う。
+        self.git_status_dirty = false;
+        // 「この root の status を持っている/取得中」の印。これを進めておかないと、結果が届くまで
+        // 毎描画で kick し直してしまう(上の inflight ガードと二重防御)。
+        self.git_status_for = Some(self.root.clone());
+        let gen = self.git_status_gen;
+        let root = self.root.clone();
+        self.spawn_or_sync_statuses(root, wd, gen);
+    }
+
+    /// Compute `statuses`+`branch` on a separate thread and return them via the Sender. With no Sender attached
+    /// (tests / no channel), fall back to **synchronous** computation and application, so unit tests that don't
+    /// drive a run loop still observe the result immediately (same contract as `spawn_or_sync_ignored`).
+    fn spawn_or_sync_statuses(&mut self, root: PathBuf, workdir: Option<PathBuf>, gen: u64) {
+        // repo でない(no-git ビルド含む)なら結果は自明に空。スレッドを起こさず即座に確定させる。
+        if workdir.is_none() {
+            let res = crate::app::StatusResult {
+                gen,
+                statuses: Default::default(),
+                branch: None,
+                workdir,
+            };
+            self.apply_statuses(res);
+            return;
+        }
+        let Some(tx) = self.status_tx.clone() else {
+            let res = Self::scan_statuses(root, workdir, gen);
+            self.apply_statuses(res);
+            return;
+        };
+        std::thread::spawn(move || {
+            // ワーカーが panic すると結果が返らず `git_status_pending` が永久に残り、スピナーが
+            // 回り続け status も凍結する。他のワーカーと同じ安全網で必ず結果を返す(原則#3)。
+            if let Some(res) =
+                crate::preview::markdown::catch_silent(|| Self::scan_statuses(root, workdir, gen))
+            {
+                let _ = tx.send(res);
+            }
+        });
+    }
+
+    /// The actual scan (pure: no `&self`), shared by the worker thread and the synchronous fallbacks.
+    fn scan_statuses(
+        root: PathBuf,
+        workdir: Option<PathBuf>,
+        gen: u64,
+    ) -> crate::app::StatusResult {
+        crate::app::StatusResult {
+            gen,
+            statuses: crate::git::statuses(&root),
+            branch: crate::git::branch(&root),
+            workdir,
+        }
+    }
+
+    /// Guarantee `git_status`/`git_branch` describe the working tree **right now**, computing synchronously
+    /// if a background scan is still in flight.
+    ///
+    /// The two paths have deliberately different contracts:
+    /// - `refresh_git_if_needed` = the **render path**. Never blocks; a stale frame is fine because the
+    ///   result lands a moment later and repaints.
+    /// - this = an **explicit user command** whose answer is derived from the status (`d` open diff,
+    ///   `C` changed-only filter, `n`/`N` jump to change, the branch label right after a checkout).
+    ///   These must not answer "no changes" just because a scan hasn't finished — that reads as a broken
+    ///   feature rather than a slow one.
+    pub fn ensure_git_status_now(&mut self) {
+        let wd = crate::git::workdir(&self.root);
+        // 走行中でなく、同一 repo の最新を既に持っているなら何もしない(`l`/`h` の流用と同じ判定)。
+        let fresh = self.git_status_pending.is_none()
+            && self.git_status_workdir.is_some()
+            && self.git_status_workdir == wd
+            && !self.git_status_dirty;
+        if fresh {
+            self.git_status_for = Some(self.root.clone());
+        } else {
+            // ここでは**別スレッドへ投げない**。投げてから同期計算すると、捨てるだけのフル走査を
+            // 1本余計に走らせることになる(大 repo ほど無駄が大きい)。世代を進めることで、既に
+            // 走行中だったスキャンの結果は届いても破棄される。
+            self.git_status_gen = self.git_status_gen.wrapping_add(1);
+            self.git_status_dirty = false;
+            self.git_status_pending = None;
+            let res = Self::scan_statuses(self.root.clone(), wd.clone(), self.git_status_gen);
+            self.apply_statuses(res);
+        }
+        self.refresh_ignored_if_needed(wd);
+    }
+
+    /// Apply a `statuses` result from the other thread. Discards results whose generation is stale (the user
+    /// moved to another root/tab while it was computing). Returns true if state changed (the caller redraws).
+    pub fn apply_statuses(&mut self, res: crate::app::StatusResult) -> bool {
+        if res.gen != self.git_status_gen {
+            return false; // 陳腐化: 既に別 root/タブへ移っている
+        }
+        self.git_status = res.statuses;
+        self.git_branch = res.branch;
+        self.git_status_workdir = res.workdir;
+        // 世代が一致 = この結果は現在の workdir のもの。スキャン開始時点の root は、同一 repo 内で
+        // `l`/`h` が動いていると現在の root と食い違う。食い違ったまま記録すると、次の fs イベントで
+        // `refresh_git_status_only` が早期 return して**再検証を丸ごと取りこぼす**ため、現在の root を入れる。
+        self.git_status_for = Some(self.root.clone());
+        self.git_status_pending = None;
+        // 計算中に届いていた再検証要求(合体分)をここで1回だけ実行する。
+        if self.git_status_dirty {
+            let wd = crate::git::workdir(&self.root);
+            self.kick_status_refresh(wd);
+        }
+        // 「変更ファイルのみ」フィルタの一覧は statuses から**導出済みの entries** なので、再描画では
+        // 直らない。新しい status が届いたこの瞬間に作り直す(エージェントの編集への live 追従)。
+        if self.changed_filter {
+            self.reapply_changed_filter();
+        }
+        true
     }
 
     /// Compute the heavy `git::ignored(root)` on a separate thread and return the result via the Sender. If no Sender is attached (tests /
@@ -714,6 +864,24 @@ impl App {
         recompute_ignored: bool,
         changed: &[std::path::PathBuf],
     ) -> Result<()> {
+        self.refresh_fs_inner(recompute_ignored, changed, true)
+    }
+
+    /// The tab-switch variant: refresh the tree / git status / derived views, but **do not reload the
+    /// preview**. `load_active` has just rebuilt it from disk itself (`setup_windowed` reopens the file,
+    /// `load_table` re-parses it, `md_cache = None` makes the next draw re-read the source, and
+    /// `start_media_load` re-reads the media), so going through `reload_preview` here only repeated the
+    /// same work — a second full CSV parse for a table tab, a second window open for a text tab.
+    pub(super) fn refresh_fs_after_tab_switch(&mut self) -> Result<()> {
+        self.refresh_fs_inner(false, &[], false)
+    }
+
+    fn refresh_fs_inner(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) -> Result<()> {
         if recompute_ignored {
             self.git_status_for = None; // 次の描画で statuses+branch を再計算
             self.git_status_dirty = true; // 無視ルール変更で status 出力も変わり得る=workdir キャッシュを無効化
@@ -731,7 +899,13 @@ impl App {
         // 変更ファイルのみフィルタ中は一覧を最新の statuses から作り直す(エージェントの編集に追従)。
         if self.changed_filter {
             self.refresh_git_if_needed();
-            self.reapply_changed_filter();
+            // スキャン走行中に作り直してはいけない。別 repo のタブから戻った直後は `git_status` が
+            // 空(kick が別 repo の残骸を捨てた直後)なので、ここで作り直すとフィルタが「変更ゼロ」と
+            // 判断されて**黙って解除され、嘘の「no changed files」まで出る**。結果到着時に
+            // `apply_statuses` が作り直すので、待てばよい。
+            if self.git_status_pending.is_none() {
+                self.reapply_changed_filter();
+            }
         }
         // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
         self.selection.retain(|p| p.symlink_metadata().is_ok());
@@ -739,7 +913,8 @@ impl App {
         if self.is_git_view() {
             self.git_view_reload();
         }
-        if matches!(self.mode, Mode::Preview) && self.preview_affected_by(changed) {
+        if reload_preview && matches!(self.mode, Mode::Preview) && self.preview_affected_by(changed)
+        {
             self.reload_preview();
         }
         tree
@@ -777,10 +952,10 @@ impl App {
         if self.git_status_for.as_deref() != Some(self.root.as_path()) {
             return;
         }
-        self.git_status = crate::git::statuses(&self.root);
-        self.git_branch = crate::git::branch(&self.root);
-        // このリポジトリの最新 status を持った=workdir キャッシュを更新し dirty を解消。
-        self.git_status_workdir = crate::git::workdir(&self.root);
-        self.git_status_dirty = false;
+        // 再取得は**別スレッド**へ。ここは `handle_key` の中(fs イベント/タブ切替)から呼ばれるので、
+        // 同期実行するとキー入力そのものが `git status` の時間だけ固まっていた。
+        let wd = crate::git::workdir(&self.root);
+        self.git_status_dirty = true; // 同一 workdir でも取り直す(再検証要求)
+        self.kick_status_refresh(wd);
     }
 }

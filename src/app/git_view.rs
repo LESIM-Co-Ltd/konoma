@@ -225,7 +225,9 @@ impl App {
     /// If the file at the tree cursor has git changes, open its diff **directly** (without going through `o`).
     /// For a directory / no changes / outside a repo, only flashes. Closing (q/Esc) returns to the tree.
     pub fn tree_open_git_diff(&mut self) {
-        self.refresh_git_if_needed(); // 念のため最新の git status に
+        // `d` は status から「変更あり/なし」を判定する=走行中なら待つ。非同期のまま読むと、
+        // スキャン中に押しただけで「no changes」と拒否され機能が壊れて見える。
+        self.ensure_git_status_now();
         let Some(e) = self.entries.get(self.selected) else {
             return;
         };
@@ -434,7 +436,7 @@ impl App {
         match crate::git::checkout(&self.root, &name) {
             Ok(()) => {
                 self.refresh()?;
-                self.refresh_git_if_needed(); // ブランチ名/状態のキャッシュを即更新(描画前でも正)
+                self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
                 self.close_git_branches();
                 self.flash = Some(format!(
                     "{}: {name}",
