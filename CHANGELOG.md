@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-22
+
 ### Fixed
 - **`h`/`l` navigation is no longer slow in large git repos.** Moving the root with `h`/`l` re-ran a
   full `git status` (a whole-worktree scan) every time — 0.3 s+ on a large repo, on every keypress.
@@ -732,7 +734,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.0...v0.15.1
