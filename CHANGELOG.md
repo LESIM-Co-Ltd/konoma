@@ -6,6 +6,24 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-07-22
+
+### Fixed
+- **Checkboxes on `*` and `+` bullets can be toggled again.** GFM task lists accept any bullet
+  (`-`, `*`, `+`) and konoma rendered all three as checkboxes, but the source scanner used to write
+  the toggle back only recognized `-`, so the toggle's safety check mismatched and cancelled every
+  toggle with "file changed on disk — reloaded". `*` and `+` task lists now toggle like `-` ones.
+  (A known remaining edge case: a task placed *inside* a `> [!NOTE]` alert or a `<details>` block can
+  still trip the same safe guard; the toggle is cancelled rather than writing to the wrong place.)
+
+### Tests
+- Expanded the test suite substantially (no runtime behavior change): coverage for the math/image
+  inline-cell sizing, table paging, Markdown task-toggle guards, the file-info popup render, and the
+  paste-jump parser edge cases + navigation; hot-path **speed** regression guards for Markdown
+  decoration, CSV tables, windowed paging, the kitty transmit path, git diff/views, and tab switching;
+  and a test-only counting allocator with **memory** guards (MdCache reuse, windowed previews not
+  scaling with file size, per-tab struct size, table row cap).
+
 ## [0.18.0] - 2026-07-22
 
 ### Fixed
@@ -734,7 +752,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.15.1...v0.16.0
