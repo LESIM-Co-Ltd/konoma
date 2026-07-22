@@ -1535,6 +1535,59 @@ fn md_task_toggle_cycles_and_writes_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `*` と `+` の箇条書きのチェックボックスもトグルできる(source scanner が `-` しか認識せず、
+/// 個数照合が外れて「file changed on disk」で全キャンセルされていた・ユーザー報告 2026-07-22)。
+#[test]
+fn md_task_toggle_star_and_plus_bullets() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join("konoma_md_task_star_plus");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    // `*`/`+` 箇条書き(GFM 準拠)。tui-markdown は3種ともチェックボックス描画する。
+    std::fs::write(&f, "* [ ] star task\n+ [ ] plus task\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("todo.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(72, 12)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert_eq!(app.md_items.len(), 2, "star/plus 両方がタスクとして認識");
+
+    // 1つ目(star)をトグル → キャンセルされず書き戻る。flash に「changed on disk」は出ない。
+    app.md_focus_move(1);
+    app.md_toggle_focused_task();
+    let s = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        s.contains("* [x] star task"),
+        "star タスクがトグルできる: {s}"
+    );
+    assert!(s.contains("+ [ ] plus task"), "他行は不変: {s}");
+    assert!(
+        app.flash
+            .as_deref()
+            .map(|m| !m.contains("changed on disk"))
+            .unwrap_or(true),
+        "「file changed on disk」でキャンセルされない: {:?}",
+        app.flash
+    );
+
+    // 2つ目(plus)も。
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_focus_move(1);
+    app.md_toggle_focused_task();
+    let s = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        s.contains("+ [x] plus task"),
+        "plus タスクもトグルできる: {s}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn md_task_toggle_custom_states_cycle() {
     use ratatui::backend::TestBackend;
@@ -1637,6 +1690,274 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
         "- [x] a\r\n\r\ntail\r\n"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// トグルの安全ガード: ①どのチェックボックスにもフォーカスしていなければ無操作(書かない)
+/// ②表示中ファイルが読めなくなっていたら flash で通知して安全に戻る(クラッシュしない・原則#3)。
+#[test]
+fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join("konoma_md_task_guard_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "- [ ] a\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(app.md_has_tasks());
+    // ①未フォーカス(Tab を押していない)ではトグルしても書かない。
+    assert!(app.focused_item.is_none());
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [ ] a\n",
+        "未フォーカスでは書かない"
+    );
+    // ②フォーカスした状態でファイルが消えたら flash + 無操作(パニックしない)。
+    app.md_focus_move(1);
+    assert!(app.md_focused_task());
+    std::fs::remove_file(&f).unwrap();
+    app.md_toggle_focused_task();
+    assert!(app.flash.is_some(), "読取エラーは flash で通知");
+    assert!(!f.exists(), "書き直さない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 書込みが拒否されても(読取専用ファイル)クラッシュせず flash で通知し、内容を壊さない(原則#3)。
+#[cfg(unix)]
+#[test]
+fn md_task_toggle_flashes_on_write_error() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join("konoma_md_task_wrerr_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("todo.md");
+    std::fs::write(&f, "- [ ] a\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    app.md_focus_move(1);
+    // 読取専用にする: 読み(照合)は通るが書込みが EACCES で失敗する。
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+    app.md_toggle_focused_task();
+    assert!(app.flash.is_some(), "書込みエラーは flash で通知");
+    // 書込みが拒否されたので内容は元のまま。
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [ ] a\n",
+        "拒否されたら壊さない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// ファイル情報ポップアップ(`i`)の描画: 通常ファイル/ディレクトリ(項目数)/読めない対象(エラー行)/
+/// 対象なし(早期 return・クラッシュしない)の各分岐を実描画バッファで確認する。
+#[test]
+fn ui_info_popup_renders_variants() {
+    use crate::i18n::{tr, Lang, Msg};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    fn info_screen(app: &App) -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::info::render(f, app, f.area()))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let w = buf.area.width as usize;
+        let mut out = String::new();
+        for (i, c) in buf.content().iter().enumerate() {
+            out.push_str(c.symbol());
+            if (i + 1) % w == 0 {
+                out.push('\n');
+            }
+        }
+        out
+    }
+    let dir = unique_tmp("konoma_ui_info_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("reg.txt"), "hello").unwrap();
+    let sub = dir.join("subdir");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), "a").unwrap();
+    std::fs::write(sub.join("b.txt"), "b").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = Lang::En;
+
+    // 通常ファイル: Type=file。
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("reg.txt"))
+        .unwrap();
+    let s = info_screen(&app);
+    assert!(s.contains(tr(Lang::En, Msg::InfoFile)), "file 種別: {s}");
+
+    // ディレクトリ: Type=directory ＋ 項目数。
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("subdir"))
+        .unwrap();
+    let s = info_screen(&app);
+    assert!(
+        s.contains(tr(Lang::En, Msg::InfoDirectory)),
+        "directory 種別"
+    );
+    assert!(s.contains(tr(Lang::En, Msg::InfoItems)), "項目数を表示");
+
+    // 読めない対象(不在): エラー行(クラッシュしない)。
+    app.mode = Mode::Preview;
+    app.preview_path = Some(dir.join("gone.txt"));
+    let s = info_screen(&app);
+    assert!(s.contains(tr(Lang::En, Msg::Failed)), "エラー表示: {s}");
+
+    // 対象なし: 早期 return(何も描かない)。
+    app.preview_path = None;
+    let s = info_screen(&app);
+    assert!(
+        !s.contains(tr(Lang::En, Msg::InfoFile)),
+        "対象なしは描画しない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// シンボリックリンクのファイル情報: Type=symlink ＋ リンク先(Target)行を描く。
+#[cfg(unix)]
+#[test]
+fn ui_info_popup_renders_symlink_target() {
+    use crate::i18n::{tr, Lang, Msg};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("konoma_ui_info_symlink_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("real.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link")).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = Lang::En;
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("link"))
+        .unwrap();
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    term.draw(|f| crate::ui::info::render(f, &app, f.area()))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let w = buf.area.width as usize;
+    let mut s = String::new();
+    for (i, c) in buf.content().iter().enumerate() {
+        s.push_str(c.symbol());
+        if (i + 1) % w == 0 {
+            s.push('\n');
+        }
+    }
+    assert!(s.contains(tr(Lang::En, Msg::Symlink)), "symlink 種別: {s}");
+    assert!(s.contains(tr(Lang::En, Msg::InfoTarget)), "リンク先を表示");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// paste-jump のナビゲーション分岐: ①絶対パス解決 ②GitHub URL の末尾が実在せず not found flash
+/// ③装飾 Markdown に `#L` を渡すと raw ソースへ切替(行アドレス可能に) ④テーブル(非 windowed)は
+/// 行ジャンプが no-op(クラッシュしない)。
+#[test]
+fn paste_jump_navigation_branches() {
+    let dir = unique_tmp("konoma_paste_nav_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("abs_target.txt"), "x\ny\nz\n").unwrap();
+    std::fs::write(dir.join("doc.md"), "# H1\n\nl2\nl3\nl4\nl5\nl6\n").unwrap();
+    std::fs::write(dir.join("data.csv"), "a,b\n1,2\n3,4\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    // ①絶対パス(resolve_local_path の absolute 枝) → プレビュー。
+    let abs = dir.join("abs_target.txt");
+    app.paste_jump_from(abs.to_str().unwrap());
+    assert_eq!(app.mode, Mode::Preview);
+    assert!(app
+        .preview_path
+        .as_deref()
+        .map(|p| p.ends_with("abs_target.txt"))
+        .unwrap_or(false));
+
+    // ②GitHub URL だが末尾が実在しない → not found flash(resolve_url_components が None)。
+    app.flash = None;
+    app.paste_jump_from("https://github.com/o/r/blob/main/nope/missing.rs");
+    assert!(
+        app.flash
+            .as_deref()
+            .map(|f| f.contains("missing.rs"))
+            .unwrap_or(false),
+        "not found flash: {:?}",
+        app.flash
+    );
+
+    // ③装飾 Markdown + `#L` → raw ソースへ切替(preview_goto_line の decorated 枝)。
+    app.paste_jump_from("doc.md#L5");
+    assert!(app
+        .preview_path
+        .as_deref()
+        .map(|p| p.ends_with("doc.md"))
+        .unwrap_or(false));
+    assert!(app.is_md_raw(), "装飾 md + 行 → raw ソースへ切替");
+
+    // ④テーブル(非 windowed)に `#L` → 行ジャンプは no-op(テーブル面のまま)。
+    app.paste_jump_from("data.csv#L2");
+    assert!(
+        app.is_table_preview(),
+        "csv はテーブル面のまま(行ジャンプ no-op)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// repo のサブディレクトリで開いた状態では、root 直下に無い相対パスも repo(workdir)基準で解決する
+/// (resolve_local_path の workdir フォールバック枝)。
+#[cfg(feature = "git")]
+#[test]
+fn paste_jump_relative_resolves_against_repo_workdir() {
+    let dir = unique_tmp("konoma_paste_workdir_test");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::write(dir.join("docs/guide.md"), "# G\n").unwrap();
+    for args in [
+        vec!["init", "-q", "."],
+        vec!["config", "user.email", "t@t"],
+        vec!["config", "user.name", "t"],
+    ] {
+        let ok = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(&args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    let repo = dir.canonicalize().unwrap();
+    let subdir = repo.join("src");
+    let mut app = App::new(subdir.clone(), Config::default()).unwrap();
+    assert_eq!(app.root, subdir, "起動 root は src サブディレクトリ");
+    // root(src)直下に docs/guide.md は無いが、repo workdir 基準で解決できる。
+    app.paste_jump_from("docs/guide.md");
+    assert_eq!(app.mode, Mode::Preview);
+    assert!(
+        app.preview_path
+            .as_deref()
+            .map(|p| p.ends_with("docs/guide.md"))
+            .unwrap_or(false),
+        "workdir 基準で解決: {:?}",
+        app.preview_path
+    );
+    std::fs::remove_dir_all(&repo).ok();
 }
 
 #[test]
@@ -6341,6 +6662,46 @@ fn table_copy_text_cell_row_column() {
     );
 }
 
+/// テーブルのページ送り: `table_page`=ビューポート1画面ぶん・`table_half_page`=半画面ぶん
+/// カーソルを縦移動し、末尾/先頭でクランプする(ページ幅の導出が `table_cursor_move` 委譲の
+/// 手前で未テストだった)。
+#[test]
+fn table_page_and_half_page_move_by_viewport() {
+    let dir = unique_tmp("konoma_table_page_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("tall.csv");
+    let mut body = String::from("c0,c1,c2\n");
+    for i in 0..20 {
+        body.push_str(&format!("r{i}a,r{i}b,r{i}c\n"));
+    }
+    std::fs::write(&csv, body).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.preview_path = Some(csv.clone());
+    app.mode = Mode::Preview;
+    app.load_table();
+    // 通常は描画時に決まるビューポート行数をテスト用に固定。
+    app.table_viewport_rows = 6;
+
+    assert_eq!(app.table_cursor(), (0, 0));
+    app.table_page(1); // 1画面(6行)下へ。
+    assert_eq!(app.table_cursor().0, 6, "1ページ = viewport 行ぶん下");
+    app.table_half_page(1); // 半画面(3行)下へ。
+    assert_eq!(app.table_cursor().0, 9, "半ページ = viewport/2 行ぶん下");
+    app.table_page(-1); // 1画面上へ。
+    assert_eq!(app.table_cursor().0, 3);
+    // 末尾/先頭でクランプ(20 データ行 → 最終 index 19)。
+    app.table_page(1);
+    app.table_page(1);
+    app.table_page(1);
+    assert_eq!(app.table_cursor().0, 19, "末尾でクランプ");
+    for _ in 0..10 {
+        app.table_page(-1);
+    }
+    assert_eq!(app.table_cursor().0, 0, "先頭でクランプ");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn table_cursor_survives_tab_roundtrip() {
     // タブ保存/復元でセルカーソルが保たれ、テーブルが再パースされる。
@@ -7473,6 +7834,41 @@ fn fence_crop_clamps_and_scales() {
     let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
     let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
     assert_eq!((x2, w2), (x1 * 2, w1 * 2));
+}
+
+/// 数式のセル寸法(純関数): SVG の em 単位(40/em)→行, アスペクト→桁。display は inline より
+/// 背が高い・幅超過はアスペクト維持でクランプ・極端に高い式は 24 行で上限。兄弟の
+/// `mermaid_cells`/`fence_crop` はテスト済みだったがこの2関数は未カバーだった。
+#[test]
+fn math_cells_size_from_em_units() {
+    // inline: 1em(uh=40)・アスペクト5:1 → 1行×10桁。
+    assert_eq!(math_cells(200, 40, 8, 16, 100, false), (10, 1));
+    // display は rows_per_em が大きい(1.5>1.3) → 同じ式でも背が高くなる(inline は上で1行)。
+    let (dc, dr) = math_cells(200, 40, 8, 16, 100, true);
+    assert!(dr > 1, "display は inline(1行)より背が高い: {dr}");
+    assert_eq!((dc, dr), (20, 2));
+    // 幅超過: avail=30 でアスペクト維持クランプ(桁が avail に張り付く)。
+    let (cc, _cr) = math_cells(1600, 40, 8, 16, 30, false);
+    assert_eq!(cc, 30, "幅は avail に張り付く");
+    // 極端に高い式(行列など)は 24 行上限で頭打ち。
+    let (_bc, br) = math_cells(1200, 1200, 8, 16, 1000, false);
+    assert_eq!(br, 24, "行数は 24 で上限");
+}
+
+/// インライン画像のセル寸法(純関数): 自然サイズを基準に、幅が余白を超えたら縮小、行が上限を
+/// 超えたら更に縮小。**mermaid と違い自然サイズを超えて拡大はしない**(写真をぼかさない)。
+#[test]
+fn md_image_cells_downscale_but_never_upscale() {
+    // 収まる: 自然サイズそのまま(80x160px, 8x16 セル → 10x10)。
+    assert_eq!(md_image_cells(80, 160, 8, 16, 100, 100), (10, 10));
+    // 横長で幅超過: avail=50 に縮小(高さも比例)。
+    let (wc, wr) = md_image_cells(1600, 160, 8, 16, 50, 100);
+    assert_eq!(wc, 50, "幅は avail に縮小");
+    assert!(wr < 10, "高さも比例縮小: {wr}");
+    // 縦長で行超過: max_rows=20 で頭打ち(桁も比例)。
+    assert_eq!(md_image_cells(80, 1600, 8, 16, 100, 20), (2, 20));
+    // 余白が広くても自然サイズより拡大しない(40x40px は 5x3 のまま)。
+    assert_eq!(md_image_cells(40, 40, 8, 16, 1000, 1000), (5, 3));
 }
 
 /// `0`=フィット(ズーム中のみ消費・等倍では従来の行頭のまま)＋ `[ui] mermaid_rows` で

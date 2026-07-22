@@ -935,7 +935,14 @@ fn replace_task_checkbox(
 /// The state char if the (whitespace-trimmed) line starts with a task marker `- [<c>] ` where `<c>`
 /// is a recognized state (` `/`x`/`X` always, plus the configured custom states).
 fn task_prefix_state(t: &str, tasks: &[char]) -> Option<char> {
-    let rest = t.strip_prefix("- [")?;
+    // GFM task lists accept any unordered-list bullet (`-`, `*`, `+`) — tui-markdown renders all
+    // three as checkboxes, so the source scanner must recognize all three too, or the toggle's
+    // count-guard mismatches and every toggle is cancelled ("file changed on disk"). The state char
+    // sits at the same offset for each (`<bullet> [` is 3 bytes), so `state_off = indent + 3` holds.
+    let rest = t
+        .strip_prefix("- [")
+        .or_else(|| t.strip_prefix("* ["))
+        .or_else(|| t.strip_prefix("+ ["))?;
     let c = rest.chars().next()?;
     if !rest[c.len_utf8()..].starts_with("] ") {
         return None;
@@ -3454,6 +3461,27 @@ mod tests {
         UnicodeWidthStr::width(s.as_str())
     }
 
+    /// `truncate_to_width`: 表示幅で切り詰める純関数。全角(2桁)文字を境界で割らず、幅を超えない
+    /// 最大までで止める(CJK ラベルの列詰めで桁溢れ・バイト破壊を起こさないための土台)。
+    #[test]
+    fn truncate_to_width_is_cjk_aware() {
+        assert_eq!(truncate_to_width("hello", 3), "hel");
+        assert_eq!(
+            truncate_to_width("hello", 5),
+            "hello",
+            "ちょうど収まれば全部"
+        );
+        assert_eq!(truncate_to_width("hello", 99), "hello", "余れば全部");
+        // 全角は各2桁。幅3では1文字ぶん(幅2)だけ入り、割って桁溢れさせない。
+        assert_eq!(truncate_to_width("あいう", 3), "あ");
+        assert_eq!(truncate_to_width("あいう", 4), "あい");
+        // 半角/全角の混在も表示幅で数える。
+        assert_eq!(truncate_to_width("aあb", 2), "a");
+        assert_eq!(truncate_to_width("aあb", 3), "aあ");
+        // 幅0では何も入らない。
+        assert_eq!(truncate_to_width("hi", 0), "");
+    }
+
     #[test]
     fn code_block_tabs_expand_to_marker() {
         // Markdown のコードブロック内のタブも単体コードと同様に「→＋空白」に展開する(設定 tab_width)。
@@ -4169,6 +4197,30 @@ mod tests {
             assert!(
                 lines[l.line][l.state_off..].starts_with(l.state),
                 "offset mismatch at line {}",
+                l.line
+            );
+        }
+    }
+
+    #[test]
+    fn task_source_locs_accepts_all_gfm_bullets() {
+        // GFM(と tui-markdown)は `-`/`*`/`+` すべてをタスクの箇条書きとして描画する。source scanner
+        // が `-` しか認識しないと、`*`/`+` タスクは描画されるのに再スキャンで見つからず、トグルの
+        // 個数照合が外れて全トグルが「file changed on disk」でキャンセルされる(ユーザー報告 2026-07-22)。
+        let src = "- [ ] dash\n* [ ] star\n+ [x] plus\n  * [ ] nested star\n";
+        let locs = task_source_locs(src, &[' ', 'x']);
+        let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
+        assert_eq!(
+            got,
+            vec![(0, ' '), (1, ' '), (2, 'x'), (3, ' ')],
+            "3 種の箇条書き全てをタスクとして検出: {got:?}"
+        );
+        // state_off は3種とも `<bullet> [` の直後(indent + 3)=状態文字を正確に指す。
+        let lines: Vec<&str> = src.lines().collect();
+        for l in &locs {
+            assert!(
+                lines[l.line][l.state_off..].starts_with(l.state),
+                "offset mismatch at line {} (bullet 種別に依らず正しい)",
                 l.line
             );
         }

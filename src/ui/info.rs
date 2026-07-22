@@ -158,6 +158,8 @@ mod tests {
         assert_eq!(format_ago(Lang::En, 120), "2 min ago");
         assert_eq!(format_ago(Lang::En, 7200), "2 hr ago");
         assert_eq!(format_ago(Lang::En, 86400 * 3), "3 days ago");
+        // months バケット(30日〜1年): 60日 → 2 months。
+        assert_eq!(format_ago(Lang::En, 86400 * 60), "2 months ago");
         assert_eq!(format_ago(Lang::En, 86400 * 400), "1 years ago");
     }
 }

@@ -17,6 +17,8 @@ mod fileops;
 mod git;
 mod i18n;
 mod keymap;
+#[cfg(test)]
+mod mem_tests;
 mod preview;
 mod session;
 #[cfg(test)]

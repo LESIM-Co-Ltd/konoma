@@ -416,6 +416,19 @@ struct TabState {
     search_idx: usize,
 }
 
+/// Size of `App` in bytes — a memory guard reads this to catch a struct that suddenly balloons.
+#[cfg(test)]
+pub fn sizeof_app() -> usize {
+    std::mem::size_of::<App>()
+}
+
+/// Size of one `TabState` in bytes. `TabState` is cloned per tab (snapshot / restore), so a regression
+/// that inlines a large buffer into it multiplies memory by the tab count — this guards against that.
+#[cfg(test)]
+pub fn sizeof_tabstate() -> usize {
+    std::mem::size_of::<TabState>()
+}
+
 /// The media payload loaded on a separate thread (sent back to the UI thread).
 pub enum MediaPayload {
     /// A still image (single-frame GIF / video thumb / PDF page) → goes to image_src.

@@ -483,4 +483,80 @@ mod tests {
             _ => panic!("expected Url"),
         }
     }
+
+    #[test]
+    fn line_anchor_edge_cases() {
+        // `#L5` のみ(パス無し) → None(空パスは棄却)。
+        assert_eq!(parse_paste_target("#L5"), None);
+        // `#` の後が行番号でなければ分割せずパスに残す。
+        assert_eq!(
+            parse_paste_target("file#foo"),
+            Some(PasteTarget::Local {
+                path: "file#foo".into(),
+                line: None,
+            })
+        );
+        // `:0` は 1 始まりの行として無効 → パスに残す。
+        assert_eq!(
+            parse_paste_target("file:0"),
+            Some(PasteTarget::Local {
+                path: "file:0".into(),
+                line: None,
+            })
+        );
+        // 小文字 `#l5` も行として解釈する。
+        assert_eq!(
+            parse_paste_target("file#l5"),
+            Some(PasteTarget::Local {
+                path: "file".into(),
+                line: Some(5),
+            })
+        );
+    }
+
+    #[test]
+    fn github_url_without_path_is_none() {
+        // ホストのみ(パス成分なし)は解決先が無いので None。
+        assert_eq!(parse_paste_target("https://github.com"), None);
+        assert_eq!(parse_paste_target("https://github.com/"), None);
+    }
+
+    #[test]
+    fn percent_decode_handles_all_hex_and_invalid() {
+        // %2f(小文字)/%2F(大文字)=`/`、不正 %zz はリテラルのまま残す。
+        let t = parse_paste_target("https://github.com/o/r/blob/main/a%2fb%2Fc%zz.rs").unwrap();
+        match t {
+            PasteTarget::Url { components, .. } => {
+                assert_eq!(components.last().unwrap(), "a/b/c%zz.rs");
+            }
+            _ => panic!("expected Url"),
+        }
+    }
+
+    #[test]
+    fn expand_tilde_uses_home() {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy().into_owned();
+            assert_eq!(expand_tilde("~"), home);
+            assert_eq!(expand_tilde("~/docs/a.md"), format!("{home}/docs/a.md"));
+        }
+        // チルダ以外はそのまま。
+        assert_eq!(expand_tilde("/abs/x"), "/abs/x");
+        assert_eq!(expand_tilde("rel/y"), "rel/y");
+    }
+
+    #[test]
+    fn canonical_existing_resolves_only_existing() {
+        let dir = std::env::temp_dir().join("konoma_paste_canon_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("real.txt");
+        std::fs::write(&f, "x").unwrap();
+        assert!(canonical_existing(&f).is_some(), "実在 → Some(canonical)");
+        assert!(
+            canonical_existing(&dir.join("nope.txt")).is_none(),
+            "不在 → None"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
