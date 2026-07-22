@@ -4542,3 +4542,79 @@ fn e2e_link_targets_stay_aligned_with_document_order() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// Tab focus must bring the **whole** focused block into view, not just the line the focus marker sits
+/// on. A code block's marker is its header and a `<details>`' marker is its summary, so ensuring only
+/// that line was visible parked the block against the bottom edge with its contents cut off — the user
+/// had to scroll manually after every Tab. Diagrams already did this; everything multi-line now does.
+#[test]
+fn e2e_tab_scrolls_whole_block_into_view() {
+    // 画面より小さいブロックを、下端ぎりぎりに置く。
+    let mut body = String::from("# Doc\n\n");
+    for i in 0..20 {
+        body.push_str(&format!("filler line {i}\n\n"));
+    }
+    body.push_str("```rust\n");
+    for i in 0..8 {
+        body.push_str(&format!("let line_{i} = {i};\n"));
+    }
+    body.push_str("```\n\nafter\n");
+
+    let (mut s, dir) = md_preview(cfg_code_bg_none(), "blocks", &body);
+    let vh = s.app.preview_viewport_for_test().max(1) as usize;
+    s.tab(); // 唯一の Tab 対象 = コードブロック
+    let scroll = s.app.preview_scroll as usize;
+    let focused = s.app.focused_item().expect("コードブロックにフォーカス");
+    let start = s.app.md_item_line_for_test(focused);
+    let end = s.app.md_item_block_end_for_test(focused);
+    assert!(
+        end > start,
+        "コードブロックは複数行にわたる (start={start} end={end})"
+    );
+
+    let (top, _) = s.app.md_visual_span_for_test(start);
+    let (btop, bh) = s.app.md_visual_span_for_test(end);
+    let block_bottom = btop + bh;
+    assert!(
+        top >= scroll,
+        "ブロック先頭が上に見切れている: top={top} scroll={scroll}"
+    );
+    assert!(
+        block_bottom <= scroll + vh,
+        "ブロック末尾が下に見切れている: bottom={block_bottom} scroll={scroll} viewport={vh}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same guarantee for an **open** `<details>`: focusing its summary must reveal the body under it.
+#[test]
+fn e2e_tab_scrolls_open_details_body_into_view() {
+    let mut body = String::from("# Doc\n\n");
+    for i in 0..20 {
+        body.push_str(&format!("filler line {i}\n\n"));
+    }
+    body.push_str("<details open>\n<summary>Show me</summary>\n\n");
+    for i in 0..8 {
+        body.push_str(&format!("- body line {i}\n"));
+    }
+    body.push_str("\n</details>\n");
+
+    let (mut s, dir) = md_preview(cfg_code_bg_none(), "detblocks", &body);
+    let vh = s.app.preview_viewport_for_test().max(1) as usize;
+    s.tab();
+    let focused = s.app.focused_item().expect("details にフォーカス");
+    let start = s.app.md_item_line_for_test(focused);
+    let end = s.app.md_item_block_end_for_test(focused);
+    assert!(
+        end > start,
+        "開いた details は本文を持つ (start={start} end={end})"
+    );
+    let scroll = s.app.preview_scroll as usize;
+    let (btop, bh) = s.app.md_visual_span_for_test(end);
+    assert!(
+        btop + bh <= scroll + vh,
+        "details 本文の末尾が見切れている: bottom={} scroll={scroll} viewport={vh}",
+        btop + bh
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

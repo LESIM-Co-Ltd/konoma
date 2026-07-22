@@ -2677,6 +2677,15 @@ pub(crate) fn is_details_header_span(span: &Span<'_>) -> bool {
         && (span.content.starts_with('▸') || span.content.starts_with('▾'))
 }
 
+/// Whether `line` is part of an **open** `<details>` body — the indented lines carrying the left bar
+/// that `render_details` draws. Used to find where a focused details block ends so Tab can scroll the
+/// whole thing into view instead of parking its summary at the bottom edge.
+pub(crate) fn is_details_body_line(line: &Line<'_>) -> bool {
+    line.spans
+        .first()
+        .is_some_and(|s| s.content.starts_with('▏') && s.style.fg == Some(TABLE_BORDER_FG))
+}
+
 /// Render a `<details>` block: a summary line marked `▾`/`▸` (a Tab-focus toggle), and — when open —
 /// its Markdown body indented under a colored left bar (like an alert). `summary` empty → "Details".
 #[allow(clippy::too_many_arguments)]

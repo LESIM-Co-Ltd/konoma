@@ -6227,12 +6227,19 @@ impl App {
         let (top, mut height) = self.md_visual_span(line);
         // フェンス図: キャプションだけでなく**図ブロック全体**(キャプション+予約行+下マージン)を
         // 可視域へ入れる(図が下に見切れたまま「フォーカスしたのに見えない」を防ぐ=ユーザー要望)。
-        if let MdItemKind::MermaidFence { ordinal } = self.md_items[next].kind {
-            if let Some((pl, pr)) = self.mermaid_placement(ordinal) {
-                let last = pl + pr as usize; // 下マージン行(placement.line + rows)
-                let (bt, bh) = self.md_visual_span(last);
-                height = (bt + bh).saturating_sub(top).max(height);
-            }
+        let block_end = if let MdItemKind::MermaidFence { ordinal } = self.md_items[next].kind {
+            // 図は予約行を持ち本文行として並んでいないので、placement の行数から終端を求める。
+            self.mermaid_placement(ordinal)
+                .map(|(pl, pr)| pl + pr as usize) // 下マージン行(placement.line + rows)
+                .unwrap_or(line)
+        } else {
+            // コードブロック / 開いた <details> は複数行にわたる。ヘッダ行だけを可視域に入れると
+            // 下端に貼り付いて中身が見えないので、ブロック全体を入れる(ユーザー要望)。
+            self.md_item_block_end(next)
+        };
+        if block_end > line {
+            let (bt, bh) = self.md_visual_span(block_end);
+            height = (bt + bh).saturating_sub(top).max(height);
         }
         let vh = self.preview_viewport.max(1) as usize;
         let scroll = self.preview_scroll as usize;
@@ -6242,6 +6249,55 @@ impl App {
         } else if top + height > scroll + vh {
             self.preview_scroll = (top + height).saturating_sub(vh) as u16;
         }
+    }
+
+    /// Last decorated line belonging to the focused item's **block**.
+    ///
+    /// Tab focus lands on a single line — a code block's header, a `<details>` summary — but the thing
+    /// the user wants to look at continues below it. Ensuring only the focused line is on screen parks
+    /// a block at the bottom edge with its contents cut off. Everything that spans more than one line
+    /// reports its real extent here so `md_focus_move` can bring the whole block into view.
+    fn md_item_block_end(&self, idx: usize) -> usize {
+        let Some(item) = self.md_items.get(idx) else {
+            return 0;
+        };
+        let start = item.line;
+        let Some(cache) = self.md_cache.as_ref() else {
+            return start;
+        };
+        // 続きの行かどうかは、レンダラが引く「左の帯」で判定する(コードは `▎`、details 本文は `▏`)。
+        // 行の見た目そのものを見るので、ソースを再解釈せずに済む。
+        let belongs: fn(&ratatui::text::Line<'_>) -> bool = match item.kind {
+            MdItemKind::CodeBlock => crate::preview::markdown::is_code_line,
+            MdItemKind::Details { .. } => crate::preview::markdown::is_details_body_line,
+            // リンク/チェックボックスは1行。フェンス図は予約行を持つので下で placement から求める。
+            _ => return start,
+        };
+        let mut end = start;
+        for (i, line) in cache.lines.iter().enumerate().skip(start + 1) {
+            if !belongs(line) {
+                break;
+            }
+            end = i;
+        }
+        end
+    }
+
+    #[cfg(test)]
+    pub fn md_item_block_end_for_test(&self, idx: usize) -> usize {
+        self.md_item_block_end(idx)
+    }
+    #[cfg(test)]
+    pub fn md_item_line_for_test(&self, idx: usize) -> usize {
+        self.md_items[idx].line
+    }
+    #[cfg(test)]
+    pub fn md_visual_span_for_test(&self, line: usize) -> (usize, usize) {
+        self.md_visual_span(line)
+    }
+    #[cfg(test)]
+    pub fn preview_viewport_for_test(&self) -> u16 {
+        self.preview_viewport
     }
 
     /// (line, rows) of the inline mermaid placement whose **source ordinal** is `ordinal`

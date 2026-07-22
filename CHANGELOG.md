@@ -45,6 +45,12 @@ All notable changes to konoma are documented in this file. The format is based o
   reference, autolink, table-cell, alert, anchor and CJK forms (a drift there would make every link in
   a document open the wrong place while looking correct).
 
+- **Tab now scrolls the whole focused block into view.** Focus lands on a single line — a code block's
+  header, a `<details>` summary — but what you want to read continues below it, so tabbing to a block
+  near the bottom of the screen parked it against the edge with its contents cut off and you had to
+  scroll by hand. Every multi-line item now reports its real extent and is brought fully into view
+  (a block taller than the window is aligned to its top), the behaviour diagrams already had.
+
 ### Changed
 - **Switching tabs in a git repository no longer waits for `git status`.** The whole-worktree scan is
   now run on a worker thread and applied when it arrives, instead of blocking the UI. Every tab switch
