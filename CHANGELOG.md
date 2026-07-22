@@ -6,6 +6,12 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Leaving a git repository for an ordinary directory now drops that repository's ignore set.** The
+  "already computing" guard compared the pending workdir with the target workdir, and for a non-repo
+  root **both are `None`**, so the guard always fired and the clearing branch was never reached — the
+  previous repository's ignored paths stayed applied to an unrelated tree.
+
 ### Changed
 - **Switching tabs in a git repository no longer waits for `git status`.** The whole-worktree scan is
   now run on a worker thread and applied when it arrives, instead of blocking the UI. Every tab switch

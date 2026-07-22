@@ -592,7 +592,12 @@ impl App {
         let different_repo = self.git_ignored_for != wd;
         let need = self.git_ignored_dirty || different_repo;
         // 同一 workdir の計算が既に走行中なら待つ(無視ルール変更 dirty の時はそれより新しい結果が要る)。
-        let inflight = self.git_ignored_pending == wd && !self.git_ignored_dirty;
+        // `is_some()` が要る: repo でない root では `wd` も `git_ignored_pending` も None なので、
+        // それ無しでは「計算中」が**常に成立**して早期 return し、下の None 分岐(前の repo の
+        // 無視セットを捨てる処理)へ永久に到達しなかった。計算が走るのは必ず実在の workdir に対してだけ。
+        let inflight = self.git_ignored_pending.is_some()
+            && self.git_ignored_pending == wd
+            && !self.git_ignored_dirty;
         if !need || inflight {
             return;
         }

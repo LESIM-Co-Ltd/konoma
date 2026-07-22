@@ -10128,3 +10128,45 @@ fn changed_filter_survives_returning_from_another_repo() {
     );
     std::fs::remove_dir_all(&base).ok();
 }
+/// Moving the root out of a repository must drop that repository's ignore set. The "already computing"
+/// guard compared `git_ignored_pending == wd`, and for a non-repo root **both are None**, so the guard
+/// always fired and the clearing branch below it was never reached — the previous repo's ignored paths
+/// stayed applied to an unrelated tree.
+#[cfg(feature = "git")]
+#[test]
+fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
+    let base = std::env::temp_dir().join(unique_tmp("konoma_ignored_leave_repo"));
+    let _ = std::fs::remove_dir_all(&base);
+    let repo = base.join("repo");
+    let plain = base.join("plain");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&plain).unwrap();
+    init_git_repo(&repo);
+    std::fs::write(repo.join(".gitignore"), b"ignored.txt\n").unwrap();
+    std::fs::write(repo.join("ignored.txt"), b"x").unwrap();
+    std::fs::write(plain.join("a.txt"), b"y").unwrap();
+    let repo = repo.canonicalize().unwrap();
+    let plain = plain.canonicalize().unwrap();
+
+    let mut app = App::new(repo.clone(), Config::default()).unwrap();
+    app.refresh_git_if_needed();
+    assert!(
+        app.is_ignored(&repo.join("ignored.txt")),
+        "前提: repo の無視セットが効いている"
+    );
+
+    // repo の外(git 管理下でないディレクトリ)へ移る。
+    app.root = plain.clone();
+    app.git_status_dirty = true;
+    app.refresh_git_if_needed();
+
+    assert!(
+        app.git_ignored_for.is_none(),
+        "repo を出たら無視セットのキャッシュキーも外れる"
+    );
+    assert!(
+        !app.is_ignored(&repo.join("ignored.txt")),
+        "前の repo の無視セットが残っていない"
+    );
+    std::fs::remove_dir_all(&base).ok();
+}
