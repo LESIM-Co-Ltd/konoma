@@ -10293,3 +10293,114 @@ fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
     );
     std::fs::remove_dir_all(&base).ok();
 }
+
+/// Build an App previewing `name.md` (body) with wrap on, rendered once into a `w`x`h` TestBackend so
+/// the wrap-aware `row_prefix` is built exactly as in the run loop. Returns the app at the preview.
+#[cfg(test)]
+fn wrapped_md_preview(dir: &Path, name: &str, body: &str, w: u16, h: u16) -> App {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    std::fs::write(dir.join(name), body).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.wrap = true;
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    app.selected = app
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with(name))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    // 保持: 呼び出し側が続けて描画・アクセスできるよう term は落とすが app は返す。
+    app
+}
+
+/// Assert the focused item's whole visual extent is inside the viewport after `md_focus_move`.
+#[cfg(test)]
+fn assert_focused_block_fully_visible(app: &App, msg: &str) {
+    let f = app.focused_item.expect("フォーカスがある");
+    let line = app.md_item_line_for_test(f);
+    let end = app.md_item_block_end_for_test(f);
+    let (top, hh) = app.md_visual_span_for_test(line);
+    let (bt, bh) = app.md_visual_span_for_test(end);
+    let bottom = (bt + bh).max(top + hh);
+    let vh = app.preview_viewport_for_test().max(1) as usize;
+    let scroll = app.preview_scroll as usize;
+    // 画面より大きいブロックは先頭合わせ(末尾は不可避に見切れる)。それ以外は完全可視であること。
+    if bottom - top >= vh {
+        assert_eq!(scroll, top, "{msg}: 画面より大きいブロックは先頭合わせ");
+    } else {
+        assert!(
+            top >= scroll,
+            "{msg}: 先頭が上に見切れ (top={top} scroll={scroll})"
+        );
+        assert!(
+            bottom <= scroll + vh,
+            "{msg}: 末尾が下に見切れ (bottom={bottom} scroll={scroll} vh={vh})"
+        );
+    }
+}
+
+/// A long checkbox that **soft-wraps** must be fully scrolled into view when focused — the wrapped
+/// tail included. This has worked via `md_visual_span` returning the wrap height, but nothing pinned
+/// it; the block-scroll feature's own tests used short, non-wrapping lines.
+#[test]
+fn md_focus_reveals_a_wrapping_checkbox_in_full() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_wrap_task_reveal"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut body = String::from("# T\n\n");
+    for i in 0..16 {
+        body.push_str(&format!("filler {i}\n\n"));
+    }
+    // 幅40で数行に折り返す長いタスクを末尾に。
+    let long: String = (0..30).map(|i| format!("word{i} ")).collect();
+    body.push_str(&format!("- [ ] {long}\n"));
+
+    let mut app = wrapped_md_preview(&dir, "t.md", &body, 40, 18);
+    // 末尾のチェックボックスへ。
+    app.md_focus_move(-1);
+    assert!(app.md_focused_task(), "チェックボックスにフォーカス");
+    let f = app.focused_item.unwrap();
+    let (_, height) = app.md_visual_span_for_test(app.md_item_line_for_test(f));
+    assert!(height > 1, "この幅ではタスクが折り返す (height={height})");
+    assert_focused_block_fully_visible(&app, "折り返しチェックボックス");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A code block whose lines are long enough to **wrap** must also be fully revealed — the block-scroll
+/// end is a logical line, and `md_visual_span` on it has to account for that line's own wrap.
+#[test]
+fn md_focus_reveals_a_wrapping_code_block_in_full() {
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_wrap_code_reveal"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut body = String::from("# T\n\n");
+    for i in 0..10 {
+        body.push_str(&format!("filler {i}\n\n"));
+    }
+    body.push_str("```text\n");
+    // 最終行だけ極端に長くして折り返させる(block_end 行の wrap を勘定に入れているかを突く)。
+    body.push_str("short first line\n");
+    let long: String = (0..30).map(|i| format!("tok{i} ")).collect();
+    body.push_str(&format!("{long}\n"));
+    body.push_str("```\n");
+
+    let mut app = wrapped_md_preview(&dir, "c.md", &body, 40, 20);
+    app.md_focus_move(1); // 唯一の対象 = コードブロック
+    let f = app.focused_item.unwrap();
+    let start = app.md_item_line_for_test(f);
+    let end = app.md_item_block_end_for_test(f);
+    // 長い1ソース行はレンダラが**事前に**複数の `▎` 論理行へ分割する(ソフト折返しでなく行分割・
+    // 2026-07-07 のガター断絶修正)。よってソース本文2行がそれ以上の論理行に膨らんでいるはず。
+    // その全部を含めて可視化されることが要点。
+    assert!(
+        end - start + 1 > 3,
+        "長い行が複数の視覚行に分割されている (start={start} end={end})"
+    );
+    assert_focused_block_fully_visible(&app, "折返しで膨らむコードブロック");
+    std::fs::remove_dir_all(&dir).ok();
+}
