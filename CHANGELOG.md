@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-07-23
+
 ### Fixed
 - **Checkboxes inside a `> [!NOTE]` alert can be toggled, and no longer break the whole document.**
   The renderer strips the `>` and draws an alert's body as normal Markdown, so its task list appears as
@@ -828,7 +830,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.6...HEAD
+[0.18.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.1...v0.18.6
 [0.18.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.16.0...v0.17.0

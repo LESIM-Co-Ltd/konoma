@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "konoma"
-version = "0.18.1"
+version = "0.18.6"
 dependencies = [
  "anyhow",
  "arboard",
