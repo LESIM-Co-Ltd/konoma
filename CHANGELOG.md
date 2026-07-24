@@ -13,6 +13,15 @@ All notable changes to konoma are documented in this file. The format is based o
   `.git/info/exclude` changes still refresh as before. (It skips writes under ignored directories that
   exist in the ignore set; a newly-created glob-matched file at the root is not covered.)
 
+### Fixed
+- **Clipboard copy now works on Linux.** On X11/Wayland the clipboard contents are owned by the
+  process holding the selection, so the previous implementation (set the text, then immediately drop
+  the `Clipboard`) released the selection and the copied text was lost right away — copy appeared to
+  succeed but nothing could be pasted. `set_clipboard` now holds the selection in a detached thread
+  via arboard's `SetExtLinux::wait()` on Linux (macOS/Windows are unchanged; their system clipboards
+  persist on their own). Verified in a Linux VM: after a copy, `xclip` reads the copied path and keeps
+  reading it. Not unit-tested (requires an X11/Wayland display).
+
 ## [0.18.8] - 2026-07-24
 
 ### Changed

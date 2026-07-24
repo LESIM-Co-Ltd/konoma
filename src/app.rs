@@ -8819,9 +8819,32 @@ fn rel_to_open(open_dir: &Path, path: &Path) -> String {
 
 /// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
 fn set_clipboard(text: &str) -> Result<()> {
-    let mut cb = arboard::Clipboard::new()?;
-    cb.set_text(text.to_string())?;
-    Ok(())
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux the clipboard content is owned by the process holding the X11/Wayland
+        // selection: dropping the Clipboard releases it and the copied text is lost unless a
+        // clipboard manager grabbed it. Probe on the main thread first so the caller still gets
+        // an Err (and shows its flash) on headless/unavailable environments, then hold the
+        // selection in a detached thread via SetExtLinux::wait() so paste works. wait() returns
+        // (and the thread exits) as soon as another app — or the next copy — takes ownership, so
+        // at most one holder thread is alive at a time. Not unit-tested (requires an X11/Wayland
+        // display); verified in a Linux VM.
+        use arboard::SetExtLinux;
+        let _ = arboard::Clipboard::new()?;
+        let owned = text.to_string();
+        std::thread::spawn(move || {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set().wait().text(owned);
+            }
+        });
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut cb = arboard::Clipboard::new()?;
+        cb.set_text(text.to_string())?;
+        Ok(())
+    }
 }
 
 /// `~/...` if under HOME, otherwise the full path.
