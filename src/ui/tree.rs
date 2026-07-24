@@ -233,7 +233,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // 絞り込み中/変更のみ表示中はフラットな結果一覧なので、各行に root からの相対パスを出して場所が分かるようにする。
     let filtering = app.filter_query().is_some() || app.changed_filter();
     let query = app.filter_query().unwrap_or("").to_string();
-    let root_for_rel = app.root.clone();
+    let root_for_rel = app.tab.root.clone();
     // 詳細リスト列 (設定 [ui] details)。有効な列のみ採用し、右端に固定幅で並べる。
     let detail_cols: Vec<String> = app
         .cfg
@@ -255,23 +255,23 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // 画面に映る行(≒ビューポート高)に限定し、スクロールごとの全件再整形を避ける。
     // 選択行が常に見えるようスクロール量を先に決め、`[offset..end]` だけを Line 化する。
     let visible = area.height.saturating_sub(2) as usize; // 上下ボーダー分を除く
-    app.tree_viewport = visible as u16; // ページ送りの1ページ量に使う
-    let offset = if visible > 0 && app.selected >= visible {
-        app.selected - visible + 1
+    app.tab.tree_viewport = visible as u16; // ページ送りの1ページ量に使う
+    let offset = if visible > 0 && app.tab.selected >= visible {
+        app.tab.selected - visible + 1
     } else {
         0
     };
-    let end = offset.saturating_add(visible).min(app.entries.len());
+    let end = offset.saturating_add(visible).min(app.tab.entries.len());
     // 詳細セルは App 側の (path → cells) キャッシュを可視行分だけ先に埋める(プリパス)。
     // 行ごとの stat(`items` 列は read_dir)がキー入力のたびに走るのを防ぎ、ツリー再構築で破棄される。
     if show_details {
-        let vis: Vec<(std::path::PathBuf, bool)> = app.entries[offset..end]
+        let vis: Vec<(std::path::PathBuf, bool)> = app.tab.entries[offset..end]
             .iter()
             .map(|e| (e.path.clone(), e.is_dir))
             .collect();
         app.ensure_detail_cells(&vis, &detail_cols);
     }
-    let lines: Vec<Line> = app.entries[offset..end]
+    let lines: Vec<Line> = app.tab.entries[offset..end]
         .iter()
         .enumerate()
         .map(|(vi, e)| {
@@ -380,7 +380,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             let line = Line::from(spans);
-            if i == app.selected {
+            if i == app.tab.selected {
                 line.reversed() // 選択行は反転 (色付き span も含む)
             } else {
                 line
@@ -388,7 +388,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let root = app.root.clone();
+    let root = app.tab.root.clone();
     // タイトル枠にパス＋(git リポジトリなら) ブランチ名を併記する。絞り込み中はクエリ件数も、
     // 変更のみ表示中は変更件数を出す。
     let title = match (app.filter_query(), app.git_branch()) {
@@ -396,13 +396,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             " {}  /{}  ({}) ",
             app.format_path(&root),
             q,
-            app.entries.len()
+            app.tab.entries.len()
         ),
         (None, _) if app.changed_filter() => format!(
             " {}  ± {} ({}) ",
             app.format_path(&root),
             tr(app.lang, Msg::StChangedOnly),
-            app.entries.len()
+            app.tab.entries.len()
         ),
         (None, Some(branch)) => format!(" {}  ⎇ {} ", app.format_path(&root), branch),
         (None, None) => format!(" {} ", app.format_path(&root)),

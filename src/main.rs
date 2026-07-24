@@ -281,7 +281,7 @@ fn run(
     })
     .ok();
     let mut watched_root: Option<PathBuf> = None;
-    rewatch(watcher.as_mut(), &mut watched_root, &app.root);
+    rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root);
     // Secondary watch: a file shown outside the tree root (a global-bookmark preview, or the repo-wide
     // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
     // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
@@ -510,7 +510,7 @@ fn run(
             pending_follow = None; // 解除されたら保留も破棄
         }
         if let Some(p) = pending_follow.clone() {
-            if app.preview_path.as_deref() == Some(p.as_path()) {
+            if app.tab.preview_path.as_deref() == Some(p.as_path()) {
                 pending_follow = None;
             } else if last_follow_jump.is_none_or(|t| t.elapsed() >= FOLLOW_MIN_DWELL) {
                 pending_follow = None;
@@ -521,8 +521,8 @@ fn run(
         }
 
         // root が変わったら監視先を張り替える(h/l/タブ切替など)。
-        if watched_root.as_deref() != Some(app.root.as_path()) {
-            rewatch(watcher.as_mut(), &mut watched_root, &app.root);
+        if watched_root.as_deref() != Some(app.tab.root.as_path()) {
+            rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root);
         }
         // root 外に表示中のファイル(ブックマーク先/repo 全体の git ビュー)はその親ディレクトリも監視する。
         // 表示ファイルが変わる/root 内へ戻る/ツリーへ戻ると None になり監視は外れる。
@@ -614,7 +614,7 @@ fn run_editor(
 }
 
 /// Launch the configured `git.tool` (default lazygit) synchronously in the repo workdir. The command
-/// is split on whitespace into prog + args. The cwd is the workdir discovered from app.root via git
+/// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
 fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     let tmpl = app.cfg.git.tool.trim();
@@ -624,7 +624,7 @@ fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resul
         return Ok(());
     };
     let args: Vec<String> = parts.collect();
-    let cwd = git_workdir(&app.root);
+    let cwd = git_workdir(&app.tab.root);
     let status = run_external(terminal, app, &prog, &args, &cwd)?;
     if let Err(e) = status {
         app.flash = Some(format!(
@@ -1592,8 +1592,9 @@ mod tests {
         // e はブックマーク名としてジャンプ(ファイル → プレビュー)。
         handle_key(&mut app, key('e')).unwrap();
         assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
-        assert_eq!(app.mode, Mode::Preview);
+        assert_eq!(app.tab.mode, Mode::Preview);
         assert!(app
+            .tab
             .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("f.txt")));
@@ -1616,7 +1617,7 @@ mod tests {
         assert!(app.bookmarks.get('e').is_none(), "消えたのは選択行の e");
         // ディレクトリのブックマークは root 移動。
         handle_key(&mut app, key('a')).unwrap();
-        assert_eq!(app.root, proj.join("sub"));
+        assert_eq!(app.tab.root, proj.join("sub"));
         assert!(!app.is_bookmark_list());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1862,7 +1863,7 @@ mod tests {
         std::fs::write(dir.join("b.txt"), b"y").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.rebuild_tree().unwrap();
-        app.selected = 0;
+        app.tab.selected = 0;
         handle_key(&mut app, key('v')).unwrap();
         assert!(app.is_visual(), "v でビジュアル");
         handle_key(&mut app, key(' ')).unwrap();
@@ -1927,16 +1928,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         // タブ0をプレビュー中にする。
-        app.mode = Mode::Preview;
+        app.tab.mode = Mode::Preview;
         // t で新規タブ (Preview 中でも効く)。新タブは Tree から始まる。
         handle_key(&mut app, key('t')).unwrap();
         assert_eq!(app.tab_count(), 2, "Preview 中でも新規タブが作れる");
-        assert_eq!(app.mode, Mode::Tree, "新規タブは Tree から");
+        assert_eq!(app.tab.mode, Mode::Tree, "新規タブは Tree から");
         let new_tab = app.active_tab_index();
         // [ で元のタブ0へ戻る → Tree に落とさず Preview が復元される。
         handle_key(&mut app, key('[')).unwrap();
         assert_ne!(app.active_tab_index(), new_tab, "タブが切り替わる");
-        assert_eq!(app.mode, Mode::Preview, "戻ったタブの Preview が復元される");
+        assert_eq!(
+            app.tab.mode,
+            Mode::Preview,
+            "戻ったタブの Preview が復元される"
+        );
     }
 
     #[test]

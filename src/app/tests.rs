@@ -84,7 +84,7 @@ fn dialog_create_rename_and_delete_is_gated() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // カーソルは a.txt(ファイル)。作成先はその親=dir。
-    assert_eq!(app.entries[app.selected].path, dir.join("a.txt"));
+    assert_eq!(app.tab.entries[app.tab.selected].path, dir.join("a.txt"));
 
     // --- 作成(ファイル): 入力ダイアログ → 確定でファイルが出来て選択される。
     app.start_create();
@@ -99,7 +99,7 @@ fn dialog_create_rename_and_delete_is_gated() {
     assert!(!app.is_dialog(), "確定でダイアログは閉じる");
     assert!(dir.join("new.txt").is_file(), "ファイルが作成される");
     assert_eq!(
-        app.entries[app.selected].path,
+        app.tab.entries[app.tab.selected].path,
         dir.join("new.txt"),
         "作成物が選択される"
     );
@@ -114,11 +114,12 @@ fn dialog_create_rename_and_delete_is_gated() {
 
     // --- リネーム: 現在名プリフィル → 変更して反映。
     let ai = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == dir.join("a.txt"))
         .unwrap();
-    app.selected = ai;
+    app.tab.selected = ai;
     app.start_rename();
     assert_eq!(
         app.dialog_view().map(|v| v.2.to_string()),
@@ -139,11 +140,12 @@ fn dialog_create_rename_and_delete_is_gated() {
 
     // --- 削除は確認ゲート: n でキャンセル → ファイルは残る(ゴミ箱を汚さない)。
     let ri = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == dir.join("renamed.txt"))
         .unwrap();
-    app.selected = ri;
+    app.tab.selected = ri;
     app.start_delete();
     assert!(
         app.is_dialog() && app.dialog_is_confirm(),
@@ -218,17 +220,17 @@ fn single_toggle_picks_scattered_items() {
 
     // V: カーソル(a)を1件トグルして下へ。a 選択・cursor=b。
     assert!(!app.has_selection());
-    app.selected = 0;
+    app.tab.selected = 0;
     app.toggle_select();
     assert!(app.is_selected(&dir.join("a.txt")));
-    assert_eq!(app.selected, 1, "V は下へ進む");
+    assert_eq!(app.tab.selected, 1, "V は下へ進む");
     // 歯抜け: b を飛ばして c を選択(jk 相当でカーソルを c へ)。
-    app.selected = 2;
+    app.tab.selected = 2;
     app.toggle_select();
     assert_eq!(app.marked_count(), 2);
     assert!(app.is_selected(&dir.join("c.txt")) && !app.is_selected(&dir.join("b.txt")));
     // 同じ項目をもう一度トグルで解除。
-    app.selected = 0;
+    app.tab.selected = 0;
     app.toggle_select();
     assert!(!app.is_selected(&dir.join("a.txt")));
     assert_eq!(app.marked_count(), 1);
@@ -246,10 +248,10 @@ fn visual_range_selects_and_batch_deletes() {
     }
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    assert_eq!(app.entries.len(), 4);
+    assert_eq!(app.tab.entries.len(), 4);
 
     // ビジュアル: a で開始 → c まで下げると a..c が範囲(ライブ)。
-    app.selected = 0;
+    app.tab.selected = 0;
     app.enter_visual();
     assert!(app.is_visual());
     app.tree_next(); // b
@@ -285,21 +287,23 @@ fn visual_scope_a_selects_same_dir_level_only() {
     app.rebuild_tree().unwrap();
     // sub を展開して inner を表示(同階層判定の検証)。
     let sub_idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == dir.join("sub"))
         .unwrap();
-    app.selected = sub_idx;
+    app.tab.selected = sub_idx;
     app.tree_activate().unwrap(); // 展開
     app.rebuild_tree().unwrap();
 
     // トップ階層(a.txt)で a=同階層全選択 → a.txt/b.txt/sub は入るが inner は入らない。
     let a_idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == dir.join("a.txt"))
         .unwrap();
-    app.selected = a_idx;
+    app.tab.selected = a_idx;
     app.enter_visual();
     app.visual_select_scope(false); // a=同階層
     assert!(app.is_selected(&dir.join("a.txt")));
@@ -313,7 +317,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
 
     // A=表示全部なら inner も入る。
     app.clear_selection();
-    app.selected = a_idx;
+    app.tab.selected = a_idx;
     app.enter_visual();
     app.visual_select_scope(true);
     assert!(
@@ -439,7 +443,10 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // 唯一のエントリ "sub"(dir) にカーソル → 落とし先 = sub。
-    assert!(app.entries[app.selected].is_dir, "カーソルが sub(dir)");
+    assert!(
+        app.tab.entries[app.tab.selected].is_dir,
+        "カーソルが sub(dir)"
+    );
 
     // --- コピー: 1ファイルをドロップ → c で sub へコピー(元は残る) ---
     app.handle_paste(src1.to_string_lossy().replace(' ', "\\ "));
@@ -502,11 +509,11 @@ fn reanchor_root_sets_current_position_as_anchor() {
     let mut app = App::new(base_c.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // 起動直後は open_dir == root == base。
-    assert_eq!(app.open_dir, base_c);
+    assert_eq!(app.tab.open_dir, base_c);
     // l で sub へ降りる(root だけ sub に・open_dir は base のまま)。
     app.tree_descend().unwrap();
-    assert_eq!(app.root, base_c.join("sub"), "root が sub へ");
-    assert_eq!(app.open_dir, base_c, "open_dir はまだ base(launch)");
+    assert_eq!(app.tab.root, base_c.join("sub"), "root が sub へ");
+    assert_eq!(app.tab.open_dir, base_c, "open_dir はまだ base(launch)");
     // sub 配下のファイルは base 基準なので "sub/..." と表示される。
     let f = base_c.join("sub").join("f.txt");
     assert!(
@@ -519,17 +526,17 @@ fn reanchor_root_sets_current_position_as_anchor() {
     app.reanchor_root();
     assert!(!app.is_dialog(), "ダイアログは出ない(入力なし)");
     assert_eq!(
-        app.open_dir,
+        app.tab.open_dir,
         base_c.join("sub"),
         "open_dir が sub へ再アンカー"
     );
-    assert_eq!(app.root, base_c.join("sub"), "root は変わらない");
+    assert_eq!(app.tab.root, base_c.join("sub"), "root は変わらない");
     // 再アンカー後は sub 基準なので f.txt は "sub/f.txt"(=sub をルートとした表示)。
     assert_eq!(app.format_path(&f), "sub/f.txt");
 
     // 既にルート上(open_dir==root)で再度 `:` → 何もしない(flash のみ)。
     app.reanchor_root();
-    assert_eq!(app.open_dir, base_c.join("sub"), "変化なし");
+    assert_eq!(app.tab.open_dir, base_c.join("sub"), "変化なし");
     std::fs::remove_dir_all(&base).ok();
 }
 
@@ -694,11 +701,12 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
 
     // 機能1: ツリーで変更ファイル a.txt にカーソル → `=` で直接 diff プレビュー。
     let ai = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == canon.join("a.txt"))
         .expect("a.txt がツリーに無い");
-    app.selected = ai;
+    app.tab.selected = ai;
     app.tree_open_git_diff();
     assert!(
         app.is_git_diff_preview(),
@@ -774,11 +782,12 @@ fn diff_horizontal_scroll_reveals_long_line() {
     app.rebuild_tree().unwrap();
     app.refresh_git_if_needed();
     let ai = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == canon.join("a.txt"))
         .unwrap();
-    app.selected = ai;
+    app.tab.selected = ai;
     app.tree_open_git_diff();
     assert!(app.is_git_diff_preview());
 
@@ -813,26 +822,26 @@ fn copy_cut_paste_flow() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let idx =
-        |app: &App, p: &std::path::Path| app.entries.iter().position(|e| e.path == p).unwrap();
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
 
     // a.txt をコピー → クリップボードに積まれ、選択はクリア。
-    app.selected = idx(&app, &dir.join("a.txt"));
+    app.tab.selected = idx(&app, &dir.join("a.txt"));
     app.toggle_select();
     app.copy_selection();
     assert!(app.clipboard_label().is_some(), "コピーで積まれる");
     assert!(!app.has_selection(), "コピーで選択クリア");
     // dst にカーソルを置いてペースト → dst/a.txt 出来て元も残る(複製)。
-    app.selected = idx(&app, &dir.join("dst"));
+    app.tab.selected = idx(&app, &dir.join("dst"));
     app.paste().unwrap();
     assert!(dir.join("dst").join("a.txt").is_file(), "コピー先に出来る");
     assert!(dir.join("a.txt").is_file(), "コピー元は残る");
     assert!(app.clipboard_label().is_some(), "コピーは貼っても消えない");
 
     // b.txt をカット → dst へペースト → 移動してクリップボード消費。
-    app.selected = idx(&app, &dir.join("b.txt"));
+    app.tab.selected = idx(&app, &dir.join("b.txt"));
     app.toggle_select();
     app.cut_selection();
-    app.selected = idx(&app, &dir.join("dst"));
+    app.tab.selected = idx(&app, &dir.join("dst"));
     app.paste().unwrap();
     assert!(dir.join("dst").join("b.txt").is_file(), "カット先に出来る");
     assert!(!dir.join("b.txt").exists(), "カット元は消える(移動)");
@@ -850,11 +859,12 @@ fn dialog_delete_permanent_removes_immediately() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path == dir.join("gone.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
 
     app.start_delete();
     assert!(
@@ -877,7 +887,7 @@ fn tree_page_clamps_within_bounds() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // 既知の件数に差し替え (100件)。
-    app.entries = (0..100)
+    app.tab.entries = (0..100)
         .map(|i| Entry {
             path: dir.join(format!("f{i}")),
             is_dir: false,
@@ -885,24 +895,24 @@ fn tree_page_clamps_within_bounds() {
             expanded: false,
         })
         .collect();
-    app.tree_viewport = 20;
+    app.tab.tree_viewport = 20;
 
-    app.selected = 0;
+    app.tab.selected = 0;
     app.tree_page(1); // +19 (1行重ね)
-    assert_eq!(app.selected, 19);
+    assert_eq!(app.tab.selected, 19);
     app.tree_half_page(1); // +10
-    assert_eq!(app.selected, 29);
+    assert_eq!(app.tab.selected, 29);
 
     // 末尾でクランプ。
     app.tree_last();
-    assert_eq!(app.selected, 99);
+    assert_eq!(app.tab.selected, 99);
     app.tree_page(1);
-    assert_eq!(app.selected, 99);
+    assert_eq!(app.tab.selected, 99);
 
     // 先頭でクランプ。
     app.tree_first();
     app.tree_page(-1);
-    assert_eq!(app.selected, 0);
+    assert_eq!(app.tab.selected, 0);
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -927,7 +937,7 @@ fn tree_move_extremes_no_panic() {
     let dir = std::env::temp_dir().join("konoma_tree_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.entries = (0..50)
+    app.tab.entries = (0..50)
         .map(|i| Entry {
             path: dir.join(format!("f{i}")),
             is_dir: false,
@@ -936,11 +946,11 @@ fn tree_move_extremes_no_panic() {
         })
         .collect();
     // 先頭以外に置いてから極値: 以前はここで i32 加算がパニックした。
-    app.selected = 10;
+    app.tab.selected = 10;
     app.tree_move(i32::MAX);
-    assert_eq!(app.selected, 49, "末尾へ");
+    assert_eq!(app.tab.selected, 49, "末尾へ");
     app.tree_move(i32::MIN);
-    assert_eq!(app.selected, 0, "先頭へ");
+    assert_eq!(app.tab.selected, 0, "先頭へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1083,7 +1093,7 @@ fn app_with_image() -> App {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
     // tx は drop されないようリーク(テスト終了まで生存)。
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1128,7 +1138,7 @@ fn media_load_is_async_then_applied() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     let kind = PreviewKind::Svg(p.to_path_buf());
-    app.preview_kind = Some(kind.clone());
+    app.tab.preview_kind = Some(kind.clone());
 
     app.start_media_load(&kind, p);
     // 開始直後: 読み込み中で、まだ画像は載っていない(UI を塞いでいない)。
@@ -1156,9 +1166,9 @@ fn media_loading_renders_shared_spinner() {
     app.attach_media_loader(tx);
     let path = PathBuf::from("/does-not-exist.svg");
     let kind = PreviewKind::Svg(path.clone());
-    app.preview_kind = Some(kind.clone());
-    app.preview_path = Some(path.clone());
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(kind.clone());
+    app.tab.preview_path = Some(path.clone());
+    app.tab.mode = Mode::Preview;
     app.start_media_load(&kind, &path);
     assert!(app.is_media_loading(), "読み込み中になる");
 
@@ -1191,8 +1201,8 @@ fn pdf_page_navigation_clamps_and_indicates() {
     let dir = std::env::temp_dir().join("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
-    app.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
+    app.tab.mode = Mode::Preview;
 
     // 総数不明: 移動不可・インジケータ無し。
     app.tab.pdf_pages = None;
@@ -1227,10 +1237,10 @@ fn pdf_page_navigation_clamps_and_indicates() {
     assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
 
     // ページ移動でズームは fit(1.0)へ戻る。
-    app.image_zoom = 4.0;
+    app.tab.image_zoom = 4.0;
     app.pdf_next_page();
     assert_eq!(app.tab.pdf_page, 2);
-    assert_eq!(app.image_zoom, 1.0, "ページ移動で fit に戻る");
+    assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
 }
 
 /// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization that lands a
@@ -1251,9 +1261,9 @@ fn pdf_next_page_renders_off_thread() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     let kind = PreviewKind::Pdf(p.to_path_buf());
-    app.preview_kind = Some(kind.clone());
-    app.preview_path = Some(p.to_path_buf());
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(kind.clone());
+    app.tab.preview_path = Some(p.to_path_buf());
+    app.tab.mode = Mode::Preview;
     app.tab.pdf_pages = Some(pages);
     app.tab.pdf_page = 1;
 
@@ -1280,7 +1290,7 @@ fn pdf_next_page_renders_off_thread() {
 #[test]
 fn stale_media_result_is_ignored() {
     let mut app = app_with_kitty();
-    app.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
+    app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
     // 現在の世代と一致しない結果を作る(古い世代)。
     let img =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
@@ -1302,7 +1312,7 @@ fn gif_emits_kitty_image_data_per_frame() {
     use ratatui_image::Image;
 
     let mut app = app_with_kitty();
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
     // 異なる2フレーム(赤/緑の単色)を直接セットし、decode を介さず描画経路だけを検証。
     let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
         40,
@@ -1355,15 +1365,15 @@ fn gif_emits_kitty_image_data_per_frame() {
 #[test]
 fn zoom_clamps_between_1_and_16() {
     let mut app = app_with_image();
-    assert_eq!(app.image_zoom, 1.0);
+    assert_eq!(app.tab.image_zoom, 1.0);
     app.image_zoom_by(0.5); // 1.0 未満には下がらない
-    assert_eq!(app.image_zoom, 1.0);
+    assert_eq!(app.tab.image_zoom, 1.0);
     for _ in 0..40 {
         app.image_zoom_by(1.25);
     }
-    assert_eq!(app.image_zoom, 16.0);
+    assert_eq!(app.tab.image_zoom, 16.0);
     app.image_zoom_reset();
-    assert_eq!(app.image_zoom, 1.0);
+    assert_eq!(app.tab.image_zoom, 1.0);
     assert_eq!(app.tab.image_center, (0.5, 0.5));
 }
 
@@ -1386,12 +1396,12 @@ fn zoom_grows_then_clips_and_enables_pan() {
     let mut app = app_with_image();
     let inner = inner(200, 40);
     // z=2: 80x30 セル、まだ viewport(200x40)内 → 全体表示・中央・パン不可。
-    app.image_zoom = 2.0;
+    app.tab.image_zoom = 2.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!((r.width, r.height), (80, 30));
     assert_eq!(app.image_vis_frac, (1.0, 1.0));
     // z=4: 160x60 → 高さ60>40 で縦が見切れる。表示は高さが viewport に制限され、縦パン可。
-    app.image_zoom = 4.0;
+    app.tab.image_zoom = 4.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!(r.height, 40, "高さは viewport に制限");
     assert_eq!(r.width, 160);
@@ -1410,7 +1420,7 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     app.prepare_image(inner).unwrap();
     assert_eq!(app.tab.image_center, (0.5, 0.5));
     // 十分拡大して両軸見切れ → パンで中心が動き、端でクランプされる。
-    app.image_zoom = 12.0;
+    app.tab.image_zoom = 12.0;
     app.prepare_image(inner).unwrap(); // 可視率を更新
     for _ in 0..50 {
         app.image_pan(1.0, 1.0);
@@ -1467,7 +1477,8 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
     )
     .unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
@@ -1484,11 +1495,12 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
     assert_eq!(app.tab.focused_item, Some(0));
     app.md_activate_focused().unwrap();
     assert!(
-        app.preview_path
+        app.tab
+            .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("target.md")),
         "ローカルリンクで target.md に遷移していない: {:?}",
-        app.preview_path
+        app.tab.preview_path
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1517,19 +1529,19 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
     .unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     assert!(app.cfg.ui.wrap, "前提: 既定は折返しON");
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     assert_eq!(app.md_items.len(), 1);
-    assert_eq!(app.preview_scroll, 0);
+    assert_eq!(app.tab.preview_scroll, 0);
     // Tab でリンクへ: リンクの論理行(2)は viewport(10) 未満だが、表示行では 25 行目付近
     // → スクロールが表示行基準で進む(旧実装は 0 のまま=このアサーションで落ちる)。
     app.md_focus_move(1);
     assert!(
-        app.preview_scroll > 5,
+        app.tab.preview_scroll > 5,
         "折返し文書でフォーカスに追従してスクロールする: scroll={}",
-        app.preview_scroll
+        app.tab.preview_scroll
     );
     // 追従後の描画でフォーカス行が画面内にある(表示行の窓に収まる)。
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
@@ -1556,7 +1568,8 @@ fn md_task_toggle_cycles_and_writes_file() {
     let f = dir.join("todo.md");
     std::fs::write(&f, "# t\n\n- [ ] 未着手のタスク\n- [X] 済み\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("todo.md"))
@@ -1599,7 +1612,8 @@ fn md_task_toggle_star_and_plus_bullets() {
     // `*`/`+` 箇条書き(GFM 準拠)。tui-markdown は3種ともチェックボックス描画する。
     std::fs::write(&f, "* [ ] star task\n+ [ ] plus task\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("todo.md"))
@@ -1653,7 +1667,7 @@ fn md_task_toggle_custom_states_cycle() {
     let mut cfg = Config::default();
     cfg.ui.md_task_states = vec![" ".into(), "/".into(), "x".into()];
     let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     let cycle = |app: &mut App, term: &mut Terminal<TestBackend>| {
@@ -1681,7 +1695,7 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
     let f = dir.join("todo.md");
     std::fs::write(&f, "- [ ] a\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -1719,7 +1733,7 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
     let f = dir.join("todo.md");
     std::fs::write(&f, "- [ ] a\r\n\r\ntail\r\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -1755,7 +1769,7 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     let f = dir.join("todo.md");
     std::fs::write(&f, "- [ ] a\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -1791,7 +1805,7 @@ fn md_task_toggle_flashes_on_write_error() {
     let f = dir.join("todo.md");
     std::fs::write(&f, "- [ ] a\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -1843,7 +1857,8 @@ fn ui_info_popup_renders_variants() {
     app.lang = Lang::En;
 
     // 通常ファイル: Type=file。
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("reg.txt"))
@@ -1852,7 +1867,8 @@ fn ui_info_popup_renders_variants() {
     assert!(s.contains(tr(Lang::En, Msg::InfoFile)), "file 種別: {s}");
 
     // ディレクトリ: Type=directory ＋ 項目数。
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("subdir"))
@@ -1865,13 +1881,13 @@ fn ui_info_popup_renders_variants() {
     assert!(s.contains(tr(Lang::En, Msg::InfoItems)), "項目数を表示");
 
     // 読めない対象(不在): エラー行(クラッシュしない)。
-    app.mode = Mode::Preview;
-    app.preview_path = Some(dir.join("gone.txt"));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(dir.join("gone.txt"));
     let s = info_screen(&app);
     assert!(s.contains(tr(Lang::En, Msg::Failed)), "エラー表示: {s}");
 
     // 対象なし: 早期 return(何も描かない)。
-    app.preview_path = None;
+    app.tab.preview_path = None;
     let s = info_screen(&app);
     assert!(
         !s.contains(tr(Lang::En, Msg::InfoFile)),
@@ -1894,7 +1910,8 @@ fn ui_info_popup_renders_symlink_target() {
     std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link")).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.lang = Lang::En;
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("link"))
@@ -1932,8 +1949,9 @@ fn paste_jump_navigation_branches() {
     // ①絶対パス(resolve_local_path の absolute 枝) → プレビュー。
     let abs = dir.join("abs_target.txt");
     app.paste_jump_from(abs.to_str().unwrap());
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     assert!(app
+        .tab
         .preview_path
         .as_deref()
         .map(|p| p.ends_with("abs_target.txt"))
@@ -1954,6 +1972,7 @@ fn paste_jump_navigation_branches() {
     // ③装飾 Markdown + `#L` → raw ソースへ切替(preview_goto_line の decorated 枝)。
     app.paste_jump_from("doc.md#L5");
     assert!(app
+        .tab
         .preview_path
         .as_deref()
         .map(|p| p.ends_with("doc.md"))
@@ -1996,17 +2015,18 @@ fn paste_jump_relative_resolves_against_repo_workdir() {
     let repo = dir.canonicalize().unwrap();
     let subdir = repo.join("src");
     let mut app = App::new(subdir.clone(), Config::default()).unwrap();
-    assert_eq!(app.root, subdir, "起動 root は src サブディレクトリ");
+    assert_eq!(app.tab.root, subdir, "起動 root は src サブディレクトリ");
     // root(src)直下に docs/guide.md は無いが、repo workdir 基準で解決できる。
     app.paste_jump_from("docs/guide.md");
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     assert!(
-        app.preview_path
+        app.tab
+            .preview_path
             .as_deref()
             .map(|p| p.ends_with("docs/guide.md"))
             .unwrap_or(false),
         "workdir 基準で解決: {:?}",
-        app.preview_path
+        app.tab.preview_path
     );
     std::fs::remove_dir_all(&repo).ok();
 }
@@ -2025,7 +2045,7 @@ fn md_items_mix_links_and_tasks_in_document_order() {
     )
     .unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -2061,7 +2081,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
     )
     .unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
@@ -2457,11 +2477,11 @@ fn code_file_decorates_with_colored_syntax() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.rs"), b"fn main() { let x = 1; }\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    let i = app.entries.iter().position(|e| !e.is_dir).unwrap();
-    app.selected = i;
+    let i = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::Code(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::Code(_))),
         "Code 種別に解決されない"
     );
     let lines = app.decorated_lines(80);
@@ -2484,13 +2504,13 @@ fn tree_filter_finds_recursively_then_clears() {
     std::fs::write(dir.join("src/main.rs"), b"x").unwrap();
     std::fs::write(dir.join("README.md"), b"x").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    let normal_count = app.entries.len();
+    let normal_count = app.tab.entries.len();
 
     app.start_filter();
     assert!(app.is_filtering());
     // `/` 直後(クエリ空)は全件展開せず何も出さない。
     assert!(
-        app.entries.is_empty(),
+        app.tab.entries.is_empty(),
         "クエリ空のとき結果は0件であるべき(全展開しない)"
     );
     for c in "TREE".chars() {
@@ -2498,13 +2518,13 @@ fn tree_filter_finds_recursively_then_clears() {
     }
     assert_eq!(app.filter_query(), Some("TREE"));
     // 2 階層下の tree.rs を再帰的に発見。
-    assert_eq!(app.entries.len(), 1, "tree 一致は1件");
-    assert!(app.entries[0].path.ends_with("tree.rs"));
+    assert_eq!(app.tab.entries.len(), 1, "tree 一致は1件");
+    assert!(app.tab.entries[0].path.ends_with("tree.rs"));
 
     // 1文字削るとライブで広がる("TRE")。tree.rs は残る。
     app.filter_input_backspace();
     assert_eq!(app.filter_query(), Some("TRE"));
-    assert!(app.entries.iter().any(|e| e.path.ends_with("tree.rs")));
+    assert!(app.tab.entries.iter().any(|e| e.path.ends_with("tree.rs")));
 
     // 確定(Enter): 入力は抜けるが絞り込みは維持。
     app.filter_commit();
@@ -2514,7 +2534,7 @@ fn tree_filter_finds_recursively_then_clears() {
     // 解除(Esc): 通常ツリーへ戻る。
     app.filter_clear();
     assert!(app.filter_query().is_none());
-    assert_eq!(app.entries.len(), normal_count, "通常ツリーに復帰");
+    assert_eq!(app.tab.entries.len(), normal_count, "通常ツリーに復帰");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2526,8 +2546,8 @@ fn small_code_file_is_also_windowed() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.rs"), b"fn main() {}\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    let i = app.entries.iter().position(|e| !e.is_dir).unwrap();
-    app.selected = i;
+    let i = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(
         app.is_windowed(),
@@ -2554,13 +2574,14 @@ fn line_numbers_gutter_tracks_position() {
     cfg.ui.line_numbers = true;
     let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.rs"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap();
-    app.preview_viewport = 5;
+    app.tab.preview_viewport = 5;
 
     // 行頭ガター span(最初の span)の数字部分。
     let gutter_num = |lines: &[Line<'static>], row: usize| -> String {
@@ -2581,13 +2602,14 @@ fn line_numbers_gutter_tracks_position() {
 
     // OFF(既定)ではガターが付かない(先頭 span が行番号でない)。
     let mut app2 = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app2.selected = app2
+    app2.tab.selected = app2
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.rs"))
         .unwrap();
     app2.tree_activate().unwrap();
-    app2.preview_viewport = 5;
+    app2.tab.preview_viewport = 5;
     let off = app2.windowed_lines(5, 80);
     let first: String = off[0].spans[0].content.to_string();
     assert!(
@@ -2615,14 +2637,15 @@ fn large_code_file_uses_windowed_reading() {
     }
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("big.rs"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(app.is_windowed(), "大きいファイルが windowed にならない");
-    app.preview_viewport = 5;
+    app.tab.preview_viewport = 5;
 
     let joined = |lines: &[Line<'static>]| -> String {
         lines
@@ -2660,10 +2683,10 @@ fn tab_label_reflects_tree_root_or_preview_file() {
     // Tree 表示中はルートのディレクトリ名。
     assert_eq!(app.tab_label(0), "konoma_tab_label_test");
     // doc.md をプレビュー → タブ名がファイル名になる。
-    let idx = app.entries.iter().position(|e| !e.is_dir).unwrap();
-    app.selected = idx;
+    let idx = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     assert_eq!(app.tab_label(0), "doc.md", "Preview 中はファイル名");
     // 新規タブ(Tree)はルート名。非アクティブの元タブはスナップショットのファイル名のまま。
     app.tab_new().unwrap();
@@ -2691,22 +2714,25 @@ fn tab_switch_preserves_and_restores_preview() {
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
     // doc.md を選んでプレビューへ。
-    let idx = app.entries.iter().position(|e| !e.is_dir).unwrap();
-    app.selected = idx;
+    let idx = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert_eq!(app.mode, Mode::Preview);
-    let previewed = app.preview_path.clone();
+    assert_eq!(app.tab.mode, Mode::Preview);
+    let previewed = app.tab.preview_path.clone();
     assert!(previewed.is_some());
 
     // 新規タブは Tree から (プレビューを持ち込まない)。
     app.tab_new().unwrap();
-    assert_eq!(app.mode, Mode::Tree, "新規タブは Tree");
-    assert!(app.preview_path.is_none(), "新規タブはプレビュー無し");
+    assert_eq!(app.tab.mode, Mode::Tree, "新規タブは Tree");
+    assert!(app.tab.preview_path.is_none(), "新規タブはプレビュー無し");
 
     // 元のタブへ戻ると Preview と対象が復元される。
     app.tab_cycle(-1);
-    assert_eq!(app.mode, Mode::Preview, "戻ると Preview が復元される");
-    assert_eq!(app.preview_path, previewed, "プレビュー対象も復元される");
+    assert_eq!(app.tab.mode, Mode::Preview, "戻ると Preview が復元される");
+    assert_eq!(
+        app.tab.preview_path, previewed,
+        "プレビュー対象も復元される"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2722,26 +2748,26 @@ fn tabs_create_switch_close_preserve_state() {
 
     // タブ1で選択を1つ下へ。
     app.tree_next();
-    let sel1 = app.selected;
+    let sel1 = app.tab.selected;
     assert!(sel1 > 0);
 
     // 新規タブ → 2枚、アクティブは2枚目、選択は先頭。
     app.tab_new().unwrap();
     assert_eq!(app.tab_count(), 2);
     assert_eq!(app.active_tab_index(), 1);
-    assert_eq!(app.selected, 0);
+    assert_eq!(app.tab.selected, 0);
     app.tree_last();
-    let sel2 = app.selected;
+    let sel2 = app.tab.selected;
 
     // 前のタブへ戻ると選択位置が復元される。
     app.tab_cycle(-1);
     assert_eq!(app.active_tab_index(), 0);
-    assert_eq!(app.selected, sel1, "タブ1の選択が保たれる");
+    assert_eq!(app.tab.selected, sel1, "タブ1の選択が保たれる");
 
     // 番号ジャンプでタブ2へ。
     app.tab_goto(1);
     assert_eq!(app.active_tab_index(), 1);
-    assert_eq!(app.selected, sel2, "タブ2の選択が保たれる");
+    assert_eq!(app.tab.selected, sel2, "タブ2の選択が保たれる");
 
     // タブを閉じると1枚に戻り、残ったタブがアクティブ。
     app.tab_close();
@@ -2766,13 +2792,14 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     std::fs::write(dir.join("sub").join("x.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
-    let idx =
-        |app: &App, p: std::path::PathBuf| app.entries.iter().position(|e| e.path == p).unwrap();
+    let idx = |app: &App, p: std::path::PathBuf| {
+        app.tab.entries.iter().position(|e| e.path == p).unwrap()
+    };
 
     // --- (a) タブAで複数選択 ---
-    app.selected = idx(&app, dir.join("a.txt"));
+    app.tab.selected = idx(&app, dir.join("a.txt"));
     app.toggle_select(); // a.txt
-    app.selected = idx(&app, dir.join("b.txt"));
+    app.tab.selected = idx(&app, dir.join("b.txt"));
     app.toggle_select(); // b.txt
     assert!(app.is_selected(&dir.join("a.txt")) && app.is_selected(&dir.join("b.txt")));
     assert_eq!(app.op_targets().len(), 2, "A の op_targets は選択2件");
@@ -2800,9 +2827,9 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     assert_eq!(app.op_targets().len(), 2);
 
     // --- (b) root 変更(l=descend)で選択クリア・op_targets が別 root のパスを返さない ---
-    app.selected = idx(&app, dir.join("sub"));
+    app.tab.selected = idx(&app, dir.join("sub"));
     app.tree_descend().unwrap();
-    assert_eq!(app.root, dir.join("sub"), "sub が新 root");
+    assert_eq!(app.tab.root, dir.join("sub"), "sub が新 root");
     assert!(!app.has_selection(), "root 変更(l)で選択クリア");
     for t in app.op_targets() {
         assert!(
@@ -2812,15 +2839,15 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     }
 
     // --- (b) root 変更(h=leave)でも選択クリア ---
-    app.selected = idx(&app, dir.join("sub").join("x.txt"));
+    app.tab.selected = idx(&app, dir.join("sub").join("x.txt"));
     app.toggle_select();
     assert!(app.has_selection(), "sub 内で選択を積む");
     app.tree_leave().unwrap();
-    assert_eq!(app.root, dir, "親へ戻る");
+    assert_eq!(app.tab.root, dir, "親へ戻る");
     assert!(!app.has_selection(), "root 変更(h)で選択クリア");
 
     // --- (c) clipboard はタブ跨ぎで保持(global) ---
-    app.selected = idx(&app, dir.join("a.txt"));
+    app.tab.selected = idx(&app, dir.join("a.txt"));
     app.toggle_select();
     app.copy_selection(); // Y: clipboard へ積む(選択はクリアされる)
     assert!(
@@ -2846,14 +2873,14 @@ fn refresh_rereads_directory_listing() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    let before = app.entries.len();
+    let before = app.tab.entries.len();
     std::fs::write(dir.join("b.txt"), b"y").unwrap(); // 外部でファイル追加
     app.refresh().unwrap();
     assert!(
-        app.entries.len() > before,
+        app.tab.entries.len() > before,
         "新規ファイルが一覧に反映されない"
     );
-    assert!(app.entries.iter().any(|e| e.path.ends_with("b.txt")));
+    assert!(app.tab.entries.iter().any(|e| e.path.ends_with("b.txt")));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2896,13 +2923,14 @@ fn refresh_reloads_active_preview() {
     std::fs::write(dir.join("doc.md"), b"# v1\n").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap(); // doc.md をプレビューで開く
-    assert!(matches!(app.mode, Mode::Preview), "Preview モードへ");
+    assert!(matches!(app.tab.mode, Mode::Preview), "Preview モードへ");
     let _ = app.decorated_lines(80); // 装飾キャッシュを張る
     assert!(app.md_cache.is_some(), "プレビューでキャッシュが張られる");
     std::fs::write(dir.join("doc.md"), b"# v2 changed\n").unwrap(); // 外部編集
@@ -2916,7 +2944,7 @@ fn refresh_reloads_active_preview() {
 
 #[test]
 fn out_of_root_watch_dir_targets_files_outside_the_root() {
-    // 真因の回帰: FSEvents 監視は app.root だけを再帰監視する。root 外に表示中のファイル
+    // 真因の回帰: FSEvents 監視は app.tab.root だけを再帰監視する。root 外に表示中のファイル
     // (グローバルブックマーク先 / repo 全体の git ビュー)は変更イベントが来ず、AI 編集を検知できない。
     // out_of_root_watch_dir が「root 外プレビューはその親ディレクトリを返す / root 内・ツリーは None」を検証。
     let base = std::env::temp_dir().join("konoma_out_of_root_watch");
@@ -2938,7 +2966,7 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
 
     // root 内ファイルのプレビュー → 再帰監視でカバー済 → None。
     app.enter_preview(&root.join("inside.md"));
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     assert_eq!(app.out_of_root_watch_dir(), None, "root 内は追加監視不要");
 
     // root 外ファイルのプレビュー(ブックマーク先を模擬) → その親ディレクトリを追加監視対象に返す。
@@ -2950,7 +2978,7 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
     );
 
     // ツリーへ戻ると None(監視は外れる)。
-    app.mode = Mode::Tree;
+    app.tab.mode = Mode::Tree;
     assert_eq!(app.out_of_root_watch_dir(), None);
 
     std::fs::remove_dir_all(&base).ok();
@@ -2968,18 +2996,19 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
     std::fs::write(root.join("doc.md"), b"# v1\n").unwrap();
     let mut app = App::new(root.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     let _ = app.decorated_lines(80);
     assert!(app.md_cache.is_some(), "プレビューでキャッシュが張られる");
 
     // root を存在しないパスへ差し替え → rebuild_tree(read_dir) が失敗する状況を作る。
-    app.root = base.join("does-not-exist");
+    app.tab.root = base.join("does-not-exist");
     std::fs::write(root.join("doc.md"), b"# v2 changed\n").unwrap(); // 外部編集
 
     let result = app.refresh_fs(false);
@@ -3007,15 +3036,16 @@ fn media_preview_reloads_only_when_file_changes() {
     RgbImage::new(2, 2).save(&pic).unwrap(); // 有効な PNG (拡張子/mime どちらでも Image に解決)
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("pic.png"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap(); // 画像プレビューで開く
     assert!(
         matches!(
-            app.preview_kind,
+            app.tab.preview_kind,
             Some(crate::preview::PreviewKind::Image(_))
         ),
         "画像として開く"
@@ -3060,7 +3090,8 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
     let names = |a: &App| {
-        a.entries
+        a.tab
+            .entries
             .iter()
             .map(|e| e.path.file_name().unwrap().to_string_lossy().to_string())
             .collect::<Vec<_>>()
@@ -3117,6 +3148,7 @@ fn sort_config_sets_initial_order() {
 
     // size 昇順: ファイルは 10<30<50 = b,a,c の相対順 (dir のサイズは環境依存なので位置は問わない)。
     let names: Vec<String> = app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().unwrap().to_string_lossy().to_string())
@@ -3138,21 +3170,23 @@ fn bookmark_set_and_jump_via_marks() {
     std::fs::write(proj.join("f.txt"), b"hello").unwrap();
     let mut app = App::new(proj.clone(), Config::default()).unwrap();
     // 実 ~/.config を汚さないようテスト用ベースへ差し替え。
-    app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.open_dir);
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.tab.open_dir);
 
     let sub_idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("sub"))
         .unwrap();
     let file_idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("f.txt"))
         .unwrap();
 
     // カーソルを sub(ディレクトリ)に置いて a に登録 → カーソルの dir が入る。
-    app.selected = sub_idx;
+    app.tab.selected = sub_idx;
     app.start_mark_set();
     assert!(app.is_marking());
     app.mark_input('a');
@@ -3160,7 +3194,7 @@ fn bookmark_set_and_jump_via_marks() {
     assert_eq!(app.bookmarks.get('a'), Some(proj.join("sub")));
 
     // カーソルを f.txt(ファイル)に置いて b に登録 → カーソルの file が入る。
-    app.selected = file_idx;
+    app.tab.selected = file_idx;
     app.start_mark_set();
     app.mark_input('b');
     assert_eq!(app.bookmarks.get('b'), Some(proj.join("f.txt")));
@@ -3170,27 +3204,27 @@ fn bookmark_set_and_jump_via_marks() {
     app.bookmark_jump_letter('a');
     assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
     assert_eq!(
-        app.root,
+        app.tab.root,
         proj.join("sub"),
         "ディレクトリのブックマークはそこへ移動"
     );
-    assert_eq!(app.mode, Mode::Tree);
+    assert_eq!(app.tab.mode, Mode::Tree);
 
     // root を proj に戻し、' b: ファイル → プレビューで開く (tree は変えない)。
-    app.root = proj.clone();
+    app.tab.root = proj.clone();
     let _ = app.rebuild_tree();
-    let root_before = app.root.clone();
+    let root_before = app.tab.root.clone();
     app.open_bookmark_list();
     app.bookmark_jump_letter('b');
     assert_eq!(
-        app.mode,
+        app.tab.mode,
         Mode::Preview,
         "ファイルのブックマークはプレビューで開く"
     );
     let f = proj.join("f.txt");
-    assert_eq!(app.preview_path.as_deref(), Some(f.as_path()));
+    assert_eq!(app.tab.preview_path.as_deref(), Some(f.as_path()));
     assert_eq!(
-        app.root, root_before,
+        app.tab.root, root_before,
         "ファイルを開いても tree(root) は変わらない"
     );
 
@@ -3204,13 +3238,13 @@ fn bookmark_set_and_jump_via_marks() {
 
     // プレビューを終了すると元の tree に戻る。
     app.back_to_tree();
-    assert_eq!(app.mode, Mode::Tree);
-    assert_eq!(app.root, root_before);
+    assert_eq!(app.tab.mode, Mode::Tree);
+    assert_eq!(app.tab.root, root_before);
 
     // 未登録マークはジャンプせず flash(一覧は開いたまま)。
     app.open_bookmark_list();
     app.bookmark_jump_letter('z');
-    assert_eq!(app.root, root_before, "未登録マークではジャンプしない");
+    assert_eq!(app.tab.root, root_before, "未登録マークではジャンプしない");
     assert!(app.flash.is_some());
     assert!(app.is_bookmark_list(), "未登録では一覧を閉じない");
     app.close_bookmark_list();
@@ -3238,17 +3272,22 @@ fn tree_descend_sets_root_to_selected_dir() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // "sub" ディレクトリのエントリを選択。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.is_dir && e.path.ends_with("sub"))
         .expect("sub が無い");
-    app.selected = i;
+    app.tab.selected = i;
     // l 相当: 選択ディレクトリを新しいルートにする。
     app.tree_descend().unwrap();
-    assert_eq!(app.root, dir.join("sub"), "root が選択ディレクトリになる");
-    assert_eq!(app.mode, Mode::Tree);
+    assert_eq!(
+        app.tab.root,
+        dir.join("sub"),
+        "root が選択ディレクトリになる"
+    );
+    assert_eq!(app.tab.mode, Mode::Tree);
     assert!(
-        app.entries.iter().any(|e| e.path.ends_with("f.txt")),
+        app.tab.entries.iter().any(|e| e.path.ends_with("f.txt")),
         "sub の中身が表示される"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -3265,17 +3304,18 @@ fn jump_to_dir_clears_selection_on_root_change() {
     let mut app = App::new(base.clone(), Config::default()).unwrap();
     // base で a.txt を選択する。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| !e.is_dir && e.path.ends_with("a.txt"))
         .expect("a.txt が無い");
-    app.selected = i;
+    app.tab.selected = i;
     app.toggle_select();
     assert!(app.has_selection(), "前提: 選択がある");
 
     // subB へジャンプ(root 変更)。
     app.jump_to_dir(base.join("subB"));
-    assert_eq!(app.root, base.join("subB"), "root が subB になる");
+    assert_eq!(app.tab.root, base.join("subB"), "root が subB になる");
     assert!(!app.has_selection(), "旧 root の選択は持ち越さない");
     assert!(
         !app.op_targets().iter().any(|p| p.ends_with("a.txt")),
@@ -3339,7 +3379,7 @@ fn copy_relative_matches_title_display() {
         work.clone(),                  // 上位
     ] {
         assert_eq!(
-            copy_text(&p, &app.open_dir, CopyKind::Relative),
+            copy_text(&p, &app.tab.open_dir, CopyKind::Relative),
             app.format_path(&p),
             "コピーとタイトル表示がずれている: {}",
             p.display()
@@ -3361,7 +3401,7 @@ fn is_image_preview_requires_src_and_kind() {
 fn help_in_image_mode_shows_only_image_section() {
     // 画像プレビュー中の ? は画像節のみ。Tree/Git/テキスト専用節は出さない (モード最適化)。
     let mut app = app_with_image();
-    app.mode = Mode::Preview;
+    app.tab.mode = Mode::Preview;
     let s: String = crate::ui::help::help_lines(&app)
         .iter()
         .map(|line| {
@@ -3385,7 +3425,7 @@ fn status_shows_image_zoom_factor() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = app_with_image();
-    app.mode = Mode::Preview;
+    app.tab.mode = Mode::Preview;
     let text = |app: &App| -> String {
         let mut term = Terminal::new(TestBackend::new(80, 1)).unwrap();
         term.draw(|f| crate::ui::status::render_combined(f, app, f.area()))
@@ -3397,11 +3437,11 @@ fn status_shows_image_zoom_factor() {
             .map(|c| c.symbol())
             .collect()
     };
-    app.image_zoom = 1.0;
+    app.tab.image_zoom = 1.0;
     let s = text(&app);
     assert!(s.contains("IMAGE"), "IMAGE チップ: {s}");
     assert!(s.contains("x1.00"), "フィットで x1.00: {s}");
-    app.image_zoom = 2.5;
+    app.tab.image_zoom = 2.5;
     assert!(text(&app).contains("x2.50"), "拡大時に倍率");
 }
 
@@ -3417,13 +3457,14 @@ fn has_rgb_fg(lines: &[Line<'static>]) -> bool {
 fn open_code_file(dir: &std::path::Path, name: &str, cfg: Config) -> App {
     std::fs::write(dir.join(name), b"fn main() {\n    let x = 1;\n}\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with(name))
         .unwrap();
     app.tree_activate().unwrap();
-    app.preview_viewport = 5;
+    app.tab.preview_viewport = 5;
     app
 }
 
@@ -3482,7 +3523,8 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
     // ファイル選択 → そのパスが編集要求になる。
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.rs"))
@@ -3501,7 +3543,7 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
     );
 
     // ディレクトリ選択 → 要求は立たず flash で拒否。
-    app.selected = app.entries.iter().position(|e| e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| e.is_dir).unwrap();
     app.flash = None;
     app.request_edit();
     assert!(
@@ -3519,13 +3561,14 @@ fn request_edit_targets_preview_file() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("b.rs"), b"fn main() {}\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("b.rs"))
         .unwrap();
     app.tree_activate().unwrap(); // Preview へ
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     app.request_edit();
     let got = app.take_pending_edit();
     assert!(
@@ -3594,7 +3637,7 @@ fn preview_search_finds_highlights_and_navigates() {
         }
     }
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tree_activate().unwrap();
     assert!(app.is_windowed(), "コードはウィンドウ読み対象");
 
@@ -3927,7 +3970,7 @@ fn follow_in_non_repo_falls_back_to_file_preview() {
         !app.is_git_diff_preview(),
         "非 repo は全画面 diff でなくファイルプレビューへ降格"
     );
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
 }
 
 /// `F` を貼り直す(OFF→ON)とベースラインを取り直し、表示中の follow diff の古いキャッシュを落とす
@@ -4072,13 +4115,14 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
 
     // sub を選択して潜行(root 変更・同一 repo)。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.is_dir && e.path.ends_with("sub"))
         .expect("sub エントリが無い");
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_descend().unwrap();
-    assert!(app.root.ends_with("sub"), "root が sub になった");
+    assert!(app.tab.root.ends_with("sub"), "root が sub になった");
     app.refresh_git_if_needed();
 
     assert_eq!(
@@ -4091,7 +4135,7 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
     );
     assert_eq!(
         app.git_status_for.as_deref(),
-        Some(app.root.as_path()),
+        Some(app.tab.root.as_path()),
         "statuses は root 変更のたびに取り直す"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -4130,8 +4174,8 @@ fn returning_to_tree_re_syncs_stale_git_status() {
     );
 
     // プレビューへ入る。
-    app.mode = Mode::Preview;
-    app.preview_path = Some(note.clone());
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(note.clone());
 
     // 外部でコミット(clean になる)。konoma には refresh を通さない = fs イベント取りこぼしの再現。
     git(&["commit", "-qam", "external commit"]);
@@ -4176,11 +4220,12 @@ fn descend_into_nested_different_repo_recomputes_ignored_set() {
 
     // inner(別 repo)へ潜行。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.is_dir && e.path.ends_with("inner"))
         .expect("inner エントリが無い");
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_descend().unwrap();
     app.refresh_git_if_needed();
 
@@ -4547,7 +4592,7 @@ fn git_diff_opens_from_view_and_esc_returns_to_view() {
     // Git ビューから diff を開く: Preview モード・GitDiff・Git ビューは閉じる。
     app.open_git_diff(&target);
     assert!(app.is_git_diff_preview(), "GitDiff プレビューになる");
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     assert!(!app.is_git_view(), "Git ビューは閉じる");
     // diff 行が取得できる(変更ありなので非空)。
     assert!(!app.git_diff_lines().is_empty(), "diff 行が空");
@@ -4895,15 +4940,18 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     std::fs::write(dir.join(".secret"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    let has_dot = |a: &App| a.entries.iter().any(|e| e.path.ends_with(".secret"));
-    assert!(!app.show_hidden && !has_dot(&app), "既定では隠しは出ない");
+    let has_dot = |a: &App| a.tab.entries.iter().any(|e| e.path.ends_with(".secret"));
+    assert!(
+        !app.tab.show_hidden && !has_dot(&app),
+        "既定では隠しは出ない"
+    );
     app.toggle_hidden().unwrap();
     assert!(
-        app.show_hidden && has_dot(&app),
+        app.tab.show_hidden && has_dot(&app),
         "トグルで .secret が現れる"
     );
     app.toggle_hidden().unwrap();
-    assert!(!app.show_hidden && !has_dot(&app), "もう一度で隠れる");
+    assert!(!app.tab.show_hidden && !has_dot(&app), "もう一度で隠れる");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4990,7 +5038,7 @@ fn take_warm_job_returns_once_then_none() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // ハイライト待ち + プレビュー対象がある状態を作る。
-    app.preview_path = Some(dir.join("main.rs"));
+    app.tab.preview_path = Some(dir.join("main.rs"));
     app.hl_pending = true;
     app.hl_warming = false;
     let job = app.take_warm_job().expect("起動対象を1度だけ返す");
@@ -5020,20 +5068,20 @@ fn preview_scroll_paging_and_to_top_non_windowed() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.preview_viewport = 20;
+    app.tab.preview_viewport = 20;
     // 非 windowed: preview_scroll を直接操作。
     app.preview_scroll(5);
-    assert_eq!(app.preview_scroll, 5);
+    assert_eq!(app.tab.preview_scroll, 5);
     app.preview_scroll(-100);
-    assert_eq!(app.preview_scroll, 0, "下限 0 でクランプ");
+    assert_eq!(app.tab.preview_scroll, 0, "下限 0 でクランプ");
     app.preview_page(1); // +19 (1行重ね)
-    assert_eq!(app.preview_scroll, 19);
+    assert_eq!(app.tab.preview_scroll, 19);
     app.preview_half_page(1); // +10
-    assert_eq!(app.preview_scroll, 29);
+    assert_eq!(app.tab.preview_scroll, 29);
     app.preview_page(-1); // -19
-    assert_eq!(app.preview_scroll, 10);
+    assert_eq!(app.tab.preview_scroll, 10);
     app.preview_to_top();
-    assert_eq!(app.preview_scroll, 0, "to_top で先頭へ");
+    assert_eq!(app.tab.preview_scroll, 0, "to_top で先頭へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -5044,13 +5092,17 @@ fn preview_hscroll_moves_and_home_end() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.preview_hscroll(8);
-    assert_eq!(app.preview_hscroll, 8);
+    assert_eq!(app.tab.preview_hscroll, 8);
     app.preview_hscroll(-100);
-    assert_eq!(app.preview_hscroll, 0, "下限 0");
+    assert_eq!(app.tab.preview_hscroll, 0, "下限 0");
     app.preview_hscroll_end();
-    assert_eq!(app.preview_hscroll, u16::MAX, "$ は上限(描画側でクランプ)");
+    assert_eq!(
+        app.tab.preview_hscroll,
+        u16::MAX,
+        "$ は上限(描画側でクランプ)"
+    );
     app.preview_hscroll_home();
-    assert_eq!(app.preview_hscroll, 0, "0 で行頭");
+    assert_eq!(app.tab.preview_hscroll, 0, "0 で行頭");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -5067,14 +5119,15 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("big.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap(); // ファイル → プレビュー(Text=窓読み)
     assert!(app.is_windowed(), "テキストは窓読みモード");
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
 
     let first_line = |a: &mut App| -> String {
         a.windowed_lines(10, 80)[0]
@@ -5141,11 +5194,12 @@ fn request_edit_opens_at_windowed_caret_line() {
 
     // ① ツリーからの編集: 行なし。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("big.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.request_edit();
     let (p, line) = app.take_pending_edit().expect("edit requested");
     assert!(p.ends_with("big.txt"));
@@ -5154,7 +5208,7 @@ fn request_edit_opens_at_windowed_caret_line() {
     // ② windowed プレビュー: キャレット行 + 1。
     app.tree_activate().unwrap();
     assert!(app.is_windowed());
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
     app.preview_scroll(12); // キャレット 0→12
     assert_eq!(app.tab.preview_cursor_line, 12);
     app.request_edit();
@@ -5169,11 +5223,12 @@ fn request_edit_opens_at_windowed_caret_line() {
     // ③ 装飾 Markdown(非 windowed): 描画前(md_cache 未構築)は行なし=先頭で開く。
     app.back_to_tree();
     let j = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = j;
+    app.tab.selected = j;
     app.tree_activate().unwrap();
     assert!(!app.is_windowed(), "装飾 Markdown は非 windowed");
     app.request_edit();
@@ -5197,14 +5252,15 @@ fn preview_visual_selection_copies_logical_lines() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("code.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(app.is_windowed(), "テキストは窓読み(行カーソル有効)");
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
 
     // カーソルを 2 行目へ。まだ非選択。
     app.preview_scroll(2);
@@ -5268,14 +5324,15 @@ fn preview_charwise_selection_copies_character_range() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("code.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(app.is_windowed());
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
 
     // 1 行目(line 0)の 2 列目(c)から開始 → l を 3 回で col 2→5(f)。単一行 charwise。
     app.preview_col_move(1); // col 1
@@ -5343,11 +5400,12 @@ fn markdown_raw_toggle_enables_windowed_selection() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_activate().unwrap();
 
     // 既定は装飾表示: windowed でない＝2D 選択は効かない。R トグル対象ではある。
@@ -5360,7 +5418,7 @@ fn markdown_raw_toggle_enables_windowed_selection() {
     app.toggle_md_raw();
     assert!(app.is_raw_source(), "raw ソース表示に切替");
     assert!(app.is_windowed(), "raw は windowed(選択可)");
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
 
     // 先頭行 "# Title" を charwise で全選択してコピー内容を確認(生ソースの行/桁一致)。
     app.preview_enter_visual(false); // anchor=(0,0)
@@ -5533,9 +5591,9 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     app.rebuild_tree().unwrap();
 
     // md を開いている体にして、相対リンクの基準を a.md にする。
-    app.preview_path = Some(base.join("a.md"));
-    app.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
-    app.mode = Mode::Preview;
+    app.tab.preview_path = Some(base.join("a.md"));
+    app.tab.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
+    app.tab.mode = Mode::Preview;
 
     // アンカー(#) は、該当見出しが無ければ「見つからない」旨を flash(未対応ではない)。
     // ここでは md_cache 未構築(描画していない)ので anchors は空 → NotFound 扱い。
@@ -5550,7 +5608,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     );
 
     // 実在しないローカルパスは NotFound 通知。
-    app.preview_path = Some(base.join("a.md"));
+    app.tab.preview_path = Some(base.join("a.md"));
     app.open_link_target("does_not_exist.zz").unwrap();
     assert!(
         app.flash
@@ -5562,10 +5620,11 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     );
 
     // 既存ファイルへのリンク → プレビュー対象が b.txt に切り替わる。
-    app.preview_path = Some(base.join("a.md"));
+    app.tab.preview_path = Some(base.join("a.md"));
     app.open_link_target("b.txt").unwrap();
     assert_eq!(
-        app.preview_path
+        app.tab
+            .preview_path
             .as_ref()
             .map(|p| p.file_name().unwrap().to_owned()),
         Some(std::ffi::OsString::from("b.txt")),
@@ -5573,11 +5632,15 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     );
 
     // ディレクトリへのリンク → root が sub になり Tree へ。
-    app.preview_path = Some(base.join("a.md"));
-    app.mode = Mode::Preview;
+    app.tab.preview_path = Some(base.join("a.md"));
+    app.tab.mode = Mode::Preview;
     app.open_link_target("sub").unwrap();
-    assert_eq!(app.root, base.join("sub"), "ディレクトリリンクで root=sub");
-    assert_eq!(app.mode, Mode::Tree, "ディレクトリは Tree へ戻る");
+    assert_eq!(
+        app.tab.root,
+        base.join("sub"),
+        "ディレクトリリンクで root=sub"
+    );
+    assert_eq!(app.tab.mode, Mode::Tree, "ディレクトリは Tree へ戻る");
     std::fs::remove_dir_all(&base).ok();
 }
 
@@ -5590,16 +5653,17 @@ fn copy_target_follows_mode() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.txt"))
         .unwrap();
-    app.selected = i;
+    app.tab.selected = i;
     // Tree: カーソルのエントリ。
     assert_eq!(app.copy_target(), Some(dir.join("a.txt")));
     // Preview: プレビュー対象。
-    app.mode = Mode::Preview;
-    app.preview_path = Some(dir.join("p.txt"));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(dir.join("p.txt"));
     assert_eq!(app.copy_target(), Some(dir.join("p.txt")));
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -5618,8 +5682,8 @@ fn tab_label_shows_root_dir_or_preview_file_name() {
     // 範囲外は空文字。
     assert_eq!(app.tab_label(999), "");
     // Preview 表示中はプレビュー対象のファイル名。
-    app.mode = Mode::Preview;
-    app.preview_path = Some(dir.join("file.md"));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(dir.join("file.md"));
     assert_eq!(app.tab_label(active), "file.md");
     std::fs::remove_dir_all(dir.parent().unwrap()).ok();
 }
@@ -6054,12 +6118,13 @@ fn bookmark_from_preview_registers_previewed_file() {
     app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase"), &proj);
     // b.txt をプレビューで開くが、ツリーカーソルは a.txt に置いたまま(フォロー/ジャンプ等で乖離する状況)。
     app.enter_preview(&proj.join("b.txt"));
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.txt"))
         .unwrap();
-    assert_eq!(app.mode, Mode::Preview);
+    assert_eq!(app.tab.mode, Mode::Preview);
     app.start_mark_set();
     app.mark_input('p');
     assert_eq!(
@@ -6067,7 +6132,7 @@ fn bookmark_from_preview_registers_previewed_file() {
         Some(proj.join("b.txt")),
         "カーソルの a.txt でなく表示中の b.txt が登録される"
     );
-    assert_eq!(app.mode, Mode::Preview, "登録後もプレビューのまま");
+    assert_eq!(app.tab.mode, Mode::Preview, "登録後もプレビューのまま");
     // ツリーに戻れば従来どおりカーソル位置を登録。
     app.back_to_tree();
     app.start_mark_set();
@@ -6279,7 +6344,7 @@ fn bookmark_list_jump_delete_and_close() {
     app.bookmark_list_jump();
     assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
     assert_eq!(
-        app.root,
+        app.tab.root,
         proj.join("sub"),
         "ディレクトリへジャンプで root 変更"
     );
@@ -6356,23 +6421,25 @@ fn op_base_dir_for_file_dir_and_empty() {
     app.rebuild_tree().unwrap();
     // ディレクトリ選択 → その中。
     let si = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("sub"))
         .unwrap();
-    app.selected = si;
+    app.tab.selected = si;
     assert_eq!(app.op_base_dir(), dir.join("sub"), "dir 選択はその中");
     // ファイル選択 → その親。
     let ai = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("a.txt"))
         .unwrap();
-    app.selected = ai;
+    app.tab.selected = ai;
     assert_eq!(app.op_base_dir(), dir, "file 選択は親ディレクトリ");
     // エントリ無し(選択範囲外) → root。
-    app.entries.clear();
-    assert_eq!(app.op_base_dir(), app.root, "エントリ無しは root");
+    app.tab.entries.clear();
+    assert_eq!(app.op_base_dir(), app.tab.root, "エントリ無しは root");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -6388,11 +6455,12 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
 
     // ファイル note.md にカーソル → その場に note copy.md ができ、内容は同一。
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("note.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.duplicate_selection().unwrap();
     assert!(
         root.join("note copy.md").exists(),
@@ -6406,11 +6474,12 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
 
     // 2回目 → note copy 2.md(既存 unique_name 準拠の連番)。
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("note.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.duplicate_selection().unwrap();
     assert!(
         root.join("note copy 2.md").exists(),
@@ -6419,11 +6488,12 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
 
     // ディレクトリ sub にカーソル → 兄弟 sub copy/ が再帰複製される(中身ごと)。
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("sub") && e.is_dir)
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.duplicate_selection().unwrap();
     assert!(root.join("sub copy").is_dir(), "sub copy/ が兄弟にできる");
     assert!(
@@ -6477,7 +6547,7 @@ fn ui_preview_renders_image_via_kitty_path() {
     // GIF(2フレーム)は同期エンコードなので、ワーカー無しの TestBackend でも render_image の
     // 画像経路が実ピクセル(kitty 転送列 _G)を吐く。静止画は非同期(app.image が後から届く)。
     let mut app = app_with_kitty();
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
     };
@@ -6486,7 +6556,7 @@ fn ui_preview_renders_image_via_kitty_path() {
         (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
     ];
     app.gif_idx = 0;
-    app.mode = Mode::Preview;
+    app.tab.mode = Mode::Preview;
     assert!(app.is_gif_active() && app.is_image_preview());
     let mut term = Terminal::new(TestBackend::new(48, 20)).unwrap();
     term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
@@ -6509,9 +6579,9 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     // 静止画 Image だが app.image(エンコード済み protocol)が未着 → ImageUnsupported に降格。
     // render_image の静止画フォールバック分岐を通す。
     let mut app = app_with_kitty();
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
-    app.mode = Mode::Preview;
+    app.tab.mode = Mode::Preview;
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
     term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
         .unwrap();
@@ -6533,8 +6603,8 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(dir.join("thing.bin"));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(dir.join("thing.bin"));
 
     let dump = |app: &mut App| -> String {
         let mut term = Terminal::new(TestBackend::new(70, 10)).unwrap();
@@ -6549,14 +6619,14 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     };
 
     // 未対応 → [can not preview: <ext>]。
-    app.preview_kind = Some(PreviewKind::CanNotPreview { ext: "bin".into() });
+    app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "bin".into() });
     assert!(
         dump(&mut app).contains("can not preview"),
         "未対応フォールバックが出ない"
     );
 
     // 動画でサムネ無し(image_src 無し)→ ヒント文言にフォールバック。
-    app.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
+    app.tab.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
     let video = dump(&mut app);
     assert!(
         video.contains("video") || video.contains("動画"),
@@ -6564,7 +6634,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     );
 
     // 外部コマンド委譲: テンプレ表示。
-    app.preview_kind = Some(PreviewKind::Command {
+    app.tab.preview_kind = Some(PreviewKind::Command {
         path: dir.join("c.xyz"),
         template: "mpv {path}".into(),
         render_as: None,
@@ -6726,14 +6796,15 @@ fn preview_survives_target_file_overwrite_and_delete() {
     RgbImage::new(4, 3).save(&pic).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("plot.png"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
     assert!(matches!(
-        app.preview_kind,
+        app.tab.preview_kind,
         Some(crate::preview::PreviewKind::Image(_))
     ));
     // Overwrite with different valid bytes, force the reload path — no panic.
@@ -6750,11 +6821,12 @@ fn preview_survives_target_file_overwrite_and_delete() {
     std::fs::write(&doc, b"# hello\n\nbody\n").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
     let _ = app.decorated_lines(80);
     std::fs::remove_file(&doc).unwrap();
@@ -6861,9 +6933,9 @@ fn app_with_table() -> (App, std::path::PathBuf) {
     let csv = dir.join("t.csv");
     std::fs::write(&csv, "h1,h2,h3\na,b,c\nd,e,f\n").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
-    app.preview_path = Some(csv.clone());
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
     app.load_table();
     (app, csv)
 }
@@ -6873,7 +6945,7 @@ fn csv_resolves_to_table_preview() {
     let (app, _) = app_with_table();
     assert!(
         matches!(
-            app.preview_kind,
+            app.tab.preview_kind,
             Some(PreviewKind::Table {
                 delimiter: b',',
                 ..
@@ -6940,9 +7012,9 @@ fn table_page_and_half_page_move_by_viewport() {
     }
     std::fs::write(&csv, body).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
-    app.preview_path = Some(csv.clone());
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
     app.load_table();
     // 通常は描画時に決まるビューポート行数をテスト用に固定。
     app.table_viewport_rows = 6;
@@ -7057,20 +7129,20 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
     assert!(!app.changed_filter());
     app.toggle_changed_filter();
     assert!(app.changed_filter(), "変更があるので ON になる");
-    let paths: Vec<PathBuf> = app.entries.iter().map(|e| e.path.clone()).collect();
+    let paths: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_eq!(
         paths,
         vec![canon.join("a.txt"), canon.join("sub").join("b.txt")],
         "root 配下の変更ファイルのみ・パス順のフラット一覧"
     );
-    assert!(app.entries.iter().all(|e| !e.is_dir), "ファイルのみ");
+    assert!(app.tab.entries.iter().all(|e| !e.is_dir), "ファイルのみ");
 
     // 一覧から Enter でプレビュー(絞り込みと同じ動き)。
-    app.selected = 0;
+    app.tab.selected = 0;
     app.tree_activate().unwrap();
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("a.txt").as_path())
     );
     app.back_to_tree();
@@ -7078,9 +7150,12 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
     // h で通常ツリーへ戻る(root は上げない)。
     app.tree_leave().unwrap();
     assert!(!app.changed_filter());
-    assert_eq!(app.root, canon, "変更フィルタ解除であって親移動ではない");
+    assert_eq!(
+        app.tab.root, canon,
+        "変更フィルタ解除であって親移動ではない"
+    );
     assert!(
-        app.entries.iter().any(|e| e.is_dir),
+        app.tab.entries.iter().any(|e| e.is_dir),
         "通常ツリーに戻る(ディレクトリ行が復活)"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -7099,22 +7174,22 @@ fn jump_changed_reveals_collapsed_targets_and_wraps() {
     std::fs::write(canon.join("sub").join("b.txt"), b"new\n").unwrap();
 
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.selected = 0; // 既定ソート(dirs_first)では sub が先頭 = 変更ファイル上ではない
+    app.tab.selected = 0; // 既定ソート(dirs_first)では sub が先頭 = 変更ファイル上ではない
     app.jump_changed(1);
     assert_eq!(
-        app.entries[app.selected].path,
+        app.tab.entries[app.tab.selected].path,
         canon.join("sub").join("b.txt"),
         "collapsed な sub/ を展開して選択(deep reveal)"
     );
     app.jump_changed(1);
     assert_eq!(
-        app.entries[app.selected].path,
+        app.tab.entries[app.tab.selected].path,
         canon.join("a.txt"),
         "末尾の次は先頭へ wrap"
     );
     app.jump_changed(-1);
     assert_eq!(
-        app.entries[app.selected].path,
+        app.tab.entries[app.tab.selected].path,
         canon.join("sub").join("b.txt"),
         "N は逆順"
     );
@@ -7136,7 +7211,7 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // OFF の間は何もしない。
     app.follow_jump(&dir.join("a.txt"));
-    assert!(matches!(app.mode, Mode::Tree));
+    assert!(matches!(app.tab.mode, Mode::Tree));
 
     app.toggle_follow();
     assert!(app.follow_enabled());
@@ -7144,19 +7219,22 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
     app.follow_jump(&outside);
     app.follow_jump(&dir.join(".hidden").join("c.txt"));
     app.follow_jump(&dir.join("sub"));
-    assert!(matches!(app.mode, Mode::Tree), "無効ターゲットでは動かない");
+    assert!(
+        matches!(app.tab.mode, Mode::Tree),
+        "無効ターゲットでは動かない"
+    );
 
     // collapsed な sub/ 配下でも deep reveal してプレビューへ。
     app.follow_jump(&dir.join("sub").join("b.txt"));
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(dir.join("sub").join("b.txt").as_path())
     );
     // Preview 面のまま別ファイルの変更が来ても追従する。
     app.follow_jump(&dir.join("a.txt"));
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(dir.join("a.txt").as_path())
     );
 
@@ -7199,7 +7277,7 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     app.cfg.ui.follow_view = "file".into(); // 本テストはファイル表示モードの挙動(既定は diff)
     app.toggle_follow();
     app.follow_jump(&canon.join("big.txt"));
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     assert_eq!(
         app.tab.preview_top_line, 96,
         "変更行(0-based 99)の3行上が窓の先頭"
@@ -7213,7 +7291,7 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     std::fs::write(&plain, b"p1\np2\n").unwrap();
     app.refresh().unwrap();
     app.follow_jump(&plain);
-    assert_eq!(app.preview_path.as_deref(), Some(plain.as_path()));
+    assert_eq!(app.tab.preview_path.as_deref(), Some(plain.as_path()));
     assert_eq!(app.tab.preview_top_line, 0);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -7255,7 +7333,7 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         "F 以降に変わったファイルは diff で開く"
     );
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("a.txt").as_path())
     );
 
@@ -7269,13 +7347,13 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         "F 後の新規ファイルも diff で開く"
     );
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("fresh.txt").as_path()),
         "diff ビューから次の変更ファイルへ切替わる"
     );
     // q はツリーへ戻る(git ハブ由来ではない)。
     app.close_git_diff();
-    assert!(matches!(app.mode, Mode::Tree));
+    assert!(matches!(app.tab.mode, Mode::Tree));
 
     // F 以降に変わっていないファイル(baseline 差分が空)はファイルプレビューへフォールバック。
     app.follow_jump(&canon.join("keep.txt"));
@@ -7283,10 +7361,10 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         !app.is_git_diff_preview(),
         "F 以降に変更なし → ファイル表示へフォールバック"
     );
-    assert!(matches!(app.mode, Mode::Preview));
+    assert!(matches!(app.tab.mode, Mode::Preview));
     assert!(app.is_windowed());
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("keep.txt").as_path())
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -7314,12 +7392,12 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
     app.jump_changed(1); // a → b
     assert!(app.is_git_diff_preview(), "diff ビューのまま");
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("b.txt").as_path())
     );
     assert_eq!(app.diff_change_position(), Some((2, 3)));
     assert_eq!(
-        app.entries[app.selected].path,
+        app.tab.entries[app.tab.selected].path,
         canon.join("b.txt"),
         "ツリーカーソルも同期"
     );
@@ -7327,12 +7405,12 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
     app.jump_changed(1); // b → e
     app.jump_changed(1); // e → a (wrap)
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("a.txt").as_path())
     );
     app.jump_changed(-1); // a → e (逆順 wrap)
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("e.txt").as_path())
     );
 
@@ -7396,13 +7474,13 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     // n はセッション内だけを回遊(wrap)。c/e.txt(セッション外の変更)へは行かない。
     app.jump_changed(1);
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("b.txt").as_path())
     );
     assert_eq!(app.diff_change_position(), Some((1, 2)));
     app.jump_changed(1);
     assert_eq!(
-        app.preview_path.as_deref(),
+        app.tab.preview_path.as_deref(),
         Some(canon.join("d.txt").as_path())
     );
 
@@ -7482,11 +7560,12 @@ fn md_row_prefix_matches_full_document_reflow() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     assert!(app.cfg.ui.wrap, "既定は wrap=on の前提");
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
 
     let width = 46u16;
@@ -7522,11 +7601,12 @@ fn md_slice_render_matches_full_document_render() {
     std::fs::write(dir.join("doc.md"), md.as_bytes()).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
-    app.selected = idx;
+    app.tab.selected = idx;
     app.tree_activate().unwrap();
 
     let (iw, ih) = (58u16, 18u16); // 枠の内側相当
@@ -7657,7 +7737,7 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
         "ズームで密度が上がる: {before:?} -> {after:?}"
     );
     assert_eq!(app.image_logical.unwrap(), logical, "論理サイズは不変");
-    assert!(app.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
+    assert!(app.tab.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -7698,10 +7778,10 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
     app.tab.focused_item = Some(idx);
-    app.preview_scroll = 3;
+    app.tab.preview_scroll = 3;
     app.md_activate_focused().unwrap();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(0))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::MermaidFence(0))),
         "全画面フェンスビューへ"
     );
     assert!(app.image_src.is_some(), "図がラスタ化されている");
@@ -7710,11 +7790,11 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     // q(back_to_tree)= md へ戻り、スクロール/フォーカスが復元される。
     app.back_to_tree();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::Markdown(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
         "ツリーでなく md プレビューへ戻る"
     );
-    assert!(matches!(app.mode, Mode::Preview));
-    assert_eq!(app.preview_scroll, 3, "スクロール位置を復元");
+    assert!(matches!(app.tab.mode, Mode::Preview));
+    assert_eq!(app.tab.preview_scroll, 3, "スクロール位置を復元");
     assert_eq!(app.tab.focused_item, Some(idx), "フォーカスを復元");
 
     std::fs::remove_dir_all(&dir).ok();
@@ -7838,15 +7918,18 @@ fn fence_focus_scrolls_block_and_draws_border() {
     let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
-    assert_eq!(app.preview_scroll, 0, "前提: 先頭表示・フェンスは画面外");
+    assert_eq!(
+        app.tab.preview_scroll, 0,
+        "前提: 先頭表示・フェンスは画面外"
+    );
 
     // Tab (唯一のアイテム=フェンス) → ブロック全体を見せる位置へスクロール。
     app.md_focus_move(1);
     let caption_line = app.md_items[app.tab.focused_item.unwrap()].line;
     assert!(
-        app.preview_scroll as usize >= caption_line.saturating_sub(2),
+        app.tab.preview_scroll as usize >= caption_line.saturating_sub(2),
         "図ブロックの先頭(キャプション)近くまでスクロールする: scroll={} caption={caption_line}",
-        app.preview_scroll
+        app.tab.preview_scroll
     );
 
     // 再描画でフォーカス枠(┌ 角とタイトル)が画像の外側に出る。
@@ -7928,11 +8011,11 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     // ビューポート未計測(0)=cap どおり。
     assert_eq!(app.md_images()[0].rows, 24, "既定 cap=24");
     // 低いビューポート → キャプション+マージン込みで収まる高さへ縮む。
-    app.preview_viewport = 10;
+    app.tab.preview_viewport = 10;
     app.ensure_md_cache(80);
     assert_eq!(app.md_images()[0].rows, 8, "vp10 → 8 行にフィット");
     // 広いビューポート → cap へ戻る。
-    app.preview_viewport = 60;
+    app.tab.preview_viewport = 60;
     app.ensure_md_cache(80);
     assert_eq!(app.md_images()[0].rows, 24, "vp60 → cap 24");
 
@@ -7940,7 +8023,7 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     app.enter_preview(&plain);
     app.ensure_md_cache(80);
     let ptr0 = app.md_cache.as_ref().unwrap().lines.as_ptr();
-    app.preview_viewport = 12;
+    app.tab.preview_viewport = 12;
     app.ensure_md_cache(80);
     assert_eq!(
         app.md_cache.as_ref().unwrap().lines.as_ptr(),
@@ -8334,7 +8417,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
 
     // 図が**画面外**にしか無い間のスクロールは要求しない(placeholder がグリッドに無い=
     // 掃除する残骸が無い。ここが毎キー clear になっていたのが回帰)。
-    app.preview_scroll = app.preview_scroll.saturating_add(3);
+    app.tab.preview_scroll = app.tab.preview_scroll.saturating_add(3);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
         !app.take_md_overlay_moved(),
@@ -8343,14 +8426,14 @@ fn md_overlay_move_detection_requests_full_redraw() {
 
     // 末尾まで送って図を画面内へ。出現フレームは要求しない(直前まで何も描いていない=
     // グリッドに掃除すべき旧 placeholder が無い。掃除は「描いていた状態からの変化」のみ)。
-    app.preview_scroll = 500; // 描画側が末尾へクランプ
+    app.tab.preview_scroll = 500; // 描画側が末尾へクランプ
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "出現フレームは掃除不要");
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
 
     // 図が見えている間のスクロール → 動いたフレームで立つ。
-    app.preview_scroll = app.preview_scroll.saturating_sub(1);
+    app.tab.preview_scroll = app.tab.preview_scroll.saturating_sub(1);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
         app.take_md_overlay_moved(),
@@ -8485,7 +8568,7 @@ fn tab_switch_restores_fullscreen_fence_view() {
     app.tab.focused_item = Some(idx);
     app.md_activate_focused().unwrap();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::MermaidFence(_))),
         "全画面フェンスへ遷移"
     );
     assert!(app.image_src.is_some(), "前提: 全画面の図がラスタ化される");
@@ -8493,7 +8576,7 @@ fn tab_switch_restores_fullscreen_fence_view() {
     app.tab_new().unwrap();
     app.tab_cycle(1);
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::MermaidFence(_))),
         "タブ復帰でも全画面フェンスのまま"
     );
     assert!(app.image_src.is_some(), "図が画像として再ロードされる");
@@ -8541,9 +8624,9 @@ fn fence_ordinal_survives_failed_upstream_fence() {
     app.tab.focused_item = Some(idx);
     app.md_activate_focused().unwrap();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::MermaidFence(1))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::MermaidFence(1))),
         "Enter は**正しい方**のフェンスを開く: {:?}",
-        app.preview_kind
+        app.tab.preview_kind
     );
     assert!(
         app.mermaid_fence_code(&md, 1)
@@ -8676,7 +8759,7 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     app.md_activate_focused().unwrap(); // Enter → 全画面
     app.back_to_tree(); // q → md へ復帰
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::Markdown(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
         "md ビューへ戻る"
     );
     let arc1 = app
@@ -8919,7 +9002,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     assert!(app.fence_pan_motion(M::Down), "可視+ズーム中はパンを消費");
 
     // 図を画面外へ(末尾へスクロール) → もう消費しない=文書スクロールに戻る。
-    app.preview_scroll = 500;
+    app.tab.preview_scroll = 500;
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
         !app.fence_pan_motion(M::Down),
@@ -8983,13 +9066,14 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
     std::fs::write(&f, &long).unwrap();
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("log.txt"))
         .unwrap();
     app.tree_activate().unwrap();
-    app.preview_viewport = 5;
+    app.tab.preview_viewport = 5;
     // 末尾へ = byte_top は 200 行ファイルの最終ページ(短縮後のファイル長より大きい)。
     app.preview_to_bottom();
     let _ = app.windowed_lines(5, 80);
@@ -9039,10 +9123,10 @@ fn preview_reloads_only_for_relevant_fs_changes() {
     let md = root.join("docs/note.md");
     let other = root.join("src/lib.rs");
     let mut app = App::new(root.clone(), Config::default()).unwrap();
-    app.preview_kind = Some(app.cfg.resolve_preview(&md));
-    app.preview_path = Some(md.clone());
-    app.mode = Mode::Preview;
-    app.preview_viewport = 20;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
+    app.tab.preview_path = Some(md.clone());
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_viewport = 20;
 
     // 装飾キャッシュを作る。
     let _ = app.decorated_lines(80);
@@ -9101,9 +9185,9 @@ fn table_search_moves_cursor_through_matching_cells() {
     .unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let csv = dir.canonicalize().unwrap().join("t.csv");
-    app.preview_kind = Some(app.cfg.resolve_preview(&csv));
-    app.preview_path = Some(csv);
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv);
+    app.tab.mode = Mode::Preview;
     app.load_table();
     assert_eq!(app.table_data().map(|t| t.nrows()), Some(4));
 
@@ -9178,10 +9262,10 @@ fn decorated_markdown_search_scrolls_to_matches() {
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     let md = dir.canonicalize().unwrap().join("doc.md");
-    app.preview_kind = Some(app.cfg.resolve_preview(&md));
-    app.preview_path = Some(md);
-    app.mode = Mode::Preview;
-    app.preview_viewport = 10;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
+    app.tab.preview_path = Some(md);
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_viewport = 10;
     let _ = app.md_layout(80); // 装飾キャッシュを張る(実描画と同じ経路)
 
     // 装飾 md でも検索を開始できる(以前は「コード/テキストのみ」と拒否していた)。
@@ -9198,20 +9282,23 @@ fn decorated_markdown_search_scrolls_to_matches() {
         "2 件見つかり 1 件目に居る"
     );
     assert!(!app.is_raw_source(), "検索のために raw ソースへ切替えない");
-    let first_scroll = app.preview_scroll;
+    let first_scroll = app.tab.preview_scroll;
     assert!(first_scroll > 0, "1 件目まで下へスクロールした");
 
     app.search_next(1);
-    let second_scroll = app.preview_scroll;
+    let second_scroll = app.tab.preview_scroll;
     assert!(
         second_scroll > first_scroll,
         "n で後方の一致へさらにスクロール: {first_scroll} → {second_scroll}"
     );
     app.search_next(1);
-    assert_eq!(app.preview_scroll, first_scroll, "wrap して 1 件目へ戻る");
+    assert_eq!(
+        app.tab.preview_scroll, first_scroll,
+        "wrap して 1 件目へ戻る"
+    );
 
     // 一致が可視域に入り、かつ強調されている(現在の一致=オレンジ背景)。
-    let (lines, _) = app.md_slice(app.preview_scroll, 10);
+    let (lines, _) = app.md_slice(app.tab.preview_scroll, 10);
     let hit = lines.iter().any(|l| {
         l.spans
             .iter()
@@ -9220,13 +9307,13 @@ fn decorated_markdown_search_scrolls_to_matches() {
     assert!(hit, "一致箇所が背景色で強調されている");
 
     // 一致なしはカーソル位置を動かさず flash で知らせる。
-    let before = app.preview_scroll;
+    let before = app.tab.preview_scroll;
     app.start_search();
     for c in "zzz-absent".chars() {
         app.search_input_push(c);
     }
     app.search_commit();
-    assert_eq!(app.preview_scroll, before, "一致なしでスクロールしない");
+    assert_eq!(app.tab.preview_scroll, before, "一致なしでスクロールしない");
     assert_eq!(app.search_status(), None);
 
     std::fs::remove_dir_all(&dir).ok();
@@ -9244,7 +9331,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -9325,9 +9412,9 @@ fn table_search_hits_do_not_leak_across_tabs() {
     // タブ0: a.csv を開いて "foo" を検索(一致セルができる)。
     let mut app = App::new(root.clone(), Config::default()).unwrap();
     let a = root.join("a.csv");
-    app.preview_kind = Some(app.cfg.resolve_preview(&a));
-    app.preview_path = Some(a);
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&a));
+    app.tab.preview_path = Some(a);
+    app.tab.mode = Mode::Preview;
     app.load_table();
     app.start_search();
     for c in "foo".chars() {
@@ -9339,9 +9426,9 @@ fn table_search_hits_do_not_leak_across_tabs() {
     // タブ1を新規作成(空タブ)し、そこで b.csv を検索なしで開く。
     app.tab_new().unwrap();
     let b = root.join("b.csv");
-    app.preview_kind = Some(app.cfg.resolve_preview(&b));
-    app.preview_path = Some(b);
-    app.mode = Mode::Preview;
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&b));
+    app.tab.preview_path = Some(b);
+    app.tab.mode = Mode::Preview;
     app.load_table();
     assert!(
         !app.table_cell_is_hit(0, 0),
@@ -9373,7 +9460,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -9392,7 +9479,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     assert!(krx.try_recv().is_err(), "初回は worker を使わない(同期)");
 
     // ズーム: 以降は非同期。kitty_image は旧サイズのまま、pending=true。
-    app.image_zoom = 4.0;
+    app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は build in-flight");
     assert_eq!(
@@ -9410,9 +9497,9 @@ fn kitty_zoom_builds_async_and_latest_wins() {
 
     // 連続ズーム(2 spawn)→ 最新世代のみ適用、古い世代は破棄(スレッドは並行=到着順は非決定的
     // なので「先着=古い」とは限らない。gen で判定するので順序に依らず最新の1つだけが適用される)。
-    app.image_zoom = 6.0;
+    app.tab.image_zoom = 6.0;
     app.prepare_image(inner(200, 40)).unwrap();
-    app.image_zoom = 8.0;
+    app.tab.image_zoom = 8.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let a = krx.recv().unwrap();
     let b = krx.recv().unwrap();
@@ -9432,7 +9519,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -9473,7 +9560,7 @@ fn kitty_failed_build_clears_pending() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -9485,7 +9572,7 @@ fn kitty_failed_build_clears_pending() {
 
     // 初回同期 → ズームで非同期ビルド in-flight(pending=true)。
     app.prepare_image(inner(200, 40)).unwrap();
-    app.image_zoom = 4.0;
+    app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は in-flight");
 
@@ -9541,7 +9628,7 @@ fn same_repo_navigation_reuses_status_without_recompute() {
         .insert(sentinel.clone(), crate::git::FileStatus::Modified);
 
     // 同一 repo のサブディレクトリへ潜る(root 変更・workdir 不変・dirty でない)→ 再計算しない。
-    app.root = root.join("sub");
+    app.tab.root = root.join("sub");
     app.refresh_git_if_needed();
     assert!(
         app.git_status_of(&sentinel).is_some(),
@@ -9589,11 +9676,12 @@ fn descend_into_nested_different_repo_recomputes_status() {
 
     // inner(別 repo)へ潜行。
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.is_dir && e.path.ends_with("inner"))
         .expect("inner エントリが無い");
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_descend().unwrap();
     app.refresh_git_if_needed();
 
@@ -9618,7 +9706,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
-    app.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("a.png")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -9629,7 +9717,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
 
     // Aを開き(初回同期)、ズームで非同期ビルド gen=N を飛ばす。
     app.prepare_image(inner(200, 40)).unwrap();
-    app.image_zoom = 4.0;
+    app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     let stale = krx.recv().expect("Aのズームの worker 結果"); // gen=N の結果
 
@@ -9699,11 +9787,12 @@ fn tab_switch_re_verifies_git_status() {
 
     let descend = |app: &mut App, name: &str| {
         let i = app
+            .tab
             .entries
             .iter()
             .position(|e| e.is_dir && e.path.ends_with(name))
             .unwrap_or_else(|| panic!("{name} エントリが無い"));
-        app.selected = i;
+        app.tab.selected = i;
         app.tree_descend().unwrap();
     };
 
@@ -9860,7 +9949,7 @@ fn stale_git_status_result_is_discarded() {
 
     // 別 root へ移って新しい世代のスキャンを投げる。
     app.git_status_dirty = true;
-    app.root = dir.join("sub");
+    app.tab.root = dir.join("sub");
     app.refresh_git_if_needed();
     assert_ne!(stale_gen, app.git_status_gen, "世代が進む");
 
@@ -9996,7 +10085,11 @@ fn changed_filter_list_follows_async_status_results() {
     app.attach_status_loader(tx);
     app.toggle_changed_filter(); // `C`: 同期契約なのでその場で一覧が立つ
     assert!(app.tab.changed_filter, "変更ファイルのみ表示になる");
-    assert!(app.entries.iter().any(|e| e.path.ends_with("first.txt")));
+    assert!(app
+        .tab
+        .entries
+        .iter()
+        .any(|e| e.path.ends_with("first.txt")));
 
     // エージェントが新規ファイルを作る → fs イベント(非同期スキャンを投げるだけ)。
     std::fs::write(dir.join("agent_new.txt"), b"y").unwrap();
@@ -10007,7 +10100,8 @@ fn changed_filter_list_follows_async_status_results() {
         .expect("スキャン結果");
     app.apply_statuses(res);
     assert!(
-        app.entries
+        app.tab
+            .entries
             .iter()
             .any(|e| e.path.ends_with("agent_new.txt")),
         "非同期スキャンの到着で C の一覧が作り直される(再描画だけでは直らない)"
@@ -10041,7 +10135,8 @@ fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, _rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx); // 以後 status は非同期(=押した瞬間はまだ届いていない)
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("tracked.txt"))
@@ -10049,7 +10144,7 @@ fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
 
     app.tree_open_git_diff();
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::GitDiff(_))),
+        matches!(app.tab.preview_kind, Some(PreviewKind::GitDiff(_))),
         "スキャン走行中でも `d` は diff を開く(flash={:?})",
         app.flash
     );
@@ -10086,14 +10181,15 @@ fn landing_status_result_keeps_tracking_the_current_root() {
     app.git_status_dirty = true;
     app.refresh_git_if_needed(); // kick(この時点の root = repo root)
     let i = app
+        .tab
         .entries
         .iter()
         .position(|e| e.is_dir && e.path.ends_with("sub"))
         .expect("sub");
-    app.selected = i;
+    app.tab.selected = i;
     app.tree_descend().unwrap();
     app.refresh_git_if_needed(); // 同一 repo=流用パス(世代は進まない)
-    assert!(app.root.ends_with("sub"));
+    assert!(app.tab.root.ends_with("sub"));
 
     // 走行中だった結果が今ここで届く。
     let res = rx
@@ -10129,20 +10225,24 @@ fn tab_switch_parses_a_table_preview_only_once() {
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // タブ1 = data.csv のプレビュー、タブ2 = ツリー。
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("data.csv"))
         .unwrap();
     app.tree_activate().unwrap();
-    assert!(matches!(app.preview_kind, Some(PreviewKind::Table { .. })));
+    assert!(matches!(
+        app.tab.preview_kind,
+        Some(PreviewKind::Table { .. })
+    ));
     app.tab_new().unwrap();
 
     // タブ1(表)へ戻る = load_active が走る。
     crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
     app.tab_cycle(1);
     assert!(
-        matches!(app.preview_kind, Some(PreviewKind::Table { .. })),
+        matches!(app.tab.preview_kind, Some(PreviewKind::Table { .. })),
         "表タブへ戻っている"
     );
     assert_eq!(
@@ -10168,14 +10268,15 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // 画像プレビュー相当の状態を作る(picker 無しでもデコード済み状態を再現できる)。
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with("pic.png"))
         .unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(img.clone());
-    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(img.clone());
+    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
     let decoded = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(decoded.clone());
     app.preview_media_mtime = crate::app::file_mtime(&img);
@@ -10219,9 +10320,9 @@ fn oversized_media_is_not_cached() {
     std::fs::write(dir.join("note.txt"), b"x").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(img.clone());
-    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(img.clone());
+    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     // 17M 画素 = 画素数だけ見れば「32MP 上限」を通ってしまうが、16bit(8B/px)なので 136MB。
     // バッファは 1 行に寄せてメモリを実寸のまま扱う(幅だけ極端に大きい画像)。
@@ -10256,19 +10357,19 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
     .unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(doc.clone());
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(doc.clone());
     app.preview_media_mtime = crate::app::file_mtime(&doc);
     // フェンス#1 を全画面表示している状態で、その図を退避させる。
-    app.preview_kind = Some(PreviewKind::MermaidFence(1));
+    app.tab.preview_kind = Some(PreviewKind::MermaidFence(1));
     let fence1 = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(fence1.clone());
     app.tab_new().unwrap(); // save_active → stash(fence_ord=1)
 
     // 別タブが**同じ文書のフェンス#0**を開いている状態に戻る。
-    app.mode = Mode::Preview;
-    app.preview_path = Some(doc.clone());
-    app.preview_kind = Some(PreviewKind::MermaidFence(0));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(doc.clone());
+    app.tab.preview_kind = Some(PreviewKind::MermaidFence(0));
     app.image_src = None;
     let restored = app.restore_media_cache(&doc, 1);
     assert!(
@@ -10276,7 +10377,7 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
         "別のフェンスの図を使い回さない(序数までキーに含める)"
     );
     // 同じフェンスなら再利用する。
-    app.preview_kind = Some(PreviewKind::MermaidFence(1));
+    app.tab.preview_kind = Some(PreviewKind::MermaidFence(1));
     assert!(app.restore_media_cache(&doc, 1), "同一フェンスは再利用");
     assert!(std::sync::Arc::ptr_eq(
         app.image_src.as_ref().unwrap(),
@@ -10296,9 +10397,9 @@ fn closing_a_media_tab_releases_its_cached_image() {
     std::fs::write(&img, b"x").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(img.clone());
-    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(img.clone());
+    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -10326,9 +10427,9 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     std::fs::write(&img, b"original").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.mode = Mode::Preview;
-    app.preview_path = Some(img.clone());
-    app.preview_kind = Some(PreviewKind::Image(img.clone()));
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(img.clone());
+    app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
@@ -10381,8 +10482,8 @@ fn changed_filter_survives_returning_from_another_repo() {
 
     // 別 repo のタブへ移り、そこで status を確定させる。
     app.tab_new().unwrap();
-    app.root = b.clone();
-    app.open_dir = b.clone();
+    app.tab.root = b.clone();
+    app.tab.open_dir = b.clone();
     app.rebuild_tree().unwrap();
     app.refresh_git_if_needed();
     while let Ok(res) = rx.try_recv() {
@@ -10410,7 +10511,10 @@ fn changed_filter_survives_returning_from_another_repo() {
     }
     assert!(app.tab.changed_filter, "到着後もフィルタは生きている");
     assert!(
-        app.entries.iter().any(|e| e.path.ends_with("changed.txt")),
+        app.tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("changed.txt")),
         "到着した status で一覧が作り直される"
     );
     std::fs::remove_dir_all(&base).ok();
@@ -10436,7 +10540,8 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
         // 何個のチェックボックスが画面に出るかは、その文書を一度開いて数える。
         std::fs::write(&f, src).unwrap();
         let mut app = App::new(root.clone(), Config::default()).unwrap();
-        app.selected = app
+        app.tab.selected = app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.ends_with("doc.md"))
@@ -10456,7 +10561,8 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             // 毎回、元の内容から開き直す(前のトグルの影響を持ち込まない)。
             std::fs::write(&f, src).unwrap();
             let mut app = App::new(root.clone(), Config::default()).unwrap();
-            app.selected = app
+            app.tab.selected = app
+                .tab
                 .entries
                 .iter()
                 .position(|e| e.path.ends_with("doc.md"))
@@ -10566,7 +10672,7 @@ fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
     );
 
     // repo の外(git 管理下でないディレクトリ)へ移る。
-    app.root = plain.clone();
+    app.tab.root = plain.clone();
     app.git_status_dirty = true;
     app.refresh_git_if_needed();
 
@@ -10591,7 +10697,8 @@ fn wrapped_md_preview(dir: &Path, name: &str, body: &str, w: u16, h: u16) -> App
     let mut cfg = Config::default();
     cfg.ui.wrap = true;
     let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with(name))
@@ -10613,7 +10720,7 @@ fn assert_focused_block_fully_visible(app: &App, msg: &str) {
     let (bt, bh) = app.md_visual_span_for_test(end);
     let bottom = (bt + bh).max(top + hh);
     let vh = app.preview_viewport_for_test().max(1) as usize;
-    let scroll = app.preview_scroll as usize;
+    let scroll = app.tab.preview_scroll as usize;
     // 画面より大きいブロックは先頭合わせ(末尾は不可避に見切れる)。それ以外は完全可視であること。
     if bottom - top >= vh {
         assert_eq!(scroll, top, "{msg}: 画面より大きいブロックは先頭合わせ");

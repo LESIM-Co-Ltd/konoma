@@ -237,9 +237,9 @@ impl App {
         let candidates: Vec<PathBuf> = if pb.is_absolute() {
             vec![pb]
         } else {
-            let mut v = vec![self.root.join(&pb)];
-            if let Some(wd) = crate::git::workdir(&self.root) {
-                if wd != self.root {
+            let mut v = vec![self.tab.root.join(&pb)];
+            if let Some(wd) = crate::git::workdir(&self.tab.root) {
+                if wd != self.tab.root {
                     v.push(wd.join(&pb));
                 }
             }
@@ -253,11 +253,11 @@ impl App {
     /// `app.rs`, and the owner/repo/blob/ref prefix (which never exists on disk) is skipped.
     fn resolve_url_components(&self, components: &[String]) -> Option<PathBuf> {
         let mut bases: Vec<PathBuf> = Vec::new();
-        if let Some(wd) = crate::git::workdir(&self.root) {
+        if let Some(wd) = crate::git::workdir(&self.tab.root) {
             bases.push(wd);
         }
-        if !bases.iter().any(|b| b == &self.root) {
-            bases.push(self.root.clone());
+        if !bases.iter().any(|b| b == &self.tab.root) {
+            bases.push(self.tab.root.clone());
         }
         for base in &bases {
             for start in 0..components.len() {
@@ -278,7 +278,7 @@ impl App {
     /// `line` when given). Sets a `→ path[:line]` flash. Also reused by "open link in a new tab"
     /// (`md_open_focused_link_new_tab`) after it creates the fresh tab.
     pub(crate) fn paste_jump_to(&mut self, path: &Path, line: Option<usize>) {
-        if !path.starts_with(&self.root) {
+        if !path.starts_with(&self.tab.root) {
             let anchor = if path.is_dir() {
                 path.to_path_buf()
             } else {
@@ -298,7 +298,7 @@ impl App {
                 self.preview_goto_line(l);
                 disp.push_str(&format!(":{l}"));
             }
-        } else if !revealed && path != self.root {
+        } else if !revealed && path != self.tab.root {
             // A directory we could not surface in the tree (hidden by the dotfile filter), and it is
             // not the new root itself (jumping *into* a directory makes it the root, which is fine).
             self.flash = Some(format!(

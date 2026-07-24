@@ -43,24 +43,24 @@ impl App {
             let (mode, root, open_dir, show_hidden, cursor, preview, is_diff) =
                 if i == self.active_tab {
                     (
-                        self.mode,
-                        &self.root,
-                        &self.open_dir,
-                        self.show_hidden,
-                        self.entries.get(self.selected),
-                        self.preview_path.as_deref(),
+                        self.tab.mode,
+                        &self.tab.root,
+                        &self.tab.open_dir,
+                        self.tab.show_hidden,
+                        self.tab.entries.get(self.tab.selected),
+                        self.tab.preview_path.as_deref(),
                         self.is_git_diff_preview(),
                     )
                 } else {
                     (
-                        slot.mode,
-                        &slot.root,
-                        &slot.open_dir,
-                        slot.show_hidden,
-                        slot.entries.get(slot.selected),
-                        slot.preview_path.as_deref(),
+                        slot.tab.mode,
+                        &slot.tab.root,
+                        &slot.tab.open_dir,
+                        slot.tab.show_hidden,
+                        slot.tab.entries.get(slot.tab.selected),
+                        slot.tab.preview_path.as_deref(),
                         matches!(
-                            slot.preview_kind,
+                            slot.tab.preview_kind,
                             Some(crate::preview::PreviewKind::GitDiff(_))
                         ),
                     )
@@ -149,28 +149,28 @@ impl App {
     /// (a git diff is reopened as a diff; mirrors `tab_new_from_selection`).
     fn apply_saved_tab(&mut self, t: &SavedTab) {
         // show_hidden は rebuild の前に適用する(保存カーソルがドットファイルでも reveal できるように)。
-        self.show_hidden = t.show_hidden;
+        self.tab.show_hidden = t.show_hidden;
         let root = PathBuf::from(&t.root);
-        let prev_root = self.root.clone();
-        if root != self.root {
+        let prev_root = self.tab.root.clone();
+        if root != self.tab.root {
             // root 変更は `l` 潜行/Ctrl-t と同じ経路(clear_for_root_change→rebuild)。
             self.clear_for_root_change();
-            self.root = root;
+            self.tab.root = root;
         }
-        self.entries.clear();
-        self.selected = 0;
+        self.tab.entries.clear();
+        self.tab.selected = 0;
         if self.rebuild_tree().is_err() {
             // is_dir() は通るが read_dir 失敗(権限/stale mount)= 読めない root。**直前の良い root へ
             // ロールバック**して、壊れた空ツリーを表示も永続化もしない(起動を止めない・原則#3)。
-            self.root = prev_root;
-            self.entries.clear();
-            self.selected = 0;
+            self.tab.root = prev_root;
+            self.tab.entries.clear();
+            self.tab.selected = 0;
             let _ = self.rebuild_tree();
             return;
         }
         // per-tab の @参照基準(open_dir)を正確に復元する(通常は起動 dir・潜行タブは別 root)。
         if let Some(od) = &t.open_dir {
-            self.open_dir = PathBuf::from(od);
+            self.tab.open_dir = PathBuf::from(od);
         }
         if let Some(cur) = &t.cursor {
             let p = Path::new(cur);
@@ -187,7 +187,7 @@ impl App {
                 if t.preview_diff {
                     // 見ていた全画面 git diff を再現する。diff が無い(以後コミット済み/no-git ビルド)
                     // なら通常プレビューへフォールバック(follow_jump と同じ判定)。
-                    let diff = crate::git::file_diff(&self.root, p);
+                    let diff = crate::git::file_diff(&self.tab.root, p);
                     if !diff.is_empty() {
                         self.open_git_diff(p);
                         self.diff_cache = Some(super::DiffCache {
@@ -246,12 +246,15 @@ mod tests {
         app2.restore_session();
         assert_eq!(app2.tab_count(), 2, "タブ数を復元");
         assert_eq!(app2.active_tab_index(), 1, "アクティブタブも復元");
-        assert_eq!(app2.mode, Mode::Tree);
-        assert_eq!(app2.entries[app2.selected].path, b, "カーソル位置を復元");
+        assert_eq!(app2.tab.mode, Mode::Tree);
+        assert_eq!(
+            app2.tab.entries[app2.tab.selected].path, b,
+            "カーソル位置を復元"
+        );
         // タブ1へ切替 = a.txt のプレビューが開き直っている。
         app2.tab_goto(0);
-        assert_eq!(app2.mode, Mode::Preview, "プレビュー面ごと復元");
-        assert_eq!(app2.preview_path.as_deref(), Some(a.as_path()));
+        assert_eq!(app2.tab.mode, Mode::Preview, "プレビュー面ごと復元");
+        assert_eq!(app2.tab.preview_path.as_deref(), Some(a.as_path()));
 
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&base).ok();
@@ -289,11 +292,11 @@ mod tests {
         app.restore_session();
         assert_eq!(app.tab_count(), 1, "存在しない root のタブは捨てる");
         assert_eq!(
-            app.mode,
+            app.tab.mode,
             Mode::Tree,
             "プレビュー先が消えていたらツリーで開く"
         );
-        assert_eq!(app.entries[app.selected].path, dir.join("b.txt"));
+        assert_eq!(app.tab.entries[app.tab.selected].path, dir.join("b.txt"));
 
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&base).ok();
@@ -381,7 +384,7 @@ mod tests {
             "元 active(B)へ焦点=先頭の落ちたぶんずらす"
         );
         assert_eq!(
-            app.entries[app.selected].path,
+            app.tab.entries[app.tab.selected].path,
             dir.join("b.txt"),
             "B のカーソルが乗っている"
         );
@@ -424,14 +427,14 @@ mod tests {
         app.attach_session_store(store);
         app.restore_session();
         assert_eq!(app.active_tab_index(), 1);
-        assert!(app.show_hidden, "#3: show_hidden を復元");
+        assert!(app.tab.show_hidden, "#3: show_hidden を復元");
         assert_eq!(
-            app.entries[app.selected].path,
+            app.tab.entries[app.tab.selected].path,
             dir.join(".secret"),
             "#3: ドットファイルのカーソルが復元される(hidden off だと見つからず落ちていた)"
         );
         assert_eq!(
-            app.open_dir, dir,
+            app.tab.open_dir, dir,
             "#4: 起動 dir の @参照基準を復元(前タブ root=sub を継がない)"
         );
 
@@ -493,11 +496,11 @@ mod tests {
         if !readable_as_root {
             assert_eq!(app.tab_count(), 1);
             assert_eq!(
-                app.root, dir,
+                app.tab.root, dir,
                 "#5: 読めない root はロールバックして起動 dir に留まる"
             );
             assert!(
-                app.entries.iter().any(|e| e.path.ends_with("a.txt")),
+                app.tab.entries.iter().any(|e| e.path.ends_with("a.txt")),
                 "起動 dir のツリーが生きている(壊れた空ツリーにしない)"
             );
         }
@@ -610,7 +613,7 @@ mod tests {
             "1タブの保存済みセッションは復元せず起動直後のタブのまま"
         );
         assert!(
-            app.entries[app.selected].path != dir.join("b.txt"),
+            app.tab.entries[app.tab.selected].path != dir.join("b.txt"),
             "保存済みカーソルへは動かない(復元しなかった)"
         );
         assert!(
@@ -656,7 +659,7 @@ mod tests {
         let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
         app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
         app2.restore_session();
-        assert!(matches!(app2.mode, Mode::Preview));
+        assert!(matches!(app2.tab.mode, Mode::Preview));
         assert!(
             app2.is_git_diff_preview(),
             "#2: git diff タブが diff で復元される(素のプレビューに落ちない)"

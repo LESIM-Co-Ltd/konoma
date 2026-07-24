@@ -147,6 +147,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).
 fn build_title(app: &App, nrows: usize, ncols: usize, cur_row: usize, cur_col: usize) -> String {
     let path = app
+        .tab
         .preview_path
         .clone()
         .map(|p| app.format_path(&p))

@@ -101,7 +101,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else if app.is_git_view() {
         git::render_changes(frame, app, content);
     } else {
-        match app.mode {
+        match app.tab.mode {
             Mode::Tree => tree::render(frame, app, content),
             Mode::Preview => preview::render(frame, app, content),
         }
@@ -265,7 +265,7 @@ mod tests {
         app.rebuild_tree().unwrap();
         app.tree_descend().unwrap(); // a.txt を選択中 → Preview へ
         assert!(
-            matches!(app.mode, crate::app::Mode::Preview),
+            matches!(app.tab.mode, crate::app::Mode::Preview),
             "Preview 遷移"
         );
 
@@ -427,9 +427,9 @@ mod tests {
         std::fs::write(dir.join("zzz_last.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         // 名前昇順なので zzz_last が末尾。末尾を選択 → 末尾が画面下端に来る。
-        app.selected = app.entries.len() - 1;
+        app.tab.selected = app.tab.entries.len() - 1;
         assert!(
-            app.entries[app.selected]
+            app.tab.entries[app.tab.selected]
                 .path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -553,7 +553,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         // 実 ~/.config を汚さないようテスト用ベースに差し替え、ローカル a を登録。
-        app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.open_dir);
+        app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.tab.open_dir);
         app.bookmarks.set('a', dir.join("sub")).unwrap();
         let buf_text = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(80, 16)).unwrap();
@@ -606,7 +606,7 @@ mod tests {
         assert!(!buf_text(&mut app).contains("> hi"), "取消で消える");
 
         // 削除確認: ゴミ箱(y)と完全削除(!)の両方が提示される。
-        app.selected = 0;
+        app.tab.selected = 0;
         app.start_delete();
         let s = buf_text(&mut app);
         assert!(s.contains("Trash"), "ゴミ箱の選択肢が出ない: {s:?}");
@@ -672,7 +672,7 @@ mod tests {
         // 選択前はマーカー無し。
         assert!(!buf_text(&mut app).contains('●'));
         // a を選択するとマーカー(●)と件数(sel)が出る。
-        app.selected = 0;
+        app.tab.selected = 0;
         app.toggle_select();
         let s = buf_text(&mut app);
         assert!(s.contains('●'), "選択マーカーが出ない");
@@ -692,7 +692,8 @@ mod tests {
         std::fs::write(dir.join("hello.txt"), b"hello world").unwrap(); // 11 bytes
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         app.rebuild_tree().unwrap();
-        app.selected = app
+        app.tab.selected = app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.ends_with("hello.txt"))

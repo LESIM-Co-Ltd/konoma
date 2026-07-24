@@ -36,7 +36,7 @@ impl App {
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::Task { .. }))
             .count();
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
         let states = self.cfg.ui.md_task_state_chars();

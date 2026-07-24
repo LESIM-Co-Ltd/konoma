@@ -7,7 +7,7 @@ impl App {
     /// Does not touch the cursor/scroll (callers reset or restore those as appropriate).
     pub(super) fn load_table(&mut self) {
         self.table_data = None;
-        if let Some(PreviewKind::Table { path, delimiter }) = self.preview_kind.clone() {
+        if let Some(PreviewKind::Table { path, delimiter }) = self.tab.preview_kind.clone() {
             if let Ok(t) = crate::preview::table::parse(&path, delimiter) {
                 self.table_data = Some(t);
             }
@@ -31,12 +31,13 @@ impl App {
     /// Whether a CSV/TSV table preview is active **and parsed** (routes the PreviewTable surface / renderer).
     /// A Table kind whose parse failed returns false → the preview degrades to raw text.
     pub fn is_table_preview(&self) -> bool {
-        matches!(self.preview_kind, Some(PreviewKind::Table { .. })) && self.table_data.is_some()
+        matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. }))
+            && self.table_data.is_some()
     }
 
     /// The field-separator byte of the active table (`,` by default).
     fn table_delimiter(&self) -> u8 {
-        match self.preview_kind {
+        match self.tab.preview_kind {
             Some(PreviewKind::Table { delimiter, .. }) => delimiter,
             _ => b',',
         }

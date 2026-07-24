@@ -25,7 +25,7 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     // モードチップ(PREVIEW/IMAGE)は `status` が前置。ここでは画像の倍率のみ追記。
     let mut spans = Vec::new();
     if app.is_image_preview() {
-        spans.push(Span::from(format!("  x{:.2}", app.image_zoom)).bold());
+        spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
     }
     // PDF はページ位置を併記(例: 2/5)。総ページ数が判っているときだけ。
     if let Some((cur, total)) = app.pdf_page_indicator() {
@@ -139,7 +139,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         ]);
         return v;
     }
-    if matches!(app.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
+    if matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
         // Markdown(装飾表示)固有のリンク/チェックボックス操作(Tab フォーカス / Enter で開く /
         // Space でトグル=チェックボックスがある文書のみ表示)＋ R でソース表示へ。
         let mut v = vec![
@@ -230,7 +230,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.is_media_loading()
         && !app.is_image_preview()
         && matches!(
-            app.preview_kind,
+            app.tab.preview_kind,
             Some(
                 PreviewKind::Image(_)
                     | PreviewKind::Svg(_)
@@ -247,7 +247,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // 画像は専用パス: 枠を描いてから内側に StatefulImage を描画する。
     // バックエンド未初期化・デコード失敗 (app.image=None) はテキストにフォールバック。
-    if matches!(app.preview_kind, Some(PreviewKind::Image(_))) {
+    if matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))) {
         render_image(frame, app, area);
         return;
     }
@@ -256,7 +256,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // 端末非対応・外部ツール不在含む)時は下のテキスト経路へ流し、安全フォールバックを表示する
     // (設計原則#3「未対応は安全に」のグレースフル降格)。
     if matches!(
-        app.preview_kind,
+        app.tab.preview_kind,
         Some(
             PreviewKind::Svg(_)
                 | PreviewKind::Video(_)
@@ -292,14 +292,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // Markdown/Mermaid/コードは装飾済み (tui-markdown / mermaid-text / syntect) の行列を
     // 描画する専用パス。
     if matches!(
-        app.preview_kind,
+        app.tab.preview_kind,
         Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_)) | Some(PreviewKind::Code(_))
     ) {
         render_decorated(frame, app, area);
         return;
     }
 
-    let (body, is_text) = match &app.preview_kind {
+    let (body, is_text) = match &app.tab.preview_kind {
         // テキスト(拡張子未登録)は実本文をそのまま描画。
         Some(PreviewKind::Text(p)) => (load_body(p, app.lang), true),
         Some(PreviewKind::Markdown(p))
@@ -356,6 +356,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let title = app
+        .tab
         .preview_path
         .clone()
         .map(|p| format!(" {} ", app.format_path(&p)))
@@ -385,9 +386,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // 末尾を超えてスクロールしないようクランプ (最低1行は残す)。
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
-    app.preview_scroll = app.preview_scroll.min(max_v);
+    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
     // ページ送り(PageUp/Down)の1ページ量に使うため、表示領域の高さを記録。
-    app.preview_viewport = inner.height;
+    app.tab.preview_viewport = inner.height;
 
     // 横スクロール: 折返し時は不要 → 0。非折返し時は最長行が画面に収まる範囲まで。
     let max_h = if wrap {
@@ -395,9 +396,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         max_line_cols.saturating_sub(inner.width as usize) as u16
     };
-    app.preview_hscroll = app.preview_hscroll.min(max_h);
+    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
 
-    let para = para.scroll((app.preview_scroll, app.preview_hscroll));
+    let para = para.scroll((app.tab.preview_scroll, app.tab.preview_hscroll));
     frame.render_widget(para, area);
 }
 
@@ -406,6 +407,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Scroll/wrap/clamp/page-step amounts reuse the same conventions as the text path.
 fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = app
+        .tab
         .preview_path
         .clone()
         .map(|p| format!(" {} ", app.format_path(&p)))
@@ -421,8 +423,8 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     let wrap = app.cfg.ui.wrap;
 
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
-    app.preview_scroll = app.preview_scroll.min(max_v);
-    app.preview_viewport = inner.height;
+    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+    app.tab.preview_viewport = inner.height;
     // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
     // line (preview_edit_line). Same value preview_scroll is clamped against, so the fraction lines up.
     app.md_view_rows = total_rows;
@@ -433,16 +435,16 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         max_line_cols.saturating_sub(inner.width as usize) as u16
     };
-    app.preview_hscroll = app.preview_hscroll.min(max_h);
+    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
 
     // 可視スライス(フォーカス反転済み)＋スライス先頭からの残余スクロール。折返しは行単位で
     // 独立(ratatui の Wrap は行を跨がない)ため、スライスの描画結果は全文書と一致する。
-    let (lines, local_scroll) = app.md_slice(app.preview_scroll, inner.height);
+    let (lines, local_scroll) = app.md_slice(app.tab.preview_scroll, inner.height);
     let mut para = Paragraph::new(Text::from(lines)).block(block);
     if wrap {
         para = para.wrap(Wrap { trim: false });
     }
-    let para = para.scroll((local_scroll, app.preview_hscroll));
+    let para = para.scroll((local_scroll, app.tab.preview_hscroll));
     frame.render_widget(para, area);
 
     // Overlay block-level inline images (kitty graphics) over their reserved placeholder rows.
@@ -471,7 +473,7 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     focused_mermaid.hash(&mut sig);
     ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut sig);
     let mut drawn = 0usize;
-    let scroll = app.preview_scroll as i32;
+    let scroll = app.tab.preview_scroll as i32;
     let top_bound = inner.y as i32;
     let bottom_bound = (inner.y + inner.height) as i32;
     for p in placements {
@@ -622,13 +624,14 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|m| format!(" · {}", tr(app.lang, m)))
         .unwrap_or_default();
     let title = app
+        .tab
         .preview_path
         .clone()
         .map(|p| format!(" diff{mode_tag}: {}{pos}{scope} ", app.format_path(&p)))
         .unwrap_or_else(|| " diff ".to_string());
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
-    app.preview_viewport = inner.height;
+    app.tab.preview_viewport = inner.height;
 
     let diff = app.git_diff_lines();
     if diff.is_empty() {
@@ -653,13 +656,13 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     // (ガター/区切りは固定)。どちらも h/l・0/$ で操作する同じ preview_hscroll を使う。
     let (lines, para_hscroll) = if split {
         let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(&diff, iw) as u16;
-        app.preview_hscroll = app.preview_hscroll.min(max_h);
+        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
         let lines = crate::preview::gitdiff::diff_lines_side_by_side(
             &diff,
             &ext,
             &theme,
             iw,
-            app.preview_hscroll as usize,
+            app.tab.preview_hscroll as usize,
         );
         (lines, 0)
     } else {
@@ -670,18 +673,18 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
             .max()
             .unwrap_or(0)
             .saturating_sub(iw) as u16;
-        app.preview_hscroll = app.preview_hscroll.min(max_h);
-        (lines, app.preview_hscroll)
+        app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
+        (lines, app.tab.preview_hscroll)
     };
     let total_rows = lines.len();
 
     // 縦スクロールは末尾を超えないようクランプ(diff は折返ししない=横は切り捨て表示)。
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
-    app.preview_scroll = app.preview_scroll.min(max_v);
+    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
 
     let para = Paragraph::new(Text::from(lines))
         .block(block)
-        .scroll((app.preview_scroll, para_hscroll));
+        .scroll((app.tab.preview_scroll, para_hscroll));
     frame.render_widget(para, area);
 }
 
@@ -689,7 +692,7 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Reads only the visible window (from the start byte to the screen height) and colors Code with syntect (does not read the whole file).
 /// Vertical scrolling is done by the "window cutout position", so Paragraph's vertical scroll stays 0. Only horizontal scroll is used.
 fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
-    let mut title = match (app.preview_path.clone(), app.window_progress()) {
+    let mut title = match (app.tab.preview_path.clone(), app.window_progress()) {
         (Some(p), Some(pct)) => format!(" {}  [{}%] ", app.format_path(&p), pct),
         (Some(p), None) => format!(" {} ", app.format_path(&p)),
         _ => " preview ".to_string(),
@@ -707,7 +710,7 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
-    app.preview_viewport = inner.height;
+    app.tab.preview_viewport = inner.height;
 
     // indicator 方式: cold な言語の初回は画面中央にスピナー(絵文字でなく点字の定番スピナー)を出す。
     // コンパイルは裏スレッドで走り、run ループが待機中にコマを進めるので**回り続ける**(フリーズ無し)。
@@ -734,14 +737,14 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
             let line_w = lines[caret_row].width();
             if line_w <= w {
                 // キャレット行が画面幅に収まるなら先頭から表示(短い行で孤立文字にしない)。
-                app.preview_hscroll = 0;
+                app.tab.preview_hscroll = 0;
             } else {
                 // 収まらない長い行は最小移動で追従(キャレットを端に置く)。
-                let h = app.preview_hscroll as usize;
+                let h = app.tab.preview_hscroll as usize;
                 if caret_disp < h {
-                    app.preview_hscroll = caret_disp as u16;
+                    app.tab.preview_hscroll = caret_disp as u16;
                 } else if caret_disp >= h + w {
-                    app.preview_hscroll = (caret_disp + 1 - w) as u16;
+                    app.tab.preview_hscroll = (caret_disp + 1 - w) as u16;
                 }
             }
         }
@@ -756,9 +759,9 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         max_line_cols.saturating_sub(inner.width as usize) as u16
     };
-    app.preview_hscroll = app.preview_hscroll.min(max_h);
+    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
     // 縦は窓で切り出し済みなので 0。横のみスクロール。
-    let para = para.scroll((0, app.preview_hscroll));
+    let para = para.scroll((0, app.tab.preview_hscroll));
     frame.render_widget(para, area);
 }
 
@@ -797,6 +800,7 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
     let title = app
+        .tab
         .preview_path
         .clone()
         .map(|p| format!(" {} ", app.format_path(&p)))
@@ -818,6 +822,7 @@ fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
 /// When rendering is impossible (unsupported terminal / decode failure), falls back safely to a message.
 fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = app
+        .tab
         .preview_path
         .clone()
         .map(|p| format!(" {} ", app.format_path(&p)))

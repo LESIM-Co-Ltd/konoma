@@ -334,23 +334,10 @@ struct Clipboard {
 /// and the next save_active overwrites it.
 #[derive(Clone, Default)]
 struct TabState {
-    root: PathBuf,
-    open_dir: PathBuf,
-    entries: Vec<Entry>,
-    selected: usize,
-    show_hidden: bool,
-    tree_viewport: u16,
-    mode: Mode,
-    preview_path: Option<PathBuf>,
-    preview_kind: Option<PreviewKind>,
-    preview_scroll: u16,
-    preview_hscroll: u16,
-    preview_viewport: u16,
-    image_zoom: f64,
-    // CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態、windowed プレビューの
-    // スクロール/2D キャレット、画像/PDF のパン・ページ位置、Markdown raw/Tab フォーカス/フェンス
-    // ズーム、選択/絞り込み/プレビュー検索を束ねた per-tab バンドル(テーブル本体は復元時に再パース。
-    // 各concern の詳細コメントは PerTab 定義側を参照)。
+    // root/mode/preview target/scroll・CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態、
+    // windowed プレビューのスクロール/2D キャレット、画像/PDF のパン・ページ位置、Markdown raw/Tab
+    // フォーカス/フェンスズーム、選択/絞り込み/プレビュー検索を束ねた per-tab バンドル(テーブル本体は
+    // 復元時に再パース。各concern の詳細コメントは PerTab 定義側を参照)。
     tab: PerTab,
 }
 
@@ -502,10 +489,6 @@ pub struct StatusResult {
 }
 
 pub struct App {
-    pub mode: Mode,
-    pub root: PathBuf,
-    /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
-    pub open_dir: PathBuf,
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
     pub path_style: PathStyle,
@@ -513,10 +496,6 @@ pub struct App {
     pub lang: crate::i18n::Lang,
     pub cfg: Config,
 
-    /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
-    pub entries: Vec<Entry>,
-    pub selected: usize,
-    pub show_hidden: bool,
     /// Tree sort settings (FR / M7 auxiliary). Global (not per-tab). Changed via the `s` menu.
     pub sort: Sort,
     /// Whether the `s` sort-selection menu is showing (while true, main intercepts keys).
@@ -541,8 +520,6 @@ pub struct App {
     dialog: Option<Dialog>,
     /// File clipboard (M7 Phase B). Push with `Y`=copy/`X`=cut, apply with `P`=paste.
     clipboard: Option<Clipboard>,
-    /// Height (in rows) of the tree display area at the last render. Used as the page size for paging.
-    pub tree_viewport: u16,
 
     /// Follow mode (`F`, global): while true, an external file change (e.g. an AI agent writing) jumps the
     /// tree selection to that file and opens its preview. Any other keypress turns it off (Zed-style).
@@ -566,15 +543,6 @@ pub struct App {
     #[cfg(feature = "git")]
     follow_baseline: Option<FollowBaseline>,
 
-    /// The target, kind, and scroll position (vertical/horizontal) while in Preview mode.
-    /// Horizontal scroll is used to view long lines when not wrapping (ui.wrap=false).
-    /// To avoid scrolling past the end, the actual clamp is done at render time (when content and screen size are known).
-    pub preview_path: Option<PathBuf>,
-    pub preview_kind: Option<PreviewKind>,
-    pub preview_scroll: u16,
-    pub preview_hscroll: u16,
-    /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
-    pub preview_viewport: u16,
     /// Total wrapped display rows of the current decorated Markdown at the last render (what
     /// `preview_scroll` is clamped against). Set by the preview renderer; used with `MdCache::src_lines`
     /// to map the scroll position back to an approximate source line when opening the editor (`e`).
@@ -657,8 +625,6 @@ pub struct App {
     /// (because ratatui-image has no offset pan). Held in an `Arc` so the async kitty-build worker
     /// can share it without copying the (potentially large) pixels.
     image_src: Option<std::sync::Arc<image::DynamicImage>>,
-    /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
-    pub image_zoom: f64,
     /// The most recently built crop rectangle (source-image px: x,y,w,h). The protocol is rebuilt only when it changes.
     image_crop: Option<(u32, u32, u32, u32)>,
     /// The most recent visible fraction (0..1, w/h). Less than 1 = the image overflows the viewport and is clipped = pan is possible.
@@ -700,9 +666,13 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
-    /// Per-tab bundle — see `PerTab` (table cursor/scroll, git-view overlay, windowed-preview
-    /// scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom, selection/filter/search).
-    tab: PerTab,
+    /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
+    /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
+    /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
+    /// flat `pub` on `App` (root/open_dir/entries/selected/show_hidden/tree_viewport/mode/
+    /// preview_path/preview_kind/preview_scroll/preview_hscroll/preview_viewport/image_zoom) directly
+    /// as `app.tab.<field>`.
+    pub(crate) tab: PerTab,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
 
@@ -1165,7 +1135,27 @@ struct DecoratedMarkdown {
 /// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `pdf_page` starts
 /// at 1), matching what `App::new` used to initialize them to before this migration.
 #[derive(Clone)]
-struct PerTab {
+pub(crate) struct PerTab {
+    // --- ツリー/root ナビゲーション状態 ---
+    pub(crate) root: PathBuf,
+    /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
+    pub(crate) open_dir: PathBuf,
+    /// The tree flattened into display order. For M0 it is fine to simply rebuild it every time.
+    pub(crate) entries: Vec<Entry>,
+    pub(crate) selected: usize,
+    pub(crate) show_hidden: bool,
+    /// Height (in rows) of the tree display area at the last render. Used as the page size for paging.
+    pub(crate) tree_viewport: u16,
+    pub(crate) mode: Mode,
+    /// The target, kind, and scroll position (vertical/horizontal) while in Preview mode.
+    /// Horizontal scroll is used to view long lines when not wrapping (ui.wrap=false).
+    /// To avoid scrolling past the end, the actual clamp is done at render time (when content and screen size are known).
+    pub(crate) preview_path: Option<PathBuf>,
+    pub(crate) preview_kind: Option<PreviewKind>,
+    pub(crate) preview_scroll: u16,
+    pub(crate) preview_hscroll: u16,
+    /// Height (in rows) of the text display area at the last render. Used as the page size for paging.
+    pub(crate) preview_viewport: u16,
     table_cur_row: usize,
     table_cur_col: usize,
     table_top_row: usize,
@@ -1207,6 +1197,8 @@ struct PerTab {
     preview_cursor_line: usize,
     preview_cursor_col: usize,
     // --- 画像/PDF のパン・ページ位置 ---
+    /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
+    pub(crate) image_zoom: f64,
     image_center: (f64, f64),
     pdf_page: u32,
     pdf_pages: Option<u32>,
@@ -1232,6 +1224,21 @@ struct PerTab {
 impl Default for PerTab {
     fn default() -> Self {
         Self {
+            // root/open_dir has no meaningful default — App::new overrides both right after
+            // `PerTab::default()`, and `rebuild_tree` fills `entries`.
+            root: PathBuf::new(),
+            open_dir: PathBuf::new(),
+            entries: Vec::new(),
+            selected: 0,
+            show_hidden: false,
+            tree_viewport: 0,
+            // App::new starts in Tree, not whatever `Mode::default()` would be.
+            mode: Mode::Tree,
+            preview_path: None,
+            preview_kind: None,
+            preview_scroll: 0,
+            preview_hscroll: 0,
+            preview_viewport: 0,
             table_cur_row: 0,
             table_cur_col: 0,
             table_top_row: 0,
@@ -1265,6 +1272,8 @@ impl Default for PerTab {
             preview_top_line: 0,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
+            // App::new used to initialize image_zoom to 1.0 (whole image fits), not 0.0.
+            image_zoom: 1.0,
             // 画像/フェンスの中心は「中央」が初期値(App::new が (0.5, 0.5) にしていたのと同じ)。
             image_center: (0.5, 0.5),
             // PDF ページは 1 始まり(App::new が 1 にしていたのと同じ)。
@@ -1305,17 +1314,11 @@ impl App {
             &cfg.keys.to_keymap_config(),
         );
         let mut app = Self {
-            mode: Mode::Tree,
-            root: root.clone(),
-            open_dir: root.clone(),
             launch_dir: root.clone(),
             path_style,
             key_scheme,
             lang,
             cfg,
-            entries: Vec::new(),
-            selected: 0,
-            show_hidden: false,
             sort,
             sort_menu: false,
             bookmarks: crate::bookmarks::Bookmarks::load(&root),
@@ -1326,19 +1329,13 @@ impl App {
             bookmark_list_sel: 0,
             dialog: None,
             clipboard: None,
-            tree_viewport: 0,
             follow_mode: false,
             follow_session: Vec::new(),
             diff_follow_scope: false,
             follow_diff_full: false,
             #[cfg(feature = "git")]
             follow_baseline: None,
-            preview_path: None,
-            preview_kind: None,
-            preview_scroll: 0,
             md_view_rows: 0,
-            preview_hscroll: 0,
-            preview_viewport: 0,
             preview_win: None,
             preview_total_lines: None,
             win_cache: None,
@@ -1364,7 +1361,6 @@ impl App {
             kitty_want: None,
             kitty_shown: None,
             image_src: None,
-            image_zoom: 1.0,
             image_crop: None,
             image_vis_frac: (1.0, 1.0),
             vector_svg: None,
@@ -1376,7 +1372,11 @@ impl App {
             preview_media_mtime: None,
             media_cache: None,
             table_data: None,
-            tab: PerTab::default(),
+            tab: PerTab {
+                root: root.clone(),
+                open_dir: root.clone(),
+                ..PerTab::default()
+            },
             table_viewport_rows: 0,
             preview_visual_anchor: None,
             preview_visual_linewise: false,
@@ -1471,6 +1471,7 @@ impl App {
         let mut out = Vec::new();
         // HashSet: build_dir checks membership once per child (a Vec scan is E×N comparisons).
         let expanded_dirs: std::collections::HashSet<PathBuf> = self
+            .tab
             .entries
             .iter()
             .filter(|e| e.is_dir && e.expanded)
@@ -1478,16 +1479,16 @@ impl App {
             .collect();
 
         build_dir(
-            &self.root,
+            &self.tab.root,
             0,
             &expanded_dirs,
-            self.show_hidden,
+            self.tab.show_hidden,
             self.sort,
             &mut out,
         )?;
-        self.entries = out;
-        if self.selected >= self.entries.len() {
-            self.selected = self.entries.len().saturating_sub(1);
+        self.tab.entries = out;
+        if self.tab.selected >= self.tab.entries.len() {
+            self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
         // entries を作り直したら visual_anchor(entries 添字)は stale。必ず無効化する。
         self.tab.visual_anchor = None;
@@ -1607,7 +1608,7 @@ impl App {
     // --- モード表示 (2軸: 表示モード × 内部モード) ----------------------------
     /// Display mode (for the outer chip). Preview becomes Image if it is an image.
     pub fn display_mode(&self) -> DisplayMode {
-        match self.mode {
+        match self.tab.mode {
             Mode::Tree => DisplayMode::Tree,
             Mode::Preview => {
                 if self.is_image_preview() {
@@ -1697,7 +1698,7 @@ impl App {
         if self.is_preview_visual() {
             return Some(InternalMode::PreviewVisual);
         }
-        if self.tab.changed_filter && matches!(self.mode, Mode::Tree) {
+        if self.tab.changed_filter && matches!(self.tab.mode, Mode::Tree) {
             return Some(InternalMode::ChangedFilter);
         }
         None
@@ -1790,7 +1791,7 @@ impl App {
             return S::Visual;
         }
         // 基本全画面 (Preview は画像/テキストで分岐)。
-        match self.mode {
+        match self.tab.mode {
             Mode::Preview => {
                 if self.is_image_preview() {
                     S::PreviewImage
@@ -1952,6 +1953,7 @@ impl App {
     /// Selections not present in entries (collapsed, etc.) are appended at the end in path order.
     fn selection_in_display_order(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = self
+            .tab
             .entries
             .iter()
             .filter(|e| self.tab.selection.contains(&e.path))
@@ -2011,7 +2013,12 @@ impl App {
 
     /// `R`=rename. An input dialog to change the cursor's file/directory name (prefilled with the current name).
     pub fn start_rename(&mut self) {
-        let Some(target) = self.entries.get(self.selected).map(|e| e.path.clone()) else {
+        let Some(target) = self
+            .tab
+            .entries
+            .get(self.tab.selected)
+            .map(|e| e.path.clone())
+        else {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoTarget).into());
             return;
         };
@@ -2173,7 +2180,7 @@ impl App {
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::MessageEmpty).into());
                 return Ok(());
             }
-            match crate::git::commit(&self.root, message) {
+            match crate::git::commit(&self.tab.root, message) {
                 Ok(()) => {
                     // ステージ済み index でコミット成功 → git データ再取得＋ビュー更新。
                     self.refresh()?;
@@ -2207,7 +2214,7 @@ impl App {
                 self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NameEmpty).into());
                 return Ok(());
             }
-            match crate::git::create_branch(&self.root, bname) {
+            match crate::git::create_branch(&self.tab.root, bname) {
                 Ok(()) => {
                     self.refresh()?;
                     self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
@@ -2399,7 +2406,7 @@ impl App {
             },
             // Git ビューの破棄: git::discard → 一覧/ツリーの git status を取り直す。
             // GitDiff プレビューからの破棄(came_from_git_view)なら Git ビューを開き直して戻す。
-            PendingOp::GitDiscard { path } => match crate::git::discard(&self.root, &path) {
+            PendingOp::GitDiscard { path } => match crate::git::discard(&self.tab.root, &path) {
                 Ok(()) => {
                     let from_diff = self.is_git_diff_preview();
                     if from_diff {
@@ -2468,40 +2475,40 @@ impl App {
     }
 
     pub fn tree_next(&mut self) {
-        if self.selected + 1 < self.entries.len() {
-            self.selected += 1;
+        if self.tab.selected + 1 < self.tab.entries.len() {
+            self.tab.selected += 1;
         }
     }
 
     pub fn tree_prev(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.tab.selected = self.tab.selected.saturating_sub(1);
     }
 
     /// To the top of the tree.
     pub fn tree_first(&mut self) {
-        self.selected = 0;
+        self.tab.selected = 0;
     }
 
     /// To the bottom of the tree.
     pub fn tree_last(&mut self) {
-        self.selected = self.entries.len().saturating_sub(1);
+        self.tab.selected = self.tab.entries.len().saturating_sub(1);
     }
 
     /// Page the tree by one (dir: +1=next / -1=previous). Overlaps one row to keep context.
     pub fn tree_page(&mut self, dir: i32) {
-        let page = self.tree_viewport.saturating_sub(1).max(1) as i32;
+        let page = self.tab.tree_viewport.saturating_sub(1).max(1) as i32;
         self.tree_move(dir * page);
     }
 
     /// Half-page the tree (vim: Ctrl-d/Ctrl-u, less: d/u).
     pub fn tree_half_page(&mut self, dir: i32) {
-        let half = (self.tree_viewport / 2).max(1) as i32;
+        let half = (self.tab.tree_viewport / 2).max(1) as i32;
         self.tree_move(dir * half);
     }
 
     /// Move the selection by delta rows and clamp it to [0, end].
     fn tree_move(&mut self, delta: i32) {
-        self.selected = clamp_cursor(self.selected, delta, self.entries.len());
+        self.tab.selected = clamp_cursor(self.tab.selected, delta, self.tab.entries.len());
     }
 
     /// If a directory, toggle expansion; if a file, transition to Preview.
@@ -2510,12 +2517,12 @@ impl App {
         if self.tab.tree_filter.is_some() || self.tab.changed_filter {
             return self.tree_descend();
         }
-        let Some(entry) = self.entries.get(self.selected).cloned() else {
+        let Some(entry) = self.tab.entries.get(self.tab.selected).cloned() else {
             return Ok(());
         };
         if entry.is_dir {
             // expanded をトグルして再構築
-            if let Some(e) = self.entries.get_mut(self.selected) {
+            if let Some(e) = self.tab.entries.get_mut(self.tab.selected) {
                 e.expanded = !e.expanded;
             }
             self.rebuild_tree()?;
@@ -2546,11 +2553,11 @@ impl App {
             self.toggle_changed_filter(); // OFF に戻す(通常ツリーへ)
             return Ok(());
         }
-        if let Some(parent) = self.root.parent().map(Path::to_path_buf) {
+        if let Some(parent) = self.tab.root.parent().map(Path::to_path_buf) {
             self.clear_for_root_change();
-            self.root = parent;
-            self.entries.clear();
-            self.selected = 0;
+            self.tab.root = parent;
+            self.tab.entries.clear();
+            self.tab.selected = 0;
             self.rebuild_tree()?;
         }
         Ok(())
@@ -2560,16 +2567,16 @@ impl App {
     /// Symmetric to `h` (to the parent). If a file, transition to Preview.
     /// Works on filter results too: directory → move there and clear the filter / file → preview.
     pub fn tree_descend(&mut self) -> Result<()> {
-        let Some(entry) = self.entries.get(self.selected).cloned() else {
+        let Some(entry) = self.tab.entries.get(self.tab.selected).cloned() else {
             return Ok(());
         };
         let was_filtering = self.tab.tree_filter.is_some();
         if entry.is_dir {
             // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越さない)。
             self.clear_for_root_change();
-            self.root = entry.path;
-            self.entries.clear();
-            self.selected = 0;
+            self.tab.root = entry.path;
+            self.tab.entries.clear();
+            self.tab.selected = 0;
             self.rebuild_tree()?;
         } else {
             // ファイルは絞り込みを保ったままプレビュー(戻ると結果一覧に復帰)。
@@ -2580,7 +2587,7 @@ impl App {
     }
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
-        self.show_hidden = !self.show_hidden;
+        self.tab.show_hidden = !self.tab.show_hidden;
         self.rebuild_tree()
     }
 
@@ -2614,7 +2621,7 @@ impl App {
     #[cfg(feature = "git")]
     fn capture_follow_baseline(&mut self) {
         self.ensure_git_status_now();
-        let head = crate::git::head_commit_id(&self.root);
+        let head = crate::git::head_commit_id(&self.tab.root);
         let mut dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>> =
             std::collections::HashMap::new();
         let mut total = 0usize;
@@ -2658,7 +2665,7 @@ impl App {
                 // No HEAD to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
                 // defers to `file_diff`, which is empty outside a repo → `follow_jump` shows the file preview.
                 let h = base.head.as_deref()?;
-                crate::git::blob_at(&self.root, h, path).unwrap_or_default()
+                crate::git::blob_at(&self.tab.root, h, path).unwrap_or_default()
             }
         };
         let current = std::fs::read(path).ok()?;
@@ -2717,7 +2724,7 @@ impl App {
             }
         }
         let _ = follow;
-        crate::git::file_diff(&self.root, path)
+        crate::git::file_diff(&self.tab.root, path)
     }
 
     /// Whether follow mode is on (chip display / the run loop's jump gate).
@@ -2755,7 +2762,7 @@ impl App {
         if !surface_ok {
             return;
         }
-        if self.preview_path.as_deref() == Some(path) {
+        if self.tab.preview_path.as_deref() == Some(path) {
             return;
         }
         if !self.follow_target_ok(path) {
@@ -2767,8 +2774,8 @@ impl App {
         if self.tab.changed_filter {
             // 変更一覧を最新化してから対象を選択(一覧に居るはず=変更イベント由来)。
             self.reapply_changed_filter();
-            if let Some(i) = self.entries.iter().position(|e| e.path == path) {
-                self.selected = i;
+            if let Some(i) = self.tab.entries.iter().position(|e| e.path == path) {
+                self.tab.selected = i;
             }
         } else if !matches!(self.reveal_path_deep(path), Ok(true)) {
             return;
@@ -2799,13 +2806,13 @@ impl App {
     /// inside a hidden (dot) directory unless hidden files are shown. Shared by the jump and the
     /// session-list recording so both see the same set.
     fn follow_target_ok(&self, path: &Path) -> bool {
-        if !path.starts_with(&self.root) || !path.is_file() || self.is_ignored(path) {
+        if !path.starts_with(&self.tab.root) || !path.is_file() || self.is_ignored(path) {
             return false;
         }
-        if !self.show_hidden {
+        if !self.tab.show_hidden {
             // 隠し(ドット)ディレクトリ/ファイル配下はツリーに出せないので追わない(show_hidden で解禁)。
             let hidden = path
-                .strip_prefix(&self.root)
+                .strip_prefix(&self.tab.root)
                 .map(|r| {
                     r.components().any(|c| {
                         c.as_os_str()
@@ -2856,14 +2863,14 @@ impl App {
         if !self.is_windowed() {
             return;
         }
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
         // ガター設定 OFF でも変更行は取得する(ON なら同じ計算が gutter_cache に載り描画でも再利用)。
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
         } else {
-            gutter_marks(&crate::git::file_diff(&self.root, &path))
+            gutter_marks(&crate::git::file_diff(&self.tab.root, &path))
         };
         let Some(first) = marks.keys().min().copied() else {
             return;
@@ -2885,12 +2892,12 @@ impl App {
         // キャッシュを温存する: キーはフェンス=内容ハッシュ/画像=パスなので stale にならず、
         // 捨てると全フェンスが Loading からやり直し=縮退レイアウトの 1 描画で復元スクロール/
         // フォーカスがクランプされ「元の位置に戻る」約束が破れていた。
-        let same_file = self.preview_path.as_deref() == Some(path);
-        self.preview_path = Some(path.to_path_buf());
+        let same_file = self.tab.preview_path.as_deref() == Some(path);
+        self.tab.preview_path = Some(path.to_path_buf());
         // 設定駆動でプレビュー種別を解決。未対応は CanNotPreview。
         let kind = self.cfg.resolve_preview(path);
-        self.preview_scroll = 0;
-        self.preview_hscroll = 0;
+        self.tab.preview_scroll = 0;
+        self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         // 画像状態は毎回リセット。SVG/GIF は別スレッドで読み込み開始(UI を塞がない)。
@@ -2900,7 +2907,7 @@ impl App {
             self.tab.pdf_pages = crate::preview::pdf::page_count(path);
         }
         self.start_media_load(&kind, path);
-        self.preview_kind = Some(kind);
+        self.tab.preview_kind = Some(kind);
         self.tab.fence_return = None; // 通常のプレビュー遷移でフェンス復帰情報は用済み
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
@@ -2930,7 +2937,7 @@ impl App {
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
         self.load_table();
-        self.mode = Mode::Preview;
+        self.tab.mode = Mode::Preview;
     }
 
     /// Code/Text previews use less-style windowed reading **regardless of size**.
@@ -2944,19 +2951,19 @@ impl App {
         // 重いハイライト待ち状態を判定: Code かつ ハイライト有効 かつ 文法が未コンパイル(cold)なら
         // 初回だけローディング表示/段階表示が要る。温まっていれば最初から即時着色。
         self.hl_pending = self.cfg.ui.syntax_highlight
-            && matches!(self.preview_kind, Some(PreviewKind::Code(_)))
+            && matches!(self.tab.preview_kind, Some(PreviewKind::Code(_)))
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
         // Code/Text は常に windowed。Markdown/Mermaid は raw 表示(`R`)のときだけ windowed 化＝
         // 素のソースを行/桁一致で読み、2D キャレット選択をそのまま乗せる。
         let windowed_kind = matches!(
-            self.preview_kind,
+            self.tab.preview_kind,
             Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
         ) || self.is_raw_source();
         if !windowed_kind {
             return;
         }
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
         if let Ok(w) = crate::preview::window::FileWindow::open(&path) {
@@ -2966,7 +2973,8 @@ impl App {
 
     /// Extension of the current preview target file (empty string if none). Used for the highlight-warm check, etc.
     pub fn current_preview_ext(&self) -> &str {
-        self.preview_path
+        self.tab
+            .preview_path
             .as_deref()
             .and_then(|p| p.extension())
             .and_then(|e| e.to_str())
@@ -2994,7 +3002,7 @@ impl App {
     /// Launch only when the return value is Some((ext, path)) (= prevents double-launch).
     pub fn take_warm_job(&mut self) -> Option<(String, PathBuf)> {
         if self.hl_pending && !self.hl_warming {
-            if let Some(path) = self.preview_path.clone() {
+            if let Some(path) = self.tab.preview_path.clone() {
                 self.hl_warming = true;
                 return Some((self.current_preview_ext().to_string(), path));
             }
@@ -3045,8 +3053,8 @@ impl App {
     /// For a directory or no target, notify via flash and do nothing (only files can be edited).
     /// In Preview the editor is asked to open at the on-screen position (see `preview_edit_line`).
     pub fn request_edit(&mut self) {
-        let target = match self.mode {
-            Mode::Tree => match self.entries.get(self.selected) {
+        let target = match self.tab.mode {
+            Mode::Tree => match self.tab.entries.get(self.tab.selected) {
                 Some(e) if e.is_dir => {
                     self.flash = Some(tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());
                     return;
@@ -3054,7 +3062,7 @@ impl App {
                 Some(e) => Some(e.path.clone()),
                 None => None,
             },
-            Mode::Preview => self.preview_path.clone(),
+            Mode::Preview => self.tab.preview_path.clone(),
         };
         match target {
             Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
@@ -3071,7 +3079,7 @@ impl App {
     ///   section being read; see `preview_edit_line` verification).
     /// - Otherwise (tree edits, Mermaid, images): None (open at the top).
     fn preview_edit_line(&self) -> Option<usize> {
-        if self.mode != Mode::Preview {
+        if self.tab.mode != Mode::Preview {
             return None;
         }
         if self.is_windowed() {
@@ -3080,16 +3088,16 @@ impl App {
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
         // source line proportionally, then refine by content (see md_content_anchor_line).
-        if matches!(self.preview_kind, Some(PreviewKind::Markdown(_))) {
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_))) {
             if let Some(c) = &self.md_cache {
-                let same = self.preview_path.as_ref().is_some_and(|p| *p == c.path);
+                let same = self.tab.preview_path.as_ref().is_some_and(|p| *p == c.path);
                 if same && c.src_lines > 0 && self.md_view_rows > 0 {
                     // Prefer the on-screen Tab focus (the visible "cursor"); otherwise the top of view.
                     let (logical, row) = match self.md_focused_visible_line() {
                         Some(hit) => hit,
                         None => (
                             self.md_top_logical_line().unwrap_or(0),
-                            self.preview_scroll as usize,
+                            self.tab.preview_scroll as usize,
                         ),
                     };
                     let est = (row * c.src_lines / self.md_view_rows).min(c.src_lines - 1);
@@ -3106,8 +3114,8 @@ impl App {
     fn md_focused_visible_line(&self) -> Option<(usize, usize)> {
         let item = self.tab.focused_item.and_then(|i| self.md_items.get(i))?;
         let (row, h) = self.md_visual_span(item.line);
-        let scroll = self.preview_scroll as usize;
-        let vh = self.preview_viewport.max(1) as usize;
+        let scroll = self.tab.preview_scroll as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
         (row < scroll + vh && row + h > scroll).then_some((item.line, row))
     }
 
@@ -3118,7 +3126,7 @@ impl App {
         if c.lines.is_empty() {
             return None;
         }
-        let scroll = self.preview_scroll as usize;
+        let scroll = self.tab.preview_scroll as usize;
         if !self.cfg.ui.wrap || c.width == 0 || c.row_prefix.len() != c.lines.len() + 1 {
             return Some(scroll.min(c.lines.len() - 1));
         }
@@ -3186,11 +3194,11 @@ impl App {
     pub fn reload_preview(&mut self) {
         self.md_cache = None;
         self.win_cache = None;
-        if matches!(self.mode, Mode::Preview) {
+        if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
             // CSV/TSV は外部編集で内容が変わり得る。再パースしてカーソルを範囲内へクランプ(位置は保つ)。
-            if matches!(self.preview_kind, Some(PreviewKind::Table { .. })) {
+            if matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. })) {
                 self.load_table();
                 self.clamp_table_cursor();
             }
@@ -3204,31 +3212,35 @@ impl App {
     /// The mtime guard avoids re-decoding / re-running external tools (pdftocairo/ffmpeg) on unrelated FS
     /// events. Zoom / pan / page are preserved across the reload.
     fn reload_media_if_changed(&mut self) {
-        let is_media = match &self.preview_kind {
+        let is_media = match &self.tab.preview_kind {
             Some(kind) => self.kind_loads_media(kind),
             None => false,
         };
         if !is_media {
             return;
         }
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
-        let Some(kind) = self.preview_kind.clone() else {
+        let Some(kind) = self.tab.preview_kind.clone() else {
             return;
         };
         if file_mtime(&path) == self.preview_media_mtime {
             return; // 対象ファイルは未変更 → 無駄な再デコード/外部ツール実行を避ける
         }
         // 表示状態(ズーム/中心/ページ)を保持して再ロード。
-        let (zoom, center, page) = (self.image_zoom, self.tab.image_center, self.tab.pdf_page);
+        let (zoom, center, page) = (
+            self.tab.image_zoom,
+            self.tab.image_center,
+            self.tab.pdf_page,
+        );
         self.clear_image(); // ズーム/中心/ページ/メディア世代をリセット
         if matches!(kind, PreviewKind::Pdf(_)) {
             self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
             self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
         }
         self.start_media_load(&kind, &path); // preview_media_mtime も更新される
-        self.image_zoom = zoom;
+        self.tab.image_zoom = zoom;
         self.tab.image_center = center;
     }
 
@@ -3238,16 +3250,16 @@ impl App {
     /// when the root is a repo subdirectory. Files under the root are already covered by the recursive
     /// root watch (so this returns `None` for them, and whenever no file is shown / not in Preview).
     ///
-    /// This closes the gap where the FSEvents watcher only covers `app.root`: an out-of-root preview
+    /// This closes the gap where the FSEvents watcher only covers `app.tab.root`: an out-of-root preview
     /// or diff never received change events, so an AI/external edit left it stale (the user's own `e`
     /// edit still reloaded via the editor-return path — hence "my edits show, the AI's don't").
     /// Consumed by the run loop in `main.rs`, which adds a non-recursive watch on this directory.
     pub fn out_of_root_watch_dir(&self) -> Option<PathBuf> {
-        if !matches!(self.mode, Mode::Preview) {
+        if !matches!(self.tab.mode, Mode::Preview) {
             return None;
         }
-        let p = self.preview_path.as_ref()?;
-        if p.starts_with(&self.root) {
+        let p = self.tab.preview_path.as_ref()?;
+        if p.starts_with(&self.tab.root) {
             return None; // already covered by the recursive root watch
         }
         p.parent().map(|d| d.to_path_buf())
@@ -3263,8 +3275,8 @@ impl App {
     /// or outside any repo. konoma's own reads are lock-free (`--no-optional-locks`), so this does not
     /// create a self-feedback loop.
     pub fn git_dir_watch(&self) -> Option<PathBuf> {
-        let wd = crate::git::workdir(&self.root)?;
-        if self.root == wd {
+        let wd = crate::git::workdir(&self.tab.root)?;
+        if self.tab.root == wd {
             return None; // root is the repo root → `.git` is already under the recursive watch
         }
         let git = wd.join(".git");
@@ -3301,7 +3313,7 @@ impl App {
     pub fn is_raw_source(&self) -> bool {
         self.tab.md_raw
             && matches!(
-                self.preview_kind,
+                self.tab.preview_kind,
                 Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
             )
     }
@@ -3309,7 +3321,7 @@ impl App {
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
         matches!(
-            self.preview_kind,
+            self.tab.preview_kind,
             Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
         )
     }
@@ -3329,8 +3341,8 @@ impl App {
         // 表示切替＝先頭から。窓読み(raw)/装飾(rendered)を張り直す。
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
-        self.preview_scroll = 0;
-        self.preview_hscroll = 0;
+        self.tab.preview_scroll = 0;
+        self.tab.preview_hscroll = 0;
         self.tab.preview_cursor_line = 0;
         self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
@@ -3391,7 +3403,7 @@ impl App {
     /// (charwise, end-inclusive). Uses the file's unwrapped/logical lines so a paste keeps the original layout.
     /// Empty when there is no path or the range is out of bounds.
     fn preview_selection_text(&self) -> String {
-        let Some(path) = self.preview_path.as_ref() else {
+        let Some(path) = self.tab.preview_path.as_ref() else {
             return String::new();
         };
         let bytes = match std::fs::read(path) {
@@ -3437,8 +3449,8 @@ impl App {
     /// selection — or the caret line when not selecting. Line numbers are 1-based and inclusive; a single
     /// line is `#L12`. In non-windowed previews (no caret) it degrades to `@path`. None without a target.
     fn preview_selection_ref_text(&self) -> Option<String> {
-        let path = self.preview_path.as_ref()?;
-        let base = at_ref_text(&self.open_dir, path);
+        let path = self.tab.preview_path.as_ref()?;
+        let base = at_ref_text(&self.tab.open_dir, path);
         if !self.is_windowed() {
             return Some(base);
         }
@@ -3500,24 +3512,25 @@ impl App {
     /// back to the cursor when the previewed file is not in the tree (e.g. a global-bookmark
     /// target outside the root). With no other file to go to, this is a no-op.
     pub fn preview_jump_file(&mut self, dir: i32) {
-        if self.mode != Mode::Preview || self.entries.is_empty() {
+        if self.tab.mode != Mode::Preview || self.tab.entries.is_empty() {
             return;
         }
         let anchor = self
+            .tab
             .preview_path
             .as_ref()
-            .and_then(|p| self.entries.iter().position(|e| e.path == *p))
-            .unwrap_or_else(|| self.selected.min(self.entries.len() - 1));
-        let n = self.entries.len() as i64;
+            .and_then(|p| self.tab.entries.iter().position(|e| e.path == *p))
+            .unwrap_or_else(|| self.tab.selected.min(self.tab.entries.len() - 1));
+        let n = self.tab.entries.len() as i64;
         let mut i = anchor as i64;
         for _ in 0..n {
             i = (i + dir as i64).rem_euclid(n);
             if i as usize == anchor {
                 break; // 一周した=他にファイルが無い
             }
-            if !self.entries[i as usize].is_dir {
-                self.selected = i as usize;
-                let path = self.entries[i as usize].path.clone();
+            if !self.tab.entries[i as usize].is_dir {
+                self.tab.selected = i as usize;
+                let path = self.tab.entries[i as usize].path.clone();
                 self.enter_preview(&path);
                 return;
             }
@@ -3527,18 +3540,18 @@ impl App {
     pub fn back_to_tree(&mut self) {
         // 全画面フェンス表示からの `q` は「ツリーへ」ではなく「元の Markdown ビューへ」戻る
         // (git diff の came_from_git_view と同じ、来た場所へ帰る流儀)。スクロール/フォーカスも復元。
-        if matches!(self.preview_kind, Some(PreviewKind::MermaidFence(_))) {
-            if let Some(md) = self.preview_path.clone() {
+        if matches!(self.tab.preview_kind, Some(PreviewKind::MermaidFence(_))) {
+            if let Some(md) = self.tab.preview_path.clone() {
                 let ret = self.tab.fence_return.take();
                 self.enter_preview(&md);
                 if let Some((scroll, focus)) = ret {
-                    self.preview_scroll = scroll;
+                    self.tab.preview_scroll = scroll;
                     self.tab.focused_item = focus;
                 }
                 return;
             }
         }
-        self.mode = Mode::Tree;
+        self.tab.mode = Mode::Tree;
         // Re-verify git status when the tree becomes visible again. FSEvents is inherently lossy
         // (bursts get coalesced, and an external commit can arrive as `.git/*.lock`-only churn), so
         // an external git op during Preview may have left `git_status` stale. Invalidating here makes
@@ -3553,8 +3566,8 @@ impl App {
         // generation (Phase G) and a missed fs event would otherwise pin stale size/mtime until
         // the next rebuild. Dropping here keeps them as robust as the git markers.
         self.detail_cells_cache.clear();
-        self.preview_path = None;
-        self.preview_kind = None;
+        self.tab.preview_path = None;
+        self.tab.preview_kind = None;
         self.clear_image(); // graphics 状態を解放
         self.md_cache = None;
         self.tab.md_raw = false;
@@ -3593,7 +3606,8 @@ impl App {
         if !self.gif_frames.is_empty() {
             return;
         }
-        let (Some(path), Some(src)) = (self.preview_path.clone(), self.image_src.clone()) else {
+        let (Some(path), Some(src)) = (self.tab.preview_path.clone(), self.image_src.clone())
+        else {
             return;
         };
         // 1枠とはいえ「見た画像を1枚ずっと抱える」ので、病的に大きいものは諦めて捨てる
@@ -3621,7 +3635,7 @@ impl App {
     /// is about to be closed). Without this, closing the only media tab leaves its image resident with
     /// nothing able to reuse it.
     fn drop_media_cache_for_active(&mut self) {
-        let cur = self.preview_path.as_deref();
+        let cur = self.tab.preview_path.as_deref();
         if matches!((&self.media_cache, cur), (Some(c), Some(p)) if c.path == p) {
             self.media_cache = None;
         }
@@ -3636,7 +3650,7 @@ impl App {
 
     /// The mermaid-fence ordinal of the current preview, if it is a full-screen fence.
     fn preview_fence_ord(&self) -> Option<usize> {
-        match &self.preview_kind {
+        match &self.tab.preview_kind {
             Some(PreviewKind::MermaidFence(ord)) => Some(*ord),
             _ => None,
         }
@@ -3689,7 +3703,7 @@ impl App {
         self.kitty_want = None;
         self.kitty_shown = None;
         self.image_src = None;
-        self.image_zoom = 1.0;
+        self.tab.image_zoom = 1.0;
         self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
         self.image_vis_frac = (1.0, 1.0);
@@ -3717,7 +3731,7 @@ impl App {
     /// and precomputes the wrap layout (row prefix sums via ratatui's own per-line reflow) — all the
     /// per-document work, done once. Frames then only slice the visible range (`md_slice`).
     fn ensure_md_cache(&mut self, width: u16) {
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
         // fence 図の目標行数(fit-to-view)が変わったら、図を含む文書だけ作り直す(ビューポートの
@@ -3870,7 +3884,7 @@ impl App {
         let (row, _) = self.md_visual_span(logical);
         // The draw path clamps preview_scroll against the document height, so an anchor near the
         // end simply scrolls as far as it can.
-        self.preview_scroll = row.min(u16::MAX as usize) as u16;
+        self.tab.preview_scroll = row.min(u16::MAX as usize) as u16;
         true
     }
 
@@ -4003,7 +4017,7 @@ impl App {
         };
         // Source line count, used to map the scroll position back to an approximate source line.
         let src_lines = src.lines().count();
-        match &self.preview_kind {
+        match &self.tab.preview_kind {
             Some(PreviewKind::Markdown(_)) => {
                 let theme = &self.cfg.ui.theme;
                 let code = crate::preview::markdown::CodeStyle {
@@ -4693,6 +4707,7 @@ impl App {
             PathBuf::from(url)
         } else {
             let base = self
+                .tab
                 .preview_path
                 .as_ref()
                 .and_then(|p| p.parent())
@@ -4804,6 +4819,7 @@ impl App {
             PathBuf::from(url)
         } else {
             let base = self
+                .tab
                 .preview_path
                 .as_ref()
                 .and_then(|p| p.parent())
@@ -4959,10 +4975,10 @@ impl App {
     /// tests without a render pass) keeps the cap.
     fn mermaid_fit_rows(&self) -> u16 {
         let cap = self.mermaid_rows_cap();
-        if self.preview_viewport == 0 {
+        if self.tab.preview_viewport == 0 {
             return cap;
         }
-        cap.min(self.preview_viewport.saturating_sub(2)).max(4)
+        cap.min(self.tab.preview_viewport.saturating_sub(2)).max(4)
     }
 
     /// The Nth ```mermaid fence body of the Markdown file at `md`, re-extracted fresh so an external
@@ -5098,7 +5114,7 @@ impl App {
         let (target, crop_rect, center, frac) = image_layout(
             src,
             picker.font_size(),
-            self.image_zoom,
+            self.tab.image_zoom,
             self.tab.image_center,
             inner,
             scale,
@@ -5158,7 +5174,7 @@ impl App {
     pub fn is_image_preview(&self) -> bool {
         (self.image_src.is_some() || self.is_gif_active())
             && matches!(
-                self.preview_kind,
+                self.tab.preview_kind,
                 Some(
                     PreviewKind::Image(_)
                         | PreviewKind::Svg(_)
@@ -5172,7 +5188,7 @@ impl App {
 
     /// Whether the current preview is a PDF (used to enable page-navigation keys / footer hints).
     pub fn is_pdf_preview(&self) -> bool {
-        matches!(self.preview_kind, Some(PreviewKind::Pdf(_)))
+        matches!(self.tab.preview_kind, Some(PreviewKind::Pdf(_)))
     }
 
     /// (current, total) page for the PDF preview, or None when not a PDF or the page count is unknown
@@ -5216,10 +5232,10 @@ impl App {
         }
         self.tab.pdf_page = page;
         // 新ページは全体が見えるよう fit に戻す(set_static_image は zoom/center を触らないので明示リセット)。
-        self.image_zoom = 1.0;
+        self.tab.image_zoom = 1.0;
         self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
-        if let Some(PreviewKind::Pdf(p)) = self.preview_kind.clone() {
+        if let Some(PreviewKind::Pdf(p)) = self.tab.preview_kind.clone() {
             // 旧ページの画像は到着まで表示したまま(media_gen で陳腐化判定・スピナーが重畳)。
             self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page));
         }
@@ -5235,7 +5251,7 @@ impl App {
             }
             return;
         }
-        self.image_zoom = (self.image_zoom * factor).clamp(1.0, 16.0);
+        self.tab.image_zoom = (self.tab.image_zoom * factor).clamp(1.0, 16.0);
         self.maybe_sharpen_vector();
     }
 
@@ -5259,12 +5275,12 @@ impl App {
             return;
         };
         let cur_side = src.dimensions().0.max(src.dimensions().1);
-        let want = ((lw.max(lh) as f64) * self.image_zoom).ceil() as u32;
+        let want = ((lw.max(lh) as f64) * self.tab.image_zoom).ceil() as u32;
         // 現ラスタで足りている(+12% マージン)か、既に上限(4096)なら何もしない。
         if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
             return;
         }
-        let base = self.preview_path.clone().unwrap_or_default();
+        let base = self.tab.preview_path.clone().unwrap_or_default();
         // 同期フォールバック(media_tx 無し=テスト)は spawn しない=多重の余地が無いので立てない。
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
@@ -5282,7 +5298,7 @@ impl App {
             }
             return;
         }
-        self.image_zoom = 1.0;
+        self.tab.image_zoom = 1.0;
         self.tab.image_center = (0.5, 0.5);
     }
 
@@ -5301,12 +5317,12 @@ impl App {
         let Some((line, rows)) = self.mermaid_placement(ord) else {
             return false;
         };
-        let vh = self.preview_viewport as usize;
+        let vh = self.tab.preview_viewport as usize;
         if vh == 0 {
             return true;
         }
         let (top, _) = self.md_visual_span(line);
-        let scroll = self.preview_scroll as usize;
+        let scroll = self.tab.preview_scroll as usize;
         top >= scroll && top + rows as usize <= scroll + vh
     }
 
@@ -5363,7 +5379,7 @@ impl App {
         let (target, crop_rect, center, frac) = image_layout(
             src,
             picker.font_size(),
-            self.image_zoom,
+            self.tab.image_zoom,
             self.tab.image_center,
             inner,
             scale,
@@ -5488,13 +5504,13 @@ impl App {
     /// Page the text preview by one page (dir: +1=next page / -1=previous page).
     /// Overlaps one row to keep context. The upper bound is clamped at render time.
     pub fn preview_page(&mut self, dir: i32) {
-        let page = self.preview_viewport.saturating_sub(1).max(1) as i32;
+        let page = self.tab.preview_viewport.saturating_sub(1).max(1) as i32;
         self.preview_scroll(dir * page);
     }
 
     /// Half-page the text preview (vim: Ctrl-d/Ctrl-u, less: d/u).
     pub fn preview_half_page(&mut self, dir: i32) {
-        let half = (self.preview_viewport / 2).max(1) as i32;
+        let half = (self.tab.preview_viewport / 2).max(1) as i32;
         self.preview_scroll(dir * half);
     }
 
@@ -5505,7 +5521,7 @@ impl App {
             self.tab.preview_byte_top = 0;
             self.tab.preview_top_line = 0;
         } else {
-            self.preview_scroll = 0;
+            self.tab.preview_scroll = 0;
         }
     }
 
@@ -5514,10 +5530,10 @@ impl App {
     /// If line numbers are ON, the bottom line number is also corrected from the total line count.
     pub fn preview_to_bottom(&mut self) {
         if !self.is_windowed() {
-            self.preview_scroll = u16::MAX;
+            self.tab.preview_scroll = u16::MAX;
             return;
         }
-        let vh = self.preview_viewport.max(1) as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
         // 行カーソルの末尾クランプに総行数が要るので常に求める(キャッシュされる)。
         let total = self.win_total();
         let cur = self.tab.preview_top_line;
@@ -5561,9 +5577,9 @@ impl App {
             self.preview_cursor_move(delta);
             return;
         }
-        let next = self.preview_scroll as i32 + delta;
+        let next = self.tab.preview_scroll as i32 + delta;
         // 下限のみここで。上限 (末尾) は内容・画面サイズが判る描画時にクランプする。
-        self.preview_scroll = next.max(0) as u16;
+        self.tab.preview_scroll = next.max(0) as u16;
     }
 
     /// Move the windowed line cursor by `delta` (clamped to the file), then scroll the window to keep it visible.
@@ -5579,7 +5595,7 @@ impl App {
 
     /// Scroll the window (byte-based) just enough that the line cursor is on screen.
     fn follow_cursor(&mut self) {
-        let vh = self.preview_viewport.max(1) as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
         let top = self.tab.preview_top_line;
         let cur = self.tab.preview_cursor_line;
         if cur < top {
@@ -5593,7 +5609,7 @@ impl App {
     /// updates preview_top_line (the line number) by the actual number of moved lines. Downward is clamped so as not to pass the last page.
     /// On end-clamp, the line number is corrected from the total line count when line numbers are ON.
     fn win_scroll_lines(&mut self, delta: i32) {
-        let vh = self.preview_viewport.max(1) as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
         let top = self.tab.preview_byte_top;
         let line = self.tab.preview_top_line;
         // 行番号 ON、または(行カーソルのため)総行数が既にキャッシュされていれば末尾クランプに使う。
@@ -5650,12 +5666,12 @@ impl App {
             }
         }
         let top = self.tab.preview_byte_top;
-        let path = self.preview_path.clone().unwrap_or_default();
+        let path = self.tab.preview_path.clone().unwrap_or_default();
         // syntax を着けるか: ハイライト無効(off-switch) / progressive で待ち中(hl_pending)なら素。
         // Code は常に対象。Text は「拡張子/ファイル名から実在の文法が解決できる時だけ」対象にする＝
         // .bashrc/Makefile/Dockerfile 等の設定ファイルを着色しつつ、本当に素のテキストは無色のまま保つ。
         // progressive 待ち中だけは「差し替え前の素テキスト」なのでキャッシュしない(後で着色版に替わる)。
-        let syntax_kind = match &self.preview_kind {
+        let syntax_kind = match &self.tab.preview_kind {
             Some(PreviewKind::Code(_)) => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // raw ソース表示(`R`)の Markdown/Mermaid はファイルの文法(.md→Markdown 等)で着色する。
@@ -5783,12 +5799,12 @@ impl App {
         if !self.cfg.ui.git_gutter {
             return std::collections::HashMap::new();
         }
-        let Some(path) = self.preview_path.clone() else {
+        let Some(path) = self.tab.preview_path.clone() else {
             return std::collections::HashMap::new();
         };
         let hit = matches!(&self.gutter_cache, Some(c) if c.path == path);
         if !hit {
-            let diff = crate::git::file_diff(&self.root, &path);
+            let diff = crate::git::file_diff(&self.tab.root, &path);
             let marks = gutter_marks(&diff);
             self.gutter_cache = Some(GutterCache {
                 path: path.clone(),
@@ -5893,13 +5909,13 @@ impl App {
     fn md_scroll_line_into_view(&mut self, line: usize) {
         const CONTEXT_ROWS: usize = 3;
         let (top, height) = self.md_visual_span(line);
-        let vh = self.preview_viewport.max(1) as usize;
-        let scroll = self.preview_scroll as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
+        let scroll = self.tab.preview_scroll as usize;
         let fully_visible = top >= scroll && top + height <= scroll + vh;
         if fully_visible {
             return;
         }
-        self.preview_scroll = top.saturating_sub(CONTEXT_ROWS) as u16;
+        self.tab.preview_scroll = top.saturating_sub(CONTEXT_ROWS) as u16;
     }
 
     /// Start a search (`/`). Supported in Code/Text (windowed) and table previews. Enters input mode.
@@ -6027,17 +6043,17 @@ impl App {
     }
 
     pub fn preview_hscroll(&mut self, delta: i32) {
-        let next = self.preview_hscroll as i32 + delta;
-        self.preview_hscroll = next.max(0) as u16;
+        let next = self.tab.preview_hscroll as i32 + delta;
+        self.tab.preview_hscroll = next.max(0) as u16;
     }
     /// Reset horizontal scroll to the line start (left edge) in one step. `0`. When wrapping, it is already 0, so no effect.
     pub fn preview_hscroll_home(&mut self) {
-        self.preview_hscroll = 0;
+        self.tab.preview_hscroll = 0;
     }
     /// Send horizontal scroll to the line end (right edge) in one step. `$`. The actual maximum is clamped to the longest line width at render time
     /// (here we set the upper bound, and the render side's `.min(max_h)` settles it at the correct right edge).
     pub fn preview_hscroll_end(&mut self) {
-        self.preview_hscroll = u16::MAX;
+        self.tab.preview_hscroll = u16::MAX;
     }
 
     /// Arrange the links in decorated Markdown lines to "show label only", build `md_items` (links +
@@ -6142,13 +6158,13 @@ impl App {
             let (bt, bh) = self.md_visual_span(block_end);
             height = (bt + bh).saturating_sub(top).max(height);
         }
-        let vh = self.preview_viewport.max(1) as usize;
-        let scroll = self.preview_scroll as usize;
+        let vh = self.tab.preview_viewport.max(1) as usize;
+        let scroll = self.tab.preview_scroll as usize;
         if height >= vh || top < scroll {
             // ブロックが画面より大きい(先頭を出す) or 上に見切れている。
-            self.preview_scroll = top as u16;
+            self.tab.preview_scroll = top as u16;
         } else if top + height > scroll + vh {
-            self.preview_scroll = (top + height).saturating_sub(vh) as u16;
+            self.tab.preview_scroll = (top + height).saturating_sub(vh) as u16;
         }
     }
 
@@ -6198,7 +6214,7 @@ impl App {
     }
     #[cfg(test)]
     pub fn preview_viewport_for_test(&self) -> u16 {
-        self.preview_viewport
+        self.tab.preview_viewport
     }
 
     /// (line, rows) of the inline mermaid placement whose **source ordinal** is `ordinal`
@@ -6298,18 +6314,18 @@ impl App {
     /// exactly where the reader was. Count-guarded re-extraction: if the file changed and the
     /// fence is gone, flash instead of rendering a stale diagram (principle #3).
     fn open_mermaid_fence(&mut self, ordinal: usize) {
-        let Some(md) = self.preview_path.clone() else {
+        let Some(md) = self.tab.preview_path.clone() else {
             return;
         };
         if self.mermaid_fence_code(&md, ordinal).is_none() {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::DiagramOpenFailed).into());
             return;
         }
-        self.tab.fence_return = Some((self.preview_scroll, self.tab.focused_item));
+        self.tab.fence_return = Some((self.tab.preview_scroll, self.tab.focused_item));
         self.clear_image();
         let kind = PreviewKind::MermaidFence(ordinal);
         self.start_media_load(&kind, &md);
-        self.preview_kind = Some(kind);
+        self.tab.preview_kind = Some(kind);
     }
 
     /// Raw source of the focused code block, matched by ordinal against the on-screen headers. The
@@ -6339,7 +6355,7 @@ impl App {
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
             .count();
-        let src = std::fs::read_to_string(self.preview_path.as_ref()?).ok()?;
+        let src = std::fs::read_to_string(self.tab.preview_path.as_ref()?).ok()?;
         // `<details>` の開閉は描画時の実効状態(md_cache が保持)。渡さないと閉じたブロック内の
         // フェンスまで数えて個数ガードが外れる。
         let details_states: Vec<bool> = self
@@ -6446,10 +6462,10 @@ impl App {
             self.back_to_tree();
             // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越さない)。
             self.clear_for_root_change();
-            self.root = resolved;
-            self.open_dir = self.root.clone();
-            self.entries.clear();
-            self.selected = 0;
+            self.tab.root = resolved;
+            self.tab.open_dir = self.tab.root.clone();
+            self.tab.entries.clear();
+            self.tab.selected = 0;
             self.rebuild_tree()?;
         } else if resolved.is_file() {
             self.enter_preview(&resolved);
@@ -6469,11 +6485,12 @@ impl App {
         let t = target.trim();
         let path_part = t.split('#').next().unwrap_or(t);
         let base = self
+            .tab
             .preview_path
             .as_ref()
             .and_then(|p| p.parent())
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.clone());
+            .unwrap_or_else(|| self.tab.root.clone());
         let p = Path::new(path_part);
         let resolved = if p.is_absolute() {
             p.to_path_buf()
@@ -6563,9 +6580,13 @@ impl App {
     }
     /// The target path for the info display: Tree=the cursor item / Preview=the file being previewed.
     pub fn info_target(&self) -> Option<PathBuf> {
-        match self.mode {
-            Mode::Tree => self.entries.get(self.selected).map(|e| e.path.clone()),
-            Mode::Preview => self.preview_path.clone(),
+        match self.tab.mode {
+            Mode::Tree => self
+                .tab
+                .entries
+                .get(self.tab.selected)
+                .map(|e| e.path.clone()),
+            Mode::Preview => self.tab.preview_path.clone(),
         }
     }
 
@@ -6581,9 +6602,13 @@ impl App {
         if self.surface() == crate::keymap::Surface::GitChanges {
             return self.git_view_selected();
         }
-        match self.mode {
-            Mode::Preview => self.preview_path.clone(),
-            Mode::Tree => self.entries.get(self.selected).map(|e| e.path.clone()),
+        match self.tab.mode {
+            Mode::Preview => self.tab.preview_path.clone(),
+            Mode::Tree => self
+                .tab
+                .entries
+                .get(self.tab.selected)
+                .map(|e| e.path.clone()),
         }
     }
 
@@ -6593,7 +6618,7 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
             return;
         };
-        let text = copy_text(&path, &self.open_dir, kind);
+        let text = copy_text(&path, &self.tab.open_dir, kind);
         match set_clipboard(&text) {
             Ok(()) => {
                 self.flash = Some(format!(
@@ -6617,7 +6642,7 @@ impl App {
     #[cfg(test)]
     pub fn copy_string_for(&self, kind: CopyKind) -> Option<String> {
         let path = self.copy_target()?;
-        Some(copy_text(&path, &self.open_dir, kind))
+        Some(copy_text(&path, &self.tab.open_dir, kind))
     }
 
     /// Test-only: the exact `@path#L..` string that `preview_copy_selection_ref` (`Y`) would copy.
@@ -6635,13 +6660,13 @@ impl App {
             Surface::GitDetail => self.tab.git_detail_meta.clone(),
             Surface::GitLog => {
                 let id = self.git_log_selected_id()?;
-                crate::git::commit_meta(&self.root, &id)
+                crate::git::commit_meta(&self.tab.root, &id)
             }
             Surface::GitGraph => {
                 let id = self
                     .git_graph_selected_row()
                     .and_then(|r| r.commit.clone())?;
-                crate::git::commit_meta(&self.root, &id)
+                crate::git::commit_meta(&self.tab.root, &id)
             }
             _ => None,
         }
@@ -6706,19 +6731,6 @@ impl App {
     /// Snapshot the current tree working state.
     fn snapshot_tab(&self) -> TabState {
         TabState {
-            root: self.root.clone(),
-            open_dir: self.open_dir.clone(),
-            entries: self.entries.clone(),
-            selected: self.selected,
-            show_hidden: self.show_hidden,
-            tree_viewport: self.tree_viewport,
-            mode: self.mode,
-            preview_path: self.preview_path.clone(),
-            preview_kind: self.preview_kind.clone(),
-            preview_scroll: self.preview_scroll,
-            preview_hscroll: self.preview_hscroll,
-            preview_viewport: self.preview_viewport,
-            image_zoom: self.image_zoom,
             tab: self.tab.clone(),
         }
     }
@@ -6739,22 +6751,17 @@ impl App {
     /// and every switch path calls save_active before the slot is needed again.
     fn load_active(&mut self) {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
-        self.root = t.root;
-        self.open_dir = t.open_dir;
-        self.entries = t.entries;
-        self.selected = t.selected;
-        self.show_hidden = t.show_hidden;
-        self.tree_viewport = t.tree_viewport;
-        self.mode = t.mode;
-        self.preview_path = t.preview_path;
-        self.preview_kind = t.preview_kind;
-        self.preview_scroll = t.preview_scroll;
-        self.preview_hscroll = t.preview_hscroll;
-        self.preview_viewport = t.preview_viewport;
-        // preview_byte_top/preview_top_line/selection/visual_anchor/tree_filter/filter_input/
-        // filter_pool/changed_filter/preview_search/search_input/search_idx: pure per-tab copies with
-        // no read anywhere below before `self.tab = t.tab` restores the whole PerTab bundle at the
-        // end of this function — nothing in between reads them, so no individual line is needed here.
+        // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
+        // load_table) before the bulk `self.tab = t.tab` restore at the end of this function, so they
+        // are restored early here (mirroring `self.tab.md_raw = t.tab.md_raw;` further down).
+        self.tab.preview_path = t.tab.preview_path.clone();
+        self.tab.preview_kind = t.tab.preview_kind.clone();
+        // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
+        // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
+        // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
+        // pure per-tab copies with no read anywhere below before `self.tab = t.tab` restores the whole
+        // PerTab bundle at the end of this function — nothing in between reads them, so no individual
+        // line is needed here.
         // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
         // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t.tab` で後段まとめて復元される。)
         self.git_graph_picker = false;
@@ -6770,7 +6777,8 @@ impl App {
         // (`self.tab` 自体は末尾の `self.tab = t.tab` まで前タブの値のままなので、ここでは `t.tab` を
         // 直接読む=借用のみで `t.tab` は消費しない)。表以外は空にする — さもないと別タブの一致セル
         // 座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
-        self.table_search_hits = if matches!(self.preview_kind, Some(PreviewKind::Table { .. })) {
+        self.table_search_hits = if matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. }))
+        {
             t.tab
                 .search_matches
                 .iter()
@@ -6787,7 +6795,9 @@ impl App {
         // (clear_image は tab.image_center/tab.pdf_page/tab.pdf_pages も既定値へ戻すが、この関数の
         // 最後で `self.tab = t.tab` が復元値を上書きするので、間で誰も読まない限り無害。)
         self.clear_image();
-        if let (Some(kind), Some(path)) = (self.preview_kind.clone(), self.preview_path.clone()) {
+        if let (Some(kind), Some(path)) =
+            (self.tab.preview_kind.clone(), self.tab.preview_path.clone())
+        {
             // Mermaid(.mmd 画像モード)/全画面フェンスも媒体復元の対象(kind_loads_media)。
             // 漏れると clear_image 後に誰も start_media_load を呼ばず、reload_media_if_changed も
             // mtime 一致で早期 return するため、タブ復帰でテキスト図/偽エラーに劣化していた。
@@ -6806,7 +6816,7 @@ impl App {
                 if !reused {
                     self.start_media_load(&kind, &path);
                 }
-                self.image_zoom = t.image_zoom;
+                self.tab.image_zoom = t.tab.image_zoom;
                 // image_center: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
                 self.image_crop = None;
                 if reused {
@@ -6870,9 +6880,17 @@ impl App {
     pub fn tab_label(&self, i: usize) -> String {
         // (mode, root, preview_path) をアクティブ/非アクティブで使い分ける。
         let (mode, root, preview) = if i == self.active_tab {
-            (self.mode, self.root.as_path(), self.preview_path.as_deref())
+            (
+                self.tab.mode,
+                self.tab.root.as_path(),
+                self.tab.preview_path.as_deref(),
+            )
         } else if let Some(t) = self.tabs.get(i) {
-            (t.mode, t.root.as_path(), t.preview_path.as_deref())
+            (
+                t.tab.mode,
+                t.tab.root.as_path(),
+                t.tab.preview_path.as_deref(),
+            )
         } else {
             return String::new();
         };
@@ -6892,19 +6910,19 @@ impl App {
         self.save_active();
         // 見出しアウトラインオーバーレイは新タブへ持ち越さない(空タブ上の空オーバーレイを防ぐ)。
         self.outline_open = false;
-        let root = self.root.clone();
-        self.open_dir = root.clone();
-        self.root = root;
-        self.selected = 0;
-        self.entries.clear();
+        let root = self.tab.root.clone();
+        self.tab.open_dir = root.clone();
+        self.tab.root = root;
+        self.tab.selected = 0;
+        self.tab.entries.clear();
         self.rebuild_tree()?;
         // snapshot 前に Tree へリセットする (snapshot がプレビュー状態も取り込むため順序が重要)。
-        self.mode = Mode::Tree;
+        self.tab.mode = Mode::Tree;
         self.clear_image();
-        self.preview_path = None;
-        self.preview_kind = None;
-        self.preview_scroll = 0;
-        self.preview_hscroll = 0;
+        self.tab.preview_path = None;
+        self.tab.preview_kind = None;
+        self.tab.preview_scroll = 0;
+        self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.preview_win = None;
@@ -6966,16 +6984,16 @@ impl App {
     /// current tab untouched. A file opens as a preview; a directory becomes the new tab's root
     /// (mirroring `l`). No-op when the tree is empty.
     pub fn tab_new_from_selection(&mut self) -> Result<()> {
-        let Some(entry) = self.entries.get(self.selected).cloned() else {
+        let Some(entry) = self.tab.entries.get(self.tab.selected).cloned() else {
             return Ok(());
         };
         self.tab_new()?; // fresh Tree tab at the current root, now active
         if entry.is_dir {
             // Descend into the folder in the new tab (same as `l`); root changes, so drop stale state.
             self.clear_for_root_change();
-            self.root = entry.path;
-            self.entries.clear();
-            self.selected = 0;
+            self.tab.root = entry.path;
+            self.tab.entries.clear();
+            self.tab.selected = 0;
             self.rebuild_tree()?;
         } else {
             // Reveal the file (so returning with `q` lands on it), then preview it.
@@ -7091,7 +7109,7 @@ impl App {
         self.outline_open = false;
         if let Some(line) = line {
             let (row, _) = self.md_visual_span(line);
-            self.preview_scroll = row.min(u16::MAX as usize) as u16;
+            self.tab.preview_scroll = row.min(u16::MAX as usize) as u16;
         }
     }
 
@@ -7135,7 +7153,7 @@ impl App {
         } else {
             // 閉じる(非アクティブ)タブのメディアをキャッシュが握っていたら手放す。
             if let Some(t) = self.tabs.get(i) {
-                let closing = t.preview_path.clone();
+                let closing = t.tab.preview_path.clone();
                 if matches!((&self.media_cache, &closing), (Some(c), Some(p)) if &c.path == p) {
                     self.media_cache = None;
                 }
@@ -7151,12 +7169,12 @@ impl App {
     /// Root directory of tab `i` (for the tab list's path column).
     pub fn tab_root(&self, i: usize) -> std::path::PathBuf {
         if i == self.active_tab {
-            self.root.clone()
+            self.tab.root.clone()
         } else {
             self.tabs
                 .get(i)
-                .map(|t| t.root.clone())
-                .unwrap_or_else(|| self.root.clone())
+                .map(|t| t.tab.root.clone())
+                .unwrap_or_else(|| self.tab.root.clone())
         }
     }
 
@@ -7165,7 +7183,7 @@ impl App {
         match self.path_style {
             PathStyle::Full => path.display().to_string(),
             PathStyle::Home => home_relative(path),
-            PathStyle::Relative => rel_to_open(&self.open_dir, path),
+            PathStyle::Relative => rel_to_open(&self.tab.open_dir, path),
         }
     }
 }

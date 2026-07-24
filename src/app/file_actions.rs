@@ -105,7 +105,7 @@ impl App {
             return;
         }
         // 2) Tree モードのみ「ドロップ」として扱う(プレビュー等では無視)。
-        if !matches!(self.mode, Mode::Tree) {
+        if !matches!(self.tab.mode, Mode::Tree) {
             return;
         }
         let sources = parse_dropped_paths(&text);
@@ -203,14 +203,14 @@ impl App {
 
     /// The operation target directory relative to the cursor (selection is a directory = inside it / a file = its parent / none = root).
     pub(super) fn op_base_dir(&self) -> PathBuf {
-        match self.entries.get(self.selected) {
+        match self.tab.entries.get(self.tab.selected) {
             Some(e) if e.is_dir => e.path.clone(),
             Some(e) => e
                 .path
                 .parent()
                 .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| self.root.clone()),
-            None => self.root.clone(),
+                .unwrap_or_else(|| self.tab.root.clone()),
+            None => self.tab.root.clone(),
         }
     }
 
@@ -223,7 +223,7 @@ impl App {
         let mut ancestors: Vec<PathBuf> = Vec::new();
         let mut p = target.parent();
         while let Some(a) = p {
-            if a == self.root || !a.starts_with(&self.root) {
+            if a == self.tab.root || !a.starts_with(&self.tab.root) {
                 break;
             }
             ancestors.push(a.to_path_buf());
@@ -231,15 +231,15 @@ impl App {
         }
         ancestors.reverse();
         for anc in ancestors {
-            if let Some(e) = self.entries.iter_mut().find(|e| e.path == anc) {
+            if let Some(e) = self.tab.entries.iter_mut().find(|e| e.path == anc) {
                 if e.is_dir && !e.expanded {
                     e.expanded = true;
                     self.rebuild_tree()?;
                 }
             }
         }
-        if let Some(i) = self.entries.iter().position(|e| e.path == target) {
-            self.selected = i;
+        if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+            self.tab.selected = i;
             return Ok(true);
         }
         Ok(false)
@@ -248,15 +248,15 @@ impl App {
     /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it before rebuilding.
     pub(super) fn reveal_and_select(&mut self, target: &Path) -> Result<()> {
         if let Some(parent) = target.parent() {
-            if let Some(e) = self.entries.iter_mut().find(|e| e.path == parent) {
+            if let Some(e) = self.tab.entries.iter_mut().find(|e| e.path == parent) {
                 if e.is_dir && !e.expanded {
                     e.expanded = true;
                 }
             }
         }
         self.rebuild_tree()?;
-        if let Some(i) = self.entries.iter().position(|e| e.path == target) {
-            self.selected = i;
+        if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+            self.tab.selected = i;
         }
         Ok(())
     }
@@ -277,7 +277,7 @@ impl App {
     }
     /// `V`=toggle the selection of the single item at the cursor and move down one (for picking scattered items / consecutive selection).
     pub fn toggle_select(&mut self) {
-        if let Some(e) = self.entries.get(self.selected) {
+        if let Some(e) = self.tab.entries.get(self.tab.selected) {
             let p = e.path.clone();
             if !self.tab.selection.remove(&p) {
                 self.tab.selection.insert(p);
@@ -292,15 +292,15 @@ impl App {
     }
     /// `v`=start visual mode. Places the anchor at the current cursor (does nothing on an empty tree).
     pub fn enter_visual(&mut self) {
-        if !self.entries.is_empty() {
-            self.tab.visual_anchor = Some(self.selected);
+        if !self.tab.entries.is_empty() {
+            self.tab.visual_anchor = Some(self.tab.selected);
         }
     }
     /// The visual range [lo, hi] (anchor to cursor, ascending). None if not in visual mode.
     fn visual_bounds(&self) -> Option<(usize, usize)> {
         self.tab
             .visual_anchor
-            .map(|a| (a.min(self.selected), a.max(self.selected)))
+            .map(|a| (a.min(self.tab.selected), a.max(self.tab.selected)))
     }
     /// Whether row `idx` is within the visual range (for the render's live preview).
     pub fn is_in_visual_range(&self, idx: usize) -> bool {
@@ -310,7 +310,7 @@ impl App {
     pub fn exit_visual_commit(&mut self) {
         if let Some((lo, hi)) = self.visual_bounds() {
             let paths: Vec<PathBuf> = (lo..=hi)
-                .filter_map(|i| self.entries.get(i).map(|e| e.path.clone()))
+                .filter_map(|i| self.tab.entries.get(i).map(|e| e.path.clone()))
                 .collect();
             for p in paths {
                 self.tab.selection.insert(p);
@@ -330,16 +330,17 @@ impl App {
             .visual_bounds()
             .map(|(lo, hi)| {
                 (lo..=hi)
-                    .filter_map(|i| self.entries.get(i).map(|e| e.path.clone()))
+                    .filter_map(|i| self.tab.entries.get(i).map(|e| e.path.clone()))
                     .collect()
             })
             .unwrap_or_default();
         // スコープ(全表示 or カーソルと同じ親)を追加。
         let parent = self
+            .tab
             .entries
-            .get(self.selected)
+            .get(self.tab.selected)
             .and_then(|e| e.path.parent().map(|p| p.to_path_buf()));
-        for e in &self.entries {
+        for e in &self.tab.entries {
             let same_parent = e.path.parent().map(|p| p.to_path_buf()) == parent;
             if all_displayed || same_parent {
                 paths.push(e.path.clone());
@@ -360,7 +361,7 @@ impl App {
             Some((lo, hi)) => {
                 let mut n = self.tab.selection.len();
                 for i in lo..=hi {
-                    if let Some(e) = self.entries.get(i) {
+                    if let Some(e) = self.tab.entries.get(i) {
                         if !self.tab.selection.contains(&e.path) {
                             n += 1;
                         }
@@ -374,8 +375,9 @@ impl App {
     /// Target paths for a batch operation: if there is a selection, **all selected items** (path ascending); otherwise, the single item at the cursor.
     pub(super) fn op_targets(&self) -> Vec<PathBuf> {
         if self.tab.selection.is_empty() {
-            self.entries
-                .get(self.selected)
+            self.tab
+                .entries
+                .get(self.tab.selected)
                 .map(|e| vec![e.path.clone()])
                 .unwrap_or_default()
         } else {

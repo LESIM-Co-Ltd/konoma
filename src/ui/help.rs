@@ -46,7 +46,7 @@ pub fn help_lines(app: &App) -> Vec<Line<'static>> {
     let mut sections = if git_active {
         crate::ui::git::help_sections(app)
     } else {
-        match app.mode {
+        match app.tab.mode {
             Mode::Tree => crate::ui::tree::help_sections(app),
             Mode::Preview => crate::ui::preview::help_sections(app),
         }
@@ -213,7 +213,7 @@ mod tests {
         );
 
         // テキストプレビュー (画像でない Preview): テキスト節のみ。Tree/Git/画像は出さない。
-        a.mode = Mode::Preview;
+        a.tab.mode = Mode::Preview;
         let txt = text(&a);
         assert!(txt.contains("Preview: text"), "テキスト節");
         assert!(txt.contains("horizontal scroll"), "横スクロール行");

@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     format!(
                         "{} ({})",
                         tr(app.lang, crate::i18n::Msg::BmLocal),
-                        app.format_path(&app.open_dir)
+                        app.format_path(&app.tab.open_dir)
                     )
                 } else {
                     tr(app.lang, crate::i18n::Msg::BmGlobal).to_string()

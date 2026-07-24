@@ -7,12 +7,12 @@ impl App {
     /// `o`: Open the Git view. Reads the change list for the current root and moves the cursor to the top.
     /// When the feature is disabled or this is not a repo, do nothing (`is_git_view` stays false = no-op).
     pub fn open_git_view(&mut self) {
-        if crate::git::branch(&self.root).is_none() {
+        if crate::git::branch(&self.tab.root).is_none() {
             // repo でない(または feature 無効)。安全に無視し、flash で知らせる。
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
             return;
         }
-        self.tab.git_view_entries = crate::git::changed_files(&self.root);
+        self.tab.git_view_entries = crate::git::changed_files(&self.tab.root);
         self.tab.git_view_sel = 0;
         self.tab.git_view = true;
     }
@@ -52,7 +52,7 @@ impl App {
     }
     /// Rebuild the list after a write operation and clamp the cursor. Also invalidates and refetches git status.
     pub fn git_view_reload(&mut self) {
-        self.tab.git_view_entries = crate::git::changed_files(&self.root);
+        self.tab.git_view_entries = crate::git::changed_files(&self.tab.root);
         if self.tab.git_view_sel >= self.tab.git_view_entries.len() {
             self.tab.git_view_sel = self.tab.git_view_entries.len().saturating_sub(1);
         }
@@ -65,7 +65,7 @@ impl App {
         let Some(path) = self.git_view_selected() else {
             return;
         };
-        match crate::git::stage(&self.root, &path) {
+        match crate::git::stage(&self.tab.root, &path) {
             Ok(()) => {
                 self.git_view_reload();
                 self.flash = Some(format!(
@@ -88,7 +88,7 @@ impl App {
         let Some(path) = self.git_view_selected() else {
             return;
         };
-        match crate::git::unstage(&self.root, &path) {
+        match crate::git::unstage(&self.tab.root, &path) {
             Ok(()) => {
                 self.git_view_reload();
                 self.flash = Some(format!(
@@ -112,7 +112,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;
         }
-        match crate::git::stage_all(&self.root) {
+        match crate::git::stage_all(&self.tab.root) {
             Ok(()) => {
                 let n = self.tab.git_view_entries.len();
                 self.git_view_reload();
@@ -136,7 +136,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NothingStaged).into());
             return;
         }
-        match crate::git::unstage_all(&self.root) {
+        match crate::git::unstage_all(&self.tab.root) {
             Ok(()) => {
                 self.git_view_reload();
                 self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::UnstagedAll).into());
@@ -177,11 +177,11 @@ impl App {
     /// `Enter`/`l`: Open the selected file's diff in the GitDiff preview. Closes the Git view and
     /// remembers where it came from (came_from_git_view) so Esc/q can return to the Git view.
     pub fn open_git_diff(&mut self, path: &Path) {
-        self.preview_path = Some(path.to_path_buf());
-        self.preview_kind = Some(PreviewKind::GitDiff(path.to_path_buf()));
+        self.tab.preview_path = Some(path.to_path_buf());
+        self.tab.preview_kind = Some(PreviewKind::GitDiff(path.to_path_buf()));
         // diff プレビューは独自描画(window/image/md を使わない)。関連状態をリセット。
-        self.preview_scroll = 0;
-        self.preview_hscroll = 0;
+        self.tab.preview_scroll = 0;
+        self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
         self.preview_win = None;
@@ -197,12 +197,12 @@ impl App {
         self.tab.git_view = false;
         // 既定はフルの git 変更スコープ(フォロー由来のときだけ呼び出し側が true に上書きする)。
         self.diff_follow_scope = false;
-        self.mode = Mode::Preview;
+        self.tab.mode = Mode::Preview;
     }
 
     /// Whether a GitDiff preview is currently showing (for render/key branching).
     pub fn is_git_diff_preview(&self) -> bool {
-        matches!(self.preview_kind, Some(PreviewKind::GitDiff(_)))
+        matches!(self.tab.preview_kind, Some(PreviewKind::GitDiff(_)))
     }
 
     /// Returns the diff lines of the GitDiff preview (for rendering). Empty if not applicable.
@@ -210,7 +210,7 @@ impl App {
     /// When the working tree changes, `refresh()` drops the cache, so j/k and horizontal scroll while
     /// displayed don't re-run git; only external edits (FS events) refetch. The return value is cloned every frame for rendering.
     pub fn git_diff_lines(&mut self) -> Vec<crate::git::DiffLine> {
-        let Some(PreviewKind::GitDiff(p)) = self.preview_kind.clone() else {
+        let Some(PreviewKind::GitDiff(p)) = self.tab.preview_kind.clone() else {
             return Vec::new();
         };
         let hit = matches!(&self.diff_cache, Some(c) if c.path == p);
@@ -234,7 +234,7 @@ impl App {
         // `d` は status から「変更あり/なし」を判定する=走行中なら待つ。非同期のまま読むと、
         // スキャン中に押しただけで「no changes」と拒否され機能が壊れて見える。
         self.ensure_git_status_now();
-        let Some(e) = self.entries.get(self.selected) else {
+        let Some(e) = self.tab.entries.get(self.tab.selected) else {
             return;
         };
         if e.is_dir {
@@ -257,7 +257,7 @@ impl App {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_layout(&mut self) {
         self.diff_layout = self.diff_layout.next();
-        self.preview_hscroll = 0;
+        self.tab.preview_hscroll = 0;
         self.tab.git_detail_hscroll = 0; // 並び替えで横位置はリセット(意味が変わるため)
         let label = match self.diff_layout {
             DiffLayout::Unified => crate::i18n::tr(self.lang, crate::i18n::Msg::DiffUnified),
@@ -282,7 +282,7 @@ impl App {
     /// (on confirm: git::discard then return to the Git view). Uses the same flow as discard from the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_diff_start_discard(&mut self) {
-        let Some(PreviewKind::GitDiff(path)) = self.preview_kind.clone() else {
+        let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
             return;
         };
         let name = path
@@ -321,7 +321,7 @@ impl App {
     /// Does nothing if there are no commits (unborn), this is not a repo, or the feature is disabled (no-op).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_log(&mut self) {
-        let commits = crate::git::log(&self.root, 200);
+        let commits = crate::git::log(&self.tab.root, 200);
         if commits.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoCommits).into());
             return;
@@ -376,7 +376,7 @@ impl App {
     /// `b`: Open the local branch list. Opened from the Git view, so the view closes. Cursor moves to the current branch. The filter is reset.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_branches(&mut self) {
-        let list = crate::git::branches(&self.root);
+        let list = crate::git::branches(&self.tab.root);
         if list.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoBranches).into());
             return;
@@ -433,7 +433,7 @@ impl App {
     }
     /// Refetch the list (e.g. after deletion). Clamps the cursor to range.
     fn git_branches_reload(&mut self) {
-        self.tab.git_branches = Some(crate::git::branches(&self.root));
+        self.tab.git_branches = Some(crate::git::branches(&self.tab.root));
         self.clamp_git_branch_sel();
     }
     /// `Enter`: Switch to the selected branch. If uncommitted changes conflict, git refuses (Err is flashed). On success, returns to the Git view.
@@ -443,7 +443,7 @@ impl App {
             return Ok(());
         };
         let name = b.name;
-        match crate::git::checkout(&self.root, &name) {
+        match crate::git::checkout(&self.tab.root, &name) {
             Ok(()) => {
                 self.refresh()?;
                 self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
@@ -495,7 +495,7 @@ impl App {
     }
     /// Confirm the deletion. `force`=false is safe (-d) / true is force (-D). On success, reloads the list.
     pub fn git_delete_branch(&mut self, name: &str, force: bool) {
-        match crate::git::delete_branch(&self.root, name, force) {
+        match crate::git::delete_branch(&self.tab.root, name, force) {
             Ok(()) => {
                 self.git_branches_reload();
                 self.flash = Some(format!(
@@ -591,7 +591,7 @@ impl App {
     /// In later sessions, keep the reordering while dropping removed branches and appending new ones in recency order.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     fn ensure_graph_order(&mut self) {
-        let by_rec = crate::git::branches_by_recency(&self.root); // (name, is_current, time) 新しい順
+        let by_rec = crate::git::branches_by_recency(&self.tab.root); // (name, is_current, time) 新しい順
         let exists: std::collections::HashSet<&str> =
             by_rec.iter().map(|(n, _, _)| n.as_str()).collect();
         // 消えたブランチを除去(並び替えは維持)。
@@ -636,7 +636,7 @@ impl App {
     fn derive_base_from_order(&self) -> Option<(String, String)> {
         for name in &self.tab.git_graph_order {
             if self.tab.git_graph_visible.contains(name) {
-                if let Some(oid) = crate::git::branch_tip(&self.root, name) {
+                if let Some(oid) = crate::git::branch_tip(&self.tab.root, name) {
                     return Some((oid, name.clone()));
                 }
             }
@@ -651,7 +651,7 @@ impl App {
         let cap = self.cfg.ui.graph_max_branches;
         let mut set = std::collections::HashSet::new();
         // HEAD は常に。
-        for (name, is_cur, _) in crate::git::branches_by_recency(&self.root) {
+        for (name, is_cur, _) in crate::git::branches_by_recency(&self.tab.root) {
             if is_cur {
                 set.insert(name);
             }
@@ -678,7 +678,7 @@ impl App {
         Vec<crate::git::LegendEntry>,
         usize,
     ) {
-        let total = crate::git::branches_by_recency(&self.root).len();
+        let total = crate::git::branches_by_recency(&self.tab.root).len();
         let visible: Vec<String> = self.tab.git_graph_visible.iter().cloned().collect();
         // 空 or 全ブランチ網羅 → --all(None)。それ以外は指定ブランチのみ。
         let use_all = visible.is_empty() || visible.len() >= total;
@@ -688,7 +688,7 @@ impl App {
             Some(visible.as_slice())
         };
         let mut rows = crate::git::graph_with_base(
-            &self.root,
+            &self.tab.root,
             self.tab.git_graph_base.as_deref(),
             self.lang,
             refs,
@@ -718,7 +718,7 @@ impl App {
         let has_wt = rows.iter().any(|r| r.worktree);
         let mut legend = crate::git::legend_from_rows(
             &rows,
-            &self.root,
+            &self.tab.root,
             self.tab.git_graph_base_label.as_deref(),
         );
         // 凡例を**優先順(`git_graph_order`)**に並べ替える(config 優先→HEAD→最近)。順序外は末尾。
@@ -831,7 +831,7 @@ impl App {
     /// The current branch (HEAD) name.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     fn head_branch_name(&self) -> Option<String> {
-        crate::git::branches_by_recency(&self.root)
+        crate::git::branches_by_recency(&self.tab.root)
             .into_iter()
             .find(|(_, c, _)| *c)
             .map(|(n, _, _)| n)
@@ -1019,11 +1019,11 @@ impl App {
             return;
         };
         let (lines, meta) = if row.worktree {
-            (crate::git::worktree_diff(&self.root), None)
+            (crate::git::worktree_diff(&self.tab.root), None)
         } else if let Some(id) = row.commit {
             (
-                crate::git::commit_diff(&self.root, &id),
-                crate::git::commit_meta(&self.root, &id),
+                crate::git::commit_diff(&self.tab.root, &id),
+                crate::git::commit_meta(&self.tab.root, &id),
             )
         } else {
             return;
@@ -1042,9 +1042,9 @@ impl App {
         let Some(id) = self.git_log_selected_id() else {
             return;
         };
-        let lines = crate::git::commit_diff(&self.root, &id);
+        let lines = crate::git::commit_diff(&self.tab.root, &id);
         self.tab.git_detail = Some(lines);
-        self.tab.git_detail_meta = crate::git::commit_meta(&self.root, &id);
+        self.tab.git_detail_meta = crate::git::commit_meta(&self.tab.root, &id);
         self.tab.git_detail_scroll = 0;
         self.tab.git_detail_hscroll = 0;
         self.tab.git_detail_title = None;
@@ -1054,7 +1054,7 @@ impl App {
     /// Does nothing if there are no changes. Overlaid as a detail view (git_detail); `s` toggles unified/split, q/Esc returns to the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_worktree_detail(&mut self) {
-        let lines = crate::git::worktree_diff(&self.root);
+        let lines = crate::git::worktree_diff(&self.tab.root);
         if lines.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;

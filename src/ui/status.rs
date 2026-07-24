@@ -161,7 +161,7 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
         spans.push(chip(app.lang, Msg::StFollow, Color::Green, false));
     }
     // 各ビュー固有の追記(Tree=ソート/選択件数 / Preview=画像倍率)。チップはここでは出さない。
-    spans.extend(match app.mode {
+    spans.extend(match app.tab.mode {
         Mode::Tree => crate::ui::tree::context(app),
         Mode::Preview => crate::ui::preview::context(app),
     });
@@ -311,7 +311,7 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
 /// Operation hints are **owned by each view**. Here we just delegate to the active view.
 /// (Tree = `ui::tree::footer_hints` / Preview = `ui::preview::footer_hints`. Kind differences are absorbed inside preview.)
 fn hint_tokens(app: &App) -> Vec<String> {
-    match app.mode {
+    match app.tab.mode {
         Mode::Tree => crate::ui::tree::footer_hints(app),
         Mode::Preview => crate::ui::preview::footer_hints(app),
     }
@@ -404,7 +404,8 @@ mod tests {
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
         // a.md をプレビュー → リンク操作あり。
-        app.selected = app
+        app.tab.selected = app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.ends_with("a.md"))
@@ -415,7 +416,8 @@ mod tests {
         assert!(md.contains("↵:open"), "md に開く操作が無い: {md}");
 
         // b.txt をプレビュー → リンク操作なし(通常のテキストヒント)。
-        app.selected = app
+        app.tab.selected = app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.ends_with("b.txt"))

@@ -125,11 +125,12 @@ impl Sim {
     fn select(&mut self, suffix: &str) {
         let i = self
             .app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.to_string_lossy().ends_with(suffix))
             .unwrap_or_else(|| panic!("entry not found: {suffix}"));
-        self.app.selected = i;
+        self.app.tab.selected = i;
         self.draw();
     }
 }
@@ -194,15 +195,15 @@ fn e2e_tree_navigation_and_ends() {
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.see("TREE");
-    let first = s.app.selected;
+    let first = s.app.tab.selected;
     s.key('j');
-    assert_eq!(s.app.selected, first + 1, "j で1つ下へ");
+    assert_eq!(s.app.tab.selected, first + 1, "j で1つ下へ");
     s.key('k');
-    assert_eq!(s.app.selected, first, "k で戻る");
+    assert_eq!(s.app.tab.selected, first, "k で戻る");
     s.key('G');
-    assert_eq!(s.app.selected, s.app.entries.len() - 1, "G で末尾");
+    assert_eq!(s.app.tab.selected, s.app.tab.entries.len() - 1, "G で末尾");
     s.key('g');
-    assert_eq!(s.app.selected, 0, "g で先頭");
+    assert_eq!(s.app.tab.selected, 0, "g で先頭");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -211,16 +212,16 @@ fn e2e_tree_filter_narrows_and_esc_clears() {
     let dir = sandbox("tree_filter");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    let all = s.app.entries.len();
+    let all = s.app.tab.entries.len();
     s.key('/');
     s.keys("csv");
     s.see("data.csv");
     s.dont_see("readme.md");
-    assert!(s.app.entries.len() < all, "絞り込みで件数が減る");
+    assert!(s.app.tab.entries.len() < all, "絞り込みで件数が減る");
     s.enter(); // 確定
     s.see("data.csv");
     s.esc(); // 解除
-    assert_eq!(s.app.entries.len(), all, "Esc で全件に戻る");
+    assert_eq!(s.app.tab.entries.len(), all, "Esc で全件に戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -246,12 +247,12 @@ fn e2e_tree_descend_and_parent() {
     s.select("src");
     s.key('l');
     assert!(
-        s.app.root.ends_with("src"),
+        s.app.tab.root.ends_with("src"),
         "l でディレクトリへ潜る(root 変更)"
     );
     s.see("lib.rs");
     s.key('h');
-    assert_eq!(s.app.root, root, "h で親へ戻る");
+    assert_eq!(s.app.tab.root, root, "h で親へ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -374,11 +375,11 @@ fn e2e_preview_text_roundtrip() {
     let mut s = Sim::new(&canon(&dir));
     s.select("notes.txt");
     s.enter();
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.see("PREVIEW");
     s.see("alpha");
     s.key('q');
-    assert_eq!(s.app.mode, Mode::Tree, "q でツリーへ戻る");
+    assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -395,6 +396,7 @@ fn e2e_markdown_link_follow_and_back() {
     s.see("alpha");
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("notes.txt")),
@@ -435,7 +437,7 @@ fn e2e_csv_table_cell_navigation() {
     let r1 = s.app.table_cursor();
     assert_ne!(r0, r1, "hjkl でセルカーソルが動く");
     s.key('q');
-    assert_eq!(s.app.mode, Mode::Tree);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -474,7 +476,7 @@ fn e2e_decorated_markdown_search() {
     s.see("needle"); // CJK 行の一致も画面に出る
 
     s.key('q');
-    assert_eq!(s.app.mode, Mode::Tree);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -510,9 +512,9 @@ fn e2e_table_search_jumps_to_matching_cell() {
     s.esc();
     assert_eq!(s.app.preview_search_query(), None, "Esc で検索が解除される");
     assert!(!s.app.table_cell_is_hit(0, 1), "一致の強調も消える");
-    assert_eq!(s.app.mode, Mode::Preview, "1回目の Esc では表に留まる");
+    assert_eq!(s.app.tab.mode, Mode::Preview, "1回目の Esc では表に留まる");
     s.esc();
-    assert_eq!(s.app.mode, Mode::Tree, "2回目の Esc でツリーへ戻る");
+    assert_eq!(s.app.tab.mode, Mode::Tree, "2回目の Esc でツリーへ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -631,9 +633,10 @@ fn e2e_bookmarks_set_list_jump() {
     s.key('\'');
     s.see("Bookmarks");
     s.key('b'); // 英字で直ジャンプ → ファイルはプレビュー
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
+        .tab
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("notes.txt")));
@@ -796,7 +799,7 @@ fn e2e_git_hub_stage_and_diff() {
     s.key('q');
     assert!(s.app.is_git_view(), "diff の q でハブへ戻る");
     s.key('q');
-    assert_eq!(s.app.mode, Mode::Tree);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -815,7 +818,7 @@ fn e2e_git_diff_from_tree_and_cycle_files() {
     s.key('n');
     assert_ne!(before, s.screen(), "n で別ファイルの diff へ");
     s.key('q');
-    assert_eq!(s.app.mode, Mode::Tree);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1071,14 +1074,14 @@ fn e2e_sort_reverse_flips_order() {
     let dir = sandbox("sort_rev");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    let before: Vec<_> = s.app.entries.iter().map(|e| e.path.clone()).collect();
+    let before: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     s.key('s');
     s.key('r'); // reverse トグル(トグル系は複数切替できるようメニューは開いたまま=設計どおり)
     assert!(
         s.app.is_sort_menu(),
         "r/. はトグルなのでメニューは開いたまま"
     );
-    let after: Vec<_> = s.app.entries.iter().map(|e| e.path.clone()).collect();
+    let after: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_ne!(before, after, "反転で並びが変わる");
     s.esc(); // メニューを閉じる
     assert!(!s.app.is_sort_menu(), "Esc でメニューが閉じる");
@@ -1095,13 +1098,16 @@ fn e2e_anchor_reanchor_and_reset() {
     let mut s = Sim::new(&root);
     s.select("src");
     s.key('l'); // src へ潜行(root 変更)
-    assert!(s.app.root.ends_with("src"));
+    assert!(s.app.tab.root.ends_with("src"));
     s.key('a'); // 再アンカー
     assert!(s.app.flash.is_some(), "a で通知");
     s.key('A'); // 起動位置へ
     assert!(s.app.flash.is_some(), "A で通知");
     // アンカー操作でツリー構造/root は不変(表示基準だけが変わる)。
-    assert!(s.app.root.ends_with("src"), "アンカーは root を動かさない");
+    assert!(
+        s.app.tab.root.ends_with("src"),
+        "アンカーは root を動かさない"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1230,7 +1236,7 @@ fn e2e_copy_path_strings_from_tree() {
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.select("notes.txt");
-    let path = s.app.entries[s.app.selected].path.clone();
+    let path = s.app.tab.entries[s.app.tab.selected].path.clone();
 
     assert_eq!(
         s.app.copy_string_for(crate::app::CopyKind::Name).as_deref(),
@@ -1284,7 +1290,7 @@ fn e2e_copy_atref_is_open_dir_relative_when_descended() {
     let mut s = Sim::new(&root);
     s.select("src");
     s.key('l'); // src へ潜行(root=src・open_dir は起動位置のまま)
-    assert!(s.app.root.ends_with("src"));
+    assert!(s.app.tab.root.ends_with("src"));
     s.select("lib.rs");
     assert_eq!(
         s.app
@@ -1349,7 +1355,7 @@ fn e2e_git_commit_copy_values() {
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
 
     let id = s.app.git_log_selected_id().expect("選択コミットの id");
-    let meta = crate::git::commit_meta(&s.app.root, &id).expect("commit_meta");
+    let meta = crate::git::commit_meta(&s.app.tab.root, &id).expect("commit_meta");
     assert_eq!(meta.message.lines().next(), Some("init"), "Subject=件名");
     assert_eq!(meta.author, "t", "Author=user.name");
     assert_eq!(meta.short.len(), 7, "ShortHash=7桁");
@@ -1390,7 +1396,7 @@ fn e2e_follow_opens_full_screen_diff() {
     s.key('F');
     assert!(s.app.follow_enabled(), "F でフォロー ON");
 
-    let a = s.app.root.join("a.rs");
+    let a = s.app.tab.root.join("a.rs");
     // ベースライン差分は「F 以降」の変更を出す → F の後に a.rs を編集する(実運用: AI の編集)。
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     // run ループ相当: 変更イベントを記録してからジャンプ(どちらも pub)。
@@ -1402,7 +1408,7 @@ fn e2e_follow_opens_full_screen_diff() {
         s.app.is_git_diff_preview(),
         "追尾先は全画面 git diff で開く"
     );
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.see("diff");
     // フォロー由来 diff の回遊対象=「セッション中に変わったファイル」。今は 1 件。
     assert_eq!(
@@ -1423,8 +1429,8 @@ fn e2e_follow_diff_cycles_session_files() {
     let mut s = Sim::new(&canon(&dir));
     s.key('F');
 
-    let a = s.app.root.join("a.rs");
-    let nt = s.app.root.join("new.txt");
+    let a = s.app.tab.root.join("a.rs");
+    let nt = s.app.tab.root.join("new.txt");
     // ベースライン差分は「F 以降」の変更を出す → F の後に両ファイルを編集する。
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     std::fs::write(&nt, "untracked\nAFTER\n").unwrap();
@@ -1472,7 +1478,7 @@ fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
     let mut s = Sim::new(&canon(&dir));
     s.key('F');
 
-    let a = s.app.root.join("a.rs");
+    let a = s.app.tab.root.join("a.rs");
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     assert!(s.app.follow_note_change(&a));
     s.app.follow_jump(&a);
@@ -1516,7 +1522,7 @@ fn e2e_follow_survives_scroll_and_cycle_breaks_only_on_q() {
     s.key('F');
     assert!(s.app.follow_enabled(), "F でフォロー ON");
 
-    let a = s.app.root.join("a.rs");
+    let a = s.app.tab.root.join("a.rs");
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     assert!(s.app.follow_note_change(&a));
     s.app.follow_jump(&a);
@@ -1619,6 +1625,7 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
     s.enter(); // リンク先を開く
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("notes.txt")),
@@ -1893,7 +1900,7 @@ fn e2e_outline_lists_headings_and_jumps() {
     }
     body.push_str("## Deep Section\n\ndeep body text\n");
     let (mut s, dir) = md_preview(Config::default(), "outline_jump", &body);
-    assert_eq!(s.app.preview_scroll, 0);
+    assert_eq!(s.app.tab.preview_scroll, 0);
     s.key('o');
     assert!(s.app.is_outline(), "o opens the outline");
     s.see("Top Heading");
@@ -1904,7 +1911,10 @@ fn e2e_outline_lists_headings_and_jumps() {
     assert_eq!(s.app.outline_sel(), 1);
     s.enter();
     assert!(!s.app.is_outline(), "Enter closes the outline");
-    assert!(s.app.preview_scroll > 0, "jumped down to the deep heading");
+    assert!(
+        s.app.tab.preview_scroll > 0,
+        "jumped down to the deep heading"
+    );
     s.see("Deep Section");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1940,7 +1950,7 @@ fn e2e_outline_closes_on_new_tab() {
     assert!(s.app.is_outline());
     s.key('t'); // global new tab
     assert!(!s.app.is_outline(), "a new tab closes the outline overlay");
-    assert_eq!(s.app.mode, Mode::Tree, "the new tab is a fresh tree");
+    assert_eq!(s.app.tab.mode, Mode::Tree, "the new tab is a fresh tree");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1971,14 +1981,14 @@ fn e2e_markdown_anchor_jump_scrolls_to_heading() {
     }
     body.push_str("## The Target\n\ndestination text\n");
     let (mut s, dir) = md_preview(Config::default(), "anchor_jump", &body);
-    assert_eq!(s.app.preview_scroll, 0, "starts at the top");
+    assert_eq!(s.app.tab.preview_scroll, 0, "starts at the top");
     s.tab(); // focus the anchor link
     assert_eq!(s.app.focused_item(), Some(0));
     s.enter(); // jump
     assert!(
-        s.app.preview_scroll > 0,
+        s.app.tab.preview_scroll > 0,
         "scrolled down toward the heading (was {})",
-        s.app.preview_scroll
+        s.app.tab.preview_scroll
     );
     s.see("The Target");
     std::fs::remove_dir_all(&dir).ok();
@@ -1995,7 +2005,10 @@ fn e2e_markdown_anchor_jump_unknown_slug_flashes() {
         s.screen().contains("nope") || s.app.flash.is_some(),
         "unknown anchor flashes"
     );
-    assert_eq!(s.app.preview_scroll, 0, "no scroll for a missing anchor");
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "no scroll for a missing anchor"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2275,13 +2288,13 @@ fn e2e_md_wrapped_focus_follows_offscreen_item() {
     on.select("torture.md");
     on.enter();
     assert!(on.app.cfg.ui.wrap, "前提: 既定は折返しON");
-    assert_eq!(on.app.preview_scroll, 0, "初期スクロール 0");
+    assert_eq!(on.app.tab.preview_scroll, 0, "初期スクロール 0");
     on.dont_see("ZZLINK"); // 段落が画面を占有=リンクは画面外
     on.tab(); // 段落の先(表示行 ~34)のリンクへフォーカス
     assert!(
-        on.app.preview_scroll > 5,
+        on.app.tab.preview_scroll > 5,
         "折返しでフォーカスに追従してスクロール: scroll={}",
-        on.app.preview_scroll
+        on.app.tab.preview_scroll
     );
     on.see("ZZLINK"); // 追従後は画面内
 
@@ -2294,7 +2307,7 @@ fn e2e_md_wrapped_focus_follows_offscreen_item() {
     off.see("ZZLINK"); // 段落1行=リンクは最初から画面内
     off.tab();
     assert_eq!(
-        off.app.preview_scroll, 0,
+        off.app.tab.preview_scroll, 0,
         "非折返しは追従スクロール不要(scroll 0 のまま)"
     );
     off.see("ZZLINK");
@@ -2559,15 +2572,16 @@ fn e2e_paste_jump_local_path_with_line() {
     // ツリー(プレビュー未開)から貼り付けジャンプ。paste_jump_from はクリップボード非依存の pub 入口。
     s.app.paste_jump_from("src/deep.txt:30");
     s.draw();
-    assert_eq!(s.app.mode, Mode::Preview, "ファイルはプレビューで開く");
+    assert_eq!(s.app.tab.mode, Mode::Preview, "ファイルはプレビューで開く");
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .map(|p| p.ends_with("src/deep.txt"))
             .unwrap_or(false),
         "deep.txt がプレビュー対象: {:?}",
-        s.app.preview_path
+        s.app.tab.preview_path
     );
     s.see("LINE_THIRTY_MARKER"); // 30 行目までスクロールした
     s.dont_see("LINE_ONE_MARKER"); // 先頭は画面外＝実際にスクロールしている
@@ -2616,23 +2630,24 @@ fn e2e_paste_jump_github_url_switches_root() {
     let subdir = repo.join("src");
     // konoma をサブディレクトリ(src)で起動。docs/guide.md はこの root の外。
     let mut s = Sim::new(&subdir);
-    assert_eq!(s.app.root, subdir, "起動 root は src サブディレクトリ");
+    assert_eq!(s.app.tab.root, subdir, "起動 root は src サブディレクトリ");
 
     // リポジトリ名(owner/name)が手元と違っても、末尾サフィックス docs/guide.md が実在すれば開ける。
     s.app
         .paste_jump_from("https://github.com/some-owner/some-name/blob/main/docs/guide.md");
     s.draw();
 
-    assert_eq!(s.app.root, repo, "root が repo(workdir)へ切替わる");
-    assert_eq!(s.app.mode, Mode::Preview, "guide.md をプレビューで開く");
+    assert_eq!(s.app.tab.root, repo, "root が repo(workdir)へ切替わる");
+    assert_eq!(s.app.tab.mode, Mode::Preview, "guide.md をプレビューで開く");
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .map(|p| p.ends_with("docs/guide.md"))
             .unwrap_or(false),
         "guide.md がプレビュー対象: {:?}",
-        s.app.preview_path
+        s.app.tab.preview_path
     );
     s.see("GUIDE_MARKER");
     std::fs::remove_dir_all(&dir).ok();
@@ -2667,15 +2682,16 @@ fn e2e_md_link_ctrl_t_opens_in_new_tab() {
 
     s.ctrl('t'); // 別タブで開く
     assert_eq!(s.app.tab_count(), 2, "別タブが増える");
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .map(|p| p.ends_with("target.txt"))
             .unwrap_or(false),
         "新タブは target.txt を開く: {:?}",
-        s.app.preview_path
+        s.app.tab.preview_path
     );
     s.see("TARGET_FILE_MARKER");
 
@@ -2683,12 +2699,13 @@ fn e2e_md_link_ctrl_t_opens_in_new_tab() {
     s.key('[');
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .map(|p| p.ends_with("doc.md"))
             .unwrap_or(false),
         "元タブは doc.md のまま: {:?}",
-        s.app.preview_path
+        s.app.tab.preview_path
     );
     s.see("DOC_HEADING");
     std::fs::remove_dir_all(&dir).ok();
@@ -2721,6 +2738,7 @@ fn e2e_tab_switch_reloads_tree_from_disk() {
     assert_eq!(s.app.active_tab_index(), 0, "タブ1 に戻る");
     assert!(
         s.app
+            .tab
             .entries
             .iter()
             .any(|e| e.path.ends_with("ZZ_NEW_FILE.txt")),
@@ -2747,28 +2765,36 @@ fn e2e_preview_file_paging_ctrl_n_p() {
     s.key('j'); // inner.txt
     s.key('j'); // a.txt
     s.enter(); // a.txt をプレビュー
-    assert!(matches!(s.app.mode, Mode::Preview));
+    assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.see("alpha content");
 
     // 次ファイル: a.txt → z.txt。
     s.ctrl('n');
     s.see("zulu content");
-    assert!(s.app.preview_path.as_ref().unwrap().ends_with("z.txt"));
+    assert!(s.app.tab.preview_path.as_ref().unwrap().ends_with("z.txt"));
 
     // さらに次: 末尾から wrap し、先頭の mid(ディレクトリ)はスキップして inner.txt へ。
     s.ctrl('n');
     s.see("inner content");
-    assert!(s.app.preview_path.as_ref().unwrap().ends_with("inner.txt"));
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_ref()
+        .unwrap()
+        .ends_with("inner.txt"));
 
     // 前ファイル: inner.txt の前は mid(スキップ)→ wrap で z.txt。
     s.ctrl('p');
     s.see("zulu content");
-    assert!(s.app.preview_path.as_ref().unwrap().ends_with("z.txt"));
+    assert!(s.app.tab.preview_path.as_ref().unwrap().ends_with("z.txt"));
 
     // ツリーカーソルが追従している(q で戻ると z.txt の上)。
     s.key('q');
-    assert!(matches!(s.app.mode, Mode::Tree));
-    assert!(s.app.entries[s.app.selected].path.ends_with("z.txt"));
+    assert!(matches!(s.app.tab.mode, Mode::Tree));
+    assert!(s.app.tab.entries[s.app.tab.selected]
+        .path
+        .ends_with("z.txt"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2788,7 +2814,7 @@ fn e2e_session_restore_reopens_previous_tabs() {
         .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
     s.select("a.txt");
     s.press(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(matches!(s.app.mode, Mode::Preview));
+    assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.key('t');
     s.select("b.txt");
     s.app.save_session(); // 終了時保存に相当(main が run 後に呼ぶ)
@@ -2803,15 +2829,17 @@ fn e2e_session_restore_reopens_previous_tabs() {
     s2.draw();
     assert_eq!(s2.app.tab_count(), 2, "タブ数を復元");
     assert_eq!(s2.app.active_tab_index(), 1, "アクティブタブを復元");
-    assert!(matches!(s2.app.mode, Mode::Tree));
+    assert!(matches!(s2.app.tab.mode, Mode::Tree));
     assert!(
-        s2.app.entries[s2.app.selected].path.ends_with("b.txt"),
+        s2.app.tab.entries[s2.app.tab.selected]
+            .path
+            .ends_with("b.txt"),
         "ツリーカーソルを復元"
     );
     s2.see("a.txt"); // タブバーにプレビュータブ(タブ1)のラベルが出る
                      // タブ1へ切替 = a.txt のプレビューが開き直っている(中身が画面に出る)。
     s2.key('[');
-    assert!(matches!(s2.app.mode, Mode::Preview));
+    assert!(matches!(s2.app.tab.mode, Mode::Preview));
     s2.see("alpha body");
 
     std::fs::remove_dir_all(&dir).ok();
@@ -2891,7 +2919,7 @@ fn e2e_search_esc_during_input_cancels_no_search() {
     assert!(!s.app.is_searching());
     assert_eq!(s.app.preview_search_query(), None);
     assert_eq!(s.app.search_status(), None);
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3010,7 +3038,7 @@ fn e2e_search_no_match_flash_and_empty_status() {
     assert_eq!(s.app.search_status(), None);
     s.esc();
     assert_eq!(s.app.preview_search_query(), None);
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3027,9 +3055,9 @@ fn e2e_search_esc_clears_then_second_esc_returns_to_tree() {
     assert_eq!(s.app.search_status(), Some((1, 1)));
     s.esc();
     assert_eq!(s.app.preview_search_query(), None);
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.esc();
-    assert_eq!(s.app.mode, Mode::Tree);
+    assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3129,7 +3157,7 @@ fn e2e_search_empty_query_enter_is_noop() {
     assert!(!s.app.is_searching());
     assert_eq!(s.app.preview_search_query(), None);
     assert_eq!(s.app.search_status(), None);
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3440,7 +3468,7 @@ fn e2e_visual_cancel_with_esc() {
     assert!(s.app.is_preview_visual());
     s.esc();
     assert!(!s.app.is_preview_visual());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3456,17 +3484,17 @@ fn e2e_visual_cancel_with_v_bigv_q_toggles() {
     assert!(s.app.is_preview_visual());
     s.key('v');
     assert!(!s.app.is_preview_visual());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.key('v');
     assert!(s.app.is_preview_visual());
     s.key('V');
     assert!(!s.app.is_preview_visual());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.key('v');
     assert!(s.app.is_preview_visual());
     s.key('q');
     assert!(!s.app.is_preview_visual());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3544,7 +3572,7 @@ fn e2e_visual_selection_in_code_preview() {
     );
     s.esc();
     assert!(!s.app.is_preview_visual());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -3681,7 +3709,7 @@ fn e2e_git_stage_then_commit_appears_in_log() {
     assert!(s.app.is_dialog());
     s.keys("ZZCOMMITSUBJECT");
     s.enter();
-    let commits = crate::git::log(&s.app.root, 200);
+    let commits = crate::git::log(&s.app.tab.root, 200);
     assert!(
         commits.iter().any(|c| c.summary == "ZZCOMMITSUBJECT"),
         "commit in log: {:?}",
@@ -3791,7 +3819,7 @@ fn e2e_git_log_navigate_open_detail_and_back() {
     let second = s.app.git_log_selected_id().expect("second id");
     assert_ne!(top, second);
     // Derive the selected commit's subject rather than assuming a specific ordering.
-    let second_subj = crate::git::commit_meta(&s.app.root, &second)
+    let second_subj = crate::git::commit_meta(&s.app.tab.root, &second)
         .and_then(|m| m.message.lines().next().map(str::to_string))
         .expect("second subject");
     s.enter();
@@ -3940,7 +3968,7 @@ fn e2e_git_branch_create_switches_to_it() {
     assert!(s.app.is_dialog());
     s.keys("createdbr");
     s.enter();
-    let branches = crate::git::branches(&s.app.root);
+    let branches = crate::git::branches(&s.app.tab.root);
     let created = branches.iter().find(|b| b.name == "createdbr");
     assert!(created.is_some());
     assert!(created.unwrap().is_current);
@@ -3964,7 +3992,7 @@ fn e2e_git_branch_delete_removes_feature_branch() {
     s.key('d');
     assert!(s.app.is_dialog());
     s.key('y');
-    assert!(!crate::git::branches(&s.app.root)
+    assert!(!crate::git::branches(&s.app.tab.root)
         .iter()
         .any(|b| b.name == "feature-x"));
     assert!(!s
@@ -3986,7 +4014,7 @@ fn e2e_git_copy_leader_all_subkeys_consume_from_log() {
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
     s.see("init");
     let id = s.app.git_log_selected_id().expect("selected id");
-    let meta = crate::git::commit_meta(&s.app.root, &id).expect("commit_meta");
+    let meta = crate::git::commit_meta(&s.app.tab.root, &id).expect("commit_meta");
     assert_eq!(meta.message.lines().next(), Some("init"));
     assert_eq!(meta.author, "t");
     assert_eq!(meta.short.len(), 7);
@@ -4040,13 +4068,17 @@ fn e2e_git_changed_filter_n_jumps_between_changed_files() {
     s.see("a.rs");
     s.see("new.txt");
     s.select("a.rs");
-    assert!(s.app.entries[s.app.selected].path.ends_with("a.rs"));
+    assert!(s.app.tab.entries[s.app.tab.selected].path.ends_with("a.rs"));
     s.key('n');
-    assert!(s.app.entries[s.app.selected].path.ends_with("new.txt"));
+    assert!(s.app.tab.entries[s.app.tab.selected]
+        .path
+        .ends_with("new.txt"));
     s.key('n');
-    assert!(s.app.entries[s.app.selected].path.ends_with("a.rs"));
+    assert!(s.app.tab.entries[s.app.tab.selected].path.ends_with("a.rs"));
     s.key('N');
-    assert!(s.app.entries[s.app.selected].path.ends_with("new.txt"));
+    assert!(s.app.tab.entries[s.app.tab.selected]
+        .path
+        .ends_with("new.txt"));
     s.key('C');
     assert!(!s.app.changed_filter());
     std::fs::remove_dir_all(&dir).ok();
@@ -4063,6 +4095,7 @@ fn e2e_sort_by_size_orders_ascending() {
     let mut s = Sim::new(&canon(&dir));
     let names: Vec<&str> = s
         .app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
@@ -4073,6 +4106,7 @@ fn e2e_sort_by_size_orders_ascending() {
     assert!(!s.app.is_sort_menu());
     let names: Vec<&str> = s
         .app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
@@ -4099,6 +4133,7 @@ fn e2e_sort_by_modified_orders_ascending() {
     assert!(!s.app.is_sort_menu());
     let names: Vec<&str> = s
         .app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
@@ -4116,6 +4151,7 @@ fn e2e_sort_by_ext_orders_ascending() {
     let mut s = Sim::new(&canon(&dir));
     let names: Vec<&str> = s
         .app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
@@ -4126,6 +4162,7 @@ fn e2e_sort_by_ext_orders_ascending() {
     assert!(!s.app.is_sort_menu());
     let names: Vec<&str> = s
         .app
+        .tab
         .entries
         .iter()
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
@@ -4139,16 +4176,16 @@ fn e2e_tree_filter_no_matches_shows_empty_list() {
     let dir = sandbox("filter_nomatch");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    let all = s.app.entries.len();
+    let all = s.app.tab.entries.len();
     s.key('/');
     s.keys("qzqzqznope");
     assert!(s.app.is_filtering());
-    assert!(s.app.entries.is_empty(), "{}", s.screen());
+    assert!(s.app.tab.entries.is_empty(), "{}", s.screen());
     s.dont_see("notes.txt");
     s.enter();
-    assert!(s.app.entries.is_empty());
+    assert!(s.app.tab.entries.is_empty());
     s.esc();
-    assert_eq!(s.app.entries.len(), all);
+    assert_eq!(s.app.tab.entries.len(), all);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4161,14 +4198,29 @@ fn e2e_tree_filter_is_case_insensitive() {
     s.key('/');
     s.keys("README");
     s.see("readme.md");
-    assert!(s.app.entries.iter().any(|e| e.path.ends_with("readme.md")));
-    assert!(!s.app.entries.iter().any(|e| e.path.ends_with("UPPER.TXT")));
+    assert!(s
+        .app
+        .tab
+        .entries
+        .iter()
+        .any(|e| e.path.ends_with("readme.md")));
+    assert!(!s
+        .app
+        .tab
+        .entries
+        .iter()
+        .any(|e| e.path.ends_with("UPPER.TXT")));
     for _ in 0..8 {
         s.press(KeyCode::Backspace, KeyModifiers::NONE);
     }
     s.keys("upper");
     s.see("UPPER.TXT");
-    assert!(s.app.entries.iter().any(|e| e.path.ends_with("UPPER.TXT")));
+    assert!(s
+        .app
+        .tab
+        .entries
+        .iter()
+        .any(|e| e.path.ends_with("UPPER.TXT")));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4207,7 +4259,7 @@ fn e2e_table_copy_full_path_value() {
     s.select("data.csv");
     s.enter();
     s.see("TABLE");
-    let csv = s.app.preview_path.clone().expect("preview path");
+    let csv = s.app.tab.preview_path.clone().expect("preview path");
     assert_eq!(
         s.app.copy_string_for(crate::app::CopyKind::Full),
         Some(csv.display().to_string())
@@ -4240,13 +4292,16 @@ fn e2e_bookmark_set_from_preview_targets_shown_file() {
     s.key('\'');
     s.see("Bookmarks");
     s.key('a');
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
+        .tab
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("notes.txt")));
-    assert!(s.app.entries[s.app.selected].path.ends_with("readme.md"));
+    assert!(s.app.tab.entries[s.app.tab.selected]
+        .path
+        .ends_with("readme.md"));
     s.keys("mx");
     assert!(
         s.app
@@ -4280,21 +4335,22 @@ fn e2e_bookmark_list_enter_jumps_to_file() {
     s.keys("mb");
     s.select("b.txt");
     s.enter();
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     s.see("BETA_BODY");
     s.key('\'');
     s.see("Bookmarks");
     assert_eq!(s.app.bookmark_list_sel(), 0);
     s.enter();
     assert!(!s.app.is_bookmark_list());
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(
         s.app
+            .tab
             .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("a.txt")),
         "{:?}",
-        s.app.preview_path
+        s.app.tab.preview_path
     );
     s.see("ALPHA_BODY");
     std::fs::remove_dir_all(&root).ok();
@@ -4320,9 +4376,10 @@ fn e2e_pastejump_hash_line_fragment_scrolls() {
     let mut s = Sim::new(&dir);
     s.app.paste_jump_from("deep.txt#L40");
     s.draw();
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
+        .tab
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("deep.txt")));
@@ -4340,9 +4397,10 @@ fn e2e_pastejump_at_ref_relative_opens() {
     let mut s = Sim::new(&dir);
     s.app.paste_jump_from("@sub/target.txt");
     s.draw();
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
+        .tab
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("sub/target.txt")));
@@ -4368,9 +4426,10 @@ fn e2e_pastejump_no_line_opens_at_top() {
     let mut s = Sim::new(&dir);
     s.app.paste_jump_from("top.txt");
     s.draw();
-    assert_eq!(s.app.mode, Mode::Preview);
+    assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
+        .tab
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("top.txt")));
@@ -4385,12 +4444,12 @@ fn e2e_pastejump_non_github_url_unrecognized() {
     seed_files(&dir);
     let dir = canon(&dir);
     let mut s = Sim::new(&dir);
-    assert_eq!(s.app.mode, Mode::Tree);
-    assert!(s.app.preview_path.is_none());
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+    assert!(s.app.tab.preview_path.is_none());
     s.app.paste_jump_from("https://example.com/some/file.rs");
     s.draw();
-    assert_eq!(s.app.mode, Mode::Tree);
-    assert!(s.app.preview_path.is_none());
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+    assert!(s.app.tab.preview_path.is_none());
     assert!(s.app.flash.is_some());
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -4650,7 +4709,7 @@ fn e2e_tab_scrolls_whole_block_into_view() {
     let (mut s, dir) = md_preview(cfg_code_bg_none(), "blocks", &body);
     let vh = s.app.preview_viewport_for_test().max(1) as usize;
     s.tab(); // 唯一の Tab 対象 = コードブロック
-    let scroll = s.app.preview_scroll as usize;
+    let scroll = s.app.tab.preview_scroll as usize;
     let focused = s.app.focused_item().expect("コードブロックにフォーカス");
     let start = s.app.md_item_line_for_test(focused);
     let end = s.app.md_item_block_end_for_test(focused);
@@ -4696,7 +4755,7 @@ fn e2e_tab_scrolls_open_details_body_into_view() {
         end > start,
         "開いた details は本文を持つ (start={start} end={end})"
     );
-    let scroll = s.app.preview_scroll as usize;
+    let scroll = s.app.tab.preview_scroll as usize;
     let (btop, bh) = s.app.md_visual_span_for_test(end);
     assert!(
         btop + bh <= scroll + vh,

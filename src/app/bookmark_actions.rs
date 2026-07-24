@@ -82,15 +82,16 @@ impl App {
     /// (fallback: the current root). Preview mode's tree cursor can lag behind the shown file
     /// (bookmark jumps / follow mode open previews without moving it), so the shown file wins.
     fn bookmark_target(&self) -> std::path::PathBuf {
-        if matches!(self.mode, Mode::Preview) {
-            if let Some(p) = &self.preview_path {
+        if matches!(self.tab.mode, Mode::Preview) {
+            if let Some(p) = &self.tab.preview_path {
                 return p.clone();
             }
         }
-        self.entries
-            .get(self.selected)
+        self.tab
+            .entries
+            .get(self.tab.selected)
             .map(|e| e.path.clone())
-            .unwrap_or_else(|| self.root.clone())
+            .unwrap_or_else(|| self.tab.root.clone())
     }
 
     /// Display form for a bookmark target. Local marks show the contextual (relative-style) path;
@@ -137,28 +138,28 @@ impl App {
         // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越すと
         // マーカー不可視のまま旧 root のファイルが誤操作対象になる footgun)。
         self.clear_for_root_change();
-        self.root = dir;
-        self.entries.clear();
-        self.selected = 0;
+        self.tab.root = dir;
+        self.tab.entries.clear();
+        self.tab.selected = 0;
         self.rebuild_tree_notify();
-        self.mode = Mode::Tree;
-        self.preview_path = None;
-        self.preview_kind = None;
+        self.tab.mode = Mode::Tree;
+        self.tab.preview_path = None;
+        self.tab.preview_kind = None;
     }
 
     /// `:`=make the current location the "anchored root" (**no text input**). Re-anchors the current tree root,
     /// navigated to with `h`/`l`, to the display base (open_dir), so relative-path display, the `yr` path copy, and
     /// the title all become relative to the current location (resolving what used to show as `../` from launch). Leaves the tree structure and cursor unchanged.
     pub fn reanchor_root(&mut self) {
-        if self.open_dir == self.root {
+        if self.tab.open_dir == self.tab.root {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::AlreadyRoot).into());
             return;
         }
-        self.open_dir = self.root.clone();
+        self.tab.open_dir = self.tab.root.clone();
         self.flash = Some(format!(
             "{}: {}",
             crate::i18n::tr(self.lang, crate::i18n::Msg::Root),
-            home_relative(&self.root)
+            home_relative(&self.tab.root)
         ));
     }
 
@@ -166,12 +167,12 @@ impl App {
     /// Resets the anchor that `a` moved to the current location back to the startup position, restoring relative-path display.
     /// Leaves the tree structure / cursor / root unchanged (moves only open_dir, symmetric to reanchor_root).
     pub fn reset_anchor(&mut self) {
-        if self.open_dir == self.launch_dir {
+        if self.tab.open_dir == self.launch_dir {
             self.flash =
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::AlreadyAtStartDir).into());
             return;
         }
-        self.open_dir = self.launch_dir.clone();
+        self.tab.open_dir = self.launch_dir.clone();
         self.flash = Some(format!(
             "{}: {}",
             crate::i18n::tr(self.lang, crate::i18n::Msg::AnchorReset),
@@ -271,10 +272,10 @@ impl App {
 
     /// Start filtering (`/`). Recursively collects everything under root into a pool and enters input mode.
     pub fn start_filter(&mut self) {
-        self.tab.filter_pool = collect_all(&self.root, self.show_hidden);
+        self.tab.filter_pool = collect_all(&self.tab.root, self.tab.show_hidden);
         self.tab.filter_input = Some(String::new());
         self.tab.tree_filter = Some(String::new());
-        self.selected = 0;
+        self.tab.selected = 0;
         self.reapply_filter();
     }
 
@@ -304,7 +305,7 @@ impl App {
     /// Clear the filter (Esc): return to the normal tree.
     pub fn filter_clear(&mut self) {
         self.clear_filter_state();
-        self.selected = 0;
+        self.tab.selected = 0;
         self.rebuild_tree_notify();
     }
 
@@ -336,7 +337,7 @@ impl App {
             .clone()
             .unwrap_or_default()
             .to_lowercase();
-        self.entries = if q.is_empty() {
+        self.tab.entries = if q.is_empty() {
             Vec::new()
         } else {
             self.tab
@@ -352,8 +353,8 @@ impl App {
                 .cloned()
                 .collect()
         };
-        if self.selected >= self.entries.len() {
-            self.selected = self.entries.len().saturating_sub(1);
+        if self.tab.selected >= self.tab.entries.len() {
+            self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
         // 絞り込み結果は別 entries 集合なので visual_anchor(添字)は stale。無効化する。
         self.tab.visual_anchor = None;
@@ -371,7 +372,7 @@ impl App {
         let mut v: Vec<PathBuf> = self
             .git_status
             .keys()
-            .filter(|p| p.starts_with(&self.root) && p.is_file())
+            .filter(|p| p.starts_with(&self.tab.root) && p.is_file())
             .cloned()
             .collect();
         v.sort();
@@ -384,7 +385,7 @@ impl App {
     pub fn toggle_changed_filter(&mut self) {
         if self.tab.changed_filter {
             self.tab.changed_filter = false;
-            self.selected = 0;
+            self.tab.selected = 0;
             self.rebuild_tree_notify();
             return;
         }
@@ -395,7 +396,7 @@ impl App {
         }
         self.clear_filter_state(); // 名前絞り込み(`/`)とは排他
         self.tab.changed_filter = true;
-        self.selected = 0;
+        self.tab.selected = 0;
         self.reapply_changed_filter();
     }
 
@@ -415,14 +416,14 @@ impl App {
             .collect();
         if entries.is_empty() {
             self.tab.changed_filter = false;
-            self.selected = 0;
+            self.tab.selected = 0;
             self.rebuild_tree_notify();
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
             return;
         }
-        self.entries = entries;
-        if self.selected >= self.entries.len() {
-            self.selected = self.entries.len().saturating_sub(1);
+        self.tab.entries = entries;
+        if self.tab.selected >= self.tab.entries.len() {
+            self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
         self.tab.visual_anchor = None;
     }
@@ -444,7 +445,12 @@ impl App {
             return;
         }
         let len = paths.len() as i64;
-        let idx = match self.entries.get(self.selected).map(|e| e.path.clone()) {
+        let idx = match self
+            .tab
+            .entries
+            .get(self.tab.selected)
+            .map(|e| e.path.clone())
+        {
             Some(cur) => match paths.binary_search(&cur) {
                 Ok(i) => (i as i64 + dir).rem_euclid(len) as usize,
                 // カーソルが変更ファイル上にない: 挿入位置の次(前)へ(wrap)。
@@ -460,8 +466,8 @@ impl App {
         };
         let target = paths[idx].clone();
         if self.tab.changed_filter {
-            if let Some(i) = self.entries.iter().position(|e| e.path == target) {
-                self.selected = i;
+            if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+                self.tab.selected = i;
             }
             return;
         }
@@ -497,7 +503,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
             return;
         }
-        let Some(crate::preview::PreviewKind::GitDiff(cur)) = self.preview_kind.clone() else {
+        let Some(crate::preview::PreviewKind::GitDiff(cur)) = self.tab.preview_kind.clone() else {
             return;
         };
         let len = paths.len() as i64;
@@ -519,8 +525,8 @@ impl App {
         // ツリーのカーソルも同期(q で戻ったとき、いま見ていたファイルの上に居る)。
         if self.tab.changed_filter {
             self.reapply_changed_filter();
-            if let Some(i) = self.entries.iter().position(|e| e.path == target) {
-                self.selected = i;
+            if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
+                self.tab.selected = i;
             }
         } else {
             let _ = self.reveal_path_deep(&target);
@@ -547,7 +553,7 @@ impl App {
     /// The current GitDiff target's position within its navigation set (1-based, total) — the follow
     /// session for follow-opened diffs, the full change set otherwise. For the title's `(2/5)` indicator.
     pub fn diff_change_position(&self) -> Option<(usize, usize)> {
-        let crate::preview::PreviewKind::GitDiff(p) = self.preview_kind.as_ref()? else {
+        let crate::preview::PreviewKind::GitDiff(p) = self.tab.preview_kind.as_ref()? else {
             return None;
         };
         let paths = if self.diff_follow_scope {
@@ -567,10 +573,11 @@ impl App {
     /// only the dimming based on ignore rules appears after the result arrives (`apply_ignored`).
     pub fn refresh_git_if_needed(&mut self) {
         // 同一 root かつ dirty でなければ何もしない。dirty(再検証要求)は同一 root でも取り直す。
-        if self.git_status_for.as_deref() == Some(self.root.as_path()) && !self.git_status_dirty {
+        if self.git_status_for.as_deref() == Some(self.tab.root.as_path()) && !self.git_status_dirty
+        {
             return;
         }
-        let wd = crate::git::workdir(&self.root);
+        let wd = crate::git::workdir(&self.tab.root);
         // statuses/branch は **workdir から** `git status` を回す=同一リポジトリ内ならどのサブディレクトリでも
         // 結果は同一。よって **workdir が同じで dirty でなければ再計算せず流用**する(`l`/`h` 潜行のたびに
         // 全 worktree を走査する `git status` が同期実行されるのを回避=大 repo での h/l の重さの主因)。
@@ -581,7 +588,7 @@ impl App {
             && !self.git_status_dirty;
         if status_reusable {
             // 同一 repo かつ再検証要求なし: 既存の status をそのまま流用する(`l`/`h` 潜行の最適化)。
-            self.git_status_for = Some(self.root.clone());
+            self.git_status_for = Some(self.tab.root.clone());
         } else {
             // フル `git status`(全 worktree 走査)は**別スレッドへ**逃がす。到着まで直前の status を
             // 見せ続けるので、ツリーは即座に描ける(原則「UI をブロックしない」)。
@@ -626,7 +633,7 @@ impl App {
                 self.git_ignored_pending = Some(wd.clone());
                 self.git_ignored_dirty = false;
                 let gen = self.git_ignored_gen;
-                self.spawn_or_sync_ignored(self.root.clone(), wd, gen);
+                self.spawn_or_sync_ignored(self.tab.root.clone(), wd, gen);
             }
         }
     }
@@ -654,7 +661,7 @@ impl App {
         // 同期実行だった頃はスキャン所要時間が次の要求を自然に律速していたが、非同期化でその律速が
         // 消えるため、ここで合体させないと fs イベント毎に全 worktree 走査が積み上がる
         // (エージェントが書き続ける大 repo ほど悪化する = この修正が狙った状況そのもの)。
-        if self.git_status_pending.as_deref() == Some(self.root.as_path()) {
+        if self.git_status_pending.as_deref() == Some(self.tab.root.as_path()) {
             return;
         }
         // 別 repo へ移ったら、パスキーでない派生表示(ブランチ名/ガター列の有無)が前の repo のまま
@@ -665,14 +672,14 @@ impl App {
             self.git_status_workdir = None;
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
-        self.git_status_pending = Some(self.root.clone());
+        self.git_status_pending = Some(self.tab.root.clone());
         // 要求はこの世代の計算が引き受けた。以後の再検証要求は次の世代で拾う。
         self.git_status_dirty = false;
         // 「この root の status を持っている/取得中」の印。これを進めておかないと、結果が届くまで
         // 毎描画で kick し直してしまう(上の inflight ガードと二重防御)。
-        self.git_status_for = Some(self.root.clone());
+        self.git_status_for = Some(self.tab.root.clone());
         let gen = self.git_status_gen;
-        let root = self.root.clone();
+        let root = self.tab.root.clone();
         self.spawn_or_sync_statuses(root, wd, gen);
     }
 
@@ -732,14 +739,14 @@ impl App {
     ///   These must not answer "no changes" just because a scan hasn't finished — that reads as a broken
     ///   feature rather than a slow one.
     pub fn ensure_git_status_now(&mut self) {
-        let wd = crate::git::workdir(&self.root);
+        let wd = crate::git::workdir(&self.tab.root);
         // 走行中でなく、同一 repo の最新を既に持っているなら何もしない(`l`/`h` の流用と同じ判定)。
         let fresh = self.git_status_pending.is_none()
             && self.git_status_workdir.is_some()
             && self.git_status_workdir == wd
             && !self.git_status_dirty;
         if fresh {
-            self.git_status_for = Some(self.root.clone());
+            self.git_status_for = Some(self.tab.root.clone());
         } else {
             // ここでは**別スレッドへ投げない**。投げてから同期計算すると、捨てるだけのフル走査を
             // 1本余計に走らせることになる(大 repo ほど無駄が大きい)。世代を進めることで、既に
@@ -747,7 +754,7 @@ impl App {
             self.git_status_gen = self.git_status_gen.wrapping_add(1);
             self.git_status_dirty = false;
             self.git_status_pending = None;
-            let res = Self::scan_statuses(self.root.clone(), wd.clone(), self.git_status_gen);
+            let res = Self::scan_statuses(self.tab.root.clone(), wd.clone(), self.git_status_gen);
             self.apply_statuses(res);
         }
         self.refresh_ignored_if_needed(wd);
@@ -765,11 +772,11 @@ impl App {
         // 世代が一致 = この結果は現在の workdir のもの。スキャン開始時点の root は、同一 repo 内で
         // `l`/`h` が動いていると現在の root と食い違う。食い違ったまま記録すると、次の fs イベントで
         // `refresh_git_status_only` が早期 return して**再検証を丸ごと取りこぼす**ため、現在の root を入れる。
-        self.git_status_for = Some(self.root.clone());
+        self.git_status_for = Some(self.tab.root.clone());
         self.git_status_pending = None;
         // 計算中に届いていた再検証要求(合体分)をここで1回だけ実行する。
         if self.git_status_dirty {
-            let wd = crate::git::workdir(&self.root);
+            let wd = crate::git::workdir(&self.tab.root);
             self.kick_status_refresh(wd);
         }
         // 「変更ファイルのみ」フィルタの一覧は statuses から**導出済みの entries** なので、再描画では
@@ -823,7 +830,7 @@ impl App {
             if self.git_ignored.contains(p) {
                 return true;
             }
-            if p == self.root {
+            if p == self.tab.root {
                 return false;
             }
             match p.parent() {
@@ -936,7 +943,9 @@ impl App {
         if self.is_git_view() {
             self.git_view_reload();
         }
-        if reload_preview && matches!(self.mode, Mode::Preview) && self.preview_affected_by(changed)
+        if reload_preview
+            && matches!(self.tab.mode, Mode::Preview)
+            && self.preview_affected_by(changed)
         {
             self.reload_preview();
         }
@@ -962,7 +971,7 @@ impl App {
         if self.is_git_diff_preview() {
             return true;
         }
-        let Some(cur) = self.preview_path.as_deref() else {
+        let Some(cur) = self.tab.preview_path.as_deref() else {
             return true;
         };
         changed.iter().any(|p| p == cur)
@@ -972,12 +981,12 @@ impl App {
     /// (keeping the cache). Does nothing if the initial `ignored` computation hasn't happened yet (`git_status_for` unset)
     /// (the next render's `refresh_git_if_needed` computes everything).
     fn refresh_git_status_only(&mut self) {
-        if self.git_status_for.as_deref() != Some(self.root.as_path()) {
+        if self.git_status_for.as_deref() != Some(self.tab.root.as_path()) {
             return;
         }
         // 再取得は**別スレッド**へ。ここは `handle_key` の中(fs イベント/タブ切替)から呼ばれるので、
         // 同期実行するとキー入力そのものが `git status` の時間だけ固まっていた。
-        let wd = crate::git::workdir(&self.root);
+        let wd = crate::git::workdir(&self.tab.root);
         self.git_status_dirty = true; // 同一 workdir でも取り直す(再検証要求)
         self.kick_status_refresh(wd);
     }

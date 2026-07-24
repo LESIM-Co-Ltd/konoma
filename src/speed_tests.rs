@@ -27,7 +27,8 @@ fn preview_app(dir: &Path, name: &str) -> crate::app::App {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let mut app = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
-    app.selected = app
+    app.tab.selected = app
+        .tab
         .entries
         .iter()
         .position(|e| e.path.ends_with(name))
@@ -145,14 +146,14 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
     let t = Instant::now();
     app.rebuild_tree().unwrap();
     let build_dt = t.elapsed();
-    assert_eq!(app.entries.len(), 1000, "全件ツリー化");
+    assert_eq!(app.tab.entries.len(), 1000, "全件ツリー化");
     assert!(
         build_dt < Duration::from_secs(2),
         "1000 件のツリー再構築が遅すぎる: {build_dt:?}"
     );
 
     // 末尾を選んだ状態で1回描画(可視範囲計算を含む)が速いこと。
-    app.selected = app.entries.len() - 1;
+    app.tab.selected = app.tab.entries.len() - 1;
     let mut term = Terminal::new(TestBackend::new(60, 30)).unwrap();
     let t = Instant::now();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
@@ -237,7 +238,7 @@ fn same_repo_navigation_does_not_rescan_git_status() {
     crate::git::STATUS_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let t = Instant::now();
     for i in 0..40 {
-        app.root = if i % 2 == 0 {
+        app.tab.root = if i % 2 == 0 {
             root.join("sub")
         } else {
             root.clone()
@@ -567,7 +568,8 @@ fn tab_switch_reloads_are_bounded() {
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
     // 各ファイルを別タブで開く(切替で別々のプレビューキャッシュを再構築させる)。
     for name in ["a.md", "b.csv", "c.txt", "d.rs"] {
-        app.selected = app
+        app.tab.selected = app
+            .tab
             .entries
             .iter()
             .position(|e| e.path.ends_with(name))
