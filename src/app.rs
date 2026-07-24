@@ -353,7 +353,8 @@ struct TabState {
     // PDF の現在ページ/総ページ数もタブごとに保持(別タブから戻ったとき同じページを再描画する)。
     pdf_page: u32,
     pdf_pages: Option<u32>,
-    // CSV/TSV テーブルのセルカーソル/スクロールもタブごとに保持(テーブル本体は復元時に再パース)。
+    // CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態を束ねた per-tab バンドル
+    // (テーブル本体は復元時に再パース。git 状態の詳細コメントは PerTab 定義側を参照)。
     tab: PerTab,
     // windowed(Code/Text)プレビューの 2D キャレット位置(別タブから戻っても同じ行/列に戻る)。選択(anchor)は持ち越さない。
     preview_cursor_line: usize,
@@ -368,36 +369,6 @@ struct TabState {
     fence_zoom: f64,
     fence_center: (f64, f64),
     fence_return: Option<(u16, Option<usize>)>,
-    // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
-    git_view: bool,
-    git_view_sel: usize,
-    git_view_entries: Vec<crate::git::ChangeEntry>,
-    came_from_git_view: bool,
-    git_log: Option<Vec<crate::git::CommitInfo>>,
-    git_log_sel: usize,
-    git_detail: Option<Vec<crate::git::DiffLine>>,
-    git_detail_meta: Option<crate::git::CommitMeta>,
-    git_detail_title: Option<String>,
-    git_detail_scroll: u16,
-    git_detail_hscroll: u16,
-    git_detail_viewport: u16,
-    git_detail_total: usize,
-    git_branches: Option<Vec<crate::git::BranchInfo>>,
-    git_branch_sel: usize,
-    git_branch_filter: String,
-    git_branch_filtering: bool,
-    git_graph: Option<Vec<crate::git::GraphRow>>,
-    git_graph_sel: usize,
-    // グラフ本体(git_graph)を保存する以上、それを装飾する派生状態(基準ピン・凡例・表示ブランチ・
-    // 優先順)も同じタブに保存しないと、別タブで基準/表示を変えて戻ったとき凡例や `base:` タイトルが
-    // 他タブのまま残る(load_active はグラフを再構築しない)。git_detail_meta/title を git_detail と
-    // 一緒に保存するのと同じ扱い。ピッカー(モーダル)の一時状態は保存せず復元時にリセットする。
-    git_graph_base: Option<String>,
-    git_graph_base_label: Option<String>,
-    git_graph_visible: std::collections::HashSet<String>,
-    git_graph_legend: Vec<crate::git::LegendEntry>,
-    git_graph_hidden: usize,
-    git_graph_order: Vec<String>,
     // --- タブ毎の選択 / 絞り込み / プレビュー検索 (#2/#6: タブ跨ぎのデータ損失 footgun 対策) ---
     // これらが TabState に無いと、タブAで選択 → 別タブ/別 dir で D/X/Y/P したとき、
     // 見えていない旧選択のファイルが操作対象になる(マーカー不可視で気付けない)。
@@ -811,7 +782,7 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
-    /// Table preview cursor + scroll (Cell cursor row/col, top row, left col). Per-tab bundle — see `PerTab`.
+    /// Per-tab bundle — see `PerTab` (table cursor/scroll + git-view overlay state).
     tab: PerTab,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
@@ -932,70 +903,16 @@ pub struct App {
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
-    /// Title override for the detail (git_detail). Used when opening all working-tree changes from the git view, etc.
-    git_detail_title: Option<String>,
     /// The current branch name (fetched at the same time as git status). None if not a repo.
     git_branch: Option<String>,
 
-    /// Whether the Git view (the changes hub) is showing. While true, content shows the change list instead of the tree, and
-    /// main intercepts keys. When the feature is disabled or it is not a repo, open_git_view does not set it, so it is always false.
-    git_view: bool,
-    /// Cursor position in the Git view (index within git_view_entries).
-    git_view_sel: usize,
-    /// The list of changed files shown in the Git view (rebuilt after open/refresh/write).
-    git_view_entries: Vec<crate::git::ChangeEntry>,
-    /// Whether the GitDiff preview was entered from the Git view. If true, Esc/q returns to the Git view.
-    came_from_git_view: bool,
-
-    /// Some if showing the git log (linear, newest first). Shows a full-screen list in content, and main intercepts keys.
-    /// When the feature is disabled, it is not a repo, or there are no commits, open_git_log does not set it, so it stays None.
-    git_log: Option<Vec<crate::git::CommitInfo>>,
-    /// Cursor position in the git log (index within git_log).
-    git_log_sel: usize,
-    /// Some if showing the commit detail (the DiffLine list from commit_diff). A full screen overlaid on the log.
-    git_detail: Option<Vec<crate::git::DiffLine>>,
-    /// The **full message, etc. shown at the top** of the commit detail (on Enter from log/graph). None for worktree diffs.
-    git_detail_meta: Option<crate::git::CommitMeta>,
-    /// Vertical scroll amount of the commit detail.
-    git_detail_scroll: u16,
-    /// Horizontal scroll amount of the commit detail (for long diff lines).
-    git_detail_hscroll: u16,
-    /// Number of visible rows when rendering the detail (for clamping g/G and scrolling; updated by the render side).
-    git_detail_viewport: u16,
-    /// Total line count when rendering the detail (the commit-message header + diff; for clamping the scroll limit; updated by the render side).
-    git_detail_total: usize,
-    /// Some if showing the branch list (`b`). Shows a full-screen list in content and main intercepts keys.
-    git_branches: Option<Vec<crate::git::BranchInfo>>,
-    /// Cursor position in the branch list (index within the **filtered** display list).
-    git_branch_sel: usize,
-    /// Branch filter query (`/`). Empty means all entries.
-    git_branch_filter: String,
-    /// Whether the branch filter is being typed (while true, main picks up keys as characters).
-    git_branch_filtering: bool,
-    /// Some if showing the commit graph (`G`, SourceTree/Git Graph style). Shown full-screen in content.
-    git_graph: Option<Vec<crate::git::GraphRow>>,
-    /// Cursor position in the graph (index within git_graph; sits on a commit row).
-    git_graph_sel: usize,
-    /// Phase 2: the base branch tip OID for the graph (if Some, pinned in a straight line on lane0). `s`=set / `x`=clear.
-    git_graph_base: Option<String>,
-    /// Display label for the base (for the title `base: …`; a branch name or a short hash).
-    git_graph_base_label: Option<String>,
-    /// The **set of local branch names shown** in the graph (for the cap/toggle when there are many branches).
-    /// At startup, auto-selected up to `ui.graph_max_branches` by HEAD + base + recency. If it equals the total branch count, `--all`.
-    git_graph_visible: std::collections::HashSet<String>,
-    /// Legend (branch ⇄ lane color). Computed and cached on graph rebuild.
-    git_graph_legend: Vec<crate::git::LegendEntry>,
-    /// The number of local branches **hidden by the cap/toggle** (for the legend's `(+K hidden)`).
-    git_graph_hidden: usize,
-    /// Whether the branch-visibility panel (`b`) is open.
+    /// Whether the branch-visibility panel (`b`) is open. Modal/transient — not per-tab (reset, not
+    /// restored, on tab switch; see `PerTab` for the per-tab git-view overlay state).
     git_graph_picker: bool,
     /// Cursor position in the panel (row = branch).
     git_graph_picker_sel: usize,
     /// Tentative selection while editing the panel (committed to `git_graph_visible` with Enter / discarded with q).
     git_graph_picker_set: std::collections::HashSet<String>,
-    /// The graph's **priority order (display order of all local branches)**. Initialized by `[ui.graph_base_branches]`→HEAD→recency, and
-    /// reordered for the current session only with the panel's `J`/`K`. Used for the order of the legend/panel/cap selection/base derivation.
-    git_graph_order: Vec<String>,
     /// Whether `J`/`K` reordering was done in the panel (so the base is re-derived to the top branch on Enter confirm).
     git_graph_reordered: bool,
 }
@@ -1326,13 +1243,44 @@ struct DecoratedMarkdown {
 
 /// Per-tab state bundle. Being migrated concern-by-concern out of the flat App/TabState fields
 /// so tab save/load is one clone and adding a per-tab field touches one place (see
-/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll.
+/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll, and the git-view overlay
+/// (changes hub / log / graph / branches / commit detail) state.
 #[derive(Clone, Default)]
 struct PerTab {
     table_cur_row: usize,
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
+    // git オーバーレイもタブごとに保持する(別タブでドキュメントを見て戻っても git モードのまま)。
+    git_view: bool,
+    git_view_sel: usize,
+    git_view_entries: Vec<crate::git::ChangeEntry>,
+    came_from_git_view: bool,
+    git_log: Option<Vec<crate::git::CommitInfo>>,
+    git_log_sel: usize,
+    git_detail: Option<Vec<crate::git::DiffLine>>,
+    git_detail_meta: Option<crate::git::CommitMeta>,
+    git_detail_title: Option<String>,
+    git_detail_scroll: u16,
+    git_detail_hscroll: u16,
+    git_detail_viewport: u16,
+    git_detail_total: usize,
+    git_branches: Option<Vec<crate::git::BranchInfo>>,
+    git_branch_sel: usize,
+    git_branch_filter: String,
+    git_branch_filtering: bool,
+    git_graph: Option<Vec<crate::git::GraphRow>>,
+    git_graph_sel: usize,
+    // グラフ本体(git_graph)を保存する以上、それを装飾する派生状態(基準ピン・凡例・表示ブランチ・
+    // 優先順)も同じタブに保存しないと、別タブで基準/表示を変えて戻ったとき凡例や `base:` タイトルが
+    // 他タブのまま残る(load_active はグラフを再構築しない)。git_detail_meta/title を git_detail と
+    // 一緒に保存するのと同じ扱い。ピッカー(モーダル)の一時状態は保存せず復元時にリセットする。
+    git_graph_base: Option<String>,
+    git_graph_base_label: Option<String>,
+    git_graph_visible: std::collections::HashSet<String>,
+    git_graph_legend: Vec<crate::git::LegendEntry>,
+    git_graph_hidden: usize,
+    git_graph_order: Vec<String>,
 }
 
 impl App {
@@ -1488,35 +1436,10 @@ impl App {
             git_ignored_dirty: false,
             ignored_tx: None,
             diff_layout,
-            git_detail_title: None,
             git_branch: None,
-            git_view: false,
-            git_view_sel: 0,
-            git_view_entries: Vec::new(),
-            came_from_git_view: false,
-            git_log: None,
-            git_log_sel: 0,
-            git_detail: None,
-            git_detail_meta: None,
-            git_detail_scroll: 0,
-            git_detail_hscroll: 0,
-            git_detail_viewport: 0,
-            git_detail_total: 0,
-            git_branches: None,
-            git_branch_sel: 0,
-            git_branch_filter: String::new(),
-            git_branch_filtering: false,
-            git_graph: None,
-            git_graph_sel: 0,
-            git_graph_base: None,
-            git_graph_base_label: None,
-            git_graph_visible: std::collections::HashSet::new(),
-            git_graph_legend: Vec::new(),
-            git_graph_hidden: 0,
             git_graph_picker: false,
             git_graph_picker_sel: 0,
             git_graph_picker_set: std::collections::HashSet::new(),
-            git_graph_order: Vec::new(),
             git_graph_reordered: false,
         };
         app.rebuild_tree()?;
@@ -2496,7 +2419,7 @@ impl App {
                     let from_diff = self.is_git_diff_preview();
                     if from_diff {
                         // プレビューを畳んで Git ビューへ復帰。
-                        self.came_from_git_view = false;
+                        self.tab.came_from_git_view = false;
                         self.back_to_tree();
                         self.open_git_view();
                     }
@@ -3663,7 +3586,7 @@ impl App {
         self.search_matches.clear();
         self.table_search_hits.clear();
         self.search_idx = 0;
-        self.came_from_git_view = false;
+        self.tab.came_from_git_view = false;
         self.table_data = None;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
@@ -6714,7 +6637,7 @@ impl App {
     fn current_commit_meta(&self) -> Option<crate::git::CommitMeta> {
         use crate::keymap::Surface;
         match self.surface() {
-            Surface::GitDetail => self.git_detail_meta.clone(),
+            Surface::GitDetail => self.tab.git_detail_meta.clone(),
             Surface::GitLog => {
                 let id = self.git_log_selected_id()?;
                 crate::git::commit_meta(&self.root, &id)
@@ -6814,31 +6737,6 @@ impl App {
             fence_zoom: self.fence_zoom,
             fence_center: self.fence_center,
             fence_return: self.fence_return,
-            git_view: self.git_view,
-            git_view_sel: self.git_view_sel,
-            git_view_entries: self.git_view_entries.clone(),
-            came_from_git_view: self.came_from_git_view,
-            git_log: self.git_log.clone(),
-            git_log_sel: self.git_log_sel,
-            git_detail: self.git_detail.clone(),
-            git_detail_meta: self.git_detail_meta.clone(),
-            git_detail_title: self.git_detail_title.clone(),
-            git_detail_scroll: self.git_detail_scroll,
-            git_detail_hscroll: self.git_detail_hscroll,
-            git_detail_viewport: self.git_detail_viewport,
-            git_detail_total: self.git_detail_total,
-            git_branches: self.git_branches.clone(),
-            git_branch_sel: self.git_branch_sel,
-            git_branch_filter: self.git_branch_filter.clone(),
-            git_branch_filtering: self.git_branch_filtering,
-            git_graph: self.git_graph.clone(),
-            git_graph_sel: self.git_graph_sel,
-            git_graph_base: self.git_graph_base.clone(),
-            git_graph_base_label: self.git_graph_base_label.clone(),
-            git_graph_visible: self.git_graph_visible.clone(),
-            git_graph_legend: self.git_graph_legend.clone(),
-            git_graph_hidden: self.git_graph_hidden,
-            git_graph_order: self.git_graph_order.clone(),
             // 選択 / 絞り込み / プレビュー検索もタブ毎に保存する(切替で旧タブへ持ち越さない)。
             selection: self.selection.clone(),
             visual_anchor: self.visual_anchor,
@@ -6883,33 +6781,8 @@ impl App {
         self.preview_viewport = t.preview_viewport;
         self.preview_byte_top = t.preview_byte_top;
         self.preview_top_line = t.preview_top_line;
-        // git オーバーレイもそのタブの状態を復元する(タブごとに git モードを保持)。
-        self.git_view = t.git_view;
-        self.git_view_sel = t.git_view_sel;
-        self.git_view_entries = t.git_view_entries;
-        self.came_from_git_view = t.came_from_git_view;
-        self.git_log = t.git_log;
-        self.git_log_sel = t.git_log_sel;
-        self.git_detail = t.git_detail;
-        self.git_detail_meta = t.git_detail_meta;
-        self.git_detail_title = t.git_detail_title;
-        self.git_detail_scroll = t.git_detail_scroll;
-        self.git_detail_hscroll = t.git_detail_hscroll;
-        self.git_detail_viewport = t.git_detail_viewport;
-        self.git_detail_total = t.git_detail_total;
-        self.git_branches = t.git_branches;
-        self.git_branch_sel = t.git_branch_sel;
-        self.git_branch_filter = t.git_branch_filter;
-        self.git_branch_filtering = t.git_branch_filtering;
-        self.git_graph = t.git_graph;
-        self.git_graph_sel = t.git_graph_sel;
-        self.git_graph_base = t.git_graph_base;
-        self.git_graph_base_label = t.git_graph_base_label;
-        self.git_graph_visible = t.git_graph_visible;
-        self.git_graph_legend = t.git_graph_legend;
-        self.git_graph_hidden = t.git_graph_hidden;
-        self.git_graph_order = t.git_graph_order;
         // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
+        // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t.tab` で後段まとめて復元される。)
         self.git_graph_picker = false;
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();
@@ -7077,33 +6950,33 @@ impl App {
         self.fence_center = (0.5, 0.5);
         self.fence_return = None;
         // 新規タブは git オーバーレイ無しの素の Tree から始める(現タブの git 状態は save_active で保持済み)。
-        self.git_view = false;
-        self.git_view_sel = 0;
-        self.git_view_entries.clear();
-        self.came_from_git_view = false;
-        self.git_log = None;
-        self.git_log_sel = 0;
-        self.git_detail = None;
-        self.git_detail_meta = None;
-        self.git_detail_title = None;
-        self.git_detail_scroll = 0;
-        self.git_detail_hscroll = 0;
-        self.git_detail_viewport = 0;
-        self.git_detail_total = 0;
-        self.git_branches = None;
-        self.git_branch_sel = 0;
-        self.git_branch_filter.clear();
-        self.git_branch_filtering = false;
-        self.git_graph = None;
-        self.git_graph_sel = 0;
+        self.tab.git_view = false;
+        self.tab.git_view_sel = 0;
+        self.tab.git_view_entries.clear();
+        self.tab.came_from_git_view = false;
+        self.tab.git_log = None;
+        self.tab.git_log_sel = 0;
+        self.tab.git_detail = None;
+        self.tab.git_detail_meta = None;
+        self.tab.git_detail_title = None;
+        self.tab.git_detail_scroll = 0;
+        self.tab.git_detail_hscroll = 0;
+        self.tab.git_detail_viewport = 0;
+        self.tab.git_detail_total = 0;
+        self.tab.git_branches = None;
+        self.tab.git_branch_sel = 0;
+        self.tab.git_branch_filter.clear();
+        self.tab.git_branch_filtering = false;
+        self.tab.git_graph = None;
+        self.tab.git_graph_sel = 0;
         // 新規タブはグラフの装飾状態(基準/凡例/表示ブランチ/優先順)とピッカーも素から始める
         // (現タブのこれらは直前の save_active で TabState に保持済み)。次に開くとき再導出される。
-        self.git_graph_base = None;
-        self.git_graph_base_label = None;
-        self.git_graph_visible.clear();
-        self.git_graph_legend.clear();
-        self.git_graph_hidden = 0;
-        self.git_graph_order.clear();
+        self.tab.git_graph_base = None;
+        self.tab.git_graph_base_label = None;
+        self.tab.git_graph_visible.clear();
+        self.tab.git_graph_legend.clear();
+        self.tab.git_graph_hidden = 0;
+        self.tab.git_graph_order.clear();
         self.git_graph_picker = false;
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();

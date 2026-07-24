@@ -521,10 +521,10 @@ impl App {
         }
         // open_git_diff は came_from_git_view / diff_follow_scope を初期化するため保存/復元する
         // (ハブ経由の diff から回遊しても q でハブへ戻れる・フォロースコープの回遊が続く)。
-        let came = self.came_from_git_view;
+        let came = self.tab.came_from_git_view;
         let scope = self.diff_follow_scope;
         self.open_git_diff(&target);
-        self.came_from_git_view = came;
+        self.tab.came_from_git_view = came;
         self.diff_follow_scope = scope;
     }
 

@@ -949,7 +949,7 @@ fn git_branch_move_extremes_no_panic() {
     let dir = std::env::temp_dir().join("konoma_branch_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.git_branches = Some(
+    app.tab.git_branches = Some(
         (0..6)
             .map(|i| crate::git::BranchInfo {
                 name: format!("br{i}"),
@@ -957,11 +957,11 @@ fn git_branch_move_extremes_no_panic() {
             })
             .collect(),
     );
-    app.git_branch_sel = 2; // 先頭以外
+    app.tab.git_branch_sel = 2; // 先頭以外
     app.git_branch_move(i32::MAX);
-    assert_eq!(app.git_branch_sel, 5, "末尾へ");
+    assert_eq!(app.tab.git_branch_sel, 5, "末尾へ");
     app.git_branch_move(i32::MIN);
-    assert_eq!(app.git_branch_sel, 0, "先頭へ");
+    assert_eq!(app.tab.git_branch_sel, 0, "先頭へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -991,18 +991,18 @@ fn git_graph_move_extremes_no_panic() {
         worktree: false,
     };
     // コミット行(0,2,4) とコネクタ行(1,3) が混在: カーソルはコミット行のみを対象。
-    app.git_graph = Some(vec![
+    app.tab.git_graph = Some(vec![
         commit("a"),
         connector(),
         commit("b"),
         connector(),
         commit("c"),
     ]);
-    app.git_graph_sel = 2; // 真ん中のコミット行(commits index=1)
+    app.tab.git_graph_sel = 2; // 真ん中のコミット行(commits index=1)
     app.git_graph_move(i32::MAX);
-    assert_eq!(app.git_graph_sel, 4, "末尾コミット行へ");
+    assert_eq!(app.tab.git_graph_sel, 4, "末尾コミット行へ");
     app.git_graph_move(i32::MIN);
-    assert_eq!(app.git_graph_sel, 0, "先頭コミット行へ");
+    assert_eq!(app.tab.git_graph_sel, 0, "先頭コミット行へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1011,7 +1011,7 @@ fn git_log_move_extremes_no_panic() {
     let dir = std::env::temp_dir().join("konoma_log_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.git_log = Some(
+    app.tab.git_log = Some(
         (0..5)
             .map(|i| crate::git::CommitInfo {
                 id: format!("id{i}"),
@@ -1022,11 +1022,11 @@ fn git_log_move_extremes_no_panic() {
             })
             .collect(),
     );
-    app.git_log_sel = 1; // 先頭以外
+    app.tab.git_log_sel = 1; // 先頭以外
     app.git_log_move(i32::MAX);
-    assert_eq!(app.git_log_sel, 4, "末尾へ");
+    assert_eq!(app.tab.git_log_sel, 4, "末尾へ");
     app.git_log_move(i32::MIN);
-    assert_eq!(app.git_log_sel, 0, "先頭へ");
+    assert_eq!(app.tab.git_log_sel, 0, "先頭へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1035,19 +1035,19 @@ fn git_view_move_extremes_no_panic() {
     let dir = std::env::temp_dir().join("konoma_view_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    app.git_view_entries = (0..4)
+    app.tab.git_view_entries = (0..4)
         .map(|i| crate::git::ChangeEntry {
             path: dir.join(format!("f{i}")),
             status: crate::git::FileStatus::Modified,
             staged: false,
         })
         .collect();
-    app.git_view_sel = 1; // 先頭以外
-                          // git_view は ±1 しか渡らないが、共通ヘルパへ寄せたので極値でも安全であること。
+    app.tab.git_view_sel = 1; // 先頭以外
+                              // git_view は ±1 しか渡らないが、共通ヘルパへ寄せたので極値でも安全であること。
     app.git_view_move(i32::MAX);
-    assert_eq!(app.git_view_sel, 3, "末尾へ");
+    assert_eq!(app.tab.git_view_sel, 3, "末尾へ");
     app.git_view_move(i32::MIN);
-    assert_eq!(app.git_view_sel, 0, "先頭へ");
+    assert_eq!(app.tab.git_view_sel, 0, "先頭へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4420,7 +4420,7 @@ fn open_git_view_lists_changes_and_stage_reloads() {
     );
 
     // 先頭(tracked.txt がパス順で先)をステージ → reload で staged=true になる。
-    app.git_view_sel = 0;
+    app.tab.git_view_sel = 0;
     let target = app.git_view_selected().unwrap();
     app.git_view_stage();
     let staged_now = app
@@ -5722,7 +5722,7 @@ fn git_copy_message_and_branch_name_set_flash() {
     // branches 未ロードで git_copy_branch_name → no-target ガードを通る。
     app.close_git_log();
     app.close_git_view();
-    app.git_branches = None;
+    app.tab.git_branches = None;
     app.git_copy_branch_name();
     assert_eq!(
         app.flash.as_deref(),
@@ -5776,7 +5776,7 @@ fn git_view_unstage_single_file_reloads() {
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon, Config::default()).unwrap();
     app.open_git_view();
-    app.git_view_sel = 0;
+    app.tab.git_view_sel = 0;
     let target = app.git_view_selected().unwrap();
     app.git_view_stage();
     assert!(
@@ -7337,9 +7337,9 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
     );
 
     // ハブ経由で開いた印(came_from_git_view)は回遊しても保たれ、q でハブへ戻れる。
-    app.came_from_git_view = true;
+    app.tab.came_from_git_view = true;
     app.jump_changed(1); // e → a
-    assert!(app.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
+    assert!(app.tab.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
     app.close_git_diff();
     assert!(app.is_git_view(), "q でハブへ戻る");
     std::fs::remove_dir_all(&dir).ok();
@@ -8398,34 +8398,40 @@ fn git_graph_decoration_state_is_per_tab() {
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // タブ0のグラフ装飾状態を模擬(実グラフ構築なしで派生フィールドを直接セット)。
-    app.git_graph_base = Some("release/1.0".into());
-    app.git_graph_base_label = Some("release/1.0".into());
-    app.git_graph_visible = ["main".to_string(), "dev".to_string()]
+    app.tab.git_graph_base = Some("release/1.0".into());
+    app.tab.git_graph_base_label = Some("release/1.0".into());
+    app.tab.git_graph_visible = ["main".to_string(), "dev".to_string()]
         .into_iter()
         .collect();
-    app.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
-    app.git_graph_hidden = 3;
+    app.tab.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
+    app.tab.git_graph_hidden = 3;
 
     app.tab_new().unwrap(); // タブ1(素の Tree)
-    assert!(app.git_graph_base.is_none(), "新規タブへ基準ピンは漏れない");
     assert!(
-        app.git_graph_visible.is_empty(),
+        app.tab.git_graph_base.is_none(),
+        "新規タブへ基準ピンは漏れない"
+    );
+    assert!(
+        app.tab.git_graph_visible.is_empty(),
         "新規タブへ表示ブランチは漏れない"
     );
-    assert!(app.git_graph_order.is_empty(), "新規タブへ優先順は漏れない");
-    assert_eq!(app.git_graph_hidden, 0, "新規タブの hidden は 0");
+    assert!(
+        app.tab.git_graph_order.is_empty(),
+        "新規タブへ優先順は漏れない"
+    );
+    assert_eq!(app.tab.git_graph_hidden, 0, "新規タブの hidden は 0");
 
     // タブ1で別の装飾状態にしてから戻る。
-    app.git_graph_base = Some("hotfix".into());
+    app.tab.git_graph_base = Some("hotfix".into());
     app.tab_goto(0);
     assert_eq!(
-        app.git_graph_base.as_deref(),
+        app.tab.git_graph_base.as_deref(),
         Some("release/1.0"),
         "タブ0の基準ピンが復元される"
     );
-    assert_eq!(app.git_graph_hidden, 3, "タブ0の hidden が復元される");
+    assert_eq!(app.tab.git_graph_hidden, 3, "タブ0の hidden が復元される");
     assert!(
-        app.git_graph_visible.contains("main") && app.git_graph_visible.contains("dev"),
+        app.tab.git_graph_visible.contains("main") && app.tab.git_graph_visible.contains("dev"),
         "タブ0の表示ブランチが復元される"
     );
 
