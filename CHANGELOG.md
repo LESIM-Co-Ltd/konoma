@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.18.8] - 2026-07-24
+
 ### Changed
 - **Follow mode (`F`) now shows the diff *since follow-start*, not the full uncommitted diff.** Pressing
   `F` captures a baseline snapshot of the current working tree, so files that already had uncommitted
@@ -854,7 +856,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.6...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.8...HEAD
+[0.18.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.6...v0.18.8
 [0.18.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.1...v0.18.6
 [0.18.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.17.0...v0.18.0
