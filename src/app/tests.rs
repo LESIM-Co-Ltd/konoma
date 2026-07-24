@@ -2857,7 +2857,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     app.tab_new().unwrap();
     assert!(
         app.clipboard_label().is_some(),
-        "clipboard はタブ跨ぎで保持(global=TabState に入れない)"
+        "clipboard はタブ跨ぎで保持(global=PerTab に入れない)"
     );
     app.tab_cycle(-1);
     assert!(app.clipboard_label().is_some(), "戻っても clipboard 保持");
@@ -8681,7 +8681,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
 }
 
 /// Tab フォーカスとインライン図のズーム/パンはタブ毎に複製される: 別タブへ漏れず、
-/// 戻れば復元される(image_zoom が TabState 保存されるのと同格)。
+/// 戻れば復元される(image_zoom が PerTab 保存されるのと同格)。
 #[test]
 fn fence_focus_and_zoom_are_per_tab() {
     let dir = std::env::temp_dir().join("konoma_fence_per_tab_test");
@@ -9399,7 +9399,7 @@ fn non_kitty_terminal_keeps_ratatui_image_path() {
 }
 
 /// タブ切替で表内検索の一致ハイライトが別タブに漏れないこと。`table_search_hits` は `search_matches`
-/// から導出される描画用集合だが TabState に無く、load_active が復元しないと前タブの座標が居残り、
+/// から導出される描画用集合だが PerTab に無く、load_active が復元しないと前タブの座標が居残り、
 /// 表 renderer(`table_cell_is_hit` を無条件参照)が別タブのセルを誤って強調する(レビュー指摘の複製漏れ)。
 #[test]
 fn table_search_hits_do_not_leak_across_tabs() {

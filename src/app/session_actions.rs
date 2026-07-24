@@ -53,14 +53,14 @@ impl App {
                     )
                 } else {
                     (
-                        slot.tab.mode,
-                        &slot.tab.root,
-                        &slot.tab.open_dir,
-                        slot.tab.show_hidden,
-                        slot.tab.entries.get(slot.tab.selected),
-                        slot.tab.preview_path.as_deref(),
+                        slot.mode,
+                        &slot.root,
+                        &slot.open_dir,
+                        slot.show_hidden,
+                        slot.entries.get(slot.selected),
+                        slot.preview_path.as_deref(),
                         matches!(
-                            slot.tab.preview_kind,
+                            slot.preview_kind,
                             Some(crate::preview::PreviewKind::GitDiff(_))
                         ),
                     )

@@ -325,33 +325,17 @@ struct Clipboard {
     paths: Vec<PathBuf>,
 }
 
-/// Snapshot of one tab's tree context (FR-5).
-/// The active tab's working state lives in App's fields as the source of truth, and is saved/loaded here on switch.
-/// It keeps not just the tree but also the **mode/preview state per tab**, restoring them on switch instead of dropping to Tree.
-/// The heavy image state (protocol/source image) is not carried over and is reloaded on restore (zoom/center are kept).
-/// `Default` exists only as the placeholder `load_active` leaves in the slot after moving the
-/// snapshot out — the active slot is never read (tab_label/tab_root use the live App fields)
-/// and the next save_active overwrites it.
-#[derive(Clone, Default)]
-struct TabState {
-    // root/mode/preview target/scroll・CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態、
-    // windowed プレビューのスクロール/2D キャレット、画像/PDF のパン・ページ位置、Markdown raw/Tab
-    // フォーカス/フェンスズーム、選択/絞り込み/プレビュー検索を束ねた per-tab バンドル(テーブル本体は
-    // 復元時に再パース。各concern の詳細コメントは PerTab 定義側を参照)。
-    tab: PerTab,
-}
-
 /// Size of `App` in bytes — a memory guard reads this to catch a struct that suddenly balloons.
 #[cfg(test)]
 pub fn sizeof_app() -> usize {
     std::mem::size_of::<App>()
 }
 
-/// Size of one `TabState` in bytes. `TabState` is cloned per tab (snapshot / restore), so a regression
+/// Size of one `PerTab` in bytes. `PerTab` is cloned per tab (snapshot / restore), so a regression
 /// that inlines a large buffer into it multiplies memory by the tab count — this guards against that.
 #[cfg(test)]
-pub fn sizeof_tabstate() -> usize {
-    std::mem::size_of::<TabState>()
+pub fn sizeof_pertab() -> usize {
+    std::mem::size_of::<PerTab>()
 }
 
 /// The media payload loaded on a separate thread (sent back to the UI thread).
@@ -736,7 +720,7 @@ pub struct App {
     pub show_info: bool,
 
     /// Tabs (FR-5). Each tab is a tree context. The active tab's working state is held in the fields above as the source of truth.
-    tabs: Vec<TabState>,
+    tabs: Vec<PerTab>,
     active_tab: usize,
     /// Tab-list overlay (`T`). App-global (not per-tab).
     tab_list: bool,
@@ -1124,9 +1108,10 @@ struct DecoratedMarkdown {
     src_lines: usize,
 }
 
-/// Per-tab state bundle. Being migrated concern-by-concern out of the flat App/TabState fields
-/// so tab save/load is one clone and adding a per-tab field touches one place (see
-/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll, the git-view overlay
+/// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load
+/// is one clone and adding a per-tab field touches one place (see docs/REFACTOR-2026-07.md).
+/// `App.tabs` is `Vec<PerTab>` (one entry per tab, snapshot/restore on switch); the active tab's
+/// working state is held in `App.tab` as the source of truth. Currently: Table preview cursor + scroll, the git-view overlay
 /// (changes hub / log / graph / branches / commit detail) state, windowed-preview scroll/caret
 /// internals (byte/line top, 2D cursor), image/PDF pan-and-page position, Markdown raw-mode/Tab-focus/
 /// inline-fence zoom state, and the tab-scoped selection/filter/search state.
@@ -6729,10 +6714,8 @@ impl App {
     // ---- タブ (FR-5) ----
 
     /// Snapshot the current tree working state.
-    fn snapshot_tab(&self) -> TabState {
-        TabState {
-            tab: self.tab.clone(),
-        }
+    fn snapshot_tab(&self) -> PerTab {
+        self.tab.clone()
     }
 
     /// Save the current working state to the active tab.
@@ -6752,18 +6735,18 @@ impl App {
     fn load_active(&mut self) {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
-        // load_table) before the bulk `self.tab = t.tab` restore at the end of this function, so they
-        // are restored early here (mirroring `self.tab.md_raw = t.tab.md_raw;` further down).
-        self.tab.preview_path = t.tab.preview_path.clone();
-        self.tab.preview_kind = t.tab.preview_kind.clone();
+        // load_table) before the bulk `self.tab = t` restore at the end of this function, so they
+        // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
+        self.tab.preview_path = t.preview_path.clone();
+        self.tab.preview_kind = t.preview_kind.clone();
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
-        // pure per-tab copies with no read anywhere below before `self.tab = t.tab` restores the whole
+        // pure per-tab copies with no read anywhere below before `self.tab = t` restores the whole
         // PerTab bundle at the end of this function — nothing in between reads them, so no individual
         // line is needed here.
         // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
-        // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t.tab` で後段まとめて復元される。)
+        // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t` で後段まとめて復元される。)
         self.git_graph_picker = false;
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();
@@ -6772,18 +6755,14 @@ impl App {
         self.outline_open = false;
         // <details> の開閉状態も文書ごと=タブ跨ぎで持ち越さない。
         self.details_open.clear();
-        // `table_search_hits` は `search_matches` から導出される描画用の集合。TabState には持たず
-        // (二重管理を避ける)、復元した(まだ `t.tab` に載ったままの)search_matches から作り直す
-        // (`self.tab` 自体は末尾の `self.tab = t.tab` まで前タブの値のままなので、ここでは `t.tab` を
-        // 直接読む=借用のみで `t.tab` は消費しない)。表以外は空にする — さもないと別タブの一致セル
+        // `table_search_hits` は `search_matches` から導出される描画用の集合。PerTab には持たず
+        // (二重管理を避ける)、復元した(まだ `t` に載ったままの)search_matches から作り直す
+        // (`self.tab` 自体は末尾の `self.tab = t` まで前タブの値のままなので、ここでは `t` を
+        // 直接読む=借用のみで `t` は消費しない)。表以外は空にする — さもないと別タブの一致セル
         // 座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
         self.table_search_hits = if matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. }))
         {
-            t.tab
-                .search_matches
-                .iter()
-                .map(|&(_, r, c)| (r, c))
-                .collect()
+            t.search_matches.iter().map(|&(_, r, c)| (r, c)).collect()
         } else {
             std::collections::HashSet::new()
         };
@@ -6793,7 +6772,7 @@ impl App {
         self.diff_follow_scope = false;
         // 画像は重い状態(protocol/元画像/GIFフレーム)を持ち越さず、画像系プレビューなら再読込で復元する。
         // (clear_image は tab.image_center/tab.pdf_page/tab.pdf_pages も既定値へ戻すが、この関数の
-        // 最後で `self.tab = t.tab` が復元値を上書きするので、間で誰も読まない限り無害。)
+        // 最後で `self.tab = t` が復元値を上書きするので、間で誰も読まない限り無害。)
         self.clear_image();
         if let (Some(kind), Some(path)) =
             (self.tab.preview_kind.clone(), self.tab.preview_path.clone())
@@ -6806,17 +6785,17 @@ impl App {
                 // 保存値を即セットしておけば、後から結果が届いても復元したズーム/中心が保たれる。
                 // GIF は先頭フレームから再生。
                 // PDF は保存ページを start_media_load の前に戻す(その世代でそのページをラスタライズする)。
-                // `t.tab.pdf_page` をその場でクランプしておく: これから読む restore_media_cache の
-                // 引数にも、末尾の `self.tab = t.tab` が運ぶ最終値にも同じクランプ後の値を使わせる。
-                t.tab.pdf_page = t.tab.pdf_page.max(1);
+                // `t.pdf_page` をその場でクランプしておく: これから読む restore_media_cache の
+                // 引数にも、末尾の `self.tab = t` が運ぶ最終値にも同じクランプ後の値を使わせる。
+                t.pdf_page = t.pdf_page.max(1);
                 // pdf_pages: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
                 // 直前に見ていたタブへ戻る等、同じファイル・同じ mtime・同じページなら、退避した
                 // デコード済み画像をそのまま使う(PDF/動画の外部ツール起動やラスタライズをやり直さない)。
-                let reused = self.restore_media_cache(&path, t.tab.pdf_page);
+                let reused = self.restore_media_cache(&path, t.pdf_page);
                 if !reused {
                     self.start_media_load(&kind, &path);
                 }
-                self.tab.image_zoom = t.tab.image_zoom;
+                self.tab.image_zoom = t.image_zoom;
                 // image_center: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
                 self.image_crop = None;
                 if reused {
@@ -6829,23 +6808,23 @@ impl App {
         }
         // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
         // setup_windowed が is_raw_source 経由で読むので、末尾の一括復元を待たずここで写す
-        // (Copy なので t.tab は消費されず、末尾の `self.tab = t.tab` にも同じ値がそのまま乗る)。
-        self.tab.md_raw = t.tab.md_raw;
+        // (Copy なので t は消費されず、末尾の `self.tab = t` にも同じ値がそのまま乗る)。
+        self.tab.md_raw = t.md_raw;
         // Tab フォーカス/インライン図のズーム/全画面復帰情報はこのタブの保存値へ(前タブの値を
         // 別文書に適用しない)。md_items は次描画の ensure_md_cache がこのタブの文書で再構築し、
         // focused_item はその時に範囲へクランプされる(それまで旧文書の items を参照しないよう空に)。
         // (focused_item/fence_zoom/fence_center/fence_return はここでは読まれないので末尾の
-        // `self.tab = t.tab` に任せる。)
+        // `self.tab = t` に任せる。)
         self.md_items.clear();
         // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は末尾で復元される)。
         self.setup_windowed();
-        // windowed プレビューの 2D キャレットは末尾の `self.tab = t.tab` で復元される(選択は持ち越さない)。
+        // windowed プレビューの 2D キャレットは末尾の `self.tab = t` で復元される(選択は持ち越さない)。
         // 範囲は次描画/移動でクランプされる。
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
         // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
         self.load_table();
-        self.tab = t.tab;
+        self.tab = t;
         self.clamp_table_cursor();
 
         // 切替でアクティブになったタブを**ディスクから再読み込み**する。ファイル監視はアクティブな
@@ -6876,7 +6855,7 @@ impl App {
 
     /// Display name of tab `i`. While showing Tree, the **root directory name**; while showing Preview/image, etc.,
     /// the **preview target's file name**. The active tab references the latest working state (App fields),
-    /// while inactive tabs reference the snapshot (`TabState`) (since saving happens only on switch).
+    /// while inactive tabs reference the snapshot (`PerTab`) (since saving happens only on switch).
     pub fn tab_label(&self, i: usize) -> String {
         // (mode, root, preview_path) をアクティブ/非アクティブで使い分ける。
         let (mode, root, preview) = if i == self.active_tab {
@@ -6886,11 +6865,7 @@ impl App {
                 self.tab.preview_path.as_deref(),
             )
         } else if let Some(t) = self.tabs.get(i) {
-            (
-                t.tab.mode,
-                t.tab.root.as_path(),
-                t.tab.preview_path.as_deref(),
-            )
+            (t.mode, t.root.as_path(), t.preview_path.as_deref())
         } else {
             return String::new();
         };
@@ -6929,7 +6904,7 @@ impl App {
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
-        // 新規タブは md フォーカス/インライン図ズームも素の状態から(TabState 複製対象)。
+        // 新規タブは md フォーカス/インライン図ズームも素の状態から(PerTab 複製対象)。
         self.md_items.clear();
         self.tab.focused_item = None;
         self.tab.fence_zoom = 1.0;
@@ -6956,7 +6931,7 @@ impl App {
         self.tab.git_graph = None;
         self.tab.git_graph_sel = 0;
         // 新規タブはグラフの装飾状態(基準/凡例/表示ブランチ/優先順)とピッカーも素から始める
-        // (現タブのこれらは直前の save_active で TabState に保持済み)。次に開くとき再導出される。
+        // (現タブのこれらは直前の save_active で PerTab に保持済み)。次に開くとき再導出される。
         self.tab.git_graph_base = None;
         self.tab.git_graph_base_label = None;
         self.tab.git_graph_visible.clear();
@@ -6968,7 +6943,7 @@ impl App {
         self.git_graph_picker_set.clear();
         self.git_graph_reordered = false;
         // 新規タブは選択 / 絞り込み / プレビュー検索を空から始める
-        // (現タブのこれらは直前の save_active で TabState に保持済み)。
+        // (現タブのこれらは直前の save_active で PerTab に保持済み)。
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
@@ -7153,7 +7128,7 @@ impl App {
         } else {
             // 閉じる(非アクティブ)タブのメディアをキャッシュが握っていたら手放す。
             if let Some(t) = self.tabs.get(i) {
-                let closing = t.tab.preview_path.clone();
+                let closing = t.preview_path.clone();
                 if matches!((&self.media_cache, &closing), (Some(c), Some(p)) if &c.path == p) {
                     self.media_cache = None;
                 }
@@ -7173,7 +7148,7 @@ impl App {
         } else {
             self.tabs
                 .get(i)
-                .map(|t| t.tab.root.clone())
+                .map(|t| t.root.clone())
                 .unwrap_or_else(|| self.tab.root.clone())
         }
     }

@@ -541,7 +541,7 @@ fn git_views_and_large_diff_render_is_bounded() {
 
 // GUARDS: cycling through tabs (save_active + load_active + preview rebuild + render) stays bounded.
 // load_active uses mem::take (perf refactor C: measured 39ms → 6.6ms); a regression that deep-clones
-// the whole TabState on every switch would blow this up. Diverse preview kinds so each switch rebuilds
+// the whole PerTab on every switch would blow this up. Diverse preview kinds so each switch rebuilds
 // a different cache (markdown decoration / table / windowed code).
 #[test]
 #[ignore] // 複数タブ + プレビュー再構築で重め。cargo test -- --ignored で実行。

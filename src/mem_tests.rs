@@ -60,7 +60,7 @@ fn allocated_by(f: impl FnOnce()) -> u64 {
 fn mem_calibration() {
     use crate::config::Config;
     eprintln!("size_of App        = {}", crate::app::sizeof_app());
-    eprintln!("size_of TabState   = {}", crate::app::sizeof_tabstate());
+    eprintln!("size_of PerTab     = {}", crate::app::sizeof_pertab());
     eprintln!("size_of Config     = {}", std::mem::size_of::<Config>());
 
     // md スクロールの装飾コスト vs 再スクロールコスト(キャッシュ再利用の証明用)。
@@ -229,17 +229,17 @@ fn windowed_preview_does_not_scale_with_file_size() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// GUARDS: cloned-per-tab / core structs stay small. TabState is cloned on every tab snapshot/restore,
+// GUARDS: cloned-per-tab / core structs stay small. PerTab is cloned on every tab snapshot/restore,
 // so a large buffer accidentally inlined into it multiplies memory by the tab count; App is held once
-// but a runaway struct is still a smell. Generous bounds (measured: App ~4.6KB, TabState ~1KB).
+// but a runaway struct is still a smell. Generous bounds (measured: App ~4.6KB, PerTab ~1KB).
 #[test]
 fn per_tab_and_app_structs_stay_small() {
     let app = crate::app::sizeof_app();
-    let tab = crate::app::sizeof_tabstate();
+    let tab = crate::app::sizeof_pertab();
     assert!(app < 16_384, "App が肥大した: {app} バイト");
     assert!(
         tab < 4_096,
-        "TabState が肥大した(タブ数ぶん倍増する): {tab} バイト"
+        "PerTab が肥大した(タブ数ぶん倍増する): {tab} バイト"
     );
 }
 
