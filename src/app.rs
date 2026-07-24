@@ -1321,6 +1321,17 @@ pub struct RemoteFetch {
     ok: bool,
 }
 
+/// Result of `build_decorated`: the rendered lines plus everything needed to finish setting up the
+/// Markdown cache (inline images, follow-up fetches/renders to kick off, source line count).
+struct DecoratedMarkdown {
+    lines: Vec<Line<'static>>,
+    images: Vec<crate::preview::markdown::ImagePlacement>,
+    remote_urls: Vec<String>,
+    mermaid_fences: Vec<String>,
+    math_exprs: Vec<(String, bool)>,
+    src_lines: usize,
+}
+
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
@@ -3809,10 +3820,10 @@ impl App {
         {
             return;
         }
-        let (raw, images, remote, fences, math, src_lines) = self.build_decorated(&path, width);
+        let decorated = self.build_decorated(&path, width);
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
-        for url in &remote {
+        for url in &decorated.remote_urls {
             self.ensure_remote_md_fetch(url);
         }
         // Kick off background renders for any ```mermaid fences not yet in the diagram cache
@@ -3821,14 +3832,14 @@ impl App {
         // Synchronous completions (no loader tx = tests) land *before* we store the cache below,
         // so the just-built decoration is already stale — rebuild once with the results in.
         let mut resync = false;
-        for code in &fences {
+        for code in &decorated.mermaid_fences {
             if code.trim().is_empty() {
                 continue; // 空フェンス(書きかけ)は図にならない=レンダを起動しない
             }
             resync |= self.ensure_mermaid_fence_render(code.clone());
         }
         // 数式も同型: latex+display キーで未着のものをレンダ起動(mermaid フェンスと同じ経路)。
-        for (latex, display) in &math {
+        for (latex, display) in &decorated.math_exprs {
             if latex.trim().is_empty() {
                 continue;
             }
@@ -3838,12 +3849,15 @@ impl App {
         // 編集(agent-watch の反復編集)で内容が変わるたび新キーが生まれ、旧キーの decoded
         // ラスタ/protocol/SVG は誰も参照しないままファイル切替まで単調成長していた。
         {
-            let mut live: std::collections::HashSet<PathBuf> = fences
+            let mut live: std::collections::HashSet<PathBuf> = decorated
+                .mermaid_fences
                 .iter()
                 .map(|c| PathBuf::from(crate::preview::markdown::mermaid_fence_url(c)))
                 .collect();
             live.extend(
-                math.iter()
+                decorated
+                    .math_exprs
+                    .iter()
                     .map(|(l, d)| PathBuf::from(crate::preview::markdown::math_url(l, *d))),
             );
             self.md_image_cache.retain(|k, _| {
@@ -3853,17 +3867,18 @@ impl App {
                     || live.contains(k)
             });
         }
-        let (raw, images, remote, src_lines) = if resync {
-            let (raw, images, remote, _fences, _math, src_lines) =
-                self.build_decorated(&path, width);
-            (raw, images, remote, src_lines)
+        let decorated = if resync {
+            self.build_decorated(&path, width)
         } else {
-            (raw, images, remote, src_lines)
+            decorated
         };
-        let _ = &remote;
-        let (lines, targets) = self.postprocess_md(raw);
+        let (lines, targets) = self.postprocess_md(decorated.lines);
         // 描画済み mermaid placement のソース序数(文書順)を番兵の照合用に渡す。
-        let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
+        let fence_ords: Vec<usize> = decorated
+            .images
+            .iter()
+            .filter_map(|p| p.fence_ord)
+            .collect();
         let items = build_md_items(&lines, &targets, &fence_ords);
         let anchors = compute_md_anchors(&lines);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
@@ -3899,8 +3914,8 @@ impl App {
             width,
             lines,
             items,
-            images,
-            src_lines,
+            images: decorated.images,
+            src_lines: decorated.src_lines,
             max_line_cols,
             row_prefix,
             fence_rows,
@@ -4057,19 +4072,7 @@ impl App {
     /// Read the file with a cap and generate decorated lines (plus inline-image placements and the list
     /// of remote image URLs to fetch) according to its kind. A read failure becomes a single safe line.
     /// Only Markdown yields image placements / remote URLs.
-    #[allow(clippy::type_complexity)] // (lines, images, remote urls, mermaid fences, math exprs, src line count)
-    fn build_decorated(
-        &self,
-        path: &Path,
-        width: u16,
-    ) -> (
-        Vec<Line<'static>>,
-        Vec<crate::preview::markdown::ImagePlacement>,
-        Vec<String>,
-        Vec<String>,
-        Vec<(String, bool)>,
-        usize,
-    ) {
+    fn build_decorated(&self, path: &Path, width: u16) -> DecoratedMarkdown {
         let src = match crate::preview::text::load(path) {
             Ok(content) => {
                 let mut s = content.lines.join("\n");
@@ -4079,14 +4082,14 @@ impl App {
                 s
             }
             Err(e) => {
-                return (
-                    vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    0,
-                )
+                return DecoratedMarkdown {
+                    lines: vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
+                    images: Vec::new(),
+                    remote_urls: Vec::new(),
+                    mermaid_fences: Vec::new(),
+                    math_exprs: Vec::new(),
+                    src_lines: 0,
+                }
             }
         };
         // Source line count, used to map the scroll position back to an approximate source line.
@@ -4280,33 +4283,40 @@ impl App {
                     all.extend(lines);
                     lines = all;
                 }
-                (lines, images, remote, fences, math, src_lines)
+                DecoratedMarkdown {
+                    lines,
+                    images,
+                    remote_urls: remote,
+                    mermaid_fences: fences,
+                    math_exprs: math,
+                    src_lines,
+                }
             }
-            Some(PreviewKind::Mermaid(_)) => (
-                crate::preview::markdown::render_mermaid_file(&src, width),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
+            Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
+                lines: crate::preview::markdown::render_mermaid_file(&src, width),
+                images: Vec::new(),
+                remote_urls: Vec::new(),
+                mermaid_fences: Vec::new(),
+                math_exprs: Vec::new(),
                 src_lines,
-            ),
+            },
             // 単体コードファイルは syntect でシンタックスハイライト。
-            Some(PreviewKind::Code(_)) => (
-                crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
+            Some(PreviewKind::Code(_)) => DecoratedMarkdown {
+                lines: crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
+                images: Vec::new(),
+                remote_urls: Vec::new(),
+                mermaid_fences: Vec::new(),
+                math_exprs: Vec::new(),
                 src_lines,
-            ),
-            _ => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
+            },
+            _ => DecoratedMarkdown {
+                lines: Vec::new(),
+                images: Vec::new(),
+                remote_urls: Vec::new(),
+                mermaid_fences: Vec::new(),
+                math_exprs: Vec::new(),
                 src_lines,
-            ),
+            },
         }
     }
 
