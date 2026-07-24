@@ -2733,14 +2733,14 @@ impl App {
         let baseline: Vec<u8> = match base.dirty.get(&key) {
             Some(Some(content)) => content.clone(),
             Some(None) => return None, // dirty at follow-start but too large → full diff
-            None => match base.head.as_deref() {
-                // clean at follow-start → HEAD blob; a file created after follow-start is absent from
+            None => {
+                // Clean at follow-start → HEAD blob; a file created after follow-start is absent from
                 // the pinned tree → empty baseline = all-added (correct: it is new since follow-start).
-                Some(h) => crate::git::blob_at(&self.root, h, path).unwrap_or_default(),
-                // No HEAD to diff against (not a repo / unborn) → defer to `file_diff`, which returns
-                // empty outside a repo so `follow_jump` falls back to the file preview (its contract).
-                None => return None,
-            },
+                // No HEAD to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
+                // defers to `file_diff`, which is empty outside a repo → `follow_jump` shows the file preview.
+                let h = base.head.as_deref()?;
+                crate::git::blob_at(&self.root, h, path).unwrap_or_default()
+            }
         };
         let current = std::fs::read(path).ok()?;
         if current.len() > FOLLOW_BASELINE_FILE_CAP {
