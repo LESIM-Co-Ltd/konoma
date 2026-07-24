@@ -6,6 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Filesystem-change refreshes are skipped when a change burst touches only gitignored paths.** Build
+  churn — writes under `target/`, `node_modules/`, `dist/` and other ignored directories — no longer
+  triggers a tree rebuild + git-status refresh. Real (non-ignored) file changes and `.gitignore` /
+  `.git/info/exclude` changes still refresh as before. (It skips writes under ignored directories that
+  exist in the ignore set; a newly-created glob-matched file at the root is not covered.)
+
 ## [0.18.8] - 2026-07-24
 
 ### Changed

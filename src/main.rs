@@ -495,7 +495,9 @@ fn run(
                 }
             }
         }
-        if fs_changed {
+        // ビルド churn ガード: バースト内の全パスが gitignored(かつ無視ルール自体は変わっていない)なら、
+        // target/ や node_modules/ への書き込みだけで走るツリー再構築を丸ごとスキップする(無駄な作業)。
+        if fs_changed && !app.fs_burst_is_build_churn(&changed_paths, ignore_rules_changed) {
             // 一覧 + git status に加え、refresh_fs() がアクティブな派生ビューも一元的に取り直す
             // (Preview モードなら現プレビューを再読込 → 外部エディタでの編集でプレビューが古いまま
             //  残る既知バグを解消。Git ビューなら変更一覧を更新)。

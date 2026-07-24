@@ -597,6 +597,57 @@ fn gitignored_entries_detected_and_dimmed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// C13(軽微な繰越): fs イベントバーストが全部 gitignored なパス(ビルド churn=target/等)なら
+/// `refresh_fs_changed` をスキップしてよい。混在/空/無視ルール変更は安全側=常にリフレッシュ。
+#[cfg(feature = "git")]
+#[test]
+fn fs_burst_build_churn_skips_only_all_ignored_paths() {
+    let dir = std::env::temp_dir().join("konoma_fs_burst_churn_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    git2::Repository::init(&dir).unwrap();
+    std::fs::write(dir.join(".gitignore"), b"build/\n").unwrap();
+    std::fs::create_dir_all(dir.join("build")).unwrap();
+    std::fs::write(dir.join("build").join("out.o"), b"x").unwrap();
+    std::fs::write(dir.join("src.rs"), b"y").unwrap();
+
+    let canon = dir.canonicalize().unwrap();
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.refresh_git_if_needed();
+
+    let out_o = canon.join("build").join("out.o");
+    let src_rs = canon.join("src.rs");
+    assert!(
+        app.is_ignored(&out_o),
+        "build/out.o は ignored のはず(前提)"
+    );
+    assert!(!app.is_ignored(&src_rs), "src.rs は tracked のはず(前提)");
+
+    assert!(
+        app.fs_burst_is_build_churn(std::slice::from_ref(&out_o), false),
+        "全パスが ignored → churn=true でスキップ可"
+    );
+    assert!(
+        !app.fs_burst_is_build_churn(std::slice::from_ref(&src_rs), false),
+        "非 ignored パスのみ → churn=false でリフレッシュ"
+    );
+    assert!(
+        !app.fs_burst_is_build_churn(&[out_o.clone(), src_rs.clone()], false),
+        "混在 → churn=false でリフレッシュ"
+    );
+    assert!(
+        !app.fs_burst_is_build_churn(&[], false),
+        "空(不明/.git のみ) → churn=false でリフレッシュ"
+    );
+    assert!(
+        !app.fs_burst_is_build_churn(&[out_o], true),
+        "無視ルール自体が変わった → churn=false で常にリフレッシュ"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn diff_layout_parse_and_resolve() {
     assert_eq!(DiffLayout::parse("unified"), DiffLayout::Unified);

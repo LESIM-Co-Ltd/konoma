@@ -827,6 +827,18 @@ impl App {
         }
     }
 
+    /// Whether an fs-event burst is pure build churn — every changed path is gitignored and no ignore
+    /// rule changed — so the tree/status refresh can be skipped. An empty `changed` (unknown / `.git`-only)
+    /// is NOT churn (returns false) so external git operations still refresh. Follow is unaffected: its
+    /// candidates are already filtered by `is_ignored` in `follow_note_change`.
+    pub(crate) fn fs_burst_is_build_churn(
+        &self,
+        changed: &[std::path::PathBuf],
+        ignore_rules_changed: bool,
+    ) -> bool {
+        !changed.is_empty() && !ignore_rules_changed && changed.iter().all(|p| self.is_ignored(p))
+    }
+
     /// The current branch name (None if not a repo). Used for the tree's title display.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
