@@ -354,10 +354,7 @@ struct TabState {
     pdf_page: u32,
     pdf_pages: Option<u32>,
     // CSV/TSV テーブルのセルカーソル/スクロールもタブごとに保持(テーブル本体は復元時に再パース)。
-    table_cur_row: usize,
-    table_cur_col: usize,
-    table_top_row: usize,
-    table_left_col: usize,
+    tab: PerTab,
     // windowed(Code/Text)プレビューの 2D キャレット位置(別タブから戻っても同じ行/列に戻る)。選択(anchor)は持ち越さない。
     preview_cursor_line: usize,
     preview_cursor_col: usize,
@@ -814,14 +811,8 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
-    /// Cell cursor: 0-based data-row index (header is a fixed non-selectable row above).
-    table_cur_row: usize,
-    /// Cell cursor: 0-based column index.
-    table_cur_col: usize,
-    /// First visible data row (vertical scroll). Adjusted at render time to keep the cursor visible.
-    table_top_row: usize,
-    /// First visible column (horizontal scroll). Adjusted at render time to keep the cursor visible.
-    table_left_col: usize,
+    /// Table preview cursor + scroll (Cell cursor row/col, top row, left col). Per-tab bundle — see `PerTab`.
+    tab: PerTab,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
 
@@ -1333,6 +1324,17 @@ struct DecoratedMarkdown {
     src_lines: usize,
 }
 
+/// Per-tab state bundle. Being migrated concern-by-concern out of the flat App/TabState fields
+/// so tab save/load is one clone and adding a per-tab field touches one place (see
+/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll.
+#[derive(Clone, Default)]
+struct PerTab {
+    table_cur_row: usize,
+    table_cur_col: usize,
+    table_top_row: usize,
+    table_left_col: usize,
+}
+
 impl App {
     pub fn new(root: PathBuf, cfg: Config) -> Result<Self> {
         let path_style = PathStyle::parse(&cfg.ui.path_style);
@@ -1439,10 +1441,7 @@ impl App {
             preview_media_mtime: None,
             media_cache: None,
             table_data: None,
-            table_cur_row: 0,
-            table_cur_col: 0,
-            table_top_row: 0,
-            table_left_col: 0,
+            tab: PerTab::default(),
             table_viewport_rows: 0,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
@@ -3018,10 +3017,10 @@ impl App {
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
         // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
-        self.table_cur_row = 0;
-        self.table_cur_col = 0;
-        self.table_top_row = 0;
-        self.table_left_col = 0;
+        self.tab.table_cur_row = 0;
+        self.tab.table_cur_col = 0;
+        self.tab.table_top_row = 0;
+        self.tab.table_left_col = 0;
         self.load_table();
         self.mode = Mode::Preview;
     }
@@ -3666,10 +3665,10 @@ impl App {
         self.search_idx = 0;
         self.came_from_git_view = false;
         self.table_data = None;
-        self.table_cur_row = 0;
-        self.table_cur_col = 0;
-        self.table_top_row = 0;
-        self.table_left_col = 0;
+        self.tab.table_cur_row = 0;
+        self.tab.table_cur_col = 0;
+        self.tab.table_top_row = 0;
+        self.tab.table_left_col = 0;
         self.preview_cursor_line = 0;
         self.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
@@ -6045,7 +6044,7 @@ impl App {
         self.search_idx = match target {
             // 表: いま居るセル以降の最初の一致へ(読み順)。無ければ先頭へ巡回。
             SearchTarget::Table => {
-                let (cr, cc) = (self.table_cur_row, self.table_cur_col);
+                let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
                 self.search_matches
                     .iter()
                     .position(|(_, r, c)| (*r, *c) >= (cr, cc))
@@ -6099,8 +6098,8 @@ impl App {
         match self.search_target() {
             // 表: (行, 列) はセル座標。カーソルを移すと描画側がスクロールして追従する。
             SearchTarget::Table => {
-                self.table_cur_row = a;
-                self.table_cur_col = b;
+                self.tab.table_cur_row = a;
+                self.tab.table_cur_col = b;
             }
             // 装飾 md: 一致した論理行を可視域へ(装飾表示のまま=raw に切替えない)。
             SearchTarget::Markdown => self.md_scroll_line_into_view(a),
@@ -6807,10 +6806,7 @@ impl App {
             image_center: self.image_center,
             pdf_page: self.pdf_page,
             pdf_pages: self.pdf_pages,
-            table_cur_row: self.table_cur_row,
-            table_cur_col: self.table_cur_col,
-            table_top_row: self.table_top_row,
-            table_left_col: self.table_left_col,
+            tab: self.tab.clone(),
             preview_cursor_line: self.preview_cursor_line,
             preview_cursor_col: self.preview_cursor_col,
             md_raw: self.md_raw,
@@ -6998,10 +6994,7 @@ impl App {
         self.preview_visual_linewise = false;
         // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
         self.load_table();
-        self.table_cur_row = t.table_cur_row;
-        self.table_cur_col = t.table_cur_col;
-        self.table_top_row = t.table_top_row;
-        self.table_left_col = t.table_left_col;
+        self.tab = t.tab;
         self.clamp_table_cursor();
 
         // 切替でアクティブになったタブを**ディスクから再読み込み**する。ファイル監視はアクティブな

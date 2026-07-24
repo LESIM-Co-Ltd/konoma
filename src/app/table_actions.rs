@@ -18,12 +18,12 @@ impl App {
     pub(super) fn clamp_table_cursor(&mut self) {
         match &self.table_data {
             Some(t) if t.nrows() > 0 && t.ncols > 0 => {
-                self.table_cur_row = self.table_cur_row.min(t.nrows() - 1);
-                self.table_cur_col = self.table_cur_col.min(t.ncols - 1);
+                self.tab.table_cur_row = self.tab.table_cur_row.min(t.nrows() - 1);
+                self.tab.table_cur_col = self.tab.table_cur_col.min(t.ncols - 1);
             }
             _ => {
-                self.table_cur_row = 0;
-                self.table_cur_col = 0;
+                self.tab.table_cur_row = 0;
+                self.tab.table_cur_col = 0;
             }
         }
     }
@@ -49,20 +49,20 @@ impl App {
 
     /// The cell cursor as (data-row, column), both 0-based.
     pub fn table_cursor(&self) -> (usize, usize) {
-        (self.table_cur_row, self.table_cur_col)
+        (self.tab.table_cur_row, self.tab.table_cur_col)
     }
 
     /// The current (top data row, left column) scroll offsets.
     pub fn table_scroll(&self) -> (usize, usize) {
-        (self.table_top_row, self.table_left_col)
+        (self.tab.table_top_row, self.tab.table_left_col)
     }
 
     /// Renderer feedback: store the scroll offsets it settled on (to keep the cursor visible) plus the
     /// visible data-row count (used as the PageUp/Down step). Mirrors how `preview_scroll`/`preview_viewport`
     /// are clamped/recorded at render time.
     pub fn set_table_view(&mut self, top_row: usize, left_col: usize, viewport_rows: u16) {
-        self.table_top_row = top_row;
-        self.table_left_col = left_col;
+        self.tab.table_top_row = top_row;
+        self.tab.table_left_col = left_col;
         self.table_viewport_rows = viewport_rows;
     }
 
@@ -75,10 +75,10 @@ impl App {
         if nr == 0 || nc == 0 {
             return;
         }
-        let r = (self.table_cur_row as i64 + drow as i64).clamp(0, nr as i64 - 1);
-        let c = (self.table_cur_col as i64 + dcol as i64).clamp(0, nc as i64 - 1);
-        self.table_cur_row = r as usize;
-        self.table_cur_col = c as usize;
+        let r = (self.tab.table_cur_row as i64 + drow as i64).clamp(0, nr as i64 - 1);
+        let c = (self.tab.table_cur_col as i64 + dcol as i64).clamp(0, nc as i64 - 1);
+        self.tab.table_cur_row = r as usize;
+        self.tab.table_cur_col = c as usize;
     }
 
     /// Jump to the first (`bottom=false`) or last (`bottom=true`) data row.
@@ -86,7 +86,7 @@ impl App {
         let Some(t) = &self.table_data else {
             return;
         };
-        self.table_cur_row = if bottom {
+        self.tab.table_cur_row = if bottom {
             t.nrows().saturating_sub(1)
         } else {
             0
@@ -98,7 +98,7 @@ impl App {
         let Some(t) = &self.table_data else {
             return;
         };
-        self.table_cur_col = if end { t.ncols.saturating_sub(1) } else { 0 };
+        self.tab.table_cur_col = if end { t.ncols.saturating_sub(1) } else { 0 };
     }
 
     /// Move the cursor down/up by whole pages (`dir` = +1 / -1). The page size is the last render's visible rows.
@@ -118,7 +118,7 @@ impl App {
     /// Column = the column's header + every cell value, one per line.
     pub(super) fn table_copy_text(&self, kind: TableCopyKind) -> Option<String> {
         let t = self.table_data.as_ref()?;
-        let (r, c) = (self.table_cur_row, self.table_cur_col);
+        let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
         let sep = (self.table_delimiter() as char).to_string();
         Some(match kind {
             TableCopyKind::Cell => {
