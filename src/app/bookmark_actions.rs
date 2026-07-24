@@ -936,6 +936,12 @@ impl App {
             if self.git_status_pending.is_none() {
                 self.reapply_changed_filter();
             }
+        } else if self.tab.tree_filter.is_some() {
+            // テキストフィルタ(`/`)中は rebuild_tree が entries を全表示に戻してしまう。プールを現在の
+            // ツリーから取り直して(外部の追加/削除に追従)、保存/復元された query で絞り込み直す
+            // (query は復元されるのにリストが全表示になる不整合を解消)。
+            self.tab.filter_pool = collect_all(&self.tab.root, self.tab.show_hidden);
+            self.reapply_filter();
         }
         // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());

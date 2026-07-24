@@ -2539,6 +2539,58 @@ fn tree_filter_finds_recursively_then_clears() {
 }
 
 #[test]
+fn text_filter_survives_fs_refresh() {
+    // 回帰: `/` 絞り込み中に refresh_fs_inner(タブ切替が通る経路そのもの)が走ると、
+    // rebuild_tree が作る全件 entries が絞り込み結果を上書きしてしまい、
+    // query("txt")は残ったままなのに一覧は .rs も含む全件に戻ってしまう不具合があった。
+    let dir = unique_tmp("konoma_text_filter_refresh_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("alpha.txt"), b"x").unwrap();
+    std::fs::write(dir.join("beta.txt"), b"x").unwrap();
+    std::fs::write(dir.join("gamma.rs"), b"x").unwrap();
+    std::fs::write(dir.join("delta.rs"), b"x").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+
+    app.start_filter();
+    for c in "txt".chars() {
+        app.filter_input_push(c);
+    }
+    app.filter_commit();
+    assert_eq!(app.filter_query(), Some("txt"));
+    assert_eq!(app.tab.entries.len(), 2, "txt 一致は2件のはず");
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .all(|e| e.path.extension().and_then(|s| s.to_str()) == Some("txt")),
+        ".rs が混入している"
+    );
+
+    // タブ切替が実際に通る経路(refresh_fs_after_tab_switch)を直接叩く=最も引き締まった再現方法。
+    app.refresh_fs_after_tab_switch().unwrap();
+
+    assert_eq!(
+        app.filter_query(),
+        Some("txt"),
+        "query は refresh を跨いで維持されるべき"
+    );
+    assert_eq!(
+        app.tab.entries.len(),
+        2,
+        "refresh 後も txt 絞り込みが維持されるべき(バグは rebuild_tree で全4件に戻る)"
+    );
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .all(|e| e.path.extension().and_then(|s| s.to_str()) == Some("txt")),
+        "refresh 後に .rs が混入してはいけない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn small_code_file_is_also_windowed() {
     // #1: サイズに関わらず Code は windowed(全行ハイライトしない)＝小ファイルでも即時。
     let dir = std::env::temp_dir().join("konoma_small_windowed_test");

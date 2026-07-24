@@ -21,6 +21,11 @@ All notable changes to konoma are documented in this file. The format is based o
   via arboard's `SetExtLinux::wait()` on Linux (macOS/Windows are unchanged; their system clipboards
   persist on their own). Verified in a Linux VM: after a copy, `xclip` reads the copied path and keeps
   reading it. Not unit-tested (requires an X11/Wayland display).
+- **The `/` text filter is kept after a tab switch or filesystem change.** Switching away from and
+  back to a tab (or any fs event) while a `/` filter was active re-read the tree unfiltered, so the
+  title still showed the query (e.g. `/txt`) but the list showed every file. The filter is now
+  re-applied after the tree rebuild — refreshing the pool from the current tree so it follows external
+  add/remove — mirroring how the `C` changed-files filter is already re-applied.
 
 ## [0.18.8] - 2026-07-24
 
