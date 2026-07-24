@@ -631,6 +631,17 @@ pub struct App {
     /// Whether the current GitDiff preview was opened by follow mode. While true, `n`/`N` and the title's
     /// position indicator use `follow_session` instead of the full git change set.
     diff_follow_scope: bool,
+    /// In a follow-opened diff, show the FULL git diff (vs HEAD/index) instead of the diff since
+    /// follow-start. Toggled per-session by the diff-scope key; reset to false (baseline) each `F`-on.
+    follow_diff_full: bool,
+    /// Snapshot captured at follow-start (`F` on), so follow diffs show only changes SINCE that point —
+    /// pre-existing uncommitted changes are folded into the baseline and stay invisible. Held in memory,
+    /// bounded to the files that were dirty at follow-start (clean files use the pinned HEAD blob on
+    /// demand). Captured on each `F`-on and KEPT afterwards (through `follow_break`/off, so the session's
+    /// diffs stay reviewable via `n`/`N`/`f`) until the next `F`-on recaptures it; only ever consulted
+    /// under `diff_follow_scope`. See `docs/FEATURE-FOLLOW-BASELINE-2026-07.md`.
+    #[cfg(feature = "git")]
+    follow_baseline: Option<FollowBaseline>,
 
     /// The target, kind, and scroll position (vertical/horizontal) while in Preview mode.
     /// Horizontal scroll is used to view long lines when not wrapping (ui.wrap=false).
@@ -1099,6 +1110,25 @@ struct DiffCache {
     lines: Vec<crate::git::DiffLine>,
 }
 
+/// Per-file cap for a follow baseline snapshot: a dirty file larger than this is not snapshotted
+/// (recorded as `None`), and its follow diff falls back to the full git diff (honest degradation).
+#[cfg(feature = "git")]
+const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
+/// Total cap across all snapshotted baseline files: once exceeded, remaining dirty files are recorded
+/// as `None` (full-diff fallback) so pressing `F` on a fully-dirty tree never balloons memory.
+#[cfg(feature = "git")]
+const FOLLOW_BASELINE_TOTAL_CAP: usize = 64 * 1024 * 1024;
+
+/// The follow-start snapshot. `dirty` holds the content of files that were already modified/untracked
+/// at follow-start (keyed by canonicalized path): `Some(bytes)` = snapshotted, `None` = skipped for
+/// size (falls back to full diff). Files NOT in `dirty` were clean at follow-start, so their baseline
+/// is the blob at `head`.
+#[cfg(feature = "git")]
+struct FollowBaseline {
+    dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>>,
+    head: Option<String>,
+}
+
 /// Cache of the editor-style git gutter marks (per new-file line) for the currently-previewed code/text
 /// file. Keyed by path; a working-tree change (`refresh`) drops it so external edits re-derive. Avoids
 /// re-invoking `file_diff` (a git call) on every scroll/keypress while previewing.
@@ -1337,6 +1367,9 @@ impl App {
             follow_mode: false,
             follow_session: Vec::new(),
             diff_follow_scope: false,
+            follow_diff_full: false,
+            #[cfg(feature = "git")]
+            follow_baseline: None,
             preview_path: None,
             preview_kind: None,
             preview_scroll: 0,
@@ -2639,7 +2672,15 @@ impl App {
         self.follow_mode = !self.follow_mode;
         if self.follow_mode {
             self.follow_session.clear();
+            // 新しい追尾セッション: 既定は「開始以降」表示・この瞬間をベースラインに固定する。
+            self.follow_diff_full = false;
+            // 表示中の follow diff があれば新ベースラインで取り直す(path 一致で残る旧 diff を落とす)。
+            self.diff_cache = None;
+            #[cfg(feature = "git")]
+            self.capture_follow_baseline();
         }
+        // OFF ではベースラインを保持する(follow_break/F-off の後も diff_follow_scope 上で
+        // n/N 回遊と `f` トグルによる復習が効くように・次の F で作り直す・有界メモリ)。
         let msg = if self.follow_mode {
             crate::i18n::Msg::FollowOn
         } else {
@@ -2648,13 +2689,126 @@ impl App {
         self.flash = Some(tr(self.lang, msg).into());
     }
 
+    /// Capture the follow-start snapshot: the content of every currently-dirty file (bounded by size),
+    /// plus the pinned HEAD sha for clean files. Dirty files too large to snapshot are recorded as
+    /// `None` so their follow diff falls back to the full git diff. `F` is a command → sync status first.
+    #[cfg(feature = "git")]
+    fn capture_follow_baseline(&mut self) {
+        self.ensure_git_status_now();
+        let head = crate::git::head_commit_id(&self.root);
+        let mut dirty: std::collections::HashMap<PathBuf, Option<Vec<u8>>> =
+            std::collections::HashMap::new();
+        let mut total = 0usize;
+        for p in self.changed_paths() {
+            let key = p.canonicalize().unwrap_or_else(|_| p.clone());
+            // stat 先読み: 大きいファイルは読まずに None(=full diff 降格)。読んでから捨てない。
+            let size = std::fs::metadata(&p).map(|m| m.len() as usize).unwrap_or(0);
+            if size > FOLLOW_BASELINE_FILE_CAP
+                || total.saturating_add(size) > FOLLOW_BASELINE_TOTAL_CAP
+            {
+                dirty.insert(key, None);
+                continue;
+            }
+            match std::fs::read(&p) {
+                Ok(content) => {
+                    total = total.saturating_add(content.len());
+                    dirty.insert(key, Some(content));
+                }
+                Err(_) => {
+                    dirty.insert(key, None);
+                }
+            }
+        }
+        self.follow_baseline = Some(FollowBaseline { dirty, head });
+    }
+
+    /// The follow diff for `path`: baseline (follow-start) content vs the current on-disk content, as
+    /// `DiffLine`s for the existing GitDiff renderer. None (→ caller uses the full git diff) when there
+    /// is no baseline session, the file was dirty-but-too-large at follow-start, the current file is
+    /// unreadable / too large, or either side is non-UTF-8 (binary).
+    #[cfg(feature = "git")]
+    fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
+        let base = self.follow_baseline.as_ref()?;
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let baseline: Vec<u8> = match base.dirty.get(&key) {
+            Some(Some(content)) => content.clone(),
+            Some(None) => return None, // dirty at follow-start but too large → full diff
+            None => match base.head.as_deref() {
+                // clean at follow-start → HEAD blob; a file created after follow-start is absent from
+                // the pinned tree → empty baseline = all-added (correct: it is new since follow-start).
+                Some(h) => crate::git::blob_at(&self.root, h, path).unwrap_or_default(),
+                // No HEAD to diff against (not a repo / unborn) → defer to `file_diff`, which returns
+                // empty outside a repo so `follow_jump` falls back to the file preview (its contract).
+                None => return None,
+            },
+        };
+        let current = std::fs::read(path).ok()?;
+        if current.len() > FOLLOW_BASELINE_FILE_CAP {
+            return None;
+        }
+        let old = String::from_utf8(baseline).ok()?;
+        let new = String::from_utf8(current).ok()?;
+        Some(crate::git::diff_contents(&old, &new))
+    }
+
+    /// `f` in a follow-opened diff: switch between the diff-since-follow-start (default) and the full
+    /// git diff for the same file. No-op in a non-follow diff (already full). Drops the diff cache so
+    /// the view recomputes in the new scope.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn toggle_follow_diff_scope(&mut self) {
+        if self.is_git_diff_preview() && self.diff_follow_scope {
+            self.follow_diff_full = !self.follow_diff_full;
+            self.diff_cache = None;
+            let msg = if self.follow_diff_full {
+                crate::i18n::Msg::FollowShowFull
+            } else {
+                crate::i18n::Msg::FollowShowSince
+            };
+            self.flash = Some(tr(self.lang, msg).into());
+        }
+    }
+
+    /// The scope label for a follow-opened diff title/flash: `FollowShowSince` (baseline) or
+    /// `FollowShowFull` (toggled). None for non-follow diffs (no suffix).
+    pub fn follow_diff_scope_msg(&self) -> Option<crate::i18n::Msg> {
+        if self.is_git_diff_preview() && self.diff_follow_scope {
+            Some(if self.follow_diff_full {
+                crate::i18n::Msg::FollowShowFull
+            } else {
+                crate::i18n::Msg::FollowShowSince
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The diff lines for a GitDiff preview of `path`. `follow` = this is a follow-opened diff, so
+    /// (unless toggled to full) show the diff since follow-start; otherwise the full git diff. The
+    /// single decision point shared by `follow_jump` (initial open) and `git_diff_lines` (recompute
+    /// on scroll/FS-refresh/`n`/`N`), so every path stays consistent.
+    pub(super) fn compute_gitdiff_lines(
+        &self,
+        path: &Path,
+        follow: bool,
+    ) -> Vec<crate::git::DiffLine> {
+        #[cfg(feature = "git")]
+        if follow && !self.follow_diff_full {
+            if let Some(lines) = self.follow_baseline_diff(path) {
+                return lines;
+            }
+        }
+        let _ = follow;
+        crate::git::file_diff(&self.root, path)
+    }
+
     /// Whether follow mode is on (chip display / the run loop's jump gate).
     pub fn follow_enabled(&self) -> bool {
         self.follow_mode
     }
 
-    /// The user took over the keyboard (pressed any key not bound to `F`): stop following (Zed-style —
-    /// following is a hands-off state; re-enable with one `F`). Flash so the state change is visible.
+    /// Stop following. Called when the user leaves the follow diff with `q` or enters a text/modal
+    /// surface (`main.rs::handle_key`). Follow is otherwise sticky — scroll/`n`/`N`/`f` keep it on, and
+    /// `F` toggles it off via `toggle_follow`. Re-enable with one `F`. Flash so the change is visible.
     pub fn follow_break(&mut self) {
         if self.follow_mode {
             self.follow_mode = false;
@@ -2665,7 +2819,7 @@ impl App {
     /// Follow-mode jump: reveal `path` in the tree and open its preview. Gated to meaningful targets:
     /// under root, an existing visible file, not gitignored, not already being previewed (the preview
     /// auto-reload handles content changes of the current file). No-op outside Tree/Preview surfaces
-    /// (dialogs and git views are never hijacked — normally unreachable anyway since any key breaks follow).
+    /// (dialogs and git views are never hijacked; follow is simply paused there and resumes on return).
     pub fn follow_jump(&mut self, path: &Path) {
         use crate::keymap::Surface;
         if !self.follow_mode {
@@ -2704,7 +2858,8 @@ impl App {
         // 見える(hunk/livediff/diffpane と同じ提示)。diff を出せない未追跡(全行新規)・リポジトリ外や、
         // バイナリのメディア系はファイルプレビュー(+最初の変更ハンクへスクロール)へフォールバック。
         if self.cfg.ui.follow_view != "file" && !self.follow_is_media(path) {
-            let diff = crate::git::file_diff(&self.root, path);
+            // フォロー由来 → 開始以降のベースライン差分(follow_diff_full なら従来のフル diff)。
+            let diff = self.compute_gitdiff_lines(path, true);
             if !diff.is_empty() {
                 self.open_git_diff(path);
                 // いま取った diff をキャッシュに載せ、描画での再取得(git 再実行)を省く。

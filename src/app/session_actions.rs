@@ -25,6 +25,12 @@ impl App {
         let Some(store) = &self.session_store else {
             return;
         };
+        // 単一タブ復元を無効化(`restore_single_tab=false`)している時、タブ1枚のセッションは
+        // 保存せずに削除する=次回起動はまっさら(ユーザー選択・2タブ以上は従来どおり保存)。
+        if !self.cfg.ui.restore_single_tab && self.tabs.len() <= 1 {
+            store.delete();
+            return;
+        }
         let _ = store.write(self.session_snapshot());
     }
 
@@ -96,6 +102,12 @@ impl App {
         let Some(sess) = store.read() else {
             return;
         };
+        // 単一タブ復元を無効化している時、既存の1タブ・セッションファイル(設定を後から false に
+        // 切替えた場合の残骸)は復元せず削除する=次回以降このファイルで無駄な判定を繰り返さない。
+        if !self.cfg.ui.restore_single_tab && sess.tabs.len() <= 1 {
+            store.delete();
+            return;
+        }
         // 存在しない root のタブを落とす。**元 index を保持**して active の再マップに使う。
         let kept: Vec<(usize, SavedTab)> = sess
             .tabs
@@ -491,6 +503,121 @@ mod tests {
         }
 
         let _ = fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)); // 掃除できるよう戻す
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
+
+    /// `restore_single_tab=false` + a lone tab: `save_session` must delete any existing file rather
+    /// than write one, so the next launch starts fresh instead of reopening a single unremarkable tab.
+    #[test]
+    fn restore_single_tab_false_deletes_a_lone_tab_session() {
+        let (dir, base) = setup("konoma_sess_single_off_delete_test");
+        let mut cfg = Config::default();
+        cfg.ui.restore_single_tab = false;
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let store = SessionStore::with_base(base.clone(), &dir);
+        app.attach_session_store(store);
+        // 前回セッションが在る状態から始める(残骸ファイルが本当に消えることを確認するため)。
+        SessionStore::with_base(base.clone(), &dir)
+            .write(SavedSession {
+                dir: String::new(),
+                active: 0,
+                tabs: vec![SavedTab {
+                    root: dir.to_string_lossy().into(),
+                    ..Default::default()
+                }],
+            })
+            .unwrap();
+        assert!(app.tabs.len() <= 1, "前提: 起動直後はタブ1枚");
+        app.save_session();
+        assert!(
+            SessionStore::with_base(base.clone(), &dir).read().is_none(),
+            "restore_single_tab=false のタブ1枚は保存せず既存ファイルも削除する"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
+
+    /// `restore_single_tab=false` + 2 tabs: multi-tab sessions still save/restore normally.
+    #[test]
+    fn restore_single_tab_false_still_saves_multi_tab() {
+        let (dir, base) = setup("konoma_sess_single_off_multi_test");
+        let mut cfg = Config::default();
+        cfg.ui.restore_single_tab = false;
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        app.tab_new().unwrap();
+        assert_eq!(app.tabs.len(), 2, "前提: タブ2枚");
+        app.save_session();
+        let saved = SessionStore::with_base(base.clone(), &dir).read();
+        assert!(
+            saved.is_some(),
+            "restore_single_tab=false でも2タブ以上は保存する"
+        );
+        assert_eq!(saved.unwrap().tabs.len(), 2);
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
+
+    /// Default (`restore_single_tab=true`): a lone tab still saves — current behavior preserved.
+    #[test]
+    fn restore_single_tab_true_saves_a_lone_tab() {
+        let (dir, base) = setup("konoma_sess_single_on_test");
+        let cfg = Config::default();
+        assert!(cfg.ui.restore_single_tab, "既定は true");
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        assert!(app.tabs.len() <= 1, "前提: タブ1枚");
+        app.save_session();
+        let saved = SessionStore::with_base(base.clone(), &dir).read();
+        assert!(
+            saved.is_some(),
+            "restore_single_tab=true(既定)はタブ1枚でも保存する"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
+
+    /// Restore side: a stale single-tab session file present while `restore_single_tab=false` is
+    /// not restored (fresh startup tab is left untouched) and the stale file is deleted.
+    #[test]
+    fn restore_single_tab_false_skips_and_deletes_stale_single_tab_file() {
+        let (dir, base) = setup("konoma_sess_single_off_restore_test");
+        let store = SessionStore::with_base(base.clone(), &dir);
+        store
+            .write(SavedSession {
+                dir: String::new(),
+                active: 0,
+                tabs: vec![SavedTab {
+                    root: dir.to_string_lossy().into(),
+                    cursor: Some(dir.join("b.txt").to_string_lossy().into()),
+                    ..Default::default()
+                }],
+            })
+            .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.ui.restore_single_tab = false;
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        app.restore_session();
+        assert_eq!(
+            app.tab_count(),
+            1,
+            "1タブの保存済みセッションは復元せず起動直後のタブのまま"
+        );
+        assert!(
+            app.entries[app.selected].path != dir.join("b.txt"),
+            "保存済みカーソルへは動かない(復元しなかった)"
+        );
+        assert!(
+            SessionStore::with_base(base.clone(), &dir).read().is_none(),
+            "残骸の1タブ・セッションファイルは削除される"
+        );
+
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&base).ok();
     }

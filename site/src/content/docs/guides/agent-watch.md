@@ -12,14 +12,22 @@ steer — without ever leaving the keyboard.
 ## Follow mode — `F`
 
 Press `F` anywhere. From now on, whenever a file changes on disk, konoma
-automatically shows **the diff of that file** (hunk-level before/after, the
-same full-screen diff as the git suite). The agent saves a file → you're
-looking at exactly what changed, hands off.
+automatically shows a diff of what changed **since you pressed `F`**
+(hunk-level before/after, the same full-screen diff as the git suite) — any
+changes the file already had before you started following stay hidden, so
+what you see is exactly the agent's new work. The agent saves a file → you're
+looking at exactly that edit, hands off.
 
 Details that make it comfortable:
 
-- **Any other key takes control back** (you grabbed the keyboard, so konoma
-  stops driving — Zed-style). Press `F` again to resume.
+- **Follow is sticky.** Reading the diff — scrolling, `n`/`N` (cycling
+  changed files), `f` (below) — doesn't turn it off. Only `q` (leaving the
+  diff), entering a text-input/confirm prompt, or pressing `F` again stops
+  following.
+- Press `f` inside a follow diff to switch between the diff **since
+  follow-start** (default) and the **full git diff** for that file — the
+  title shows which one you're looking at (`· since follow start` /
+  `· full diff`).
 - Untracked (new) files show as an all-added diff. Files with no diff and
   media files (images, PDFs, …) open as a normal preview instead, scrolled to
   the first change.

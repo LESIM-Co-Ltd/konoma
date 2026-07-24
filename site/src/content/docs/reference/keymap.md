@@ -90,6 +90,7 @@ information contextually inside the app.
 | Hub: `c` / `x` / `Enter` | commit / discard file / open diff |
 | Hub: `l` / `g` / `b` | log / commit graph / branches |
 | Diff: `s` / `n` `N` / `x` | layout unified⇄split⇄auto / next/prev changed file / discard |
+| Follow diff: `f` | toggle scope: since follow-start (default) ⇄ full git diff |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
 | Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |
 | Branches: `Enter` / `n` / `d` / `/` | checkout / create / delete / filter |

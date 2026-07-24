@@ -210,7 +210,8 @@ impl App {
         };
         let hit = matches!(&self.diff_cache, Some(c) if c.path == p);
         if !hit {
-            let lines = crate::git::file_diff(&self.root, &p);
+            // フォロー由来(diff_follow_scope)なら開始以降のベースライン差分・それ以外はフル diff。
+            let lines = self.compute_gitdiff_lines(&p, self.diff_follow_scope);
             self.diff_cache = Some(DiffCache {
                 path: p.clone(),
                 lines,

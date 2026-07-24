@@ -97,7 +97,8 @@ pub enum Action {
     JumpNextChange,
     JumpPrevChange,
     /// `F` (global): toggle follow mode — externally changed files are auto-selected and previewed
-    /// (watch an AI agent work); any other key stops following.
+    /// (watch an AI agent work). Sticky: only `q` (leaving the follow diff), entering a text/modal
+    /// surface, or another `F` stops following; scroll/`n`/`N`/`f` keep it on.
     ToggleFollow,
 
     // --- ファイル管理 (Space→ リーダー配下 / Visual も共有) ---
@@ -167,6 +168,9 @@ pub enum Action {
     GitDiffDiscard,
     #[cfg(feature = "git")]
     CycleDiffLayout,
+    /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
+    #[cfg(feature = "git")]
+    ToggleFollowDiffScope,
 
     // --- Git 変更ハブ (o) ---
     #[cfg(feature = "git")]
@@ -819,6 +823,8 @@ impl KeyMap {
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
             pgit.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
+            // f=フォロー由来 diff の範囲トグル(開始以降 ⇄ フル)。非フォロー diff では no-op。
+            pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
             pgit.insert(KeyPress::ch('j'), nav(Motion::Down));
             pgit.insert(KeyPress::ch('k'), nav(Motion::Up));
             pgit.insert(KeyPress::ch('l'), nav(Motion::Right));
@@ -1708,6 +1714,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "cycle_diff_layout" => Action::CycleDiffLayout,
         #[cfg(feature = "git")]
+        "toggle_follow_diff_scope" => Action::ToggleFollowDiffScope,
+        #[cfg(feature = "git")]
         "git_stage" => Action::GitStage,
         #[cfg(feature = "git")]
         "git_unstage" => Action::GitUnstage,
@@ -1874,6 +1882,8 @@ pub fn action_name(a: Action) -> String {
         Action::GitDiffDiscard => "git_diff_discard",
         #[cfg(feature = "git")]
         Action::CycleDiffLayout => "cycle_diff_layout",
+        #[cfg(feature = "git")]
+        Action::ToggleFollowDiffScope => "toggle_follow_diff_scope",
         #[cfg(feature = "git")]
         Action::GitStage => "git_stage",
         #[cfg(feature = "git")]
@@ -2917,6 +2927,13 @@ mod tests {
                 "diff ビューの {k} が変更間ジャンプに解決する"
             );
         }
+        // diff ビュー内の f=フォロー範囲トグル(開始以降 ⇄ フル)。
+        #[cfg(feature = "git")]
+        assert_eq!(
+            m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('f')),
+            Resolution::Action(Action::ToggleFollowDiffScope),
+            "diff ビューの f がフォロー範囲トグルに解決する"
+        );
         // 設定文字列の往復。
         for s in [
             "toggle_changed_filter",

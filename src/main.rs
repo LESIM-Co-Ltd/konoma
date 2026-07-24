@@ -1034,6 +1034,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::CycleDiffLayout => app.cycle_diff_layout(),
         #[cfg(feature = "git")]
+        Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
+        #[cfg(feature = "git")]
         Action::GitStage => app.git_view_stage(),
         #[cfg(feature = "git")]
         Action::GitUnstage => app.git_view_unstage(),
@@ -1360,17 +1362,17 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     app.flash = None;
     let sfc = app.surface();
 
-    // フォロー中に F(ToggleFollow に解決されるキー)以外を押したら追尾を止める(Zed 流:
-    // 手を置いた=閲覧、キーボードを取った=手動優先。F 一発で再開できる)。
     if app.follow_enabled() {
-        let is_follow_key = !sfc.is_text_input()
-            && !sfc.is_modal_confirm()
-            && app.pending_leader.is_none()
+        // ユーザー選択(2026-07-23): フォローは最大粘着=フォロー diff 内では q(diff を出る)以外の
+        // 全キー(スクロール/移動/n/N/f/レイアウト)でフォローを維持する。解除するのは「テキスト入力/
+        // 確認モーダルに入る」「q でフォロービューを出る」のみ。F(ToggleFollow)は dispatch の
+        // toggle_follow が明示オフするので follow_break は不要(=ここでは維持扱い)。
+        let leaves_follow_view = app.pending_leader.is_none()
             && matches!(
                 app.keymaps.resolve(sfc, None, KeyPress::norm(&key)),
-                Resolution::Action(Action::ToggleFollow)
+                Resolution::Action(Action::PreviewBack)
             );
-        if !is_follow_key {
+        if sfc.is_text_input() || sfc.is_modal_confirm() || leaves_follow_view {
             app.follow_break();
         }
     }
@@ -1514,8 +1516,11 @@ mod tests {
     }
 
     #[test]
-    fn any_key_but_follow_toggle_breaks_follow() {
-        // フォロー中に F 以外のキー → 解除(Zed 流)。F 自体はトグルに解決される。
+    fn follow_is_sticky_and_breaks_only_on_toggle_or_text_input() {
+        // ユーザー選択(2026-07-23・最大粘着): フォロー中は通常キー(移動等)ではフォローを解除
+        // しない。解除するのは F(トグル自体・toggle_follow 経由)/テキスト入力面に入っている間の
+        // キー/確認モーダル/q(PreviewBack でフォロービューを出る)のみ(q/PreviewBack の検証は
+        // e2e_follow_survives_scroll_and_cycle_breaks_only_on_q を参照)。
         let dir = std::env::temp_dir().join("konoma_follow_break_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -1532,7 +1537,7 @@ mod tests {
         )
         .unwrap();
         assert!(!app.follow_enabled(), "F 再押下で OFF");
-        // ON に戻して j(移動キー)→ 解除される。
+        // ON に戻して j(移動キー・ツリー面では PreviewBack に解決されない)→ 最大粘着で維持。
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
@@ -1540,7 +1545,23 @@ mod tests {
         .unwrap();
         assert!(app.follow_enabled());
         handle_key(&mut app, key('j')).unwrap();
-        assert!(!app.follow_enabled(), "F 以外のキーで追尾解除");
+        assert!(
+            app.follow_enabled(),
+            "j のような通常キーでは最大粘着によりフォロー維持"
+        );
+        // '/' でテキスト入力面(Filter)に入る。入る瞬間のキー自体はまだ Tree 面での判定なので
+        // 維持されるが、いったんテキスト入力面に居る間は次のキーで解除される(手動操作扱い)。
+        handle_key(&mut app, key('/')).unwrap();
+        assert!(app.is_filtering());
+        assert!(
+            app.follow_enabled(),
+            "テキスト入力面へ入る瞬間のキーでは未解除"
+        );
+        handle_key(&mut app, key('x')).unwrap();
+        assert!(
+            !app.follow_enabled(),
+            "テキスト入力面に居る間のキーでフォロー解除"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

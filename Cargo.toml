@@ -141,6 +141,7 @@ ratex-layout = "0.1"
 ratex-svg = { version = "0.1", default-features = false, features = ["embed-fonts"] }
 # MathStyle(Display=ブロック / Text=インライン)を渡すため(ratex-layout は再エクスポートしない・推移依存)。
 ratex-types = "0.1"
+similar = "3.1.1"
 
 [features]
 default = ["git"]

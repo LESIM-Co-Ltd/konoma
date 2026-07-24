@@ -101,6 +101,12 @@ impl SessionStore {
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("セッション保存: {}", self.path.display()))
     }
+
+    /// Remove this dir's session file (used when single-tab sessions are disabled). A missing file
+    /// is fine — errors are ignored, since failing to delete a stale session must not disturb the UI.
+    pub fn delete(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 #[cfg(test)]

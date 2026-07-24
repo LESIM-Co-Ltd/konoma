@@ -361,7 +361,7 @@ impl App {
 
     /// The sorted list of files with a git status under the current root (the review work-list).
     /// Deleted files have a status but no longer exist, so they are excluded (nothing to preview/select).
-    fn changed_paths(&self) -> Vec<PathBuf> {
+    pub(super) fn changed_paths(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = self
             .git_status
             .keys()

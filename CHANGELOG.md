@@ -6,6 +6,30 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Follow mode (`F`) now shows the diff *since follow-start*, not the full uncommitted diff.** Pressing
+  `F` captures a baseline snapshot of the current working tree, so files that already had uncommitted
+  changes appear "unchanged" at follow-start and only edits made *after* `F` are highlighted. The
+  baseline is held in memory (bounded to the files dirty at follow-start; clean files use the pinned
+  HEAD blob), never writes to your `.git`, and is discarded/recaptured on the next `F`. Design notes:
+  `docs/FEATURE-FOLLOW-BASELINE-2026-07.md`.
+- **Follow mode is now sticky.** Only `q` (leaving the follow diff), entering a text-input/confirm
+  surface, or pressing `F` again stops following — scrolling, `n`/`N` (cycling changed files), and `f`
+  (scope toggle) keep it on, so you can read and navigate the follow diff without losing the auto-jump.
+  Previously any key other than `F` stopped following (Zed-style hands-off).
+
+### Added
+- In a follow-opened diff, **`f` toggles between the diff since follow-start (default) and the full git
+  diff** for the same file (configurable via `[keys.preview_git_diff] toggle_follow_diff_scope`). The
+  diff title shows the current scope (`· since follow start` / `· full diff`).
+- `[ui] restore_single_tab` (default true): set false to not persist single-tab sessions (multi-tab
+  sessions still restore).
+
+### Security
+- Bumped the transitive dependencies `crossbeam-epoch` (→ 0.9.20) and `plist` (→ 1.10.0, which pulls
+  `quick-xml` → 0.41.0) to clear RUSTSEC-2026-0204 and RUSTSEC-2026-0194 / -0195. `cargo audit` now
+  reports no vulnerabilities. `syntect` and konoma's own code are unchanged.
+
 ## [0.18.6] - 2026-07-23
 
 ### Fixed

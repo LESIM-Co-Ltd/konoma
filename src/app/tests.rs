@@ -3713,6 +3713,219 @@ fn init_git_repo(dir: &Path) {
     cfg.set_str("commit.gpgsign", "false").ok();
 }
 
+// --- Follow ベースライン差分 (F 押下時点を起点に、それ以降の変更だけを表示) ------------------
+#[cfg(feature = "git")]
+fn added_texts(lines: &[crate::git::DiffLine]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l.kind == crate::git::DiffLineKind::Added)
+        .map(|l| l.text.clone())
+        .collect()
+}
+
+/// 核心の回帰: F 前から未コミット変更があっても、フォロー diff は「F 以降の変更だけ」を出す。
+/// F 前の変更はベースラインに畳まれて見えず、`f` トグルでフル diff にすると再び現れる。
+#[cfg(feature = "git")]
+#[test]
+fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_follow_baseline_core");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    let file = dir.join("app.txt");
+    std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    // F 前から存在する未コミット変更(line2 を書き換え)。
+    std::fs::write(&file, "line1\nPRE-FOLLOW\nline3\n").unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.toggle_follow(); // F on → この瞬間の内容(PRE-FOLLOW 込み)をベースラインに固定
+    assert!(app.follow_enabled(), "F で追尾 ON");
+
+    // F 後の編集(line3 を書き換え)。
+    let fc = file.canonicalize().unwrap();
+    std::fs::write(&fc, "line1\nPRE-FOLLOW\nPOST-FOLLOW\n").unwrap();
+    app.follow_jump(&fc);
+    assert!(app.is_git_diff_preview(), "追跡変更 → 全画面 diff");
+
+    let base = app.git_diff_lines();
+    let added = added_texts(&base);
+    assert!(
+        added.iter().any(|t| t == "POST-FOLLOW"),
+        "F 後の変更は出る: {added:?}"
+    );
+    assert!(
+        !added.iter().any(|t| t == "PRE-FOLLOW"),
+        "F 前の変更はベースラインに畳まれて出ない: {added:?}"
+    );
+    assert_eq!(
+        app.follow_diff_scope_msg(),
+        Some(crate::i18n::Msg::FollowShowSince),
+        "既定はフォロー開始以降"
+    );
+
+    // `f` トグル → フル diff(HEAD 比)。F 前の変更も出る・ラベルが切替わる。
+    app.toggle_follow_diff_scope();
+    assert_eq!(
+        app.follow_diff_scope_msg(),
+        Some(crate::i18n::Msg::FollowShowFull),
+        "トグルでフル差分ラベル"
+    );
+    let full = added_texts(&app.git_diff_lines());
+    assert!(
+        full.iter().any(|t| t == "PRE-FOLLOW") && full.iter().any(|t| t == "POST-FOLLOW"),
+        "フル diff は F 前後どちらの変更も出す: {full:?}"
+    );
+}
+
+/// F 時に clean だったファイルの後続編集は、HEAD blob をベースラインにして「F 以降」を出す。
+#[cfg(feature = "git")]
+#[test]
+fn follow_baseline_clean_file_diffs_against_head() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_follow_baseline_clean");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    let file = dir.join("clean.txt");
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.toggle_follow(); // clean.txt は clean → dirty マップに載らない(HEAD blob を使う)
+    let fc = file.canonicalize().unwrap();
+    std::fs::write(&fc, "one\nTWO-EDITED\nthree\n").unwrap();
+    app.follow_jump(&fc);
+    let added = added_texts(&app.git_diff_lines());
+    assert!(
+        added.iter().any(|t| t == "TWO-EDITED"),
+        "clean だったファイルの F 後編集が出る: {added:?}"
+    );
+}
+
+/// サイズ上限を超える dirty ファイルはスナップショットせず(None)、follow ベースライン差分は
+/// None を返す = 呼び出し側がフル diff に降格する(原則#3・メモリ暴発の回避)。
+#[cfg(feature = "git")]
+#[test]
+fn follow_baseline_oversized_dirty_file_falls_back_to_full() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_follow_baseline_big");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    let file = dir.join("big.txt");
+    std::fs::write(&file, "seed\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    // F 前に >5MB へ肥大化(= dirty かつ上限超)。
+    let big = "x".repeat(6 * 1024 * 1024);
+    std::fs::write(&file, format!("seed\n{big}\n")).unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.toggle_follow(); // big.txt は上限超 → dirty マップに None で記録
+    let fc = file.canonicalize().unwrap();
+    // フォローベースライン差分は None(=フル diff 降格)。
+    assert!(
+        app.follow_baseline_diff(&fc).is_none(),
+        "上限超の dirty ファイルはベースライン差分を持たない(フル diff へ降格)"
+    );
+}
+
+/// 非 git ディレクトリで follow → 編集ファイルは全画面 diff でなくファイルプレビューへ降格する
+/// (ベースラインに HEAD が無い＝ all-added の壁を出さない・follow_jump の契約どおり)。
+/// 旧実装は空ベースライン→全行 Added で誤って diff を開いていた(回帰防止)。
+#[cfg(feature = "git")]
+#[test]
+fn follow_in_non_repo_falls_back_to_file_preview() {
+    let dir = std::env::temp_dir().join("konoma_follow_non_repo");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap(); // .git を作らない = 非 repo
+    let file = dir.join("note.txt");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.toggle_follow(); // head=None・dirty 空のベースライン
+    let fc = file.canonicalize().unwrap();
+    std::fs::write(&fc, "alpha\nBETA-EDIT\ngamma\n").unwrap();
+    app.follow_jump(&fc);
+    assert!(
+        !app.is_git_diff_preview(),
+        "非 repo は全画面 diff でなくファイルプレビューへ降格"
+    );
+    assert!(matches!(app.mode, Mode::Preview));
+}
+
+/// `F` を貼り直す(OFF→ON)とベースラインを取り直し、表示中の follow diff の古いキャッシュを落とす
+/// (path 一致で残る旧 diff を drop・`toggle_follow_diff_scope` と対称)。
+#[cfg(feature = "git")]
+#[test]
+fn re_following_recaptures_baseline_and_drops_stale_diff() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("konoma_follow_recapture");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    let file = dir.join("x.txt");
+    std::fs::write(&file, "a\nb\nc\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.toggle_follow(); // F1
+    let fc = file.canonicalize().unwrap();
+    std::fs::write(&fc, "a\nEDIT1\nc\n").unwrap();
+    app.refresh().unwrap(); // FS イベント相当: 編集後に git_status を最新化(x.txt を dirty として見せる)
+    app.follow_jump(&fc);
+    assert!(app.is_git_diff_preview());
+    assert!(
+        added_texts(&app.git_diff_lines())
+            .iter()
+            .any(|t| t == "EDIT1"),
+        "F1 以降の EDIT1 が出る"
+    );
+
+    // F を貼り直す(OFF→ON)。現内容(EDIT1 込み)が新ベースライン → EDIT1 は「以降の変更」でなくなる。
+    app.toggle_follow(); // OFF
+    app.toggle_follow(); // ON (再ベースライン・diff_cache を落とす)
+    let lines = app.git_diff_lines();
+    assert!(
+        lines.is_empty(),
+        "再 F でベースライン取り直し → 旧 diff(EDIT1)が残らない: {:?}",
+        added_texts(&lines)
+    );
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
@@ -6959,32 +7172,50 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
 fn follow_jump_opens_diff_view_by_default_and_falls_back() {
     // 既定(ui.follow_view="diff")では追跡済み変更ファイルを**全画面 diff** で開く。
     // 未追跡(diff が出せない=全行新規)はファイルプレビューへフォールバック。
+    // ベースライン差分は「F 以降」の変更を出す(旧: dirty vs HEAD)。よって diff を出すには
+    // F の後にファイルが変わる必要がある(= 実運用: F を押してから AI が編集する)。
     let dir = std::env::temp_dir().join("konoma_follow_diff_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir); // a.txt をコミット済み
     let canon = dir.canonicalize().unwrap();
-    std::fs::write(canon.join("a.txt"), b"one\nCHANGED\n").unwrap();
-    std::fs::write(canon.join("fresh.txt"), b"new file\n").unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    };
+    // F 前にコミット済みで以後触らないファイル(フォールバック検証用)。
+    std::fs::write(canon.join("keep.txt"), b"committed\n").unwrap();
+    sh(&["add", "keep.txt"]);
+    sh(&["commit", "-m", "keep"]);
 
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
     assert_eq!(app.cfg.ui.follow_view, "diff", "既定は diff 表示");
-    app.toggle_follow();
+    app.toggle_follow(); // F: この瞬間をベースラインに固定(a.txt/keep.txt は clean)
 
-    // 追跡済み+変更あり → GitDiff プレビュー。
+    // F 以降に a.txt を編集 → 追跡済み+F 以降の変更あり → GitDiff プレビュー。
+    std::fs::write(canon.join("a.txt"), b"one\nCHANGED\n").unwrap();
     app.follow_jump(&canon.join("a.txt"));
-    assert!(app.is_git_diff_preview(), "変更ファイルは diff で開く");
+    assert!(
+        app.is_git_diff_preview(),
+        "F 以降に変わったファイルは diff で開く"
+    );
     assert_eq!(
         app.preview_path.as_deref(),
         Some(canon.join("a.txt").as_path())
     );
 
-    // diff ビュー表示中でも次のファイルへ追従が続く(PreviewGitDiff 面の許可・回帰防止)。
-    // 未追跡も file_diff が全行追加の diff を合成できる → diff で開く(一貫)。
+    // F 以降に新規作成された未追跡ファイルも all-added の diff で開く(diff ビューから追従継続)。
+    // 実運用では FS イベントが refresh(ツリー再構築)してからジャンプする→ここでも refresh を挟む。
+    std::fs::write(canon.join("fresh.txt"), b"new file\n").unwrap();
+    app.refresh().unwrap();
     app.follow_jump(&canon.join("fresh.txt"));
     assert!(
         app.is_git_diff_preview(),
-        "未追跡も all-added の diff で開く"
+        "F 後の新規ファイルも diff で開く"
     );
     assert_eq!(
         app.preview_path.as_deref(),
@@ -6995,29 +7226,17 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
     app.close_git_diff();
     assert!(matches!(app.mode, Mode::Tree));
 
-    // 変更の無いコミット済みファイル(diff が空)はファイルプレビューへフォールバック。
-    let sh = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
-    };
-    std::fs::write(canon.join("clean.txt"), b"committed\n").unwrap();
-    sh(&["add", "clean.txt"]);
-    sh(&["commit", "-m", "clean file"]);
-    app.refresh().unwrap();
-    app.follow_jump(&canon.join("clean.txt"));
+    // F 以降に変わっていないファイル(baseline 差分が空)はファイルプレビューへフォールバック。
+    app.follow_jump(&canon.join("keep.txt"));
     assert!(
         !app.is_git_diff_preview(),
-        "変更なしはファイル表示へフォールバック"
+        "F 以降に変更なし → ファイル表示へフォールバック"
     );
     assert!(matches!(app.mode, Mode::Preview));
     assert!(app.is_windowed());
     assert_eq!(
         app.preview_path.as_deref(),
-        Some(canon.join("clean.txt").as_path())
+        Some(canon.join("keep.txt").as_path())
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -7095,6 +7314,10 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     app.refresh_git_if_needed();
     app.toggle_follow();
     assert!(app.follow_session.is_empty(), "F ON でセッションは空から");
+
+    // F 以降に b と d が変わる(ベースライン差分が非空 → diff で開ける)。
+    std::fs::write(canon.join("b.txt"), b"new b.txt\nAFTER-FOLLOW\n").unwrap();
+    std::fs::write(canon.join("d.txt"), b"new d.txt\nAFTER-FOLLOW\n").unwrap();
 
     // ドレイン相当: セッションへ記録(有効ターゲットのみ true)。
     let outside = std::env::temp_dir().join("konoma_follow_session_outside.txt");

@@ -403,6 +403,11 @@ pub struct UiConfig {
     /// every tab open/close/switch and on quit; launching konoma in the same directory reopens those
     /// tabs. false = always start fresh (the session file is neither read nor written).
     pub restore_tabs: bool,
+    /// When `restore_tabs` is on: also restore a session that has only ONE tab. Default true (matches
+    /// the common `cd project && konoma` case). Set false to NOT persist single-tab sessions — quitting
+    /// with a lone tab deletes that directory's session file and next launch starts fresh; sessions with
+    /// two or more tabs still restore.
+    pub restore_single_tab: bool,
 }
 
 impl UiConfig {
@@ -611,6 +616,7 @@ impl Default for UiConfig {
             mermaid_theme: "dark".into(),
             mermaid_rows: 24,
             restore_tabs: true,
+            restore_single_tab: true,
         }
     }
 }

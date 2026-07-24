@@ -845,8 +845,13 @@ fn e2e_follow_mode_chip_toggles() {
     s.key('F');
     assert!(s.app.follow_enabled());
     s.see("FOLLOW");
-    s.key('j'); // 任意キーで解除
-    assert!(!s.app.follow_enabled());
+    // 最大粘着(2026-07-23): 通常キーではフォローは解除されない。
+    s.key('j');
+    assert!(s.app.follow_enabled(), "j のような通常キーではフォロー維持");
+    s.see("FOLLOW");
+    // F の再押下(toggle_follow 経由)でのみ解除される。
+    s.key('F');
+    assert!(!s.app.follow_enabled(), "F の再押下で解除");
     s.dont_see("FOLLOW");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1386,6 +1391,8 @@ fn e2e_follow_opens_full_screen_diff() {
     assert!(s.app.follow_enabled(), "F でフォロー ON");
 
     let a = s.app.root.join("a.rs");
+    // ベースライン差分は「F 以降」の変更を出す → F の後に a.rs を編集する(実運用: AI の編集)。
+    std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     // run ループ相当: 変更イベントを記録してからジャンプ(どちらも pub)。
     assert!(s.app.follow_note_change(&a), "変更ファイルは有効な追尾対象");
     s.app.follow_jump(&a);
@@ -1418,6 +1425,9 @@ fn e2e_follow_diff_cycles_session_files() {
 
     let a = s.app.root.join("a.rs");
     let nt = s.app.root.join("new.txt");
+    // ベースライン差分は「F 以降」の変更を出す → F の後に両ファイルを編集する。
+    std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
+    std::fs::write(&nt, "untracked\nAFTER\n").unwrap();
     // 2 つの変更イベントがセッションに溜まる(記録順 = 回遊順)。
     assert!(s.app.follow_note_change(&a));
     assert!(s.app.follow_note_change(&nt));
@@ -1430,12 +1440,12 @@ fn e2e_follow_diff_cycles_session_files() {
         "a.rs = 2 件中 1 番目"
     );
 
-    // n=次の変更ファイルの diff へ(セッション内のみ)。handle_key 経由なので follow_break が
-    // follow_mode を落とすが、回遊は diff_follow_scope + follow_session で継続する。
+    // n=次の変更ファイルの diff へ(セッション内のみ)。最大粘着(2026-07-23)=n は PreviewBack に
+    // 解決されないので follow は維持されたまま回遊する(diff_follow_scope + follow_session)。
     s.key('n');
     assert!(
-        !s.app.follow_enabled(),
-        "n(F 以外)で follow は解除される(Zed 流)"
+        s.app.follow_enabled(),
+        "n(変更ファイル回遊)でもフォロー維持(最大粘着)"
     );
     assert_eq!(
         s.app.diff_change_position(),
@@ -1448,6 +1458,83 @@ fn e2e_follow_diff_cycles_session_files() {
         Some((1, 2)),
         "N で 1 番目へ戻る"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
+    // 回帰: f(ToggleFollowDiffScope)はフォロー由来 diff の範囲(開始以降⇄フル)を切り替える
+    // 表示オプションであり、手動操作の乗っ取りではない → フォローを解除してはいけない。
+    // 修正前は「F 以外は follow_break」の判定に f が含まれておらず、押すと FOLLOW が OFF になった。
+    let dir = sandbox("follow_f_scope");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+
+    let a = s.app.root.join("a.rs");
+    std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    assert!(s.app.is_git_diff_preview(), "追尾先は全画面 diff で開く");
+    assert!(s.app.follow_enabled(), "f を押す前は follow が ON");
+
+    s.key('f');
+    assert!(
+        s.app.follow_enabled(),
+        "f はフォロー表示オプション=follow を解除してはいけない(回帰)"
+    );
+    assert_eq!(
+        s.app.follow_diff_scope_msg(),
+        Some(crate::i18n::Msg::FollowShowFull),
+        "1 回目の f で範囲がフルへ切り替わる"
+    );
+
+    s.key('f');
+    assert!(
+        s.app.follow_enabled(),
+        "2 回目の f でも follow は ON のまま"
+    );
+    assert_eq!(
+        s.app.follow_diff_scope_msg(),
+        Some(crate::i18n::Msg::FollowShowSince),
+        "2 回目の f で範囲が開始以降へ戻る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_survives_scroll_and_cycle_breaks_only_on_q() {
+    // 回帰(2026-07-23・ユーザー選択=最大粘着): フォロー由来 diff の中では q(PreviewBack で
+    // diff を出る)以外の全キー(スクロール/横スクロール/n の変更ファイル回遊)がフォローを
+    // 維持する。修正前は F/f 以外の任意キーで解除していた(hands-off/Zed 流)。
+    let dir = sandbox("follow_sticky");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+    assert!(s.app.follow_enabled(), "F でフォロー ON");
+
+    let a = s.app.root.join("a.rs");
+    std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    assert!(s.app.is_git_diff_preview(), "追尾先は全画面 diff で開く");
+    assert!(s.app.follow_enabled(), "diff を開いた直後は follow ON");
+
+    s.key('j');
+    assert!(s.app.follow_enabled(), "スクロールでフォロー維持");
+    s.key('h');
+    assert!(s.app.follow_enabled(), "横スクロールでフォロー維持");
+    s.key('n');
+    assert!(
+        s.app.follow_enabled(),
+        "n(変更ファイル回遊)でもフォロー維持"
+    );
+    s.key('q');
+    assert!(!s.app.follow_enabled(), "q(diff を出る)でだけフォロー解除");
     std::fs::remove_dir_all(&dir).ok();
 }
 

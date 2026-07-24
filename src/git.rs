@@ -518,6 +518,73 @@ pub fn file_diff(_root: &Path, _file: &Path) -> Vec<DiffLine> {
     Vec::new()
 }
 
+/// Line-level diff between two in-memory contents (`old` → `new`), producing the same `DiffLine`
+/// shape as `file_diff` so the existing GitDiff renderer consumes it unchanged. Used by the follow
+/// baseline diff, where `old` is the file's content at follow-start and `new` is its content now.
+/// Emits hunks with 3 lines of context (like git), not the whole file. Pure text — no git needed,
+/// so it is available in the no-git build too.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn diff_contents(old: &str, new: &str) -> Vec<DiffLine> {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut out = Vec::new();
+    for group in diff.grouped_ops(3) {
+        for op in &group {
+            for change in diff.iter_changes(op) {
+                let raw = change.value();
+                // 行末の改行を落とす(DiffLine.text は改行を含まない契約・file_diff と同じ)。
+                let text = raw
+                    .strip_suffix('\n')
+                    .unwrap_or(raw)
+                    .strip_suffix('\r')
+                    .unwrap_or_else(|| raw.strip_suffix('\n').unwrap_or(raw))
+                    .to_string();
+                let old_no = change.old_index().map(|i| i as u32 + 1);
+                let new_no = change.new_index().map(|i| i as u32 + 1);
+                let kind = match change.tag() {
+                    similar::ChangeTag::Equal => DiffLineKind::Context,
+                    similar::ChangeTag::Delete => DiffLineKind::Removed,
+                    similar::ChangeTag::Insert => DiffLineKind::Added,
+                };
+                out.push(DiffLine {
+                    kind,
+                    old_no,
+                    new_no,
+                    text,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The current HEAD commit's full SHA (pinned at follow-start so a clean-at-follow-start file's
+/// baseline stays fixed even if the agent commits mid-session). None if unborn / not a repo.
+#[cfg(feature = "git")]
+pub fn head_commit_id(root: &Path) -> Option<String> {
+    let repo = git2::Repository::discover(root).ok()?;
+    let commit = repo.head().ok()?.peel_to_commit().ok()?;
+    Some(commit.id().to_string())
+}
+
+/// The bytes of `file` as of commit `sha` (the baseline for a file that was clean at follow-start).
+/// None if the commit/path is unresolvable (e.g. the file did not exist then → caller treats it as
+/// all-added). `file` is absolute; it is made relative to the repo workdir for the tree lookup.
+#[cfg(feature = "git")]
+pub fn blob_at(root: &Path, sha: &str, file: &Path) -> Option<Vec<u8>> {
+    let repo = git2::Repository::discover(root).ok()?;
+    let workdir = repo.workdir()?;
+    let workdir = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
+    let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let rel = file_abs.strip_prefix(&workdir).ok()?;
+    let oid = git2::Oid::from_str(sha).ok()?;
+    let tree = repo.find_commit(oid).ok()?.tree().ok()?;
+    let entry = tree.get_path(rel).ok()?;
+    let obj = entry.to_object(&repo).ok()?;
+    Some(obj.as_blob()?.content().to_vec())
+}
+
 /// Walks a git2 Diff and assembles the sequence of DiffLines.
 /// When `with_headers` = true, inserts a Context line at each file boundary (text = bare path, line numbers None) (for commit_diff). The renderer turns it into a boxed header.
 #[cfg(feature = "git")]
@@ -1482,6 +1549,36 @@ fn classify(s: git2::Status) -> FileStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `diff_contents`(follow ベースライン差分の diff エンジン)は、変更ハンクだけを
+    /// 正しい行番号つきで出す(全文でなく)・text は改行を含まない・同一内容なら空。
+    #[test]
+    fn diff_contents_emits_changed_hunks_with_line_numbers() {
+        let old = "a\nb\nc\nd\ne\n";
+        let new = "a\nb\nCHANGED\nd\ne\n";
+        let lines = diff_contents(old, new);
+        let removed: Vec<&DiffLine> = lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Removed)
+            .collect();
+        let added: Vec<&DiffLine> = lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Added)
+            .collect();
+        assert_eq!(removed.len(), 1, "変更行1本が Removed");
+        assert_eq!(added.len(), 1, "変更行1本が Added");
+        assert_eq!(removed[0].text, "c");
+        assert_eq!(removed[0].old_no, Some(3), "旧側の行番号");
+        assert_eq!(added[0].text, "CHANGED");
+        assert_eq!(added[0].new_no, Some(3), "新側の行番号");
+        // 文脈行は Context・text に改行を含まない。
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Context && l.text == "a" && l.old_no == Some(1)));
+        assert!(lines.iter().all(|l| !l.text.contains('\n')));
+        // 同一内容なら空(変更なし)。
+        assert!(diff_contents(new, new).is_empty());
+    }
 
     /// 背景の読み取り(statuses/ignored)は index を**書き戻さない**(--no-optional-locks)。
     /// stat キャッシュが陳腐化した状態(内容同一で mtime だけ更新)で status を読んでも

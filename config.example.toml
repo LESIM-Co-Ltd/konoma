@@ -124,6 +124,9 @@ csv_rainbow = true
 #                      all-added diff). q goes back, s cycles the layout.
 #   "file"           … a normal full-screen preview (auto-scrolls to the first changed hunk, gutter on changed lines).
 # Either way, files with no diff (unchanged / outside a repo) and images/SVG/video/PDF open as a normal preview.
+# The follow diff shows changes SINCE you pressed F (pre-existing uncommitted changes stay hidden); press f in
+# the diff to toggle the full git diff. Follow is sticky — only q / another F / entering text input stops it
+# (scrolling, n/N and f keep it on).
 follow_view = "diff"
 
 # The states Space cycles through in Markdown task lists (checkboxes), in cycle order.
@@ -225,6 +228,10 @@ math_color = "#d0d0d0"
 #   true  (default) … restore (pick up where you left off).
 #   false           … always start with a single blank tab (the session is neither read nor written).
 restore_tabs = true
+# When restore_tabs is on: also persist/restore a session that has only ONE tab (default true). Set
+# false to skip saving single-tab sessions — quitting with a lone tab deletes that directory's session
+# file so the next launch starts fresh; sessions with two or more tabs still save/restore.
+restore_single_tab = true
 
 # Default tree sort (at startup). At runtime, switch with the `s` sort menu
 # (key n/s/m/e, r=reverse, .=dirs first).
@@ -354,7 +361,9 @@ builtin = "pdf"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
 #                  "enter_visual" "toggle_select" "open_in_new_tab" (Ctrl-t: open the entry under the cursor in a new tab)
 #   Agent Watch  : "toggle_changed_filter" (C: show only changed files) "jump_next_change" (n) "jump_prev_change" (N)
-#                  "toggle_follow" (F, global: auto-jump to externally changed files = follow the AI's work)
+#                  "toggle_follow" (F, global: auto-jump to externally changed files = follow the AI's work.
+#                    The follow diff shows changes SINCE you pressed F — pre-existing uncommitted changes stay hidden.)
+#                  "toggle_follow_diff_scope" (f, in a follow diff: switch between "since follow start" and the full git diff)
 #   Path jump    : "paste_jump" (P, global: read a path/GitHub link from the clipboard and go to it = reveal +
 #                  preview. Handles local absolute/relative paths, GitHub blob/raw URLs, #L123 / :123 line anchors.
 #                  Outside the current root, switches the target's repo to root. @path#L references paste as-is too.)

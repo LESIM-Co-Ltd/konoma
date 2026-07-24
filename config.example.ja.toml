@@ -118,6 +118,8 @@ csv_rainbow = true
 #                    未追跡ファイルは全行追加の diff)。q で戻る・s でレイアウト切替。
 #   "file"        … 通常の全画面プレビュー(最初の変更ハンクの位置まで自動スクロール・変更行にガター)。
 # どちらでも、diff の無いファイル(変更なし/リポジトリ外)と画像/SVG/動画/PDF は通常プレビューで開く。
+# フォロー diff は「F を押して以降」の変更だけを出す(F 前の未コミット変更は隠れる)。diff 内 f でフル git
+# diff に切替。フォローは粘着的=q / もう一度 F / テキスト入力 でのみ解除(スクロール/n/N/f は維持)。
 follow_view = "diff"
 
 # Markdown プレビューのタスクリスト(チェックボックス)で Space が巡回する状態の配列(巡回順)。
@@ -217,6 +219,10 @@ math_color = "#d0d0d0"
 #   true  (既定) … 復元する(前回の続きから始まる)
 #   false        … 常にまっさらな1タブで起動(セッションは読みも書きもしない)
 restore_tabs = true
+# restore_tabs が on の時: タブ1枚だけのセッションも保存/復元するか(既定 true)。false にすると
+# タブ1枚のセッションは保存しない=タブ1枚のまま終了するとそのディレクトリのセッションファイルを
+# 削除し、次回起動はまっさらから始まる(タブ2枚以上のセッションは従来どおり保存/復元する)。
+restore_single_tab = true
 
 # ツリーの既定の並び (起動時)。実行時は `s` のソートメニューで切り替え可
 # (基準 n/s/m/e・r=昇降反転・.=ﾌｫﾙﾀﾞ先頭)。
@@ -345,7 +351,9 @@ builtin = "pdf"
 #                  "mark_jump" "set_anchor" "reset_anchor" "open_git_diff_cursor" "open_git_view"
 #                  "enter_visual" "toggle_select" "open_in_new_tab"(Ctrl-t: カーソル下を別タブで開く)
 #   Agent Watch  : "toggle_changed_filter"(C: 変更ファイルのみ表示) "jump_next_change"(n) "jump_prev_change"(N)
-#                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾)
+#                  "toggle_follow"(F・global: 外部変更ファイルへ自動ジャンプ＝AI の作業を追尾。
+#                    フォロー diff は「F を押して以降」の変更だけを出す＝F 前の未コミット変更は隠れる)
+#                  "toggle_follow_diff_scope"(f・フォロー diff 内: 「開始以降」とフル git diff を切替)
 #   パス移動     : "paste_jump"(P・global: クリップボードのパス/GitHub リンクを読んでその位置へ移動＝
 #                  reveal + preview。ローカル絶対/相対・GitHub blob/raw URL・#L123 / :123 行指定に対応。
 #                  現在の root 外なら対象の repo を root に切替。@path#L 参照もそのまま貼れる)

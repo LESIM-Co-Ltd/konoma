@@ -46,6 +46,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
+            .row("f", l(crate::i18n::Msg::HintFollowScope))
             .row(crate::ui::status::page_help(app), "")
             .row("x", l(crate::i18n::Msg::DiscardWholeFile))
             .row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
@@ -194,6 +195,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     }
     // フォロー(F)の再開導線(解除後に1キーで戻れることを見せる)。
     v.push(hint(lang, "F", crate::i18n::Msg::StFollow));
+    // フォロー由来 diff: f=範囲トグル(開始以降 ⇄ フル)。follow_diff_scope_msg が Some のときだけ。
+    if app.follow_diff_scope_msg().is_some() {
+        v.push(hint(lang, "f", crate::i18n::Msg::HintFollowScope));
+    }
     // Markdown/Mermaid は R で装飾表示 ⇄ raw ソース表示をトグル(ラベルは現在モードで切替)。
     if app.is_decorated_kind() {
         let msg = if app.is_md_raw() {
@@ -611,10 +616,15 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
         .diff_change_position()
         .map(|(i, n)| format!(" ({i}/{n})"))
         .unwrap_or_default();
+    // フォロー由来 diff は「開始以降 / フル」の範囲を明示する(境界が不可視ゆえの戸惑いを防ぐ)。
+    let scope = app
+        .follow_diff_scope_msg()
+        .map(|m| format!(" · {}", tr(app.lang, m)))
+        .unwrap_or_default();
     let title = app
         .preview_path
         .clone()
-        .map(|p| format!(" diff{mode_tag}: {}{pos} ", app.format_path(&p)))
+        .map(|p| format!(" diff{mode_tag}: {}{pos}{scope} ", app.format_path(&p)))
         .unwrap_or_else(|| " diff ".to_string());
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
