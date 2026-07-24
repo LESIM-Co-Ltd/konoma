@@ -264,23 +264,23 @@ impl App {
     // --- 複数選択 + ビジュアル(範囲)選択 (M7 Phase B) ------------------------
     /// Whether there are any selected items (the committed set).
     pub fn has_selection(&self) -> bool {
-        !self.selection.is_empty()
+        !self.tab.selection.is_empty()
     }
     /// Whether `path` is in the committed selection (for the render's marker check).
     pub fn is_selected(&self, path: &Path) -> bool {
-        self.selection.contains(path)
+        self.tab.selection.contains(path)
     }
     /// Clear the entire selection (Esc / after a batch operation). If in visual mode, also clears the range.
     pub fn clear_selection(&mut self) {
-        self.selection.clear();
-        self.visual_anchor = None;
+        self.tab.selection.clear();
+        self.tab.visual_anchor = None;
     }
     /// `V`=toggle the selection of the single item at the cursor and move down one (for picking scattered items / consecutive selection).
     pub fn toggle_select(&mut self) {
         if let Some(e) = self.entries.get(self.selected) {
             let p = e.path.clone();
-            if !self.selection.remove(&p) {
-                self.selection.insert(p);
+            if !self.tab.selection.remove(&p) {
+                self.tab.selection.insert(p);
             }
             self.tree_next();
         }
@@ -288,17 +288,18 @@ impl App {
 
     /// Whether visual (range) selection mode is active.
     pub fn is_visual(&self) -> bool {
-        self.visual_anchor.is_some()
+        self.tab.visual_anchor.is_some()
     }
     /// `v`=start visual mode. Places the anchor at the current cursor (does nothing on an empty tree).
     pub fn enter_visual(&mut self) {
         if !self.entries.is_empty() {
-            self.visual_anchor = Some(self.selected);
+            self.tab.visual_anchor = Some(self.selected);
         }
     }
     /// The visual range [lo, hi] (anchor to cursor, ascending). None if not in visual mode.
     fn visual_bounds(&self) -> Option<(usize, usize)> {
-        self.visual_anchor
+        self.tab
+            .visual_anchor
             .map(|a| (a.min(self.selected), a.max(self.selected)))
     }
     /// Whether row `idx` is within the visual range (for the render's live preview).
@@ -312,14 +313,14 @@ impl App {
                 .filter_map(|i| self.entries.get(i).map(|e| e.path.clone()))
                 .collect();
             for p in paths {
-                self.selection.insert(p);
+                self.tab.selection.insert(p);
             }
         }
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
     }
     /// Esc=leave visual mode without taking in the range (keeps the committed selection).
     pub fn exit_visual_cancel(&mut self) {
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
     }
     /// `a`/`A` during visual mode = scope bulk selection. `all_displayed`=everything displayed / otherwise=the same parent level as the cursor.
     /// Also takes in the in-progress range, adds it to the selection, and leaves visual mode.
@@ -345,40 +346,40 @@ impl App {
             }
         }
         for p in paths {
-            self.selection.insert(p);
+            self.tab.selection.insert(p);
         }
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
     }
     /// Whether to render the marker column (leftmost 2 cells): there is a committed selection, or visual mode is active.
     pub fn show_selection_gutter(&self) -> bool {
-        !self.selection.is_empty() || self.is_visual()
+        !self.tab.selection.is_empty() || self.is_visual()
     }
     /// The count currently marked (committed ∪ visual range). For the context's `sel: N` display.
     pub fn marked_count(&self) -> usize {
         match self.visual_bounds() {
             Some((lo, hi)) => {
-                let mut n = self.selection.len();
+                let mut n = self.tab.selection.len();
                 for i in lo..=hi {
                     if let Some(e) = self.entries.get(i) {
-                        if !self.selection.contains(&e.path) {
+                        if !self.tab.selection.contains(&e.path) {
                             n += 1;
                         }
                     }
                 }
                 n
             }
-            None => self.selection.len(),
+            None => self.tab.selection.len(),
         }
     }
     /// Target paths for a batch operation: if there is a selection, **all selected items** (path ascending); otherwise, the single item at the cursor.
     pub(super) fn op_targets(&self) -> Vec<PathBuf> {
-        if self.selection.is_empty() {
+        if self.tab.selection.is_empty() {
             self.entries
                 .get(self.selected)
                 .map(|e| vec![e.path.clone()])
                 .unwrap_or_default()
         } else {
-            self.selection.iter().cloned().collect()
+            self.tab.selection.iter().cloned().collect()
         }
     }
 }

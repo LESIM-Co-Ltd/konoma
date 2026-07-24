@@ -346,43 +346,12 @@ struct TabState {
     preview_scroll: u16,
     preview_hscroll: u16,
     preview_viewport: u16,
-    preview_byte_top: u64,
-    preview_top_line: usize,
     image_zoom: f64,
-    image_center: (f64, f64),
-    // PDF の現在ページ/総ページ数もタブごとに保持(別タブから戻ったとき同じページを再描画する)。
-    pdf_page: u32,
-    pdf_pages: Option<u32>,
-    // CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態を束ねた per-tab バンドル
-    // (テーブル本体は復元時に再パース。git 状態の詳細コメントは PerTab 定義側を参照)。
+    // CSV/TSV テーブルのセルカーソル/スクロールと git オーバーレイ状態、windowed プレビューの
+    // スクロール/2D キャレット、画像/PDF のパン・ページ位置、Markdown raw/Tab フォーカス/フェンス
+    // ズーム、選択/絞り込み/プレビュー検索を束ねた per-tab バンドル(テーブル本体は復元時に再パース。
+    // 各concern の詳細コメントは PerTab 定義側を参照)。
     tab: PerTab,
-    // windowed(Code/Text)プレビューの 2D キャレット位置(別タブから戻っても同じ行/列に戻る)。選択(anchor)は持ち越さない。
-    preview_cursor_line: usize,
-    preview_cursor_col: usize,
-    // Markdown/Mermaid の raw ソース表示(`R`)状態もタブごとに保持する。
-    md_raw: bool,
-    // Markdown プレビューの Tab フォーカスと、インライン図のその場ズーム/全画面復帰情報も
-    // タブごとに保持する。タブ非依存のままだと、両タブが md プレビュー中の切替(enter_preview を
-    // 経ない唯一の経路)で前タブのフォーカス/ズームが別文書へ漏れ、hjkl が見えない図のパンに
-    // 化ける(image_zoom が TabState 保存されるのと同じ扱いに揃える)。
-    focused_item: Option<usize>,
-    fence_zoom: f64,
-    fence_center: (f64, f64),
-    fence_return: Option<(u16, Option<usize>)>,
-    // --- タブ毎の選択 / 絞り込み / プレビュー検索 (#2/#6: タブ跨ぎのデータ損失 footgun 対策) ---
-    // これらが TabState に無いと、タブAで選択 → 別タブ/別 dir で D/X/Y/P したとき、
-    // 見えていない旧選択のファイルが操作対象になる(マーカー不可視で気付けない)。
-    // クリップボード(Y/X/P の paths バッファ)は app 全体共有のままで、ここには入れない(ユーザ確定事項)。
-    selection: BTreeSet<PathBuf>,
-    visual_anchor: Option<usize>,
-    tree_filter: Option<String>,
-    filter_input: Option<String>,
-    filter_pool: Vec<Entry>,
-    changed_filter: bool,
-    preview_search: Option<String>,
-    search_input: Option<String>,
-    search_matches: Vec<(u64, usize, usize)>,
-    search_idx: usize,
 }
 
 /// Size of `App` in bytes — a memory guard reads this to catch a struct that suddenly balloons.
@@ -570,26 +539,11 @@ pub struct App {
     bookmark_list_sel: usize,
     /// Confirmation/input dialog (create `a` / rename `R` / delete `D`). While showing, main intercepts keys.
     dialog: Option<Dialog>,
-    /// Multi-selection (M7 Phase B). The set of **absolute paths** selected via `V`/visual. The target of batch delete, etc.
-    /// Held by path (not by index), so the selection is preserved across tree rebuilds and filtering.
-    selection: BTreeSet<PathBuf>,
-    /// Anchor of visual (range) selection mode (entries index). Visual mode is active while it is Some.
-    /// Range = anchor to cursor. On confirm, it is taken into `selection`.
-    visual_anchor: Option<usize>,
     /// File clipboard (M7 Phase B). Push with `Y`=copy/`X`=cut, apply with `P`=paste.
     clipboard: Option<Clipboard>,
     /// Height (in rows) of the tree display area at the last render. Used as the page size for paging.
     pub tree_viewport: u16,
 
-    /// Tree filter (`/`). Some=filter is active (the query). entries holds the result of narrowing filter_pool.
-    tree_filter: Option<String>,
-    /// Editing buffer for the filter query. Some=input mode (intercepts keys).
-    filter_input: Option<String>,
-    /// All entries to filter from (recursively collected under root). Built once when `/` starts.
-    filter_pool: Vec<Entry>,
-    /// Changed-files-only tree filter (`C`). While true, entries is a flat list of the files with a git
-    /// status under root (the review companion for AI-made changes; broot's `:gs` equivalent). Per tab.
-    changed_filter: bool,
     /// Follow mode (`F`, global): while true, an external file change (e.g. an AI agent writing) jumps the
     /// tree selection to that file and opens its preview. Any other keypress turns it off (Zed-style).
     follow_mode: bool,
@@ -627,13 +581,8 @@ pub struct App {
     pub md_view_rows: usize,
 
     /// less-style windowed reading for Code/Text (does not read the whole file). Always Some during a Code/Text preview.
-    /// While Some, scrolling uses preview_byte_top (the line-head byte) instead of preview_scroll.
+    /// While Some, scrolling uses `tab.preview_byte_top` (the line-head byte) instead of preview_scroll.
     preview_win: Option<crate::preview::window::FileWindow>,
-    /// Byte offset of the top line of the window (the scroll position when windowed).
-    preview_byte_top: u64,
-    /// Absolute line number of the top of the window (0-based). For the line-number gutter. Changes with scrolling, and
-    /// is corrected from the total line count when reaching the end.
-    preview_top_line: usize,
     /// Cache of the total line count (computed once with count_lines when line numbers are ON).
     preview_total_lines: Option<usize>,
     /// Cache of the highlighted window (avoids re-highlighting on every render).
@@ -661,10 +610,6 @@ pub struct App {
     /// It depends on width (to fit mermaid to the display width), so the key is (path, width).
     md_cache: Option<MdCache>,
 
-    /// `R`: show a Markdown/Mermaid preview as its raw source (windowed, like a code file) instead of the
-    /// decorated render. Raw mode makes lines/columns match the file, so the 2D caret selection/copy works.
-    md_raw: bool,
-
     /// Cache of raw diff lines for the GitDiff preview (per path). Avoids recomputing `git diff` every frame.
     diff_cache: Option<DiffCache>,
     gutter_cache: Option<GutterCache>,
@@ -672,26 +617,13 @@ pub struct App {
     /// Interactive items in the Markdown preview (links + task checkboxes, collected on each render).
     /// Focus with Tab/⇧Tab; Enter opens a link / toggles a checkbox, Space toggles a checkbox.
     md_items: Vec<MdItem>,
-    /// Index of the focused item (within md_items). None=nothing selected.
-    focused_item: Option<usize>,
     /// Per-`<details>`-block open override (ordinal → open), set by `Space`/`Enter` on the summary.
     /// Absent = the default (from the `open` attribute + `ui.md_details`). Reset on file/tab change.
     details_open: std::collections::HashMap<usize, bool>,
 
-    /// In-preview search (`/`, less style). Some=search is active (the query). Highlights matches and moves with n/N.
-    /// Supported in Code/Text (windowed) and table previews — see `search_target`.
-    preview_search: Option<String>,
-    /// Editing buffer for the search query. Some=input mode (intercepts keys, runs on Enter).
-    search_input: Option<String>,
-    /// For each occurrence: (line-head byte offset, 0-based line number, byte column within the line). The result of `find_all_matches`.
-    /// Multiple occurrences on one line become separate elements (so `n`/`N` move per occurrence).
-    /// **Table previews reuse this slot as `(0, data row, column)`** — cell coordinates in reading order.
-    search_matches: Vec<(u64, usize, usize)>,
-    /// The matching table cells as a set, for O(1) lookup while rendering (mirrors `search_matches`).
+    /// The matching table cells as a set, for O(1) lookup while rendering (mirrors `tab.search_matches`).
     /// Kept separate so a large result set does not turn cell drawing into a linear scan.
     table_search_hits: std::collections::HashSet<(usize, usize)>,
-    /// Index of the current match (within search_matches).
-    search_idx: usize,
 
     /// Image backend (M2). None if the terminal is unsupported or uninitialized, in which case images fall back to text.
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
@@ -727,8 +659,6 @@ pub struct App {
     image_src: Option<std::sync::Arc<image::DynamicImage>>,
     /// Zoom factor. 1.0=the whole image fits, >1.0 zooms in (overflowing the viewport clips and enables pan).
     pub image_zoom: f64,
-    /// Display center (image-normalized coordinates [0,1]). Moved by pan. Default is the center.
-    image_center: (f64, f64),
     /// The most recently built crop rectangle (source-image px: x,y,w,h). The protocol is rebuilt only when it changes.
     image_crop: Option<(u32, u32, u32, u32)>,
     /// The most recent visible fraction (0..1, w/h). Less than 1 = the image overflows the viewport and is clipped = pan is possible.
@@ -745,9 +675,6 @@ pub struct App {
     /// the same job a dozen times; the inline-fence analog is `MdImgEntry::reraster_inflight`).
     /// Cleared when a media result arrives (`apply_media`) and by `clear_image` (generation bump).
     vector_reraster_inflight: bool,
-    /// Where to return when closing a full-screen mermaid-fence view (`q`): the Markdown preview's
-    /// scroll offset and Tab-focus index at the moment the fence was opened.
-    fence_return: Option<(u16, Option<usize>)>,
     /// Signature of the inline-image overlay drawn last frame (urls + screen rects). When it
     /// changes (scroll/focus moved a diagram, or the document was left), the run loop clears the
     /// terminal once to sweep orphaned kitty unicode-placeholder rows (they are printed into the
@@ -757,16 +684,7 @@ pub struct App {
     md_overlay_seen: Option<u64>,
     /// The overlay moved/vanished since the previous frame → the run loop full-redraws once.
     md_overlay_moved: bool,
-    /// In-place zoom of the **focused** inline mermaid diagram (`+`/`-` while focused; 1.0 = fit).
-    /// The reserved cell area never changes — the zoom crops within it (embedded-map feel).
-    fence_zoom: f64,
-    /// Pan center of the in-place zoom (image-normalized [0,1]; hjkl while zoomed).
-    fence_center: (f64, f64),
 
-    /// PDF: current page (1-based). Each page is rasterized on demand (one at a time) into image_src.
-    pdf_page: u32,
-    /// PDF: total page count from poppler `pdfinfo`. None = unknown (no poppler) → page navigation disabled.
-    pdf_pages: Option<u32>,
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
@@ -782,17 +700,12 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
-    /// Per-tab bundle — see `PerTab` (table cursor/scroll + git-view overlay state).
+    /// Per-tab bundle — see `PerTab` (table cursor/scroll, git-view overlay, windowed-preview
+    /// scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom, selection/filter/search).
     tab: PerTab,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
 
-    /// Line cursor for windowed (Code/Text) previews: absolute 0-based logical line under the cursor.
-    /// The current line is highlighted; `j`/`k` move it (the window follows). Only meaningful while windowed.
-    preview_cursor_line: usize,
-    /// Column cursor: 0-based char index within the logical line (`h`/`l` move it). The render clamps it to the
-    /// line's length and writes the clamp back. Used for the block caret and charwise (`v`) selection.
-    preview_cursor_col: usize,
     /// Visual-selection anchor `(line, col)`. Some = selecting. Charwise (`v`) uses both; linewise (`V`) uses the line.
     preview_visual_anchor: Option<(usize, usize)>,
     /// Whether the active selection is linewise (`V`, whole lines) rather than charwise (`v`, exact character range).
@@ -1243,9 +1156,15 @@ struct DecoratedMarkdown {
 
 /// Per-tab state bundle. Being migrated concern-by-concern out of the flat App/TabState fields
 /// so tab save/load is one clone and adding a per-tab field touches one place (see
-/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll, and the git-view overlay
-/// (changes hub / log / graph / branches / commit detail) state.
-#[derive(Clone, Default)]
+/// docs/REFACTOR-2026-07.md). Currently: Table preview cursor + scroll, the git-view overlay
+/// (changes hub / log / graph / branches / commit detail) state, windowed-preview scroll/caret
+/// internals (byte/line top, 2D cursor), image/PDF pan-and-page position, Markdown raw-mode/Tab-focus/
+/// inline-fence zoom state, and the tab-scoped selection/filter/search state.
+///
+/// `Default` is implemented manually (not derived): a few fields have a non-zero "fresh tab" value
+/// (`image_center`/`fence_center` start centered, `fence_zoom` starts at 1.0=fit, `pdf_page` starts
+/// at 1), matching what `App::new` used to initialize them to before this migration.
+#[derive(Clone)]
 struct PerTab {
     table_cur_row: usize,
     table_cur_col: usize,
@@ -1281,6 +1200,94 @@ struct PerTab {
     git_graph_legend: Vec<crate::git::LegendEntry>,
     git_graph_hidden: usize,
     git_graph_order: Vec<String>,
+    // --- windowed(Code/Text/raw md)プレビューのスクロール内部状態 ---
+    preview_byte_top: u64,
+    preview_top_line: usize,
+    // --- windowed プレビューの 2D キャレット位置(選択 anchor は持ち越さない) ---
+    preview_cursor_line: usize,
+    preview_cursor_col: usize,
+    // --- 画像/PDF のパン・ページ位置 ---
+    image_center: (f64, f64),
+    pdf_page: u32,
+    pdf_pages: Option<u32>,
+    // --- Markdown/Mermaid raw ソース表示(`R`)・Tab フォーカス・インライン図のその場ズーム/全画面復帰 ---
+    md_raw: bool,
+    focused_item: Option<usize>,
+    fence_zoom: f64,
+    fence_center: (f64, f64),
+    fence_return: Option<(u16, Option<usize>)>,
+    // --- タブ毎の選択 / 絞り込み / プレビュー検索 ---
+    selection: BTreeSet<PathBuf>,
+    visual_anchor: Option<usize>,
+    tree_filter: Option<String>,
+    filter_input: Option<String>,
+    filter_pool: Vec<Entry>,
+    changed_filter: bool,
+    preview_search: Option<String>,
+    search_input: Option<String>,
+    search_matches: Vec<(u64, usize, usize)>,
+    search_idx: usize,
+}
+
+impl Default for PerTab {
+    fn default() -> Self {
+        Self {
+            table_cur_row: 0,
+            table_cur_col: 0,
+            table_top_row: 0,
+            table_left_col: 0,
+            git_view: false,
+            git_view_sel: 0,
+            git_view_entries: Vec::new(),
+            came_from_git_view: false,
+            git_log: None,
+            git_log_sel: 0,
+            git_detail: None,
+            git_detail_meta: None,
+            git_detail_title: None,
+            git_detail_scroll: 0,
+            git_detail_hscroll: 0,
+            git_detail_viewport: 0,
+            git_detail_total: 0,
+            git_branches: None,
+            git_branch_sel: 0,
+            git_branch_filter: String::new(),
+            git_branch_filtering: false,
+            git_graph: None,
+            git_graph_sel: 0,
+            git_graph_base: None,
+            git_graph_base_label: None,
+            git_graph_visible: std::collections::HashSet::new(),
+            git_graph_legend: Vec::new(),
+            git_graph_hidden: 0,
+            git_graph_order: Vec::new(),
+            preview_byte_top: 0,
+            preview_top_line: 0,
+            preview_cursor_line: 0,
+            preview_cursor_col: 0,
+            // 画像/フェンスの中心は「中央」が初期値(App::new が (0.5, 0.5) にしていたのと同じ)。
+            image_center: (0.5, 0.5),
+            // PDF ページは 1 始まり(App::new が 1 にしていたのと同じ)。
+            pdf_page: 1,
+            pdf_pages: None,
+            md_raw: false,
+            focused_item: None,
+            // フェンスのその場ズームは 1.0=フィットが初期値(App::new が 1.0 にしていたのと同じ)。
+            fence_zoom: 1.0,
+            fence_center: (0.5, 0.5),
+            fence_return: None,
+            selection: BTreeSet::new(),
+            visual_anchor: None,
+            tree_filter: None,
+            filter_input: None,
+            filter_pool: Vec::new(),
+            changed_filter: false,
+            preview_search: None,
+            search_input: None,
+            search_matches: Vec::new(),
+            search_idx: 0,
+        }
+    }
 }
 
 impl App {
@@ -1318,14 +1325,8 @@ impl App {
             bookmark_list: false,
             bookmark_list_sel: 0,
             dialog: None,
-            selection: BTreeSet::new(),
-            visual_anchor: None,
             clipboard: None,
             tree_viewport: 0,
-            tree_filter: None,
-            filter_input: None,
-            filter_pool: Vec::new(),
-            changed_filter: false,
             follow_mode: false,
             follow_session: Vec::new(),
             diff_follow_scope: false,
@@ -1339,8 +1340,6 @@ impl App {
             preview_hscroll: 0,
             preview_viewport: 0,
             preview_win: None,
-            preview_byte_top: 0,
-            preview_top_line: 0,
             preview_total_lines: None,
             win_cache: None,
             hl_pending: false,
@@ -1349,17 +1348,11 @@ impl App {
             pending_edit: None,
             pending_git_tool: false,
             md_cache: None,
-            md_raw: false,
             diff_cache: None,
             gutter_cache: None,
             md_items: Vec::new(),
-            focused_item: None,
             details_open: std::collections::HashMap::new(),
-            preview_search: None,
-            search_input: None,
-            search_matches: Vec::new(),
             table_search_hits: std::collections::HashSet::new(),
-            search_idx: 0,
             picker: None,
             img_tx: None,
             image: None,
@@ -1372,27 +1365,19 @@ impl App {
             kitty_shown: None,
             image_src: None,
             image_zoom: 1.0,
-            image_center: (0.5, 0.5),
             image_crop: None,
             image_vis_frac: (1.0, 1.0),
             vector_svg: None,
             image_logical: None,
             vector_reraster_inflight: false,
-            fence_return: None,
-            fence_zoom: 1.0,
-            fence_center: (0.5, 0.5),
             md_overlay_last: None,
             md_overlay_seen: None,
             md_overlay_moved: false,
-            pdf_page: 1,
-            pdf_pages: None,
             preview_media_mtime: None,
             media_cache: None,
             table_data: None,
             tab: PerTab::default(),
             table_viewport_rows: 0,
-            preview_cursor_line: 0,
-            preview_cursor_col: 0,
             preview_visual_anchor: None,
             preview_visual_linewise: false,
             gif_frames: Vec::new(),
@@ -1505,7 +1490,7 @@ impl App {
             self.selected = self.entries.len().saturating_sub(1);
         }
         // entries を作り直したら visual_anchor(entries 添字)は stale。必ず無効化する。
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
         // 詳細セルのキャッシュも世代交代(fs が変わった可能性がある節目=ここで必ず破棄)。
         self.detail_cells_cache.clear();
         Ok(())
@@ -1601,7 +1586,7 @@ impl App {
             }
         };
         // 絞り込み中は結果順を変えない(クリア後にツリー再構築で反映)。
-        if self.tree_filter.is_none() {
+        if self.tab.tree_filter.is_none() {
             self.rebuild_tree()?;
         }
         self.sort_menu = keep_open;
@@ -1712,7 +1697,7 @@ impl App {
         if self.is_preview_visual() {
             return Some(InternalMode::PreviewVisual);
         }
-        if self.changed_filter && matches!(self.mode, Mode::Tree) {
+        if self.tab.changed_filter && matches!(self.mode, Mode::Tree) {
             return Some(InternalMode::ChangedFilter);
         }
         None
@@ -1969,10 +1954,10 @@ impl App {
         let mut v: Vec<PathBuf> = self
             .entries
             .iter()
-            .filter(|e| self.selection.contains(&e.path))
+            .filter(|e| self.tab.selection.contains(&e.path))
             .map(|e| e.path.clone())
             .collect();
-        for p in &self.selection {
+        for p in &self.tab.selection {
             if !v.contains(p) {
                 v.push(p.clone());
             }
@@ -2522,7 +2507,7 @@ impl App {
     /// If a directory, toggle expansion; if a file, transition to Preview.
     /// While filtering (a flat result list), expand-toggle is meaningless, so behave the same as `tree_descend`.
     pub fn tree_activate(&mut self) -> Result<()> {
-        if self.tree_filter.is_some() || self.changed_filter {
+        if self.tab.tree_filter.is_some() || self.tab.changed_filter {
             return self.tree_descend();
         }
         let Some(entry) = self.entries.get(self.selected).cloned() else {
@@ -2545,19 +2530,19 @@ impl App {
     /// `visual_anchor` is an entries index, so it goes stale under a different root. The filter and preview search are also
     /// for the old root, so they are cleared together (rebuild_tree also invalidates visual_anchor, but we do it explicitly).
     fn clear_for_root_change(&mut self) {
-        self.selection.clear();
-        self.visual_anchor = None;
+        self.tab.selection.clear();
+        self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
     pub fn tree_leave(&mut self) -> Result<()> {
-        if self.tree_filter.is_some() {
+        if self.tab.tree_filter.is_some() {
             self.filter_clear();
             return Ok(());
         }
-        if self.changed_filter {
+        if self.tab.changed_filter {
             self.toggle_changed_filter(); // OFF に戻す(通常ツリーへ)
             return Ok(());
         }
@@ -2578,7 +2563,7 @@ impl App {
         let Some(entry) = self.entries.get(self.selected).cloned() else {
             return Ok(());
         };
-        let was_filtering = self.tree_filter.is_some();
+        let was_filtering = self.tab.tree_filter.is_some();
         if entry.is_dir {
             // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越さない)。
             self.clear_for_root_change();
@@ -2779,7 +2764,7 @@ impl App {
         // 追尾がビューを動かす瞬間に古い flash(「follow: on」等)を消す=フッターを
         // その面の操作ヒントに明け渡す(flash は本来キー入力で消えるが、追尾はキー無しで進むため)。
         self.flash = None;
-        if self.changed_filter {
+        if self.tab.changed_filter {
             // 変更一覧を最新化してから対象を選択(一覧に居るはず=変更イベント由来)。
             self.reapply_changed_filter();
             if let Some(i) = self.entries.iter().position(|e| e.path == path) {
@@ -2889,9 +2874,9 @@ impl App {
             return;
         };
         if let Ok((off, _)) = win.advance(0, top) {
-            self.preview_byte_top = off;
-            self.preview_top_line = top;
-            self.preview_cursor_line = line0;
+            self.tab.preview_byte_top = off;
+            self.tab.preview_top_line = top;
+            self.tab.preview_cursor_line = line0;
         }
     }
 
@@ -2906,37 +2891,37 @@ impl App {
         let kind = self.cfg.resolve_preview(path);
         self.preview_scroll = 0;
         self.preview_hscroll = 0;
-        self.preview_byte_top = 0;
-        self.preview_top_line = 0;
+        self.tab.preview_byte_top = 0;
+        self.tab.preview_top_line = 0;
         // 画像状態は毎回リセット。SVG/GIF は別スレッドで読み込み開始(UI を塞がない)。
         self.clear_image();
         // PDF はページ数を先に求める(pdfinfo・~数 ms)。None なら単ページ扱い=ページ移動なし。
         if matches!(kind, PreviewKind::Pdf(_)) {
-            self.pdf_pages = crate::preview::pdf::page_count(path);
+            self.tab.pdf_pages = crate::preview::pdf::page_count(path);
         }
         self.start_media_load(&kind, path);
         self.preview_kind = Some(kind);
-        self.fence_return = None; // 通常のプレビュー遷移でフェンス復帰情報は用済み
-        self.fence_zoom = 1.0;
-        self.fence_center = (0.5, 0.5);
-        self.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
+        self.tab.fence_return = None; // 通常のプレビュー遷移でフェンス復帰情報は用済み
+        self.tab.fence_zoom = 1.0;
+        self.tab.fence_center = (0.5, 0.5);
+        self.tab.md_raw = false; // 新規ファイルは装飾表示から(Markdown/Mermaid)。`R` で raw へ。
         self.md_cache = None; // 別ファイルに切替: 装飾キャッシュを無効化
         self.md_items.clear();
         if !same_file {
             self.md_image_cache.clear(); // 別ファイル: インライン画像キャッシュも破棄
         }
-        self.focused_item = None;
+        self.tab.focused_item = None;
         self.outline_open = false; // 新規プレビューでアウトラインオーバーレイは閉じる
         self.details_open.clear(); // <details> の開閉状態は文書ごと=別ファイルでリセット
-        self.preview_search = None;
-        self.search_input = None;
-        self.search_matches.clear();
+        self.tab.preview_search = None;
+        self.tab.search_input = None;
+        self.tab.search_matches.clear();
         self.table_search_hits.clear();
-        self.search_idx = 0;
+        self.tab.search_idx = 0;
         self.setup_windowed(); // 大きい Code/Text なら less 風ウィンドウ読みに切替
                                // windowed プレビューの 2D キャレット/選択を先頭へリセット。
-        self.preview_cursor_line = 0;
-        self.preview_cursor_col = 0;
+        self.tab.preview_cursor_line = 0;
+        self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
         // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
@@ -3090,7 +3075,7 @@ impl App {
             return None;
         }
         if self.is_windowed() {
-            return Some(self.preview_cursor_line + 1);
+            return Some(self.tab.preview_cursor_line + 1);
         }
         // Rendered Markdown: reflow means there is no exact scroll-row → source-line mapping. Anchor on a
         // logical line (a Tab-focused item if one is visible, else the top of the view), estimate its
@@ -3119,7 +3104,7 @@ impl App {
     /// is currently on screen — so `e` opens where the visible cursor is. None if nothing is focused or
     /// the focus has been scrolled out of view (then `e` falls back to the top of the view).
     fn md_focused_visible_line(&self) -> Option<(usize, usize)> {
-        let item = self.focused_item.and_then(|i| self.md_items.get(i))?;
+        let item = self.tab.focused_item.and_then(|i| self.md_items.get(i))?;
         let (row, h) = self.md_visual_span(item.line);
         let scroll = self.preview_scroll as usize;
         let vh = self.preview_viewport.max(1) as usize;
@@ -3236,15 +3221,15 @@ impl App {
             return; // 対象ファイルは未変更 → 無駄な再デコード/外部ツール実行を避ける
         }
         // 表示状態(ズーム/中心/ページ)を保持して再ロード。
-        let (zoom, center, page) = (self.image_zoom, self.image_center, self.pdf_page);
+        let (zoom, center, page) = (self.image_zoom, self.tab.image_center, self.tab.pdf_page);
         self.clear_image(); // ズーム/中心/ページ/メディア世代をリセット
         if matches!(kind, PreviewKind::Pdf(_)) {
-            self.pdf_pages = crate::preview::pdf::page_count(&path);
-            self.pdf_page = page.clamp(1, self.pdf_pages.unwrap_or(1).max(1));
+            self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
+            self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
         }
         self.start_media_load(&kind, &path); // preview_media_mtime も更新される
         self.image_zoom = zoom;
-        self.image_center = center;
+        self.tab.image_center = center;
     }
 
     /// The directory to watch **in addition** to the tree root so external (agent) edits to the
@@ -3295,7 +3280,7 @@ impl App {
     /// E2E simulation tests to assert Tab/⇧Tab focus movement.
     #[cfg(test)]
     pub fn focused_item(&self) -> Option<usize> {
-        self.focused_item
+        self.tab.focused_item
     }
 
     /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
@@ -3314,7 +3299,7 @@ impl App {
     /// Whether the current preview is a Markdown/Mermaid file shown as its raw source (`R` toggled on).
     /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
-        self.md_raw
+        self.tab.md_raw
             && matches!(
                 self.preview_kind,
                 Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
@@ -3331,7 +3316,7 @@ impl App {
 
     /// Whether raw source view is currently on (for the footer/title indicator).
     pub fn is_md_raw(&self) -> bool {
-        self.md_raw
+        self.tab.md_raw
     }
 
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source. No-op for other kinds.
@@ -3340,14 +3325,14 @@ impl App {
         if !self.is_decorated_kind() {
             return;
         }
-        self.md_raw = !self.md_raw;
+        self.tab.md_raw = !self.tab.md_raw;
         // 表示切替＝先頭から。窓読み(raw)/装飾(rendered)を張り直す。
-        self.preview_byte_top = 0;
-        self.preview_top_line = 0;
+        self.tab.preview_byte_top = 0;
+        self.tab.preview_top_line = 0;
         self.preview_scroll = 0;
         self.preview_hscroll = 0;
-        self.preview_cursor_line = 0;
-        self.preview_cursor_col = 0;
+        self.tab.preview_cursor_line = 0;
+        self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
         self.md_cache = None;
@@ -3371,7 +3356,7 @@ impl App {
         let Some((al, ac)) = self.preview_visual_anchor else {
             return PreviewSelection::None;
         };
-        let (cl, cc) = (self.preview_cursor_line, self.preview_cursor_col);
+        let (cl, cc) = (self.tab.preview_cursor_line, self.tab.preview_cursor_col);
         if self.preview_visual_linewise {
             PreviewSelection::Line {
                 lo: al.min(cl),
@@ -3391,7 +3376,8 @@ impl App {
     /// `v` (charwise) / `V` (linewise): start a visual selection at the current 2D caret (windowed previews only).
     pub fn preview_enter_visual(&mut self, linewise: bool) {
         if self.is_windowed() {
-            self.preview_visual_anchor = Some((self.preview_cursor_line, self.preview_cursor_col));
+            self.preview_visual_anchor =
+                Some((self.tab.preview_cursor_line, self.tab.preview_cursor_col));
             self.preview_visual_linewise = linewise;
         }
     }
@@ -3429,7 +3415,7 @@ impl App {
             }
             PreviewSelection::None => {
                 // not selecting → the current logical line
-                let l = self.preview_cursor_line.min(last);
+                let l = self.tab.preview_cursor_line.min(last);
                 lines[l].to_string()
             }
             PreviewSelection::Char { start, end } => selection_char_text(&lines, start, end),
@@ -3459,7 +3445,7 @@ impl App {
         let (lo, hi) = match self.preview_selection() {
             PreviewSelection::Line { lo, hi } => (lo, hi),
             PreviewSelection::Char { start, end } => (start.0, end.0),
-            PreviewSelection::None => (self.preview_cursor_line, self.preview_cursor_line),
+            PreviewSelection::None => (self.tab.preview_cursor_line, self.tab.preview_cursor_line),
         };
         Some(if lo == hi {
             format!("{base}#L{}", lo + 1)
@@ -3483,8 +3469,8 @@ impl App {
     /// and writes the clamp back, so overshoot is corrected on the next frame. Falls back to hscroll otherwise.
     pub fn preview_col_move(&mut self, dir: i32) {
         if self.is_windowed() {
-            let next = (self.preview_cursor_col as i64 + dir as i64).max(0) as usize;
-            self.preview_cursor_col = next;
+            let next = (self.tab.preview_cursor_col as i64 + dir as i64).max(0) as usize;
+            self.tab.preview_cursor_col = next;
         } else {
             self.preview_hscroll(dir * 2);
         }
@@ -3493,7 +3479,7 @@ impl App {
     /// `0`: move the caret to the first column (windowed), else scroll home.
     pub fn preview_col_home(&mut self) {
         if self.is_windowed() {
-            self.preview_cursor_col = 0;
+            self.tab.preview_cursor_col = 0;
         } else {
             self.preview_hscroll_home();
         }
@@ -3502,7 +3488,7 @@ impl App {
     /// `$`: move the caret to the last column (windowed). The render clamps the sentinel to the line length.
     pub fn preview_col_end(&mut self) {
         if self.is_windowed() {
-            self.preview_cursor_col = usize::MAX;
+            self.tab.preview_cursor_col = usize::MAX;
         } else {
             self.preview_hscroll_end();
         }
@@ -3543,11 +3529,11 @@ impl App {
         // (git diff の came_from_git_view と同じ、来た場所へ帰る流儀)。スクロール/フォーカスも復元。
         if matches!(self.preview_kind, Some(PreviewKind::MermaidFence(_))) {
             if let Some(md) = self.preview_path.clone() {
-                let ret = self.fence_return.take();
+                let ret = self.tab.fence_return.take();
                 self.enter_preview(&md);
                 if let Some((scroll, focus)) = ret {
                     self.preview_scroll = scroll;
-                    self.focused_item = focus;
+                    self.tab.focused_item = focus;
                 }
                 return;
             }
@@ -3571,29 +3557,29 @@ impl App {
         self.preview_kind = None;
         self.clear_image(); // graphics 状態を解放
         self.md_cache = None;
-        self.md_raw = false;
+        self.tab.md_raw = false;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
         self.hl_pending = false;
         self.hl_warming = false;
-        self.preview_byte_top = 0;
-        self.preview_top_line = 0;
+        self.tab.preview_byte_top = 0;
+        self.tab.preview_top_line = 0;
         self.md_items.clear();
-        self.focused_item = None;
-        self.preview_search = None;
-        self.search_input = None;
-        self.search_matches.clear();
+        self.tab.focused_item = None;
+        self.tab.preview_search = None;
+        self.tab.search_input = None;
+        self.tab.search_matches.clear();
         self.table_search_hits.clear();
-        self.search_idx = 0;
+        self.tab.search_idx = 0;
         self.tab.came_from_git_view = false;
         self.table_data = None;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
-        self.preview_cursor_line = 0;
-        self.preview_cursor_col = 0;
+        self.tab.preview_cursor_line = 0;
+        self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
     }
@@ -3623,7 +3609,7 @@ impl App {
             path,
             mtime: self.preview_media_mtime,
             len: meta.map(|m| m.len()),
-            page: self.pdf_page.max(1),
+            page: self.tab.pdf_page.max(1),
             fence_ord: self.preview_fence_ord(),
             src,
             logical: self.image_logical,
@@ -3704,7 +3690,7 @@ impl App {
         self.kitty_shown = None;
         self.image_src = None;
         self.image_zoom = 1.0;
-        self.image_center = (0.5, 0.5);
+        self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
         self.image_vis_frac = (1.0, 1.0);
         self.vector_svg = None;
@@ -3714,8 +3700,8 @@ impl App {
         self.gif_shown_at = None;
         self.gif_protocol = None;
         self.gif_proto_key = None;
-        self.pdf_page = 1;
-        self.pdf_pages = None;
+        self.tab.pdf_page = 1;
+        self.tab.pdf_pages = None;
         // 世代を進めて、別ファイルの読み込み中に届く前ファイルのメディア結果を陳腐化させる。
         self.media_gen = self.media_gen.wrapping_add(1);
         self.media_loading = false;
@@ -3825,10 +3811,10 @@ impl App {
         // Mirror the items into the live field (the same refresh decorate_md_items used to do per
         // frame — items only change when the cache is rebuilt) and keep the focus index in range.
         self.md_items = items.clone();
-        match self.focused_item {
-            Some(_) if self.md_items.is_empty() => self.focused_item = None,
+        match self.tab.focused_item {
+            Some(_) if self.md_items.is_empty() => self.tab.focused_item = None,
             Some(f) if f >= self.md_items.len() => {
-                self.focused_item = Some(self.md_items.len() - 1)
+                self.tab.focused_item = Some(self.md_items.len() - 1)
             }
             _ => {}
         }
@@ -3930,18 +3916,18 @@ impl App {
         let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
         // 検索中は可視行の一致箇所を強調(現在の一致=オレンジ / 他=黄色)。窓読みと同じ見た目・
         // 同じ関数を使う。可視範囲だけに掛けるので文書サイズに依らず O(viewport)。
-        if let Some(q) = self.preview_search.as_deref() {
-            let cur = self.search_matches.get(self.search_idx).copied();
+        if let Some(q) = self.tab.preview_search.as_deref() {
+            let cur = self.tab.search_matches.get(self.tab.search_idx).copied();
             for (i, line) in out.iter_mut().enumerate() {
                 let li = lo + i;
                 // この行に一致が無ければ触らない(clone/再構築を避ける)。
-                if !self.search_matches.iter().any(|(_, l, _)| *l == li) {
+                if !self.tab.search_matches.iter().any(|(_, l, _)| *l == li) {
                     continue;
                 }
                 // 現在の一致がこの行なら、行内での出現順位を渡してその 1 つだけオレンジに。
                 let rank = cur.and_then(|(_, cl, _)| {
                     (cl == li).then(|| {
-                        self.search_matches[..self.search_idx]
+                        self.tab.search_matches[..self.tab.search_idx]
                             .iter()
                             .filter(|(_, l, _)| *l == li)
                             .count()
@@ -3951,7 +3937,7 @@ impl App {
             }
         }
         // フォーカス中アイテムの行だけ反転する(画面外なら何もしない=見た目は全文反転と同一)。
-        if let Some(f) = self.focused_item {
+        if let Some(f) = self.tab.focused_item {
             if let Some(it) = c.items.get(f) {
                 if it.line >= lo && it.line < hi {
                     // コードブロックのみ行全体反転(ヘッダ帯が既に全幅)。フェンス図は
@@ -4343,7 +4329,7 @@ impl App {
     pub fn ensure_md_fence_zoom(&mut self, url: &str, cols: u16, rows: u16) {
         use image::GenericImageView;
         let key_path = PathBuf::from(url);
-        let zoom = self.fence_zoom;
+        let zoom = self.tab.fence_zoom;
         let font = self.picker.as_ref().map(|p| p.font_size());
         let enc_tx = self.md_enc_tx.clone();
         let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
@@ -4366,8 +4352,8 @@ impl App {
         }
         // 現ラスタから可視窓を切り出す(比率ベース=再ラスタ後も同じ窓)。中心は端でクランプし書き戻す。
         let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
-        let (crop, center) = fence_crop((sw, sh), f, self.fence_center);
-        self.fence_center = center;
+        let (crop, center) = fence_crop((sw, sh), f, self.tab.fence_center);
+        self.tab.fence_center = center;
         let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
             return;
         };
@@ -4911,7 +4897,7 @@ impl App {
             }
             PreviewKind::Video(_) => self.spawn_or_sync_media(MediaJob::Video(path.to_path_buf())),
             PreviewKind::Pdf(_) => {
-                self.spawn_or_sync_media(MediaJob::Pdf(path.to_path_buf(), self.pdf_page))
+                self.spawn_or_sync_media(MediaJob::Pdf(path.to_path_buf(), self.tab.pdf_page))
             }
             // 単体 .mmd/.mermaid: 画像モードなら純 Rust で SVG 化→ラスタライズ(別スレッド)。
             // テキストモード/バックエンド無しは何もしない=装飾テキスト経路が描く(原則#3)。
@@ -5113,7 +5099,7 @@ impl App {
             src,
             picker.font_size(),
             self.image_zoom,
-            self.image_center,
+            self.tab.image_center,
             inner,
             scale,
             None, // GIF はラスタ実寸のまま(ベクタ由来でない)
@@ -5144,7 +5130,7 @@ impl App {
                 }
             }
         }
-        self.image_center = center;
+        self.tab.image_center = center;
         self.image_vis_frac = frac;
         self.image_crop = Some(crop_rect);
         Some(target)
@@ -5195,24 +5181,24 @@ impl App {
         if !self.is_pdf_preview() {
             return None;
         }
-        let total = self.pdf_pages?;
-        Some((self.pdf_page.min(total), total))
+        let total = self.tab.pdf_pages?;
+        Some((self.tab.pdf_page.min(total), total))
     }
 
     /// Whether PDF page navigation is possible (a known multi-page PDF; requires poppler for both the
     /// count and per-page rendering, so this gates `J`/`K` from doing anything on single-page/no-poppler PDFs).
     pub fn pdf_can_navigate(&self) -> bool {
-        matches!(self.pdf_pages, Some(n) if n > 1)
+        matches!(self.tab.pdf_pages, Some(n) if n > 1)
     }
 
     /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).
     pub fn pdf_next_page(&mut self) {
-        self.pdf_goto(self.pdf_page.saturating_add(1));
+        self.pdf_goto(self.tab.pdf_page.saturating_add(1));
     }
 
     /// Go to the previous PDF page (clamped to page 1).
     pub fn pdf_prev_page(&mut self) {
-        self.pdf_goto(self.pdf_page.saturating_sub(1));
+        self.pdf_goto(self.tab.pdf_page.saturating_sub(1));
     }
 
     /// Jump to a 1-based page (clamped to [1, total]). No-op if not a navigable PDF or already there.
@@ -5221,19 +5207,21 @@ impl App {
         if !self.pdf_can_navigate() {
             return;
         }
-        let Some(total) = self.pdf_pages else { return };
+        let Some(total) = self.tab.pdf_pages else {
+            return;
+        };
         let page = page.clamp(1, total);
-        if page == self.pdf_page {
+        if page == self.tab.pdf_page {
             return;
         }
-        self.pdf_page = page;
+        self.tab.pdf_page = page;
         // 新ページは全体が見えるよう fit に戻す(set_static_image は zoom/center を触らないので明示リセット)。
         self.image_zoom = 1.0;
-        self.image_center = (0.5, 0.5);
+        self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
         if let Some(PreviewKind::Pdf(p)) = self.preview_kind.clone() {
             // 旧ページの画像は到着まで表示したまま(media_gen で陳腐化判定・スピナーが重畳)。
-            self.spawn_or_sync_media(MediaJob::Pdf(p, self.pdf_page));
+            self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page));
         }
     }
 
@@ -5243,7 +5231,7 @@ impl App {
     pub fn image_zoom_by(&mut self, factor: f64) {
         if self.image_src.is_none() && !self.is_gif_active() {
             if self.focused_mermaid_ordinal().is_some() {
-                self.fence_zoom = (self.fence_zoom * factor).clamp(1.0, 16.0);
+                self.tab.fence_zoom = (self.tab.fence_zoom * factor).clamp(1.0, 16.0);
             }
             return;
         }
@@ -5289,18 +5277,18 @@ impl App {
     pub fn image_zoom_reset(&mut self) {
         if self.image_src.is_none() && !self.is_gif_active() {
             if self.focused_mermaid_ordinal().is_some() {
-                self.fence_zoom = 1.0;
-                self.fence_center = (0.5, 0.5);
+                self.tab.fence_zoom = 1.0;
+                self.tab.fence_center = (0.5, 0.5);
             }
             return;
         }
         self.image_zoom = 1.0;
-        self.image_center = (0.5, 0.5);
+        self.tab.image_center = (0.5, 0.5);
     }
 
     /// Current in-place zoom of the focused inline diagram (renderer/footer cue).
     pub fn fence_zoom_level(&self) -> f64 {
-        self.fence_zoom
+        self.tab.fence_zoom
     }
 
     /// Whether the focused inline diagram's reserved block is fully visible in the preview viewport
@@ -5329,13 +5317,13 @@ impl App {
     /// would otherwise pan an invisible diagram and the keys would appear dead.
     pub fn fence_pan_motion(&mut self, m: crate::keymap::Motion) -> bool {
         use crate::keymap::Motion as M;
-        if self.fence_zoom <= 1.001 || !self.focused_fence_fully_visible() {
+        if self.tab.fence_zoom <= 1.001 || !self.focused_fence_fully_visible() {
             return false;
         }
         // 0 = フィット(全画面画像と同じキー)。ズーム中のみ奪う(等倍では従来の行頭のまま)。
         if matches!(m, M::LineHome) {
-            self.fence_zoom = 1.0;
-            self.fence_center = (0.5, 0.5);
+            self.tab.fence_zoom = 1.0;
+            self.tab.fence_center = (0.5, 0.5);
             return true;
         }
         let (dx, dy) = match m {
@@ -5346,9 +5334,9 @@ impl App {
             _ => return false,
         };
         // 1ステップ=可視窓の 1/4(全画面画像のパンと同じ感覚)。端のクランプは描画側の crop 計算。
-        let f = 1.0 / self.fence_zoom;
-        self.fence_center.0 = (self.fence_center.0 + dx * f * 0.25).clamp(0.0, 1.0);
-        self.fence_center.1 = (self.fence_center.1 + dy * f * 0.25).clamp(0.0, 1.0);
+        let f = 1.0 / self.tab.fence_zoom;
+        self.tab.fence_center.0 = (self.tab.fence_center.0 + dx * f * 0.25).clamp(0.0, 1.0);
+        self.tab.fence_center.1 = (self.tab.fence_center.1 + dy * f * 0.25).clamp(0.0, 1.0);
         true
     }
 
@@ -5360,8 +5348,8 @@ impl App {
         }
         let (fw, fh) = self.image_vis_frac;
         // 1回で可視窓の約25%。見切れていない軸(frac>=1)は動かしても描画時にクランプされる。
-        self.image_center.0 += dx * 0.25 * fw;
-        self.image_center.1 += dy * 0.25 * fh;
+        self.tab.image_center.0 += dx * 0.25 * fw;
+        self.tab.image_center.1 += dy * 0.25 * fh;
     }
 
     /// Call just before rendering. From the current (zoom, center, display area inner), compute the image's display rectangle target
@@ -5376,7 +5364,7 @@ impl App {
             src,
             picker.font_size(),
             self.image_zoom,
-            self.image_center,
+            self.tab.image_center,
             inner,
             scale,
             self.image_logical,
@@ -5412,7 +5400,7 @@ impl App {
                 self.image = Some(tp);
             }
         }
-        self.image_center = center;
+        self.tab.image_center = center;
         self.image_vis_frac = frac;
         self.image_crop = Some(crop_rect);
         Some(target)
@@ -5513,9 +5501,9 @@ impl App {
     /// To the top of the preview.
     pub fn preview_to_top(&mut self) {
         if self.is_windowed() {
-            self.preview_cursor_line = 0;
-            self.preview_byte_top = 0;
-            self.preview_top_line = 0;
+            self.tab.preview_cursor_line = 0;
+            self.tab.preview_byte_top = 0;
+            self.tab.preview_top_line = 0;
         } else {
             self.preview_scroll = 0;
         }
@@ -5532,17 +5520,17 @@ impl App {
         let vh = self.preview_viewport.max(1) as usize;
         // 行カーソルの末尾クランプに総行数が要るので常に求める(キャッシュされる)。
         let total = self.win_total();
-        let cur = self.preview_top_line;
+        let cur = self.tab.preview_top_line;
         if let Some(b) = self
             .preview_win
             .as_mut()
             .map(|w| w.last_page_top(vh).unwrap_or(0))
         {
-            self.preview_byte_top = b;
-            self.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
+            self.tab.preview_byte_top = b;
+            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
         }
         if let Some(t) = total {
-            self.preview_cursor_line = t.saturating_sub(1);
+            self.tab.preview_cursor_line = t.saturating_sub(1);
         }
     }
 
@@ -5583,16 +5571,17 @@ impl App {
     fn preview_cursor_move(&mut self, delta: i32) {
         let total = self.win_total().unwrap_or(usize::MAX);
         let maxl = total.saturating_sub(1) as i64;
-        let next = (self.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
-        self.preview_cursor_line = next;
+        let next =
+            (self.tab.preview_cursor_line as i64 + delta as i64).clamp(0, maxl.max(0)) as usize;
+        self.tab.preview_cursor_line = next;
         self.follow_cursor();
     }
 
     /// Scroll the window (byte-based) just enough that the line cursor is on screen.
     fn follow_cursor(&mut self) {
         let vh = self.preview_viewport.max(1) as usize;
-        let top = self.preview_top_line;
-        let cur = self.preview_cursor_line;
+        let top = self.tab.preview_top_line;
+        let cur = self.tab.preview_cursor_line;
         if cur < top {
             self.win_scroll_lines(-((top - cur) as i32));
         } else if cur >= top + vh {
@@ -5605,8 +5594,8 @@ impl App {
     /// On end-clamp, the line number is corrected from the total line count when line numbers are ON.
     fn win_scroll_lines(&mut self, delta: i32) {
         let vh = self.preview_viewport.max(1) as usize;
-        let top = self.preview_byte_top;
-        let line = self.preview_top_line;
+        let top = self.tab.preview_byte_top;
+        let line = self.tab.preview_top_line;
         // 行番号 ON、または(行カーソルのため)総行数が既にキャッシュされていれば末尾クランプに使う。
         let total = if self.cfg.ui.line_numbers || self.preview_total_lines.is_some() {
             self.win_total()
@@ -5632,8 +5621,8 @@ impl App {
             }
         });
         if let Some((nt, nl)) = result {
-            self.preview_byte_top = nt;
-            self.preview_top_line = nl;
+            self.tab.preview_byte_top = nt;
+            self.tab.preview_top_line = nl;
         }
     }
 
@@ -5644,23 +5633,23 @@ impl App {
         let _ = width; // 行内容は幅に依存しない(折返しは描画側)。将来用に受けておく。
         let h = height.max(1) as usize;
         // リサイズ等で末尾を超えていたらクランプ(行番号も総行数から補正)。
-        let top0 = self.preview_byte_top;
+        let top0 = self.tab.preview_byte_top;
         let maxt = self
             .preview_win
             .as_mut()
             .and_then(|w| w.last_page_top(h).ok());
         if let Some(maxt) = maxt {
             if top0 > maxt {
-                self.preview_byte_top = maxt;
+                self.tab.preview_byte_top = maxt;
                 // 行番号ガター OFF でも検索の現在一致(橙)が abs=preview_top_line+i で
                 // 参照するため、末尾ページへのクランプ時は line_numbers の有無に関わらず
                 // 常に preview_top_line を総行数から補正する(#5)。
                 if let Some(t) = self.win_total() {
-                    self.preview_top_line = t.saturating_sub(h);
+                    self.tab.preview_top_line = t.saturating_sub(h);
                 }
             }
         }
-        let top = self.preview_byte_top;
+        let top = self.tab.preview_byte_top;
         let path = self.preview_path.clone().unwrap_or_default();
         // syntax を着けるか: ハイライト無効(off-switch) / progressive で待ち中(hl_pending)なら素。
         // Code は常に対象。Text は「拡張子/ファイル名から実在の文法が解決できる時だけ」対象にする＝
@@ -5670,7 +5659,7 @@ impl App {
             Some(PreviewKind::Code(_)) => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // raw ソース表示(`R`)の Markdown/Mermaid はファイルの文法(.md→Markdown 等)で着色する。
-            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.md_raw => {
+            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
                 crate::preview::code::has_named_syntax(p)
             }
             _ => false,
@@ -5727,21 +5716,22 @@ impl App {
         // 検索中は一致箇所(クエリ)を強調する(ガターより先=本文だけ強調)。
         // 現在の出現(search_idx)1箇所だけオレンジ、他は黄色。表示行 i の絶対行 = preview_top_line + i。
         // その行が現在の出現の行なら、その列(col)の出現だけオレンジにする(同一行に複数あっても1つ)。
-        if let Some(q) = self.preview_search.clone() {
+        if let Some(q) = self.tab.preview_search.clone() {
             // 現在一致(search_idx)の行と、その「行内での出現順位」(0始まり)を求める。
             // タブ展開でバイト列がずれるため、列(バイト位置)ではなく出現順位で
             // 現在一致を同定する(#14)。同一行の一致は search_matches 内で連続・列昇順。
-            let (cur_line, cur_rank) = match self.search_matches.get(self.search_idx).copied() {
-                Some((_, line, _)) => {
-                    let rank = self.search_matches[..self.search_idx]
-                        .iter()
-                        .filter(|(_, l, _)| *l == line)
-                        .count();
-                    (Some(line), Some(rank))
-                }
-                None => (None, None),
-            };
-            let top_line = self.preview_top_line;
+            let (cur_line, cur_rank) =
+                match self.tab.search_matches.get(self.tab.search_idx).copied() {
+                    Some((_, line, _)) => {
+                        let rank = self.tab.search_matches[..self.tab.search_idx]
+                            .iter()
+                            .filter(|(_, l, _)| *l == line)
+                            .count();
+                        (Some(line), Some(rank))
+                    }
+                    None => (None, None),
+                };
+            let top_line = self.tab.preview_top_line;
             content = content
                 .into_iter()
                 .enumerate()
@@ -5756,23 +5746,23 @@ impl App {
                 })
                 .collect();
         }
-        let top_line = self.preview_top_line;
+        let top_line = self.tab.preview_top_line;
         // 2D キャレット列を可視のカーソル行の実長さにクランプし、書き戻す(`l`/`$` の行き過ぎ補正)。
         // キャレット行はビューポート追従で常に可視なので、ここで content から実長を取得できる。
-        if self.preview_cursor_line >= top_line
-            && self.preview_cursor_line < top_line + content.len()
+        if self.tab.preview_cursor_line >= top_line
+            && self.tab.preview_cursor_line < top_line + content.len()
         {
-            let ln = &content[self.preview_cursor_line - top_line];
+            let ln = &content[self.tab.preview_cursor_line - top_line];
             let len: usize = ln.spans.iter().map(|s| s.content.chars().count()).sum();
             // 読み取り専用キャレットは常に実在の文字の上に置く(空行は 0)。$ は最後の文字へ。
-            self.preview_cursor_col = self.preview_cursor_col.min(len.saturating_sub(1));
+            self.tab.preview_cursor_col = self.tab.preview_cursor_col.min(len.saturating_sub(1));
         }
         // 行カーソル/選択範囲のハイライト(ガター前＝列インデックスが本文先頭 0 基準に揃う)。
         let content = apply_preview_caret(
             content,
             top_line,
-            self.preview_cursor_line,
-            self.preview_cursor_col,
+            self.tab.preview_cursor_line,
+            self.tab.preview_cursor_col,
             self.preview_selection(),
         );
         // 行番号ガター(設定 ON のときだけ)。先頭行番号 = preview_top_line。
@@ -5818,28 +5808,28 @@ impl App {
         if len == 0 {
             return Some(0);
         }
-        Some((self.preview_byte_top.min(len) * 100 / len) as u16)
+        Some((self.tab.preview_byte_top.min(len) * 100 / len) as u16)
     }
 
     /// Whether in-preview search input mode is active (intercepting keys).
     pub fn is_searching(&self) -> bool {
-        self.search_input.is_some()
+        self.tab.search_input.is_some()
     }
 
     /// The active search query (for highlighting).
     pub fn preview_search_query(&self) -> Option<&str> {
-        self.preview_search.as_deref()
+        self.tab.preview_search.as_deref()
     }
 
     /// The search input being edited (for the footer prompt).
     pub fn search_input(&self) -> Option<&str> {
-        self.search_input.as_deref()
+        self.tab.search_input.as_deref()
     }
 
     /// Search status (current/total). Some((1-based, total)) when active and there are matches.
     pub fn search_status(&self) -> Option<(usize, usize)> {
-        if self.preview_search.is_some() && !self.search_matches.is_empty() {
-            Some((self.search_idx + 1, self.search_matches.len()))
+        if self.tab.preview_search.is_some() && !self.tab.search_matches.is_empty() {
+            Some((self.tab.search_idx + 1, self.tab.search_matches.len()))
         } else {
             None
         }
@@ -5869,7 +5859,7 @@ impl App {
     /// Non-ASCII queries whose byte length changes under `to_lowercase` are skipped for that line,
     /// matching `highlight_query_in_line` so the highlight and the match list never disagree.
     fn md_search_scan(&mut self, q: &str) {
-        self.search_matches.clear();
+        self.tab.search_matches.clear();
         let needle = q.to_lowercase();
         let Some(c) = self.md_cache.as_ref() else {
             return;
@@ -5883,7 +5873,7 @@ impl App {
             let mut i = 0usize;
             while let Some(rel) = lower[i..].find(&needle) {
                 let s = i + rel;
-                self.search_matches.push((0, li, s));
+                self.tab.search_matches.push((0, li, s));
                 i = s + needle.len().max(1);
                 if i >= lower.len() {
                     break;
@@ -5918,27 +5908,27 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::SearchCodeTextOnly).into());
             return;
         }
-        self.search_input = Some(String::new());
+        self.tab.search_input = Some(String::new());
     }
 
     pub fn search_input_push(&mut self, c: char) {
-        if let Some(s) = self.search_input.as_mut() {
+        if let Some(s) = self.tab.search_input.as_mut() {
             s.push(c);
         }
     }
 
     pub fn search_input_backspace(&mut self) {
-        if let Some(s) = self.search_input.as_mut() {
+        if let Some(s) = self.tab.search_input.as_mut() {
             s.pop();
         }
     }
 
     /// Confirm input (Enter): run the query (collect all matching lines) and jump to the first match at or after the current position.
     pub fn search_commit(&mut self) {
-        let q = self.search_input.take().unwrap_or_default();
+        let q = self.tab.search_input.take().unwrap_or_default();
         if q.is_empty() {
-            self.preview_search = None;
-            self.search_matches.clear();
+            self.tab.preview_search = None;
+            self.tab.search_matches.clear();
             self.table_search_hits.clear();
             return;
         }
@@ -5952,23 +5942,24 @@ impl App {
             }
             _ => {
                 self.table_search_hits.clear();
-                self.search_matches = self
+                self.tab.search_matches = self
                     .preview_win
                     .as_mut()
                     .and_then(|w| w.find_all_matches(&q, CAP).ok())
                     .unwrap_or_default();
             }
         }
-        self.preview_search = Some(q);
-        if self.search_matches.is_empty() {
+        self.tab.preview_search = Some(q);
+        if self.tab.search_matches.is_empty() {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::NoMatch).into());
             return;
         }
-        self.search_idx = match target {
+        self.tab.search_idx = match target {
             // 表: いま居るセル以降の最初の一致へ(読み順)。無ければ先頭へ巡回。
             SearchTarget::Table => {
                 let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
-                self.search_matches
+                self.tab
+                    .search_matches
                     .iter()
                     .position(|(_, r, c)| (*r, *c) >= (cr, cc))
                     .unwrap_or(0)
@@ -5976,15 +5967,17 @@ impl App {
             // 装飾 md: いま見えている先頭の論理行以降の最初の一致へ。無ければ先頭へ巡回。
             SearchTarget::Markdown => {
                 let from = self.md_top_logical_line().unwrap_or(0);
-                self.search_matches
+                self.tab
+                    .search_matches
                     .iter()
                     .position(|(_, line, _)| *line >= from)
                     .unwrap_or(0)
             }
             // 窓読み: 現在の表示位置(byte_top)以降の最初の出現へ。無ければ先頭へ巡回。
             _ => {
-                let top = self.preview_byte_top;
-                self.search_matches
+                let top = self.tab.preview_byte_top;
+                self.tab
+                    .search_matches
                     .iter()
                     .position(|(off, _, _)| *off >= top)
                     .unwrap_or(0)
@@ -5995,27 +5988,27 @@ impl App {
 
     /// `n`/`N`: to the next/previous match (cyclic).
     pub fn search_next(&mut self, dir: i32) {
-        if self.search_matches.is_empty() {
+        if self.tab.search_matches.is_empty() {
             return;
         }
-        let n = self.search_matches.len() as i32;
-        self.search_idx = (self.search_idx as i32 + dir).rem_euclid(n) as usize;
+        let n = self.tab.search_matches.len() as i32;
+        self.tab.search_idx = (self.tab.search_idx as i32 + dir).rem_euclid(n) as usize;
         self.jump_to_match();
     }
 
     /// Clear the search (Esc).
     pub fn search_clear(&mut self) {
-        self.preview_search = None;
-        self.search_input = None;
-        self.search_matches.clear();
+        self.tab.preview_search = None;
+        self.tab.search_input = None;
+        self.tab.search_matches.clear();
         self.table_search_hits.clear();
-        self.search_idx = 0;
+        self.tab.search_idx = 0;
     }
 
     /// Bring the line of the current occurrence to the top of the display (updates the line-head byte and line number). For moves within the same line,
     /// the top does not change, and only the highlight color (orange) moves to that occurrence (the column is referenced by the render side).
     fn jump_to_match(&mut self) {
-        let Some(&(off, a, b)) = self.search_matches.get(self.search_idx) else {
+        let Some(&(off, a, b)) = self.tab.search_matches.get(self.tab.search_idx) else {
             return;
         };
         match self.search_target() {
@@ -6027,8 +6020,8 @@ impl App {
             // 装飾 md: 一致した論理行を可視域へ(装飾表示のまま=raw に切替えない)。
             SearchTarget::Markdown => self.md_scroll_line_into_view(a),
             _ => {
-                self.preview_byte_top = off;
-                self.preview_top_line = a;
+                self.tab.preview_byte_top = off;
+                self.tab.preview_top_line = a;
             }
         }
     }
@@ -6080,14 +6073,14 @@ impl App {
         let (lines, targets) = self.postprocess_md(lines);
         let items = build_md_items(&lines, &targets, &[]);
         // フォーカス添字を範囲内にクランプ。
-        match self.focused_item {
-            Some(_) if items.is_empty() => self.focused_item = None,
-            Some(f) if f >= items.len() => self.focused_item = Some(items.len() - 1),
+        match self.tab.focused_item {
+            Some(_) if items.is_empty() => self.tab.focused_item = None,
+            Some(f) if f >= items.len() => self.tab.focused_item = Some(items.len() - 1),
             _ => {}
         }
         self.md_items = items;
 
-        let Some(target_idx) = self.focused_item else {
+        let Some(target_idx) = self.tab.focused_item else {
             return lines;
         };
         let (target_line, whole_line) = {
@@ -6116,17 +6109,17 @@ impl App {
             return;
         }
         let n = self.md_items.len() as i32;
-        let next = match self.focused_item {
+        let next = match self.tab.focused_item {
             Some(f) => (f as i32 + dir).rem_euclid(n),
             None if dir >= 0 => 0,
             None => n - 1,
         } as usize;
-        if self.focused_item != Some(next) {
+        if self.tab.focused_item != Some(next) {
             // フォーカスが移ったらインライン図のズーム/パンは初期化(前の図の状態を持ち越さない)。
-            self.fence_zoom = 1.0;
-            self.fence_center = (0.5, 0.5);
+            self.tab.fence_zoom = 1.0;
+            self.tab.fence_center = (0.5, 0.5);
         }
-        self.focused_item = Some(next);
+        self.tab.focused_item = Some(next);
         // フォーカス行を表示範囲に収める。preview_scroll は**表示行(折返し後)**の座標系
         // (描画側が para.line_count でクランプしている)なので、アイテムの論理行も
         // 表示行へ変換してから比較する(論理行のままだと折返しで乖離し、画面外の
@@ -6222,7 +6215,7 @@ impl App {
 
     /// Ordinal of the focused inline mermaid diagram, if the focus is on one (border cue in the renderer).
     pub fn focused_mermaid_ordinal(&self) -> Option<usize> {
-        let f = self.focused_item?;
+        let f = self.tab.focused_item?;
         match self.md_items.get(f)?.kind {
             MdItemKind::MermaidFence { ordinal } => Some(ordinal),
             _ => None,
@@ -6254,7 +6247,7 @@ impl App {
     /// Activate the focused item: a link opens (URLs externally, local paths within konoma),
     /// a task checkbox toggles.
     pub fn md_activate_focused(&mut self) -> Result<()> {
-        let Some(f) = self.focused_item else {
+        let Some(f) = self.tab.focused_item else {
             return Ok(());
         };
         match self.md_items.get(f) {
@@ -6312,7 +6305,7 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::DiagramOpenFailed).into());
             return;
         }
-        self.fence_return = Some((self.preview_scroll, self.focused_item));
+        self.tab.fence_return = Some((self.preview_scroll, self.tab.focused_item));
         self.clear_image();
         let kind = PreviewKind::MermaidFence(ordinal);
         self.start_media_load(&kind, &md);
@@ -6325,7 +6318,7 @@ impl App {
     /// the caller then flashes instead of copying garbage (safe fallback, #3). Also used by tests
     /// to assert the copied value without a clipboard round-trip.
     fn focused_code_source(&self) -> Option<String> {
-        let f = self.focused_item?;
+        let f = self.tab.focused_item?;
         if !matches!(
             self.md_items.get(f),
             Some(MdItem {
@@ -6391,6 +6384,7 @@ impl App {
     pub fn md_focused_code(&self) -> bool {
         !self.is_raw_source()
             && self
+                .tab
                 .focused_item
                 .and_then(|f| self.md_items.get(f))
                 .is_some_and(|it| matches!(it.kind, MdItemKind::CodeBlock))
@@ -6401,6 +6395,7 @@ impl App {
     pub fn md_focused_task(&self) -> bool {
         !self.is_raw_source()
             && self
+                .tab
                 .focused_item
                 .and_then(|f| self.md_items.get(f))
                 .is_some_and(|it| matches!(it.kind, MdItemKind::Task { .. }))
@@ -6412,7 +6407,7 @@ impl App {
         if self.is_raw_source() {
             return None;
         }
-        match self.focused_item.and_then(|f| self.md_items.get(f)) {
+        match self.tab.focused_item.and_then(|f| self.md_items.get(f)) {
             Some(MdItem {
                 kind: MdItemKind::Details { ordinal },
                 ..
@@ -6493,7 +6488,7 @@ impl App {
     /// foreground tab via the shared paste-jump navigation (reveal + root-switch-if-outside + preview).
     /// No-op when the focused item is not a link (task/code) or nothing is focused.
     pub fn md_open_focused_link_new_tab(&mut self) -> Result<()> {
-        let Some(f) = self.focused_item else {
+        let Some(f) = self.tab.focused_item else {
             return Ok(());
         };
         let target = match self.md_items.get(f) {
@@ -6723,31 +6718,8 @@ impl App {
             preview_scroll: self.preview_scroll,
             preview_hscroll: self.preview_hscroll,
             preview_viewport: self.preview_viewport,
-            preview_byte_top: self.preview_byte_top,
-            preview_top_line: self.preview_top_line,
             image_zoom: self.image_zoom,
-            image_center: self.image_center,
-            pdf_page: self.pdf_page,
-            pdf_pages: self.pdf_pages,
             tab: self.tab.clone(),
-            preview_cursor_line: self.preview_cursor_line,
-            preview_cursor_col: self.preview_cursor_col,
-            md_raw: self.md_raw,
-            focused_item: self.focused_item,
-            fence_zoom: self.fence_zoom,
-            fence_center: self.fence_center,
-            fence_return: self.fence_return,
-            // 選択 / 絞り込み / プレビュー検索もタブ毎に保存する(切替で旧タブへ持ち越さない)。
-            selection: self.selection.clone(),
-            visual_anchor: self.visual_anchor,
-            tree_filter: self.tree_filter.clone(),
-            filter_input: self.filter_input.clone(),
-            filter_pool: self.filter_pool.clone(),
-            changed_filter: self.changed_filter,
-            preview_search: self.preview_search.clone(),
-            search_input: self.search_input.clone(),
-            search_matches: self.search_matches.clone(),
-            search_idx: self.search_idx,
         }
     }
 
@@ -6766,7 +6738,7 @@ impl App {
     /// while a tab is active its slot is never read (tab_label/tab_root use the live App fields)
     /// and every switch path calls save_active before the slot is needed again.
     fn load_active(&mut self) {
-        let t = std::mem::take(&mut self.tabs[self.active_tab]);
+        let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         self.root = t.root;
         self.open_dir = t.open_dir;
         self.entries = t.entries;
@@ -6779,8 +6751,10 @@ impl App {
         self.preview_scroll = t.preview_scroll;
         self.preview_hscroll = t.preview_hscroll;
         self.preview_viewport = t.preview_viewport;
-        self.preview_byte_top = t.preview_byte_top;
-        self.preview_top_line = t.preview_top_line;
+        // preview_byte_top/preview_top_line/selection/visual_anchor/tree_filter/filter_input/
+        // filter_pool/changed_filter/preview_search/search_input/search_idx: pure per-tab copies with
+        // no read anywhere below before `self.tab = t.tab` restores the whole PerTab bundle at the
+        // end of this function — nothing in between reads them, so no individual line is needed here.
         // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
         // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t.tab` で後段まとめて復元される。)
         self.git_graph_picker = false;
@@ -6791,23 +6765,14 @@ impl App {
         self.outline_open = false;
         // <details> の開閉状態も文書ごと=タブ跨ぎで持ち越さない。
         self.details_open.clear();
-        // 選択 / 絞り込み / プレビュー検索もそのタブの状態を復元する(entries も同時に復元するため
-        // visual_anchor(entries 添字)は整合する)。load_active は rebuild_tree を呼ばない。
-        self.selection = t.selection;
-        self.visual_anchor = t.visual_anchor;
-        self.tree_filter = t.tree_filter;
-        self.filter_input = t.filter_input;
-        self.filter_pool = t.filter_pool;
-        self.changed_filter = t.changed_filter;
-        self.preview_search = t.preview_search;
-        self.search_input = t.search_input;
-        self.search_matches = t.search_matches;
-        self.search_idx = t.search_idx;
         // `table_search_hits` は `search_matches` から導出される描画用の集合。TabState には持たず
-        // (二重管理を避ける)、復元した search_matches から作り直す。表以外は空にする — さもないと
-        // 別タブの一致セル座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
+        // (二重管理を避ける)、復元した(まだ `t.tab` に載ったままの)search_matches から作り直す
+        // (`self.tab` 自体は末尾の `self.tab = t.tab` まで前タブの値のままなので、ここでは `t.tab` を
+        // 直接読む=借用のみで `t.tab` は消費しない)。表以外は空にする — さもないと別タブの一致セル
+        // 座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
         self.table_search_hits = if matches!(self.preview_kind, Some(PreviewKind::Table { .. })) {
-            self.search_matches
+            t.tab
+                .search_matches
                 .iter()
                 .map(|&(_, r, c)| (r, c))
                 .collect()
@@ -6819,6 +6784,8 @@ impl App {
         // 復元した diff プレビューはフォロー由来の印を持ち越さない(セッションはタブ横断の概念でない)。
         self.diff_follow_scope = false;
         // 画像は重い状態(protocol/元画像/GIFフレーム)を持ち越さず、画像系プレビューなら再読込で復元する。
+        // (clear_image は tab.image_center/tab.pdf_page/tab.pdf_pages も既定値へ戻すが、この関数の
+        // 最後で `self.tab = t.tab` が復元値を上書きするので、間で誰も読まない限り無害。)
         self.clear_image();
         if let (Some(kind), Some(path)) = (self.preview_kind.clone(), self.preview_path.clone()) {
             // Mermaid(.mmd 画像モード)/全画面フェンスも媒体復元の対象(kind_loads_media)。
@@ -6829,16 +6796,18 @@ impl App {
                 // 保存値を即セットしておけば、後から結果が届いても復元したズーム/中心が保たれる。
                 // GIF は先頭フレームから再生。
                 // PDF は保存ページを start_media_load の前に戻す(その世代でそのページをラスタライズする)。
-                self.pdf_page = t.pdf_page.max(1);
-                self.pdf_pages = t.pdf_pages;
+                // `t.tab.pdf_page` をその場でクランプしておく: これから読む restore_media_cache の
+                // 引数にも、末尾の `self.tab = t.tab` が運ぶ最終値にも同じクランプ後の値を使わせる。
+                t.tab.pdf_page = t.tab.pdf_page.max(1);
+                // pdf_pages: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
                 // 直前に見ていたタブへ戻る等、同じファイル・同じ mtime・同じページなら、退避した
                 // デコード済み画像をそのまま使う(PDF/動画の外部ツール起動やラスタライズをやり直さない)。
-                let reused = self.restore_media_cache(&path, self.pdf_page);
+                let reused = self.restore_media_cache(&path, t.tab.pdf_page);
                 if !reused {
                     self.start_media_load(&kind, &path);
                 }
                 self.image_zoom = t.image_zoom;
-                self.image_center = t.image_center;
+                // image_center: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
                 self.image_crop = None;
                 if reused {
                     // 復元は apply_payload を通らないので、そこで走るはずのシャープ再ラスタが
@@ -6849,20 +6818,19 @@ impl App {
             }
         }
         // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
-        self.md_raw = t.md_raw;
+        // setup_windowed が is_raw_source 経由で読むので、末尾の一括復元を待たずここで写す
+        // (Copy なので t.tab は消費されず、末尾の `self.tab = t.tab` にも同じ値がそのまま乗る)。
+        self.tab.md_raw = t.tab.md_raw;
         // Tab フォーカス/インライン図のズーム/全画面復帰情報はこのタブの保存値へ(前タブの値を
         // 別文書に適用しない)。md_items は次描画の ensure_md_cache がこのタブの文書で再構築し、
         // focused_item はその時に範囲へクランプされる(それまで旧文書の items を参照しないよう空に)。
+        // (focused_item/fence_zoom/fence_center/fence_return はここでは読まれないので末尾の
+        // `self.tab = t.tab` に任せる。)
         self.md_items.clear();
-        self.focused_item = t.focused_item;
-        self.fence_zoom = t.fence_zoom;
-        self.fence_center = t.fence_center;
-        self.fence_return = t.fence_return;
-        // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は上で復元済み)。
+        // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は末尾で復元される)。
         self.setup_windowed();
-        // windowed プレビューの 2D キャレットを復元(選択は持ち越さない)。範囲は次描画/移動でクランプされる。
-        self.preview_cursor_line = t.preview_cursor_line;
-        self.preview_cursor_col = t.preview_cursor_col;
+        // windowed プレビューの 2D キャレットは末尾の `self.tab = t.tab` で復元される(選択は持ち越さない)。
+        // 範囲は次描画/移動でクランプされる。
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
         // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
@@ -6937,18 +6905,18 @@ impl App {
         self.preview_kind = None;
         self.preview_scroll = 0;
         self.preview_hscroll = 0;
-        self.preview_byte_top = 0;
-        self.preview_top_line = 0;
+        self.tab.preview_byte_top = 0;
+        self.tab.preview_top_line = 0;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
         // 新規タブは md フォーカス/インライン図ズームも素の状態から(TabState 複製対象)。
         self.md_items.clear();
-        self.focused_item = None;
-        self.fence_zoom = 1.0;
-        self.fence_center = (0.5, 0.5);
-        self.fence_return = None;
+        self.tab.focused_item = None;
+        self.tab.fence_zoom = 1.0;
+        self.tab.fence_center = (0.5, 0.5);
+        self.tab.fence_return = None;
         // 新規タブは git オーバーレイ無しの素の Tree から始める(現タブの git 状態は save_active で保持済み)。
         self.tab.git_view = false;
         self.tab.git_view_sel = 0;
@@ -6983,8 +6951,8 @@ impl App {
         self.git_graph_reordered = false;
         // 新規タブは選択 / 絞り込み / プレビュー検索を空から始める
         // (現タブのこれらは直前の save_active で TabState に保持済み)。
-        self.selection.clear();
-        self.visual_anchor = None;
+        self.tab.selection.clear();
+        self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
         self.tabs.push(self.snapshot_tab());

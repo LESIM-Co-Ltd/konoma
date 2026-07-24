@@ -14,7 +14,9 @@ impl App {
         if self.is_raw_source() {
             return; // raw ソース表示は 2D キャレット面(md_items は装飾表示のもの)
         }
-        let Some(f) = self.focused_item else { return };
+        let Some(f) = self.tab.focused_item else {
+            return;
+        };
         let Some(MdItem {
             kind: MdItemKind::Task { state },
             ..

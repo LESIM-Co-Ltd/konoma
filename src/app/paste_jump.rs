@@ -326,9 +326,9 @@ impl App {
         let top = line0.saturating_sub(3);
         if let Some(win) = self.preview_win.as_mut() {
             if let Ok((off, _)) = win.advance(0, top) {
-                self.preview_byte_top = off;
-                self.preview_top_line = top;
-                self.preview_cursor_line = line0;
+                self.tab.preview_byte_top = off;
+                self.tab.preview_top_line = top;
+                self.tab.preview_cursor_line = line0;
             }
         }
     }

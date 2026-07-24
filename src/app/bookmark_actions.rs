@@ -271,34 +271,34 @@ impl App {
 
     /// Start filtering (`/`). Recursively collects everything under root into a pool and enters input mode.
     pub fn start_filter(&mut self) {
-        self.filter_pool = collect_all(&self.root, self.show_hidden);
-        self.filter_input = Some(String::new());
-        self.tree_filter = Some(String::new());
+        self.tab.filter_pool = collect_all(&self.root, self.show_hidden);
+        self.tab.filter_input = Some(String::new());
+        self.tab.tree_filter = Some(String::new());
         self.selected = 0;
         self.reapply_filter();
     }
 
     /// Add one character to the filter input (live filtering).
     pub fn filter_input_push(&mut self, c: char) {
-        if let Some(q) = self.filter_input.as_mut() {
+        if let Some(q) = self.tab.filter_input.as_mut() {
             q.push(c);
         }
-        self.tree_filter = self.filter_input.clone();
+        self.tab.tree_filter = self.tab.filter_input.clone();
         self.reapply_filter();
     }
 
     /// Delete one character from the filter input.
     pub fn filter_input_backspace(&mut self) {
-        if let Some(q) = self.filter_input.as_mut() {
+        if let Some(q) = self.tab.filter_input.as_mut() {
             q.pop();
         }
-        self.tree_filter = self.filter_input.clone();
+        self.tab.tree_filter = self.tab.filter_input.clone();
         self.reapply_filter();
     }
 
     /// Commit input (Enter): leave editing but keep the filtered results (navigate normally afterwards).
     pub fn filter_commit(&mut self) {
-        self.filter_input = None;
+        self.tab.filter_input = None;
     }
 
     /// Clear the filter (Esc): return to the normal tree.
@@ -310,31 +310,37 @@ impl App {
 
     /// Discard the filter state (input/query/pool and the changed-files filter) (does not rebuild the tree).
     pub(super) fn clear_filter_state(&mut self) {
-        self.filter_input = None;
-        self.tree_filter = None;
-        self.filter_pool = Vec::new();
-        self.changed_filter = false;
+        self.tab.filter_input = None;
+        self.tab.tree_filter = None;
+        self.tab.filter_pool = Vec::new();
+        self.tab.changed_filter = false;
     }
 
     /// Whether input mode (key interception) is active.
     pub fn is_filtering(&self) -> bool {
-        self.filter_input.is_some()
+        self.tab.filter_input.is_some()
     }
 
     /// The query while a filter is applied (including after the input is committed). Used for title / relative-path display.
     pub fn filter_query(&self) -> Option<&str> {
-        self.tree_filter.as_deref()
+        self.tab.tree_filter.as_deref()
     }
 
     /// Filter the pool by the current query (substring match, case-insensitive) to build entries.
     /// When the query is empty (= right after pressing `/`, before typing any character), **show nothing**
     /// (avoiding a flat display of everything, which would look like "expand all").
     fn reapply_filter(&mut self) {
-        let q = self.tree_filter.clone().unwrap_or_default().to_lowercase();
+        let q = self
+            .tab
+            .tree_filter
+            .clone()
+            .unwrap_or_default()
+            .to_lowercase();
         self.entries = if q.is_empty() {
             Vec::new()
         } else {
-            self.filter_pool
+            self.tab
+                .filter_pool
                 .iter()
                 .filter(|e| {
                     e.path
@@ -350,13 +356,13 @@ impl App {
             self.selected = self.entries.len().saturating_sub(1);
         }
         // 絞り込み結果は別 entries 集合なので visual_anchor(添字)は stale。無効化する。
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
     }
 
     // --- 変更ファイルのみフィルタ (`C`) ＋ 変更間ジャンプ (`n`/`N`) — Agent Watch ① ----------
     /// Whether the changed-files-only tree filter is active (drives the flat relative-path rendering).
     pub fn changed_filter(&self) -> bool {
-        self.changed_filter
+        self.tab.changed_filter
     }
 
     /// The sorted list of files with a git status under the current root (the review work-list).
@@ -376,8 +382,8 @@ impl App {
     /// filter's result list — review them top to bottom); OFF returns to the normal tree. When there is
     /// no change, stays on the tree with a flash (never trap the user in an empty list).
     pub fn toggle_changed_filter(&mut self) {
-        if self.changed_filter {
-            self.changed_filter = false;
+        if self.tab.changed_filter {
+            self.tab.changed_filter = false;
             self.selected = 0;
             self.rebuild_tree_notify();
             return;
@@ -388,7 +394,7 @@ impl App {
             return;
         }
         self.clear_filter_state(); // 名前絞り込み(`/`)とは排他
-        self.changed_filter = true;
+        self.tab.changed_filter = true;
         self.selected = 0;
         self.reapply_changed_filter();
     }
@@ -408,7 +414,7 @@ impl App {
             })
             .collect();
         if entries.is_empty() {
-            self.changed_filter = false;
+            self.tab.changed_filter = false;
             self.selected = 0;
             self.rebuild_tree_notify();
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
@@ -418,7 +424,7 @@ impl App {
         if self.selected >= self.entries.len() {
             self.selected = self.entries.len().saturating_sub(1);
         }
-        self.visual_anchor = None;
+        self.tab.visual_anchor = None;
     }
 
     /// `n`/`N` on the tree: jump the cursor to the next/previous changed file in path order (wraps).
@@ -453,7 +459,7 @@ impl App {
             None => 0,
         };
         let target = paths[idx].clone();
-        if self.changed_filter {
+        if self.tab.changed_filter {
             if let Some(i) = self.entries.iter().position(|e| e.path == target) {
                 self.selected = i;
             }
@@ -511,7 +517,7 @@ impl App {
             return; // 対象が1つだけ
         }
         // ツリーのカーソルも同期(q で戻ったとき、いま見ていたファイルの上に居る)。
-        if self.changed_filter {
+        if self.tab.changed_filter {
             self.reapply_changed_filter();
             if let Some(i) = self.entries.iter().position(|e| e.path == target) {
                 self.selected = i;
@@ -768,7 +774,7 @@ impl App {
         }
         // 「変更ファイルのみ」フィルタの一覧は statuses から**導出済みの entries** なので、再描画では
         // 直らない。新しい status が届いたこの瞬間に作り直す(エージェントの編集への live 追従)。
-        if self.changed_filter {
+        if self.tab.changed_filter {
             self.reapply_changed_filter();
         }
         true
@@ -914,7 +920,7 @@ impl App {
                                   // それらは preview_path / git 状態だけで動き、新しいツリーには依存しない。ツリーの Err は末尾で返す。
         let tree = self.rebuild_tree();
         // 変更ファイルのみフィルタ中は一覧を最新の statuses から作り直す(エージェントの編集に追従)。
-        if self.changed_filter {
+        if self.tab.changed_filter {
             self.refresh_git_if_needed();
             // スキャン走行中に作り直してはいけない。別 repo のタブから戻った直後は `git_status` が
             // 空(kick が別 repo の残骸を捨てた直後)なので、ここで作り直すとフィルタが「変更ゼロ」と
@@ -925,7 +931,7 @@ impl App {
             }
         }
         // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
-        self.selection.retain(|p| p.symlink_metadata().is_ok());
+        self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
         // アクティブな派生ビューのみ追従させる。
         if self.is_git_view() {
             self.git_view_reload();

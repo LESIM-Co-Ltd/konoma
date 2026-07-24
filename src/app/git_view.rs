@@ -182,15 +182,15 @@ impl App {
         // diff プレビューは独自描画(window/image/md を使わない)。関連状態をリセット。
         self.preview_scroll = 0;
         self.preview_hscroll = 0;
-        self.preview_byte_top = 0;
-        self.preview_top_line = 0;
+        self.tab.preview_byte_top = 0;
+        self.tab.preview_top_line = 0;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
         self.diff_cache = None; // 別ファイルの diff を開く: 生 diff キャッシュを無効化
         self.md_items.clear();
-        self.focused_item = None;
+        self.tab.focused_item = None;
         self.hl_pending = false;
         self.hl_warming = false;
         self.tab.came_from_git_view = self.tab.git_view;

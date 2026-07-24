@@ -1195,41 +1195,41 @@ fn pdf_page_navigation_clamps_and_indicates() {
     app.mode = Mode::Preview;
 
     // 総数不明: 移動不可・インジケータ無し。
-    app.pdf_pages = None;
-    app.pdf_page = 1;
+    app.tab.pdf_pages = None;
+    app.tab.pdf_page = 1;
     assert!(!app.pdf_can_navigate());
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 1, "総数不明では動かない");
+    assert_eq!(app.tab.pdf_page, 1, "総数不明では動かない");
     assert_eq!(app.pdf_page_indicator(), None);
 
     // 1ページ: 移動不可。
-    app.pdf_pages = Some(1);
+    app.tab.pdf_pages = Some(1);
     assert!(!app.pdf_can_navigate(), "単ページは移動不可");
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 1);
+    assert_eq!(app.tab.pdf_page, 1);
 
     // 3ページ: 前後移動と端クランプ・インジケータ。
-    app.pdf_pages = Some(3);
-    app.pdf_page = 1;
+    app.tab.pdf_pages = Some(3);
+    app.tab.pdf_page = 1;
     assert!(app.pdf_can_navigate());
     assert_eq!(app.pdf_page_indicator(), Some((1, 3)));
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 2);
+    assert_eq!(app.tab.pdf_page, 2);
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 3);
+    assert_eq!(app.tab.pdf_page, 3);
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 3, "末尾でクランプ");
+    assert_eq!(app.tab.pdf_page, 3, "末尾でクランプ");
     assert_eq!(app.pdf_page_indicator(), Some((3, 3)));
     app.pdf_prev_page();
-    assert_eq!(app.pdf_page, 2);
+    assert_eq!(app.tab.pdf_page, 2);
     app.pdf_prev_page();
     app.pdf_prev_page();
-    assert_eq!(app.pdf_page, 1, "先頭でクランプ");
+    assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
 
     // ページ移動でズームは fit(1.0)へ戻る。
     app.image_zoom = 4.0;
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 2);
+    assert_eq!(app.tab.pdf_page, 2);
     assert_eq!(app.image_zoom, 1.0, "ページ移動で fit に戻る");
 }
 
@@ -1254,8 +1254,8 @@ fn pdf_next_page_renders_off_thread() {
     app.preview_kind = Some(kind.clone());
     app.preview_path = Some(p.to_path_buf());
     app.mode = Mode::Preview;
-    app.pdf_pages = Some(pages);
-    app.pdf_page = 1;
+    app.tab.pdf_pages = Some(pages);
+    app.tab.pdf_page = 1;
 
     // 1ページ目を読み込んで反映。
     app.start_media_load(&kind, p);
@@ -1267,7 +1267,7 @@ fn pdf_next_page_renders_off_thread() {
 
     // 2ページ目へ: 別スレッドで再ラスタライズ開始 → 反映。
     app.pdf_next_page();
-    assert_eq!(app.pdf_page, 2);
+    assert_eq!(app.tab.pdf_page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
     let r2 = rx
         .recv_timeout(std::time::Duration::from_secs(15))
@@ -1364,7 +1364,7 @@ fn zoom_clamps_between_1_and_16() {
     assert_eq!(app.image_zoom, 16.0);
     app.image_zoom_reset();
     assert_eq!(app.image_zoom, 1.0);
-    assert_eq!(app.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_center, (0.5, 0.5));
 }
 
 #[test]
@@ -1408,7 +1408,7 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     // z=1: 見切れ無し → パンしても prepare で中心が 0.5 に戻る。
     app.image_pan(1.0, 1.0);
     app.prepare_image(inner).unwrap();
-    assert_eq!(app.image_center, (0.5, 0.5));
+    assert_eq!(app.tab.image_center, (0.5, 0.5));
     // 十分拡大して両軸見切れ → パンで中心が動き、端でクランプされる。
     app.image_zoom = 12.0;
     app.prepare_image(inner).unwrap(); // 可視率を更新
@@ -1419,8 +1419,8 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     let (fw, fh) = app.image_vis_frac;
     assert!(fw < 1.0 && fh < 1.0, "両軸見切れ");
     // 端 = 1 - frac/2 にクランプ。
-    assert!((app.image_center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
-    assert!((app.image_center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
+    assert!((app.tab.image_center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
 }
 
 #[test]
@@ -1481,7 +1481,7 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
     assert_eq!(item_target(&app.md_items[1]), "https://example.com/x");
     // 先頭リンク(ローカル)にフォーカスして開く → konoma が target.md をプレビュー。
     app.md_focus_move(1);
-    assert_eq!(app.focused_item, Some(0));
+    assert_eq!(app.tab.focused_item, Some(0));
     app.md_activate_focused().unwrap();
     assert!(
         app.preview_path
@@ -1658,7 +1658,7 @@ fn md_task_toggle_custom_states_cycle() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     let cycle = |app: &mut App, term: &mut Terminal<TestBackend>| {
         term.draw(|fr| crate::ui::render(fr, app)).unwrap();
-        if app.focused_item.is_none() {
+        if app.tab.focused_item.is_none() {
             app.md_focus_move(1);
         }
         app.md_toggle_focused_task();
@@ -1761,7 +1761,7 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(app.md_has_tasks());
     // ①未フォーカス(Tab を押していない)ではトグルしても書かない。
-    assert!(app.focused_item.is_none());
+    assert!(app.tab.focused_item.is_none());
     app.md_toggle_focused_task();
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
@@ -2042,7 +2042,7 @@ fn md_items_mix_links_and_tasks_in_document_order() {
     app.md_focus_move(1);
     assert!(!app.md_focused_task());
     app.md_focus_move(1);
-    assert_eq!(app.focused_item, Some(0), "巡回で先頭へ戻る");
+    assert_eq!(app.tab.focused_item, Some(0), "巡回で先頭へ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -2434,7 +2434,7 @@ fn decorate_links_highlights_focused() {
         Line::from(vec![Span::raw("a "), link("u0")]),
         Line::from(vec![Span::raw("b "), link("u1")]),
     ];
-    app.focused_item = Some(1);
+    app.tab.focused_item = Some(1);
     let out = app.decorate_md_items(lines);
     assert_eq!(app.md_items.len(), 2);
     // フォーカス中(1番目)のリンク span だけ REVERSED が付く。
@@ -2870,7 +2870,7 @@ fn refresh_prunes_deleted_paths_from_selection() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // 3件すべて選択。
     for n in ["a.txt", "b.txt", "c.txt"] {
-        app.selection.insert(dir.join(n));
+        app.tab.selection.insert(dir.join(n));
     }
     assert_eq!(app.op_targets().len(), 3, "選択3件が一括対象");
     // 外部で b.txt を削除 → refresh で selection から b.txt だけ剪定される。
@@ -3609,31 +3609,31 @@ fn preview_search_finds_highlights_and_navigates() {
     assert!(!app.is_searching(), "確定で入力モード解除");
 
     // 6 件・1件目(line0)へジャンプ・ステータス 1/6。
-    assert_eq!(app.search_matches.len(), 6, "7行ごとに6件");
+    assert_eq!(app.tab.search_matches.len(), 6, "7行ごとに6件");
     assert_eq!(app.search_status(), Some((1, 6)));
-    assert_eq!(app.preview_top_line, 0, "最初の一致(行0)を先頭に");
+    assert_eq!(app.tab.preview_top_line, 0, "最初の一致(行0)を先頭に");
     assert_eq!(app.preview_search_query(), Some("needle"));
 
     // n で次(line7), もう一度で line14。
     app.search_next(1);
     assert_eq!(app.search_status(), Some((2, 6)));
-    assert_eq!(app.preview_top_line, 7);
+    assert_eq!(app.tab.preview_top_line, 7);
     app.search_next(1);
-    assert_eq!(app.preview_top_line, 14);
+    assert_eq!(app.tab.preview_top_line, 14);
     // N で戻る(line7)。
     app.search_next(-1);
-    assert_eq!(app.preview_top_line, 7);
+    assert_eq!(app.tab.preview_top_line, 7);
     // 末尾(idx0)から N で巡回 → 最終一致(line35)。
-    app.search_idx = 0;
+    app.tab.search_idx = 0;
     app.search_next(-1);
     assert_eq!(app.search_status(), Some((6, 6)));
-    assert_eq!(app.preview_top_line, 35);
+    assert_eq!(app.tab.preview_top_line, 35);
 
     // Esc 相当: 解除でクエリ・一致が消える。
     app.search_clear();
     assert!(app.preview_search_query().is_none());
     assert_eq!(app.search_status(), None);
-    assert!(app.search_matches.is_empty());
+    assert!(app.tab.search_matches.is_empty());
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -5086,10 +5086,10 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
     assert!(first_line(&mut app).contains("line 0"), "先頭は line 0");
 
     // 常時カーソルモデル: 窓内(vh=10)で行カーソルを動かしても、末端に達するまで窓は動かない。
-    assert_eq!(app.preview_byte_top, 0);
+    assert_eq!(app.tab.preview_byte_top, 0);
     app.preview_scroll(5); // カーソル 0→5(まだ可視範囲内)
-    assert_eq!(app.preview_cursor_line, 5, "カーソルは 5 行目");
-    assert_eq!(app.preview_byte_top, 0, "窓内移動では窓は動かない");
+    assert_eq!(app.tab.preview_cursor_line, 5, "カーソルは 5 行目");
+    assert_eq!(app.tab.preview_byte_top, 0, "窓内移動では窓は動かない");
     assert!(
         first_line(&mut app).contains("line 0"),
         "先頭は line 0 のまま"
@@ -5097,9 +5097,9 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 
     // カーソルが下端を超えると窓が追従する(byte_top が前進)。
     app.preview_scroll(5); // カーソル 5→10(下端 vh=10 を超える)
-    assert_eq!(app.preview_cursor_line, 10, "カーソルは 10 行目");
+    assert_eq!(app.tab.preview_cursor_line, 10, "カーソルは 10 行目");
     assert!(
-        app.preview_byte_top > 0,
+        app.tab.preview_byte_top > 0,
         "下端超えで窓が追従(byte_top 前進)"
     );
     assert!(
@@ -5109,9 +5109,9 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 
     // windowed の preview_to_top はカーソルと窓を先頭へ。
     app.preview_to_top();
-    assert_eq!(app.preview_cursor_line, 0);
-    assert_eq!(app.preview_byte_top, 0);
-    assert_eq!(app.preview_top_line, 0);
+    assert_eq!(app.tab.preview_cursor_line, 0);
+    assert_eq!(app.tab.preview_byte_top, 0);
+    assert_eq!(app.tab.preview_top_line, 0);
     assert!(
         first_line(&mut app).contains("line 0"),
         "to_top で先頭へ戻る"
@@ -5119,7 +5119,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 
     // 末尾へ: カーソルは最終行(199)、窓は最終ページ。
     app.preview_to_bottom();
-    assert_eq!(app.preview_cursor_line, 199, "to_bottom で最終行へ");
+    assert_eq!(app.tab.preview_cursor_line, 199, "to_bottom で最終行へ");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -5156,7 +5156,7 @@ fn request_edit_opens_at_windowed_caret_line() {
     assert!(app.is_windowed());
     app.preview_viewport = 10;
     app.preview_scroll(12); // キャレット 0→12
-    assert_eq!(app.preview_cursor_line, 12);
+    assert_eq!(app.tab.preview_cursor_line, 12);
     app.request_edit();
     let (p, line) = app.take_pending_edit().expect("edit requested");
     assert!(p.ends_with("big.txt"));
@@ -5208,7 +5208,7 @@ fn preview_visual_selection_copies_logical_lines() {
 
     // カーソルを 2 行目へ。まだ非選択。
     app.preview_scroll(2);
-    assert_eq!(app.preview_cursor_line, 2);
+    assert_eq!(app.tab.preview_cursor_line, 2);
     assert!(!app.is_preview_visual(), "まだ選択していない");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
 
@@ -7014,25 +7014,25 @@ fn preview_selection_ref_formats_caret_and_ranges() {
     assert!(app.is_windowed(), "テキストは windowed");
 
     // 非選択: キャレット行(1-based)。
-    app.preview_cursor_line = 2;
+    app.tab.preview_cursor_line = 2;
     assert_eq!(
         app.preview_selection_ref_text().as_deref(),
         Some("@notes.txt#L3")
     );
     // linewise 選択 3..=5 行目。
     app.preview_enter_visual(true);
-    app.preview_cursor_line = 4;
+    app.tab.preview_cursor_line = 4;
     assert_eq!(
         app.preview_selection_ref_text().as_deref(),
         Some("@notes.txt#L3-5")
     );
     app.preview_exit_visual();
     // charwise 選択は行スパンへ丸める(2..=4 行目)。
-    app.preview_cursor_line = 1;
-    app.preview_cursor_col = 1;
+    app.tab.preview_cursor_line = 1;
+    app.tab.preview_cursor_col = 1;
     app.preview_enter_visual(false);
-    app.preview_cursor_line = 3;
-    app.preview_cursor_col = 0;
+    app.tab.preview_cursor_line = 3;
+    app.tab.preview_cursor_col = 0;
     assert_eq!(
         app.preview_selection_ref_text().as_deref(),
         Some("@notes.txt#L2-4")
@@ -7201,11 +7201,11 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     app.follow_jump(&canon.join("big.txt"));
     assert!(matches!(app.mode, Mode::Preview));
     assert_eq!(
-        app.preview_top_line, 96,
+        app.tab.preview_top_line, 96,
         "変更行(0-based 99)の3行上が窓の先頭"
     );
-    assert_eq!(app.preview_cursor_line, 99, "キャレットは変更行");
-    assert!(app.preview_byte_top > 0, "窓はファイル先頭ではない");
+    assert_eq!(app.tab.preview_cursor_line, 99, "キャレットは変更行");
+    assert!(app.tab.preview_byte_top > 0, "窓はファイル先頭ではない");
 
     // 未変更ファイル(変更ハンク無し)は従来どおり先頭から。
     // (実運用では follow_jump の前に必ず refresh_fs が走り新規ファイルがツリーに載る=同じ順で呼ぶ)
@@ -7214,7 +7214,7 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     app.refresh().unwrap();
     app.follow_jump(&plain);
     assert_eq!(app.preview_path.as_deref(), Some(plain.as_path()));
-    assert_eq!(app.preview_top_line, 0);
+    assert_eq!(app.tab.preview_top_line, 0);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -7697,7 +7697,7 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.preview_scroll = 3;
     app.md_activate_focused().unwrap();
     assert!(
@@ -7715,7 +7715,7 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     );
     assert!(matches!(app.mode, Mode::Preview));
     assert_eq!(app.preview_scroll, 3, "スクロール位置を復元");
-    assert_eq!(app.focused_item, Some(idx), "フォーカスを復元");
+    assert_eq!(app.tab.focused_item, Some(idx), "フォーカスを復元");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -7780,7 +7780,7 @@ fn fence_focus_inverts_caption_span_only() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .expect("フェンスが Tab アイテムに載る");
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
 
     let buf = term.backend().buffer();
@@ -7842,7 +7842,7 @@ fn fence_focus_scrolls_block_and_draws_border() {
 
     // Tab (唯一のアイテム=フェンス) → ブロック全体を見せる位置へスクロール。
     app.md_focus_move(1);
-    let caption_line = app.md_items[app.focused_item.unwrap()].line;
+    let caption_line = app.md_items[app.tab.focused_item.unwrap()].line;
     assert!(
         app.preview_scroll as usize >= caption_line.saturating_sub(2),
         "図ブロックの先頭(キャプション)近くまでスクロールする: scroll={} caption={caption_line}",
@@ -8006,7 +8006,7 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     let focused = caption_rows(&term);
     assert_eq!(
@@ -8049,7 +8049,7 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.image_zoom_by(2.0);
     assert!(
         (app.fence_zoom_level() - 2.0).abs() < 1e-9,
@@ -8061,7 +8061,7 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
         app.fence_pan_motion(Motion::Right),
         "ズーム中はパンに化ける"
     );
-    assert!(app.fence_center.0 > 0.5, "中心が右へ動く");
+    assert!(app.tab.fence_center.0 > 0.5, "中心が右へ動く");
     // レイアウトは不変(予約セル数が変わらない=md 上の表示サイズ固定)。
     app.ensure_md_cache(80);
     let imgs = app.md_images();
@@ -8196,7 +8196,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app2.focused_item = Some(idx);
+    app2.tab.focused_item = Some(idx);
     app2.image_zoom_by(2.0);
     assert!(
         app2.fence_pan_motion(Motion::LineHome),
@@ -8365,7 +8365,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
         app.take_md_overlay_moved(),
@@ -8482,7 +8482,7 @@ fn tab_switch_restores_fullscreen_fence_view() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .expect("フェンスが Tab アイテムに載る");
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.md_activate_focused().unwrap();
     assert!(
         matches!(app.preview_kind, Some(PreviewKind::MermaidFence(_))),
@@ -8538,7 +8538,7 @@ fn fence_ordinal_survives_failed_upstream_fence() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.md_activate_focused().unwrap();
     assert!(
         matches!(app.preview_kind, Some(PreviewKind::MermaidFence(1))),
@@ -8618,20 +8618,27 @@ fn fence_focus_and_zoom_are_per_tab() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.image_zoom_by(2.0); // 全画面画像なし+フェンスフォーカス中 → fence_zoom に作用
-    assert!(app.fence_zoom > 1.9, "前提: タブ1でその場ズーム中");
+    assert!(app.tab.fence_zoom > 1.9, "前提: タブ1でその場ズーム中");
 
     app.tab_new().unwrap(); // タブ2
-    assert_eq!(app.focused_item, None, "新規タブへフォーカスは漏れない");
-    assert!(app.fence_zoom < 1.001, "新規タブへズームは漏れない");
+    assert_eq!(app.tab.focused_item, None, "新規タブへフォーカスは漏れない");
+    assert!(app.tab.fence_zoom < 1.001, "新規タブへズームは漏れない");
     app.enter_preview(&b);
     app.ensure_md_cache(100);
-    assert_eq!(app.focused_item, None, "タブ2の文書は未フォーカスのまま");
+    assert_eq!(
+        app.tab.focused_item, None,
+        "タブ2の文書は未フォーカスのまま"
+    );
 
     app.tab_cycle(1); // タブ1へ復帰
-    assert_eq!(app.focused_item, Some(idx), "タブ1のフォーカスが復元される");
-    assert!(app.fence_zoom > 1.9, "タブ1のズームが復元される");
+    assert_eq!(
+        app.tab.focused_item,
+        Some(idx),
+        "タブ1のフォーカスが復元される"
+    );
+    assert!(app.tab.fence_zoom > 1.9, "タブ1のズームが復元される");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -8665,7 +8672,7 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.md_activate_focused().unwrap(); // Enter → 全画面
     app.back_to_tree(); // q → md へ復帰
     assert!(
@@ -8681,7 +8688,7 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
         std::sync::Arc::ptr_eq(&arc0, &arc1),
         "同じラスタを温存(再レンダしていない)"
     );
-    assert_eq!(app.focused_item, Some(idx), "フォーカスも復元される");
+    assert_eq!(app.tab.focused_item, Some(idx), "フォーカスも復元される");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -8907,7 +8914,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
         .iter()
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
-    app.focused_item = Some(idx);
+    app.tab.focused_item = Some(idx);
     app.image_zoom_by(2.0);
     assert!(app.fence_pan_motion(M::Down), "可視+ズーム中はパンを消費");
 
@@ -8922,7 +8929,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
         !app.fence_pan_motion(M::LineHome),
         "0 も奪わない(通常の行頭へ)"
     );
-    assert!(app.fence_zoom > 1.9, "ズーム状態自体は保持(戻れば再開)");
+    assert!(app.tab.fence_zoom > 1.9, "ズーム状態自体は保持(戻れば再開)");
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -8986,7 +8993,7 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
     // 末尾へ = byte_top は 200 行ファイルの最終ページ(短縮後のファイル長より大きい)。
     app.preview_to_bottom();
     let _ = app.windowed_lines(5, 80);
-    let deep_top = app.preview_byte_top;
+    let deep_top = app.tab.preview_byte_top;
     assert!(deep_top > 0, "末尾へスクロールできている");
 
     // 外部で 3 行に切り詰め(エージェントの truncate 相当)。
@@ -8999,9 +9006,9 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
     let lines = app.windowed_lines(5, 80);
 
     assert!(
-        app.preview_byte_top <= new_len,
+        app.tab.preview_byte_top <= new_len,
         "縮小後もスクロール位置が EOF を越えている: top={} len={new_len}",
-        app.preview_byte_top
+        app.tab.preview_byte_top
     );
     let text: String = lines
         .iter()
@@ -9988,7 +9995,7 @@ fn changed_filter_list_follows_async_status_results() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter(); // `C`: 同期契約なのでその場で一覧が立つ
-    assert!(app.changed_filter, "変更ファイルのみ表示になる");
+    assert!(app.tab.changed_filter, "変更ファイルのみ表示になる");
     assert!(app.entries.iter().any(|e| e.path.ends_with("first.txt")));
 
     // エージェントが新規ファイルを作る → fs イベント(非同期スキャンを投げるだけ)。
@@ -10370,7 +10377,7 @@ fn changed_filter_survives_returning_from_another_repo() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter(); // `C` は同期契約なので即座に一覧が立つ
-    assert!(app.changed_filter, "前提: 変更ファイルのみ表示");
+    assert!(app.tab.changed_filter, "前提: 変更ファイルのみ表示");
 
     // 別 repo のタブへ移り、そこで status を確定させる。
     app.tab_new().unwrap();
@@ -10385,7 +10392,7 @@ fn changed_filter_survives_returning_from_another_repo() {
     // repo A のタブへ戻る(この時点で A の status は走行中)。
     app.tab_cycle(1);
     assert!(
-        app.changed_filter,
+        app.tab.changed_filter,
         "スキャン走行中でもフィルタは維持される(旧実装は解除+偽 flash)"
     );
     assert_ne!(
@@ -10401,7 +10408,7 @@ fn changed_filter_survives_returning_from_another_repo() {
             app.apply_statuses(res);
         }
     }
-    assert!(app.changed_filter, "到着後もフィルタは生きている");
+    assert!(app.tab.changed_filter, "到着後もフィルタは生きている");
     assert!(
         app.entries.iter().any(|e| e.path.ends_with("changed.txt")),
         "到着した status で一覧が作り直される"
@@ -10457,7 +10464,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             app.tree_activate().unwrap();
             let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
             term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
-            app.focused_item = Some(item_idx);
+            app.tab.focused_item = Some(item_idx);
             app.flash = None;
             app.md_toggle_focused_task();
 
@@ -10599,7 +10606,7 @@ fn wrapped_md_preview(dir: &Path, name: &str, body: &str, w: u16, h: u16) -> App
 /// Assert the focused item's whole visual extent is inside the viewport after `md_focus_move`.
 #[cfg(test)]
 fn assert_focused_block_fully_visible(app: &App, msg: &str) {
-    let f = app.focused_item.expect("フォーカスがある");
+    let f = app.tab.focused_item.expect("フォーカスがある");
     let line = app.md_item_line_for_test(f);
     let end = app.md_item_block_end_for_test(f);
     let (top, hh) = app.md_visual_span_for_test(line);
@@ -10643,7 +10650,7 @@ fn md_focus_reveals_a_wrapping_checkbox_in_full() {
     // 末尾のチェックボックスへ。
     app.md_focus_move(-1);
     assert!(app.md_focused_task(), "チェックボックスにフォーカス");
-    let f = app.focused_item.unwrap();
+    let f = app.tab.focused_item.unwrap();
     let (_, height) = app.md_visual_span_for_test(app.md_item_line_for_test(f));
     assert!(height > 1, "この幅ではタスクが折り返す (height={height})");
     assert_focused_block_fully_visible(&app, "折り返しチェックボックス");
@@ -10671,7 +10678,7 @@ fn md_focus_reveals_a_wrapping_code_block_in_full() {
 
     let mut app = wrapped_md_preview(&dir, "c.md", &body, 40, 20);
     app.md_focus_move(1); // 唯一の対象 = コードブロック
-    let f = app.focused_item.unwrap();
+    let f = app.tab.focused_item.unwrap();
     let start = app.md_item_line_for_test(f);
     let end = app.md_item_block_end_for_test(f);
     // 長い1ソース行はレンダラが**事前に**複数の `▎` 論理行へ分割する(ソフト折返しでなく行分割・

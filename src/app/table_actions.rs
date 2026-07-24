@@ -161,7 +161,7 @@ impl App {
     /// would have nowhere to jump to.
     pub(super) fn table_search_scan(&mut self, q: &str) {
         self.table_search_hits.clear();
-        self.search_matches.clear();
+        self.tab.search_matches.clear();
         let needle = q.to_lowercase();
         let Some(t) = self.table_data.as_ref() else {
             return;
@@ -169,7 +169,7 @@ impl App {
         for r in 0..t.nrows() {
             for c in 0..t.ncols {
                 if t.cell(r, c).to_lowercase().contains(&needle) {
-                    self.search_matches.push((0, r, c));
+                    self.tab.search_matches.push((0, r, c));
                     self.table_search_hits.insert((r, c));
                 }
             }
