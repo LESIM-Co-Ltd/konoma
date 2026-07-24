@@ -5096,7 +5096,12 @@ impl App {
         let picker = self.picker.as_ref()?;
         let scale = self.cfg.ui.image_render_scale;
         let src = &self.gif_frames.get(self.gif_idx)?.0;
-        let (target, crop_rect, center, frac) = image_layout(
+        let ImageLayout {
+            target,
+            crop_rect,
+            center,
+            frac,
+        } = image_layout(
             src,
             picker.font_size(),
             self.tab.image_zoom,
@@ -5361,7 +5366,12 @@ impl App {
         let src = self.image_src.as_ref()?;
         let picker = self.picker.as_ref()?;
         let scale = self.cfg.ui.image_render_scale;
-        let (target, crop_rect, center, frac) = image_layout(
+        let ImageLayout {
+            target,
+            crop_rect,
+            center,
+            frac,
+        } = image_layout(
             src,
             picker.font_size(),
             self.tab.image_zoom,
@@ -8342,15 +8352,25 @@ fn fence_crop(dims: (u32, u32), f: f64, center: (f64, f64)) -> (PxRect, (f64, f6
     ((x0, y0, cw, ch), (cx, cy))
 }
 
-/// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
-/// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
-/// `(target, crop_rect, center, frac)` (None if size 0).
+/// Result of [`image_layout`]. `center` and `frac` are both `(f64, f64)` pairs with different
+/// meanings (image-space center vs. per-axis visible fraction), so this struct keeps them from
+/// being swapped at the call site.
 ///
 /// - `target`  : the render-target rectangle (centered; z=1=fit, grows when zooming, clips when exceeding the viewport)
 /// - `crop_rect`: the source-image window of the visible portion (px: x,y,w,h)
 /// - `center`  : the center clamped to where the visible window fits within the image [0,1]
 /// - `frac`    : the visible fraction per axis (<1=clipped=pan possible)
-#[allow(clippy::type_complexity)]
+#[derive(Clone, Copy)]
+struct ImageLayout {
+    target: Rect,
+    crop_rect: PxRect,
+    center: (f64, f64),
+    frac: (f64, f64),
+}
+
+/// Compute the display layout for an image/GIF frame (a pure function shared by prepare_image / prepare_gif).
+/// From (source image src, font_size, zoom, center[0,1], display area inner, render_scale), returns
+/// an [`ImageLayout`] (None if size 0).
 fn image_layout(
     src: &image::DynamicImage,
     font_size: ratatui_image::FontSize,
@@ -8359,7 +8379,7 @@ fn image_layout(
     inner: Rect,
     render_scale: f64,
     logical: Option<(u32, u32)>,
-) -> Option<(Rect, PxRect, (f64, f64), (f64, f64))> {
+) -> Option<ImageLayout> {
     use image::GenericImageView;
     let (sw, sh) = src.dimensions();
     if sw == 0 || sh == 0 || inner.width == 0 || inner.height == 0 {
@@ -8413,7 +8433,12 @@ fn image_layout(
         width: tw.min(inner.width),
         height: th.min(inner.height),
     };
-    Some((target, crop_rect, (cx, cy), (fw, fh)))
+    Some(ImageLayout {
+        target,
+        crop_rect,
+        center: (cx, cy),
+        frac: (fw, fh),
+    })
 }
 
 /// The modification time of `path`, or None if it cannot be read. Used by the FS-driven media auto-reload guard.

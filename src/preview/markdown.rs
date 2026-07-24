@@ -126,6 +126,19 @@ pub fn render_markdown_tasks(
     render_markdown_tasks_opts(src, width, code, theme, icons, tasks, true)
 }
 
+/// Shared trailing render options threaded through the alert/details/text-block renderers
+/// ([`render_alert`], [`render_details`], [`render_text_block_safe`]) — bundling same-typed
+/// positional args (e.g. two `bool`s, `&str`/`&[char]`) so a mix-up at a call site is a compile
+/// error on the field name instead of a silent swap.
+#[derive(Clone, Copy)]
+struct MdRenderCtx<'a> {
+    width: u16,
+    code: CodeStyle,
+    theme: &'a str,
+    icons: bool,
+    tasks: &'a [char],
+}
+
 /// Like [`render_markdown_tasks`], with the GitHub-alert (`> [!NOTE]` …) rendering gated by
 /// `alerts` (`ui.md_alerts`). When off, an alert blockquote renders as an ordinary blockquote.
 fn render_markdown_tasks_opts(
@@ -137,6 +150,13 @@ fn render_markdown_tasks_opts(
     tasks: &[char],
     alerts: bool,
 ) -> Vec<Line<'static>> {
+    let ctx = MdRenderCtx {
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+    };
     let mut out = Vec::new();
     for seg in split_segments(src) {
         match seg {
@@ -152,9 +172,9 @@ fn render_markdown_tasks_opts(
                             AlertPart::Text(t) => {
                                 render_md_text(&mut out, &t, width, code, theme, icons, tasks)
                             }
-                            AlertPart::Alert { kind, title, body } => out.extend(render_alert(
-                                kind, &title, &body, width, code, theme, icons, tasks,
-                            )),
+                            AlertPart::Alert { kind, title, body } => {
+                                out.extend(render_alert(kind, &title, &body, &ctx))
+                            }
                         }
                     }
                 } else {
@@ -179,6 +199,13 @@ fn render_md_text(
     icons: bool,
     tasks: &[char],
 ) {
+    let ctx = MdRenderCtx {
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+    };
     for part in split_details(text) {
         match part {
             DetailsPart::Text(t) => render_md_text_inner(out, &t, width, code, theme, icons, tasks),
@@ -188,9 +215,7 @@ fn render_md_text(
                 body,
             } => {
                 let open = next_details_open(open_attr);
-                out.extend(render_details(
-                    open, &summary, &body, width, code, theme, icons, tasks,
-                ));
+                out.extend(render_details(open, &summary, &body, &ctx));
             }
         }
     }
@@ -207,6 +232,13 @@ fn render_md_text_inner(
     tasks: &[char],
 ) {
     let opts = Options::new(KonomaStyles { code_bg: code.bg });
+    let ctx = MdRenderCtx {
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+    };
     // tui-markdown は GFM 表を1行に潰すため、表ブロックだけ先に横取りして
     // 自前で罫線描画する。残りのテキストは従来どおり tui-markdown へ。
     for part in split_tables(text) {
@@ -229,9 +261,7 @@ fn render_md_text_inner(
                             // 捕捉し、二分割の再帰で**最小の失敗ブロックだけ**を素の
                             // テキストへ降格する(丸ごと降格だと実在の文書が全編
                             // 無装飾になる — 2026-07-07 ユーザー報告)。
-                            render_text_block_safe(
-                                out, &t2, &opts, width, code, theme, icons, tasks, 0,
-                            );
+                            render_text_block_safe(out, &t2, &opts, &ctx, 0);
                         }
                         HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                     }
@@ -1458,23 +1488,20 @@ fn highlight_body(
 /// Render one text block via tui-markdown with panic isolation. On panic the block is split
 /// in half at a blank line **outside code fences** and both halves are rendered recursively, so
 /// only the minimal offending paragraph degrades to plain text — not the whole document segment.
-#[allow(clippy::too_many_arguments)]
 fn render_text_block_safe(
     out: &mut Vec<Line<'static>>,
     src: &str,
     opts: &Options<KonomaStyles>,
-    width: u16,
-    code: CodeStyle,
-    theme: &str,
-    icons: bool,
-    tasks: &[char],
+    ctx: &MdRenderCtx,
     depth: u8,
 ) {
     if src.trim().is_empty() {
         return;
     }
     if let Some(lines) = render_md_segment(src, opts) {
-        out.extend(decorate_md_lines(lines, width, code, theme, icons, tasks));
+        out.extend(decorate_md_lines(
+            lines, ctx.width, ctx.code, ctx.theme, ctx.icons, ctx.tasks,
+        ));
         return;
     }
     // 深さ上限 or これ以上割れない → このブロックだけ素のテキストで(内容は失わない)。
@@ -1484,8 +1511,8 @@ fn render_text_block_safe(
     }
     match split_block_for_retry(src) {
         Some((a, b)) => {
-            render_text_block_safe(out, a, opts, width, code, theme, icons, tasks, depth + 1);
-            render_text_block_safe(out, b, opts, width, code, theme, icons, tasks, depth + 1);
+            render_text_block_safe(out, a, opts, ctx, depth + 1);
+            render_text_block_safe(out, b, opts, ctx, depth + 1);
         }
         None => out.extend(src.lines().map(|l| Line::from(l.to_string()))),
     }
@@ -2469,23 +2496,13 @@ fn split_alerts(md: &str) -> Vec<AlertPart> {
 /// Render a GitHub alert as a colored callout box: a header (`icon Label` in the type's color, bold)
 /// and the Markdown body, every line carrying a colored left bar (`▌`). The body is rendered by the
 /// shared Markdown pipeline, so links, code, lists etc. inside an alert work like anywhere else.
-#[allow(clippy::too_many_arguments)]
-fn render_alert(
-    kind: AlertKind,
-    title: &str,
-    body: &str,
-    width: u16,
-    code: CodeStyle,
-    theme: &str,
-    icons: bool,
-    tasks: &[char],
-) -> Vec<Line<'static>> {
+fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
     let color = kind.color();
     let bar = || Span::styled("▌ ".to_string(), Style::new().fg(color));
     let mut out = Vec::new();
     // Header: bar + optional icon + label (+ optional Obsidian-style title), all in the alert color.
     let mut header = vec![bar()];
-    if icons {
+    if ctx.icons {
         header.push(Span::styled(
             format!("{} ", kind.icon()),
             Style::new().fg(color),
@@ -2502,9 +2519,17 @@ fn render_alert(
     ));
     out.push(Line::from(header));
     // Body via the shared pipeline (width reduced by the 2-col bar), each line bar-prefixed.
-    let inner = width.saturating_sub(2);
+    let inner = ctx.width.saturating_sub(2);
     let mut body_lines = Vec::new();
-    render_md_text_inner(&mut body_lines, body, inner, code, theme, icons, tasks);
+    render_md_text_inner(
+        &mut body_lines,
+        body,
+        inner,
+        ctx.code,
+        ctx.theme,
+        ctx.icons,
+        ctx.tasks,
+    );
     for bl in body_lines {
         let style = bl.style;
         let mut spans = vec![bar()];
@@ -2688,17 +2713,7 @@ pub(crate) fn is_details_body_line(line: &Line<'_>) -> bool {
 
 /// Render a `<details>` block: a summary line marked `▾`/`▸` (a Tab-focus toggle), and — when open —
 /// its Markdown body indented under a colored left bar (like an alert). `summary` empty → "Details".
-#[allow(clippy::too_many_arguments)]
-fn render_details(
-    open: bool,
-    summary: &str,
-    body: &str,
-    width: u16,
-    code: CodeStyle,
-    theme: &str,
-    icons: bool,
-    tasks: &[char],
-) -> Vec<Line<'static>> {
+fn render_details(open: bool, summary: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let arrow = if open { '▾' } else { '▸' };
     let label = if summary.trim().is_empty() {
@@ -2712,9 +2727,17 @@ fn render_details(
     ]));
     if open && !body.trim().is_empty() {
         let bar = || Span::styled("▏ ".to_string(), Style::new().fg(TABLE_BORDER_FG));
-        let inner = width.saturating_sub(2);
+        let inner = ctx.width.saturating_sub(2);
         let mut body_lines = Vec::new();
-        render_md_text_inner(&mut body_lines, body, inner, code, theme, icons, tasks);
+        render_md_text_inner(
+            &mut body_lines,
+            body,
+            inner,
+            ctx.code,
+            ctx.theme,
+            ctx.icons,
+            ctx.tasks,
+        );
         for bl in body_lines {
             let style = bl.style;
             let mut spans = vec![bar()];
