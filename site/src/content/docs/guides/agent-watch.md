@@ -18,6 +18,15 @@ changes the file already had before you started following stay hidden, so
 what you see is exactly the agent's new work. The agent saves a file → you're
 looking at exactly that edit, hands off.
 
+<img src="/konoma/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and f reveals the full git diff" width="1268" height="768" style="width:100%;height:auto;border-radius:8px" />
+
+*`src/main.rs` starts with an uncommitted line of your own (`// TODO: handle
+retries`) — the plain git diff shows it. After `F`, the agent appends a function
+and konoma opens the file by itself, with that new function as the only
+highlighted change: your earlier edit has dropped back to context. `f` switches
+to the full git diff, where both changes are highlighted. The agent then edits
+`docs/guide.md` and konoma follows again.*
+
 Details that make it comfortable:
 
 - **Follow is sticky.** Reading the diff — scrolling, `n`/`N` (cycling

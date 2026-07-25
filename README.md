@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/hero-image.png" alt="konoma — 木の間 — between the trees · full-screen preview" width="860">
+</p>
+
 # konoma
 
 > Terminal file browser built for AI pair-programming — full-screen previews
@@ -51,14 +55,32 @@ in-between split view.
 <p align="center"><b>Markdown</b> — inline images, Mermaid diagrams, and LaTeX math, rendered right in the preview</p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-richtext.png" alt="Headings, tables, syntax-highlighted code, and interactive task lists in a Markdown preview" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-richtext.png" alt="Tables with inline styling and alignment, a horizontal rule, and interactive task lists in a Markdown preview" width="860">
 </p>
-<p align="center"><b>Rich text</b> — headings, tables, syntax-highlighted code, and interactive task lists</p>
+<p align="center"><b>Rich text</b> — tables with inline styling and alignment, a horizontal rule, and interactive task lists</p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-alerts.png" alt="GitHub-style alerts, autolinks, emoji, footnotes, and inline HTML in a Markdown preview" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-alerts.png" alt="GitHub-style alerts, autolinks, emoji, and footnotes in a Markdown preview" width="860">
 </p>
-<p align="center"><b>GitHub-flavored</b> — alerts, autolinks, emoji, footnotes, and inline HTML</p>
+<p align="center"><b>GitHub-flavored</b> — alerts, autolinks, emoji, and footnotes</p>
+
+## Agent watch — konoma follows your AI's edits
+
+Press `F` and konoma stops being a browser you drive: whenever a file changes on
+disk, it jumps there by itself and shows a diff of **what changed since you pressed
+`F`** — not the full `git diff`. That distinction is the point. A working tree you
+hand to an agent usually already has your own edits in it; follow mode hides those
+and shows you only what the agent just did. Press `f` to swap between the two views,
+`n`/`N` to cycle the files touched in this session, and `q` to stop.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/follow.gif" alt="Follow mode — the file already has an uncommitted edit; after F, konoma shows only the lines the agent adds, and f reveals the full git diff" width="860">
+</p>
+<p align="center">
+  <b>Follow mode</b> — the file already has an uncommitted line (<code>// TODO: handle retries</code>).
+  After <code>F</code>, the agent's new function is the only thing highlighted; <code>f</code> switches to
+  the full <code>git diff</code>, where both show up.
+</p>
 
 ## Features
 
@@ -67,7 +89,11 @@ in-between split view.
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
-- **kitty graphics**: images use the kitty graphics protocol via ratatui-image for high quality.
+- **kitty graphics**: on a kitty-graphics terminal konoma transmits images itself, zlib-compressed, so
+  a full-screen image or a zoom step appears immediately instead of streaming megabytes of escape
+  codes. Other terminals (sixel, iTerm2, half-blocks) fall back to ratatui-image.
+- **Agent watch**: `F` follows whatever your AI edits — konoma jumps to each file on its own and shows
+  the diff *since you pressed `F`*, so pre-existing changes stay out of the way.
 - **Git suite**: status, diff, log, a custom commit-graph renderer, branches, and commits, all in-app.
 - **File manager**: create / rename / delete (trash by default) / copy / move, plus search,
   bookmarks, and sorting. Destructive actions require a confirmation dialog.

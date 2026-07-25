@@ -10,7 +10,29 @@ export default defineConfig({
 		starlight({
 			title: 'konoma',
 			description:
-				'A full-screen preview-focused terminal file browser for macOS, built for working next to an AI coding agent.',
+				'A full-screen preview-focused terminal file browser for macOS and Linux, built for working next to an AI coding agent.',
+			// Social preview (Open Graph / Twitter). The image lives in site/public/,
+			// so it is served from <site><base>og.jpg.
+			head: [
+				{
+					tag: 'meta',
+					attrs: { property: 'og:image', content: 'https://lesim-co-ltd.github.io/konoma/og.jpg' },
+				},
+				{ tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
+				{ tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
+				{
+					tag: 'meta',
+					attrs: {
+						property: 'og:image:alt',
+						content: 'konoma — sunlit forest seen through the gap between two trees',
+					},
+				},
+				{ tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+				{
+					tag: 'meta',
+					attrs: { name: 'twitter:image', content: 'https://lesim-co-ltd.github.io/konoma/og.jpg' },
+				},
+			],
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/LESIM-Co-Ltd/konoma' },
 			],

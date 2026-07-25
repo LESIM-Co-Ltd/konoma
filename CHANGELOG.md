@@ -17,6 +17,18 @@ All notable changes to konoma are documented in this file. The format is based o
   `samples/tutorial.md` from the repository in konoma"). Bundling them made every `cargo install`
   download media it cannot use. The published crate drops from 2.2 MB to 0.7 MB. Nothing changes for
   a git checkout: the samples, the tutorial and the test fixtures are all still there.
+- **New key visual.** `samples/sample.png` (the image the previews demo) and the README banner are now
+  a daylight forest looking through the gap between two trees into open sky — the meaning of the name
+  (木の間, "between the trees"). The site landing page uses a text-free variant, and social previews
+  (Open Graph / Twitter cards) now have a dedicated image.
+- **All screenshots and the tour GIF were re-shot.** They were captured in a window narrow enough that
+  the terminal text stays legible at the width the images are actually displayed, and they no longer
+  show the previous key visual. The tour GIF also lost the black border that the macOS window shadow
+  left around one of its frames.
+- **The README and the agent-watch guide now show follow mode as an animation.** The GIF is built
+  around what makes follow mode different from a plain `git diff`: the file already carries one of
+  your own uncommitted lines, and after `F` only the lines the agent adds are highlighted, until `f`
+  switches to the full git diff and both show up.
 
 ### Fixed
 - **Clipboard copy now works on Linux.** On X11/Wayland the clipboard contents are owned by the

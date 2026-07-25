@@ -4,8 +4,10 @@ All assets in this directory are **original content created for konoma** — use
 preview/thumbnail demo material and as test fixtures. They contain no third-party work
 and are covered by the project's MIT license.
 
-- `sample.png` / `sample.jpg` / `sample.gif` — generated with ImageMagick (gradients,
-  shapes, and an animated dot). `sample.gif` is a short original animation.
+- `sample.png` — the project's key visual: artwork generated for konoma with Google Gemini,
+  with the wordmark and tagline composited by the project. No third-party imagery is used.
+- `sample.jpg` / `sample.gif` — generated with ImageMagick (gradients, shapes, and an
+  animated dot). `sample.gif` is a short original animation.
 - `sample.pdf` — a generated three-page text PDF (exercises PDF page navigation).
 - `sample.mp4` — an ffmpeg-generated test pattern (`testsrc2`); no recorded footage.
 - `images.md` — demonstrates **inline block-level images** (Markdown `![]()` and HTML
