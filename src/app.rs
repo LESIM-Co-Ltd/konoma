@@ -20,6 +20,7 @@ use crate::i18n::tr;
 use crate::preview::PreviewKind;
 
 mod bookmark_actions;
+mod copy_actions;
 mod dialog_actions;
 mod file_actions;
 mod follow;
@@ -30,6 +31,7 @@ mod md_render;
 mod md_tasks;
 mod md_text;
 mod media_load;
+mod outline;
 mod paste_jump;
 mod preview_visual;
 mod search;
@@ -3278,204 +3280,6 @@ impl App {
     /// Scroll within the help. The upper bound is clamped at render time (since content and screen size are then known).
     pub fn help_scroll_by(&mut self, delta: i32) {
         self.help_scroll = (self.help_scroll as i32 + delta).max(0) as u16;
-    }
-
-    /// The path to copy. In Preview it is the preview target; in Tree it is the entry selected in the tree.
-    fn copy_target(&self) -> Option<PathBuf> {
-        // Git 変更ハブ表示中は、ツリーの選択ではなく**変更ファイル**のパスをコピー対象にする。
-        #[cfg(feature = "git")]
-        if self.surface() == crate::keymap::Surface::GitChanges {
-            return self.git_view_selected();
-        }
-        match self.tab.mode {
-            Mode::Preview => self.tab.preview_path.clone(),
-            Mode::Tree => self
-                .tab
-                .entries
-                .get(self.tab.selected)
-                .map(|e| e.path.clone()),
-        }
-    }
-
-    /// Copy the selected path to the clipboard according to the kind, and show the result in flash (FR-6).
-    pub fn copy_path(&mut self, kind: CopyKind) {
-        let Some(path) = self.copy_target() else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
-            return;
-        };
-        let text = copy_text(&path, &self.tab.open_dir, kind);
-        match set_clipboard(&text) {
-            Ok(()) => {
-                self.flash = Some(format!(
-                    "{}{text}",
-                    tr(self.lang, crate::i18n::Msg::CopiedPrefix)
-                ))
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}{e}",
-                    tr(self.lang, crate::i18n::Msg::CopyFailed)
-                ))
-            }
-        }
-    }
-
-    /// Test-only: the exact string `copy_path(kind)` would place on the clipboard for the current
-    /// copy target (tree selection / preview path / git-changes selection). `None` when there is no
-    /// target — the same gate as `copy_path`. Lets E2E assert copy values without the (headless-flaky)
-    /// clipboard round-trip.
-    #[cfg(test)]
-    pub fn copy_string_for(&self, kind: CopyKind) -> Option<String> {
-        let path = self.copy_target()?;
-        Some(copy_text(&path, &self.tab.open_dir, kind))
-    }
-
-    /// Test-only: the exact `@path#L..` string that `preview_copy_selection_ref` (`Y`) would copy.
-    #[cfg(test)]
-    pub fn selection_ref_string(&self) -> Option<String> {
-        self.preview_selection_ref_text()
-    }
-
-    /// Get metadata for the selected commit in log/graph/detail. detail uses the already-loaded data, while log/graph
-    /// fetch `commit_meta` from the selected commit id. None for non-commits (uncommitted rows, etc.) or out-of-scope surfaces.
-    #[cfg(feature = "git")]
-    fn current_commit_meta(&self) -> Option<crate::git::CommitMeta> {
-        use crate::keymap::Surface;
-        match self.surface() {
-            Surface::GitDetail => self.tab.git_detail_meta.clone(),
-            Surface::GitLog => {
-                let id = self.git_log_selected_id()?;
-                crate::git::commit_meta(&self.tab.root, &id)
-            }
-            Surface::GitGraph => {
-                let id = self
-                    .git_graph_selected_row()
-                    .and_then(|r| r.commit.clone())?;
-                crate::git::commit_meta(&self.tab.root, &id)
-            }
-            _ => None,
-        }
-    }
-
-    /// git log/graph/detail: copy the selected commit's info (short/full hash, subject, full message, author, date)
-    /// to the clipboard. If there is no commit, notify via flash.
-    #[cfg(feature = "git")]
-    pub fn git_copy(&mut self, kind: GitCopyKind) {
-        let Some(meta) = self.current_commit_meta() else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCommitToCopy).into());
-            return;
-        };
-        let text = match kind {
-            GitCopyKind::ShortHash => meta.short,
-            GitCopyKind::FullHash => meta.id,
-            GitCopyKind::Subject => meta.message.lines().next().unwrap_or("").to_string(),
-            GitCopyKind::Message => meta.message,
-            GitCopyKind::Author => meta.author,
-            GitCopyKind::Date => meta.date,
-        };
-        self.set_clipboard_flash(&text);
-    }
-
-    /// branches view: copy the selected branch name to the clipboard.
-    #[cfg(feature = "git")]
-    pub fn git_copy_branch_name(&mut self) {
-        let Some(b) = self.git_branch_selected() else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::NoCopyTarget).into());
-            return;
-        };
-        let name = b.name;
-        self.set_clipboard_flash(&name);
-    }
-
-    /// Write to the clipboard and flash success/failure (common processing for copy operations). On success, shows a one-line preview
-    /// (multi-line content such as a full message is rounded to the first line + `…` so the footer does not overflow).
-    fn set_clipboard_flash(&mut self, text: &str) {
-        match set_clipboard(text) {
-            Ok(()) => {
-                let first = text.lines().next().unwrap_or("");
-                let mut preview: String = first.chars().take(60).collect();
-                if first.chars().count() > 60 || text.lines().nth(1).is_some() {
-                    preview.push('…');
-                }
-                self.flash = Some(format!(
-                    "{}{preview}",
-                    tr(self.lang, crate::i18n::Msg::CopiedPrefix)
-                ));
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}{e}",
-                    tr(self.lang, crate::i18n::Msg::CopyFailed)
-                ))
-            }
-        }
-    }
-
-    // --- 見出しアウトラインオーバーレイ (`o` in a Markdown preview) --------
-    pub fn is_outline(&self) -> bool {
-        self.outline_open
-    }
-
-    /// Heading outline of the current Markdown preview: `(level, text, decorated-line-index)` in
-    /// document order. Built from the decorated cache, so it reflects exactly what is on screen
-    /// (front matter stripped, footnotes/inline-HTML processed). Empty for non-Markdown previews.
-    pub(crate) fn md_outline(&self) -> Vec<(u8, String, usize)> {
-        let Some(c) = &self.md_cache else {
-            return Vec::new();
-        };
-        c.anchors
-            .iter()
-            .filter_map(|(_slug, line)| {
-                let l = c.lines.get(*line)?;
-                let text = crate::preview::markdown::heading_text(l)?;
-                let level = crate::preview::markdown::heading_level_hint(l, c.lines.get(*line + 1));
-                Some((level, text, *line))
-            })
-            .collect()
-    }
-
-    /// `o`: open/close the heading outline. Opening selects the heading of the current section
-    /// (the last one at or above the viewport top). Flashes and stays closed if there are no
-    /// headings (e.g. a non-Markdown preview or a document without any).
-    pub fn toggle_outline(&mut self) {
-        if self.outline_open {
-            self.outline_open = false;
-            return;
-        }
-        let items = self.md_outline();
-        if items.is_empty() {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::OutlineEmpty).into());
-            return;
-        }
-        // Select the current section: the last heading at or above the top of the view.
-        let top = self.md_top_logical_line().unwrap_or(0);
-        self.outline_sel = items
-            .iter()
-            .rposition(|(_, _, line)| *line <= top)
-            .unwrap_or(0);
-        self.outline_open = true;
-    }
-
-    pub fn outline_sel(&self) -> usize {
-        self.outline_sel
-    }
-
-    pub fn outline_move(&mut self, delta: i32) {
-        let n = self.md_outline().len();
-        if n == 0 {
-            return;
-        }
-        self.outline_sel = (self.outline_sel as i32 + delta).rem_euclid(n as i32) as usize;
-    }
-
-    /// Enter in the outline: scroll the preview to the selected heading and close the overlay.
-    pub fn outline_jump(&mut self) {
-        let line = self.md_outline().get(self.outline_sel).map(|(_, _, l)| *l);
-        self.outline_open = false;
-        if let Some(line) = line {
-            let (row, _) = self.md_visual_span(line);
-            self.tab.preview_scroll = row.min(u16::MAX as usize) as u16;
-        }
     }
 
     /// Format a path into a display string using the current path_style (shared by the tree/preview title).
