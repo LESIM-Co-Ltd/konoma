@@ -28,9 +28,12 @@ exclude = [
     "/config.example.ja.toml",
     # ドキュメントサイト(Astro Starlight)。公開先は GitHub Pages なので crate に同梱しない。
     "/site",
-    # 窓読みスクロールの手動性能確認用に自動生成した 52k 行(1.8MB)。テスト・doc から参照されない
-    # ローカル専用の生成物なので同梱しない(手元には残す)。
-    "/samples/code/large_generated.rs",
+    # デモ/チュートリアル素材とテスト fixture。**実行時バイナリは samples に依存しない**
+    # (参照はすべて #[cfg(test)])。ドキュメントも「リポジトリの samples/tutorial.md を konoma で
+    # 開く」と案内しており、git 側に在れば足りる。同梱すると全インストーラが使わないメディアを
+    # ダウンロードすることになる(sample.png だけで 2MB)ので crate からは外す。
+    # 注: 除外環境ではテストの fixture が無いため、`cargo test` は git チェックアウトから走らせる。
+    "/samples",
 ]
 
 # cargo-binstall: fetch the prebuilt binary from the GitHub Release instead of

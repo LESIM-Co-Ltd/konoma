@@ -12,6 +12,11 @@ All notable changes to konoma are documented in this file. The format is based o
   triggers a tree rebuild + git-status refresh. Real (non-ignored) file changes and `.gitignore` /
   `.git/info/exclude` changes still refresh as before. (It skips writes under ignored directories that
   exist in the ignore set; a newly-created glob-matched file at the root is not covered.)
+- **`samples/` is no longer bundled in the published crate.** The binary never reads them — they are
+  demo/tutorial material and test fixtures, and the docs point at the repository copy ("open
+  `samples/tutorial.md` from the repository in konoma"). Bundling them made every `cargo install`
+  download media it cannot use. The published crate drops from 2.2 MB to 0.7 MB. Nothing changes for
+  a git checkout: the samples, the tutorial and the test fixtures are all still there.
 
 ### Fixed
 - **Clipboard copy now works on Linux.** On X11/Wayland the clipboard contents are owned by the
