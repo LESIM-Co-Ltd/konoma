@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-25
+
 ### Added
 - **Inline Markdown GIFs now animate.** Full-screen GIF preview has always cycled frames, but a GIF
   embedded in a Markdown document (`![...](x.gif)`) only ever showed its first frame. The inline
@@ -921,7 +923,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.8...v0.19.0
 [0.18.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.6...v0.18.8
 [0.18.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.1...v0.18.6
