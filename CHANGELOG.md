@@ -6,6 +6,24 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Linux: reading a file is no longer mistaken for changing it.** The filesystem watcher never looked
+  at the event *kind*, and notify's inotify backend subscribes to `IN_OPEN` — so on Linux merely
+  opening or reading a file was reported to konoma as a change. Two things followed from that, both
+  Linux-only (macOS's FSEvents does not report reads at all, which is why this went unnoticed):
+  - **Follow mode (`F`) jumped to files that were only read.** Anything your agent merely grepped, or
+    that a build opened, pulled the view away from what it was actually writing.
+  - **konoma spun `git status` forever.** Its own status scan opens tracked files, those reads came
+    back as "changes", and that refresh ran another scan — a self-feeding loop. Measured in a Linux
+    container on an idle 40-file repository with no input at all: **~18.5 `git status` invocations per
+    second, indefinitely** (416 + 416 calls in 24 s), holding CPU at ~5.6% and leaving the "git scan"
+    busy indicator permanently lit. After the fix the same idle 24 s window runs **zero** further
+    invocations and CPU sits at ~0.5%.
+
+  Events are now filtered to actual content changes before anything else looks at them: every
+  `Access(..)` kind is dropped except `Close(Write)` (inotify's `IN_CLOSE_WRITE`, which does mean a
+  write happened). macOS behaviour is unchanged — FSEvents only produces kinds that still pass.
+
 ## [0.19.0] - 2026-07-25
 
 ### Changed

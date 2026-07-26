@@ -1792,6 +1792,31 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 0o444 のファイルへの書込みがこのプロセスで実際に拒否されるか probe する。
+/// root(または権限ビットをバイパスできる任意のプロセス)ではパーミッションが効かず
+/// 書込みが成功してしまう(libc 非依存=uid を直接は読まない・fs 挙動そのものを確認する)。
+#[cfg(unix)]
+fn write_denied_by_permissions() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = std::env::temp_dir().join(format!(
+        "konoma_perm_probe_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&probe, "x").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let denied = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&probe)
+        .is_err();
+    let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o644));
+    let _ = std::fs::remove_file(&probe);
+    denied
+}
+
 /// 書込みが拒否されても(読取専用ファイル)クラッシュせず flash で通知し、内容を壊さない(原則#3)。
 #[cfg(unix)]
 #[test]
@@ -1799,6 +1824,16 @@ fn md_task_toggle_flashes_on_write_error() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::os::unix::fs::PermissionsExt;
+    // このテストは「パーミッションビットが書込みを拒否する」ことに依存する。
+    // root(や権限ビットをバイパスできるプロセス)で実行すると 0o444 でも書込みが
+    // 成功してしまい、製品は正しく動いているのにテストだけ環境要因で赤くなる。
+    // (Linux コンテナで root として動作確認する際に踏んだ・製品コードは変更しない)
+    if !write_denied_by_permissions() {
+        eprintln!(
+            "md_task_toggle_flashes_on_write_error: このプロセスはパーミッションで書込みを拒否されない(root 等)ためスキップ"
+        );
+        return;
+    }
     let dir = std::env::temp_dir().join("konoma_md_task_wrerr_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

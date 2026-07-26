@@ -213,6 +213,29 @@ fn classify_fs_paths(paths: &[PathBuf]) -> (bool, bool) {
     (true, ignore_rules)
 }
 
+/// Whether a raw notify `EventKind` reflects an actual content change and is worth reacting to at
+/// all — checked **before** `classify_fs_paths` even looks at the paths. notify's inotify backend
+/// (Linux) subscribes to `IN_OPEN`/`IN_ACCESS`, so merely *opening or reading* a file emits
+/// `EventKind::Access(..)` — no write happened. Left unfiltered this breaks two things on Linux:
+/// follow mode (`F`) jumping to files that were only `cat`, and a self-feeding loop where konoma's
+/// own `git status` opens tracked files, the reads get reported back as "changes", and that refresh
+/// runs `git status` again forever (the busy "git scan" spinner never stops). macOS's FSEvents
+/// backend never reports reads at all, so this predicate is a no-op there — `Access` events simply
+/// don't occur, and every branch below `Access` (`Any`/`Create`/`Modify`/`Remove`/`Other`) still
+/// returns `true`, keeping macOS behaviour byte-identical.
+///
+/// The one `Access` case that *is* a real change: `Close(Write)` (inotify's `IN_CLOSE_WRITE`) fires
+/// after a file that was opened for writing is closed — i.e. a write actually happened and is now
+/// flushed. Every other `Access` variant (opens, plain reads, close-without-write) is a no-op read.
+fn is_content_event(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    match kind {
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        notify::EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
 /// Paths from an fs event that follow mode may jump to: anything not under a `.git` directory
 /// (repository internals — index/refs/lock churn — are never review targets). Existence/kind/root
 /// checks happen later in `App::follow_jump` (the event may be a deletion, or outside the tree).
@@ -273,6 +296,12 @@ fn run(
     let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(bool, Vec<PathBuf>)>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
+            // 中身の変化でないイベント(Linux inotify の open/read 通知)はここで弾く
+            // (is_content_event)。両方の watch(root 再帰＋extra/`.git` 非再帰)がこのコールバック
+            // 1つを共有しているので、ここで弾けば経路すべてに効く。
+            if !is_content_event(&ev.kind) {
+                return;
+            }
             let (meaningful, ignore_rules) = classify_fs_paths(&ev.paths);
             if meaningful {
                 let _ = fs_tx.send((ignore_rules, follow_candidates(&ev.paths)));
@@ -332,6 +361,7 @@ fn run(
         // キー長押し対策: 1イベント=1描画だと、描画が重いとき入力が溜まり「離した後もスクロール
         // し続ける」。保留中のイベントを**一括で処理してから 1 回だけ描画**する(最終状態へ収束)。
         // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする。
+        // インライン、両方の次フレーム期限のうち近い方)。
         // 別スレッドのメディア読み込み待ちの間も、結果を即反映できるようこまめに起きる。
         let poll_timeout =
             if app.is_media_loading() || app.md_images_loading() || app.kitty_build_pending() {
@@ -1515,6 +1545,118 @@ mod tests {
                 PathBuf::from("/repo/README.md"),
             ]
         );
+    }
+
+    #[test]
+    fn is_content_event_ignores_reads_reacts_to_writes() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
+        };
+        use notify::EventKind;
+
+        // 読み取り系(open/read/close-without-write)は反応しない(inotify の IN_OPEN/IN_ACCESS 対策)。
+        assert!(!is_content_event(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!is_content_event(&EventKind::Access(AccessKind::Open(
+            AccessMode::Read
+        ))));
+        assert!(!is_content_event(&EventKind::Access(AccessKind::Read)));
+        assert!(!is_content_event(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(!is_content_event(&EventKind::Access(AccessKind::Any)));
+
+        // 書込み確定(IN_CLOSE_WRITE)は反応する。Access 以外の種別はすべて反応する(安全側)。
+        assert!(is_content_event(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        assert!(is_content_event(&EventKind::Any));
+        assert!(is_content_event(&EventKind::Create(CreateKind::File)));
+        assert!(is_content_event(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(is_content_event(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::Any
+        ))));
+        assert!(is_content_event(&EventKind::Remove(RemoveKind::File)));
+        assert!(is_content_event(&EventKind::Other));
+    }
+
+    /// A unique temp directory per call (pid + a process-global counter), matching
+    /// `app::tests::unique_tmp` — a real filesystem watcher below must not share a fixed path with
+    /// a parallel test run or the two watchers cross-contaminate each other's events.
+    fn watch_test_unique_tmp(prefix: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
+    }
+
+    #[test]
+    fn watcher_ignores_reads_but_reports_writes() {
+        // 実際の notify watcher で is_content_event を run() のコールバックと同じ順序
+        // (is_content_event → classify_fs_paths)で通す統合テスト。
+        //
+        // read 側のアサーションは **Linux では is_content_event フィルタ無しだと落ちる**
+        // (inotify は WatchMask::OPEN も購読しており、ただの open/read でも
+        // EventKind::Access(..) が飛んでくる=フィルタが無ければ「変更あり」と誤検知する)。
+        // macOS の FSEvents は read を一切報告しないため、read 側は**フィルタの有無に関わらず
+        // 元々イベントが来ない=vacuous(空虚に緑になるだけで検出力が無い)だが無害。
+        // write 側のアサーションは両 OS で効き、「read を弾く」修正が中身の変更まで
+        // 握り潰す over-filtering になっていないことの歯止めになる。
+        use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = watch_test_unique_tmp("konoma_watch_filter_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                // run() の watcher コールバックと同じ順序のフィルタ。
+                if !is_content_event(&ev.kind) {
+                    return;
+                }
+                let (meaningful, _) = classify_fs_paths(&ev.paths);
+                if meaningful {
+                    let _ = tx.send(());
+                }
+            }
+        })
+        .expect("recommended_watcher");
+        watcher
+            .watch(&dir, RecursiveMode::Recursive)
+            .expect("watch");
+
+        // settle: ディレクトリ/ファイル作成自体のイベントを ~500ms かけて捨てる。
+        let settle_until = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < settle_until {
+            let _ = rx.recv_timeout(Duration::from_millis(50));
+        }
+
+        // read だけでは(フィルタが効いていれば)イベントが来ない。
+        for _ in 0..5 {
+            let _ = std::fs::read(&file);
+        }
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_err(),
+            "reading a file must not be reported as a change \
+             (fails on Linux without the is_content_event filter; vacuous on macOS)"
+        );
+
+        // write では引き続きイベントが来る(over-filtering していないことの確認)。
+        std::fs::write(&file, b"changed").unwrap();
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "writing a file must still be reported as a change"
+        );
+
+        drop(watcher);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
