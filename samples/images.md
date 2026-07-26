@@ -17,6 +17,12 @@ Text between the two images, so you can see the spacing and scrolling behavior.
 
 <p align="center"><img src="sample.png" width="480" alt="html image form"></p>
 
+## Animated GIF
+
+Inline GIFs cycle in place, the same way the full-screen preview animates them:
+
+![animated sample](sample.gif)
+
 ## Remote images (fetched with the system `curl`, cached on disk)
 
 A remote raster screenshot and an SVG badge — the kind READMEs show on GitHub.

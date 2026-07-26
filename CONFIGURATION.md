@@ -128,7 +128,7 @@ Built-in renderers (`builtin = "..."`):
 
 | Name | Renders |
 |---|---|
-| `markdown` | Decorated Markdown (headings, tables, links, task checkboxes, inline images, ```` ```mermaid ```` fences as diagrams). |
+| `markdown` | Decorated Markdown (headings, tables, links, task checkboxes, inline images — animated GIFs cycle in place — and ```` ```mermaid ```` fences as diagrams). |
 | `mermaid` | Standalone `.mmd`/`.mermaid` files as diagrams. Renders as a real image by default (pure Rust, full-screen zoom/pan); set `[ui] mermaid = "text"` for Unicode box-drawing. Controlled by the `[ui] mermaid` option above. |
 | `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |

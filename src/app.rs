@@ -1004,6 +1004,17 @@ struct MdImgEntry {
     layout_px: Option<(u32, u32)>,
     /// A sharpening re-raster is in flight (at most one per diagram).
     reraster_inflight: bool,
+    /// All frames of an animated inline GIF (empty = not a GIF, or a static/single-frame one — those
+    /// already decode through the plain `decoded` path above and never populate this). Kept as `Arc`s
+    /// so advancing to the next frame (`App::advance_md_gifs_if_due`) is a cheap pointer clone into
+    /// `decoded` rather than a full image copy — mirrors the full-screen `gif_frames` mechanism
+    /// (`App::advance_gif_if_due`) but per cache entry, since several inline GIFs can animate at once.
+    frames: Vec<(Arc<image::DynamicImage>, std::time::Duration)>,
+    /// Index of the currently-displayed frame within `frames`.
+    idx: usize,
+    /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
+    /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
+    shown_at: Option<std::time::Instant>,
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -1106,6 +1117,10 @@ pub struct MdImageResult {
     /// True when this is a sharpening re-raster of an already-shown diagram: only the pixels are
     /// replaced — the layout size and the decoration cache stay untouched.
     reraster: bool,
+    /// All frames when this is an animated inline GIF (`image` above is just its first frame, kept
+    /// so the existing layout-sizing code path is unchanged). None for everything else, including a
+    /// static/single-frame GIF, which already fell back to the plain still-image decode.
+    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
 }
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.

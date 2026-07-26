@@ -360,7 +360,7 @@ fn run(
         // 入力待ち(タイムアウト付き)。タイムアウト中もワーカー結果やファイル変更を拾えるようにする。
         // キー長押し対策: 1イベント=1描画だと、描画が重いとき入力が溜まり「離した後もスクロール
         // し続ける」。保留中のイベントを**一括で処理してから 1 回だけ描画**する(最終状態へ収束)。
-        // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする。
+        // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする(全画面/Markdown
         // インライン、両方の次フレーム期限のうち近い方)。
         // 別スレッドのメディア読み込み待ちの間も、結果を即反映できるようこまめに起きる。
         let poll_timeout =
@@ -368,7 +368,11 @@ fn run(
                 // 別スレッド待ち(メディア/kitty ビルド)の間はこまめに起きて結果を即反映する。
                 Duration::from_millis(16)
             } else {
-                app.gif_poll_timeout().unwrap_or(Duration::from_millis(100))
+                app.gif_poll_timeout()
+                    .into_iter()
+                    .chain(app.md_gif_poll_timeout())
+                    .min()
+                    .unwrap_or(Duration::from_millis(100))
             };
         if event::poll(poll_timeout)? {
             let mut quit = false;
@@ -500,6 +504,11 @@ fn run(
         // GIF アニメ: 現フレームの表示時間が過ぎていれば次フレームへ進める(image_src 差し替え→
         // 次の描画で prepare_image が再構築→ワーカー再エンコード→上の分岐で反映)。
         if app.advance_gif_if_due() {
+            needs_redraw = true;
+        }
+        // Markdown インライン GIF: 同様に各エントリを独立して進める(decoded 差し替え→次の描画で
+        // ensure_md_image がキー不一致を見て再エンコードを要求→md_enc の分岐で反映)。
+        if app.advance_md_gifs_if_due() {
             needs_redraw = true;
         }
 

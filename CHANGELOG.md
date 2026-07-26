@@ -6,6 +6,13 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Inline Markdown GIFs now animate.** Full-screen GIF preview has always cycled frames, but a GIF
+  embedded in a Markdown document (`![...](x.gif)`) only ever showed its first frame. The inline
+  decode path now expands all frames the same way the full-screen path does, budgeted smaller
+  (32 MiB vs. the full-screen 128 MiB) since a single document can embed several GIFs at once. A
+  static or single-frame GIF still decodes through the normal still-image path, unchanged.
+
 ### Fixed
 - **Linux: reading a file is no longer mistaken for changing it.** The filesystem watcher never looked
   at the event *kind*, and notify's inotify backend subscribes to `IN_OPEN` — so on Linux merely

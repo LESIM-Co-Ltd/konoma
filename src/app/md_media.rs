@@ -74,7 +74,22 @@ impl App {
                         Some(img.dimensions())
                     };
                 }
-                entry.decoded = Some(Arc::new(img));
+                // Animated GIF: keep all frames (as cheap-to-clone Arcs from here on) and start the
+                // cycle at frame 0; `advance_md_gifs_if_due` swaps `decoded` to the current frame as
+                // playback advances. `res.frames` only arrives on the initial decode — GIFs never go
+                // through the sharpening re-raster path (that's for vector sources), so this can't
+                // race a later reraster result and clobber mid-playback state.
+                if let Some(frames) = res.frames {
+                    entry.frames = frames
+                        .into_iter()
+                        .map(|(im, d)| (Arc::new(im), d))
+                        .collect();
+                    entry.idx = 0;
+                    entry.shown_at = None;
+                    entry.decoded = entry.frames.first().map(|(im, _)| im.clone());
+                } else {
+                    entry.decoded = Some(Arc::new(img));
+                }
                 entry.failed = false;
                 if let Some(svg) = res.svg {
                     entry.svg = Some(svg);
@@ -187,6 +202,7 @@ impl App {
                 image,
                 svg: None,
                 reraster: true,
+                frames: None,
             }
         };
         if let Some(tx) = img_tx {
@@ -284,6 +300,7 @@ impl App {
                     image,
                     svg,
                     reraster: false,
+                    frames: None,
                 });
             });
             false
@@ -294,6 +311,7 @@ impl App {
                 image,
                 svg,
                 reraster: false,
+                frames: None,
             });
             true
         }
@@ -333,6 +351,7 @@ impl App {
                     image,
                     svg,
                     reraster: false,
+                    frames: None,
                 });
             });
             false
@@ -343,6 +362,7 @@ impl App {
                 image,
                 svg,
                 reraster: false,
+                frames: None,
             });
             true
         }
@@ -490,16 +510,29 @@ impl App {
                 let svg_max_px = self.cfg.ui.svg_max_px;
                 std::thread::spawn(move || {
                     // Sniff the format from content (remote-cache files have no extension); rasterize SVG.
+                    // Animated GIF: decode all frames so the inline image cycles the same way the
+                    // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
+                    // full-screen path bounds memory when a document embeds several GIFs at once.
+                    // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
+                    // falls through unchanged to the normal still-image decode.
                     // panic(病的画像/SVG)も捕捉して必ず結果を返す(返さないと busy 固着)。
-                    let image =
-                        crate::preview::markdown::catch_silent(|| md_decode_image(&p, svg_max_px))
-                            .flatten()
-                            .ok_or_else(|| "decode failed".to_string());
+                    let (still, frames) = crate::preview::markdown::catch_silent(|| {
+                        if App::looks_like_gif(&p) {
+                            if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
+                                let first = frames[0].0.clone();
+                                return (Some(first), Some(frames));
+                            }
+                        }
+                        (md_decode_image(&p, svg_max_px), None)
+                    })
+                    .unwrap_or((None, None));
+                    let image = still.ok_or_else(|| "decode failed".to_string());
                     let _ = tx.send(MdImageResult {
                         path: p,
                         image,
                         svg: None,
                         reraster: false,
+                        frames,
                     });
                 });
             }
@@ -597,5 +630,64 @@ impl App {
         }
         // Not yet encoded for this exact position: keep the last band (or the full image) visible.
         entry.clip_protocol.as_ref().or(entry.protocol.as_ref())
+    }
+
+    /// Drive every animated inline Markdown GIF (the per-entry analog of `App::advance_gif_if_due`
+    /// for the full-screen GIF path). Each cache entry with ≥2 frames advances independently once
+    /// its current frame's display time has elapsed. Advancing swaps `decoded` to the new frame and
+    /// invalidates the encode keys (`proto_size`/`clip_key`/`zoom_key`) — but **not** the encoded
+    /// protocols themselves, which stay visible until `ensure_md_image` (called from the renderer,
+    /// only for placements actually drawn) requests and receives a fresh encode of the new frame.
+    /// Advancing an off-screen entry therefore costs only an index bump, never a re-encode.
+    /// Returns true if any entry advanced (the caller re-renders).
+    pub fn advance_md_gifs_if_due(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let mut advanced = false;
+        for entry in self.md_image_cache.values_mut() {
+            if entry.frames.len() < 2 {
+                continue;
+            }
+            let Some(shown_at) = entry.shown_at else {
+                // 最初の tick: 計時を開始するだけ(先頭フレームは decoded に表示済み)。
+                entry.shown_at = Some(now);
+                continue;
+            };
+            let delay = entry.frames[entry.idx].1;
+            if now.duration_since(shown_at) < delay {
+                continue;
+            }
+            entry.idx = (entry.idx + 1) % entry.frames.len();
+            entry.shown_at = Some(now);
+            entry.decoded = Some(entry.frames[entry.idx].0.clone());
+            // 次フレームは再エンコードが要る: キーだけ無効化する。旧 protocol は次のエンコードが
+            // 届くまでの表示用に残す(消すと一瞬空白になる=フェンスの再ラスタと同じ流儀)。
+            entry.proto_size = None;
+            entry.clip_key = None;
+            entry.zoom_key = None;
+            advanced = true;
+        }
+        advanced
+    }
+
+    /// Wait time until the soonest inline-GIF frame change, across every animating cache entry (for
+    /// the run loop's poll timeout — mirrors `App::gif_poll_timeout` for the full-screen GIF path).
+    /// None when no inline GIF is currently animating.
+    pub fn md_gif_poll_timeout(&self) -> Option<std::time::Duration> {
+        use std::time::Duration;
+        let mut min: Option<Duration> = None;
+        for entry in self.md_image_cache.values() {
+            if entry.frames.len() < 2 {
+                continue;
+            }
+            let remaining = match entry.shown_at {
+                None => Duration::ZERO, // まだ計時前: すぐ次の tick を回して計時開始
+                Some(t) => entry.frames[entry.idx]
+                    .1
+                    .checked_sub(t.elapsed())
+                    .unwrap_or(Duration::ZERO),
+            };
+            min = Some(min.map_or(remaining, |m| m.min(remaining)));
+        }
+        min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
     }
 }

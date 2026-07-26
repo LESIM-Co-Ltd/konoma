@@ -5609,6 +5609,159 @@ fn gif_poll_timeout_none_without_anim_some_when_playing() {
     );
 }
 
+// ---- インライン Markdown GIF アニメーション --------------------------------------------
+
+/// フレーム 1 個のエントリ(静止画/単フレーム GIF)は進めない・状態も変わらない。
+#[test]
+fn advance_md_gifs_single_frame_entry_does_not_advance() {
+    let dir = unique_tmp("konoma_md_gif_single_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let key = PathBuf::from("/tmp/one.gif");
+    let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(frame.clone()),
+            frames: vec![(frame, std::time::Duration::from_millis(50))],
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        !app.advance_md_gifs_if_due(),
+        "1フレームしか無いエントリは進めない"
+    );
+    let e = &app.md_image_cache[&key];
+    assert_eq!(e.idx, 0);
+    assert!(e.shown_at.is_none(), "アニメ対象外なので計時も始めない");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 複数フレームのエントリ: 期限前は進めない(最初の tick は計時開始のみ)。期限超過で次フレーム
+/// へ進み、decoded が差し替わり、proto_size/clip_key/zoom_key は無効化されるが **protocol 本体は
+/// 消さない**(次のエンコードが届くまでの表示用に残す=消すと一瞬空白になる)。一周すると idx は0へ。
+#[test]
+fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_keys() {
+    let dir = unique_tmp("konoma_md_gif_advance_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let key = PathBuf::from("/tmp/anim.gif");
+    let f0 = Arc::new(image::DynamicImage::new_rgba8(4, 4));
+    let f1 = Arc::new(image::DynamicImage::new_rgba8(4, 4));
+
+    // 実物の Protocol(halfblocks=端末不要)を1つ作り、「advance 後も残る」ことを確かめる。
+    let picker = test_picker();
+    let proto = picker
+        .new_protocol(
+            (*f0).clone(),
+            ratatui::layout::Size::new(4, 2),
+            ratatui_image::Resize::Fit(None),
+        )
+        .expect("halfblocks エンコードは端末無しでも成功する");
+
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(f0.clone()),
+            frames: vec![
+                (f0.clone(), std::time::Duration::from_millis(50)),
+                (f1.clone(), std::time::Duration::from_millis(50)),
+            ],
+            protocol: Some(proto),
+            proto_size: Some((4, 2)),
+            clip_key: Some((4, 2, 0, 2)),
+            zoom_key: Some((4, 2, (0, 0, 4, 4))),
+            ..Default::default()
+        },
+    );
+
+    // 期限前(初回 tick): 計時を開始するだけで進めない。
+    assert!(!app.advance_md_gifs_if_due(), "最初の tick は計時開始だけ");
+    {
+        let e = &app.md_image_cache[&key];
+        assert_eq!(e.idx, 0);
+        assert!(e.shown_at.is_some(), "計時は始まる");
+        assert!(
+            e.proto_size.is_some(),
+            "計時開始だけではエンコードキーを崩さない"
+        );
+    }
+
+    // 期限を過去にずらして次フレームへ進める。
+    {
+        let e = app.md_image_cache.get_mut(&key).unwrap();
+        e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    }
+    assert!(app.advance_md_gifs_if_due(), "期限超過で次フレームへ進む");
+    {
+        let e = &app.md_image_cache[&key];
+        assert_eq!(e.idx, 1, "次フレームへ進む");
+        assert!(
+            Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f1),
+            "decoded が新フレームへ差し替わる"
+        );
+        assert!(e.proto_size.is_none(), "proto_size は無効化される");
+        assert!(e.clip_key.is_none(), "clip_key も無効化される");
+        assert!(e.zoom_key.is_none(), "zoom_key も無効化される");
+        assert!(
+            e.protocol.is_some(),
+            "旧 protocol 本体は消さない(次のエンコードが届くまでの表示用)"
+        );
+    }
+
+    // 一周: もう一度期限を過去にずらすと idx が 0 へ戻る。
+    {
+        let e = app.md_image_cache.get_mut(&key).unwrap();
+        e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    }
+    assert!(app.advance_md_gifs_if_due());
+    assert_eq!(
+        app.md_image_cache[&key].idx, 0,
+        "2フレームを一周して先頭へ戻る"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// アニメ対象が無ければ None、あれば Some で frames の delay 以下(10〜100ms クランプ)。
+#[test]
+fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
+    use std::time::Duration;
+    let dir = unique_tmp("konoma_md_gif_poll_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    assert!(
+        app.md_gif_poll_timeout().is_none(),
+        "アニメ中のインライン GIF が無ければ None"
+    );
+
+    let key = PathBuf::from("/tmp/anim2.gif");
+    let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
+    app.md_image_cache.insert(
+        key,
+        MdImgEntry {
+            decoded: Some(frame.clone()),
+            frames: vec![
+                (frame.clone(), Duration::from_millis(50)),
+                (frame, Duration::from_millis(50)),
+            ],
+            ..Default::default()
+        },
+    );
+    let t = app.md_gif_poll_timeout().expect("再生中は Some");
+    assert!(
+        t >= Duration::from_millis(10) && t <= Duration::from_millis(100),
+        "10〜100ms にクランプ: {t:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn apply_image_resize_err_is_ignored() {
     // エンコード失敗(Err)はクラッシュさせず false を返す(状態も変えない)。
@@ -9126,6 +9279,7 @@ fn stale_md_image_result_is_dropped() {
         image: Ok(image::DynamicImage::new_rgba8(4, 4)),
         svg: None,
         reraster: false,
+        frames: None,
     });
     assert!(!redraw, "陳腐化結果は再描画も要求しない");
     assert!(

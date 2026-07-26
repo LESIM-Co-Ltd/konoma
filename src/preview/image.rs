@@ -63,6 +63,19 @@ fn shrink_target(w: u32, h: u32, shrink: u32) -> (u32, u32) {
     ((w / shrink).max(1), (h / shrink).max(1))
 }
 
+/// Upper bound on the RGBA bytes kept resident for an animated GIF **embedded inline in a Markdown
+/// document** (`decode_gif_inline`). Smaller than the full-screen bound (`MAX_GIF_BYTES`): a single
+/// document can embed several GIFs at once, each decoded independently and kept expanded for as
+/// long as the document is open, so per-image memory needs to stay tighter to keep the total bounded.
+const MAX_GIF_BYTES_INLINE: usize = 32 * 1024 * 1024;
+
+/// `decode_gif`, budgeted for an inline Markdown image (see `MAX_GIF_BYTES_INLINE`). Same semantics:
+/// None for a non-GIF / undecodable / single-frame GIF — the caller (the inline-image decode worker)
+/// falls back to the normal still-image decode, which already handles those cases.
+pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
+    decode_gif_with_budget(path, MAX_GIF_BYTES_INLINE)
+}
+
 /// `decode_gif` with an explicit byte budget (separated so tests can force the shrink path with a
 /// tiny budget). Frames are decoded one at a time; when the running total exceeds the budget the
 /// shrink factor doubles and the already-kept frames are downscaled to the same target, so every
@@ -129,6 +142,21 @@ mod tests {
         assert!(frames
             .iter()
             .all(|(img, d)| { img.width() == w0 && img.height() == h0 && *d >= MIN_FRAME_DELAY }));
+    }
+
+    #[test]
+    fn decode_gif_inline_real_sample_has_multiple_frames() {
+        // Same fixture/skip-guard as decode_gif_real_sample_has_multiple_frames — this exercises
+        // the smaller inline budget (MAX_GIF_BYTES_INLINE) used for Markdown-embedded GIFs.
+        let p = Path::new("samples/sample.gif");
+        if !p.exists() {
+            return; // パッケージから samples が除外された環境ではスキップ
+        }
+        let frames = decode_gif_inline(p)
+            .expect("sample.gif はインライン経路でもアニメとしてデコードできるはず");
+        assert!(frames.len() > 1, "アニメ GIF は 2 フレーム以上");
+        let (w0, h0) = (frames[0].0.width(), frames[0].0.height());
+        assert!(w0 > 0 && h0 > 0);
     }
 
     #[test]
