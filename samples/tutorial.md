@@ -91,15 +91,17 @@ brew install poppler ffmpeg
 sudo apt install poppler-utils ffmpeg
 ```
 
-- **poppler** — PDF. Without it macOS still shows the **first page only** (via
-  `qlmanage`/`sips`); with it you get every page and `J`/`K` to move between them.
+- **poppler** — PDF pages already render natively in Rust (`hayro`, no external
+  tool needed) — `J`/`K` move through every page either way; poppler (plus
+  macOS's built-in `qlmanage`/`sips`) is kept only as a fallback for the rare
+  PDF the built-in renderer can't handle.
 - **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of a video.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
-Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables and code need
-**nothing extra** — they are rendered inside konoma. What they do need is a
-terminal that speaks the kitty graphics protocol (Ghostty, kitty, WezTerm,
-Konsole) for the picture formats; text previews work in any terminal.
+Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, and
+code need **nothing extra** — they are rendered inside konoma. What they do
+need is a terminal that speaks the kitty graphics protocol (Ghostty, kitty,
+WezTerm, Konsole) for the picture formats; text previews work in any terminal.
 
 - [ ] I know what to install if I need it
 

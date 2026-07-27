@@ -70,8 +70,11 @@ Drawn as real pixels via the kitty graphics protocol:
 - Videos show a representative frame via `ffmpegthumbnailer`/`ffmpeg`
   (optional; a hint appears if neither is installed). Want playback? Delegate
   to `mpv` with one config rule.
-- PDFs render page by page — `J` / `K` (or PageDown/PageUp) turn pages
-  (multi-page needs poppler; the first page works with macOS built-ins alone).
+- PDFs render page by page, natively in Rust (`hayro`, no external tool
+  needed) — `J` / `K` (or PageDown/PageUp) turn any page. The external chain
+  (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`) only kicks in as a fallback for
+  the rare PDF `hayro` can't render (encrypted, corrupt, or otherwise
+  unsupported).
 
 ## Everything else
 

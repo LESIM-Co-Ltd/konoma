@@ -126,7 +126,7 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 | `image` | kitty graphics で全画面表示(ズーム/パン・GIF は自動アニメ)。 |
 | `svg` | プロセス内でラスタライズ(resvg・純 Rust)して画像表示。 |
 | `video` | `ffmpegthumbnailer`/`ffmpeg` で代表フレーム表示(任意ツール・無ければヒント)。再生したい場合は `command` で `mpv` へ。 |
-| `pdf` | ページ単位でラスタライズ(`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`・macOS は後者2つが常在)。`J`/`K` でページ送り(複数ページは poppler 必須)。 |
+| `pdf` | 純 Rust(`hayro`)でネイティブにラスタライズ(外部ツール不要・1ページずつ) — `J`/`K` で任意のページへ。`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`(macOS は後者2つが常在)は hayro が描画できない PDF(暗号化・破損など)のフォールバックとしてのみ使われます。 |
 | `csv` / `tsv` | 列レインボー+セルカーソルの整列テーブル(`hjkl` 移動・`y →` でコピー)。 |
 | `code` | シンタックスハイライト(文法は 拡張子 → ファイル名 → 先頭行 で解決)。 |
 | `text` | 素のテキスト。テキストらしいファイルの自動フォールバック先でもあります。 |
@@ -191,9 +191,9 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 |---|---|---|
 | `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`o`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。 |
 | `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
-| `pdf` | `true` | PDF ページのラスタライズ(`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`/`pdfinfo`)。 |
+| `pdf` | `true` | **外部フォールバック**のラスタライズチェーン(`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。 |
 | `video` | `true` | 動画サムネイル抽出(`ffmpegthumbnailer`/`ffmpeg`)。 |
-| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得(`curl`)。konoma が行う唯一の外向きネットワーク通信です。 |
+| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
 | `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)等。 |
 | `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |
 
@@ -207,9 +207,10 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 ため、PDF や動画だけを狙って止めることができず、Markdown・画像・CSV 等も一緒に
 効かなくなります。
 
-`[ui] lang` は既に「明示 / `"auto"`」の切替を持っています(OS 言語取得は `macOS
-defaults` 経由)。`lang` を明示(`"en"`/`"jp"`)すればこの取得自体が呼ばれないため、
-`[external]` に専用フラグは足していません。
+`[ui] lang` は既に「明示 / `"auto"`」の切替を持っています(OS 言語取得は
+`sys-locale` クレート経由 — 外部プロセスは起動しません)。`lang` を明示
+(`"en"`/`"jp"`)すればこの取得自体が呼ばれないため、`[external]` に専用フラグは
+足していません。
 
 ## `[keys]` — キーバインド
 
@@ -278,6 +279,8 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 - **アイコン**(`ui.icons = true`・既定)には Nerd Font グリフが必要:
   端末のフォールバックに `Symbols Nerd Font Mono` を足すか、NF 内蔵フォント
   (HackGen Console NF・UDEV Gothic NF …)を使用。無ければ `ui.icons = false`。
-- **任意ツール**: `poppler`(PDF 複数ページ)・`ffmpegthumbnailer`/`ffmpeg`
-  (動画サムネイル)・`git` + `lazygit`(git スイート/外部ツール)。
+- **任意ツール**: `ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・`git` +
+  `lazygit`(git スイート/外部ツール)。PDF・画像・SVG・Markdown・Mermaid・
+  LaTeX 数式・CSV は追加インストール不要 — `poppler` は内蔵 Rust レンダラが
+  扱えない稀な PDF のフォールバックとしてのみ使われます。
   すべて不在時は安全に降格します。

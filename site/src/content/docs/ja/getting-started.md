@@ -42,9 +42,12 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
   (**HackGen Console NF**・**UDEV Gothic NF** など)なら、アイコンと CJK の両方を
   1つのフォントで賄えます。
 
-**任意ツール**(無くてもその機能以外は動作): `git`(git スイート)・`poppler`
-(PDF の複数ページ)・`ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・
-`lazygit`(`O` の外部 git ツール)。
+**任意ツール**(無くてもその機能以外は動作): `git`(git スイート)・
+`ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・`lazygit`(`O` の外部 git
+ツール)。画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・コード・**PDF**
+(`J`/`K` で全ページ)は Rust ネイティブで動作 — 追加インストール不要です。
+`poppler` は hayro が扱えない稀な PDF(暗号化・破損など)のフォールバック
+としてのみ使われます。
 
 ## ゼロからのセットアップ
 
@@ -82,6 +85,9 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
    ```sh
    brew install poppler ffmpeg git lazygit
    ```
+   PDF は既にこれ無しで全ページ描画できます(純 Rust の `hayro`・`J`/`K` で
+   ページ送り) — ここでの `poppler` は hayro が扱えない稀な PDF のフォール
+   バック専用です。`ffmpeg` は動画サムネイル、`git`/`lazygit` は git スイート用。
 6. **起動** — Ghostty を開いて:
    ```sh
    konoma            # カレントディレクトリ
@@ -113,7 +119,9 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
      libdbus-1-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev git
    cargo install konoma
    ```
-4. **任意ツール**:
+4. **任意ツール** — macOS と同様、PDF は `poppler-utils` 無しで動作します
+   (純 Rust の `hayro` が全ページを描画)。ここでの `poppler-utils` は
+   hayro が扱えない稀な PDF のフォールバック用です。
    ```sh
    sudo apt install poppler-utils ffmpeg git
    ```

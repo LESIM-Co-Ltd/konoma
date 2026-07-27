@@ -61,8 +61,10 @@ kitty graphics による実ピクセル描画:
 - GIF は自動でアニメーション。SVG はプロセス内でラスタライズ(外部ツール不要)。
 - 動画は `ffmpegthumbnailer`/`ffmpeg` で代表フレームを表示(任意ツール・無ければ
   ヒント表示)。再生したければ config 1 行で `mpv` に委譲できます。
-- PDF はページ単位で描画 — `J` / `K`(PageDown/PageUp)でページ送り
-  (複数ページは poppler が必要。1ページ目だけなら macOS 標準ツールで表示可)。
+- PDF は純 Rust(`hayro`・外部ツール不要)でページ単位に描画 — `J` / `K`
+  (PageDown/PageUp)で任意のページへ送れます。外部チェーン
+  (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`)は hayro が扱えない稀な PDF
+  (暗号化・破損など)のフォールバックとしてのみ使われます。
 
 ## それ以外
 

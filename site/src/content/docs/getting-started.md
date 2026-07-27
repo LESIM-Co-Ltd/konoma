@@ -44,8 +44,11 @@ The gate for konoma's full experience is the **terminal**, not the OS:
   covers both needs (icons *and* CJK) in a single font.
 
 **Optional tools**, all degrading gracefully when absent: `git` (git suite),
-`poppler` (multi-page PDF), `ffmpegthumbnailer` / `ffmpeg` (video thumbnails),
-`lazygit` (external git tool on `O`).
+`ffmpegthumbnailer` / `ffmpeg` (video thumbnails), `lazygit` (external git
+tool on `O`). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code, and
+**PDF** (any page, via `J`/`K`) render natively in Rust — nothing else to
+install; `poppler` is kept only as a fallback for the rare PDF the built-in
+renderer can't handle.
 
 ## Set up from scratch
 
@@ -84,6 +87,9 @@ konoma with image previews.
    ```sh
    brew install poppler ffmpeg git lazygit
    ```
+   PDF pages already render without any of this (pure-Rust `hayro`, any page
+   via `J`/`K`) — `poppler` here only covers the rare PDF `hayro` can't
+   handle. `ffmpeg` adds video thumbnails, `git`/`lazygit` the git suite.
 6. **Run it** — open Ghostty, then:
    ```sh
    konoma            # the current directory
@@ -117,7 +123,9 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
      libdbus-1-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev git
    cargo install konoma
    ```
-4. **Optional tools**:
+4. **Optional tools** — same story as macOS: PDF pages already work without
+   `poppler-utils` (pure-Rust `hayro` renders every page); it's kept only as
+   a fallback for the rare PDF `hayro` can't handle.
    ```sh
    sudo apt install poppler-utils ffmpeg git
    ```

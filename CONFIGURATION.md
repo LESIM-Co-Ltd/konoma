@@ -218,7 +218,7 @@ it can't selectively turn off just PDF or video without also breaking Markdown, 
 CSV.
 
 `[ui] lang` already has its own explicit-vs-`"auto"` switch for OS-language detection
-(`macOS defaults`) — setting it explicitly (`"en"`/`"jp"`) skips that lookup, so there is no
+(via `sys-locale`; no external process) — setting it explicitly (`"en"`/`"jp"`) skips that lookup, so there is no
 separate `[external]` flag for it.
 
 ## `[keys]` — keybindings
