@@ -1,3 +1,4 @@
+use super::bookmark_actions::fuzzy_filter_pool;
 use super::*;
 use crate::config::Config;
 
@@ -2571,6 +2572,152 @@ fn tree_filter_finds_recursively_then_clears() {
     app.filter_clear();
     assert!(app.filter_query().is_none());
     assert_eq!(app.tab.entries.len(), normal_count, "通常ツリーに復帰");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Helper: an `Entry` wrapping a bare file name (as if it were the sole path component), for
+/// exercising `fuzzy_filter_pool` without touching the filesystem.
+fn named_entry(name: &str) -> Entry {
+    Entry {
+        path: std::path::PathBuf::from(name),
+        is_dir: false,
+        depth: 0,
+        expanded: false,
+    }
+}
+
+#[test]
+fn filter_fuzzy_finds_non_contiguous_subsequence() {
+    // `[ui] filter_mode` 既定("fuzzy") の核: 飛び石一致(連続部分文字列でなくても、文字が
+    // 順番に現れれば一致)。"aprs" は "app_resolver.rs" の a-p-r-s を順に含む。
+    let pool = vec![
+        named_entry("app_resolver.rs"),
+        named_entry("main.rs"),
+        named_entry("readme.md"),
+    ];
+    let hits = fuzzy_filter_pool(&pool, "aprs");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].path.ends_with("app_resolver.rs"));
+}
+
+#[test]
+fn filter_fuzzy_ranks_better_match_first() {
+    // 同じクエリでも、より引き締まった(連続/先頭に近い)一致がスコア上位に来る。
+    let pool = vec![
+        // "app" の a-p-p が離れた位置に散らばる(弱い一致): a(pretty)...p(rogram)...p(rogram の2つ目)。
+        named_entry("a_pretty_neat_program.rs"),
+        // "app" がそのまま先頭に連続して現れる(強い一致)。
+        named_entry("app.rs"),
+    ];
+    let hits = fuzzy_filter_pool(&pool, "app");
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(
+        hits[0].path.ends_with("app.rs"),
+        "引き締まった一致が先頭に来るべき: {hits:?}"
+    );
+}
+
+#[test]
+fn filter_fuzzy_multi_word_query_is_and() {
+    // 空白区切りの複数語は AND(fzf 流)。"app rs" は両方が(隣接でなくても)存在すれば一致。
+    let pool = vec![named_entry("app_resolver.rs"), named_entry("readme.md")];
+    let hits = fuzzy_filter_pool(&pool, "app rs");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].path.ends_with("app_resolver.rs"));
+}
+
+#[test]
+fn filter_fuzzy_no_matches_returns_empty() {
+    let pool = vec![named_entry("readme.md"), named_entry("notes.txt")];
+    assert!(fuzzy_filter_pool(&pool, "qzqzqznope").is_empty());
+}
+
+#[test]
+fn filter_fuzzy_handles_cjk_filenames_without_panic() {
+    let pool = vec![
+        named_entry("日本語.txt"),
+        named_entry("readme.md"),
+        named_entry("メモ.md"),
+    ];
+    // CJK クエリが CJK ファイル名に一致する。
+    let hits = fuzzy_filter_pool(&pool, "日本語");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].path.ends_with("日本語.txt"));
+    // 一致しない ASCII クエリでもパニックしない(空)。
+    assert!(fuzzy_filter_pool(&pool, "zzzz").is_empty());
+    // 部分一致の CJK クエリも安全に扱える。
+    let hits2 = fuzzy_filter_pool(&pool, "モ");
+    assert_eq!(hits2.len(), 1, "{hits2:?}");
+    assert!(hits2[0].path.ends_with("メモ.md"));
+}
+
+#[test]
+fn filter_fuzzy_is_case_insensitive_both_directions() {
+    // 常に大小無視(CaseMatching::Ignore): 旧 substring モードの「常に大小無視」挙動を
+    // fuzzy モードでも保つ(fzf/ripgrep 流の smart-case=全大文字クエリは大小区別、は不採用)。
+    let pool = vec![named_entry("TREE.txt"), named_entry("tree.rs")];
+    assert_eq!(
+        fuzzy_filter_pool(&pool, "tree").len(),
+        2,
+        "小文字クエリは両方に一致"
+    );
+    assert_eq!(
+        fuzzy_filter_pool(&pool, "TREE").len(),
+        2,
+        "大文字クエリでも大小無視で両方に一致(legacy substring と同じ挙動)"
+    );
+}
+
+/// Speed guard (loose bound, debug build): fuzzy-filtering a 30,000-entry pool (the tree filter's
+/// realistic worst case — `collect_all`'s own cap is 50,000) must not visibly stall the UI thread
+/// on every keystroke. `Matcher` reuse (the thread-local in `bookmark_actions.rs`) is what keeps
+/// this fast — rebuilding one per call would add its own ~135KB allocation on top.
+#[test]
+fn filter_fuzzy_large_pool_is_bounded() {
+    let pool: Vec<Entry> = (0..30_000)
+        .map(|i| named_entry(&format!("module_{i}_helper_resolver.rs")))
+        .collect();
+    let t = std::time::Instant::now();
+    let hits = fuzzy_filter_pool(&pool, "mhr");
+    let dt = t.elapsed();
+    assert!(!hits.is_empty(), "少なくとも一部は一致するはず");
+    assert!(
+        dt < std::time::Duration::from_millis(500),
+        "30,000 件のファジー絞り込みが遅すぎる(回帰?): {dt:?}"
+    );
+}
+
+#[test]
+fn filter_substring_mode_excludes_scattered_query_but_keeps_legacy_behavior() {
+    // `[ui] filter_mode = "substring"`: 飛び石一致は無効(連続部分文字列のみ)、かつ大小無視は維持。
+    let dir = unique_tmp("konoma_filter_substring_mode_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app_resolver.rs"), b"x").unwrap();
+    std::fs::write(dir.join("main.rs"), b"x").unwrap();
+    std::fs::write(dir.join("README.md"), b"x").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.ui.filter_mode = "substring".into();
+    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+
+    app.start_filter();
+    for c in "aprs".chars() {
+        app.filter_input_push(c);
+    }
+    assert!(
+        app.tab.entries.is_empty(),
+        "substring モードでは飛び石一致(aprs→app_resolver.rs)はしない: {:?}",
+        app.tab.entries
+    );
+
+    // 一方、通常の(大小無視の)連続部分文字列一致は引き続き機能する。
+    app.filter_clear();
+    app.start_filter();
+    for c in "README".chars() {
+        app.filter_input_push(c);
+    }
+    assert_eq!(app.tab.entries.len(), 1, "{:?}", app.tab.entries);
+    assert!(app.tab.entries[0].path.ends_with("README.md"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -7375,6 +7522,16 @@ fn table_cursor_survives_tab_roundtrip() {
         "セルカーソルがタブ跨ぎで保たれる"
     );
 }
+
+// --- テーブルセル全文ポップアップ(`Enter`): 切り詰められたグリッドの穴を埋める読取専用ビュー ---
+
+
+
+
+
+
+
+
 
 // --- Agent Watch: @参照コピー(③) / 変更フィルタ+ジャンプ(①) / フォローモード(②) ---
 

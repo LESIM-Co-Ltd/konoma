@@ -354,6 +354,26 @@ fn cfg_ui_follow_view_default_and_parse() {
     );
 }
 
+/// `filter_mode`: default `"fuzzy"`; `"substring"` selects the legacy path; the raw field stores
+/// verbatim (like the other mode strings) but `.filter_mode()` is the permissive accessor — only
+/// the literal `"substring"` opts out of fuzzy, anything else (including a typo) is `"fuzzy"`.
+#[test]
+fn cfg_ui_filter_mode_default_parse_and_permissive_fallback() {
+    let d = Config::default();
+    assert_eq!(d.ui.filter_mode, "fuzzy");
+    assert_eq!(d.ui.filter_mode(), "fuzzy");
+
+    let mk =
+        |v: &str| -> Config { toml::from_str(&format!("[ui]\nfilter_mode = \"{v}\"\n")).unwrap() };
+    assert_eq!(mk("substring").ui.filter_mode, "substring");
+    assert_eq!(mk("substring").ui.filter_mode(), "substring");
+    assert_eq!(mk("fuzzy").ui.filter_mode, "fuzzy");
+    assert_eq!(mk("fuzzy").ui.filter_mode(), "fuzzy");
+    // Unknown value: stored verbatim, but the accessor falls back to "fuzzy" (typo-safe).
+    assert_eq!(mk("regex").ui.filter_mode, "regex");
+    assert_eq!(mk("regex").ui.filter_mode(), "fuzzy");
+}
+
 #[test]
 fn cfg_ui_mermaid_default_and_parse() {
     assert_eq!(
@@ -419,6 +439,7 @@ fn cfg_ui_string_fields_stored_verbatim_when_bogus() {
     let cfg: Config = toml::from_str(
         r#"
 [ui]
+filter_mode = "regex"
 tabbar = "bogus"
 preview_loading = "nope"
 path_style = "sideways"
@@ -432,6 +453,7 @@ mermaid_theme = "chartreuse"
 "#,
     )
     .unwrap();
+    assert_eq!(cfg.ui.filter_mode, "regex");
     assert_eq!(cfg.ui.tabbar, "bogus");
     assert_eq!(cfg.ui.preview_loading, "nope");
     assert_eq!(cfg.ui.path_style, "sideways");
@@ -520,6 +542,7 @@ fn cfg_ui_mermaid_rows_default_and_parse() {
 fn cfg_ui_empty_toml_yields_all_scalar_defaults() {
     let ui = toml::from_str::<Config>("").unwrap().ui;
     assert!(!ui.show_hidden);
+    assert_eq!(ui.filter_mode, "fuzzy");
     assert_eq!(ui.tabbar, "auto");
     assert!(ui.icons);
     assert!(ui.wrap);

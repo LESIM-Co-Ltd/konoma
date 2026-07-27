@@ -327,19 +327,18 @@ impl App {
         self.tab.tree_filter.as_deref()
     }
 
-    /// Filter the pool by the current query (substring match, case-insensitive) to build entries.
+    /// Filter the pool by the current query to build entries.
+    /// `[ui] filter_mode` (see `UiConfig::filter_mode`): `"fuzzy"` (default) = ranked fuzzy
+    /// subsequence match via `fuzzy_filter_pool`; `"substring"` = the legacy plain
+    /// case-insensitive substring match, kept in the pool's original order (no ranking).
     /// When the query is empty (= right after pressing `/`, before typing any character), **show nothing**
     /// (avoiding a flat display of everything, which would look like "expand all").
     fn reapply_filter(&mut self) {
-        let q = self
-            .tab
-            .tree_filter
-            .clone()
-            .unwrap_or_default()
-            .to_lowercase();
+        let q = self.tab.tree_filter.clone().unwrap_or_default();
         self.tab.entries = if q.is_empty() {
             Vec::new()
-        } else {
+        } else if self.cfg.ui.filter_mode() == "substring" {
+            let q = q.to_lowercase();
             self.tab
                 .filter_pool
                 .iter()
@@ -352,6 +351,8 @@ impl App {
                 })
                 .cloned()
                 .collect()
+        } else {
+            fuzzy_filter_pool(&self.tab.filter_pool, &q)
         };
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
@@ -996,4 +997,50 @@ impl App {
         self.git_status_dirty = true; // 同一 workdir でも取り直す(再検証要求)
         self.kick_status_refresh(wd);
     }
+}
+
+// --- ツリー絞り込み(`/`)のファジー照合 -----------------------------------------------------
+
+thread_local! {
+    // `nucleo_matcher::Matcher::new` eagerly allocates ~135KB, so nucleo's own docs recommend
+    // reusing one instance rather than building it per call. konoma's run loop is single-threaded,
+    // so a thread-local scratch instance is reused across every keystroke of every filter session
+    // without needing a dedicated `App`/`PerTab` field.
+    static FUZZY_MATCHER: std::cell::RefCell<nucleo_matcher::Matcher> =
+        std::cell::RefCell::new(nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT));
+}
+
+/// fzf-style fuzzy-match `query` against each entry's file/directory name (the leaf name only —
+/// the same target the legacy substring mode uses), keep only entries that match, and return them
+/// ranked best-score-first. Ties keep the pool's original relative order (`Vec::sort_by` is a
+/// stable sort in Rust, so no explicit tie-break is needed).
+///
+/// Matching is always case-insensitive (`CaseMatching::Ignore`), matching the legacy substring
+/// mode's behavior — a query typed in any case still finds everything. (nucleo also offers
+/// `CaseMatching::Smart`, the fzf/ripgrep convention where an all-uppercase query becomes
+/// case-sensitive; that would be a user-visible behavior change from konoma's historical
+/// always-case-insensitive filter, so it isn't the default here.) Space-separated words in the
+/// query are AND-ed (each must match somewhere), fzf-style — this and the `^`/`$`/`'`/`!` special
+/// atom syntax come for free from `Pattern::parse`.
+pub(super) fn fuzzy_filter_pool(pool: &[Entry], query: &str) -> Vec<Entry> {
+    use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    FUZZY_MATCHER.with(|cell| {
+        let mut matcher = cell.borrow_mut();
+        let mut buf: Vec<char> = Vec::new();
+        let mut scored: Vec<(u32, usize)> = pool
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let name = e.path.file_name().and_then(|n| n.to_str())?;
+                buf.clear();
+                let haystack = nucleo_matcher::Utf32Str::new(name, &mut buf);
+                pattern
+                    .score(haystack, &mut matcher)
+                    .map(|score| (score, i))
+            })
+            .collect();
+        scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
+        scored.into_iter().map(|(_, i)| pool[i].clone()).collect()
+    })
 }

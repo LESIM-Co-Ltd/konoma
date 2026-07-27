@@ -191,6 +191,12 @@ ratex-svg = { version = "0.1", default-features = false, features = ["embed-font
 ratex-types = "0.1"
 similar = "3.1.1"
 
+# ツリー絞り込み(`/`)のファジー照合(`[ui] filter_mode = "fuzzy"`, 既定)。Helix editor 由来の純 Rust
+# fzf 風マッチャ(飛び石一致・スコア降順・空白区切り AND を無償で提供)。onig/chafa を避けたのと同じ方針
+# (配布容易性 PRD §5)＝C ライブラリ・build.rs 経由のネイティブビルド無し。`Matcher` はキー入力毎に
+# 作り直すと ~135KB の eager alloc が毎回走るため、呼び出し側で使い回す(bookmark_actions.rs 参照)。
+nucleo-matcher = "0.3"
+
 [features]
 default = ["git"]
 git = ["dep:git2"]

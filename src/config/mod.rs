@@ -307,6 +307,15 @@ impl KeysConfig {
 #[serde(default)]
 pub struct UiConfig {
     pub show_hidden: bool,
+    /// How the tree filter (`/`) matches typed characters against file/directory names.
+    /// `"fuzzy"` (default) does fzf-style fuzzy subsequence matching via `nucleo-matcher`, ranked
+    /// best-match-first — non-contiguous matches work (e.g. `aprs` → `app_resolver.rs`), and
+    /// space-separated words in the query are AND-ed (e.g. `app rs`). Matching is always
+    /// case-insensitive (matching the legacy behavior below), so typing in any case still finds
+    /// everything. `"substring"` restores the legacy behavior: a plain, case-insensitive substring
+    /// match, kept in the tree's original order (no ranking, no fuzzy, no AND). Any other value
+    /// falls back to `"fuzzy"` (see `UiConfig::filter_mode`).
+    pub filter_mode: String,
     pub tabbar: String,     // "always" | "auto" | "hidden"
     pub icons: bool, // ツリー行頭の Nerd Font アイコン (要 Nerd Font。無ければ false でプレーン記号)
     pub wrap: bool, // テキストプレビューの折返し。true=折返して全文表示 / false=非折返し+横スクロール
@@ -458,6 +467,17 @@ pub struct UiConfig {
 }
 
 impl UiConfig {
+    /// `filter_mode` resolved permissively: only the literal `"substring"` selects the legacy
+    /// path; anything else (including a typo) is `"fuzzy"`, the default — a typo can't silently
+    /// disable the tree filter.
+    pub fn filter_mode(&self) -> &str {
+        if self.filter_mode == "substring" {
+            "substring"
+        } else {
+            "fuzzy"
+        }
+    }
+
     /// `md_task_states` resolved to chars: every entry must be exactly 1 char and there must be at
     /// least 2 states (a cycle needs somewhere to go) — otherwise fall back to the default (` `/`x`).
     pub fn md_task_state_chars(&self) -> Vec<char> {
@@ -624,6 +644,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             show_hidden: false,
+            filter_mode: "fuzzy".into(),
             tabbar: "auto".into(),
             icons: true,
             wrap: true,
