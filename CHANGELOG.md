@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-27
+
 ### Added
 - **Archives (`.zip` / `.tar` / `.tar.gz` / `.tgz`) preview as a table of their entries** — Name /
   Size / Modified, in the archive's own order, through the exact same grid as CSV/TSV (`hjkl` cell
@@ -1003,7 +1005,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.8...v0.19.0
 [0.18.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.18.6...v0.18.8
