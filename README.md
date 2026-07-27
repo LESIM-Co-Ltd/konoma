@@ -182,8 +182,10 @@ brew install poppler ffmpeg git           # macOS
 sudo apt install poppler-utils ffmpeg git # Debian / Ubuntu
 ```
 
-- **poppler** (`pdftoppm` / `pdftocairo` / `pdfinfo`) — PDF rendering and multi-page navigation.
-  Without it, macOS falls back to `qlmanage`/`sips` for the **first page only**.
+- **poppler** (`pdftoppm` / `pdftocairo`) — PDF pages render natively in Rust (`hayro`, no external
+  tool needed, any page via `J`/`K`); poppler (plus macOS's built-in `qlmanage`/`sips`) is only a
+  fallback for the rare PDF the built-in renderer can't handle (encrypted, corrupt, or otherwise
+  unsupported).
 - **ffmpeg** or **ffmpegthumbnailer** — video thumbnail frames.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.

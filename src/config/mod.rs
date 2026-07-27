@@ -40,7 +40,10 @@ pub struct ExternalConfig {
     pub git: bool,
     /// The external git tool launched with `!` in the changes hub (`[git] tool`, default lazygit).
     pub git_tool: bool,
-    /// PDF page rasterization (pdftocairo/pdftoppm/qlmanage/sips/pdfinfo).
+    /// The external PDF fallback tools (pdftocairo/pdftoppm/qlmanage/sips), used only when the
+    /// primary renderer (`hayro`, pure Rust — always active regardless of this flag) fails to render
+    /// a given PDF (encrypted/corrupt/unsupported). `false` never launches those tools; PDF preview
+    /// itself keeps working via `hayro` (see `preview::pdf`).
     pub pdf: bool,
     /// Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
     pub video: bool,
@@ -728,8 +731,9 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
-                    // PDF は1ページ目をラスタライズして内蔵表示する(pdftocairo/pdftoppm/qlmanage/sips)。
-                    // ツールが無ければ安全にヒント表示へフォールバックする(原則#3)。
+                    // PDF は純Rust(hayro)でページをラスタライズして内蔵表示する(外部ツール不要)。
+                    // hayro が描けない(暗号化/破損等)場合のみ pdftocairo/pdftoppm/qlmanage/sips へ
+                    // 降格し、それも無ければ安全にヒント表示へフォールバックする(原則#3)。
                     glob: Some("*.pdf".into()),
                     builtin: Some("pdf".into()),
                     ..Rule::empty()

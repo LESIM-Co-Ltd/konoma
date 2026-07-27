@@ -33,26 +33,23 @@ impl Lang {
         Self::En
     }
 
-    /// Determine the OS default language. Prefer the macOS system language (AppleLanguages),
-    /// and if it can't be obtained, check the locale environment variables (LC_ALL → LC_MESSAGES → LANG). English if undeterminable.
+    /// Determine the OS default language via `sys-locale` (no external process: on macOS this links
+    /// CoreFoundation directly — `CFLocaleCopyPreferredLanguages`, the same source the former
+    /// `defaults read -g AppleLanguages` call read — and on Linux/BSD it reads the locale
+    /// environment variables, `LANGUAGE` → `LC_ALL` → `LC_MESSAGES` → `LANG`, which supersedes the
+    /// previous hand-rolled `LC_ALL`/`LC_MESSAGES`/`LANG` loop here). English if undeterminable.
+    /// The returned tag may use either separator (`ja-JP` BCP-47 from sys-locale, `ja_JP` POSIX-style
+    /// from a raw env var) — `from_lang_tag` only checks the leading "ja", so both work unchanged.
     #[cfg(not(test))]
     fn from_os() -> Self {
-        if let Some(tag) = macos_preferred_language() {
-            return Self::from_lang_tag(&tag);
+        match sys_locale::get_locale() {
+            Some(tag) => Self::from_lang_tag(&tag),
+            None => Self::En,
         }
-        for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-            if let Ok(v) = std::env::var(key) {
-                let v = v.trim();
-                if !v.is_empty() && v != "C" && v != "POSIX" {
-                    return Self::from_lang_tag(v);
-                }
-            }
-        }
-        Self::En
     }
 
     /// Jp if the language part of a language tag/locale string is Japanese (starts with "ja"), otherwise En.
-    /// Examples: "ja", "ja-JP", "ja_JP.UTF-8" → Jp / "en-US", "en_US.UTF-8", "C" → En.
+    /// Examples: "ja", "ja-JP", "ja_JP.UTF-8" → Jp / "en-US", "en_US.UTF-8", "C", "" → En.
     fn from_lang_tag(s: &str) -> Self {
         if s.trim().to_ascii_lowercase().starts_with("ja") {
             Self::Jp
@@ -60,29 +57,6 @@ impl Lang {
             Self::En
         }
     }
-}
-
-/// Get the first tag of the macOS user-preferred languages (e.g. "ja-JP") from `defaults read -g AppleLanguages`.
-/// This is the macOS system language itself. None on failure (e.g. non-macOS / command absent).
-#[cfg(not(test))]
-fn macos_preferred_language() -> Option<String> {
-    let out = std::process::Command::new("defaults")
-        .args(["read", "-g", "AppleLanguages"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_apple_languages(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// A pure function that extracts the first language tag from the plist-like output of `AppleLanguages`.
-/// Example input: `(\n    "ja-JP",\n    "en-US"\n)` → `Some("ja-JP")`.
-fn parse_apple_languages(text: &str) -> Option<String> {
-    text.lines()
-        .map(|l| l.trim().trim_end_matches(','))
-        .find_map(|l| l.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
-        .map(|s| s.to_string())
 }
 
 /// Keys for display strings. The actual strings live in the per-language tables en()/jp().
@@ -901,7 +875,7 @@ fn en(msg: Msg) -> &'static str {
             "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)"
         }
         PdfPreviewUnavailable => {
-            "[pdf] cannot render — install poppler (pdftoppm), or use a kitty-graphics terminal"
+            "[pdf] cannot render — use a kitty-graphics terminal (install poppler for a fallback with unusual PDFs)"
         }
         ArchiveListUnavailable => {
             "[archive] cannot list entries — corrupt file or unsupported format"
@@ -1312,7 +1286,7 @@ fn jp(msg: Msg) -> &'static str {
             "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)"
         }
         PdfPreviewUnavailable => {
-            "[PDF] 表示不可 — poppler(pdftoppm) を導入するか kitty graphics 対応端末を使ってください"
+            "[PDF] 表示不可 — kitty graphics 対応端末を使ってください(特殊な PDF 向けのフォールバックとして poppler も導入可)"
         }
         ArchiveListUnavailable => {
             "[アーカイブ] 一覧化できません — 壊れたファイルか非対応形式です"
@@ -1361,15 +1335,35 @@ mod tests {
         assert_eq!(tr(Lang::Jp, Msg::GitNoChangesItem), "  (変更なし)");
     }
 
+    /// Both tag formats a real OS lookup can hand us must resolve the same: `sys-locale` returns
+    /// BCP-47 (`ja-JP`, hyphen) on every platform, while a raw locale env var is POSIX-style
+    /// (`ja_JP`, underscore) — `from_lang_tag` only looks at the leading "ja", so the separator
+    /// (and any trailing `.UTF-8` encoding/`@modifier` suffix) must not matter either way.
     #[test]
-    fn from_lang_tag_detects_japanese() {
+    fn from_lang_tag_detects_japanese_in_either_separator_style() {
         assert_eq!(Lang::from_lang_tag("ja"), Lang::Jp);
-        assert_eq!(Lang::from_lang_tag("ja-JP"), Lang::Jp);
+        assert_eq!(
+            Lang::from_lang_tag("ja-JP"),
+            Lang::Jp,
+            "BCP-47 (sys-locale)"
+        );
+        assert_eq!(
+            Lang::from_lang_tag("ja_JP"),
+            Lang::Jp,
+            "POSIX-style (raw env var)"
+        );
         assert_eq!(Lang::from_lang_tag("ja_JP.UTF-8"), Lang::Jp);
+        assert_eq!(Lang::from_lang_tag("JA-jp"), Lang::Jp, "大文字小文字混在");
         assert_eq!(Lang::from_lang_tag("en-US"), Lang::En);
         assert_eq!(Lang::from_lang_tag("en_US.UTF-8"), Lang::En);
         assert_eq!(Lang::from_lang_tag("fr-FR"), Lang::En);
         assert_eq!(Lang::from_lang_tag("C"), Lang::En);
+        assert_eq!(Lang::from_lang_tag(""), Lang::En, "空文字列");
+        assert_eq!(
+            Lang::from_lang_tag("not-a-locale-at-all"),
+            Lang::En,
+            "不正値"
+        );
     }
 
     #[test]
@@ -1381,19 +1375,6 @@ mod tests {
         assert_eq!(Lang::resolve(""), Lang::En);
         assert_eq!(Lang::resolve("auto"), Lang::En);
         assert_eq!(Lang::resolve(" System "), Lang::En);
-    }
-
-    #[test]
-    fn parse_apple_languages_takes_first_tag() {
-        assert_eq!(
-            parse_apple_languages("(\n    \"ja-JP\",\n    \"en-US\"\n)"),
-            Some("ja-JP".to_string())
-        );
-        assert_eq!(
-            parse_apple_languages("(\n    \"en-US\"\n)"),
-            Some("en-US".to_string())
-        );
-        assert_eq!(parse_apple_languages("()"), None);
     }
 
     // 全 Msg variant を1つの配列に集め、en()/jp() の**全 match arm**を実行する網羅スイープ。

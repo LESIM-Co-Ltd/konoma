@@ -6,7 +6,27 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
-## [0.21.0] - 2026-07-27
+### Changed
+- **PDF pages now render natively in Rust — no poppler, no Quick Look, no external process at all
+  for the common case.** `hayro` (pure Rust) is the new primary PDF renderer; `pdftocairo`/
+  `pdftoppm`/`qlmanage`/`sips` are kept purely as a fallback for the rare cases `hayro` can't handle
+  (an encrypted PDF, a corrupt file, or anything else it fails to parse/render). Because `hayro`
+  renders **any** page directly (not just page 1 like `qlmanage`/`sips`), page navigation (`J`/`K`)
+  is no longer gated on poppler being installed — only on the page count being known, which (as
+  before) is parsed natively too (`hayro-syntax`, no `pdfinfo` process). `[external] pdf = false`
+  now means "never launch the external fallback tools"; it no longer disables PDF preview outright,
+  since the primary renderer was never external to begin with. PDF pages also pick up two behaviors
+  already used for mermaid/LaTeX-math images: a **transparent background** (only the page's own
+  painted content is opaque, so the terminal's background/theme shows through unpainted margins
+  instead of forcing white), and a **CJK font rescue** for PDFs that reference a non-embedded CJK
+  font by name (e.g. the predefined `HeiseiMin-W3`/Adobe-Japan1 font some tools emit) — a real
+  system CJK font is substituted instead of the previous silent all-glyphs-missing blank page.
+  Fetching `http(s)://` images referenced from Markdown (`[external] remote_images`) no longer
+  spawns `curl`; it's done in-process with `ureq` (rustls + webpki-roots — pure Rust, no
+  OpenSSL/native-tls, no system TLS dependency), with the same timeout/size-limit/redirect-following
+  behavior. Detecting the OS's preferred language (`[ui] lang = "auto"`) no longer spawns `defaults`
+  on macOS; `sys-locale` reads it via a direct CoreFoundation call instead (Linux/BSD locale-env-var
+  detection is also handled by the same crate now).
 
 ### Added
 - **Archives (`.zip` / `.tar` / `.tar.gz` / `.tgz`) preview as a table of their entries** — Name /

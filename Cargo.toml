@@ -70,6 +70,33 @@ resvg = "0.47"
 # (valid ⟺ usvg が fill を黒フォールバックしない)ため直接依存として明示(既に resvg 経由で推移依存)。
 svgtypes = "0.16"
 
+# PDF のページ数取得(純 Rust・外部プロセス無し)。ページのラスタライズ自体は今も外部ツール
+# (pdftocairo/pdftoppm/qlmanage/sips)へ委譲するが(preview/pdf.rs)、「何ページあるか」を知るためだけに
+# 子プロセス pdfinfo(poppler) を起動していたのを廃止し、純 Rust でページツリーを直接読む。
+# default-features を落として images(zune-jpeg 等・埋め込み画像デコード用)を外す
+# (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページ数が分かることと
+# 実際にそのページを描けることは別問題(qlmanage/sips は1ページ目専用)なので、複数ページの
+# ナビゲーションは引き続き poppler の有無で明示的にゲートする(preview/pdf.rs 参照)。
+hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
+
+# PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。poppler/qlmanage/sips(preview/pdf.rs)は
+# hayro が失敗した時だけ使う**フォールバック**に降格した(暗号化/破損 PDF、または `[external] pdf = false`
+# で明示的にフォールバックを禁じた時)。`embed-fonts`/`embed-cmaps` は**既定 ON のまま明示指定**する:
+# 両方 off で実測したところ、①埋め込みフォントの PDF は無傷(バイト同一)だが、②**非埋め込みの標準14
+# フォント(Helvetica 等・reportlab 等が普通に出力する)と③Adobe-Japan1 等の定義済み CMap を使う
+# 非埋め込み CJK CID フォント(HeiseiMin-W3 等)が、エラーも警告も無く**無言で白紙**になる
+# (embed-cmaps 無しだとフォールバックフォントを font_resolver で渡してもグリフ→コード変換自体が
+# 失敗する)。バイナリ +0.7MB 程度の増分より、ありふれた PDF が理由も分からず白紙表示になる方を避ける。
+hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+
+# Markdown 内 `http(s)://` 画像のリモート取得(`[external] remote_images`)。旧 `curl` 子プロセスの代わり。
+# TLS は rustls(+webpki-roots=純Rustのルート証明書同梱)に固定し native-tls/OpenSSL は一切引かない
+# (default-features を切った上で明示指定。これは実際には ureq の既定と同じ集合になるが、将来
+# デフォルトが変わっても native-tls を拾わないよう明示する)。gzip は透過解凍のため有効化。
+# `ring`(rustls の暗号バックエンド)は入るが vendored/自己完結な Rust+一部アセンブリで、システムの
+# OpenSSL 等を要求しない＝配布容易性(PRD §5)を損なわない。
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+
 # Markdown / Mermaid / コードハイライト
 # 当初候補の ratatui-markdown(0.3.6) は ratatui ^0.29 依存で、画像プレビューが要求する
 # ratatui 0.30(ratatui-image 11)と両立不可のため不採用(2026-06 調査)。代わりに:
@@ -105,6 +132,13 @@ emojis = "0.9"
 # 設定
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+# OS 既定言語の判定(`[ui] lang = "auto"`)。旧 `defaults read -g AppleLanguages` 子プロセスの代わり。
+# 依存クレート 0。macOS は CoreFoundation(CFLocaleCopyPreferredLanguages)を直接 `#[link]` するので
+# 子プロセスを起動しない。Linux/BSD は LANGUAGE→LC_ALL→LC_MESSAGES→LANG を読む(旧実装の手書き
+# フォールバックを置換)。返り値は BCP-47(例 "ja-JP")または生の locale 文字列("ja_JP" 等)だが、
+# `Lang::from_lang_tag` は先頭の "ja" しか見ないのでどちらの区切りでも動く。
+sys-locale = "0.3"
 
 # クリップボード
 arboard = "3"

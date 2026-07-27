@@ -400,8 +400,10 @@ enum MediaJob {
     Gif(PathBuf),
     /// Extract one representative frame from a video (delegated to ffmpegthumbnailer/ffmpeg). Thumbnail only; no playback.
     Video(PathBuf),
-    /// Rasterize page N (1-based) of a PDF (delegated to pdftocairo/pdftoppm/qlmanage/sips). Loaded one page at a time.
-    Pdf(PathBuf, u32),
+    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, external tools
+    /// (pdftocairo/pdftoppm/qlmanage/sips) only as a fallback and only when the `bool` (`[external]
+    /// pdf`) allows it. Loaded one page at a time.
+    Pdf(PathBuf, u32, bool),
     /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme).
     /// None (unsupported diagram / parse failure) → the caller's text-diagram fallback shows.
     Mermaid(PathBuf, u32, String),
@@ -430,8 +432,8 @@ impl MediaJob {
                 None => crate::preview::image::decode_static(&p).map(MediaPayload::Static),
             },
             MediaJob::Video(p) => crate::preview::video::thumbnail(&p).map(MediaPayload::Static),
-            MediaJob::Pdf(p, page) => {
-                crate::preview::pdf::render_page(&p, page).map(MediaPayload::Static)
+            MediaJob::Pdf(p, page, allow_external) => {
+                crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
             }
             MediaJob::Mermaid(p, max_px, theme) => {
                 let code = std::fs::read_to_string(&p).ok()?;
@@ -2259,9 +2261,14 @@ impl App {
         self.tab.preview_top_line = 0;
         // 画像状態は毎回リセット。SVG/GIF は別スレッドで読み込み開始(UI を塞がない)。
         self.clear_image();
-        // PDF はページ数を先に求める(pdfinfo・~数 ms)。None なら単ページ扱い=ページ移動なし。
-        // `[external] pdf = false` では pdfinfo も呼ばない(単ページ扱いのまま=ナビ無効)。
-        if matches!(kind, PreviewKind::Pdf(_)) && self.cfg.external.pdf {
+        // PDF はページ数を先に求める(hayro-syntax・純Rust・外部プロセス無し・~数ms)。`hayro` が
+        // レンダラの第一候補になった今は、任意ページを外部ツール無しで描けるので「カウントできる ⟹
+        // 描ける」がほぼ成立する(qlmanage/sips のような「1ページ目専用」制約は無い)――以前ここにあった
+        // `arbitrary_page_renderer_available()`(poppler の有無)によるナビ抑制は撤去した。
+        // `[external] pdf` はページ数取得にも影響しない: `page_count` は外部プロセスを一切起動しない
+        // 純 Rust の読み取りなので、`pdf=false`(=外部レンダリングツールを起動しない)でも変わらず動く
+        // (外部ツールが関わるのは `render_page` がフォールバックへ降格する時だけ)。
+        if matches!(kind, PreviewKind::Pdf(_)) {
             self.tab.pdf_pages = crate::preview::pdf::page_count(path);
         }
         self.start_media_load(&kind, path);
@@ -2619,7 +2626,9 @@ impl App {
             self.tab.pdf_page,
         );
         self.clear_image(); // ズーム/中心/ページ/メディア世代をリセット
-        if matches!(kind, PreviewKind::Pdf(_)) && self.cfg.external.pdf {
+        if matches!(kind, PreviewKind::Pdf(_)) {
+            // ゲート理由は enter_preview 側のコメント参照(page_count は外部プロセス無し・
+            // hayro が任意ページを描けるので arbitrary_page_renderer_available によるナビ抑制は無い)。
             self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
             self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
         }
@@ -3676,12 +3685,11 @@ fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
 /// Maximum bytes to download for one remote image (guards against huge / hostile responses).
 const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
-/// Download a remote image with `curl` into `dest` (atomically, via a temp file), validating that the
+/// Download a remote image with `ureq` into `dest` (atomically, via a temp file), validating that the
 /// bytes decode as an image before committing. Returns whether a valid image now exists at `dest`.
-/// Runs on a background thread. Uses the system `curl` (always present on macOS) to avoid adding a
-/// TLS/HTTP dependency — consistent with konoma's external-tool delegation model (PRD §5).
+/// Runs on a background thread. `ureq` is pure Rust (rustls + webpki-roots, no OpenSSL/native-tls),
+/// so this adds no external process and no system TLS dependency — replaces a former `curl` spawn.
 fn fetch_remote_image(url: &str, dest: &Path) -> bool {
-    use std::process::{Command, Stdio};
     let Some(parent) = dest.parent() else {
         return false;
     };
@@ -3689,26 +3697,11 @@ fn fetch_remote_image(url: &str, dest: &Path) -> bool {
         return false;
     }
     let tmp = dest.with_extension("part");
-    let status = Command::new("curl")
-        .args([
-            "-sSL", // silent, show errors, follow redirects (GitHub proxies images via camo)
-            "--fail",
-            "--max-time",
-            "20",
-            "--max-filesize",
-            &MD_REMOTE_MAX_BYTES.to_string(),
-            "-A",
-            "konoma image preview",
-            "-o",
-        ])
-        .arg(&tmp)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let downloaded = matches!(status, Ok(s) if s.success());
-    if !downloaded {
+    let Some(bytes) = fetch_remote_bytes(url) else {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    };
+    if std::fs::write(&tmp, &bytes).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
@@ -3722,6 +3715,26 @@ fn fetch_remote_image(url: &str, dest: &Path) -> bool {
         prune_remote_cache(parent, MD_REMOTE_CACHE_MAX);
     }
     ok
+}
+
+/// Perform the actual HTTP GET, bounded by a global timeout (principle #4 — don't let a background
+/// thread hang forever even though it's already off the UI thread) and a max body size (mirrors the
+/// old `curl --max-filesize`). Redirects are followed automatically (up to ureq's default of 10 —
+/// GitHub proxies images through camo, so this matters, same as the old `curl -L`). `gzip` is
+/// transparently decoded. Returns None on any failure: bad URL, connect/TLS error, non-2xx status
+/// (ureq treats those as errors by default, mirroring `curl --fail`), or an oversized body.
+fn fetch_remote_bytes(url: &str) -> Option<Vec<u8>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .user_agent("konoma image preview")
+        .build()
+        .into();
+    let mut resp = agent.get(url).call().ok()?;
+    resp.body_mut()
+        .with_config()
+        .limit(MD_REMOTE_MAX_BYTES)
+        .read_to_vec()
+        .ok()
 }
 
 /// Keep at most `keep` files in the remote-image cache directory, deleting the oldest (by mtime).

@@ -267,9 +267,10 @@ code_theme = "TwoDark"
 #   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
 #   video  =ffmpegthumbnailer/ffmpeg で代表フレーム1枚を抽出しサムネイル表示(端末内再生はしない)。
 #          外部ツールは任意(不在ならヒント表示にフォールバック)。再生したい場合は下の command 例参照。
-#   pdf    =ページを1枚ずつラスタライズして画像表示(pdftocairo/pdftoppm/qlmanage/sips)。macOS は qlmanage/sips
-#          が常在するため事実上どの環境でも表示可。外部ツール全滅時のみヒント表示にフォールバック。
-#          複数ページは J/K(または PageDown/PageUp)で送る(poppler 必須=pdfinfo でページ数取得+任意ページ描画)。
+#   pdf    =ページを純 Rust(hayro)で1枚ずつラスタライズして画像表示(外部ツール不要)。
+#          pdftocairo/pdftoppm/qlmanage/sips は hayro が描けない PDF(暗号化/破損/非対応)の
+#          フォールバックとしてのみ使う。複数ページは J/K(または PageDown/PageUp)で送る
+#          (外部ツール無しで任意ページに移動できる)。
 #   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
@@ -450,9 +451,12 @@ git              = true   # git 連携(status 色/ガター/Git ビュー/stage�
                            # false は `--no-default-features`(git feature 無し)でビルドしたのと同じ挙動(読み取りは空/None、
                            # 書き込みはエラー)。`o` は「repo でない」とは別文言で無効を知らせる。
 git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
-pdf              = true   # PDF ページのラスタライズ(pdftocairo/pdftoppm/qlmanage/sips/pdfinfo)。
+pdf              = true   # 外部フォールバックの梯子(pdftocairo/pdftoppm/qlmanage/sips)。第一候補のレンダラ
+                           # (hayro・純Rust・このフラグに関係なく常に動く)がそのPDFで失敗した時(暗号化/破損/非対応)
+                           # だけ使う。false でもこれらの外部ツールを起動しないだけで、PDF プレビュー自体は hayro で動く。
 video            = true   # 動画サムネイル抽出(ffmpegthumbnailer/ffmpeg)。
-remote_images    = true   # Markdown 内の http(s) 画像取得(curl)。konoma が行う唯一の外向き通信。
+remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
+                           # ureq(rustls)でプロセス内取得=外部ツールは使わない。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
 preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり
                            # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。

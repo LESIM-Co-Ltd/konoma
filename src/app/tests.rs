@@ -1243,8 +1243,9 @@ fn pdf_page_navigation_clamps_and_indicates() {
     assert_eq!(app.tab.image_zoom, 1.0, "ページ移動で fit に戻る");
 }
 
-/// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization that lands a
-/// new image. Skipped without the sample or without poppler (page_count None → single-page, no navigation).
+/// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization (via
+/// `hayro`, no external tool needed) that lands a new image. `page_count` is pure Rust and always
+/// resolves (no poppler needed), so this only skips without the bundled sample.
 #[test]
 fn pdf_next_page_renders_off_thread() {
     let p = Path::new("samples/sample.pdf");
@@ -1252,7 +1253,7 @@ fn pdf_next_page_renders_off_thread() {
         return; // samples 除外環境ではスキップ
     }
     let Some(pages) = crate::preview::pdf::page_count(p) else {
-        return; // poppler 無し: ページ数不明=単ページ扱い
+        return; // 万一パースに失敗した場合の保険(通常は到達しない)
     };
     if pages < 2 {
         return;
@@ -6916,6 +6917,22 @@ fn md_remote_cache_path_is_stable_and_url_specific() {
     }
 }
 
+/// A malformed URL fails inside `ureq`'s own request construction (bad scheme / no host) — this
+/// returns before any DNS lookup or socket is ever opened, so it exercises the failure path without
+/// making a real network call (per the "no tests that reach the network" rule: a `.invalid`/loopback
+/// URL would still trigger a DNS/connect attempt, which is why this uses a syntactically-invalid URL
+/// instead). No `.part` file is left behind.
+#[test]
+fn fetch_remote_image_malformed_url_fails_without_touching_the_network() {
+    let dir = unique_tmp("konoma_fetch_remote_malformed_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("out.png");
+    assert!(!fetch_remote_image("not a url at all", &dest));
+    assert!(!dest.exists());
+    assert!(!dest.with_extension("part").exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// リモート画像ディスクキャッシュは上限を超えたら古いものから削除される(無上限成長の防止)。
 /// `.part`(取得中の一時ファイル)は対象外。
 #[test]
@@ -11486,11 +11503,14 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `[external] pdf = false`: `pdfinfo` is never run, even for a real multi-page PDF with poppler
-/// installed — `tab.pdf_pages` stays `None` (page navigation disabled), proving the gate itself
-/// short-circuits rather than "no PDF tool available" doing it by accident.
+/// `[external] pdf = false` means "never spawn pdftocairo/pdftoppm/qlmanage/sips" — it does **not**
+/// disable PDF preview, because `hayro` (the primary renderer) and `page_count` (`hayro-syntax`) are
+/// both pure Rust and never touch an external process. `tab.pdf_pages` must resolve identically
+/// (`Some(3)`, the bundled sample's known page count) whether the flag is on or off — unlike before
+/// `hayro` existed, when this flag (and `arbitrary_page_renderer_available`) gated whether page
+/// navigation was exposed at all.
 #[test]
-fn pdf_page_count_skipped_when_external_pdf_disabled() {
+fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     let p = Path::new("samples/sample.pdf");
     if !p.exists() {
         return; // samples excluded from the published crate
@@ -11502,18 +11522,20 @@ fn pdf_page_count_skipped_when_external_pdf_disabled() {
     cfg.external.pdf = false;
     let mut app = App::new(dir.clone(), cfg).unwrap();
     app.enter_preview(p);
-    assert!(
-        app.tab.pdf_pages.is_none(),
-        "pdf=false: page_count() (pdfinfo) must not run"
+    assert_eq!(
+        app.tab.pdf_pages,
+        Some(3),
+        "pdf=false: page_count (hayro-syntax) still runs — it never touched an external process"
     );
 
-    // Sanity: with pdf enabled (default) and poppler installed, the same file's page count IS resolved.
+    // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
     let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
     app2.enter_preview(p);
-    match app2.tab.pdf_pages {
-        Some(n) => assert!(n >= 1),
-        None => eprintln!("skip sanity: no poppler (pdfinfo) available"),
-    }
+    assert_eq!(
+        app2.tab.pdf_pages,
+        Some(3),
+        "external.pdf doesn't change the resolved page count"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

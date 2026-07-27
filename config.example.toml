@@ -277,9 +277,10 @@ code_theme = "TwoDark"
 #   svg      = rasterized to an image via resvg/usvg/tiny-skia (pure Rust, no external tools).
 #   video    = a representative frame extracted via ffmpegthumbnailer/ffmpeg, shown as a thumbnail (no in-terminal
 #              playback). The external tools are optional (a hint is shown if absent). To play, see the command example below.
-#   pdf      = each page rasterized to an image (pdftocairo/pdftoppm/qlmanage/sips). macOS always has qlmanage/sips,
-#              so it displays essentially anywhere. Falls back to a hint only if every tool is missing.
-#              Turn pages with J/K (or PageDown/PageUp) (multi-page needs poppler = pdfinfo for the count + per-page render).
+#   pdf      = each page rasterized to an image natively in Rust (hayro; no external tool needed).
+#              pdftocairo/pdftoppm/qlmanage/sips are kept only as a fallback for a PDF hayro can't
+#              render (encrypted/corrupt/unsupported). Turn pages with J/K (or PageDown/PageUp) —
+#              any page, no external tool required.
 #   csv      = comma-separated shown as an aligned table (rainbow columns + cell cursor). hjkl=move cell / y→=cell/row/column copy.
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
@@ -463,9 +464,13 @@ git              = true   # git integration (status colors, gutter, Git views, s
                            # false behaves exactly like building with `--no-default-features` (no `git` feature): reads return
                            # empty/None, writes return an error. `o` flashes distinctly from "not a repo".
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
-pdf              = true   # PDF page rasterization (pdftocairo/pdftoppm/qlmanage/sips/pdfinfo).
+pdf              = true   # The external fallback rasterizer chain (pdftocairo/pdftoppm/qlmanage/sips), tried only when
+                           # the primary renderer (hayro, pure Rust, always active regardless of this flag) fails on a
+                           # given PDF (encrypted/corrupt/unsupported). false never launches those tools; PDF preview
+                           # itself keeps working via hayro.
 video            = true   # Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
-remote_images    = true   # Fetching http(s) images referenced from Markdown (curl) — the only outbound network call konoma makes.
+remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
+                           # Done in-process via ureq (rustls), not an external tool.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
 preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
                            # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.

@@ -25,4 +25,7 @@ accepted = [
     "Unlicense",
     "0BSD",
     "OpenSSL",
+    # webpki-roots ships Mozilla's root certificate bundle under this data license (permissive,
+    # not copyleft — explicitly designed for redistributing datasets like a CA bundle).
+    "CDLA-Permissive-2.0",
 ]

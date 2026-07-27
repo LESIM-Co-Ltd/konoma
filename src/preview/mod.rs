@@ -36,8 +36,10 @@ pub enum PreviewKind {
     /// Built-in video thumbnail (extracts one representative frame via ffmpegthumbnailer/ffmpeg, then flows into the image path).
     /// Does not play inside the terminal. Missing/failed external tools fall back safely (hint display).
     Video(PathBuf),
-    /// Built-in PDF preview (rasterizes the first page via pdftocairo/pdftoppm/qlmanage/sips, then flows into the image path).
-    /// Missing tools fall back safely (hint display). First page only.
+    /// Built-in PDF preview: renders the current page natively in Rust (`hayro`, no external tool
+    /// needed), then flows into the image path. `J`/`K` turn any page. Falls back to
+    /// pdftocairo/pdftoppm/qlmanage/sips only if `hayro` can't render a given PDF (encrypted/
+    /// corrupt/unsupported), and to a hint display if nothing can render it (`preview::pdf`).
     Pdf(PathBuf),
     /// Built-in code highlighting (syntect).
     Code(PathBuf),

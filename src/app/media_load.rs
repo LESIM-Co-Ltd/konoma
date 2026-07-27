@@ -74,17 +74,22 @@ impl App {
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
             }
-            // `[external] video/pdf = false`: never spawn the job (never runs ffmpeg*/poppler/qlmanage/
-            // sips). `image_src` stays None, so the render side falls back exactly like "tool not
-            // installed" (VideoThumbUnavailable / PdfPreviewUnavailable hint) — no new UI state needed.
+            // `[external] video = false`: never spawn the job (never runs ffmpegthumbnailer/ffmpeg).
+            // `image_src` stays None, so the render side falls back exactly like "tool not installed"
+            // (VideoThumbUnavailable hint) — no new UI state needed.
             PreviewKind::Video(_) if self.cfg.external.video => {
                 self.spawn_or_sync_media(MediaJob::Video(path.to_path_buf()))
             }
             PreviewKind::Video(_) => {}
-            PreviewKind::Pdf(_) if self.cfg.external.pdf => {
-                self.spawn_or_sync_media(MediaJob::Pdf(path.to_path_buf(), self.tab.pdf_page))
-            }
-            PreviewKind::Pdf(_) => {}
+            // PDF: always spawn the job — `hayro` (the primary renderer, `preview::pdf::render_page`)
+            // is pure Rust and never touches an external process, so it must work regardless of
+            // `[external] pdf`. That flag now only controls whether the job's *fallback* chain
+            // (pdftocairo/pdftoppm/qlmanage/sips, tried only if hayro itself fails) may run.
+            PreviewKind::Pdf(_) => self.spawn_or_sync_media(MediaJob::Pdf(
+                path.to_path_buf(),
+                self.tab.pdf_page,
+                self.cfg.external.pdf,
+            )),
             // 単体 .mmd/.mermaid: 画像モードなら純 Rust で SVG 化→ラスタライズ(別スレッド)。
             // テキストモード/バックエンド無しは何もしない=装飾テキスト経路が描く(原則#3)。
             PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {
@@ -366,8 +371,9 @@ impl App {
         matches!(self.tab.preview_kind, Some(PreviewKind::Pdf(_)))
     }
 
-    /// (current, total) page for the PDF preview, or None when not a PDF or the page count is unknown
-    /// (no poppler → single-page fallback, navigation disabled). Used for the footer/status indicator.
+    /// (current, total) page for the PDF preview, or None when not a PDF or the page count is
+    /// unknown (page_count/hayro-syntax failed to parse the file at all — single-page fallback,
+    /// navigation disabled). Used for the footer/status indicator.
     pub fn pdf_page_indicator(&self) -> Option<(u32, u32)> {
         if !self.is_pdf_preview() {
             return None;
@@ -376,8 +382,10 @@ impl App {
         Some((self.tab.pdf_page.min(total), total))
     }
 
-    /// Whether PDF page navigation is possible (a known multi-page PDF; requires poppler for both the
-    /// count and per-page rendering, so this gates `J`/`K` from doing anything on single-page/no-poppler PDFs).
+    /// Whether PDF page navigation is possible (a known multi-page PDF). The page count comes from
+    /// `page_count` (`hayro-syntax`, pure Rust, no poppler needed), and rendering any given page is
+    /// `hayro`'s job too — poppler is only consulted as a fallback when `hayro` itself fails, so
+    /// navigation is no longer coupled to poppler being installed.
     pub fn pdf_can_navigate(&self) -> bool {
         matches!(self.tab.pdf_pages, Some(n) if n > 1)
     }
@@ -412,7 +420,7 @@ impl App {
         self.image_crop = None;
         if let Some(PreviewKind::Pdf(p)) = self.tab.preview_kind.clone() {
             // 旧ページの画像は到着まで表示したまま(media_gen で陳腐化判定・スピナーが重畳)。
-            self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page));
+            self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page, self.cfg.external.pdf));
         }
     }
 

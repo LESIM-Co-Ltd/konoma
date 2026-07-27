@@ -19,7 +19,11 @@ const HARD_MAX_PX: u32 = 4096;
 /// Build the system font DB once and share it.
 /// Because load_system_fonts can take several hundred ms on macOS, it is not re-enumerated each time an SVG is opened
 /// (to avoid UI-thread stutter). Fonts are only needed for text inside SVGs.
-fn shared_fontdb() -> Arc<usvg::fontdb::Database> {
+///
+/// `pub(crate)`: also reused by `preview::pdf`'s hayro `font_resolver` to pick a system CJK font for
+/// PDFs that reference a non-embedded CJK font (Adobe-Japan1/GB1/CNS1/Korea1 predefined CMaps).
+/// Sharing this one DB avoids a second several-hundred-ms `load_system_fonts()` enumeration.
+pub(crate) fn shared_fontdb() -> Arc<usvg::fontdb::Database> {
     static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     DB.get_or_init(|| {
         let mut db = usvg::fontdb::Database::new();

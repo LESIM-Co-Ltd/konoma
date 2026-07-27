@@ -125,7 +125,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "0/=", crate::i18n::Msg::HintFit),
             hint(lang, "hjkl", crate::i18n::Msg::HintPan),
         ];
-        // 多ページ PDF のときだけページ送りを前寄りに出す(単ページ/poppler 無しでは出さない)。
+        // 多ページ PDF のときだけページ送りを前寄りに出す(単ページ/ページ数不明では出さない)。
         if app.pdf_can_navigate() {
             v.push(hint(lang, "J/K", crate::i18n::Msg::HintPage));
         }
@@ -325,7 +325,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
-        // ラスタ化不可(pdftocairo/pdftoppm/qlmanage/sips いずれも不可)の PDF。対象ファイル＋ヒントを表示。
+        // ラスタ化不可(hayro・pdftocairo/pdftoppm/qlmanage/sips いずれも不可、または端末が非対応)の PDF。
+        // 対象ファイル＋ヒントを表示。
         Some(PreviewKind::Pdf(p)) => (
             format!(
                 "{}\n{}",
