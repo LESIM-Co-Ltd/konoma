@@ -45,6 +45,8 @@ use md_text::*;
 #[cfg(test)]
 pub use preview_visual::PreviewSelection;
 use preview_visual::*;
+// Referenced by `ui/table.rs` (the full-cell popup renderer) as `crate::app::TableCellView`.
+pub use table_actions::TableCellView;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -84,6 +86,8 @@ pub enum InternalMode {
     Tabs,
     Outline,
     Info,
+    /// Full-cell popup (`Enter` in a table preview): the cursor cell's untruncated text.
+    TableCell,
     Create,
     Rename,
     BatchRename,
@@ -684,6 +688,15 @@ pub struct App {
     pub(crate) tab: PerTab,
     /// Visible data-row count at the last render (the page size for PageUp/Down). Set by the renderer.
     table_viewport_rows: u16,
+
+    /// Full-cell popup (`Enter` in a table preview): shows the cursor cell's untruncated text,
+    /// wrapped and scrollable. App-global (not per-tab), matching `outline_open`/`show_info` — it
+    /// is always reset on a new preview / tab switch / new tab (never worth restoring).
+    table_cell_open: bool,
+    /// Vertical scroll offset within the cell popup (wrapped-row units; clamped at render time).
+    table_cell_scroll: u16,
+    /// The popup's visible row count at the last render (the page size for PageUp/Down).
+    table_cell_viewport: u16,
 
     /// Visual-selection anchor `(line, col)`. Some = selecting. Charwise (`v`) uses both; linewise (`V`) uses the line.
     preview_visual_anchor: Option<(usize, usize)>,
@@ -1403,6 +1416,9 @@ impl App {
                 ..PerTab::default()
             },
             table_viewport_rows: 0,
+            table_cell_open: false,
+            table_cell_scroll: 0,
+            table_cell_viewport: 0,
             preview_visual_anchor: None,
             preview_visual_linewise: false,
             gif_frames: Vec::new(),
@@ -1725,6 +1741,9 @@ impl App {
         if self.is_info() {
             return Some(InternalMode::Info);
         }
+        if self.is_table_cell_open() {
+            return Some(InternalMode::TableCell);
+        }
         if self.is_visual() {
             return Some(InternalMode::Visual);
         }
@@ -1819,6 +1838,9 @@ impl App {
         }
         if self.is_info() {
             return S::Info;
+        }
+        if self.is_table_cell_open() {
+            return S::TableCell;
         }
         if self.is_visual() {
             return S::Visual;
@@ -2284,6 +2306,7 @@ impl App {
         }
         self.tab.focused_item = None;
         self.outline_open = false; // 新規プレビューでアウトラインオーバーレイは閉じる
+        self.table_cell_open = false; // 同様にテーブルセル全文ポップアップも閉じる
         self.details_open.clear(); // <details> の開閉状態は文書ごと=別ファイルでリセット
         self.tab.preview_search = None;
         self.tab.search_input = None;

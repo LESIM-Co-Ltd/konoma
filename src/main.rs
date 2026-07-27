@@ -926,6 +926,16 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             }
             _ => {}
         },
+        // テーブルセル全文ポップアップ: 折返し後の可能性が高い長文なので上下スクロール+ページ送り。
+        Surface::TableCell => match m {
+            Motion::Up => app.table_cell_scroll_by(-1),
+            Motion::Down => app.table_cell_scroll_by(1),
+            Motion::Top => app.table_cell_scroll_to(false),
+            Motion::Bottom => app.table_cell_scroll_to(true),
+            Motion::PageUp => app.table_cell_page(-1),
+            Motion::PageDown => app.table_cell_page(1),
+            _ => {}
+        },
         Surface::Help => match m {
             Motion::Up => app.help_scroll_by(-1),
             Motion::Down => app.help_scroll_by(1),
@@ -1078,6 +1088,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::BookmarkDelete => app.bookmark_list_delete(),
         Action::BookmarkClose => app.close_bookmark_list(),
         Action::InfoClose => app.toggle_info(),
+        Action::ToggleTableCell => app.toggle_table_cell_view(),
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => app.git_diff_start_discard(),
         #[cfg(feature = "git")]
@@ -1265,6 +1276,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::Visual => app.exit_visual_cancel(),
         Surface::Sort => app.close_sort_menu(),
         Surface::Info => app.toggle_info(),
+        Surface::TableCell => app.toggle_table_cell_view(),
         Surface::Bookmarks => app.close_bookmark_list(),
         Surface::Tabs => app.toggle_tab_list(),
         Surface::Outline => app.toggle_outline(),
@@ -1322,6 +1334,9 @@ fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
         Surface::Bookmarks => app.bookmark_list_jump(),
         Surface::Tabs => app.tab_list_activate(),
         Surface::Outline => app.outline_jump(),
+        // `Enter` opens the full-cell popup from the table grid, and (the same toggle) closes it
+        // again from inside the popup — mirrors `MermaidCaption`'s "Enter: full screen" idiom.
+        Surface::PreviewTable | Surface::TableCell => app.toggle_table_cell_view(),
         #[cfg(feature = "git")]
         Surface::GitChanges => {
             if let Some(p) = app.git_view_selected() {

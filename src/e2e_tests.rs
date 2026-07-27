@@ -468,6 +468,95 @@ fn e2e_zip_archive_opens_as_table() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `Enter` の全文ポップアップ: グリッドは列幅(40)で切り詰めるが、ポップアップは生の全文を見せる。
+/// 切り詰め上限(39連続+`…`)を大きく超える連続 run が画面に見えることで「切り詰め無し」を実証する。
+#[test]
+fn e2e_table_cell_popup_shows_full_text_not_truncated() {
+    let dir = sandbox("cellpopup_long");
+    let long = "x".repeat(80);
+    std::fs::write(dir.join("wide.csv"), format!("h1,h2\nshort,{long}\n")).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("wide.csv");
+    s.enter();
+    s.see("TABLE");
+    s.dont_see(&"x".repeat(40)); // グリッドの切り詰め上限は39連続+"…"。
+    s.key('l'); // 長いセル(h2 列)へ。
+    s.enter(); // ポップアップを開く。
+    s.see("CELL");
+    s.see(&"x".repeat(45)); // 切り詰め上限を大きく超える連続runが見える。
+    assert_eq!(
+        s.app.table_cell_view().unwrap().text,
+        long,
+        "ポップアップの中身は生の全文(切り詰め無し)"
+    );
+    s.key('q');
+    s.see("TABLE");
+    s.dont_see("CELL");
+    assert_eq!(
+        s.app.tab.mode,
+        Mode::Preview,
+        "q はポップアップだけ閉じる(テーブルへ留まる・ツリーへは戻らない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// CSV の引用符内改行(複数行の住所欄等)がポップアップの中身にそのまま(実改行のまま)残る。
+/// Esc でも閉じられること(`q` だけでない)も確認する。
+#[test]
+fn e2e_table_cell_popup_shows_multiline_cell_and_esc_closes() {
+    let dir = sandbox("cellpopup_multiline");
+    std::fs::write(
+        dir.join("addr.csv"),
+        "name,address\nDoe,\"123 Main St\nSuite 4\nCity\"\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("addr.csv");
+    s.enter();
+    s.see("TABLE");
+    s.key('l'); // address 列(改行入り)へ。
+    s.enter();
+    s.see("CELL");
+    assert_eq!(
+        s.app.table_cell_view().unwrap().text,
+        "123 Main St\nSuite 4\nCity",
+        "引用符内の実改行がそのまま保持される"
+    );
+    s.esc();
+    s.dont_see("CELL");
+    assert_eq!(s.app.tab.mode, Mode::Preview, "Esc もツリーへは戻らない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// アーカイブ一覧も同じ `TableData` を経由するので、セルポップアップが実キー操作でも効く。
+#[test]
+fn e2e_zip_archive_cell_popup_shows_full_name_via_enter() {
+    let dir = sandbox("cellpopup_zip");
+    let long_name = format!("{}.txt", "x".repeat(90));
+    {
+        use std::io::Write as _;
+        let f = std::fs::File::create(dir.join("bundle.zip")).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(&long_name, opts).unwrap();
+        zw.write_all(b"hi").unwrap();
+        zw.finish().unwrap();
+    }
+    let mut s = Sim::new(&canon(&dir));
+    s.select("bundle.zip");
+    s.enter();
+    s.see("TABLE");
+    s.enter(); // カーソルは先頭セル(Name 列)→ ポップアップを開く。
+    s.see("CELL");
+    let view = s.app.table_cell_view().unwrap();
+    assert_eq!(view.header, "Name");
+    assert_eq!(view.text, long_name, "長いエントリ名も切り詰め無しで取れる");
+    s.key('q');
+    s.see("TABLE");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 装飾 Markdown の検索を **キー入力経由**で通す。装飾表示のまま(raw に切替えず)一致行へ
 /// スクロールし、n で次の一致へ動くこと。CJK 本文でも壊れないこと。
 #[test]

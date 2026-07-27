@@ -43,6 +43,8 @@ impl App {
         self.git_graph_reordered = false;
         // 見出しアウトラインオーバーレイもタブ跨ぎで持ち越さない。
         self.outline_open = false;
+        // テーブルセル全文ポップアップも同様(表示中のセルはタブごとに意味が変わる)。
+        self.table_cell_open = false;
         // <details> の開閉状態も文書ごと=タブ跨ぎで持ち越さない。
         self.details_open.clear();
         // `table_search_hits` は `search_matches` から導出される描画用の集合。PerTab には持たず
@@ -177,6 +179,8 @@ impl App {
         self.save_active();
         // 見出しアウトラインオーバーレイは新タブへ持ち越さない(空タブ上の空オーバーレイを防ぐ)。
         self.outline_open = false;
+        // テーブルセル全文ポップアップも同様。
+        self.table_cell_open = false;
         let root = self.tab.root.clone();
         self.tab.open_dir = root.clone();
         self.tab.root = root;

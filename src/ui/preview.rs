@@ -57,6 +57,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
             .row("/  n / N", l(crate::i18n::Msg::TableSearchHelp))
+            .row("Enter", l(crate::i18n::Msg::TableCellViewHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
             .row("y → f", l(crate::i18n::Msg::WkFull))
             .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
@@ -108,6 +109,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     if app.is_table_preview() {
         return vec![
             hint(lang, "hjkl", crate::i18n::Msg::HintCell),
+            hint(lang, "↵", crate::i18n::Msg::HintViewCell),
             hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "y", crate::i18n::Msg::CopyHint),
             hint(lang, "g/G", crate::i18n::Msg::HintEnds),

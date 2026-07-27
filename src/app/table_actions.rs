@@ -196,4 +196,98 @@ impl App {
     pub fn table_cell_is_hit(&self, row: usize, col: usize) -> bool {
         self.table_search_hits.contains(&(row, col))
     }
+
+    // ---- テーブルセル全文ポップアップ (`Enter` in a table preview) --------------
+    // konoma の表グリッドは列幅に収まらないセルを `…` で切り詰めるので、`y→c` でクリップボードへ
+    // コピーはできても画面上で読めない(コピー先は常に生のセル値=切り詰め無し)。この穴を埋める、
+    // Outline/Info と同型の App-global(非 per-tab)トグルオーバーレイ。
+
+    /// `Enter`: open/close the full-cell popup (mirrors `toggle_outline`/`toggle_info`). The real
+    /// trigger is the fixed `Enter` key (`handle_enter`/`handle_esc` in main.rs); `Action::ToggleTableCell`
+    /// exists so `q` inside the popup can also close it through the ordinary keymap. Flashes and
+    /// stays closed when the table has no columns (an empty file — nothing to show).
+    pub fn toggle_table_cell_view(&mut self) {
+        if self.table_cell_open {
+            self.table_cell_open = false;
+            return;
+        }
+        match &self.table_data {
+            Some(t) if t.ncols > 0 => {}
+            _ => {
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::TableCellEmpty).into());
+                return;
+            }
+        }
+        self.table_cell_scroll = 0;
+        self.table_cell_open = true;
+    }
+
+    /// Whether the full-cell popup is showing.
+    pub fn is_table_cell_open(&self) -> bool {
+        self.table_cell_open
+    }
+
+    /// The full-cell popup's content (the cursor cell, read live so it reflects any reload/move
+    /// while open). None when there is no table, or it has no columns (nothing to show).
+    pub fn table_cell_view(&self) -> Option<TableCellView> {
+        let t = self.table_data.as_ref()?;
+        if t.ncols == 0 {
+            return None;
+        }
+        let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
+        let text = if t.nrows() == 0 {
+            String::new() // ヘッダのみのファイル: 中身は空。
+        } else {
+            t.cell(r, c).to_string()
+        };
+        Some(TableCellView {
+            header: t.header(c).to_string(),
+            row: r + 1,
+            col: c + 1,
+            nrows: t.nrows(),
+            ncols: t.ncols,
+            text,
+        })
+    }
+
+    /// The popup's current vertical scroll offset (wrapped-row units).
+    pub fn table_cell_scroll(&self) -> u16 {
+        self.table_cell_scroll
+    }
+
+    /// Renderer feedback: the clamped scroll and the popup's visible row count (used as the
+    /// PageUp/Down step). Mirrors `set_table_view`.
+    pub fn set_table_cell_view(&mut self, scroll: u16, viewport: u16) {
+        self.table_cell_scroll = scroll;
+        self.table_cell_viewport = viewport;
+    }
+
+    /// Scroll the popup by `delta` wrapped rows (the upper bound is clamped at render time,
+    /// mirroring `preview_scroll`).
+    pub fn table_cell_scroll_by(&mut self, delta: i32) {
+        let v = self.table_cell_scroll as i32 + delta;
+        self.table_cell_scroll = v.max(0) as u16;
+    }
+
+    /// To the top (`bottom=false`) or bottom (`bottom=true`, clamped at render time via `u16::MAX`) of the popup.
+    pub fn table_cell_scroll_to(&mut self, bottom: bool) {
+        self.table_cell_scroll = if bottom { u16::MAX } else { 0 };
+    }
+
+    /// Page the popup up/down (`dir` = -1/+1). The page size is the last render's visible rows.
+    pub fn table_cell_page(&mut self, dir: i32) {
+        let page = self.table_cell_viewport.saturating_sub(1).max(1) as i32;
+        self.table_cell_scroll_by(dir * page);
+    }
+}
+
+/// The full-cell popup's content: the cursor cell's header/position/untruncated text.
+/// `row`/`col` are 1-based (display convention, matching the table grid's own title).
+pub struct TableCellView {
+    pub header: String,
+    pub row: usize,
+    pub col: usize,
+    pub nrows: usize,
+    pub ncols: usize,
+    pub text: String,
 }

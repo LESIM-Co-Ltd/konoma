@@ -7525,13 +7525,205 @@ fn table_cursor_survives_tab_roundtrip() {
 
 // --- テーブルセル全文ポップアップ(`Enter`): 切り詰められたグリッドの穴を埋める読取専用ビュー ---
 
+/// グリッドは列幅(`MAX_COL_W`=40)を超えるセルを `…` で切り詰めるが、`table_cell_view()` は
+/// (`y→c` コピー同様)常に生のセル値を返す=画面上でも全文が取れる。CJK 混在でも壊れない。
+#[test]
+fn table_cell_view_returns_untruncated_long_and_cjk_text() {
+    let dir = unique_tmp("konoma_cellview_long_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let long = "x".repeat(200); // グリッドの MAX_COL_W(40) を大きく超える長さ。
+    let cjk = "あいうえおかきくけこ".repeat(5); // 全角50文字=幅100(こちらも40超)。
+    let csv = dir.join("t.csv");
+    std::fs::write(&csv, format!("h1,h2\n{long},{cjk}\n")).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
 
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert_eq!(view.header, "h1");
+    assert_eq!(view.row, 1);
+    assert_eq!(view.col, 1);
+    assert_eq!(view.nrows, 1);
+    assert_eq!(view.ncols, 2);
+    assert_eq!(view.text, long, "長いセルが切り詰めなしで取れる");
 
+    app.table_cursor_move(0, 1);
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert_eq!(view.header, "h2");
+    assert_eq!(view.col, 2);
+    assert_eq!(view.text, cjk, "CJK セルも全文がそのまま取れる");
+    std::fs::remove_dir_all(&dir).ok();
+}
 
+/// CSV は引用符内に実改行を持てる(複数行の住所欄など)。ポップアップの本文は生のセル値
+/// (`\n` を保持したまま)を返し、グリッド用の `flatten`(スペースに均す)を経由しない。
+#[test]
+fn table_cell_view_preserves_embedded_newlines() {
+    let dir = unique_tmp("konoma_cellview_newline_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("t.csv");
+    std::fs::write(&csv, "name,address\nDoe,\"123 Main St\nSuite 4\nCity\"\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    app.table_cursor_move(0, 1);
 
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert_eq!(view.text, "123 Main St\nSuite 4\nCity");
+    assert_eq!(
+        view.text.lines().count(),
+        3,
+        "実改行3行がそのまま数えられる"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
 
+/// 非UTF-8由来のバイト列は csv クレートの lossy デコードで既に U+FFFD に置換済み(preview/table.rs)。
+/// ポップアップ側はそれをそのまま表示するだけで、クラッシュしないことを確認する。
+#[test]
+fn table_cell_view_handles_replacement_chars_without_panic() {
+    let dir = unique_tmp("konoma_cellview_badbytes_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("t.csv");
+    let mut bytes = b"h1,h2\n".to_vec();
+    bytes.extend_from_slice(b"a\xff\xfeb,c\n"); // 不正バイトを含む1行。
+    std::fs::write(&csv, bytes).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
 
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert!(
+        view.text.contains('\u{FFFD}'),
+        "不正バイトは置換文字になっている: {:?}",
+        view.text
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
 
+/// `Enter`(トグル): 開くとスクロールが先頭へ、`is_table_cell_open` が反映、もう一度で閉じる。
+#[test]
+fn toggle_table_cell_view_opens_resets_scroll_and_closes() {
+    let (mut app, _) = app_with_table();
+    assert!(!app.is_table_cell_open());
+    assert_eq!(app.internal_mode(), None);
+
+    app.table_cell_scroll_by(5); // 前回の残骸を模す(閉じている間は無意味だが値は残る)。
+    app.toggle_table_cell_view();
+    assert!(app.is_table_cell_open());
+    assert_eq!(app.table_cell_scroll(), 0, "開いた時点でスクロールは先頭へ");
+    assert_eq!(app.surface(), crate::keymap::Surface::TableCell);
+    assert_eq!(app.internal_mode(), Some(InternalMode::TableCell));
+
+    app.toggle_table_cell_view();
+    assert!(!app.is_table_cell_open());
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
+    assert_eq!(app.internal_mode(), None);
+}
+
+/// 列の無い(空)ファイルには表示できるセルが無い: flash して開かない。
+#[test]
+fn toggle_table_cell_view_flashes_on_empty_table() {
+    let dir = unique_tmp("konoma_cellview_empty_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("empty.csv");
+    std::fs::write(&csv, "").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
+    app.tab.preview_path = Some(csv.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    assert!(app.table_cell_view().is_none());
+
+    app.toggle_table_cell_view();
+    assert!(!app.is_table_cell_open(), "表示するセルが無いので開かない");
+    assert!(app.flash.is_some(), "no-cell flash が出る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// スクロールの純粋な移動/クランプ: 上端は0でクランプ、`scroll_to` は先頭/末尾(u16::MAX、描画時に
+/// クランプされる規約)、`table_cell_page` は最後にレンダラが書き戻したビューポート幅を1ページとする。
+#[test]
+fn table_cell_scroll_by_to_and_page_move_and_clamp_floor() {
+    let (mut app, _) = app_with_table();
+    app.toggle_table_cell_view();
+    assert_eq!(app.table_cell_scroll(), 0);
+
+    app.table_cell_scroll_by(-3);
+    assert_eq!(
+        app.table_cell_scroll(),
+        0,
+        "上端で0にクランプ(負にならない)"
+    );
+
+    app.table_cell_scroll_by(7);
+    assert_eq!(app.table_cell_scroll(), 7);
+
+    app.table_cell_scroll_to(true);
+    assert_eq!(
+        app.table_cell_scroll(),
+        u16::MAX,
+        "末尾は描画時にクランプされる規約(preview_scroll と同型)"
+    );
+    app.table_cell_scroll_to(false);
+    assert_eq!(app.table_cell_scroll(), 0);
+
+    // レンダラが書き戻したビューポート幅(=1ページの高さ)を使ってページ送りする。
+    app.set_table_cell_view(0, 11); // viewport=11 行 → 1ページ=10行(preview_page と同じ -1 オーバーラップ)。
+    app.table_cell_page(1);
+    assert_eq!(app.table_cell_scroll(), 10);
+    app.table_cell_page(-1);
+    assert_eq!(app.table_cell_scroll(), 0);
+}
+
+/// アーカイブ一覧も同じ `TableData` を経由するので、セルポップアップは自動的に効く(確認)。
+#[test]
+fn table_cell_view_works_for_archive_listing() {
+    let (mut app, _) = app_with_archive_zip();
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert_eq!(view.header, "Name");
+    assert_eq!(view.text, "one.txt");
+    app.table_cursor_move(1, 0);
+    let view = app.table_cell_view().expect("table_cell_view");
+    assert_eq!(view.text, "two.txt");
+
+    app.toggle_table_cell_view();
+    assert!(
+        app.is_table_cell_open(),
+        "アーカイブ一覧でもポップアップが開く"
+    );
+}
+
+/// タブ切替/新規タブでポップアップは持ち越さない(Outline と同じ App-global オーバーレイの規約)。
+#[test]
+fn table_cell_popup_does_not_survive_tab_switch_or_new_tab() {
+    let (mut app, _) = app_with_table();
+    app.toggle_table_cell_view();
+    assert!(app.is_table_cell_open());
+
+    app.tab_new().unwrap(); // 新タブは常にポップアップ無しから始まる(tab_new の明示リセット)。
+    assert!(
+        !app.is_table_cell_open(),
+        "新規タブは常にポップアップ無しから始まる"
+    );
+
+    // 別セッション: 開いたまま切替→復帰でも開いたままにしない。
+    let (mut app2, _) = app_with_table();
+    app2.toggle_table_cell_view();
+    assert!(app2.is_table_cell_open());
+    app2.tab_new().unwrap();
+    app2.tab_cycle(-1); // 元タブへ戻る(load_active)
+    assert!(
+        !app2.is_table_cell_open(),
+        "タブ切替(load_active)でもポップアップは閉じる"
+    );
+}
 
 // --- Agent Watch: @参照コピー(③) / 変更フィルタ+ジャンプ(①) / フォローモード(②) ---
 

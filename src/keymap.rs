@@ -265,6 +265,14 @@ pub enum Action {
 
     // --- Info ---
     InfoClose,
+
+    // --- テーブルセル全文ポップアップ (`Enter` in a table preview) ---
+    /// Open/close the full-cell popup (mirrors `ToggleOutline`/`ToggleInfo`). The real trigger is
+    /// the fixed `Enter` key (see `handle_enter`/`handle_esc` in main.rs, same pattern as
+    /// `LinkOpen`); this variant exists so the action is nameable/config-registrable (e.g. `q`
+    /// inside the popup closes it via this same action) and round-trips through
+    /// `action_from_str`/`action_name`.
+    ToggleTableCell,
 }
 
 // =============================================================================
@@ -301,6 +309,9 @@ pub enum Surface {
     /// Heading-outline overlay (`o` in a Markdown preview): j/k + Enter jump to a heading.
     Outline,
     Info,
+    /// Full-cell popup (`Enter` in a table preview): the cursor cell's untruncated text, wrapped
+    /// and scrollable (`j`/`k`/`g`/`G`/PageUp/PageDown), `q`/Esc/Enter close it.
+    TableCell,
     #[cfg(feature = "git")]
     GitDetail,
     #[cfg(feature = "git")]
@@ -978,6 +989,19 @@ impl KeyMap {
         info.insert(KeyPress::ch('q'), run(Action::InfoClose));
         per_surface.insert(Surface::Info, info);
 
+        // --- テーブルセル全文ポップアップ (`Enter` in a table preview opens it; fixed key, see
+        // handle_enter). j/k/g/G/PageUp/PageDown scroll the (possibly wrapped/long) cell text.
+        // `q` closes (Enter/Esc also close via the fixed-key path). ---
+        let mut tcell: ContextMap = HashMap::new();
+        tcell.insert(KeyPress::ch('j'), nav(Motion::Down));
+        tcell.insert(KeyPress::ch('k'), nav(Motion::Up));
+        tcell.insert(KeyPress::ch('g'), nav(Motion::Top));
+        tcell.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+        tcell.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
+        tcell.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
+        tcell.insert(KeyPress::ch('q'), run(Action::ToggleTableCell));
+        per_surface.insert(Surface::TableCell, tcell);
+
         // --- Help (?/Esc は Global/固定で閉じる。q もここで閉じる) ---
         let mut help: ContextMap = HashMap::new();
         help.insert(KeyPress::ch('j'), nav(Motion::Down));
@@ -1295,6 +1319,7 @@ fn surface_config_name(sfc: Surface) -> Option<&'static str> {
         Surface::Tabs => Some("tabs"),
         Surface::Outline => Some("outline"),
         Surface::Info => Some("info"),
+        Surface::TableCell => Some("table_cell"),
         #[cfg(feature = "git")]
         Surface::GitDetail => Some("git_detail"),
         #[cfg(feature = "git")]
@@ -1336,6 +1361,7 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "tabs" => Surface::Tabs,
         "outline" => Surface::Outline,
         "info" => Surface::Info,
+        "table_cell" => Surface::TableCell,
         "help" => Surface::Help,
         #[cfg(feature = "git")]
         "preview_git_diff" => Surface::PreviewGitDiff,
@@ -1775,6 +1801,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "bookmark_close" => Action::BookmarkClose,
         // Info
         "info_close" => Action::InfoClose,
+        // Table cell popup
+        "toggle_table_cell" => Action::ToggleTableCell,
         // Git (feature gate)
         #[cfg(feature = "git")]
         "git_diff_discard" => Action::GitDiffDiscard,
@@ -1945,6 +1973,7 @@ pub fn action_name(a: Action) -> String {
         Action::BookmarkDelete => "bookmark_delete",
         Action::BookmarkClose => "bookmark_close",
         Action::InfoClose => "info_close",
+        Action::ToggleTableCell => "toggle_table_cell",
         #[cfg(feature = "git")]
         Action::GitDiffDiscard => "git_diff_discard",
         #[cfg(feature = "git")]

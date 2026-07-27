@@ -238,7 +238,8 @@ helix-style:
 ```
 
 Surface names: `global`, `tree`, `tree_visual`, `preview_text`, `preview_text_visual`,
-`preview_image`, `preview_table`, `sort`, `bookmarks`, `info`, `help`, and (git builds)
+`preview_image`, `preview_table`, `table_cell` (the full-cell popup opened by `Enter` in
+`preview_table`), `sort`, `bookmarks`, `tabs`, `outline`, `info`, `help`, and (git builds)
 `preview_git_diff`, `git_changes`, `git_log`, `git_graph`, `git_graph_picker`, `git_branches`,
 `git_detail`.
 
@@ -256,7 +257,8 @@ Action names are snake_case strings — the full annotated list is in
 - **Bookmarks**: `mark_set` (`m`), `mark_jump` (`'` — opens the list; plain letters inside it jump), `bookmark_edit` (`ctrl-e`), `bookmark_delete` (`ctrl-d`), `bookmark_close`. `m`/`'` are bound in both the tree and previews (a preview bookmarks the shown file).
 - **Path copy** (`y` leader): `copy_name`, `copy_relative`, `copy_full`, `copy_parent`, `copy_at_ref` (`@relative/path` for AI chats)
 - **File management** (`Space` leader): `file_create`, `file_rename`, `file_delete`, `file_copy`, `file_cut`, `file_paste`, `file_duplicate` (`Space→D`: duplicate the cursor/selection in place, e.g. `note copy.md`)
-- **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab), `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends), `table_copy_cell/row/column`
+- **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab), `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends)
+- **Table** (`preview_table`): `table_copy_cell/row/column` (`y` leader), `toggle_table_cell` (`Enter`: a full-text popup for the cursor cell — the grid truncates wide cells with `…`, this shows the untruncated value, wrapped and scrollable with `j`/`k`/`g`/`G`/PageUp/PageDown; `q`/Esc/`Enter` close it; `[keys.table_cell]` covers the popup's own keys)
 - **Agent Watch**: `toggle_follow` (`F`), `toggle_changed_filter` (`C`), `jump_next_change` (`n`), `jump_prev_change` (`N`), `toggle_follow_diff_scope` (`f`, in a follow diff: switch between "since follow start" and the full git diff)
 - **Paste-jump** (`global`): `paste_jump` (`P`) — reads a path or GitHub link from the clipboard and jumps there (reveal + preview). Understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and `#L123` / `:123` line anchors; switches root to the target's repository when it lies outside the current root.
 - **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`!`, in the changes hub), `cycle_diff_layout`, `git_copy_*`, `branch_*`

@@ -82,6 +82,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
         InternalMode::Outline => (Msg::StOutline, Color::Yellow, false),
         InternalMode::Info => (Msg::StInfo, Color::DarkGray, true),
+        // 「読むだけ」の補助オーバーレイなので Info と同系統(DarkGray)。
+        InternalMode::TableCell => (Msg::StTableCell, Color::DarkGray, true),
         InternalMode::Create => (Msg::StCreate, Color::Green, false),
         InternalMode::Rename => (Msg::StRename, Color::Cyan, false),
         InternalMode::BatchRename => (Msg::StBatchRename, Color::Cyan, false),
@@ -207,6 +209,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
             }
         }
         InternalMode::Info => tr(lang, crate::i18n::Msg::StCloseHint),
+        InternalMode::TableCell => tr(lang, crate::i18n::Msg::TableCellActions),
         InternalMode::ChangedFilter => tr(lang, crate::i18n::Msg::ChangedFilterHint),
         InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),

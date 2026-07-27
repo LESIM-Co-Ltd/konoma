@@ -127,6 +127,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.is_info() {
         info::render(frame, app, frame.area());
     }
+    // テーブルセル全文ポップアップ(`Enter`)。
+    if app.is_table_cell_open() {
+        table::render_cell_popup(frame, app, frame.area());
+    }
     // 確認/入力ダイアログは最優先(キーも横取りされる)なので最前面。
     if app.is_dialog() {
         dialog::render(frame, app, frame.area());

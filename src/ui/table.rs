@@ -5,14 +5,15 @@
 //! csvlens), so opening is instant even for large files. Vertical/horizontal scrolling is done by
 //! adjusting the scroll offsets to keep the cursor visible, then writing them back to `App`.
 
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::App;
+use crate::app::{App, TableCellView};
+use crate::i18n::tr;
 use crate::preview::table::TableData;
 
 /// Rotating palette for rainbow columns. Mid-tone hues that read on both light and dark terminals
@@ -142,6 +143,84 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, area);
+}
+
+/// Fraction of the screen the full-cell popup occupies (generous — the point is reading long
+/// content comfortably, not a small dialog like Outline/Info).
+const CELL_POPUP_FRACTION: u32 = 4; // out of 5 (80%)
+const CELL_POPUP_DENOM: u32 = 5;
+
+/// `Enter` in a table preview: a centered popup showing the **cursor cell's untruncated text**
+/// (wrapped, scrollable with j/k/g/G/PageUp/PageDown). This is the read counterpart to `y → c`
+/// (which already copies the full, un-truncated cell) — the grid above always shows `…`-truncated
+/// cells, with no way to read the rest on screen until now. Reads the cell live from `App` each
+/// frame (so an external edit reloading the table, or the popup staying open across an unrelated
+/// redraw, always shows the current value) and writes the clamped scroll back, mirroring the
+/// render/`set_table_view` convention used by the grid above.
+pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(view): Option<TableCellView> = app.table_cell_view() else {
+        return; // 呼び出し側(ui::render)が is_table_cell_open を確認済み。防御的に無処理。
+    };
+
+    let title = format!(
+        " {} · {}  r{}/{} c{}/{} ",
+        tr(app.lang, crate::i18n::Msg::TableCellTitle),
+        view.header,
+        view.row,
+        view.nrows.max(1),
+        view.col,
+        view.ncols
+    );
+
+    // ポップアップサイズ: 画面の80%を基本に、余白を確保して収める(Outline/Info より大きい =
+    // 「長い内容を読む」用途のため)。
+    let w = ((area.width as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
+        .clamp(20, area.width.saturating_sub(2));
+    let h = ((area.height as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
+        .clamp(6, area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+
+    let block = Block::bordered()
+        .title(title)
+        .title_bottom(
+            Line::from(tr(app.lang, crate::i18n::Msg::TableCellActions))
+                .centered()
+                .dim(),
+        )
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(popup);
+
+    // ratatui はタブ文字を端末のタブストップへ展開せず(unicode-width の幅計算と食い違う)そのまま
+    // 1桁として描くので、折返し前に空白へ均す。実改行(引用符内に改行を持つ CSV セル等)は
+    // Text::raw(String::from 経由)がそのまま行分割するので、ここでは触らない。
+    let body = if view.text.contains('\t') {
+        view.text.replace('\t', " ")
+    } else {
+        view.text
+    };
+
+    let mut para = Paragraph::new(body).wrap(Wrap { trim: false });
+    // 総表示行数(折返し込み)を ratatui に計算させ、末尾を超えてスクロールしないようクランプする
+    // (render_windowed/render_decorated と同じ流儀)。
+    let total_rows = para.line_count(inner.width);
+    let max_scroll = total_rows.saturating_sub(inner.height as usize) as u16;
+    let scroll = app.table_cell_scroll().min(max_scroll);
+    app.set_table_cell_view(scroll, inner.height);
+
+    para = para
+        .block(block)
+        .scroll((scroll, 0))
+        .alignment(Alignment::Left);
+
+    frame.render_widget(Clear, popup); // 下地を消してから描く
+    frame.render_widget(para, popup);
 }
 
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).

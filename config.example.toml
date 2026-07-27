@@ -352,6 +352,7 @@ builtin = "pdf"
 #                  (it clashes with vim's word motion; close is the tree's q; restore with "w"="tab_close").
 #   tree          : the full-screen tree      tree_visual   : the tree's visual selection
 #   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff
+#   preview_table : CSV/TSV/archive tables    table_cell : the full-cell popup (Enter in preview_table)
 #   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
 #   git_graph_picker : the graph's branch-visibility panel (b)
 #   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
@@ -389,6 +390,10 @@ builtin = "pdf"
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
+#                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
+#                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
+#                    j/k/g/G/PageUp/PageDown; q/Esc/Enter close it. Surface [keys.table_cell] covers the popup's keys.)
 #   Sort         : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
