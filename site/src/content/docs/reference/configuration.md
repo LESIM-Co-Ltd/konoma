@@ -183,6 +183,35 @@ Mermaid and images always open at the top.
 | `tool` | `"lazygit"` | External git tool launched with `O` (command + args). |
 | `diff` | `"unified"` | Initial diff layout: `"unified"` (vertical) / `"split"` (side by side) / `"auto"` (by width). Cycle at runtime with `s` while viewing a diff. |
 
+## `[external]` — external process on/off switches
+
+One on/off switch per external process konoma can launch. Every key defaults to `true`,
+so an absent `[external]` section (or an absent field within it) changes nothing.
+
+| Key | Default | Description |
+|---|---|---|
+| `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. |
+| `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
+| `pdf` | `true` | PDF page rasterization (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`/`pdfinfo`). |
+| `video` | `true` | Video thumbnail extraction (`ffmpegthumbnailer`/`ffmpeg`). |
+| `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown (`curl`) — the only outbound network call konoma makes. |
+| `open_links` | `true` | Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, pasted-path jump (`P`), etc. |
+| `preview_commands` | `true` | Running a `[[preview.rules]] command = "..."` delegation. `false` makes a matching rule behave as if it hadn't matched (falls through to `[can not preview]`); builtin renderers (`markdown`, `image`, `pdf`, ...) are unaffected. |
+
+Disabled mechanisms degrade the same way a missing optional tool already does: PDF/video
+fall back to the existing "cannot render" hint, a disabled remote image shows the text
+placeholder instead of the image, and a disabled `command` rule falls through to
+`[can not preview]` — nothing crashes.
+
+Prefer `[external]` over trying to disable one thing through `[[preview.rules]]`: as noted
+above, writing even a single user rule there **replaces the entire builtin rule table**, so
+it can't selectively turn off just PDF or video without also breaking Markdown, images, and
+CSV.
+
+`[ui] lang` already has its own explicit-vs-`"auto"` switch for OS-language detection
+(`macOS defaults`) — setting it explicitly (`"en"`/`"jp"`) skips that lookup, so there is no
+separate `[external]` flag for it.
+
 ## `[keys]` — keybindings
 
 Every command is rebindable. The model: **each screen ("surface") maps keys to actions**,

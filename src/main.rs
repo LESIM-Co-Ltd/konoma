@@ -952,7 +952,15 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ToggleHelp => app.toggle_help(),
         Action::CopyPath(kind) => app.copy_path(kind),
         Action::CopyCodeBlock => app.md_copy_focused_code(),
-        Action::PasteJump => app.paste_jump(),
+        Action::PasteJump => {
+            // `P` は global(全面継承)なので Visual からも届く。他の7つの Visual 由来アクション
+            // (main.rs の commit_visual_if_needed 呼び出し箇所)と同じく、進行中の範囲選択を
+            // 先に確定してから動く。これを怠ると is_visual() は tab.mode を見ないため、
+            // paste_jump が全画面プレビューへ遷移した後も surface() が Visual のままになり、
+            // プレビューを見ながらキーがツリーの Visual マップへ流れ続ける事故になる。
+            commit_visual_if_needed(app, sfc);
+            app.paste_jump();
+        }
         Action::Quit => {
             // confirm_quit が ON なら確認ダイアログを開いてまだ終了しない。OFF なら即終了。
             if app.request_quit() {

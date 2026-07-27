@@ -21,15 +21,19 @@ impl App {
         let decorated = self.build_decorated(&path, width);
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
+        // A *synchronous* failure (remote images disabled: `ensure_remote_md_fetch` returns true
+        // the first time it marks the URL failed, since nothing else would ever invalidate the
+        // cache to un-stick the Loading placeholder) also asks for a resync below, the same way a
+        // synchronous mermaid/math completion does.
+        let mut resync = false;
         for url in &decorated.remote_urls {
-            self.ensure_remote_md_fetch(url);
+            resync |= self.ensure_remote_md_fetch(url);
         }
         // Kick off background renders for any ```mermaid fences not yet in the diagram cache
         // (content-hash keyed). Completion invalidates md_cache (apply_md_image), so the loading
         // line re-lays out into the real inline diagram — the remote-image pattern exactly.
         // Synchronous completions (no loader tx = tests) land *before* we store the cache below,
         // so the just-built decoration is already stale — rebuild once with the results in.
-        let mut resync = false;
         for code in &decorated.mermaid_fences {
             if code.trim().is_empty() {
                 continue; // 空フェンス(書きかけ)は図にならない=レンダを起動しない

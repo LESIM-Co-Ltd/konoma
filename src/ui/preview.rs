@@ -349,6 +349,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         ),
         // テーブルは上の専用パスで描画済み。ここに来るのはパース失敗時=生 CSV/TSV をテキスト表示(安全降格)。
         Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
+        // アーカイブも上の専用パス(is_table_preview)で描画済み。ここに来るのは一覧化失敗時
+        // (壊れたファイル/非対応形式)。zip/tar の生バイト列をテキストとしてダンプせず、対象ファイル＋
+        // ヒントを表示する(原則#3)。
+        Some(PreviewKind::Archive { path, .. }) => (
+            format!(
+                "{}\n{}",
+                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
+                path.display()
+            ),
+            false,
+        ),
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
         // GitDiff は上の専用パスで描画済み(ここには来ない)。網羅性のため安全側。
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),

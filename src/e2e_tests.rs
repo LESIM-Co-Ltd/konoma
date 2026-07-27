@@ -441,6 +441,33 @@ fn e2e_csv_table_cell_navigation() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn e2e_zip_archive_opens_as_table() {
+    let dir = sandbox("zip_archive");
+    {
+        use std::io::Write as _;
+        let f = std::fs::File::create(dir.join("bundle.zip")).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file("one.txt", opts).unwrap();
+        zw.write_all(b"hello").unwrap();
+        zw.start_file("two.txt", opts).unwrap();
+        zw.write_all(b"world").unwrap();
+        zw.finish().unwrap();
+    }
+    let mut s = Sim::new(&canon(&dir));
+    s.select("bundle.zip");
+    s.enter();
+    s.see("TABLE");
+    s.see("one.txt");
+    s.see("two.txt");
+    assert!(s.app.is_table_preview());
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// 装飾 Markdown の検索を **キー入力経由**で通す。装飾表示のまま(raw に切替えず)一致行へ
 /// スクロールし、n で次の一致へ動くこと。CJK 本文でも壊れないこと。
 #[test]
@@ -2650,6 +2677,74 @@ fn e2e_paste_jump_github_url_switches_root() {
         s.app.tab.preview_path
     );
     s.see("GUIDE_MARKER");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
+    // バグ回帰: ツリーの Visual(範囲選択)中に `P`(PasteJump)を押すと、以前は選択範囲が
+    // 確定/破棄されないまま全画面プレビューへ遷移していた。`is_visual()` は `tab.mode` を見ず
+    // `tab.visual_anchor` の有無だけを見るため、プレビュー表示中も `surface()` が Visual を
+    // 返し続け、見えているのはプレビューなのにキー(`j` 等)はツリーの Visual マップへ流れる
+    // 事故になっていた。
+    let dir = sandbox("paste_jump_visual");
+    std::fs::write(dir.join("target.txt"), "PASTE_JUMP_VISUAL_BODY\n").unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+
+    // 実キー経由: v でツリー Visual に入る。
+    s.select("target.txt");
+    s.key('v');
+    assert!(s.app.is_visual(), "v でツリー Visual に入る");
+    assert_eq!(s.app.surface(), crate::keymap::Surface::Visual);
+
+    // P(PasteJump)を dispatch する。実キーではなく `crate::dispatch_action` を直接呼ぶ理由:
+    // このテストは実機のシステムクリップボードに触れたくない(中身は環境依存＝テストが不安定に
+    // なる。paste_jump() 自体の解決/クラッシュ耐性は e2e_paste_jump_local_path_with_line などが
+    // クリップボード非依存の `paste_jump_from` で別途検証済み)。dispatch_action は main.rs の
+    // 中央ディスパッチそのもので、実キー `P` が解決する Action・Surface と全く同じ引数を渡す
+    // ので、経路としては実キー経由と同一。main.rs の dispatch が(他の Space→ 系アクションと
+    // 同じく)`commit_visual_if_needed` を通していれば、クリップボードの中身/読み取り成否に
+    // かかわらず Visual は必ず終わる(commit_visual_if_needed は app.paste_jump() を呼ぶ**前**に
+    // 走る)。
+    let sfc = s.app.surface();
+    assert_eq!(sfc, crate::keymap::Surface::Visual);
+    crate::dispatch_action(&mut s.app, crate::keymap::Action::PasteJump, sfc)
+        .expect("dispatch_action(PasteJump)");
+    s.draw();
+    assert!(
+        !s.app.is_visual(),
+        "PasteJump を dispatch した後は(ジャンプの成否によらず)ツリーの Visual 選択が終わっている"
+    );
+
+    // enter_preview 自体の防御を独立に検証する: paste_jump_from はクリップボード非依存の
+    // pub 入口(既存の paste-jump e2e と同じ流儀)。Visual を意図的に貼り直し、
+    // commit_visual_if_needed を経由しない仮想の呼び出し元を模して、enter_preview 自身が
+    // 保証すべき不変条件(全画面プレビューに入る=ツリーの範囲選択は終わっている)を確認する。
+    s.app.enter_visual();
+    assert!(s.app.is_visual(), "enter_visual で Visual に入り直す");
+    s.app.paste_jump_from("target.txt");
+    s.draw();
+    assert!(
+        !s.app.is_visual(),
+        "enter_preview は(呼び出し元が畳み忘れていても)ツリーの Visual を必ず終える"
+    );
+    assert_ne!(
+        s.app.surface(),
+        crate::keymap::Surface::Visual,
+        "surface() はもう Visual を返さない"
+    );
+    assert_eq!(s.app.tab.mode, Mode::Preview, "プレビューに入っている");
+    s.see("PASTE_JUMP_VISUAL_BODY");
+
+    // プレビューを見ながらキーがツリーの Visual マップへ流れていない証拠: j はツリーの
+    // カーソル/Visual 範囲を動かさない(バグ当時は j がツリーの Visual 範囲伸長として効いていた)。
+    let cursor_before = s.app.tab.selected;
+    s.key('j');
+    assert_eq!(
+        s.app.tab.selected, cursor_before,
+        "j はもうツリーの Visual カーソルを動かさない(プレビュー中)"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

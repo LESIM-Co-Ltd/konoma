@@ -67,6 +67,10 @@ pub enum DisplayMode {
 /// Priority: dialog > each footer mode (filter/search/sort/bookmarks) > visual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InternalMode {
+    /// The `?` help overlay. It renders as a centered popup that does not cover the top/bottom
+    /// chrome, so the chip/footer must reflect the overlay's own keys (j/k/g/G scroll, q/Esc close)
+    /// rather than whatever surface sits behind it (Tree/Preview keep rendering underneath).
+    Help,
     Visual,
     /// Windowed-preview line selection (`v` in a code/text preview).
     PreviewVisual,
@@ -1446,6 +1450,10 @@ impl App {
             git_graph_picker_set: std::collections::HashSet::new(),
             git_graph_reordered: false,
         };
+        // `[external] git` を今このスレッドに反映してから git を触る最初の呼び出し(rebuild_tree)へ入る。
+        // スレッドローカルなので他のテストと競合しない(git.rs の EXTERNAL_GIT_ENABLED を参照)。
+        #[cfg(feature = "git")]
+        crate::git::set_external_git_enabled(app.cfg.external.git);
         app.rebuild_tree()?;
         // 最初のタブとして現在の状態を登録する。
         app.tabs.push(app.snapshot_tab());
@@ -1663,6 +1671,10 @@ impl App {
                     _ => InternalMode::Rename,
                 },
             });
+        }
+        // ヘルプ (全要素の上。surface() と同じ優先順=ダイアログの直後)。
+        if self.show_help {
+            return Some(InternalMode::Help);
         }
         // コミット詳細は log の上に被さるので先に判定する。
         if self.is_git_detail() {
@@ -2248,7 +2260,8 @@ impl App {
         // 画像状態は毎回リセット。SVG/GIF は別スレッドで読み込み開始(UI を塞がない)。
         self.clear_image();
         // PDF はページ数を先に求める(pdfinfo・~数 ms)。None なら単ページ扱い=ページ移動なし。
-        if matches!(kind, PreviewKind::Pdf(_)) {
+        // `[external] pdf = false` では pdfinfo も呼ばない(単ページ扱いのまま=ナビ無効)。
+        if matches!(kind, PreviewKind::Pdf(_)) && self.cfg.external.pdf {
             self.tab.pdf_pages = crate::preview::pdf::page_count(path);
         }
         self.start_media_load(&kind, path);
@@ -2276,7 +2289,23 @@ impl App {
         self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // CSV/TSV はテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
+        // ツリーの範囲選択(Visual)モードも畳む: `is_visual()` は `tab.visual_anchor` の有無だけを
+        // 見て `tab.mode` を見ないため、ここで畳まないと全画面プレビューへ遷移した後も
+        // `surface()` が Visual を返し続け、見えているのはプレビューなのにキーはツリーの
+        // Visual マップに流れてしまう(例: `j` でツリーのカーソルが動く)。「全画面プレビューに
+        // 入った=ツリーの範囲選択は終わっている」という不変条件をここで保証する。
+        //
+        // 確定(exit_visual_commit)でなく破棄(exit_visual_cancel)を選ぶ理由: `commit_visual_if_needed`
+        // による確定は「Space→操作」のような**明示的な選択→実行**のワークフロー専用の意味論であり、
+        // それを必要とする呼び出し元(例: `P`=PasteJump)は自分で明示的に呼ぶ(main.rs 参照)。ここは
+        // 呼び出し元を問わない汎用の保険であり、企図せず全く別の画面へ遷移した「中断」に近い
+        // (`Esc` が進行中の範囲を破棄しつつ既に確定済みの選択は残すのと同じ発想)。進行中の範囲を
+        // 無条件に選択へ確定してしまうと、意図しない経路(将来の新しい遷移など)で
+        // ツリーへ戻ったときに身に覚えのないファイルが選択済みになる副作用を生みかねない。
+        if self.is_visual() {
+            self.exit_visual_cancel();
+        }
+        // CSV/TSV/アーカイブはテーブルへパース。カーソル/スクロールを先頭へ戻してから読み込む。
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -2524,8 +2553,14 @@ impl App {
     }
 
     /// `O`: request launching an external git tool (lazygit, etc.) (the run loop picks it up, suspends, then launches).
+    /// No-op (flash) when `[external] git_tool = false`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn launch_git_tool(&mut self) {
+        if !self.cfg.external.git_tool {
+            self.flash =
+                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ExternalGitToolDisabled).into());
+            return;
+        }
         self.pending_git_tool = true;
     }
 
@@ -2542,8 +2577,12 @@ impl App {
         if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
-            // CSV/TSV は外部編集で内容が変わり得る。再パースしてカーソルを範囲内へクランプ(位置は保つ)。
-            if matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. })) {
+            // CSV/TSV/アーカイブは外部編集で内容が変わり得る。再パースしてカーソルを範囲内へ
+            // クランプ(位置は保つ)。
+            if matches!(
+                self.tab.preview_kind,
+                Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
+            ) {
                 self.load_table();
                 self.clamp_table_cursor();
             }
@@ -2580,7 +2619,7 @@ impl App {
             self.tab.pdf_page,
         );
         self.clear_image(); // ズーム/中心/ページ/メディア世代をリセット
-        if matches!(kind, PreviewKind::Pdf(_)) {
+        if matches!(kind, PreviewKind::Pdf(_)) && self.cfg.external.pdf {
             self.tab.pdf_pages = crate::preview::pdf::page_count(&path);
             self.tab.pdf_page = page.clamp(1, self.tab.pdf_pages.unwrap_or(1).max(1));
         }

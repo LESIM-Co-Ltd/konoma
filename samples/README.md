@@ -17,6 +17,11 @@ and are covered by the project's MIT license.
 - `sample.csv` / `sample.tsv` / `data.csv` — hand-written tables that exercise the CSV/TSV
   table preview (rainbow columns, cell navigation, quoted commas, full-width CJK cells, and
   long-value truncation).
+- `sample.zip` / `sample.tar.gz` — exercise the archive-listing preview (entry name / size /
+  modified date in the same table renderer). Built by simply packing a few of this directory's
+  *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,
+  `code/app.ts`, `code/calc.c`, `code/main.go`; `sample.tar.gz` = `sample.csv`, `sample.tsv`,
+  `japanese.txt`) — no third-party content, same as everything else here.
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
 - The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix

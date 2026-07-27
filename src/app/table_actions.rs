@@ -3,14 +3,26 @@ use super::*;
 impl App {
     // ---- CSV/TSV テーブルプレビュー ------------------------------------------
 
-    /// Parse the current Table-kind preview into `table_data` (None on failure = raw-text fallback).
-    /// Does not touch the cursor/scroll (callers reset or restore those as appropriate).
+    /// Parse the current Table/Archive-kind preview into `table_data` (None on failure = raw-text
+    /// fallback / can-not-preview). Does not touch the cursor/scroll (callers reset or restore
+    /// those as appropriate).
     pub(super) fn load_table(&mut self) {
         self.table_data = None;
-        if let Some(PreviewKind::Table { path, delimiter }) = self.tab.preview_kind.clone() {
-            if let Ok(t) = crate::preview::table::parse(&path, delimiter) {
-                self.table_data = Some(t);
+        match self.tab.preview_kind.clone() {
+            Some(PreviewKind::Table { path, delimiter }) => {
+                if let Ok(t) = crate::preview::table::parse(&path, delimiter) {
+                    self.table_data = Some(t);
+                }
             }
+            // アーカイブの一覧化はサードパーティクレート(zip/tar)頼み。万一のパニックも
+            // catch_silent で握り潰し、失敗は None(→ [can not preview] へ安全降格)にする。
+            Some(PreviewKind::Archive { path, kind }) => {
+                self.table_data = crate::preview::markdown::catch_silent(|| {
+                    crate::preview::archive::list(&path, kind)
+                })
+                .and_then(Result::ok);
+            }
+            _ => {}
         }
     }
 
@@ -28,11 +40,14 @@ impl App {
         }
     }
 
-    /// Whether a CSV/TSV table preview is active **and parsed** (routes the PreviewTable surface / renderer).
-    /// A Table kind whose parse failed returns false → the preview degrades to raw text.
+    /// Whether a CSV/TSV/archive table preview is active **and parsed** (routes the PreviewTable
+    /// surface / renderer). A Table/Archive kind whose parse failed returns false → the preview
+    /// degrades to raw text (CSV/TSV) or a can-not-preview-style hint (archive).
     pub fn is_table_preview(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. }))
-            && self.table_data.is_some()
+        matches!(
+            self.tab.preview_kind,
+            Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
+        ) && self.table_data.is_some()
     }
 
     /// The field-separator byte of the active table (`,` by default).

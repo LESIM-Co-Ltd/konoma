@@ -181,6 +181,36 @@ Mermaid と画像は常に先頭です。
 | `tool` | `"lazygit"` | `O` で起動する外部 git ツール(コマンド+引数)。 |
 | `diff` | `"unified"` | diff の初期レイアウト: `"unified"`(縦) / `"split"`(左右) / `"auto"`(幅で判断)。実行時は diff 内 `s` で巡回。 |
 
+## `[external]` — 外部プロセスの on/off スイッチ
+
+konoma が起動する外部プロセスを1個ずつ on/off できます。全キーの既定は `true`。
+`[external]` セクション自体が無い、あるいは中の項目が無い場合も既定は `true` のまま
+なので、何も書かなければ挙動は変わりません。
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`o`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。 |
+| `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
+| `pdf` | `true` | PDF ページのラスタライズ(`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`/`pdfinfo`)。 |
+| `video` | `true` | 動画サムネイル抽出(`ffmpegthumbnailer`/`ffmpeg`)。 |
+| `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得(`curl`)。konoma が行う唯一の外向きネットワーク通信です。 |
+| `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)等。 |
+| `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |
+
+無効化された機構は、任意ツールが不在のときと**同じ形で安全に降格**します: PDF/動画は
+既存の「表示できません」ヒントへ、無効化したリモート画像は画像の代わりにテキストの
+プレースホルダへ、無効化した `command` ルールは `[can not preview]` へ — クラッシュは
+しません。
+
+「1つだけ止めたい」場合も `[[preview.rules]]` で個別に対処しようとしないこと。上で
+触れたとおり、ユーザー定義ルールを1つでも書くと**既定のルール一覧が丸ごと置き換わる**
+ため、PDF や動画だけを狙って止めることができず、Markdown・画像・CSV 等も一緒に
+効かなくなります。
+
+`[ui] lang` は既に「明示 / `"auto"`」の切替を持っています(OS 言語取得は `macOS
+defaults` 経由)。`lang` を明示(`"en"`/`"jp"`)すればこの取得自体が呼ばれないため、
+`[external]` に専用フラグは足していません。
+
 ## `[keys]` — キーバインド
 
 すべてのコマンドが再割当できます。モデルは「**画面(surface)ごとに キー → アクション

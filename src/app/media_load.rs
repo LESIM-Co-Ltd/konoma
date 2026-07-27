@@ -74,10 +74,17 @@ impl App {
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
             }
-            PreviewKind::Video(_) => self.spawn_or_sync_media(MediaJob::Video(path.to_path_buf())),
-            PreviewKind::Pdf(_) => {
+            // `[external] video/pdf = false`: never spawn the job (never runs ffmpeg*/poppler/qlmanage/
+            // sips). `image_src` stays None, so the render side falls back exactly like "tool not
+            // installed" (VideoThumbUnavailable / PdfPreviewUnavailable hint) — no new UI state needed.
+            PreviewKind::Video(_) if self.cfg.external.video => {
+                self.spawn_or_sync_media(MediaJob::Video(path.to_path_buf()))
+            }
+            PreviewKind::Video(_) => {}
+            PreviewKind::Pdf(_) if self.cfg.external.pdf => {
                 self.spawn_or_sync_media(MediaJob::Pdf(path.to_path_buf(), self.tab.pdf_page))
             }
+            PreviewKind::Pdf(_) => {}
             // 単体 .mmd/.mermaid: 画像モードなら純 Rust で SVG 化→ラスタライズ(別スレッド)。
             // テキストモード/バックエンド無しは何もしない=装飾テキスト経路が描く(原則#3)。
             PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {

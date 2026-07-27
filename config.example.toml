@@ -313,6 +313,14 @@ glob = "*.tsv"             # Tab-separated variant.
 builtin = "tsv"
 
 [[preview.rules]]
+glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
+builtin = "archive"
+
+[[preview.rules]]
+glob = "*.tar.gz"          # Compound extension needs its own rule (globset alternation can't express it).
+builtin = "archive"
+
+[[preview.rules]]
 glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
 builtin = "code"
 
@@ -344,6 +352,7 @@ builtin = "pdf"
 #   tree          : the full-screen tree      tree_visual   : the tree's visual selection
 #   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff
 #   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
+#   git_graph_picker : the graph's branch-visibility panel (b)
 #   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
 #
 # ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / '",
@@ -441,3 +450,22 @@ tool        = "lazygit"   # The external git tool launched with `!` in the hub (
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph (post-release, docs/GRAPH-BASE-SPEC.md).
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
+
+# ── External process switches ────────────────────────────────────────────────
+# One on/off switch per external process konoma can launch. All default to `true` (unchanged
+# behavior). Prefer these over trying to disable a mechanism through `[[preview.rules]]`: writing
+# even one user rule there *replaces the entire builtin rule table*, so it isn't a targeted way to
+# turn off just PDF/video/etc. — it also breaks Markdown, images, CSV, and everything else.
+# `[ui] lang` already has its own explicit-vs-auto switch for OS-language lookup, so there is no
+# separate flag for that here.
+[external]
+git              = true   # git integration (status colors, gutter, Git views, stage/commit/checkout — git CLI + embedded git2).
+                           # false behaves exactly like building with `--no-default-features` (no `git` feature): reads return
+                           # empty/None, writes return an error. `o` flashes distinctly from "not a repo".
+git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
+pdf              = true   # PDF page rasterization (pdftocairo/pdftoppm/qlmanage/sips/pdfinfo).
+video            = true   # Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
+remote_images    = true   # Fetching http(s) images referenced from Markdown (curl) — the only outbound network call konoma makes.
+open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
+preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
+                           # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.

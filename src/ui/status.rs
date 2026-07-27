@@ -61,6 +61,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         return Some(chip_str(text, Color::Yellow, false));
     }
     let (msg, bg, dark) = match app.internal_mode()? {
+        // ヘルプは Info と同様の「閲覧専用オーバーレイ」系(dim/DarkGray)。
+        InternalMode::Help => (Msg::StHelp, Color::DarkGray, true),
         InternalMode::Visual => (Msg::StVisual, Color::Magenta, true),
         // プレビューの選択: 文字範囲(v)=VISUAL / 行(V)=V-LINE。
         InternalMode::PreviewVisual => {
@@ -181,6 +183,10 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
 fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
     let s = match app.internal_mode()? {
+        // ヘルプ自体の操作キー(j/k/g/G スクロール・q/Esc 閉じる)。裏の面(Tree/Preview)のヒントを
+        // 出し続けると、ヘルプ表示中に押せないキーを案内することになる(中央ポップアップは
+        // 上下端を覆わないのでフッターは常に見えている)。
+        InternalMode::Help => tr(lang, crate::i18n::Msg::StHelpHint),
         InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => {
             tr(lang, crate::i18n::Msg::StDeleteForce)
         }

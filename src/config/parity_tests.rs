@@ -1276,6 +1276,36 @@ detached = true
 }
 
 #[test]
+fn cfg_preview_command_rule_disabled_by_external_falls_back_to_can_not_preview() {
+    let toml = r#"
+[external]
+preview_commands = false
+
+[[preview.rules]]
+glob = "*.xyz"
+command = "mpv {path}"
+"#;
+    let cfg: Config = toml::from_str(toml).unwrap();
+    match cfg.resolve_preview(Path::new("/tmp/whatever.xyz")) {
+        PreviewKind::CanNotPreview { ext } => assert_eq!(ext, "xyz"),
+        other => panic!("preview_commands=false: expected CanNotPreview, got {other:?}"),
+    }
+    // Builtin renderers matched by other rules are unaffected.
+    let toml2 = r#"
+[external]
+preview_commands = false
+"#;
+    let cfg2: Config = toml::from_str(toml2).unwrap();
+    assert!(
+        matches!(
+            cfg2.resolve_preview(Path::new("/x/note.md")),
+            PreviewKind::Markdown(_)
+        ),
+        "preview_commands=false leaves builtin rules intact"
+    );
+}
+
+#[test]
 fn cfg_preview_unknown_builtin_falls_back_to_can_not_preview() {
     let toml = r#"
 [[preview.rules]]
@@ -1507,4 +1537,120 @@ fn cfg_git_parses_from_toml() {
     assert_eq!(cfg2.git.main_branch, "develop");
     assert_eq!(cfg2.git.tool, "lazygit");
     assert_eq!(cfg2.git.diff, "unified");
+}
+
+// =============================================================================
+// [external] — on/off switches for every external process konoma can launch
+// =============================================================================
+
+/// Absent `[external]` (and every field within it) defaults to fully enabled — the toggle changes
+/// nothing unless a user opts in to turning something off.
+#[test]
+fn cfg_external_defaults_all_true() {
+    let d = ExternalConfig::default();
+    assert!(d.git);
+    assert!(d.git_tool);
+    assert!(d.pdf);
+    assert!(d.video);
+    assert!(d.remote_images);
+    assert!(d.open_links);
+    assert!(d.preview_commands);
+
+    let e = Config::default().external;
+    assert!(e.git);
+    assert!(e.git_tool);
+    assert!(e.pdf);
+    assert!(e.video);
+    assert!(e.remote_images);
+    assert!(e.open_links);
+    assert!(e.preview_commands);
+
+    // No `[external]` section at all in the file.
+    let cfg: Config = toml::from_str("[ui]\n").unwrap();
+    assert!(cfg.external.git);
+    assert!(cfg.external.git_tool);
+    assert!(cfg.external.pdf);
+    assert!(cfg.external.video);
+    assert!(cfg.external.remote_images);
+    assert!(cfg.external.open_links);
+    assert!(cfg.external.preview_commands);
+
+    // An empty `[external]` table (present but nothing set).
+    let cfg2: Config = toml::from_str("[external]\n").unwrap();
+    assert!(cfg2.external.git);
+    assert!(cfg2.external.git_tool);
+    assert!(cfg2.external.pdf);
+    assert!(cfg2.external.video);
+    assert!(cfg2.external.remote_images);
+    assert!(cfg2.external.open_links);
+    assert!(cfg2.external.preview_commands);
+}
+
+/// (field name, its accessor) — used by `cfg_external_each_field_parses_independently`.
+type ExternalFieldCase = (&'static str, fn(&ExternalConfig) -> bool);
+
+/// Each field parses independently — flipping one to `false` leaves the rest at their default `true`.
+#[test]
+fn cfg_external_each_field_parses_independently() {
+    let cases: &[ExternalFieldCase] = &[
+        ("git", |e| e.git),
+        ("git_tool", |e| e.git_tool),
+        ("pdf", |e| e.pdf),
+        ("video", |e| e.video),
+        ("remote_images", |e| e.remote_images),
+        ("open_links", |e| e.open_links),
+        ("preview_commands", |e| e.preview_commands),
+    ];
+    for (field, getter) in cases {
+        let toml = format!("[external]\n{field} = false\n");
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert!(
+            !getter(&cfg.external),
+            "{field} = false should parse as false"
+        );
+        // The other six fields stay at their default `true`.
+        let others_true = cases
+            .iter()
+            .filter(|(f, _)| f != field)
+            .all(|(_, g)| g(&cfg.external));
+        assert!(others_true, "{field}=false must not disturb other fields");
+    }
+}
+
+/// All seven flipped to `false` at once.
+#[test]
+fn cfg_external_all_false_parses() {
+    let toml = "\
+[external]
+git = false
+git_tool = false
+pdf = false
+video = false
+remote_images = false
+open_links = false
+preview_commands = false
+";
+    let cfg: Config = toml::from_str(toml).unwrap();
+    let e = &cfg.external;
+    assert!(
+        !e.git
+            && !e.git_tool
+            && !e.pdf
+            && !e.video
+            && !e.remote_images
+            && !e.open_links
+            && !e.preview_commands
+    );
+}
+
+/// A type-mismatched value (a string where a bool is expected) fails the **whole** config parse —
+/// the same as every other plain bool field in this config (e.g. `[ui] icons = "nope"`), not a
+/// silent per-field fallback. `Config::load_reporting` already turns that failure into
+/// `Config::default()` (so `external.*` stays `true`) plus a startup message, same as any other
+/// broken config file.
+#[test]
+fn cfg_external_field_wrong_type_fails_whole_parse_like_other_bool_fields() {
+    assert!(toml::from_str::<Config>("[external]\ngit = \"nope\"\n").is_err());
+    // Sanity: the same failure mode already exists for an established bool field.
+    assert!(toml::from_str::<Config>("[ui]\nicons = \"nope\"\n").is_err());
 }

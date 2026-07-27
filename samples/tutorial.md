@@ -70,10 +70,38 @@ konoma's flagship trick, for the "konoma on the left, coding agent on the right"
 layout:
 
 - `F` — follow mode: whenever a file changes on disk, konoma automatically shows
-  its diff. Press any key to take back control; `F` again to resume.
+  the diff of **what changed since you pressed `F`** — not the whole uncommitted
+  diff, so your own earlier edits stay out of the way. `f` switches between the
+  two. Scrolling and `n`/`N` keep following; `q` stops.
 - `C` — flat list of every file with uncommitted changes; `n`/`N` jump through them.
 - `y` → `@` / `Y` — copy `@path` / `@path#L12-34` references to paste into the
   agent conversation.
+
+## 8. If a preview says `[can not preview]`
+
+Nothing is broken. konoma hands a few formats to external tools, and when one is
+missing it says so instead of crashing — everything else keeps working. Install
+what you actually want:
+
+```bash
+# macOS
+brew install poppler ffmpeg
+
+# Debian / Ubuntu
+sudo apt install poppler-utils ffmpeg
+```
+
+- **poppler** — PDF. Without it macOS still shows the **first page only** (via
+  `qlmanage`/`sips`); with it you get every page and `J`/`K` to move between them.
+- **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of a video.
+- **git** — the whole git suite in section 6. You almost certainly have it already.
+
+Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables and code need
+**nothing extra** — they are rendered inside konoma. What they do need is a
+terminal that speaks the kitty graphics protocol (Ghostty, kitty, WezTerm,
+Konsole) for the picture formats; text previews work in any terminal.
+
+- [ ] I know what to install if I need it
 
 ## Where to go next
 

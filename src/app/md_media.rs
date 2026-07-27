@@ -439,20 +439,37 @@ impl App {
 
     /// Ensure a background download is in flight for the remote image `url` (deduplicated). Skips URLs
     /// that are already cached, already downloading, or known to have failed. The download runs off the
-    /// UI thread (principle #4) via `curl`; on completion it reports through `md_remote_tx`.
-    pub(super) fn ensure_remote_md_fetch(&mut self, url: &str) {
+    /// UI thread (principle #4) via `curl`; on completion it reports through `md_remote_tx`. Returns
+    /// true on a *synchronous* failure (mirrors `ensure_mermaid_fence_render`/`ensure_math_render`'s
+    /// "no loader tx = tests" convention) so the caller (`ensure_md_cache`) can resync its
+    /// already-built `decorated` before storing it — see the `remote_images = false` branch below.
+    pub(super) fn ensure_remote_md_fetch(&mut self, url: &str) -> bool {
         if !crate::preview::markdown::is_remote_image_url(url) {
-            return;
+            return false;
+        }
+        if !self.cfg.external.remote_images {
+            // `[external] remote_images = false`: never call out to `curl`. Mark it failed right away
+            // (instead of leaving it unrecorded) so the renderer degrades to the text placeholder
+            // instead of showing `ImageSlot::Loading` forever. Marking it failed alone only affects a
+            // *future* decoration build though — `ensure_md_cache` already built `decorated` (with a
+            // Loading slot, since `md_remote_failed` didn't contain `url` yet) before calling this, and
+            // unconditionally stores that `decorated` into `md_cache` afterwards regardless of what we
+            // do to `self.md_cache` here. Since remote fetches never run, nothing else would ever
+            // invalidate the cache to trigger a later rebuild (unlike a real download completing via
+            // `apply_remote_fetch`), so the Loading placeholder would otherwise stick around forever.
+            // Returning true (only the first time — `insert()` reports whether it was new) tells the
+            // caller to rebuild `decorated` right now, in this same pass, using the now-failed URL.
+            return self.md_remote_failed.insert(url.to_string());
         }
         // Already downloaded (cache file exists), already failed, or already downloading → nothing to do.
         if resolve_md_image_path(url, None).is_some()
             || self.md_remote_failed.contains(url)
             || self.md_remote_inflight.contains(url)
         {
-            return;
+            return false;
         }
         let (Some(tx), Some(dest)) = (self.md_remote_tx.clone(), md_remote_cache_path(url)) else {
-            return;
+            return false;
         };
         self.md_remote_inflight.insert(url.to_string());
         let u = url.to_string();
@@ -463,6 +480,7 @@ impl App {
                 .unwrap_or(false);
             let _ = tx.send(RemoteFetch { url: u, ok });
         });
+        false
     }
 
     /// Ensure the inline image for `url` is decoding in the background and that the protocol for the

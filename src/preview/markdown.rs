@@ -1171,6 +1171,13 @@ pub(crate) struct TaskLoc {
 /// to the next blank line) and GFM table blocks. This keeps the Nth checkbox on screen aligned
 /// with the Nth `TaskLoc`, so a toggle edits the right line. Pathological documents could still
 /// disagree — the caller cross-checks count and current state before writing.
+///
+/// Known, deliberately unhandled gap: `process_inline_html` (run by the caller *before* this scan,
+/// on the same source) turns a `<br>` into a hard line break, which can make the text right after it
+/// *look* like a new task line to the renderer even though it is not one on disk. This scanner has no
+/// way to know that without re-running the same substitution, so it does not special-case it — the
+/// resulting count mismatch just makes the caller's cross-check fail and refuse the toggle (principle
+/// #3: refuse rather than write to the wrong place), it never mis-edits a line.
 pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool]) -> Vec<TaskLoc> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
@@ -2265,6 +2272,40 @@ enum MdPart {
     Table(String),
 }
 
+/// For each of `lines`, whether it is part of a fenced code block — the opening/closing marker
+/// lines and everything between (using the same fence-matching rules as `split_segments`/
+/// `parse_fence`: matching char, len ≥ opening len, empty info to close). `split_tables`,
+/// `split_html_blocks` and `split_alerts` gate their block-start detection on this: none of them
+/// otherwise know about code fences, so a fenced block whose *contents* happen to look like a GFM
+/// table, an HTML tag, or a `> [!NOTE]` alert header got sliced out of the fence and rendered as
+/// that construct instead of code — breaking the fence in two (each half growing its own code
+/// header) or leaking its closing marker into a stray HTML-block rescue. `split_details` has its
+/// own (simpler) fence toggle and is intentionally left alone here.
+fn fence_mask(lines: &[&str]) -> Vec<bool> {
+    let mut mask = vec![false; lines.len()];
+    let mut open: Option<Fence> = None;
+    for (i, line) in lines.iter().enumerate() {
+        match &open {
+            None => {
+                if let Some((fence, _info)) = parse_fence(line) {
+                    mask[i] = true;
+                    open = Some(fence);
+                }
+            }
+            Some(fence) => {
+                mask[i] = true;
+                let closing = parse_fence(line)
+                    .map(|(f, info)| f.ch == fence.ch && f.len >= fence.len && info.is_empty())
+                    .unwrap_or(false);
+                if closing {
+                    open = None;
+                }
+            }
+        }
+    }
+    mask
+}
+
 // ---- HTML ブロックの救出 --------------------------------------------------------
 // tui-markdown(pulldown-cmark) は Html イベントを黙って捨てるため、`<details>` 等の
 // ブロックの**中身のテキストごと**消えていた。ブロックを横取りしてタグを剥いだテキストを
@@ -2307,13 +2348,17 @@ fn is_html_block_start(line: &str) -> bool {
 }
 
 /// Split md text into normal text and HTML blocks (a line starting a block, up to the next blank line).
+/// Fence-aware (`fence_mask`): an HTML-looking line inside a code fence is left as ordinary text, or
+/// its tags would be stripped and — worse — the "block" scan (which just runs to the next blank
+/// line) would swallow the fence's own closing marker, leaking it into the rescued text.
 fn split_html_blocks(md: &str) -> Vec<HtmlPart> {
     let lines: Vec<&str> = md.lines().collect();
+    let fenced = fence_mask(&lines);
     let mut parts = Vec::new();
     let mut buf: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if is_html_block_start(lines[i]) {
+        if !fenced[i] && is_html_block_start(lines[i]) {
             if !buf.is_empty() {
                 parts.push(HtmlPart::Text(buf.join("\n") + "\n"));
                 buf.clear();
@@ -2462,14 +2507,24 @@ fn strip_blockquote(line: &str) -> String {
 }
 
 /// Partition Markdown into plain-text runs and GitHub alerts. An alert starts at a `> [!TYPE]`
-/// header and captures the following blockquote lines as its (marker-stripped) body.
+/// header and captures the following blockquote lines as its (marker-stripped) body. Fence-aware
+/// (`fence_mask`): a `> [!NOTE]`-looking line inside a code fence must stay literal code, not open
+/// a callout box (whose body-capture loop then stops at the first non-`>` line — usually the very
+/// next line of code — leaving the rest of the fence, including its closing marker, to fall through
+/// to plain text and break the code block in two).
 fn split_alerts(md: &str) -> Vec<AlertPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
     let lines: Vec<&str> = md.lines().collect();
+    let fenced = fence_mask(&lines);
     let mut i = 0;
     while i < lines.len() {
-        if let Some((kind, title)) = parse_alert_header(lines[i]) {
+        let header = if fenced[i] {
+            None
+        } else {
+            parse_alert_header(lines[i])
+        };
+        if let Some((kind, title)) = header {
             if !text.is_empty() {
                 parts.push(AlertPart::Text(std::mem::take(&mut text)));
             }
@@ -3108,14 +3163,22 @@ fn looks_like_table_row(line: &str) -> bool {
 
 /// Split md text into "normal text" and "table blocks".
 /// A table = header row (containing `|`) + the delimiter row right after (`|---|`) + the consecutive data rows.
+/// Fence-aware (`fence_mask`): pipe-delimited lines inside a code fence (e.g. a shell/markdown
+/// example) must stay code, not get carved out as a rendered table — which also splits the fence
+/// into two pieces, each growing its own (broken) code-block header.
 fn split_tables(md: &str) -> Vec<MdPart> {
     let lines: Vec<&str> = md.lines().collect();
+    let fenced = fence_mask(&lines);
     let mut parts = Vec::new();
     let mut text = String::new();
     let mut i = 0;
     while i < lines.len() {
-        // 表開始 = 現在行がヘッダ候補 かつ 次行が区切り行。
-        if i + 1 < lines.len() && looks_like_table_row(lines[i]) && is_table_delimiter(lines[i + 1])
+        // 表開始 = 現在行がヘッダ候補 かつ 次行が区切り行 かつ どちらもフェンス外。
+        if !fenced[i]
+            && i + 1 < lines.len()
+            && !fenced[i + 1]
+            && looks_like_table_row(lines[i])
+            && is_table_delimiter(lines[i + 1])
         {
             if !text.is_empty() {
                 parts.push(MdPart::Text(std::mem::take(&mut text)));
@@ -3126,7 +3189,7 @@ fn split_tables(md: &str) -> Vec<MdPart> {
             raw.push_str(lines[i + 1]);
             raw.push('\n');
             let mut j = i + 2;
-            while j < lines.len() && looks_like_table_row(lines[j]) {
+            while j < lines.len() && !fenced[j] && looks_like_table_row(lines[j]) {
                 raw.push_str(lines[j]);
                 raw.push('\n');
                 j += 1;
@@ -5490,7 +5553,25 @@ pub(crate) mod task_corpus {
             ("no trailing newline", "- [ ] a\n- [x] b"),
             ("crlf", "- [ ] a\r\n- [x] b\r\n"),
             ("front matter", "---\ntitle: t\n---\n\n- [ ] a\n"),
+            // 真因(b) の "front matter 内の疑似タスク" は**ここには入れない**: 前提が違う。この
+            // corpus を使う `md_task_toggle_is_byte_exact_across_the_corpus`(app/tests.rs)は
+            // 「期待する書込み位置」を素の(front matter 非対応の)`task_source_locs(src, ..)` から
+            // 逆算しており、front matter を実際に本文から剥がして走査する App 側(真因(b)の修正)
+            // とは別の実装になる。専用テスト
+            // `md_task_toggle_skips_pseudo_tasks_inside_front_matter`(app/tests.rs)で直接カバーする。
             ("footnote", "- [ ] a[^1]\n\n[^1]: note\n"),
+            (
+                "fence containing a table lookalike",
+                "```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n\n- [ ] real\n",
+            ),
+            (
+                "fence containing an html block lookalike",
+                "```html\n<div class=\"x\">\nhello\n</div>\n```\n\n- [ ] real\n",
+            ),
+            (
+                "fence containing an alert lookalike",
+                "```text\n> [!NOTE]\nlooks like an alert\n```\n\n- [ ] real\n",
+            ),
             ("empty doc", ""),
             ("no tasks", "# just text\n\nparagraph\n"),
             (
@@ -5605,6 +5686,13 @@ mod task_scan_parity_tests {
                 "mermaid in alert + plain fence",
                 "> [!NOTE]\n> ```mermaid\n> A-->B\n> ```\n\n```\nreal\n```\n",
             ),
+            // 真因(a): split_tables がフェンスを見ずに中身のテーブルらしき行を横取りすると、
+            // フェンスが2つに割れて壊れたヘッダが2個できる(それぞれ空の本文で終端に達する) —
+            // 実際に開いていない/閉じていないフェンスの断片として tui-markdown が処理するため。
+            (
+                "fence containing a table lookalike",
+                "```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n",
+            ),
         ];
         for (name, src) in cases {
             set_details_open(Vec::new());
@@ -5650,6 +5738,74 @@ mod task_scan_parity_tests {
                 );
             }
         }
+    }
+
+    /// Content-level pin for 真因(a) on `split_html_blocks`: an HTML-tag-looking line inside a code
+    /// fence must stay code (drawn with the `▎` code gutter), not get rescued as an HTML block —
+    /// which also swallows the fence's closing marker (`is_code_header_span` count alone does not
+    /// catch this: the broken render still produces exactly one — empty — header, so only the body
+    /// content proves the fix).
+    #[test]
+    fn fence_containing_html_lookalike_stays_code() {
+        set_details_open(Vec::new());
+        let src = "```html\n<div class=\"x\">\nhello\n</div>\n```\n";
+        let lines = render_markdown_tasks(src, 100, CodeStyle::default(), "TwoDark", false, &[]);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l
+                    .spans
+                    .iter()
+                    .any(|s| s.content.as_ref() == "```"))
+                .count(),
+            0,
+            "閉じフェンスの `` ``` `` が生テキストとして漏れてはいけない\n--- rendered ---\n{lines:?}"
+        );
+        let hello_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("hello")))
+            .unwrap_or_else(|| {
+                panic!("'hello' がどこにも描画されていない\n--- rendered ---\n{lines:?}")
+            });
+        assert!(
+            is_code_line(hello_line),
+            "フェンス内の 'hello' はコードとして描かれるはず(HTML ブロック救出に横取りされていない)\
+             \n--- line ---\n{hello_line:?}"
+        );
+    }
+
+    /// Content-level pin for 真因(a) on `split_alerts`: a `> [!NOTE]`-looking line inside a code
+    /// fence must stay code, not open a (mostly empty) GitHub-alert callout box.
+    #[test]
+    fn fence_containing_alert_lookalike_stays_code() {
+        set_details_open(Vec::new());
+        let src = "```text\n> [!NOTE]\nlooks like an alert\n```\n";
+        let lines = render_markdown_tasks_opts(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[],
+            true, // alerts on (the default)
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.spans.first().is_some_and(|s| s.content.starts_with('▌'))),
+            "アラートの左バー(▌)が出てはいけない(フェンス内の `> [!NOTE]` は素のコード)\
+             \n--- rendered ---\n{lines:?}"
+        );
+        let note_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("[!NOTE]")))
+            .unwrap_or_else(|| {
+                panic!("'[!NOTE]' がどこにも描画されていない\n--- rendered ---\n{lines:?}")
+            });
+        assert!(
+            is_code_line(note_line),
+            "フェンス内の '[!NOTE]' 行はコードとして描かれるはず\n--- line ---\n{note_line:?}"
+        );
     }
 }
 

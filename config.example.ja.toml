@@ -303,6 +303,14 @@ glob = "*.tsv"             # タブ区切り版
 builtin = "tsv"
 
 [[preview.rules]]
+glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
+builtin = "archive"
+
+[[preview.rules]]
+glob = "*.tar.gz"          # 複合拡張子は globset の alternation で拾えないため別ルール
+builtin = "archive"
+
+[[preview.rules]]
 glob = "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}"
 builtin = "code"
 
@@ -334,6 +342,7 @@ builtin = "pdf"
 #   tree          : ツリー全画面          tree_visual   : ツリーのビジュアル選択中
 #   preview_text  : テキスト/Markdown     preview_image : 画像     preview_git_diff : git 差分
 #   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
+#   git_graph_picker : グラフのブランチ表示パネル(b)
 #   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
 #
 # ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
@@ -429,3 +438,21 @@ tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツー
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ(リリース後・docs/GRAPH-BASE-SPEC.md)用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
+
+# ── 外部プロセスのスイッチ ───────────────────────────────────────────────────
+# konoma が起動する外部プロセスを1個ずつ on/off できる。既定は全て `true`(挙動は変わらない)。
+# `[[preview.rules]]` で個別に止めようとしないこと — ユーザー定義ルールを1つでも書くと**既定の
+# ルール一覧が丸ごと置き換わる**ため、PDF/動画だけを狙って止めることができず、Markdown・画像・
+# CSV 等も一緒に効かなくなる。`[ui] lang` は既に明示/自動の切替を持つので、ここには専用フラグを
+# 足していない(OS 言語取得は `lang` を明示すれば呼ばれない)。
+[external]
+git              = true   # git 連携(status 色/ガター/Git ビュー/stage・commit・checkout — git CLI + 組込み git2)。
+                           # false は `--no-default-features`(git feature 無し)でビルドしたのと同じ挙動(読み取りは空/None、
+                           # 書き込みはエラー)。`o` は「repo でない」とは別文言で無効を知らせる。
+git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
+pdf              = true   # PDF ページのラスタライズ(pdftocairo/pdftoppm/qlmanage/sips/pdfinfo)。
+video            = true   # 動画サムネイル抽出(ffmpegthumbnailer/ffmpeg)。
+remote_images    = true   # Markdown 内の http(s) 画像取得(curl)。konoma が行う唯一の外向き通信。
+open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
+preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり
+                           # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。

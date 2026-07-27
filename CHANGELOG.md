@@ -6,6 +6,86 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Archives (`.zip` / `.tar` / `.tar.gz` / `.tgz`) preview as a table of their entries** — Name /
+  Size / Modified, in the archive's own order, through the exact same grid as CSV/TSV (`hjkl` cell
+  navigation, `/` in-preview search, `y →` cell/row/column copy all come for free). Metadata only:
+  entry contents are never extracted or decompressed (`ZipArchive::by_index_raw` and
+  `tar::Archive::entries` never read content, only headers/central-directory metadata), and an
+  in-archive entry name is never joined onto a filesystem path — this stays entirely outside the
+  historical `tar` unpack-time symlink/path-traversal advisories (RUSTSEC-2018-0002 / 2021-0080 /
+  2026-0067 / 2026-0068), which are all about `Archive::unpack`. Capped at 100k entries (mirrors
+  the CSV row cap); corrupt/empty/wrong-format files degrade to `[can not preview: <ext>]` instead
+  of panicking. New default rule: `*.{zip,tar,tgz}` / `*.tar.gz` → `builtin = "archive"`.
+- **`[external]` — one on/off switch per external process konoma can launch**, all defaulting to
+  `true` (no behavior change unless you opt in). `git` gates status colors/gutter/the Git
+  views/stage-commit-checkout (`false` behaves exactly like a `--no-default-features` build: every
+  read returns empty/`None`, every write returns an error — `o` flashes a message distinct from
+  "not a repo"); `git_tool` gates the external tool launched with `!`; `pdf`/`video` gate PDF page
+  rasterization and video thumbnail extraction; `remote_images` gates fetching `http(s)://` images
+  referenced from Markdown (`curl` — the only outbound network call konoma makes); `open_links`
+  gates opening URLs/files with the OS handler; `preview_commands` gates
+  `[[preview.rules]] command = "..."` delegation (falls through to `[can not preview]` when off,
+  builtin renderers unaffected). Disabled mechanisms degrade exactly like an absent optional tool
+  already does — nothing crashes. Also fixes opening a Markdown link/URL on Linux: it unconditionally
+  ran macOS's `open`, so links never opened there; now `open` on macOS, `xdg-open` elsewhere.
+
+### Fixed
+- **The `?` help overlay no longer advertises keys that do nothing.** Help renders as a centred popup
+  that leaves the top and bottom chrome visible, and those still described the view *behind* it — the
+  chip said `TREE` and the footer offered `l:enter`, `/:filter`, `Space:file ops`, `e:edit`, `o:git`,
+  none of which are bound while help is open (it only takes `j`/`k`/`g`/`G`/`q`). The cause was that
+  "which surface am I on" was derived in two places and only one of them knew about help; the chip and
+  footer now come from the same answer and show the overlay's own keys.
+- **`P` (jump to the path in the clipboard) while a tree selection is in progress no longer leaves the
+  keyboard behind in the tree.** It was the one action that did not close the selection first, so the
+  preview opened full-screen while keys kept going to the tree's selection map — `j` moved the hidden
+  cursor instead of scrolling what you were looking at. Entering a full-screen preview now always ends
+  an in-progress tree selection (discarding it, like `Esc`, rather than committing it).
+- **The graph's branch panel can be rebound after all.** `config.example.toml` documented its five
+  actions as configurable, but no `[keys.<surface>]` section resolved to that panel, so any binding
+  written for it was silently ignored. The surface now has a name (`[keys.git_graph_picker]`), and the
+  name table is exhaustive over the surfaces, so a new one cannot be added without deciding whether it
+  is configurable.
+- **Markdown rendering: code fences no longer break when their contents look like a table, an HTML
+  tag, or a `> [!NOTE]` alert.** Three of the renderer's block-splitters (`split_tables`,
+  `split_html_blocks`, `split_alerts`) had no idea they might be inside a fenced code block, unlike
+  the fence-only mermaid splitter. A fence like:
+  ````
+  ```text
+  | a | b |
+  |---|---|
+  | 1 | 2 |
+  ```
+  ````
+  had its table-looking lines carved out and rendered as an actual table, splitting the fence in two
+  (each half growing its own, broken code header) — and everything after the break could be swallowed
+  into that broken code block instead of rendering normally. An HTML tag inside a fence (` ```html `)
+  similarly triggered the HTML-block rescue, which also leaked the fence's own closing marker into the
+  rescued text. A `> [!NOTE]` line inside a fence opened a (mostly empty) GitHub-alert callout box. All
+  three now share one fence-tracking pass and leave fenced content alone, so it renders as plain code —
+  and, since the on-screen code-block count now matches what the write-back scanner finds, `y` →
+  `c` (copy code block) is no longer refused for documents containing this pattern.
+- **Markdown checkbox toggling (and `y c` code-block copy) refused every checkbox in documents larger
+  than the preview's display caps, including ones fully on screen.** The preview renderer only shows
+  the first 5,000 lines / 1 MiB of a file (`preview::text::load`'s truncation), but the write-back
+  scanners (`md_toggle_focused_task`, `focused_code_source`) re-scanned the **whole** file from disk.
+  In a document with real checkboxes or fences both inside and beyond that cutoff, the scanner counted
+  more items than the renderer drew, and the safety check that guards against writing to the wrong
+  line then cancelled *every* toggle in the file ("file changed on disk — reloaded") — even the very
+  first checkbox, which was fully visible. A 6,530-line real-world file showed 136 checkboxes on
+  screen but the naive scanner found 185. Both scanners now mirror the exact prefix the renderer used
+  (`preview::text::cap_lines`, factored out of `load()` so the limit is defined once) before counting;
+  the checkbox-toggle write itself still targets the full on-disk file, so nothing beyond the visible
+  prefix is ever touched or truncated. The same mismatch also existed for a pseudo-checkbox-looking
+  line inside a document's YAML front matter (which the renderer strips before rendering but the old
+  scanner still counted); the scanners now strip front matter the same way, with the removed line count
+  folded back into the checkbox's real line offset for the write.
+- Known, deliberately out-of-scope limitation (documented in code): a `<br>` inside inline HTML can
+  force a line break that turns the text right after it into what looks like a new checkbox line; the
+  write-back scanner does not special-case this, so it errs on the side of refusing rather than
+  guessing wrong.
+
 ## [0.20.0] - 2026-07-25
 
 ### Added

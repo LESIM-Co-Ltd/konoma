@@ -26,6 +26,7 @@ Contents:
 - [`[[preview.rules]]` — what renders each file type](#previewrules--what-renders-each-file-type)
 - [`[editor]` — external editor](#editor--external-editor)
 - [`[git]` — git integration](#git--git-integration)
+- [`[external]` — external process on/off switches](#external--external-process-onoff-switches)
 - [`[keys]` — keybindings](#keys--keybindings)
 - [Data files](#data-files)
 - [Fonts & terminal requirements](#fonts--terminal-requirements)
@@ -135,6 +136,7 @@ Built-in renderers (`builtin = "..."`):
 | `video` | A representative frame extracted with `ffmpegthumbnailer`/`ffmpeg` (optional tools; a hint is shown if absent). No in-terminal playback — delegate to `mpv` via `command` if you want playback. |
 | `pdf` | Pages rasterized one at a time (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`; on macOS the last two are always present). `J`/`K` turn pages (multi-page needs poppler). |
 | `csv` / `tsv` | Aligned table with rainbow columns and a cell cursor (`hjkl` moves, `y →` copies cell/row/column). |
+| `archive` | Lists entries (name / size / modified) for `.zip`/`.tar`/`.tar.gz`/`.tgz` in the same aligned-table renderer as CSV/TSV — metadata only, nothing is extracted (`hjkl` / `y →` c/r/C copy work the same). |
 | `code` | Syntax-highlighted source (grammar resolved by extension → file name → first line). |
 | `text` | Plain text. Also the automatic fallback for anything that looks like text. |
 
@@ -187,8 +189,37 @@ screen, `e` opens at that item's line instead. Mermaid and images always open at
 
 | Key | Default | Description |
 |---|---|---|
-| `tool` | `"lazygit"` | External git tool launched with `O` (command + args). |
+| `tool` | `"lazygit"` | External git tool launched with `!` inside the changes hub (`o` → `!`). Command + args. |
 | `diff` | `"unified"` | Initial diff layout: `"unified"` (vertical) / `"split"` (side by side) / `"auto"` (by width). Cycle at runtime with `s` while viewing a diff. |
+
+## `[external]` — external process on/off switches
+
+One on/off switch per external process konoma can launch. Every key defaults to `true`,
+so an absent `[external]` section (or an absent field within it) changes nothing.
+
+| Key | Default | Description |
+|---|---|---|
+| `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. |
+| `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
+| `pdf` | `true` | PDF page rasterization (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`/`pdfinfo`). |
+| `video` | `true` | Video thumbnail extraction (`ffmpegthumbnailer`/`ffmpeg`). |
+| `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown (`curl`) — the only outbound network call konoma makes. |
+| `open_links` | `true` | Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, pasted-path jump (`P`), etc. |
+| `preview_commands` | `true` | Running a `[[preview.rules]] command = "..."` delegation. `false` makes a matching rule behave as if it hadn't matched (falls through to `[can not preview]`); builtin renderers (`markdown`, `image`, `pdf`, ...) are unaffected. |
+
+Disabled mechanisms degrade the same way a missing optional tool already does: PDF/video
+fall back to the existing "cannot render" hint, a disabled remote image shows the text
+placeholder instead of the image, and a disabled `command` rule falls through to
+`[can not preview]` — nothing crashes.
+
+Prefer `[external]` over trying to disable one thing through `[[preview.rules]]`: as noted
+above, writing even a single user rule there **replaces the entire builtin rule table**, so
+it can't selectively turn off just PDF or video without also breaking Markdown, images, and
+CSV.
+
+`[ui] lang` already has its own explicit-vs-`"auto"` switch for OS-language detection
+(`macOS defaults`) — setting it explicitly (`"en"`/`"jp"`) skips that lookup, so there is no
+separate `[external]` flag for it.
 
 ## `[keys]` — keybindings
 
@@ -208,7 +239,8 @@ helix-style:
 
 Surface names: `global`, `tree`, `tree_visual`, `preview_text`, `preview_text_visual`,
 `preview_image`, `preview_table`, `sort`, `bookmarks`, `info`, `help`, and (git builds)
-`preview_git_diff`, `git_changes`, `git_log`, `git_graph`, `git_branches`, `git_detail`.
+`preview_git_diff`, `git_changes`, `git_log`, `git_graph`, `git_graph_picker`, `git_branches`,
+`git_detail`.
 
 Key tokens: single characters (uppercase = Shift), `space`, literals like `0 $ ! + - = . / '`,
 modifiers `ctrl-<k>` (alias `c-<k>`), named keys `tab enter esc backspace delete up down
@@ -227,7 +259,8 @@ Action names are snake_case strings — the full annotated list is in
 - **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab), `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends), `table_copy_cell/row/column`
 - **Agent Watch**: `toggle_follow` (`F`), `toggle_changed_filter` (`C`), `jump_next_change` (`n`), `jump_prev_change` (`N`), `toggle_follow_diff_scope` (`f`, in a follow diff: switch between "since follow start" and the full git diff)
 - **Paste-jump** (`global`): `paste_jump` (`P`) — reads a path or GitHub link from the clipboard and jumps there (reveal + preview). Understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and `#L123` / `:123` line anchors; switches root to the target's repository when it lies outside the current root.
-- **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`O`), `cycle_diff_layout`, `git_copy_*`, `branch_*`
+- **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`!`, in the changes hub), `cycle_diff_layout`, `git_copy_*`, `branch_*`
+- **Git graph** (`git_graph`): `git_graph_set_base`, `git_graph_clear_base`, `git_graph_open_picker` (`b`, opens the branch panel). Inside the branch panel (`[keys.git_graph_picker]`): `git_graph_picker_toggle`, `git_graph_picker_all`, `git_graph_picker_current_only`, `git_graph_picker_move_up`, `git_graph_picker_move_down`
 - **Tabs / app** (`global`): `tab_new` (`t`), `toggle_tab_list` (`T` — tab list; `tab_list_close` = `d` inside it), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`). `tab_close` has no default key (closing is `q` on the tree; rebind with `"w" = "tab_close"` if you want it back)
 - `noop` (alias `disabled`) removes a default binding.
 

@@ -117,6 +117,17 @@ infer = "0.16"
 # 引用符内カンマ・改行埋め込み・可変列数を正しく扱う(素朴な split では壊れる)。
 csv = "1"
 
+# アーカイブ(zip/tar/tar.gz)の中身一覧プレビュー。展開はしない=メタデータ(名前/サイズ/更新日)のみ
+# 読む(preview/archive.rs のモジュール doc に安全境界の詳細)。zip の既定 feature は任意の展開コーデック
+# (bzip2 等・C ライブラリを引きうる)を有効化するが、`by_index_raw` はエントリの圧縮方式に関わらず
+# 非展開の生リーダーでメタデータを返すため default-features=false で足りる(実機検証済)。
+zip = { version = "8", default-features = false }
+# default-features=false で既定 feature の xattr(展開時の拡張属性復元。unpack 専用)を落とす。
+# エントリ列挙(`Archive::entries`)はこれを使わない。>=0.4.45 は過去の展開時シンボリックリンク/
+# パストラバーサル勧告(RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068)の修正版だが、
+# このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
+tar = { version = "0.4.45", default-features = false }
+
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { version = "0.21", optional = true }
 

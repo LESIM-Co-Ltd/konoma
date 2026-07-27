@@ -7198,6 +7198,69 @@ fn csv_resolves_to_table_preview() {
     assert_eq!(app.display_mode(), crate::app::DisplayMode::Table);
 }
 
+/// Open a zip archive as a table preview (mirrors `app_with_table` but for `PreviewKind::Archive`).
+fn app_with_archive_zip() -> (App, std::path::PathBuf) {
+    use std::io::Write as _;
+    let dir = unique_tmp("konoma_archive_app_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let zpath = dir.join("t.zip");
+    let f = std::fs::File::create(&zpath).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let opts =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zw.start_file("one.txt", opts).unwrap();
+    zw.write_all(b"hello").unwrap();
+    zw.start_file("two.txt", opts).unwrap();
+    zw.write_all(b"world!!").unwrap();
+    zw.finish().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&zpath));
+    app.tab.preview_path = Some(zpath.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    (app, zpath)
+}
+
+#[test]
+fn zip_resolves_to_archive_table_preview() {
+    let (app, _) = app_with_archive_zip();
+    assert!(
+        matches!(
+            app.tab.preview_kind,
+            Some(PreviewKind::Archive {
+                kind: crate::preview::archive::ArchiveKind::Zip,
+                ..
+            })
+        ),
+        "*.zip は Archive(Zip) に解決される"
+    );
+    assert!(app.is_table_preview(), "一覧化成功でテーブル面が有効");
+    assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
+    assert_eq!(app.display_mode(), crate::app::DisplayMode::Table);
+    let t = app.table_data().unwrap();
+    assert_eq!(t.headers, vec!["Name", "Size", "Modified"]);
+    assert_eq!(t.rows.len(), 2);
+}
+
+#[test]
+fn corrupt_zip_degrades_to_no_table_data() {
+    let dir = unique_tmp("konoma_archive_corrupt_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("bad.zip");
+    std::fs::write(&p, b"not a zip file at all").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&p));
+    app.tab.preview_path = Some(p.clone());
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    assert!(app.table_data().is_none(), "壊れた zip はパース失敗→ None");
+    assert!(
+        !app.is_table_preview(),
+        "テーブル面は無効(→ can not preview へ降格)"
+    );
+}
+
 #[test]
 fn table_cursor_moves_and_clamps() {
     let (mut app, _) = app_with_table();
@@ -10885,6 +10948,196 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 真因(b) の front-matter ケース: the renderer (`build_decorated`) strips the leading YAML front
+/// matter before it ever reaches task detection, so a line inside it that merely *looks* like a task
+/// (`  - [ ] draft`) is never drawn as a checkbox. The write-back scanner must agree — scan the same
+/// (front-matter-stripped) body — or it counts one more "task" than is on screen and the safety check
+/// cancels the toggle of the one real, visible checkbox. Kept out of `task_corpus` (see the comment
+/// there): that shared corpus is also driven through a parallel, front-matter-**unaware** reference
+/// computation in `md_task_toggle_is_byte_exact_across_the_corpus`, which this case would defeat.
+#[test]
+fn md_task_toggle_skips_pseudo_tasks_inside_front_matter() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_task_front_matter"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+    let src = "---\ntitle: t\ntags:\n  - [ ] draft\n---\n\n- [ ] real\n";
+    std::fs::write(&f, src).unwrap();
+
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let task_items: Vec<usize> = app
+        .md_items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        task_items.len(),
+        1,
+        "front matter 内の疑似タスクは描画されないはず(本文の1個だけ)"
+    );
+
+    app.tab.focused_item = Some(task_items[0]);
+    app.flash = None;
+    app.md_toggle_focused_task();
+    assert!(
+        app.flash.is_none(),
+        "本文の唯一のチェックボックスのトグルが拒否された(flash={:?})",
+        app.flash
+    );
+
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(
+        after, "---\ntitle: t\ntags:\n  - [ ] draft\n---\n\n- [x] real\n",
+        "front matter 内の疑似タスクは無傷のまま、本文のチェックボックスだけが変わるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 真因(b) の line-count-cap ケース: `preview::text::load` shows only the first `MAX_LINES` (5000)
+/// lines of a Markdown file, so a document with real checkboxes both inside and beyond that cutoff
+/// disagrees between the (unbounded) raw scanner and the (capped) render — and the safety check then
+/// cancels **every** toggle in the document, including the very first checkbox, which is fully on
+/// screen. This is the real-world failure the report cites (a 6,530-line `THIRD-PARTY-LICENSES.md`
+/// showed 136 checkboxes but the naive scanner found 185).
+#[test]
+fn md_task_toggle_works_beyond_the_preview_line_cap() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_task_beyond_cap"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("big.md");
+
+    let mut src = String::from("- [ ] first\n");
+    for i in 0..6000 {
+        src.push_str(&format!("filler line {i}\n"));
+    }
+    src.push_str("- [ ] last\n"); // beyond MAX_LINES=5000: culled from the render
+    assert!(src.lines().count() > 5000, "前提: 5000行を超えていること");
+    std::fs::write(&f, &src).unwrap();
+
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("big.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let task_items: Vec<usize> = app
+        .md_items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        task_items.len(),
+        1,
+        "5000行の上限で切り詰められ、可視のチェックボックスは先頭の1個だけのはず"
+    );
+
+    app.tab.focused_item = Some(task_items[0]);
+    app.flash = None;
+    app.md_toggle_focused_task();
+    assert!(
+        app.flash.is_none(),
+        "画面に見えている先頭のチェックボックスのトグルが拒否された(flash={:?})",
+        app.flash
+    );
+
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        after.starts_with("- [x] first\n"),
+        "先頭のチェックボックスだけが状態変更されるはず: {:?}",
+        &after[..after.len().min(20)]
+    );
+    assert!(
+        after.ends_with("- [ ] last\n"),
+        "切り詰め範囲より後ろの本物のチェックボックスは無傷のまま保存されるはず"
+    );
+    assert_eq!(
+        src.len(),
+        after.len(),
+        "書込みでファイル長が変わってはいけない(切り詰め接頭辞でなく全文を保存している証拠)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `y c` analog of the previous test: `focused_code_source` must scan the same capped prefix
+/// the renderer used, or a document with fenced code blocks both inside and beyond the line cap
+/// refuses to copy even the block that is fully on screen.
+#[test]
+fn md_code_block_copy_works_beyond_the_preview_line_cap() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_code_beyond_cap"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("big.md");
+
+    let mut src = String::from("```\nvisible code\n```\n");
+    for i in 0..6000 {
+        src.push_str(&format!("filler line {i}\n"));
+    }
+    src.push_str("```\nhidden code\n```\n"); // beyond MAX_LINES=5000: culled from the render
+    assert!(src.lines().count() > 5000, "前提: 5000行を超えていること");
+    std::fs::write(&f, &src).unwrap();
+
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("big.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let code_items: Vec<usize> = app
+        .md_items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| matches!(it.kind, MdItemKind::CodeBlock))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        code_items.len(),
+        1,
+        "5000行の上限で切り詰められ、可視のコードブロックは先頭の1個だけのはず"
+    );
+
+    app.tab.focused_item = Some(code_items[0]);
+    let copied = app.focused_code_text();
+    assert_eq!(
+        copied.as_deref(),
+        Some("visible code"),
+        "画面に見えている先頭のコードブロックがコピーできるはず(copied={copied:?})"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Moving the root out of a repository must drop that repository's ignore set. The "already computing"
 /// guard compared `git_ignored_pending == wd`, and for a non-repo root **both are None**, so the guard
 /// always fired and the clearing branch below it was never reached — the previous repo's ignored paths
@@ -11037,5 +11290,264 @@ fn md_focus_reveals_a_wrapping_code_block_in_full() {
         "長い行が複数の視覚行に分割されている (start={start} end={end})"
     );
     assert_focused_block_fully_visible(&app, "折返しで膨らむコードブロック");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =========================================================================================
+// [external] — one on/off switch per external process konoma can launch
+// =========================================================================================
+
+/// `[external] git = false` in a real repo: `o` (Git view) refuses with a message distinct from
+/// "not a repo" (`ExternalGitDisabled`, not `NotAGitRepo` — this really is a repo), and the tree
+/// still renders without panicking (git status/branch/ignored all degrade to empty/None, same as a
+/// `--no-default-features` build).
+#[cfg(feature = "git")]
+#[test]
+fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_external_git_view_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-qm", "init"]);
+    std::fs::write(dir.join("a.txt"), b"changed\n").unwrap(); // would normally show an `M` marker
+
+    let mut cfg = Config::default();
+    cfg.external.git = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    app.open_git_view();
+    assert!(!app.is_git_view(), "git=false: the Git view does not open");
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::ExternalGitDisabled)),
+        "distinct from NotAGitRepo"
+    );
+
+    // The tree still renders (no color markers since status/branch are gated to empty/None, but no panic).
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+    // Sanity: with git enabled (default), `o` really does open on the same repo.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.open_git_view();
+    assert!(
+        app2.is_git_view(),
+        "sanity: default config opens the Git view on a real repo"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[external] git_tool = false`: `O` never queues a launch (the run loop's `take_launch_git_tool`
+/// would otherwise suspend the TUI and exec the configured tool, e.g. lazygit).
+#[test]
+fn launch_git_tool_respects_external_flag() {
+    let dir = unique_tmp("konoma_git_tool_disabled_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.external.git_tool = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    app.launch_git_tool();
+    assert!(
+        !app.take_launch_git_tool(),
+        "git_tool=false: no launch request is queued"
+    );
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::ExternalGitToolDisabled))
+    );
+
+    // Sanity: enabled (default) does queue the request.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.launch_git_tool();
+    assert!(
+        app2.take_launch_git_tool(),
+        "sanity: default queues the launch"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[external] open_links = false`: an external link is refused via flash *before* ever spawning
+/// `open`/`xdg-open` — the test never actually launches a browser either way.
+#[test]
+fn open_link_target_respects_external_open_links_flag() {
+    let dir = unique_tmp("konoma_open_links_disabled_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.external.open_links = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    app.open_link_target("https://example.com/page").unwrap();
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::ExternalOpenLinksDisabled)),
+        "opening is refused instead of spawning `open`/`xdg-open`"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[external] remote_images = false`: the Markdown-inline `curl` fetch is never kicked off — the
+/// URL is marked failed immediately so the renderer degrades straight to the text placeholder
+/// instead of showing `ImageSlot::Loading` forever.
+#[test]
+fn remote_image_fetch_skipped_and_marked_failed_when_disabled() {
+    let dir = unique_tmp("konoma_remote_images_disabled_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::default();
+    cfg.external.remote_images = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    let url = "https://example.invalid/does-not-matter.png";
+    app.ensure_remote_md_fetch(url);
+    assert!(
+        app.md_remote_inflight.is_empty(),
+        "no background curl download is kicked off"
+    );
+    assert!(
+        app.md_remote_failed.contains(url),
+        "marked failed immediately so the renderer shows the text placeholder, not a stuck Loading"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression: `[external] remote_images = false` used to leave a Markdown-inline remote image
+/// stuck showing "🖼 remote — loading…" forever. `ensure_remote_md_fetch`'s synchronous-failure
+/// branch recorded the URL in `md_remote_failed`, but — unlike a real download completing via
+/// `apply_remote_fetch` — nothing else would ever invalidate `md_cache` to redecorate the
+/// already-built `ImageSlot::Loading` line, since disabling remote fetches means no download ever
+/// runs to trigger that invalidation. Fixed by having `ensure_remote_md_fetch` report the *first*
+/// time it records a failure (`HashSet::insert`'s return value) so `ensure_md_cache` resyncs its
+/// already-built `decorated` in the very same pass — the same synchronous-completion convention
+/// `ensure_mermaid_fence_render`/`ensure_math_render` already use.
+#[test]
+fn remote_image_disabled_does_not_stick_on_loading_forever() {
+    let dir = unique_tmp("konoma_remote_images_disabled_no_hang_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# title\n\n![remote](https://example.invalid/pic.png)\n\ntail\n",
+    )
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.external.remote_images = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+
+    let joined = |app: &App| -> String {
+        app.md_cache
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    };
+
+    // First decoration pass: `decorated` is initially built with an `ImageSlot::Loading` line
+    // (before `md_remote_failed` contains the URL), but `ensure_remote_md_fetch`'s synchronous
+    // failure signal resyncs within this *same* pass, so the stored cache already reflects the
+    // degrade — it must never observably show "loading…", even for a single frame.
+    app.ensure_md_cache(80);
+    let text = joined(&app);
+    assert!(
+        !text.contains("loading…"),
+        "must degrade to the text placeholder within the first decoration pass, not hang: {text:?}"
+    );
+    assert!(
+        text.contains("https://example.invalid/pic.png"),
+        "degrades to the text fallback showing the URL: {text:?}"
+    );
+
+    // Second pass (next frame): still not stuck, and idempotent (insert() only resyncs once).
+    app.ensure_md_cache(80);
+    let text = joined(&app);
+    assert!(
+        !text.contains("loading…"),
+        "still not stuck after a second frame: {text:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[external] pdf = false`: `pdfinfo` is never run, even for a real multi-page PDF with poppler
+/// installed — `tab.pdf_pages` stays `None` (page navigation disabled), proving the gate itself
+/// short-circuits rather than "no PDF tool available" doing it by accident.
+#[test]
+fn pdf_page_count_skipped_when_external_pdf_disabled() {
+    let p = Path::new("samples/sample.pdf");
+    if !p.exists() {
+        return; // samples excluded from the published crate
+    }
+    let dir = unique_tmp("konoma_pdf_disabled_test");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.external.pdf = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.enter_preview(p);
+    assert!(
+        app.tab.pdf_pages.is_none(),
+        "pdf=false: page_count() (pdfinfo) must not run"
+    );
+
+    // Sanity: with pdf enabled (default) and poppler installed, the same file's page count IS resolved.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.enter_preview(p);
+    match app2.tab.pdf_pages {
+        Some(n) => assert!(n >= 1),
+        None => eprintln!("skip sanity: no poppler (pdfinfo) available"),
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[external] video = false`: the thumbnail extraction job is never spawned, even for a real video
+/// with ffmpeg installed — `image_src` stays `None` (falls back to the "unavailable" hint like a
+/// missing tool would), proving the gate itself short-circuits rather than a missing tool doing it.
+#[test]
+fn video_thumbnail_skipped_when_external_video_disabled() {
+    let p = Path::new("samples/sample.mp4");
+    if !p.exists() {
+        return; // samples excluded from the published crate
+    }
+    let dir = unique_tmp("konoma_video_disabled_test");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.external.video = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(p);
+    assert!(
+        app.image_src.is_none(),
+        "video=false: the thumbnail job must not run"
+    );
+    assert!(!app.is_media_loading(), "no job left pending either");
+
+    // Sanity: with video enabled (default) and ffmpeg/ffmpegthumbnailer installed, a thumbnail IS produced.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.picker = Some(test_picker());
+    app2.enter_preview(p);
+    if app2.image_src.is_none() {
+        eprintln!("skip sanity: no video-thumbnail tool available (ffmpeg/ffmpegthumbnailer)");
+    }
+
     std::fs::remove_dir_all(&dir).ok();
 }

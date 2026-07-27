@@ -3,6 +3,7 @@
 // M0 では種別の解決のみを実装。実描画は各サブモジュールで段階的に実装する
 // (M2: image / M3: markdown / 以降: code・command)。
 
+pub mod archive;
 pub mod code;
 pub mod command;
 pub mod gitdiff;
@@ -43,6 +44,13 @@ pub enum PreviewKind {
     /// Built-in CSV/TSV table preview: aligned grid with rainbow columns and a movable cell cursor.
     /// `delimiter` is the field separator byte (`b','` for csv, `b'\t'` for tsv).
     Table { path: PathBuf, delimiter: u8 },
+    /// Built-in archive listing (zip / tar / tar.gz / tgz): entries (name/size/modified) rendered
+    /// through the same table grid as CSV/TSV. Metadata only — never extracts/decompresses entry
+    /// content (see `preview/archive.rs`'s module docs for the security boundary).
+    Archive {
+        path: PathBuf,
+        kind: archive::ArchiveKind,
+    },
     /// Built-in plain-text display (extension not registered but judged to be text).
     Text(PathBuf),
     /// Git diff preview (opened with Enter in the Git view; unified display, Zed-style coloring).
@@ -88,6 +96,10 @@ impl PreviewKind {
                 "tsv" => PreviewKind::Table {
                     path: p,
                     delimiter: b'\t',
+                },
+                "archive" => match archive::ArchiveKind::from_path(path) {
+                    Some(kind) => PreviewKind::Archive { path: p, kind },
+                    None => PreviewKind::can_not_preview(path),
                 },
                 "text" => PreviewKind::Text(p),
                 _ => PreviewKind::can_not_preview(path),

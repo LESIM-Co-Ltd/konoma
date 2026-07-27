@@ -41,7 +41,9 @@ impl App {
         };
         let states = self.cfg.ui.md_task_state_chars();
 
-        let src = match std::fs::read_to_string(&path) {
+        // 全文を1回だけ読む: 書込みは全文に対して行う(切り詰め接頭辞を書き戻すとファイルの
+        // 末尾を消し飛ばす)。走査だけはレンダラが実際に見た範囲に合わせる(下記)。
+        let full_src = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
                 self.flash = Some(format!(
@@ -51,6 +53,28 @@ impl App {
                 return;
             }
         };
+        // レンダラ(`build_decorated`)は `preview::text::load` の上限(MAX_BYTES/MAX_LINES)で
+        // 切り詰めた接頭辞だけを見る。スキャナが全文を見ると、切り詰め範囲より後ろにある
+        // タスクまで数えてしまい、画面上の個数(rendered)と食い違って**そのファイルのトグルが
+        // 全部拒否される**(5,000行超のMarkdownで再現)。上限の定義は `preview::text` の
+        // ものを再利用する(ここで二重に定義しない)。前提: この接頭辞は生ファイルの先頭からの
+        // バイト位置と一致するので、走査で得た (line, state_off) はそのまま `full_src` にも
+        // 通用する — 書込みだけ `full_src` に対して行うことで安全に両立する。
+        let (capped_lines, _) = crate::preview::text::cap_lines(full_src.as_bytes());
+        let capped = capped_lines.join("\n");
+        // front matter もレンダラは本文から剥がして描く(タスクとしては扱わない)。同じ規則で
+        // 剥がし、除去した行数をオフセットとして見つかった行番号へ足し戻す(front matter が無い/
+        // 設定 OFF なら剥がれず offset=0)。
+        let (front_matter, body) = if self.cfg.ui.md_frontmatter {
+            crate::preview::markdown::strip_front_matter(&capped)
+        } else {
+            (None, capped.clone())
+        };
+        let line_offset = if front_matter.is_some() {
+            capped.lines().count().saturating_sub(body.lines().count())
+        } else {
+            0
+        };
         // 書込み前の照合: 個数と対象マーカーの現状態が画面表示と一致するときだけ書く。
         // `<details>` の開閉は実行時状態。描画に使ったのと同じ開閉列を渡さないと、閉じたブロックの
         // 本文まで数えてしまい個数が合わなくなる(直近の描画が md_cache に記録している)。
@@ -59,7 +83,10 @@ impl App {
             .as_ref()
             .map(|c| c.details_states.clone())
             .unwrap_or_default();
-        let locs = crate::preview::markdown::task_source_locs(&src, &states, &details_states);
+        let mut locs = crate::preview::markdown::task_source_locs(&body, &states, &details_states);
+        for l in &mut locs {
+            l.line += line_offset;
+        }
         let ok = locs.len() == total
             && locs
                 .get(ordinal)
@@ -78,8 +105,9 @@ impl App {
             Some(i) => states[(i + 1) % states.len()],
             None => states[0], // 配列外の状態は先頭へ正規化
         };
-        // 状態文字 1 文字だけを置換(他バイトは不変・CRLF/末尾改行も保たれる)。
-        let mut lines: Vec<String> = src.split('\n').map(str::to_string).collect();
+        // 状態文字 1 文字だけを置換(他バイトは不変・CRLF/末尾改行も保たれる)。全文(full_src)に
+        // 対して書くので、切り詰め/front matter で見えていない範囲もそのまま保存される。
+        let mut lines: Vec<String> = full_src.split('\n').map(str::to_string).collect();
         let Some(line) = lines.get_mut(loc.line) else {
             return; // task_source_locs 由来なので到達しない(防御)
         };

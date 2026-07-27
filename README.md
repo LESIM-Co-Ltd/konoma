@@ -86,6 +86,9 @@ and shows you only what the agent just did. Press `f` to swap between the two vi
 
 - **Full-screen preview**: images, Markdown, Mermaid, code, SVG, video thumbnails, and
   **PDF** (multi-page, navigate with `J`/`K`) rendered to fill the screen.
+- **Table preview**: CSV/TSV render as an aligned, rainbow-column table with a cell cursor;
+  **archives** (`.zip`/`.tar`/`.tar.gz`) list their entries — name, size, modified date — in the
+  same grid, without extracting anything.
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
@@ -174,11 +177,20 @@ links you can follow and checkboxes you can actually toggle.
 konoma never breaks when an external tool is missing — the relevant preview just degrades to a hint
 (principle: "unsupported is shown safely, never a crash"). Install these to enable richer previews:
 
+```bash
+brew install poppler ffmpeg git           # macOS
+sudo apt install poppler-utils ffmpeg git # Debian / Ubuntu
+```
+
 - **poppler** (`pdftoppm` / `pdftocairo` / `pdfinfo`) — PDF rendering and multi-page navigation.
   Without it, macOS falls back to `qlmanage`/`sips` for the **first page only**.
 - **ffmpeg** or **ffmpegthumbnailer** — video thumbnail frames.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.
+
+Images, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders them
+itself. The picture formats do need a terminal that speaks the kitty graphics protocol; text
+previews work anywhere.
 
 ## Configuration
 

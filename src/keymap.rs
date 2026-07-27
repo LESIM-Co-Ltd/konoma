@@ -1250,13 +1250,78 @@ fn binding_to_resolution(b: &Binding) -> Resolution {
 }
 
 /// The target of a config `[keys.<name>]` surface name.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyTarget {
     Global,
     Surface(Surface),
 }
 
-/// Surface name (snake_case) → target. Unknown names return None (the caller warns). Git names are None when the feature is off.
+/// Config-file name (snake_case) for `sfc`'s `[keys.<name>]` section, if it has one.
+/// **Exhaustive over `Surface`, no wildcard arm** — the Surface-axis counterpart of the
+/// `action_from_str`/`action_name` round trip (v0.17.0 fixed the same class of bug for `Action`,
+/// where a graph-panel action existed but had no string name reachable from config). Adding a new
+/// `Surface` variant is now a compile error here until this match explicitly decides `Some(name)`
+/// (configurable) or `None` (fixed-key surface — `Surface::is_text_input()` /
+/// `Surface::is_modal_confirm()` — never reachable through the declarative keymap at all).
+/// `Surface::GitGraphPicker` regressed into exactly this bug: it is registered in `per_surface`
+/// (`KeyMap::defaults`, so its 5 branch-panel actions are live/bindable) but had no entry in
+/// `key_target_from_name`, so `[keys.git_graph_picker]` in config had nowhere to land and silently
+/// did nothing. `key_target_from_name` below is the reverse (name → Surface) lookup config parsing
+/// actually uses; `keymap_names_cover_every_bindable_surface` (in `mod tests`) cross-checks that
+/// every `Surface` registered in `per_surface` has a name here, so the two cannot silently drift
+/// apart again. Only referenced from `mod tests` below (so it is `#[cfg(test)]`), but that means the
+/// exhaustiveness check — and therefore the "adding a `Surface` variant is a compile error" property
+/// — is enforced on every `cargo test` run, which this project always runs before a commit lands.
+#[cfg(test)]
+fn surface_config_name(sfc: Surface) -> Option<&'static str> {
+    match sfc {
+        // --- 固定テキスト入力 (is_text_input): 設定不可 ---
+        Surface::DialogInput => None,
+        Surface::Filter => None,
+        Surface::Search => None,
+        Surface::Mark => None,
+        #[cfg(feature = "git")]
+        Surface::BranchFilter => None,
+        // --- 確認モーダル (is_modal_confirm): 設定不可 ---
+        Surface::DialogConfirmDelete => None,
+        Surface::DialogConfirmDrop => None,
+        Surface::DialogRenamePreview => None,
+        Surface::DialogConfirmQuit => None,
+        Surface::DialogConfirmBookmark => None,
+        // --- オーバーレイ (keymap 駆動): 設定可 ---
+        Surface::Help => Some("help"),
+        Surface::Sort => Some("sort"),
+        Surface::Bookmarks => Some("bookmarks"),
+        Surface::Tabs => Some("tabs"),
+        Surface::Outline => Some("outline"),
+        Surface::Info => Some("info"),
+        #[cfg(feature = "git")]
+        Surface::GitDetail => Some("git_detail"),
+        #[cfg(feature = "git")]
+        Surface::GitLog => Some("git_log"),
+        #[cfg(feature = "git")]
+        Surface::GitGraph => Some("git_graph"),
+        #[cfg(feature = "git")]
+        Surface::GitGraphPicker => Some("git_graph_picker"),
+        #[cfg(feature = "git")]
+        Surface::GitBranches => Some("git_branches"),
+        #[cfg(feature = "git")]
+        Surface::GitChanges => Some("git_changes"),
+        // --- 基本全画面 (keymap 駆動): 設定可 ---
+        Surface::Visual => Some("tree_visual"),
+        Surface::Tree => Some("tree"),
+        Surface::PreviewText => Some("preview_text"),
+        Surface::PreviewTextVisual => Some("preview_text_visual"),
+        Surface::PreviewImage => Some("preview_image"),
+        Surface::PreviewTable => Some("preview_table"),
+        #[cfg(feature = "git")]
+        Surface::PreviewGitDiff => Some("preview_git_diff"),
+    }
+}
+
+/// Surface name (snake_case) → target. Unknown names return None (the caller warns). Git names are
+/// None when the feature is off. Must resolve every name `surface_config_name` hands out for a
+/// `per_surface`-registered `Surface` (see `keymap_names_cover_every_bindable_surface`).
 fn key_target_from_name(name: &str) -> Option<KeyTarget> {
     let s = match name {
         "global" => return Some(KeyTarget::Global),
@@ -1280,6 +1345,8 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "git_log" => Surface::GitLog,
         #[cfg(feature = "git")]
         "git_graph" => Surface::GitGraph,
+        #[cfg(feature = "git")]
+        "git_graph_picker" => Surface::GitGraphPicker,
         #[cfg(feature = "git")]
         "git_branches" => Surface::GitBranches,
         #[cfg(feature = "git")]
@@ -3048,6 +3115,38 @@ mod tests {
         assert!(
             missing.is_empty(),
             "action_from_str に無い(=config で再割り当てできない)アクション: {missing:?}"
+        );
+    }
+
+    /// バグ3の回帰テスト: `per_surface` に登録された(=キーバインドが実在し、押せば発火する)
+    /// 全 `Surface` が `[keys.<name>]` の名前を持ち、`key_target_from_name` で解決できること。
+    /// `Surface::GitGraphPicker` は `per_surface` に登録済みなのに `key_target_from_name` に名前が
+    /// 無く、グラフのブランチパネルの5アクション(`config.example.toml` は設定可能と案内していた)
+    /// が config で再割り当てできなかった。「登録簿(per_surface)」と「設定名の登録簿
+    /// (key_target_from_name)」の同期を、この機械検査で常時確認する。
+    #[test]
+    fn keymap_names_cover_every_bindable_surface() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        let mut missing: Vec<String> = Vec::new();
+        for &sfc in m.per_surface.keys() {
+            match surface_config_name(sfc) {
+                Some(name) => match key_target_from_name(name) {
+                    Some(KeyTarget::Surface(back)) if back == sfc => {}
+                    _ => missing.push(format!(
+                        "{sfc:?} => surface_config_name={name:?} だが key_target_from_name({name:?}) が \
+                         {sfc:?} に往復しない"
+                    )),
+                },
+                None => missing.push(format!(
+                    "{sfc:?} は per_surface に登録済み(バインド発火可能)なのに surface_config_name が \
+                     None(=config から到達不能)"
+                )),
+            }
+        }
+        missing.sort_unstable();
+        assert!(
+            missing.is_empty(),
+            "per_surface ↔ config 面名がずれている: {missing:#?}"
         );
     }
 }

@@ -814,6 +814,56 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// バグ1の回帰テスト: `?` ヘルプは中央ポップアップで上下端を覆わないので、チップ/フッターの
+    /// 「今どの面か」の判定(`internal_mode()`)がヘルプを反映していないと、裏の Tree のフッター
+    /// (`l:enter`/`Space:file ops` 等=ヘルプ表示中は効かない)が出続けてしまう。
+    #[test]
+    fn help_chip_and_footer_reflect_the_help_surface_not_the_view_behind_it() {
+        let dir = std::env::temp_dir().join("konoma_help_footer_mode_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (w, h) = (80, 24);
+
+        // 通常時: 上段 TREE チップ・下段はツリーのキーヒント(l:enter 等)。
+        assert!(
+            row_text(&mut app, w, h, 0).contains("TREE"),
+            "通常時は TREE チップ"
+        );
+        let footer = row_text(&mut app, w, h, h - 1);
+        assert!(
+            footer.contains("l:enter"),
+            "通常時はツリーのフッター: {footer}"
+        );
+
+        // `?` でヘルプを開く: internal_mode()/surface() が Help を返し、内側チップに HELP、
+        // フッターはヘルプ自身の j/k/g/G/q(スクロール/閉じる)を出す(ツリーの l/Space は出ない
+        // =ヘルプ表示中は Surface::Help のバインドしか効かないので、案内するのはそれだけであるべき)。
+        app.toggle_help();
+        assert_eq!(
+            app.internal_mode(),
+            Some(crate::app::InternalMode::Help),
+            "show_help 中は internal_mode() が Help を返す"
+        );
+        assert_eq!(app.surface(), crate::keymap::Surface::Help);
+        let top = row_text(&mut app, w, h, 0);
+        assert!(
+            top.contains("HELP"),
+            "ヘルプ表示中は内側チップに HELP: {top}"
+        );
+        let help_footer = row_text(&mut app, w, h, h - 1);
+        assert!(
+            !help_footer.contains("l:enter") && !help_footer.contains("Space:file ops"),
+            "ヘルプ表示中はツリーのフッター(押しても効かないキー)を出さない: {help_footer}"
+        );
+        assert!(
+            help_footer.contains("scroll") && help_footer.contains("close"),
+            "ヘルプ表示中はヘルプ自身のスクロール/閉じるヒントを出す: {help_footer}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn no_bg_by_default_keeps_terminal_default() {
         // 既定 (bg=none) では**全体下地**を塗らない=端末既定(Reset)のまま。

@@ -486,11 +486,23 @@ pub enum Msg {
     PreviewTruncated,
     VideoThumbUnavailable,
     PdfPreviewUnavailable,
+    ArchiveListUnavailable,
     MermaidUnavailable,
     DiagramOpenFailed,
     MermaidCaption,
     MermaidZoomAffordance,
     MermaidPanAffordance,
+    /// Status chip for the `?` help overlay (`internal_mode() == Some(InternalMode::Help)`).
+    StHelp,
+    /// Footer hint for the help overlay (its own j/k/g/G/q keys, not the surface behind it).
+    StHelpHint,
+    /// `o`/`d` etc. when `[external] git = false` (Git views unavailable by config, not because this
+    /// isn't a repo).
+    ExternalGitDisabled,
+    /// `O` when `[external] git_tool = false`.
+    ExternalGitToolDisabled,
+    /// Opening a link/file (Markdown link, `P`, ...) when `[external] open_links = false`.
+    ExternalOpenLinksDisabled,
 }
 
 /// English table.
@@ -891,6 +903,9 @@ fn en(msg: Msg) -> &'static str {
         PdfPreviewUnavailable => {
             "[pdf] cannot render — install poppler (pdftoppm), or use a kitty-graphics terminal"
         }
+        ArchiveListUnavailable => {
+            "[archive] cannot list entries — corrupt file or unsupported format"
+        }
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
         DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
         // Inline-diagram caption/frame affordances. `MermaidCaption` keeps the word "Enter" so the
@@ -899,6 +914,11 @@ fn en(msg: Msg) -> &'static str {
         MermaidCaption => "Enter: full screen",
         MermaidZoomAffordance => "+/-: zoom",
         MermaidPanAffordance => "hjkl:pan  0:fit",
+        StHelp => "HELP",
+        StHelpHint => "j/k:scroll  g/G:top/bottom  q/Esc:close",
+        ExternalGitDisabled => "git integration is disabled (config: [external] git = false)",
+        ExternalGitToolDisabled => "external git tool is disabled (config: [external] git_tool = false)",
+        ExternalOpenLinksDisabled => "opening links/files is disabled (config: [external] open_links = false)",
     }
 }
 
@@ -1294,11 +1314,19 @@ fn jp(msg: Msg) -> &'static str {
         PdfPreviewUnavailable => {
             "[PDF] 表示不可 — poppler(pdftoppm) を導入するか kitty graphics 対応端末を使ってください"
         }
+        ArchiveListUnavailable => {
+            "[アーカイブ] 一覧化できません — 壊れたファイルか非対応形式です"
+        }
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
         DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
         MermaidCaption => "Enter: 全画面",
         MermaidZoomAffordance => "+/-: ズーム",
         MermaidPanAffordance => "hjkl:パン  0:フィット",
+        StHelp => "ヘルプ",
+        StHelpHint => "j/k:スクロール  g/G:先頭/末尾  q/Esc:閉じる",
+        ExternalGitDisabled => "git 連携は無効です(設定: [external] git = false)",
+        ExternalGitToolDisabled => "外部 git ツールは無効です(設定: [external] git_tool = false)",
+        ExternalOpenLinksDisabled => "リンク/ファイルを開く機能は無効です(設定: [external] open_links = false)",
     }
 }
 
@@ -1753,6 +1781,7 @@ mod tests {
         Msg::PreviewTruncated,
         Msg::VideoThumbUnavailable,
         Msg::PdfPreviewUnavailable,
+        Msg::ArchiveListUnavailable,
         Msg::MermaidUnavailable,
         Msg::DiagramOpenFailed,
         Msg::MermaidCaption,
@@ -1761,6 +1790,11 @@ mod tests {
         Msg::QuitConfirm,
         Msg::StQuit,
         Msg::StQuitHint,
+        Msg::StHelp,
+        Msg::StHelpHint,
+        Msg::ExternalGitDisabled,
+        Msg::ExternalGitToolDisabled,
+        Msg::ExternalOpenLinksDisabled,
     ];
 
     #[test]

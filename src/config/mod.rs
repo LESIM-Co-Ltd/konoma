@@ -21,13 +21,57 @@ pub struct Config {
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub git: GitConfig,
+    pub external: ExternalConfig,
+}
+
+/// Single on/off switch per external process konoma can launch (`[external]`). Everything defaults to
+/// `true`, so an absent section changes nothing. Unlike `[[preview.rules]]` (where writing one user rule
+/// **replaces** the whole builtin list — see `PreviewConfig::default`), these flags are independent
+/// toggles layered on top of whatever preview rules are in effect: they gate the specific mechanism, not
+/// the rule table. `[ui] lang` already has its own explicit/auto switch for OS-language lookup
+/// (`Lang::resolve`), so there is deliberately no separate flag for it here.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExternalConfig {
+    /// git integration (status colors, gutter, the Git views, stage/commit/checkout — `src/git.rs`,
+    /// via the `git` CLI and the embedded git2/libgit2). `false` behaves like the crate built with
+    /// `--no-default-features` (no `git` feature): every read returns empty/None and every write
+    /// returns an error, exactly as when the feature is compiled out, so nothing else needs to change.
+    pub git: bool,
+    /// The external git tool launched with `!` in the changes hub (`[git] tool`, default lazygit).
+    pub git_tool: bool,
+    /// PDF page rasterization (pdftocairo/pdftoppm/qlmanage/sips/pdfinfo).
+    pub pdf: bool,
+    /// Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
+    pub video: bool,
+    /// Fetching `http(s)://` images referenced from Markdown (`curl`) — the only outbound network call konoma makes.
+    pub remote_images: bool,
+    /// Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
+    pub open_links: bool,
+    /// Running a `[[preview.rules]] command = "..."` delegation. `false` makes that rule shape behave
+    /// like no rule matched (falls through to `[can not preview]`).
+    pub preview_commands: bool,
+}
+
+impl Default for ExternalConfig {
+    fn default() -> Self {
+        Self {
+            git: true,
+            git_tool: true,
+            pdf: true,
+            video: true,
+            remote_images: true,
+            open_links: true,
+            preview_commands: true,
+        }
+    }
 }
 
 /// Git integration settings (`[git]`). How external git tools are launched and how diffs are shown.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct GitConfig {
-    /// External git tool launched with `O` (command + args, whitespace-separated). Default "lazygit".
+    /// External git tool launched with `!` inside the changes hub (command + args, whitespace-separated). Default "lazygit".
     pub tool: String,
     /// Initial diff layout. "unified" (vertical, default) | "split" (side by side) | "auto" (by width).
     /// (Aliases: vertical = unified / horizontal, side-by-side = split.) At runtime, `s` while viewing a diff
@@ -567,7 +611,7 @@ pub struct PreviewConfig {
 pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
-    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text"
+    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "text"
     pub command: Option<String>, // テンプレ: {path} {out}
     pub render_as: Option<String>, // command 出力の扱い: "image" | "text"
     pub detached: bool,          // 別プロセスで開きTUIをブロックしない（動画等）
@@ -659,6 +703,19 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
+                    // アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない(中身は読まない・原則#3)。
+                    glob: Some("*.{zip,tar,tgz}".into()),
+                    builtin: Some("archive".into()),
+                    ..Rule::empty()
+                },
+                Rule {
+                    // globset の `*.{...}` alternation は単純ドット区切りの複合拡張子(.tar.gz)を
+                    // 拾えないので別ルール(csv/tsv の隣に2ルールで登録する形は既存の svg/image と同型)。
+                    glob: Some("*.tar.gz".into()),
+                    builtin: Some("archive".into()),
+                    ..Rule::empty()
+                },
+                Rule {
                     glob: Some("*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}".into()),
                     builtin: Some("code".into()),
                     ..Rule::empty()
@@ -732,7 +789,14 @@ impl Config {
     pub fn resolve_preview(&self, path: &Path) -> PreviewKind {
         for rule in &self.preview.rules {
             if rule_matches(rule, path) {
-                return PreviewKind::from_rule(rule, path);
+                let kind = PreviewKind::from_rule(rule, path);
+                // `[external] preview_commands = false`: a matching `command = "..."` rule behaves as
+                // if it hadn't matched at all (falls through to the safe CanNotPreview below), rather
+                // than launching the external tool. Builtin renderers are unaffected.
+                if matches!(kind, PreviewKind::Command { .. }) && !self.external.preview_commands {
+                    return PreviewKind::can_not_preview(path);
+                }
+                return kind;
             }
         }
         if crate::preview::text::is_probably_text(path) {

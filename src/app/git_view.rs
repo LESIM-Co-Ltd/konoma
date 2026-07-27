@@ -5,8 +5,15 @@ use super::*;
 impl App {
     // --- Git ビュー(変更ハブ・既定キー `o`・keymap で変更可) -----------------
     /// `o`: Open the Git view. Reads the change list for the current root and moves the cursor to the top.
-    /// When the feature is disabled or this is not a repo, do nothing (`is_git_view` stays false = no-op).
+    /// When the feature is disabled, `[external] git = false`, or this is not a repo, do nothing
+    /// (`is_git_view` stays false = no-op).
     pub fn open_git_view(&mut self) {
+        if !self.cfg.external.git {
+            // 設定で明示的に無効(feature は有効・repo でもありうる): "not a repo" と区別して知らせる。
+            self.flash =
+                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ExternalGitDisabled).into());
+            return;
+        }
         if crate::git::branch(&self.tab.root).is_none() {
             // repo でない(または feature 無効)。安全に無視し、flash で知らせる。
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());

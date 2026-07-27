@@ -15,6 +15,37 @@ use ratatui::style::Color;
 #[cfg(all(test, feature = "git"))]
 pub static STATUS_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(feature = "git")]
+thread_local! {
+    /// Whether git integration (`[external] git`) is allowed to run **on this thread**. Deliberately
+    /// thread-local rather than a process-wide global: `App::new` sets it once for the thread that
+    /// constructs the App (production's single main thread, or — in tests — each test's own thread,
+    /// since the default test harness runs every `#[test]` on a fresh thread). That keeps concurrently
+    /// running tests from ever observing each other's `external.git = false` (a shared `AtomicBool`
+    /// toggled per-test caused exactly this kind of flake before — see `STATUS_CALLS`'s history/memory
+    /// `git-watch-feedback-loop-perf`). The two places that hop to a **new** background thread
+    /// (`spawn_or_sync_statuses`/`spawn_or_sync_ignored` in `app/bookmark_actions.rs`) only ever spawn
+    /// when `workdir()` — itself gated below — returned `Some`, i.e. only when this was already `true`,
+    /// so the spawned thread's default value (`true`) is already correct without extra propagation.
+    static EXTERNAL_GIT_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Enable/disable git integration on the current thread (config `[external] git`). Called once by
+/// `App::new`. When disabled, every function below returns exactly the value it would return with the
+/// `git` feature compiled out (empty map/set/Vec, `None`, or `Err`) — downstream code already treats
+/// that as "not a repo" and degrades safely (flash, no colors, etc.), so nothing else needs to change.
+#[cfg(feature = "git")]
+pub fn set_external_git_enabled(enabled: bool) {
+    EXTERNAL_GIT_ENABLED.with(|c| c.set(enabled));
+}
+
+/// Whether git integration is enabled on the current thread. Defaults to `true` (matches every
+/// existing test/binary that never calls `set_external_git_enabled`).
+#[cfg(feature = "git")]
+pub fn external_git_enabled() -> bool {
+    EXTERNAL_GIT_ENABLED.with(|c| c.get())
+}
+
 /// Git status of a single file (or a directory rollup).
 /// When the `git` feature is disabled the status is always empty, so no variant is ever constructed (warning suppressed).
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -81,6 +112,9 @@ impl FileStatus {
 /// Only repo discovery uses git2 (discover is lightweight because it does not compute status).
 #[cfg(feature = "git")]
 pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
+    if !external_git_enabled() {
+        return HashMap::new();
+    }
     #[cfg(test)]
     STATUS_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     use std::os::unix::ffi::OsStrExt;
@@ -176,6 +210,9 @@ pub fn statuses(_root: &Path) -> HashMap<PathBuf, FileStatus> {
 /// main cause of first-paint freezes. Only repo discovery uses git2 (discover is lightweight because it does not compute status).
 #[cfg(feature = "git")]
 pub fn ignored(root: &Path) -> HashSet<PathBuf> {
+    if !external_git_enabled() {
+        return HashSet::new();
+    }
     use std::os::unix::ffi::OsStrExt;
     let mut set = HashSet::new();
     let Some(workdir) = git2::Repository::discover(root)
@@ -234,6 +271,9 @@ pub fn ignored(_root: &Path) -> HashSet<PathBuf> {
 /// moving root within the same repository."
 #[cfg(feature = "git")]
 pub fn workdir(root: &Path) -> Option<PathBuf> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     let wd = repo.workdir()?.to_path_buf();
     Some(wd.canonicalize().unwrap_or(wd))
@@ -248,6 +288,9 @@ pub fn workdir(_root: &Path) -> Option<PathBuf> {
 /// Returns None when not a repo / when the feature is disabled.
 #[cfg(feature = "git")]
 pub fn branch(root: &Path) -> Option<String> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     if let Ok(head) = repo.head() {
         // git2 0.21: shorthand() は Result<&str, Error>(UTF-8 検証)。None 同等は .ok() で吸収。
@@ -322,6 +365,9 @@ pub struct BranchInfo {
 /// Returns an empty Vec when not a repo / when the feature is disabled / before the first commit (unborn = no branch created yet).
 #[cfg(feature = "git")]
 pub fn branches(root: &Path) -> Vec<BranchInfo> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return Vec::new();
     };
@@ -350,6 +396,9 @@ pub fn branches(_root: &Path) -> Vec<BranchInfo> {
 /// `(name, is_current, time_epoch)`. Ordered so the cap (`ui.graph_max_branches`) can take from the front.
 #[cfg(feature = "git")]
 pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return Vec::new();
     };
@@ -384,6 +433,9 @@ pub fn branches_by_recency(_root: &Path) -> Vec<(String, bool, i64)> {
 /// Returns None when not a repo / when the branch does not exist / when the feature is disabled.
 #[cfg(feature = "git")]
 pub fn branch_tip(root: &Path, name: &str) -> Option<String> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     let branch = repo.find_branch(name, git2::BranchType::Local).ok()?;
     let oid = branch.get().peel_to_commit().ok()?.id();
@@ -479,6 +531,9 @@ pub fn legend_from_rows(
 /// Returns an empty Vec when not a repo / on failure / when the feature is disabled. Never panics.
 #[cfg(feature = "git")]
 pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return Vec::new();
     };
@@ -561,6 +616,9 @@ pub fn diff_contents(old: &str, new: &str) -> Vec<DiffLine> {
 /// baseline stays fixed even if the agent commits mid-session). None if unborn / not a repo.
 #[cfg(feature = "git")]
 pub fn head_commit_id(root: &Path) -> Option<String> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     let commit = repo.head().ok()?.peel_to_commit().ok()?;
     Some(commit.id().to_string())
@@ -571,6 +629,9 @@ pub fn head_commit_id(root: &Path) -> Option<String> {
 /// all-added). `file` is absolute; it is made relative to the repo workdir for the tree lookup.
 #[cfg(feature = "git")]
 pub fn blob_at(root: &Path, sha: &str, file: &Path) -> Option<Vec<u8>> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     let workdir = repo.workdir()?;
     let workdir = workdir
@@ -648,6 +709,9 @@ fn collect_diff_lines(diff: &git2::Diff, with_headers: bool) -> Vec<DiffLine> {
 /// was opened, this cost showed up each time. Only repo discovery uses git2 (discover is lightweight because it does not compute status).
 #[cfg(feature = "git")]
 pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     use std::os::unix::ffi::OsStrExt;
     let mut out = Vec::new();
     let Some(workdir) = git2::Repository::discover(root)
@@ -716,6 +780,9 @@ pub fn changed_files(_root: &Path) -> Vec<ChangeEntry> {
 #[cfg(feature = "git")]
 pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
     let mut out = Vec::new();
+    if !external_git_enabled() {
+        return out;
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return out;
     };
@@ -756,6 +823,9 @@ pub fn log(_root: &Path, _max: usize) -> Vec<CommitInfo> {
 /// Inserts a Context header line (bare path, line numbers None) at the start of each file.
 #[cfg(feature = "git")]
 pub fn commit_diff(root: &Path, id: &str) -> Vec<DiffLine> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return Vec::new();
     };
@@ -793,6 +863,9 @@ pub struct CommitMeta {
 /// Returns None when not a repo / when the commit does not exist / when the feature is disabled.
 #[cfg(feature = "git")]
 pub fn commit_meta(root: &Path, id: &str) -> Option<CommitMeta> {
+    if !external_git_enabled() {
+        return None;
+    }
     let repo = git2::Repository::discover(root).ok()?;
     let oid = git2::Oid::from_str(id).ok()?;
     let commit = repo.find_commit(oid).ok()?;
@@ -834,6 +907,9 @@ fn workdir_of(root: &Path) -> PathBuf {
 #[cfg(feature = "git")]
 fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
     use anyhow::{anyhow, Context};
+    if !external_git_enabled() {
+        return Err(anyhow!("git disabled (external.git = false)"));
+    }
     let cwd = workdir_of(root);
     let out = std::process::Command::new("git")
         .current_dir(&cwd)
@@ -941,6 +1017,9 @@ pub fn graph_with_base(
     lang: crate::i18n::Lang,
     refs: Option<&[String]>,
 ) -> Vec<GraphRow> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let commits = dag_commits(root, 400, refs);
     let wt = worktree_payload(root, lang);
     lay_out_lanes(&commits, base, wt)
@@ -1423,6 +1502,9 @@ fn worktree_payload(root: &Path, lang: crate::i18n::Lang) -> Option<(String, Str
 /// For the full-screen diff when pressing `Enter` on the graph's "Uncommitted changes" row. Empty when outside a repo / on failure / when the feature is disabled.
 #[cfg(feature = "git")]
 pub fn worktree_diff(root: &Path) -> Vec<DiffLine> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
     let Ok(repo) = git2::Repository::discover(root) else {
         return Vec::new();
     };
@@ -1624,6 +1706,75 @@ mod tests {
             "内容同一なので clean 判定は正しく出る: {st:?}"
         );
         assert!(ig.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `[external] git = false` (via `set_external_git_enabled(false)`): every read returns the same
+    /// empty/None value as a `--no-default-features` build, and every write returns `Err`, **even
+    /// though the directory is a real repo with real history** — proving the gate actually short-
+    /// circuits before touching git2/the `git` CLI, rather than the assertions holding "by accident"
+    /// because the repo happens to be empty. Runs entirely on this test's own thread (thread-local),
+    /// so it does not affect any other test running concurrently — see the `EXTERNAL_GIT_ENABLED` doc.
+    #[cfg(feature = "git")]
+    #[test]
+    fn external_git_disabled_returns_empty_for_a_real_repo() {
+        let dir = std::env::temp_dir().join("konoma_git_external_disabled_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"one\n").unwrap();
+        // Baseline sanity check while still enabled (default): the repo really is a repo.
+        assert!(external_git_enabled(), "default is enabled");
+        assert!(workdir(&dir).is_some(), "sanity: this is a real repo");
+        stage(&dir, &file).unwrap();
+        commit(&dir, "init").unwrap();
+        assert!(branch(&dir).is_some(), "sanity: has a branch after commit");
+        std::fs::write(&file, b"two\n").unwrap();
+
+        set_external_git_enabled(false);
+        assert!(statuses(&dir).is_empty(), "statuses");
+        assert!(ignored(&dir).is_empty(), "ignored");
+        assert!(workdir(&dir).is_none(), "workdir");
+        assert!(branch(&dir).is_none(), "branch");
+        assert!(branches(&dir).is_empty(), "branches");
+        assert!(branches_by_recency(&dir).is_empty(), "branches_by_recency");
+        assert!(file_diff(&dir, &file).is_empty(), "file_diff");
+        assert!(changed_files(&dir).is_empty(), "changed_files");
+        assert!(log(&dir, 10).is_empty(), "log");
+        assert!(worktree_diff(&dir).is_empty(), "worktree_diff");
+        assert!(head_commit_id(&dir).is_none(), "head_commit_id");
+        // Mutations: all route through the shared `run_git` gate.
+        assert!(stage(&dir, &file).is_err(), "stage");
+        assert!(unstage(&dir, &file).is_err(), "unstage");
+        assert!(stage_all(&dir).is_err(), "stage_all");
+        assert!(unstage_all(&dir).is_err(), "unstage_all");
+        assert!(discard(&dir, &file).is_err(), "discard");
+        assert!(commit(&dir, "nope").is_err(), "commit");
+        assert!(checkout(&dir, "nope").is_err(), "checkout");
+        assert!(create_branch(&dir, "nope").is_err(), "create_branch");
+        assert!(delete_branch(&dir, "nope", false).is_err(), "delete_branch");
+        assert!(
+            graph_with_base(&dir, None, crate::i18n::Lang::En, None).is_empty(),
+            "graph_with_base"
+        );
+
+        // Commit id/branch name resolved *before* disabling still work as lookups, but with the gate
+        // off they must fail too.
+        assert!(
+            branch_tip(&dir, "main").is_none() && branch_tip(&dir, "master").is_none(),
+            "branch_tip"
+        );
+
+        // Re-enable and confirm the gate is not "stuck off": this is the same thread that just
+        // disabled it, so re-enabling must restore normal behavior immediately.
+        set_external_git_enabled(true);
+        assert!(
+            !statuses(&dir).is_empty(),
+            "statuses work again once re-enabled"
+        );
+        assert!(branch(&dir).is_some(), "branch works again once re-enabled");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

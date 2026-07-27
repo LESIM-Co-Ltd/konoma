@@ -50,8 +50,10 @@ impl App {
         // (`self.tab` 自体は末尾の `self.tab = t` まで前タブの値のままなので、ここでは `t` を
         // 直接読む=借用のみで `t` は消費しない)。表以外は空にする — さもないと別タブの一致セル
         // 座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
-        self.table_search_hits = if matches!(self.tab.preview_kind, Some(PreviewKind::Table { .. }))
-        {
+        self.table_search_hits = if matches!(
+            self.tab.preview_kind,
+            Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
+        ) {
             t.search_matches.iter().map(|&(_, r, c)| (r, c)).collect()
         } else {
             std::collections::HashSet::new()

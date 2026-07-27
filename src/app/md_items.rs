@@ -303,7 +303,20 @@ impl App {
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
             .count();
-        let src = std::fs::read_to_string(self.tab.preview_path.as_ref()?).ok()?;
+        let full_src = std::fs::read_to_string(self.tab.preview_path.as_ref()?).ok()?;
+        // レンダラと同じ範囲だけを走査する: `preview::text::load` の上限(MAX_BYTES/MAX_LINES)で
+        // 切り詰め、front matter が有効なら同じ規則で剥がす。全文を見ると、切り詰め範囲より
+        // 後ろ/front matter 内にあるフェンスまで数えてしまい、画面上の個数(rendered)と食い違って
+        // **そのファイルの `y c` コピーが全部拒否される**(5,000行超のMarkdownで再現)。
+        // ここは書込みが無い(コピーのみ)ので、走査した接頭辞の内容をそのまま使ってよい
+        // (md_tasks.rs のように全文へ書き戻すための別読みは不要)。
+        let (capped_lines, _) = crate::preview::text::cap_lines(full_src.as_bytes());
+        let capped = capped_lines.join("\n");
+        let src = if self.cfg.ui.md_frontmatter {
+            crate::preview::markdown::strip_front_matter(&capped).1
+        } else {
+            capped
+        };
         // `<details>` の開閉は描画時の実効状態(md_cache が保持)。渡さないと閉じたブロック内の
         // フェンスまで数えて個数ガードが外れる。
         let details_states: Vec<bool> = self
@@ -488,9 +501,18 @@ impl App {
         Ok(())
     }
 
-    /// Open a URL/file with an external command (macOS `open`). The result is reported via flash.
+    /// Open a URL/file with the OS handler (`open` on macOS, `xdg-open` elsewhere). The result is
+    /// reported via flash. No-op (flash) when `[external] open_links = false`.
     fn open_external(&mut self, url: &str) -> Result<()> {
-        match std::process::Command::new("open").arg(url).spawn() {
+        if !self.cfg.external.open_links {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::ExternalOpenLinksDisabled).into());
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+        match std::process::Command::new(opener).arg(url).spawn() {
             Ok(_) => self.flash = Some(format!("{}{url}", tr(self.lang, crate::i18n::Msg::Opened))),
             Err(e) => {
                 self.flash = Some(format!(
