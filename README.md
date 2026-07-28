@@ -134,8 +134,9 @@ The gate for the full experience is the **terminal**, not the OS:
   **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
   shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
   **HackGen Console NF** covers both in one font.
-- **Optional tools** (all degrade gracefully): `poppler` (multi-page PDF), `ffmpeg` (video thumbnails),
-  `git` (git suite), `lazygit` (external git tool on `O`).
+- **Optional tools** (all degrade gracefully): `ffmpeg` (video thumbnails), `git` (git suite),
+  `lazygit` (external git tool on `!`). PDF, images, SVG, Mermaid, LaTeX math and CSV need nothing —
+  konoma renders them itself.
 
 ## Install
 
@@ -178,8 +179,8 @@ konoma never breaks when an external tool is missing — the relevant preview ju
 (principle: "unsupported is shown safely, never a crash"). Install these to enable richer previews:
 
 ```bash
-brew install poppler ffmpeg git           # macOS
-sudo apt install poppler-utils ffmpeg git # Debian / Ubuntu
+brew install ffmpeg git           # macOS
+sudo apt install ffmpeg git       # Debian / Ubuntu
 ```
 
 - **poppler** (`pdftoppm` / `pdftocairo`) — PDF pages render natively in Rust (`hayro`, no external

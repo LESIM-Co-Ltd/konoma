@@ -43,7 +43,7 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
   1つのフォントで賄えます。
 
 **任意ツール**(無くてもその機能以外は動作): `git`(git スイート)・
-`ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・`lazygit`(`O` の外部 git
+`ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・`lazygit`(`!` の外部 git
 ツール)。画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・コード・**PDF**
 (`J`/`K` で全ページ)は Rust ネイティブで動作 — 追加インストール不要です。
 `poppler` は hayro が扱えない稀な PDF(暗号化・破損など)のフォールバック
@@ -83,7 +83,7 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
    ```
 5. **任意ツール**(リッチなプレビュー用):
    ```sh
-   brew install poppler ffmpeg git lazygit
+   brew install ffmpeg git lazygit
    ```
    PDF は既にこれ無しで全ページ描画できます(純 Rust の `hayro`・`J`/`K` で
    ページ送り) — ここでの `poppler` は hayro が扱えない稀な PDF のフォール
@@ -123,7 +123,7 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
    (純 Rust の `hayro` が全ページを描画)。ここでの `poppler-utils` は
    hayro が扱えない稀な PDF のフォールバック用です。
    ```sh
-   sudo apt install poppler-utils ffmpeg git
+   sudo apt install ffmpeg git
    ```
 5. **起動** — kitty-graphics 対応端末の中で:
    ```sh

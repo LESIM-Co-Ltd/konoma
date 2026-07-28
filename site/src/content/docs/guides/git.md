@@ -56,8 +56,8 @@ the bottom.
 List with ahead/behind info. `Enter` checks out, `n` creates, `d` deletes
 (confirmed), `/` filters. Worktrees are listed too.
 
-## External tool — `O`
+## External tool — `!` (inside the changes hub)
 
-For anything beyond the built-ins (rebase, stash surgery…), `O` suspends
+For anything beyond the built-ins (rebase, stash surgery…), `!` (inside the changes hub, `o`) suspends
 konoma and launches your configured tool (`git.tool`, default `lazygit`),
 returning to the same spot when you exit.

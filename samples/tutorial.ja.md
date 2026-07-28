@@ -80,10 +80,10 @@ Markdown のリンクはフォーカスできます。`Tab` を何度か押す�
 
 ```bash
 # macOS
-brew install poppler ffmpeg
+brew install ffmpeg
 
 # Debian / Ubuntu
-sudo apt install poppler-utils ffmpeg
+sudo apt install ffmpeg
 ```
 
 - **poppler** — PDF は純 Rust(`hayro`)で既に全ページがネイティブ描画され、

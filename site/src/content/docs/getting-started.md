@@ -45,7 +45,7 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 
 **Optional tools**, all degrading gracefully when absent: `git` (git suite),
 `ffmpegthumbnailer` / `ffmpeg` (video thumbnails), `lazygit` (external git
-tool on `O`). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code, and
+tool on `!`, inside the changes hub). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code, and
 **PDF** (any page, via `J`/`K`) render natively in Rust — nothing else to
 install; `poppler` is kept only as a fallback for the rare PDF the built-in
 renderer can't handle.
@@ -85,7 +85,7 @@ konoma with image previews.
    ```
 5. **Optional tools** for richer previews:
    ```sh
-   brew install poppler ffmpeg git lazygit
+   brew install ffmpeg git lazygit
    ```
    PDF pages already render without any of this (pure-Rust `hayro`, any page
    via `J`/`K`) — `poppler` here only covers the rare PDF `hayro` can't
@@ -127,7 +127,7 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
    `poppler-utils` (pure-Rust `hayro` renders every page); it's kept only as
    a fallback for the rare PDF `hayro` can't handle.
    ```sh
-   sudo apt install poppler-utils ffmpeg git
+   sudo apt install ffmpeg git
    ```
 5. **Run it** inside your kitty-graphics terminal:
    ```sh

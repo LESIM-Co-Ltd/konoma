@@ -52,8 +52,8 @@ konoma は DAG を自前で描画します — `git log --graph` の斜め線で
 ahead/behind 付きの一覧。`Enter` でチェックアウト、`n` で作成、`d` で削除
 (確認付き)、`/` で絞り込み。worktree も一覧に出ます。
 
-## 外部ツール — `O`
+## 外部ツール — `!`（変更ハブ内）
 
-rebase や stash の手術など内蔵外の操作は、`O` で konoma をサスペンドして
+rebase や stash の手術など内蔵外の操作は、変更ハブ(`o`)内の `!` で konoma をサスペンドして
 設定済みツール(`git.tool`・既定 `lazygit`)を起動。終了すると元の場所に
 戻ります。

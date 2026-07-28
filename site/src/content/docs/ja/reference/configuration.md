@@ -179,7 +179,7 @@ Mermaid と画像は常に先頭です。
 
 | キー | 既定 | 説明 |
 |---|---|---|
-| `tool` | `"lazygit"` | `O` で起動する外部 git ツール(コマンド+引数)。 |
+| `tool` | `"lazygit"` | 変更ハブ内の `!` で起動する外部 git ツール(コマンド+引数)。 |
 | `diff` | `"unified"` | diff の初期レイアウト: `"unified"`(縦) / `"split"`(左右) / `"auto"`(幅で判断)。実行時は diff 内 `s` で巡回。 |
 
 ## `[external]` — 外部プロセスの on/off スイッチ
@@ -251,7 +251,7 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 - **ファイル管理**(`Space` リーダー): `file_create`・`file_rename`・`file_delete`・`file_copy`・`file_cut`・`file_paste`・`file_duplicate`(`Space→D`=カーソル/選択をその場に複製。例 `note copy.md`)
 - **プレビュー**: `preview_back`・`search_start`・`search_next`・`search_prev`・`preview_enter_visual`(`v`)・`preview_enter_visual_line`(`V`)・`preview_copy_selection`・`preview_copy_selection_ref`(`Y` = `@path#L12-34`)・`toggle_markdown_raw`(`R`)・`link_focus_next/prev`・`link_open`(`Enter`=同タブ)・`open_link_new_tab`(`Ctrl-t`=別タブ)・`image_zoom_in/out/reset`・`pdf_next_page`・`pdf_prev_page`・`preview_next_file` / `preview_prev_file`(`Ctrl-n` / `Ctrl-p`=ツリー表示順で次/前のファイルへ。ディレクトリはスキップ・端で wrap)・`table_copy_cell/row/column`
 - **Agent Watch**: `toggle_follow`(`F`)・`toggle_changed_filter`(`C`)・`jump_next_change`(`n`)・`jump_prev_change`(`N`)・`toggle_follow_diff_scope`(`f`、フォロー diff 内で「開始以降」⇄ フル git diff を切替)
-- **Git**: `open_git_view`(`o`)・`open_git_diff_cursor`(`d`)・`git_stage`・`git_unstage`・`git_stage_all`・`git_unstage_all`・`git_discard`・`git_commit`・`git_open_log`・`git_open_graph`・`git_open_branches`・`git_launch_tool`(`O`)・`cycle_diff_layout`・`git_copy_*`・`branch_*`
+- **Git**: `open_git_view`(`o`)・`open_git_diff_cursor`(`d`)・`git_stage`・`git_unstage`・`git_stage_all`・`git_unstage_all`・`git_discard`・`git_commit`・`git_open_log`・`git_open_graph`・`git_open_branches`・`git_launch_tool` (`!`, in the changes hub)・`cycle_diff_layout`・`git_copy_*`・`branch_*`
 - **パス貼り付けジャンプ**(`global`): `paste_jump`(`P`) — クリップボードのパス/GitHub リンクを読んでその場所へジャンプ(reveal+プレビュー)。ローカルの絶対/相対パス・GitHub `blob`/`raw` URL・`#L123` / `:123` の行アンカーに対応。対象が root 外ならそのリポジトリへ root を切替えます。
 - **タブ / アプリ**(`global`): `tab_new`(`t`)・`toggle_tab_list`(`T`=タブ一覧。一覧内 `tab_list_close`=`d`)・`tab_prev`/`tab_next`(`[`/`]`)・`quit`(`Q`)・`toggle_help`(`?`)。`tab_close` は既定キー無し(閉じるはツリーの `q`。`"w" = "tab_close"` で復活可)
 - `noop`(別名 `disabled`)は既定の割当を消します。

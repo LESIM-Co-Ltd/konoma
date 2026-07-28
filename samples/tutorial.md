@@ -85,10 +85,10 @@ what you actually want:
 
 ```bash
 # macOS
-brew install poppler ffmpeg
+brew install ffmpeg
 
 # Debian / Ubuntu
-sudo apt install poppler-utils ffmpeg
+sudo apt install ffmpeg
 ```
 
 - **poppler** — PDF pages already render natively in Rust (`hayro`, no external

@@ -39,7 +39,7 @@ information contextually inside the app.
 | `y` → `n r f p @` | copy name / relative / full / parent / `@ref` |
 | `m` + letter / `'` | set bookmark / bookmark list |
 | `a` / `A` | anchor display root here / reset anchor |
-| `o` / `d` / `O` | git changes hub / diff of cursor file / external git tool |
+| `o` / `d` | git changes hub / diff of the cursor file (the external git tool |
 | `C` / `n` `N` | changed-files view / jump between changed files |
 | `q` | close tab (last tab: quit) |
 
