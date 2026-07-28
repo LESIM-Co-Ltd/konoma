@@ -5314,7 +5314,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.21.0
+- konoma 0.22.0
 
 ```
 MIT License
