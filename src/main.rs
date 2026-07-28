@@ -241,6 +241,57 @@ fn is_content_event(kind: &notify::EventKind) -> bool {
     }
 }
 
+/// Hard cap on how many changed paths one filesystem burst reports individually.
+/// Beyond this the burst is treated as "paths unknown", which the caller handles conservatively
+/// (a full refresh). A burst that large is a build or a bulk copy, where per-path information is
+/// worthless anyway — and collecting it used to cost O(N²).
+const MAX_BURST_PATHS: usize = 1024;
+
+/// Accumulates the distinct paths of one filesystem-event burst, in arrival order, with a hard cap.
+///
+/// De-duplication is a hash lookup, not a linear scan: an agent creating tens of thousands of files
+/// produced one burst that took minutes of 100% CPU to de-duplicate with `Vec::contains`, freezing
+/// the UI. Once the cap is passed the collected list is discarded and `finish` reports `None`,
+/// meaning "something changed but we don't know what" — the caller's safe path.
+#[derive(Default)]
+struct BurstPaths {
+    seen: std::collections::HashSet<PathBuf>,
+    paths: Vec<PathBuf>,
+    overflowed: bool,
+}
+
+impl BurstPaths {
+    /// Record one path. Returns true when it is newly seen (the caller uses that to avoid repeating
+    /// per-path work). Returns false once the cap is reached (whether or not `p` was already seen).
+    fn push(&mut self, p: &Path) -> bool {
+        if self.overflowed {
+            return false;
+        }
+        if self.seen.contains(p) {
+            return false;
+        }
+        if self.paths.len() >= MAX_BURST_PATHS {
+            self.overflowed = true;
+            self.seen.clear();
+            self.paths.clear();
+            return false;
+        }
+        let owned = p.to_path_buf();
+        self.seen.insert(owned.clone());
+        self.paths.push(owned);
+        true
+    }
+
+    /// The distinct paths in arrival order, or `None` when the burst overflowed the cap.
+    fn finish(self) -> Option<Vec<PathBuf>> {
+        if self.overflowed {
+            None
+        } else {
+            Some(self.paths)
+        }
+    }
+}
+
 /// Paths from an fs event that follow mode may jump to: anything not under a `.git` directory
 /// (repository internals — index/refs/lock churn — are never review targets). Existence/kind/root
 /// checks happen later in `App::follow_jump` (the event may be a deletion, or outside the tree).
@@ -536,8 +587,10 @@ fn run(
         let mut fs_changed = false;
         let mut ignore_rules_changed = false;
         // このバーストで変わったパス(監視側が `.git` 配下を除いて送ってくる)。空 = `.git` のみ
-        // または不明で、その場合 `refresh_fs_changed` は安全側=プレビューも再読込する。
-        let mut changed_paths: Vec<PathBuf> = Vec::new();
+        // または不明(上限超過含む)で、その場合 `refresh_fs_changed` は安全側=プレビューも再読込する。
+        // 重複除去はハッシュ照合(O(1))＋上限付き(BurstPaths)＝Vec::contains の線形走査(O(N²))で
+        // エージェントの大量ファイル生成時に UI が数分固まった不具合の修正(MAX_BURST_PATHS 参照)。
+        let mut burst = BurstPaths::default();
         // konoma 自身のバックグラウンドファイル操作(コピー/移動/複製/削除)が進行中は、その
         // 操作が生む大量の watcher イベントに反応しない(1万件規模のコピーで毎バースト
         // refresh_fs_changed を走らせると run ループがそれに占有され、キー入力が処理されず
@@ -554,15 +607,15 @@ fn run(
             ignore_rules_changed |= b;
             // フォローモード: 有効ターゲットをセッション一覧(n/N レビューの母集合)へ記録しつつ、
             // 最後の1つを保留ターゲットに(latest-wins)。無効パスは dwell 枠を消費しない。
+            // 上限を超えたバースト(overflowed)では push が常に false を返し、以降は per-path の
+            // 仕事(フォロー記帳)をせずチャネルを空にするだけになる。
             for p in paths {
-                if app.follow_enabled() && app.follow_note_change(&p) {
-                    pending_follow = Some(p.clone());
-                }
-                if !changed_paths.contains(&p) {
-                    changed_paths.push(p);
+                if burst.push(&p) && app.follow_enabled() && app.follow_note_change(&p) {
+                    pending_follow = Some(p);
                 }
             }
         }
+        let changed_paths = burst.finish().unwrap_or_default();
         // 溜めていたバーストを、操作が完了した(defer が外れた)最初のループで 1 回だけ反映する。
         // changed_paths は空のまま = 「どのパスが変わったか不明」= 安全側(プレビューも再読込)。
         if !defer_fs && deferred_fs {
@@ -1613,6 +1666,37 @@ mod tests {
                 PathBuf::from("/repo/src/main.rs"),
                 PathBuf::from("/repo/README.md"),
             ]
+        );
+    }
+
+    #[test]
+    fn burst_paths_dedupes_and_preserves_order() {
+        let mut burst = BurstPaths::default();
+        let a = PathBuf::from("/repo/a");
+        let b = PathBuf::from("/repo/b");
+        let c = PathBuf::from("/repo/c");
+        assert!(burst.push(&a));
+        assert!(burst.push(&b));
+        assert!(!burst.push(&a), "重複は false(既にカウント済み)");
+        assert!(burst.push(&c));
+        assert_eq!(burst.finish(), Some(vec![a, b, c]));
+    }
+
+    #[test]
+    fn burst_paths_overflow_reports_unknown() {
+        let mut burst = BurstPaths::default();
+        for i in 0..MAX_BURST_PATHS {
+            assert!(burst.push(&PathBuf::from(format!("/repo/f{i}"))));
+        }
+        // 上限ちょうどまでは全部 distinct として通る。次の1件で上限超過=false。
+        assert!(
+            !burst.push(&PathBuf::from("/repo/overflow")),
+            "上限を超えたら push は false"
+        );
+        assert_eq!(
+            burst.finish(),
+            None,
+            "上限超過バーストは「パス不明」として扱われる"
         );
     }
 

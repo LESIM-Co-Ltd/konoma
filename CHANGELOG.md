@@ -20,6 +20,15 @@ All notable changes to konoma are documented in this file. The format is based o
   longer starves the input loop either. Quitting while an operation is still running always asks
   for confirmation (even with `ui.confirm_quit = false`), since leaving interrupts it.
 
+### Fixed
+- **A large burst of filesystem changes — a build, an install, an AI agent generating thousands of
+  files — could pin konoma at 100% CPU with a completely frozen UI for minutes.** The filesystem
+  watcher de-duplicated a burst's changed paths with a linear scan (`Vec::contains`), which costs
+  O(n) per path and O(n²) for the whole burst; a real-world burst of 72,000 created files (three
+  `cp -R` of a 24,000-file tree) took over 3 minutes at 99% CPU with no keystroke processed. Bursts
+  are now de-duplicated in constant time and capped at 1024 individually-tracked paths; a larger
+  burst falls back to a single conservative full refresh instead of trying to track every path.
+
 ## [0.22.0] - 2026-07-28
 
 ### Changed

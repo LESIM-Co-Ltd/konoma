@@ -592,3 +592,36 @@ fn tab_switch_reloads_are_bounded() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// GUARDS: main.rs's `BurstPaths` (the fs-watcher burst de-duplicator) stays fast for a burst of tens
+// of thousands of *distinct* paths. The historical bug: the run loop's fs-event drain used to
+// de-duplicate a burst with `Vec::contains` (an O(n) scan per path, so O(n^2) overall, no cap at
+// all). Measured on a real burst of 72,000 newly created files (three `cp -R` of a 24,000-file
+// tree), that pinned konoma at 99% CPU with a **completely frozen UI for over 3 minutes** —
+// `sample(1)` showed the main thread stuck in `Component::PartialEq` called from this loop. This is
+// konoma's core use case (an AI agent generating files, a build writing `target/`/`node_modules/`),
+// so it matters a lot. Not `#[ignore]`d: it guards a bug severe enough to freeze the app for minutes,
+// so it must run in the normal suite, not just on demand.
+#[test]
+fn burst_paths_handles_large_distinct_burst_without_quadratic_blowup() {
+    let t = Instant::now();
+    let mut burst = crate::BurstPaths::default();
+    for i in 0..50_000 {
+        let p = std::path::PathBuf::from(format!("/repo/generated/f{i:06}.txt"));
+        burst.push(&p);
+    }
+    let dt = t.elapsed();
+    // 50,000 は MAX_BURST_PATHS(1024) を大きく超える = 「不明」に丸められる(安全側フォールバック)。
+    assert_eq!(
+        burst.finish(),
+        None,
+        "上限を超える distinct バーストは「パス不明」として扱われる"
+    );
+    // 2 秒は広い安全マージン(通常は数ミリ秒)。旧実装(Vec::contains・上限なし)なら 50,000 件の
+    // 重複除去は O(n^2) ≈ 12.5 億回の PathBuf 比較になり、実測の 72,000 件(3 分超・CPU 99%)と
+    // 同オーダーで数十秒〜数分かかっていた。
+    assert!(
+        dt < Duration::from_secs(2),
+        "distinct な大量パスの重複除去が遅すぎる(線形走査への回帰?): {dt:?}"
+    );
+}
