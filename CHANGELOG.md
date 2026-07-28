@@ -6,6 +6,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Copy / move / duplicate / delete now run on a background thread**, with a live progress
+  readout (`N/M` targets, plus a running file count for large directories) in the top-right
+  busy indicator. The `N/M` count advances per target for copy, move, duplicate and permanent
+  delete; moving to the trash is a single batch call to the OS, so it reports only on
+  completion. The indicator is shown for a file operation even when `ui.busy_indicator` is
+  off — it is what you are waiting on, not background bookkeeping. Pasting or deleting a large
+  directory no longer freezes keyboard input and rendering (design principle #4). Only one
+  filesystem operation runs at a time; starting another while one is in flight is rejected with
+  a flash rather than queued. While the operation runs, the filesystem-watcher events it
+  generates are held back and applied as a single refresh once it finishes, so a large copy no
+  longer starves the input loop either. Quitting while an operation is still running always asks
+  for confirmation (even with `ui.confirm_quit = false`), since leaving interrupts it.
+
 ## [0.22.0] - 2026-07-28
 
 ### Changed

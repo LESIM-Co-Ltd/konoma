@@ -156,6 +156,8 @@ impl App {
     }
 
     /// Execute the drop confirmation's `c`=copy / `m`=move. Transfers each source to the drop target and flashes the result.
+    /// Runs in the background (design principle #4) — see `start_file_op`. Stops at the first
+    /// error (unlike paste/duplicate), matching the original synchronous implementation.
     pub fn drop_apply(&mut self, move_it: bool) -> Result<()> {
         let Some(dialog) = self.dialog.take() else {
             return Ok(());
@@ -163,42 +165,327 @@ impl App {
         let PendingOp::DropTransfer { sources, dir } = dialog.op else {
             return Ok(());
         };
-        let (mut ok, mut last) = (0usize, None);
-        let mut err: Option<String> = None;
-        for src in &sources {
-            let r = if move_it {
-                crate::fileops::move_into(&dir, src)
+        let job = FileOpJob {
+            kind: if move_it {
+                FileOpKind::DropMove
             } else {
-                crate::fileops::copy_into(&dir, src)
-            };
-            match r {
-                Ok(p) => {
-                    ok += 1;
-                    last = Some(p);
+                FileOpKind::DropCopy
+            },
+            targets: sources,
+            dest: Some(dir),
+            root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+            err_self_paste: String::new(), // Drop 側は自己貼付の専用メッセージを使わない(copy_dir_all の一般エラーに任せる=既存挙動)
+            err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string(),
+        };
+        self.start_file_op(job);
+        Ok(())
+    }
+
+    /// Attach the Sender of the worker that runs background filesystem operations (called by main at startup).
+    pub fn attach_fileop_runner(&mut self, tx: std::sync::mpsc::Sender<crate::app::FileOpResult>) {
+        self.fileop_tx = Some(tx);
+    }
+
+    /// Whether watcher-driven refreshes should be held back right now.
+    ///
+    /// A background copy/move/delete of a large directory makes konoma's own watcher fire tens of
+    /// thousands of events; refreshing per burst starves the run loop so keystrokes are not processed
+    /// until the storm ends. While the operation runs, the run loop accumulates the bursts and applies
+    /// **one** refresh afterwards — nothing is missed, because `apply_file_op` refreshes on completion
+    /// and the deferred burst is flushed right after it. Same idea as `is_content_event`/the `.git`
+    /// lock filter: never react to filesystem noise konoma itself caused.
+    pub fn should_defer_fs_events(&self) -> bool {
+        self.fileop_pending.is_some()
+    }
+
+    /// Start a filesystem operation in the background, or run it synchronously when no runner is
+    /// attached (unit tests / no run loop) so the result is observable immediately (same contract
+    /// as `spawn_or_sync_statuses`/`spawn_or_sync_ignored`). Returns false and flashes when another
+    /// operation is already in flight (only one runs at a time).
+    pub(super) fn start_file_op(&mut self, mut job: FileOpJob) -> bool {
+        if self.fileop_pending.is_some() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::FileOpBusy).into());
+            return false;
+        }
+        // 「どのタブから投げたか」を dispatch 時にここで焼き付ける(呼び出し側は空で渡す)。
+        // 完了時にアクティブなタブが同じとは限らないため、apply_file_op がこれで判定する。
+        job.root = self.tab.root.clone();
+        self.fileop_gen = self.fileop_gen.wrapping_add(1);
+        let gen = self.fileop_gen;
+        self.fileop_pending = Some(job.kind);
+        self.fileop_total = job.targets.len();
+        let progress = Arc::new(crate::fileops::Progress::default());
+        self.fileop_progress = Some(progress.clone());
+
+        let Some(tx) = self.fileop_tx.clone() else {
+            let res = Self::run_file_op(gen, job, &progress);
+            self.apply_file_op(res);
+            return true;
+        };
+        let kind = job.kind;
+        let root = job.root.clone();
+        // panic 時の代替エラーは self.lang をここ(UI スレッド)で先に翻訳しておく(ワーカースレッドには
+        // &self が無く tr() を呼べない)。
+        let panic_err = crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string();
+        std::thread::spawn(move || {
+            // ワーカーが panic すると結果が返らず `fileop_pending` が永久に残り、スピナーが回り続ける。
+            // 他のワーカーと同じ安全網で必ず結果を返す(原則#3)。
+            let res =
+                crate::preview::markdown::catch_silent(|| Self::run_file_op(gen, job, &progress))
+                    .unwrap_or(FileOpResult {
+                        gen,
+                        kind,
+                        root,
+                        ok: 0,
+                        last: None,
+                        err: Some(panic_err),
+                    });
+            let _ = tx.send(res);
+        });
+        true
+    }
+
+    /// The actual work (pure: no `&self`), shared by the worker thread and the synchronous fallback.
+    /// `PasteCopy`/`PasteMove`/`Duplicate` continue past a failing target (existing behaviour);
+    /// `DropCopy`/`DropMove` stop at the first error (existing `drop_apply` behaviour).
+    fn run_file_op(gen: u64, job: FileOpJob, p: &crate::fileops::Progress) -> FileOpResult {
+        let FileOpJob {
+            kind,
+            targets,
+            dest,
+            root,
+            err_self_paste,
+            err_failed,
+        } = job;
+        let (mut ok, mut last, mut err) = (0usize, None, None);
+        match kind {
+            FileOpKind::PasteCopy | FileOpKind::PasteMove => {
+                let Some(dest) = dest else {
+                    return FileOpResult {
+                        gen,
+                        kind,
+                        root,
+                        ok,
+                        last,
+                        err: Some(err_failed),
+                    };
+                };
+                for src in &targets {
+                    // 自分自身(やその中)への貼り付けは無限コピーになるので弾く。
+                    if dest.starts_with(src) {
+                        err = Some(err_self_paste.clone());
+                        p.bump_item();
+                        continue;
+                    }
+                    let res = if kind == FileOpKind::PasteCopy {
+                        crate::fileops::copy_into_with_progress(&dest, src, p)
+                    } else {
+                        crate::fileops::move_into_with_progress(&dest, src, p)
+                    };
+                    match res {
+                        Ok(path) => {
+                            ok += 1;
+                            last = Some(path);
+                        }
+                        Err(e) => err = Some(e.to_string()),
+                    }
+                    p.bump_item();
                 }
-                Err(e) => {
-                    err = Some(e.to_string());
-                    break;
+            }
+            FileOpKind::DropCopy | FileOpKind::DropMove => {
+                let Some(dest) = dest else {
+                    return FileOpResult {
+                        gen,
+                        kind,
+                        root,
+                        ok,
+                        last,
+                        err: Some(err_failed),
+                    };
+                };
+                for src in &targets {
+                    let res = if kind == FileOpKind::DropCopy {
+                        crate::fileops::copy_into_with_progress(&dest, src, p)
+                    } else {
+                        crate::fileops::move_into_with_progress(&dest, src, p)
+                    };
+                    match res {
+                        Ok(path) => {
+                            ok += 1;
+                            last = Some(path);
+                            p.bump_item();
+                        }
+                        Err(e) => {
+                            err = Some(e.to_string());
+                            break; // ドロップは最初の失敗で打ち切る(既存 drop_apply と同じ)
+                        }
+                    }
+                }
+            }
+            FileOpKind::Duplicate => {
+                for src in &targets {
+                    // 親ディレクトリ = 複製先(その場に複製)。ルート等で親が無ければ失敗扱い(クラッシュしない)。
+                    let Some(parent) = src.parent() else {
+                        err = Some(err_failed.clone());
+                        p.bump_item();
+                        continue;
+                    };
+                    match crate::fileops::copy_into_with_progress(parent, src, p) {
+                        Ok(path) => {
+                            ok += 1;
+                            last = Some(path);
+                        }
+                        Err(e) => err = Some(e.to_string()),
+                    }
+                    p.bump_item();
+                }
+            }
+            // ゴミ箱送りは `trash::delete_all` の**1回の呼び出し**なので途中経過が取れない。
+            // 完了して初めて全件ぶん進む(進捗は 0/M のまま最後に M/M になる)。
+            FileOpKind::Trash => match crate::fileops::move_to_trash(&targets) {
+                Ok(()) => {
+                    ok = targets.len();
+                    for _ in 0..ok {
+                        p.bump_item();
+                    }
+                }
+                Err(e) => err = Some(e.to_string()),
+            },
+            // 完全削除はパスごとに回るので、1件ずつ進捗を進められる(`_with_progress`)。
+            FileOpKind::DeletePermanent => {
+                match crate::fileops::delete_permanently_with_progress(&targets, p) {
+                    Ok(()) => ok = targets.len(),
+                    Err(e) => err = Some(e.to_string()),
                 }
             }
         }
-        self.refresh()?;
-        if let Some(p) = &last {
-            let _ = self.reveal_and_select(p);
+        FileOpResult {
+            gen,
+            kind,
+            root,
+            ok,
+            last,
+            err,
         }
-        let verb = if move_it {
-            crate::i18n::tr(self.lang, crate::i18n::Msg::Moved)
-        } else {
-            crate::i18n::tr(self.lang, crate::i18n::Msg::Copied)
-        };
-        self.flash = Some(match err {
-            Some(e) => format!(
-                "{}: {e}",
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-            ),
-            None => format!("{verb} ({ok})"),
+    }
+
+    /// Apply a finished filesystem operation: refresh the tree, reveal the newest item and flash the
+    /// same summary the synchronous implementation used to produce.
+    ///
+    /// The generation check is belt-and-braces only: `fileop_gen` advances solely in
+    /// `start_file_op`, which refuses to start while `fileop_pending` is set, so the generation is
+    /// frozen for as long as an operation is in flight and a stale result cannot actually occur
+    /// today. The guard that matters is the **root comparison**: the user can switch tabs during a
+    /// long copy, so the tab active when the result arrives may not be the one that dispatched it.
+    /// The tree cursor is only touched when the roots match.
+    pub fn apply_file_op(&mut self, res: FileOpResult) -> bool {
+        if res.gen != self.fileop_gen {
+            return false;
+        }
+        self.fileop_pending = None;
+        self.fileop_progress = None;
+        self.fileop_total = 0;
+        // 再読込は無条件(どのタブを見ていてもディスクは実際に変わっている)。
+        let mut post = self.refresh();
+        // リビール(=カーソル移動)は**投げたタブに戻っている時だけ**。`reveal_and_select` は
+        // 無条件に rebuild_tree するので、別タブでやると絞り込み(`/`)や変更ビュー(`C`)を畳み、
+        // そのタブのカーソルまで動かしてしまう。比較はタブ番号でなく root で行う
+        // (タブは操作中に閉じたり並べ替えたりできる=番号は同一性の根拠にならない)。
+        if post.is_ok() && res.root == self.tab.root {
+            if let Some(p) = &res.last {
+                post = self.reveal_and_select(p);
+            }
+        }
+        // 削除系の選択解除は**成功した時だけ**(旧同期版と同じ)。12件中3件目で権限エラー、
+        // のような部分失敗で選択ごと失うと、ユーザーは選び直しからやり直しになる。
+        if res.err.is_none() && matches!(res.kind, FileOpKind::Trash | FileOpKind::DeletePermanent)
+        {
+            self.clear_selection();
+        }
+        let lang = self.lang;
+        // 操作自体は成功したのに後段(再読込/リビール)が失敗したら、その失敗を出す。
+        // 旧同期版は `refresh()?` / `reveal_and_select(p)?` で handle_key へ伝播し
+        // `resolve_key_result` が flash していた=成功 flash で塗り潰さない(原則: 未確認を成功と言わない)。
+        // 操作自体が失敗している場合は、そちらのエラーの方が本題なので下の分岐に任せる。
+        if res.err.is_none() {
+            if let Err(e) = post {
+                self.flash = Some(format!(
+                    "{}: {e}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed)
+                ));
+                return true;
+            }
+        }
+        self.flash = Some(match res.kind {
+            FileOpKind::PasteCopy | FileOpKind::PasteMove => match &res.err {
+                Some(e) => format!(
+                    "{} {} / {}: {e}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Pasted),
+                    res.ok,
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed),
+                ),
+                None => format!(
+                    "{} ({})",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Pasted),
+                    res.ok
+                ),
+            },
+            FileOpKind::Duplicate => match &res.err {
+                Some(e) => format!(
+                    "{} {} / {}: {e}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Duplicated),
+                    res.ok,
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed)
+                ),
+                None => format!(
+                    "{} ({})",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Duplicated),
+                    res.ok
+                ),
+            },
+            FileOpKind::DropCopy | FileOpKind::DropMove => {
+                let verb = if res.kind == FileOpKind::DropMove {
+                    crate::i18n::tr(lang, crate::i18n::Msg::Moved)
+                } else {
+                    crate::i18n::tr(lang, crate::i18n::Msg::Copied)
+                };
+                match &res.err {
+                    Some(e) => format!("{}: {e}", crate::i18n::tr(lang, crate::i18n::Msg::Failed)),
+                    None => format!("{verb} ({})", res.ok),
+                }
+            }
+            FileOpKind::Trash => match &res.err {
+                Some(e) => format!("{}: {e}", crate::i18n::tr(lang, crate::i18n::Msg::Failed)),
+                None => format!(
+                    "{} ({})",
+                    crate::i18n::tr(lang, crate::i18n::Msg::MovedToTrash),
+                    res.ok
+                ),
+            },
+            FileOpKind::DeletePermanent => match &res.err {
+                Some(e) => format!("{}: {e}", crate::i18n::tr(lang, crate::i18n::Msg::Failed)),
+                None => format!(
+                    "{} ({})",
+                    crate::i18n::tr(lang, crate::i18n::Msg::DeletedPermanently),
+                    res.ok
+                ),
+            },
         });
-        Ok(())
+        true
+    }
+
+    /// `N/M` (targets finished) plus the running leaf-file count once it exceeds the target count,
+    /// e.g. `2/3` or `1/1 · 3120`. `None` when no operation is running.
+    pub fn fileop_progress_text(&self) -> Option<String> {
+        let p = self.fileop_progress.as_ref()?;
+        let items = p.items();
+        let files = p.files();
+        let total = self.fileop_total;
+        let mut s = format!("{items}/{total}");
+        if files > total {
+            s.push_str(&format!(" · {files}"));
+        }
+        Some(s)
     }
 
     /// The operation target directory relative to the cursor (selection is a directory = inside it / a file = its parent / none = root).

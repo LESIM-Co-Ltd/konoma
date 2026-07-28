@@ -189,6 +189,8 @@ md_details = "auto"
 # Nothing is shown when idle (= zero idle load).
 #   true  (default) … show it.
 #   false           … hide it (per-item displays like a centered "loading…" are unaffected).
+# A file operation in progress (copy / move / duplicate / delete, with its N/M progress) is always
+# shown regardless of this setting — it is the thing you are waiting on, not background bookkeeping.
 busy_indicator = true
 
 # How mermaid diagrams are rendered.

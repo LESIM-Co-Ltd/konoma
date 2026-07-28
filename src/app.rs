@@ -501,6 +501,52 @@ pub struct StatusResult {
     branch: Option<String>,
 }
 
+/// Which long-running filesystem operation a background job is performing.
+/// The variants differ in the completion message and in whether a failing target aborts the
+/// rest: paste/duplicate continue past a failing target (existing behaviour), while a
+/// drag-and-drop transfer stops at the first error (existing `drop_apply` behaviour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOpKind {
+    PasteCopy,
+    PasteMove,
+    DropCopy,
+    DropMove,
+    Duplicate,
+    Trash,
+    DeletePermanent,
+}
+
+/// A queued filesystem operation handed to the background worker (or run synchronously when no
+/// worker is attached — see `App::start_file_op`). `dest` is the destination directory for
+/// `Paste*`/`Drop*`; `None` for `Duplicate`/`Trash`/`DeletePermanent` (each target uses its own
+/// parent, or is deleted in place). The two error strings are pre-translated by the caller
+/// (`self.lang`), since the worker thread has no `&self` to translate with.
+pub struct FileOpJob {
+    kind: FileOpKind,
+    targets: Vec<PathBuf>,
+    dest: Option<PathBuf>,
+    /// The tree root of the tab this operation was dispatched from. **Callers leave this empty**
+    /// (`PathBuf::new()`, like the unused `err_self_paste`): `start_file_op` overwrites it from
+    /// `self.tab.root` so there is a single choke point and no call site can forget it. It travels
+    /// through to `FileOpResult` so the completion can tell whether it is landing on the tab it
+    /// started on (see `apply_file_op`).
+    root: PathBuf,
+    err_self_paste: String,
+    err_failed: String,
+}
+
+/// Outcome of a background filesystem operation, applied on the run loop's thread by `App::apply_file_op`.
+pub struct FileOpResult {
+    gen: u64,
+    kind: FileOpKind,
+    /// The tree root the operation was dispatched from (copied from `FileOpJob`). `apply_file_op`
+    /// compares it with the now-active tab's root before touching the tree cursor.
+    root: PathBuf,
+    ok: usize,
+    last: Option<PathBuf>,
+    err: Option<String>,
+}
+
 pub struct App {
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
@@ -820,6 +866,22 @@ pub struct App {
     git_graph_picker_set: std::collections::HashSet<String>,
     /// Whether `J`/`K` reordering was done in the panel (so the base is re-derived to the top branch on Enter confirm).
     git_graph_reordered: bool,
+
+    /// Sender returning results from the worker running background filesystem operations
+    /// (paste/duplicate/trash/permanent-delete/drop-transfer). If not attached (tests), `start_file_op`
+    /// falls back to computing synchronously, exactly like `spawn_or_sync_statuses`/`_ignored`.
+    fileop_tx: Option<std::sync::mpsc::Sender<FileOpResult>>,
+    /// Generation of the current/most recent background file operation. Incremented on dispatch;
+    /// a result is applied only if it still matches (guards against a stray stale send).
+    fileop_gen: u64,
+    /// The kind of filesystem operation currently running in the background (None = idle). Only one
+    /// runs at a time — starting another while this is `Some` is rejected with a flash.
+    fileop_pending: Option<FileOpKind>,
+    /// Number of top-level targets in the in-flight operation (the `M` in the `N/M` progress readout).
+    fileop_total: usize,
+    /// Live progress counters for the in-flight operation, shared with the worker thread. `Arc` so the
+    /// UI thread can read it every frame without waiting on the worker.
+    fileop_progress: Option<Arc<crate::fileops::Progress>>,
 }
 
 /// Path-copy kind (FR-6). Chosen by the key after `c`.
@@ -1467,6 +1529,11 @@ impl App {
             git_graph_picker_sel: 0,
             git_graph_picker_set: std::collections::HashSet::new(),
             git_graph_reordered: false,
+            fileop_tx: None,
+            fileop_gen: 0,
+            fileop_pending: None,
+            fileop_total: 0,
+            fileop_progress: None,
         };
         // `[external] git` を今このスレッドに反映してから git を触る最初の呼び出し(rebuild_tree)へ入る。
         // スレッドローカルなので他のテストと競合しない(git.rs の EXTERNAL_GIT_ENABLED を参照)。
@@ -1910,97 +1977,60 @@ impl App {
         ));
     }
     /// `P`=paste: apply to the cursor-based directory. Copy duplicates, cut moves (consumed). **Never overwrites.**
+    /// Runs in the background (design principle #4): a large copy/move no longer freezes input/rendering.
+    /// With no runner attached (tests), it still completes synchronously — see `start_file_op`.
     pub fn paste(&mut self) -> Result<()> {
         let Some(clip) = self.clipboard.clone() else {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ClipboardEmpty).into());
             return Ok(());
         };
         let dir = self.op_base_dir();
-        let (mut ok, mut last, mut err) = (0usize, None, None);
-        for src in &clip.paths {
-            // 自分自身(やその中)への貼り付けは無限コピーになるので弾く。
-            if dir.starts_with(src) {
-                err = Some(
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::CannotPasteIntoSelf).to_string(),
-                );
-                continue;
-            }
-            let res = match clip.op {
-                ClipOp::Copy => crate::fileops::copy_into(&dir, src),
-                ClipOp::Cut => crate::fileops::move_into(&dir, src),
-            };
-            match res {
-                Ok(p) => {
-                    ok += 1;
-                    last = Some(p);
-                }
-                Err(e) => err = Some(e.to_string()),
-            }
+        let kind = match clip.op {
+            ClipOp::Copy => FileOpKind::PasteCopy,
+            ClipOp::Cut => FileOpKind::PasteMove,
+        };
+        let is_cut = matches!(clip.op, ClipOp::Cut);
+        let job = FileOpJob {
+            kind,
+            targets: clip.paths,
+            dest: Some(dir),
+            root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+            err_self_paste: crate::i18n::tr(self.lang, crate::i18n::Msg::CannotPasteIntoSelf)
+                .to_string(),
+            err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string(),
+        };
+        // カットは投げた瞬間に消費する(元は既に「使用中」)。ただし**実際に job が始まった時だけ**
+        // ——既に他の操作が進行中で拒否された場合はクリップボードを残し、ユーザーがやり直せるようにする。
+        if self.start_file_op(job) && is_cut {
+            self.clipboard = None;
         }
-        if matches!(clip.op, ClipOp::Cut) {
-            self.clipboard = None; // カットは消費(元が移動済み)
-        }
-        self.refresh()?;
-        if let Some(p) = &last {
-            self.reveal_and_select(p)?;
-        }
-        self.flash = Some(match err {
-            Some(e) => format!(
-                "{} {ok} / {}: {e}",
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Pasted),
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
-            ),
-            None => format!(
-                "{} ({ok})",
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Pasted)
-            ),
-        });
         Ok(())
     }
 
     /// `Space→D`=duplicate: copy each target **in place** (into its own parent directory) with a
     /// collision-free name (`note copy.md`, then `note copy 2.md`). Operates on the selection, or the
     /// cursor entry when none. Directories are duplicated recursively (as a sibling `dir copy`), and
-    /// symlinks are copied as links — both via `copy_into`. Never overwrites. The last new item is
-    /// revealed and selected so the result is visible.
+    /// symlinks are copied as links — both via `copy_into_with_progress`. Never overwrites. The last
+    /// new item is revealed and selected so the result is visible.
+    /// Runs in the background (design principle #4) — see `start_file_op`.
     pub fn duplicate_selection(&mut self) -> Result<()> {
         let targets = self.op_targets();
         if targets.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoTarget).into());
             return Ok(());
         }
-        let (mut ok, mut last, mut err) = (0usize, None, None);
-        for src in &targets {
-            // 親ディレクトリ = 複製先(その場に複製)。ルート等で親が無ければ失敗扱い(クラッシュしない)。
-            let Some(dir) = src.parent() else {
-                err =
-                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string());
-                continue;
-            };
-            match crate::fileops::copy_into(dir, src) {
-                Ok(p) => {
-                    ok += 1;
-                    last = Some(p);
-                }
-                Err(e) => err = Some(e.to_string()),
-            }
+        let job = FileOpJob {
+            kind: FileOpKind::Duplicate,
+            targets,
+            dest: None, // 複製先は各ターゲット自身の親(run_file_op が src.parent() で決める)
+            root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+            err_self_paste: String::new(), // Duplicate では自己貼付ガードを使わない
+            err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string(),
+        };
+        // 選択解除は job が実際に始まった時だけ(他の操作が進行中で拒否された時は選択を残す)。
+        if self.start_file_op(job) {
+            self.clear_selection();
         }
-        self.clear_selection();
-        self.refresh()?;
-        if let Some(p) = &last {
-            self.reveal_and_select(p)?;
-        }
-        self.flash = Some(match err {
-            Some(e) => format!(
-                "{} {ok} / {}: {e}",
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Duplicated),
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-            ),
-            None => format!(
-                "{} ({ok})",
-                crate::i18n::tr(self.lang, crate::i18n::Msg::Duplicated)
-            ),
-        });
         Ok(())
     }
 
@@ -2419,6 +2449,10 @@ impl App {
     /// a stuck spinner): git-ignored scan / media decode / syntax-highlight warm-up / inline images.
     pub fn busy_jobs(&self) -> Vec<crate::i18n::Msg> {
         let mut v = Vec::new();
+        // ファイル操作は今ユーザーが待っているものなので、先頭(常に見える単独ラベル)に置く。
+        if self.fileop_pending.is_some() {
+            v.push(crate::i18n::Msg::BusyFileOp);
+        }
         // 無視セットと status はどちらも「git のスキャン中」= 同じラベルで表す(片方でも走っていれば出す)。
         if self.git_ignored_pending.is_some() || self.git_status_pending.is_some() {
             v.push(crate::i18n::Msg::BusyGitScan);
@@ -2436,10 +2470,20 @@ impl App {
     }
 
     /// Whether the top-right busy indicator should be shown/animated right now
-    /// (config on + at least one background job in flight). The run loop only schedules
-    /// animation ticks while this is true, so idle CPU stays at zero.
+    /// (at least one background job in flight, and either the config is on or the job is a file
+    /// operation). The run loop only schedules animation ticks while this is true, so idle CPU
+    /// stays at zero.
+    ///
+    /// A running file operation is shown **even with `ui.busy_indicator = false`**: unlike the
+    /// other jobs (git scans, decodes, warm-ups — background bookkeeping the user did not ask
+    /// for), a copy/move/delete is the very thing the user is waiting on. Hiding it would leave a
+    /// multi-minute copy with no feedback at all, which is worse than the old synchronous version
+    /// that at least froze visibly.
     pub fn busy_indicator_active(&self) -> bool {
-        self.cfg.ui.busy_indicator && !self.busy_jobs().is_empty()
+        if self.busy_jobs().is_empty() {
+            return false;
+        }
+        self.cfg.ui.busy_indicator || self.fileop_pending.is_some()
     }
 
     /// Advance the spinner by one frame (the run loop calls this periodically while waiting = keeps it spinning).

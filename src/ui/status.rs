@@ -144,7 +144,12 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     if app.busy_indicator_active() {
         let jobs = app.busy_jobs();
         if let Some(first) = jobs.first() {
-            let label = tr(app.lang, *first);
+            let label = tr(app.lang, *first).to_string();
+            // ファイル操作は進捗(N/M・大きなディレクトリでは末端ファイル数)も添える。
+            let label = match app.fileop_progress_text() {
+                Some(d) if *first == Msg::BusyFileOp => format!("{label} {d}"),
+                _ => label,
+            };
             let txt = if jobs.len() > 1 {
                 format!("{} {} +{}  ", app.spinner_glyph(), label, jobs.len() - 1)
             } else {

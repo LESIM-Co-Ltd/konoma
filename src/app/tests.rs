@@ -6892,6 +6892,602 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+/// A background file-op runner is attached → `paste()` must return immediately (before the copy
+/// completes) with `fileop_pending` set and the busy indicator reporting it, then the result must
+/// apply once the worker's channel delivers it. Regression guard for "pasting a big directory
+/// freezes input/rendering" (design principle #4).
+#[test]
+fn file_op_runs_in_background_when_runner_attached() {
+    let base = unique_tmp("konoma_fileop_bg_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    // 先に canonicalize してから中身を作る(temp_dir はシンボリックリンク越しのことがあり、
+    // 後から canonicalize すると entries の path と食い違って position() が None になる)。
+    let dir = base.canonicalize().unwrap();
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for n in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(src.join(n), b"x").unwrap();
+    }
+    std::fs::create_dir_all(dir.join("dst")).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+
+    let idx =
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
+    app.tab.selected = idx(&app, &src);
+    app.toggle_select();
+    app.copy_selection();
+    app.tab.selected = idx(&app, &dir.join("dst"));
+
+    app.paste().unwrap();
+    // paste() から戻った時点で pending が立っている = 結果は**チャネル経由で**届く(その場で
+    // 適用されていない)。ワーカーが既に走り終えている可能性はあるが、`fileop_pending` を解くのは
+    // メインスレッドの `apply_file_op` だけなので、ここでは必ず立っている。
+    assert!(
+        app.fileop_pending.is_some(),
+        "バックグラウンド実行中は fileop_pending が立つ"
+    );
+    assert!(
+        app.busy_jobs().contains(&crate::i18n::Msg::BusyFileOp),
+        "busy インジケーターにファイル操作が出る"
+    );
+    // 進捗カウンタは apply で捨てられるので、先に Arc を握っておく(コピー経路の items/files 検証用)。
+    let progress = app.fileop_progress.clone().expect("進捗カウンタが在る");
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ワーカーが結果を返す");
+    assert_eq!(
+        progress.items(),
+        1,
+        "上位ターゲット(src/ 1件)ぶん items が進む"
+    );
+    assert_eq!(progress.files(), 3, "末端ファイル3枚ぶん files が進む");
+    assert!(app.apply_file_op(res), "現世代の結果は適用される");
+    assert!(app.fileop_pending.is_none(), "適用で pending が解ける");
+    assert!(
+        dir.join("dst").join("src").join("a.txt").is_file(),
+        "コピーがディスクに反映されている"
+    );
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Pasted)),
+        "flash にペースト結果が出る: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// While one file operation is in flight, a second must be rejected (flash `FileOpBusy`, generation
+/// unchanged) rather than starting a second worker thread.
+#[test]
+fn second_file_op_is_rejected_while_one_is_in_flight() {
+    let dir = unique_tmp("konoma_fileop_busy_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    // 実際のワーカーを起こさず、in-flight 状態そのものを直接作る(同一モジュール内は private field に触れる)。
+    let gen_before = app.fileop_gen;
+    app.fileop_gen = app.fileop_gen.wrapping_add(1);
+    app.fileop_pending = Some(FileOpKind::Trash);
+    app.fileop_total = 1;
+
+    app.cut_selection(); // op_targets() を満たすためにクリップボードへ積む
+    app.paste().unwrap();
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::FileOpBusy)),
+        "実行中は FileOpBusy フラッシュで拒否される"
+    );
+    assert_eq!(
+        app.fileop_gen,
+        gen_before.wrapping_add(1),
+        "拒否された2件目は世代を進めない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `apply_file_op` must ignore a result whose generation doesn't match the current one (superseded)
+/// and must not touch `fileop_pending`.
+#[test]
+fn stale_file_op_result_is_dropped() {
+    let dir = unique_tmp("konoma_fileop_stale_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    app.fileop_gen = 5;
+    app.fileop_pending = Some(FileOpKind::Trash);
+    let stale = FileOpResult {
+        gen: 4,
+        kind: FileOpKind::Trash,
+        root: dir.clone(),
+        ok: 1,
+        last: None,
+        err: None,
+    };
+    assert!(
+        !app.apply_file_op(stale),
+        "陳腐化した世代の結果は適用されない"
+    );
+    assert!(
+        app.fileop_pending.is_some(),
+        "陳腐化した結果は pending を解かない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// `copy_into_with_progress` の末端ファイルカウンタ回帰は `src/fileops.rs` 側の
+// `file_op_progress_counts_leaf_files` で検証済み(fileops はここから `App` を経由せず直接叩ける)。
+
+/// A finished operation must not disturb whatever tab happens to be active when the result arrives.
+/// The user can switch tabs during a long copy; `reveal_and_select` rebuilds the tree
+/// unconditionally, which would collapse that other tab's `/` filter and move its cursor. The
+/// generation check does **not** protect against this (the generation is frozen while an operation
+/// is pending) — the root comparison in `apply_file_op` does.
+#[test]
+fn file_op_result_does_not_disturb_another_tab() {
+    let base = unique_tmp("konoma_fileop_other_tab_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    // タブ1の root(コピー元/先) と、タブ2の別 root。
+    let a = base.join("a");
+    let b = base.join("b");
+    let src = a.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("f.txt"), b"x").unwrap();
+    std::fs::create_dir_all(a.join("dst")).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    for n in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        std::fs::write(b.join(n), b"x").unwrap();
+    }
+
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+
+    let idx =
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
+    app.tab.selected = idx(&app, &src);
+    app.toggle_select();
+    app.copy_selection();
+    app.tab.selected = idx(&app, &a.join("dst"));
+    app.paste().unwrap();
+    assert!(app.fileop_pending.is_some(), "実行中");
+
+    // コピー中に別 root のタブへ切り替え、そこで `/` 絞り込み中にしておく。
+    app.tab_new().unwrap();
+    app.tab.root = b.clone();
+    app.tab.entries.clear();
+    app.tab.selected = 0;
+    app.rebuild_tree().unwrap();
+    app.start_filter();
+    for c in "beta".chars() {
+        app.filter_input_push(c);
+    }
+    app.filter_commit();
+    let before_len = app.tab.entries.len();
+    let before_sel = app.tab.selected;
+    let before_path = app.tab.entries.get(before_sel).map(|e| e.path.clone());
+    assert_eq!(before_len, 1, "絞り込みで beta.txt だけが残っている");
+
+    // 結果は「タブ1で投げたもの」。今アクティブなのはタブ2なので、カーソル/一覧に触れてはいけない。
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_file_op(res), "現世代の結果は適用される");
+    assert!(
+        a.join("dst").join("src").join("f.txt").is_file(),
+        "コピー自体は完了している"
+    );
+    assert_eq!(
+        app.tab.entries.len(),
+        before_len,
+        "別タブの絞り込み結果を全表示に戻さない"
+    );
+    assert_eq!(app.tab.selected, before_sel, "別タブのカーソルを動かさない");
+    assert_eq!(
+        app.tab
+            .entries
+            .get(app.tab.selected)
+            .map(|e| e.path.clone()),
+        before_path,
+        "カーソルが指すエントリも変わらない"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// このプロセスで 0o000 ディレクトリの読み取りが実際に拒否されるか probe する。
+/// root(や権限ビットをバイパスできるプロセス)では効かず read_dir が成功してしまうので、
+/// パーミッション依存のテストはその場合スキップする(`write_denied_by_permissions` と同じ趣旨)。
+#[cfg(unix)]
+fn read_dir_denied_by_permissions() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = unique_tmp("konoma_readperm_probe");
+    let _ = std::fs::remove_dir_all(&probe);
+    std::fs::create_dir_all(&probe).unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = std::fs::read_dir(&probe).is_err();
+    let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755));
+    let _ = std::fs::remove_dir_all(&probe);
+    denied
+}
+
+/// The operation succeeded but the follow-up refresh failed → report the failure, do **not** paper
+/// over it with the success flash. (The old synchronous code used `refresh()?`, so the error
+/// propagated to `handle_key` and `resolve_key_result` flashed it.)
+#[cfg(unix)]
+#[test]
+fn file_op_refresh_failure_is_reported_not_masked() {
+    use std::os::unix::fs::PermissionsExt;
+    if !read_dir_denied_by_permissions() {
+        eprintln!(
+            "file_op_refresh_failure_is_reported_not_masked: このプロセスはパーミッションで読み取りを拒否されない(root 等)ためスキップ"
+        );
+        return;
+    }
+    let dir = unique_tmp("konoma_fileop_refresh_err_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    // 実際のワーカーを起こさず in-flight 状態を直接作り、成功した結果を手で組む。
+    app.fileop_gen = 7;
+    app.fileop_pending = Some(FileOpKind::PasteCopy);
+    let ok_result = FileOpResult {
+        gen: 7,
+        kind: FileOpKind::PasteCopy,
+        root: dir.clone(),
+        ok: 1,
+        last: None,
+        err: None,
+    };
+    // root を読めなくする → apply 内の refresh() が失敗する。
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let applied = app.apply_file_op(ok_result);
+    // 後片付け(assert より先に戻す=失敗しても消せるように)。
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(applied, "現世代の結果は適用される");
+    let flash = app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Failed)),
+        "再読込の失敗を通知する: {flash:?}"
+    );
+    assert!(
+        !flash.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Pasted)),
+        "成功 flash で失敗を覆い隠さない: {flash:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A delete that fails partway must keep the selection (the user can retry); only a fully
+/// successful delete clears it. The old synchronous code cleared it inside the `Ok(())` arm.
+#[test]
+fn failed_delete_keeps_the_selection() {
+    let dir = unique_tmp("konoma_fileop_del_sel_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    std::fs::write(dir.join("b.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    app.tab.selected = 0;
+    app.toggle_select();
+    app.toggle_select();
+    assert_eq!(app.marked_count(), 2, "2件選択した状態から始める");
+
+    // 失敗した削除: 選択は残る。
+    app.fileop_gen = 3;
+    app.fileop_pending = Some(FileOpKind::Trash);
+    assert!(app.apply_file_op(FileOpResult {
+        gen: 3,
+        kind: FileOpKind::Trash,
+        root: dir.clone(),
+        ok: 0,
+        last: None,
+        err: Some("boom".into()),
+    }));
+    assert!(
+        app.has_selection(),
+        "途中で失敗した削除は選択を保つ(選び直させない)"
+    );
+
+    // 成功した削除: 選択を解除する。
+    app.fileop_pending = Some(FileOpKind::Trash);
+    assert!(app.apply_file_op(FileOpResult {
+        gen: 3,
+        kind: FileOpKind::Trash,
+        root: dir.clone(),
+        ok: 2,
+        last: None,
+        err: None,
+    }));
+    assert!(!app.has_selection(), "成功した削除は選択を解除する");
+
+    // 実際のディスパッチ経路(`Space→d` → `!`)でも同じこと。ランナー未 attach = 同期実行なので
+    // start_file_op がその場で apply まで通す。1件目を外部で消しておくと完全削除が途中で失敗し、
+    // 残りの選択(b.txt)は保たれる=旧実装のディスパッチ時解除ならここで空になる。
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    app.refresh().unwrap();
+    app.tab.selected = 0;
+    app.toggle_select();
+    app.toggle_select();
+    assert_eq!(app.marked_count(), 2, "a.txt と b.txt を選択");
+    app.start_delete();
+    assert!(app.dialog_is_confirm() && app.dialog_allow_permanent());
+    std::fs::remove_file(dir.join("a.txt")).unwrap(); // 1件目を外部で消す → 完全削除が失敗する
+    app.dialog_delete_permanent().unwrap();
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Failed)),
+        "失敗が通知される: {:?}",
+        app.flash
+    );
+    assert!(
+        app.has_selection(),
+        "ディスパッチ経路でも、失敗した削除は選択を保つ"
+    );
+    assert!(dir.join("b.txt").exists(), "失敗で打ち切られ b.txt は残る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `Q` while a file operation is running must always confirm — even with `ui.confirm_quit = false`,
+/// because the worker is detached and quitting would truncate a half-finished copy. Quitting is not
+/// blocked (the dialog's `y` still quits); the message just gains the warning line.
+#[test]
+fn quit_while_file_op_always_confirms() {
+    let dir = unique_tmp("konoma_quit_fileop_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.confirm_quit = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    // 操作なし = 従来どおり即終了(確認しない)。
+    assert!(!app.request_quit(), "confirm_quit=false + 操作なしは即終了");
+    assert!(!app.is_dialog(), "ダイアログは開かない");
+
+    // 操作中 = 設定に関わらず確認する。
+    app.fileop_pending = Some(FileOpKind::PasteCopy);
+    assert!(app.request_quit(), "実行中は確認ダイアログを出す");
+    assert!(app.dialog_is_confirm() && app.confirm_is_quit(), "終了確認");
+    let (_, head, _, _) = app.dialog_view().unwrap();
+    assert!(
+        head.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::QuitWhileFileOp)),
+        "実行中である旨の警告が本文に出る: {head:?}"
+    );
+    assert!(
+        head.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::QuitConfirm)),
+        "通常の終了確認文も残る: {head:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The busy indicator must show a running file operation even when `ui.busy_indicator = false`:
+/// it is the thing the user is waiting on, not background bookkeeping. Idle stays silent.
+#[test]
+fn busy_indicator_always_shows_file_operations() {
+    let dir = unique_tmp("konoma_busy_fileop_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.busy_indicator = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    assert!(
+        !app.busy_indicator_active(),
+        "アイドル時は(設定に関わらず)出さない"
+    );
+    app.fileop_pending = Some(FileOpKind::PasteCopy);
+    assert!(
+        app.busy_indicator_active(),
+        "busy_indicator=false でもファイル操作中は出す"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The "rejected while busy" branches: a second operation must leave the state it would otherwise
+/// consume intact — the cut clipboard stays (so the user can retry the move) and the selection
+/// stays (so a duplicate can be retried).
+#[test]
+fn rejected_file_op_keeps_clipboard_and_selection() {
+    let dir = unique_tmp("konoma_fileop_reject_state_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    app.tab.selected = 0;
+    app.toggle_select();
+    app.cut_selection(); // クリップボードへ(cut_selection 自体が選択を解除する)
+    assert!(app.clipboard_label().is_some());
+
+    // 実行中の状態を直接作る(ワーカーは起こさない)。
+    app.fileop_pending = Some(FileOpKind::Trash);
+
+    app.paste().unwrap();
+    assert!(
+        app.clipboard_label().is_some(),
+        "拒否されたカット貼付はクリップボードを消費しない(やり直せる)"
+    );
+
+    // 複製も同様: 拒否されたら選択を残す。
+    app.tab.selected = 0;
+    app.toggle_select();
+    assert!(app.has_selection());
+    app.duplicate_selection().unwrap();
+    assert!(
+        app.has_selection(),
+        "拒否された複製は選択を解除しない(やり直せる)"
+    );
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::FileOpBusy)),
+        "拒否は FileOpBusy で通知される"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A cut clipboard must be consumed the moment `paste()` kicks the job off — **before** the result
+/// is applied — since the paths are already being moved by the (possibly still-running) worker.
+#[test]
+fn paste_cut_consumes_the_clipboard_at_kick() {
+    let dir = unique_tmp("konoma_fileop_cut_kick_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("dst")).unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+
+    let idx =
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
+    app.tab.selected = idx(&app, &dir.join("a.txt"));
+    app.toggle_select();
+    app.cut_selection();
+    assert!(app.clipboard_label().is_some());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+    app.tab.selected = idx(&app, &dir.join("dst"));
+    app.paste().unwrap();
+    assert!(
+        app.clipboard_label().is_none(),
+        "カットのクリップボードは投げた瞬間に消費される(結果適用を待たない)"
+    );
+
+    // ワーカーの結果を受け取って後始末(リソースリーク検出用に recv しておく)。
+    if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        app.apply_file_op(res);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Background permanent delete: attach a runner, drive `dialog_delete_permanent`, receive and apply
+/// the result, and confirm the targets are actually gone from disk. (Uses permanent delete, not
+/// trash — the real OS trash is environment-dependent and gated to macOS elsewhere.)
+#[test]
+fn async_permanent_delete_removes_targets() {
+    let dir = unique_tmp("konoma_fileop_async_delete_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("gone.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == dir.join("gone.txt"))
+        .unwrap();
+    app.tab.selected = i;
+    app.start_delete();
+    assert!(app.dialog_is_confirm() && app.dialog_allow_permanent());
+    app.dialog_delete_permanent().unwrap();
+    assert!(!app.is_dialog(), "完全削除でダイアログは閉じる");
+    assert!(
+        app.fileop_pending.is_some(),
+        "バックグラウンド実行中は fileop_pending が立つ"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_file_op(res));
+    assert!(app.fileop_pending.is_none());
+    assert!(
+        !dir.join("gone.txt").exists(),
+        "完全削除でファイルが消える(ゴミ箱を経由しない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `should_defer_fs_events()` must track whether a background file operation is in flight, so the
+/// run loop can hold back watcher-driven refreshes while a large copy/move/delete is running
+/// (regression guard for "pasting a big directory starves keyboard input" — the same watcher-noise
+/// class as `is_content_event`/the `.git` lock filter, but for konoma's own bulk writes).
+#[test]
+fn should_defer_fs_events_tracks_file_op_in_flight() {
+    let base = unique_tmp("konoma_defer_fs_events_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let dir = base.canonicalize().unwrap();
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), b"x").unwrap();
+    std::fs::create_dir_all(dir.join("dst")).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    assert!(!app.should_defer_fs_events(), "操作前は溜め込まない");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+
+    let idx =
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
+    app.tab.selected = idx(&app, &src);
+    app.toggle_select();
+    app.copy_selection();
+    app.tab.selected = idx(&app, &dir.join("dst"));
+
+    app.paste().unwrap();
+    assert!(
+        app.should_defer_fs_events(),
+        "バックグラウンド実行中は fs イベントを溜め込む"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_file_op(res), "現世代の結果は適用される");
+    assert!(
+        !app.should_defer_fs_events(),
+        "適用後は溜め込みを解く(以後のバーストは通常どおり即時反映)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn dialog_preview_scroll_clamps_within_lines() {
     let dir = std::env::temp_dir().join("konoma_dialog_preview_scroll_test");

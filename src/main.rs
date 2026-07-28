@@ -39,8 +39,8 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult,
-    RemoteFetch, SortKey, StatusResult,
+    App, FileOpResult, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult, MdImageResult,
+    MediaResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -112,6 +112,9 @@ fn main() -> Result<()> {
     // フル `git status`(全 worktree 走査)も別スレッドへ。小さい repo でも ~5ms、大きい repo では
     // 数百 ms かかり、タブ切替/ディレクトリ移動のたびに UI を止めていた。
     let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
+    // 長時間かかるファイル操作(コピー/移動/複製/削除)も別スレッドへ。大きなディレクトリの貼り付け/
+    // 削除で入力/描画が固まっていた(設計原則#4)。
+    let (fileop_tx, fileop_rx) = std::sync::mpsc::channel::<FileOpResult>();
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
@@ -121,6 +124,7 @@ fn main() -> Result<()> {
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
+    app.attach_fileop_runner(fileop_tx);
     // 設定の読み込みエラー + キーマップ衝突/無視した設定を起動時メッセージで知らせる
     // (黙って既定に戻ると気づけないため)。両方あれば結合して 1 行に出す。
     let km_report = app.keymap_report();
@@ -159,6 +163,7 @@ fn main() -> Result<()> {
             md_enc: md_enc_res_rx,
             ignored: ignored_rx,
             status: status_rx,
+            fileop: fileop_rx,
         },
     );
 
@@ -279,6 +284,7 @@ struct WorkerRx {
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
     status: std::sync::mpsc::Receiver<StatusResult>,
+    fileop: std::sync::mpsc::Receiver<FileOpResult>,
 }
 
 fn run(
@@ -330,6 +336,11 @@ fn run(
     const FOLLOW_MIN_DWELL: Duration = Duration::from_millis(1000);
     let mut pending_follow: Option<PathBuf> = None;
     let mut last_follow_jump: Option<std::time::Instant> = None;
+
+    // 実行中のファイル操作(自分が起こした大量の書き込み)が生む fs イベントは、その場では
+    // 処理せず溜めておき、操作の完了後に 1 回だけ反映する(下の should_defer_fs_events)。
+    let mut deferred_fs = false;
+    let mut deferred_ignore_rules = false;
 
     let mut needs_redraw = true;
     loop {
@@ -501,6 +512,13 @@ fn run(
             }
         }
 
+        // 別スレッドのファイル操作(コピー/移動/複製/削除)完了を反映。
+        while let Ok(result) = rx.fileop.try_recv() {
+            if app.apply_file_op(result) {
+                needs_redraw = true;
+            }
+        }
+
         // GIF アニメ: 現フレームの表示時間が過ぎていれば次フレームへ進める(image_src 差し替え→
         // 次の描画で prepare_image が再構築→ワーカー再エンコード→上の分岐で反映)。
         if app.advance_gif_if_due() {
@@ -520,7 +538,18 @@ fn run(
         // このバーストで変わったパス(監視側が `.git` 配下を除いて送ってくる)。空 = `.git` のみ
         // または不明で、その場合 `refresh_fs_changed` は安全側=プレビューも再読込する。
         let mut changed_paths: Vec<PathBuf> = Vec::new();
+        // konoma 自身のバックグラウンドファイル操作(コピー/移動/複製/削除)が進行中は、その
+        // 操作が生む大量の watcher イベントに反応しない(1万件規模のコピーで毎バースト
+        // refresh_fs_changed を走らせると run ループがそれに占有され、キー入力が処理されず
+        // ユーザーには固まって見える)。溜めておき、操作完了後に 1 回だけ反映する
+        // (App::should_defer_fs_events・apply_file_op が完了時に refresh() 済みなので取りこぼしはない)。
+        let defer_fs = app.should_defer_fs_events();
         while let Ok((b, paths)) = fs_rx.try_recv() {
+            if defer_fs {
+                deferred_fs = true;
+                deferred_ignore_rules |= b;
+                continue;
+            }
             fs_changed = true;
             ignore_rules_changed |= b;
             // フォローモード: 有効ターゲットをセッション一覧(n/N レビューの母集合)へ記録しつつ、
@@ -533,6 +562,14 @@ fn run(
                     changed_paths.push(p);
                 }
             }
+        }
+        // 溜めていたバーストを、操作が完了した(defer が外れた)最初のループで 1 回だけ反映する。
+        // changed_paths は空のまま = 「どのパスが変わったか不明」= 安全側(プレビューも再読込)。
+        if !defer_fs && deferred_fs {
+            deferred_fs = false;
+            fs_changed = true;
+            ignore_rules_changed |= deferred_ignore_rules;
+            deferred_ignore_rules = false;
         }
         // ビルド churn ガード: バースト内の全パスが gitignored(かつ無視ルール自体は変わっていない)なら、
         // target/ や node_modules/ への書き込みだけで走るツリー再構築を丸ごとスキップする(無駄な作業)。

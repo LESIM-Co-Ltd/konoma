@@ -74,14 +74,28 @@ impl App {
     /// Handle a quit request (`q` at the top level / `Q` from anywhere). If `ui.confirm_quit` is on,
     /// open a yes/no confirmation dialog and return `true` (the caller must NOT quit yet). Otherwise
     /// return `false` (the caller quits immediately).
+    ///
+    /// **While a file operation is running the confirmation is shown regardless of the setting**:
+    /// the worker thread is detached, so quitting mid-copy leaves a half-copied directory behind.
+    /// The dialog only warns — `y` still quits (we never block the user from leaving).
     pub fn request_quit(&mut self) -> bool {
-        if !self.cfg.ui.confirm_quit {
+        let file_op_running = self.fileop_pending.is_some();
+        if !self.cfg.ui.confirm_quit && !file_op_running {
             return false;
+        }
+        let mut message = crate::i18n::tr(self.lang, crate::i18n::Msg::QuitConfirm).to_string();
+        if file_op_running {
+            // 2行目=実行中の警告(ダイアログ描画は `\n` 区切りの複数行に対応済み)。
+            message.push('\n');
+            message.push_str(crate::i18n::tr(
+                self.lang,
+                crate::i18n::Msg::QuitWhileFileOp,
+            ));
         }
         self.dialog = Some(Dialog {
             op: PendingOp::Quit,
             kind: DialogKind::Confirm {
-                message: crate::i18n::tr(self.lang, crate::i18n::Msg::QuitConfirm).into(),
+                message,
                 allow_permanent: false,
             },
         });
@@ -311,23 +325,21 @@ impl App {
             return Ok(());
         }
         match dialog.op {
-            PendingOp::Delete { targets } => match crate::fileops::move_to_trash(&targets) {
-                Ok(()) => {
-                    self.refresh()?;
-                    self.clear_selection();
-                    self.flash = Some(format!(
-                        "{} ({})",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::MovedToTrash),
-                        targets.len()
-                    ));
-                }
-                Err(e) => {
-                    self.flash = Some(format!(
-                        "{}: {e}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                    ))
-                }
-            },
+            PendingOp::Delete { targets } => {
+                // 削除(ゴミ箱)も他の一括ファイル操作と同じくバックグラウンドで実行する(原則#4)。
+                let job = FileOpJob {
+                    kind: FileOpKind::Trash,
+                    targets,
+                    dest: None,
+                    root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+                    err_self_paste: String::new(),
+                    err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
+                        .to_string(),
+                };
+                // 選択解除は**成功して初めて**(`apply_file_op`)。途中で失敗した削除で選択ごと
+                // 失うと選び直しからやり直しになる(旧同期版も Ok(()) の中でだけ解除していた)。
+                self.start_file_op(job);
+            }
             // Git ビューの破棄: git::discard → 一覧/ツリーの git status を取り直す。
             // GitDiff プレビューからの破棄(came_from_git_view)なら Git ビューを開き直して戻す。
             PendingOp::GitDiscard { path } => match crate::git::discard(&self.tab.root, &path) {
@@ -377,23 +389,18 @@ impl App {
             return Ok(());
         }
         if let PendingOp::Delete { targets } = dialog.op {
-            match crate::fileops::delete_permanently(&targets) {
-                Ok(()) => {
-                    self.refresh()?;
-                    self.clear_selection();
-                    self.flash = Some(format!(
-                        "{} ({})",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::DeletedPermanently),
-                        targets.len()
-                    ));
-                }
-                Err(e) => {
-                    self.flash = Some(format!(
-                        "{}: {e}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                    ))
-                }
-            }
+            // 完全削除も他の一括ファイル操作と同じくバックグラウンドで実行する(原則#4)。
+            let job = FileOpJob {
+                kind: FileOpKind::DeletePermanent,
+                targets,
+                dest: None,
+                root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+                err_self_paste: String::new(),
+                err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
+                    .to_string(),
+            };
+            // 選択解除は**成功して初めて**(`apply_file_op`)。途中失敗で選択を失わせない。
+            self.start_file_op(job);
         }
         Ok(())
     }

@@ -26,6 +26,9 @@ struct Sim {
     term: Terminal<TestBackend>,
     /// Set when a key handler requested quit (like the run loop breaking).
     quit: bool,
+    /// Receiver for background file operations, once `with_async_file_ops` opted in (the run loop
+    /// owns this channel live). `None` = the synchronous fallback in `start_file_op` is used.
+    fileop_rx: Option<std::sync::mpsc::Receiver<crate::app::FileOpResult>>,
 }
 
 impl Sim {
@@ -40,9 +43,35 @@ impl Sim {
             app,
             term,
             quit: false,
+            fileop_rx: None,
         };
         sim.draw();
         sim
+    }
+
+    /// Opt in to the **real background path** for file operations (copy/move/duplicate/delete):
+    /// attach a runner channel just like `main` does, so `start_file_op` spawns a worker instead of
+    /// falling back to running the operation inline. Results are applied by `drain_file_ops`.
+    fn with_async_file_ops(mut self) -> Sim {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app.attach_fileop_runner(tx);
+        self.fileop_rx = Some(rx);
+        self
+    }
+
+    /// Wait for the in-flight file operation's result and apply it (the run loop's
+    /// `while let Ok(result) = rx.fileop.try_recv()` step), then redraw.
+    #[track_caller]
+    fn drain_file_ops(&mut self) {
+        let rx = self
+            .fileop_rx
+            .as_ref()
+            .expect("with_async_file_ops() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("ワーカーが結果を返す");
+        assert!(self.app.apply_file_op(res), "現世代の結果は適用される");
+        self.draw();
     }
 
     fn draw(&mut self) {
@@ -2457,6 +2486,50 @@ fn e2e_file_copy_then_paste_duplicates() {
         "コピーがディレクトリ内に複製される"
     );
     assert!(dir.join("orig.txt").exists(), "コピーは元を残す");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_file_copy_then_paste_runs_in_background() {
+    // 上の同期版と同じ操作を、**実際のバックグラウンド経路**(runner を attach)で通す。
+    // Space→c でディレクトリをコピー、貼付先へカーソルを移して Space→p。paste 直後は
+    // まだ実行中(busy インジケーターに出る)で、ワーカーの結果が届いて初めて反映される。
+    let dir = sandbox("copy_paste_async");
+    std::fs::create_dir_all(dir.join("pkg/inner")).unwrap();
+    std::fs::write(dir.join("pkg/one.txt"), "1\n").unwrap();
+    std::fs::write(dir.join("pkg/inner/two.txt"), "2\n").unwrap();
+    std::fs::create_dir_all(dir.join("dest")).unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir).with_async_file_ops();
+
+    s.select("pkg");
+    s.key(' ');
+    s.key('c'); // Space→c = FileCopy
+    s.select("dest");
+    s.key(' ');
+    s.key('p'); // Space→p = FilePaste(ワーカーへ投げる)
+
+    assert!(
+        s.app.busy_jobs().contains(&crate::i18n::Msg::BusyFileOp),
+        "貼付直後はバックグラウンド実行中(busy インジケーターに出る)"
+    );
+
+    s.drain_file_ops();
+
+    assert!(
+        dir.join("dest/pkg/one.txt").is_file() && dir.join("dest/pkg/inner/two.txt").is_file(),
+        "ディレクトリごとコピーされている"
+    );
+    assert!(dir.join("pkg/one.txt").is_file(), "コピー元は残る");
+    assert!(
+        s.app
+            .tab
+            .entries
+            .iter()
+            .any(|e| e.path == dir.join("dest/pkg")),
+        "貼付先が展開され、コピーがツリーに現れる"
+    );
+    s.see("pkg");
     std::fs::remove_dir_all(&dir).ok();
 }
 

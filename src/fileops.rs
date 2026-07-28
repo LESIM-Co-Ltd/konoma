@@ -205,6 +205,36 @@ pub fn detail_cell(id: &str, path: &Path, m: &RowMeta) -> Option<String> {
     })
 }
 
+/// Live counters shared with the UI while a background file operation runs.
+/// Both are monotonic; the UI reads them each frame (no locking — `Relaxed` is enough since
+/// these are just a progress readout, never used to synchronize other state).
+#[derive(Debug, Default)]
+pub struct Progress {
+    items: std::sync::atomic::AtomicUsize, // 上位ターゲット(paste/duplicate の1件=1ファイル or 1ディレクトリ)の完了数
+    files: std::sync::atomic::AtomicUsize, // 末端エントリ(実際にコピー/移動したファイル/symlink)の累積数
+}
+
+impl Progress {
+    /// Record one leaf file (or symlink) copied/moved.
+    pub fn bump_file(&self) {
+        self.files
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Record one top-level target finished.
+    pub fn bump_item(&self) {
+        self.items
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Leaf files copied/moved so far.
+    pub fn files(&self) -> usize {
+        self.files.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Top-level targets finished so far.
+    pub fn items(&self) -> usize {
+        self.items.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Move multiple paths to Trash (recoverable). On macOS this is the proper Trash (supports Finder's "Put Back").
 pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
     trash::delete_all(paths).context("ゴミ箱への移動に失敗しました")?;
@@ -213,16 +243,29 @@ pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
 
 /// **Permanently delete** multiple paths (unrecoverable; does not go through Trash). Directories are deleted with their contents.
 /// For a symlink, only the link itself is removed (the target is not followed).
-pub fn delete_permanently(paths: &[PathBuf]) -> Result<()> {
-    for p in paths {
-        let meta =
-            std::fs::symlink_metadata(p).with_context(|| format!("情報取得: {}", p.display()))?;
+///
+/// The production call site is [`delete_permanently_with_progress`] (this is the same thing with a
+/// throwaway [`Progress`]); as with [`copy_into`], the plain form is kept only so the pre-existing
+/// unit tests below did not need to change their call sites, hence `cfg(test)`.
+#[cfg(test)]
+fn delete_permanently(paths: &[PathBuf]) -> Result<()> {
+    delete_permanently_with_progress(paths, &Progress::default())
+}
+
+/// Same as [`delete_permanently`], but bumps `p` **per path** so the background file-op worker can
+/// report real progress (`3/12`) instead of sitting at `0/12` until the whole batch is done.
+/// (`move_to_trash` cannot do this: it is a single `trash::delete_all` call for the whole batch.)
+pub fn delete_permanently_with_progress(paths: &[PathBuf], p: &Progress) -> Result<()> {
+    for path in paths {
+        let meta = std::fs::symlink_metadata(path)
+            .with_context(|| format!("情報取得: {}", path.display()))?;
         if meta.is_dir() {
-            std::fs::remove_dir_all(p)
-                .with_context(|| format!("ディレクトリ完全削除: {}", p.display()))?;
+            std::fs::remove_dir_all(path)
+                .with_context(|| format!("ディレクトリ完全削除: {}", path.display()))?;
         } else {
-            std::fs::remove_file(p).with_context(|| format!("完全削除: {}", p.display()))?;
+            std::fs::remove_file(path).with_context(|| format!("完全削除: {}", path.display()))?;
         }
+        p.bump_item();
     }
     Ok(())
 }
@@ -429,7 +472,9 @@ fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
 
 /// Recursively copy a directory (done by hand since `std::fs` lacks it). `dst` is newly created.
 /// Symlinks are duplicated as links and their targets are not followed (to prevent accidental materialization/following).
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+/// `p` is bumped once per leaf file and per symlink recreated, so a caller polling it from another
+/// thread sees the counter advance **inside** a large directory instead of jumping only at the end.
+fn copy_dir_all(src: &Path, dst: &Path, p: &Progress) -> Result<()> {
     // 自己包含ガード: `dst` が `src` の部分木内だと read_dir が増殖中の `dst` を拾い続け
     // 無限再帰する(例: Finder から親フォルダを子へ D&D)。paste() の starts_with ガードと対称に、
     // コピー/移動/ドロップの全経路をここで一括防御する。
@@ -448,10 +493,12 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         let ft = entry.file_type()?;
         if ft.is_symlink() {
             copy_symlink(&from, &to)?;
+            p.bump_file();
         } else if ft.is_dir() {
-            copy_dir_all(&from, &to)?;
+            copy_dir_all(&from, &to, p)?;
         } else {
             std::fs::copy(&from, &to).with_context(|| format!("コピー: {}", from.display()))?;
+            p.bump_file();
         }
     }
     Ok(())
@@ -459,7 +506,18 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 
 /// **Copy** `src` (file/directory) directly under `dir`. On collision, append ` copy` and **do not overwrite**.
 /// Copying into the same directory produces a duplicate (`name copy`). Returns the resolved destination path.
-pub fn copy_into(dir: &Path, src: &Path) -> Result<PathBuf> {
+///
+/// Every production call site now goes through [`copy_into_with_progress`] (which this just wraps with a
+/// throwaway [`Progress`]) so the background file-op worker can report live progress; this plain form is
+/// kept **only** so the pre-existing unit tests below did not need to change their call sites, hence `cfg(test)`.
+#[cfg(test)]
+fn copy_into(dir: &Path, src: &Path) -> Result<PathBuf> {
+    copy_into_with_progress(dir, src, &Progress::default())
+}
+
+/// Same as [`copy_into`], but bumps `p` as leaf files are copied — for the background file-op
+/// worker to report live progress on a directory that may contain many files.
+pub fn copy_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<PathBuf> {
     let name = src
         .file_name()
         .and_then(|n| n.to_str())
@@ -468,17 +526,29 @@ pub fn copy_into(dir: &Path, src: &Path) -> Result<PathBuf> {
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         copy_symlink(src, &dst)?;
+        p.bump_file();
     } else if meta.is_dir() {
-        copy_dir_all(src, &dst)?;
+        copy_dir_all(src, &dst, p)?;
     } else {
         std::fs::copy(src, &dst).with_context(|| format!("コピー: {}", src.display()))?;
+        p.bump_file();
     }
     Ok(dst)
 }
 
 /// **Move** `src` directly under `dir`. Moving into the same directory is a no-op. On collision, append ` copy` and do not overwrite.
 /// If rename is impossible (e.g. across volumes), fall back to copy plus deleting the original. Returns the resolved destination path.
-pub fn move_into(dir: &Path, src: &Path) -> Result<PathBuf> {
+///
+/// Kept only for the pre-existing unit tests below (see [`copy_into`]) — production code calls
+/// [`move_into_with_progress`] directly.
+#[cfg(test)]
+fn move_into(dir: &Path, src: &Path) -> Result<PathBuf> {
+    move_into_with_progress(dir, src, &Progress::default())
+}
+
+/// Same as [`move_into`], but bumps `p` as leaf files are moved — for the background file-op
+/// worker to report live progress on a directory that may contain many files.
+pub fn move_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<PathBuf> {
     let name = src
         .file_name()
         .and_then(|n| n.to_str())
@@ -489,6 +559,7 @@ pub fn move_into(dir: &Path, src: &Path) -> Result<PathBuf> {
     }
     let dst = dir.join(unique_name(dir, name));
     if std::fs::rename(src, &dst).is_ok() {
+        p.bump_file();
         return Ok(dst);
     }
     // 別ボリューム等 → コピーして元を削除。symlink はリンク自体を複製し参照先を辿らない。
@@ -496,12 +567,14 @@ pub fn move_into(dir: &Path, src: &Path) -> Result<PathBuf> {
     if meta.file_type().is_symlink() {
         copy_symlink(src, &dst)?;
         std::fs::remove_file(src)?;
+        p.bump_file();
     } else if meta.is_dir() {
-        copy_dir_all(src, &dst)?;
+        copy_dir_all(src, &dst, p)?;
         std::fs::remove_dir_all(src)?;
     } else {
         std::fs::copy(src, &dst).with_context(|| format!("移動(コピー): {}", src.display()))?;
         std::fs::remove_file(src)?;
+        p.bump_file();
     }
     Ok(dst)
 }
@@ -971,5 +1044,71 @@ mod tests {
         assert_eq!(human_size(1024u64.pow(5)), "1.0 PB");
         // PB を超えても最上位単位(PB)で留まる。
         assert_eq!(human_size(2 * 1024u64.pow(5)), "2.0 PB");
+    }
+
+    /// A unique temp directory per call (pid + a process-global counter). A fixed shared name
+    /// collides between parallel runs and flakes — this repo has been bitten by that before.
+    fn unique_tmp(prefix: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
+    }
+
+    #[test]
+    fn delete_permanently_reports_progress_per_path() {
+        // 完全削除はパスごとに回れるので、1件ずつ進捗が進む(最後にまとめて、ではない)。
+        // ゴミ箱送りは `trash::delete_all` の1回呼び出しなので同じことはできない(完了時に一括)。
+        let dir = unique_tmp("konoma_progress_delete_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for n in ["a.txt", "b.txt"] {
+            let p = dir.join(n);
+            std::fs::write(&p, b"x").unwrap();
+            paths.push(p);
+        }
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("c.txt"), b"c").unwrap();
+        paths.push(sub);
+
+        let p = Progress::default();
+        delete_permanently_with_progress(&paths, &p).unwrap();
+        assert_eq!(p.items(), 3, "3つのターゲットぶん items が進む");
+        for path in &paths {
+            assert!(!path.exists(), "対象が消えている: {}", path.display());
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_op_progress_counts_leaf_files() {
+        // ネストしたサブディレクトリを含む木を丸ごとコピーし、末端ファイル数だけ Progress が
+        // 進むこと(ディレクトリ自体は数えない)を確認する。バックグラウンド file-op ワーカーの
+        // 進捗表示("N/M · files")がこのカウンタに依存する。
+        let dir = unique_tmp("konoma_progress_leaf_count_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("b.txt"), b"b").unwrap();
+        std::fs::write(src.join("nested").join("c.txt"), b"c").unwrap();
+        let dst = dir.join("dst");
+        std::fs::create_dir_all(&dst).unwrap();
+
+        let p = Progress::default();
+        assert_eq!(p.files(), 0);
+        let out = copy_into_with_progress(&dst, &src, &p).unwrap();
+        assert!(out.join("a.txt").is_file());
+        assert!(out.join("nested").join("c.txt").is_file());
+        assert_eq!(
+            p.files(),
+            3,
+            "3枚の末端ファイルぶん進む(ディレクトリは数えない)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
