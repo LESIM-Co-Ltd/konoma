@@ -119,6 +119,13 @@ confirm_bookmark_overwrite = true
 # Keys: hjkl=move cell / g·G=first/last row / 0·$=first/last column / y→ c:cell r:row C:column f:full path / q:back.
 csv_rainbow = true
 
+# `/` のツリー絞り込みの照合方法。
+#   "fuzzy"     = 飛び石一致をスコア順に(fzf 流)。`aprs` が `app_resolver.rs` にヒットする。既定。
+#                 空白区切りの語は AND(すべて含むものだけ残る)。
+#   "substring" = 従来の単純な部分一致(プールの順序を保つ)。
+# どちらも大文字小文字は無視する。不正値は "fuzzy" として扱う。
+filter_mode = "fuzzy"
+
 # How follow mode (F) opens the file it jumps to.
 #   "diff" (default) … the file's full-screen git diff (what changed, hunk by hunk; an untracked file is an
 #                      all-added diff). q goes back, s cycles the layout.

@@ -80,6 +80,7 @@ information contextually inside the app.
 | `g` `G` / `0` `$` | first/last row / first/last column |
 | `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
+| `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings. |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
 
 ## Git

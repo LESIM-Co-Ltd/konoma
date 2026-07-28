@@ -29,6 +29,16 @@ All notable changes to konoma are documented in this file. The format is based o
   detection is also handled by the same crate now).
 
 ### Added
+- **Read a table cell that does not fit.** Wide cells are cut off with an ellipsis in the CSV/TSV
+  grid, and there was no way to see the rest — `y c` would copy the value but you still could not
+  read it. `Enter` on the cursor cell now opens it in a scrollable popup, wrapped, showing the raw
+  value (newlines embedded in a CSV field stay newlines); `Enter`, `q` or `Esc` closes it. Archive
+  listings share the table renderer, so a long path inside a `.zip` reads the same way.
+- **The `/` tree filter matches fuzzily.** Typing `app` found `app_resolver.rs` before, but `aprs`
+  found nothing: the match was a plain substring test and results came back in the tree's own order.
+  Matching now goes through nucleo (the matcher Helix uses) and results are ranked best-first;
+  space-separated words are AND-ed. Case is still always ignored, as it has always been in konoma.
+  Set **`[ui] filter_mode = "substring"`** for the previous behaviour.
 - **Archives (`.zip` / `.tar` / `.tar.gz` / `.tgz`) preview as a table of their entries** — Name /
   Size / Modified, in the archive's own order, through the exact same grid as CSV/TSV (`hjkl` cell
   navigation, `/` in-preview search, `y →` cell/row/column copy all come for free). Metadata only:
