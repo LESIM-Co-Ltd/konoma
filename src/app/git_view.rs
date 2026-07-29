@@ -5,14 +5,28 @@ use super::*;
 impl App {
     // --- Git ビュー(変更ハブ・既定キー `o`・keymap で変更可) -----------------
     /// `o`: Open the Git view. Reads the change list for the current root and moves the cursor to the top.
-    /// When the feature is disabled, `[external] git = false`, or this is not a repo, do nothing
-    /// (`is_git_view` stays false = no-op).
+    /// When the feature is disabled, `[external] git = false`, this is not a repo, or (in the `git`
+    /// build only) no `git` executable exists on this machine, do nothing (`is_git_view` stays false =
+    /// no-op). Each of those reasons flashes its own message — "not a repo" must not be blamed for a
+    /// missing binary. The no-git build has no way to probe for a git executable (git support itself is
+    /// compiled out, independent of what is actually installed), so it never claims "git is not
+    /// installed" and keeps flashing "not a repo" as before.
     pub fn open_git_view(&mut self) {
         if !self.cfg.external.git {
             // 設定で明示的に無効(feature は有効・repo でもありうる): "not a repo" と区別して知らせる。
             self.flash =
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ExternalGitDisabled).into());
             return;
+        }
+        #[cfg(feature = "git")]
+        {
+            if !crate::git::git_binary_available() {
+                // 設定は許可しているが git 実行ファイルが無い。repo かどうかは判定できていない
+                // (discover は in-process の libgit2 で通る)ので "not a repo" とは言わない。
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::GitNotInstalled).into());
+                return;
+            }
         }
         if crate::git::branch(&self.tab.root).is_none() {
             // repo でない(または feature 無効)。安全に無視し、flash で知らせる。

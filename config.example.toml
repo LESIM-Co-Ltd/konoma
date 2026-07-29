@@ -477,6 +477,8 @@ diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" 
 git              = true   # git integration (status colors, gutter, Git views, stage/commit/checkout — git CLI + embedded git2).
                            # false behaves exactly like building with `--no-default-features` (no `git` feature): reads return
                            # empty/None, writes return an error. `o` flashes distinctly from "not a repo".
+                           # Whatever this says, git integration also turns itself off automatically when no `git`
+                           # executable is found on the machine (checked once, on first use), and `o` says so.
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
 pdf              = true   # The external fallback rasterizer chain (pdftocairo/pdftoppm/qlmanage/sips), tried only when
                            # the primary renderer (hayro, pure Rust, always active regardless of this flag) fails on a

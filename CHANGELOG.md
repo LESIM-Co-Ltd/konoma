@@ -6,6 +6,18 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **git integration now switches itself off when no `git` executable is present, instead of
+  half-working.** Repository discovery goes through the bundled libgit2 and succeeded regardless, so
+  the git views would open while every CLI-backed operation (status, staging, committing) silently
+  produced nothing. konoma now probes for a usable `git` once, on first use, and — whatever
+  `[external] git` says — degrades exactly as it does when built without the `git` feature: reads
+  return empty/`None`, writes return an error. The Git view (`o`) now says git is not installed
+  rather than claiming the directory is not a repository, which it may well be. The probe is lazy on
+  purpose: on macOS without the Xcode Command Line Tools, invoking `/usr/bin/git` pops a system
+  "install the developer tools" dialog, and merely opening a non-repository directory must not
+  trigger that.
+
 ## [0.22.1] - 2026-07-29
 
 ### Changed

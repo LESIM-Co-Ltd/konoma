@@ -465,6 +465,8 @@ diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "spl
 git              = true   # git 連携(status 色/ガター/Git ビュー/stage・commit・checkout — git CLI + 組込み git2)。
                            # false は `--no-default-features`(git feature 無し)でビルドしたのと同じ挙動(読み取りは空/None、
                            # 書き込みはエラー)。`o` は「repo でない」とは別文言で無効を知らせる。
+                           # この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになる
+                           # (初回使用時に一度だけ判定)。`o` はその旨を知らせる。
 git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
 pdf              = true   # 外部フォールバックの梯子(pdftocairo/pdftoppm/qlmanage/sips)。第一候補のレンダラ
                            # (hayro・純Rust・このフラグに関係なく常に動く)がそのPDFで失敗した時(暗号化/破損/非対応)

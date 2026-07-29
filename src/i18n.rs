@@ -484,6 +484,13 @@ pub enum Msg {
     /// `o`/`d` etc. when `[external] git = false` (Git views unavailable by config, not because this
     /// isn't a repo).
     ExternalGitDisabled,
+    /// `o`/`d` etc. when the config allows git but no `git` executable exists on this machine
+    /// (distinct from `NotAGitRepo`: the directory may well be a repository — repo discovery goes
+    /// through the embedded libgit2 and does not need the binary). Only ever constructed in the `git`
+    /// build: the no-git build has no way to probe for a git executable (git support itself is compiled
+    /// out), so it never claims "git is not installed" there.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    GitNotInstalled,
     /// `O` when `[external] git_tool = false`.
     ExternalGitToolDisabled,
     /// Opening a link/file (Markdown link, `P`, ...) when `[external] open_links = false`.
@@ -911,6 +918,7 @@ fn en(msg: Msg) -> &'static str {
         StHelp => "HELP",
         StHelpHint => "j/k:scroll  g/G:top/bottom  q/Esc:close",
         ExternalGitDisabled => "git integration is disabled (config: [external] git = false)",
+        GitNotInstalled => "git is not installed — git integration is off",
         ExternalGitToolDisabled => "external git tool is disabled (config: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "opening links/files is disabled (config: [external] open_links = false)",
     }
@@ -1328,6 +1336,7 @@ fn jp(msg: Msg) -> &'static str {
         StHelp => "ヘルプ",
         StHelpHint => "j/k:スクロール  g/G:先頭/末尾  q/Esc:閉じる",
         ExternalGitDisabled => "git 連携は無効です(設定: [external] git = false)",
+        GitNotInstalled => "git が見つかりません — git 連携はオフです",
         ExternalGitToolDisabled => "外部 git ツールは無効です(設定: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "リンク/ファイルを開く機能は無効です(設定: [external] open_links = false)",
     }
@@ -1812,6 +1821,7 @@ mod tests {
         Msg::StHelp,
         Msg::StHelpHint,
         Msg::ExternalGitDisabled,
+        Msg::GitNotInstalled,
         Msg::ExternalGitToolDisabled,
         Msg::ExternalOpenLinksDisabled,
     ];

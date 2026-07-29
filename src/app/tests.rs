@@ -12311,6 +12311,121 @@ fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A machine without a `git` executable, with `[external] git = true` (the default): every read
+/// degrades to exactly what a `--no-default-features` build returns, **even though the directory is a
+/// real repo with real history**. Repo discovery goes through the embedded libgit2 and would still
+/// succeed, so without the probe this state is half-broken (views open, every CLI-backed operation
+/// silently does nothing).
+#[cfg(feature = "git")]
+#[test]
+fn git_integration_is_off_when_the_binary_is_missing() {
+    let dir = unique_tmp("konoma_git_binary_missing_reads");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-qm", "init"]);
+    std::fs::write(dir.join("a.txt"), b"two\n").unwrap();
+
+    // Baseline while the real probe runs: this really is a repo with a change to report.
+    assert!(
+        crate::git::git_binary_available(),
+        "sanity: git is installed"
+    );
+    assert!(!crate::git::statuses(&dir).is_empty(), "sanity: statuses");
+    assert!(crate::git::branch(&dir).is_some(), "sanity: branch");
+    assert!(crate::git::workdir(&dir).is_some(), "sanity: workdir");
+
+    // Simulate a machine without git: the config still says `true`, but the gate must be off.
+    crate::git::set_git_binary_available_for_test(Some(false));
+    assert!(
+        !crate::git::external_git_enabled(),
+        "config allows git, but no binary = the gate is off"
+    );
+    assert!(crate::git::statuses(&dir).is_empty(), "statuses");
+    assert!(crate::git::branch(&dir).is_none(), "branch");
+    assert!(crate::git::workdir(&dir).is_none(), "workdir");
+
+    crate::git::set_git_binary_available_for_test(None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A machine without a `git` executable: `o` refuses with `GitNotInstalled` — not `NotAGitRepo`
+/// (this is a repo; blaming the directory would be wrong) and not `ExternalGitDisabled` (the config
+/// allows git). The `[external] git = false` case is covered by the neighbouring test.
+#[cfg(feature = "git")]
+#[test]
+fn open_git_view_reports_a_missing_git_binary_distinctly() {
+    let dir = unique_tmp("konoma_git_binary_missing_view");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-qm", "init"]);
+    std::fs::write(dir.join("a.txt"), b"changed\n").unwrap();
+
+    crate::git::set_git_binary_available_for_test(Some(false));
+    let mut app = App::new(dir.clone(), Config::default()).unwrap(); // external.git = true (default)
+    app.open_git_view();
+    assert!(
+        !app.is_git_view(),
+        "no git binary: the Git view does not open"
+    );
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::GitNotInstalled)),
+        "distinct from NotAGitRepo / ExternalGitDisabled"
+    );
+
+    // Unchanged when the binary IS available: the same repo opens the view as before.
+    crate::git::set_git_binary_available_for_test(None);
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    app2.open_git_view();
+    assert!(
+        app2.is_git_view(),
+        "sanity: with git installed the Git view opens on a real repo"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A machine without a `git` executable still renders: the tree draws (no markers, no branch name)
+/// and nothing panics — principle #3, degrade safely rather than show a half-broken screen.
+#[cfg(feature = "git")]
+#[test]
+fn tree_renders_without_a_git_binary() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_git_binary_missing_render");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"hi\n").unwrap(); // would normally show a `U` marker
+
+    crate::git::set_git_binary_available_for_test(Some(false));
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert!(app.git_branch().is_none(), "no branch name without git");
+
+    crate::git::set_git_binary_available_for_test(None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `[external] git_tool = false`: `O` never queues a launch (the run loop's `take_launch_git_tool`
 /// would otherwise suspend the TUI and exec the configured tool, e.g. lazygit).
 #[test]

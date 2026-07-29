@@ -39,11 +39,59 @@ pub fn set_external_git_enabled(enabled: bool) {
     EXTERNAL_GIT_ENABLED.with(|c| c.set(enabled));
 }
 
-/// Whether git integration is enabled on the current thread. Defaults to `true` (matches every
-/// existing test/binary that never calls `set_external_git_enabled`).
+/// Whether git integration is enabled on the current thread: the config allows it **and** a git
+/// executable exists on this machine. Defaults to `true` (matches every existing test/binary that
+/// never calls `set_external_git_enabled`) as long as `git --version` succeeds.
 #[cfg(feature = "git")]
 pub fn external_git_enabled() -> bool {
-    EXTERNAL_GIT_ENABLED.with(|c| c.get())
+    EXTERNAL_GIT_ENABLED.with(|c| c.get()) && git_binary_available()
+}
+
+/// Probe result of `git --version`, cached process-wide. Unlike the config flag above this cannot
+/// differ per thread (the machine either has git or it does not), so a `OnceLock` is right here.
+#[cfg(feature = "git")]
+static GIT_BINARY_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[cfg(all(test, feature = "git"))]
+thread_local! {
+    /// Test-only override of the probe. A `OnceLock` cannot be reset, so tests that need to simulate
+    /// "this machine has no git" set this instead. Thread-local for the same reason as
+    /// `EXTERNAL_GIT_ENABLED`: parallel tests must never observe each other's override.
+    static GIT_BINARY_AVAILABLE_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Force `git_binary_available()` to a value on the current thread (`None` = probe for real).
+/// Tests must reset it to `None` when done.
+#[cfg(all(test, feature = "git"))]
+pub fn set_git_binary_available_for_test(v: Option<bool>) {
+    GIT_BINARY_AVAILABLE_OVERRIDE.with(|c| c.set(v));
+}
+
+/// Whether a usable `git` executable exists on this machine (`git --version` succeeds).
+///
+/// Probed **once, lazily** — on first use rather than at startup. konoma only shells out to git
+/// inside a repository (repository discovery itself is in-process libgit2), and on macOS without the
+/// Xcode Command Line Tools `/usr/bin/git` is a stub whose invocation pops a system "install the
+/// developer tools" dialog; probing eagerly would raise that dialog for users who merely opened a
+/// directory that is not a repository.
+#[cfg(feature = "git")]
+pub fn git_binary_available() -> bool {
+    #[cfg(test)]
+    if let Some(v) = GIT_BINARY_AVAILABLE_OVERRIDE.with(|c| c.get()) {
+        return v;
+    }
+    *GIT_BINARY_AVAILABLE.get_or_init(|| {
+        // stdin/stdout/stderr は全て捨てる: TUI の raw mode 画面をバージョン文字列で汚さない。
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false) // 実行ファイルが無い / 実行権限が無い
+    })
 }
 
 /// Git status of a single file (or a directory rollup).
