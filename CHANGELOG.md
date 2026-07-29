@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-07-29
+
 ### Changed
 - **Copy / move / duplicate / delete now run on a background thread**, with a live progress
   readout (`N/M` targets, plus a running file count for large directories) in the top-right
@@ -1060,7 +1062,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.19.0...v0.20.0
