@@ -1,7 +1,7 @@
-// プレビュー方式の解決とレンダラ選択。
-// 設定ルール → PreviewKind に落とし込み、各レンダラ(内蔵/外部委譲)へ振り分ける。
-// M0 では種別の解決のみを実装。実描画は各サブモジュールで段階的に実装する
-// (M2: image / M3: markdown / 以降: code・command)。
+// Resolution of preview kind and renderer selection.
+// Config rules are resolved into a PreviewKind and dispatched to each renderer (builtin / external
+// delegation). M0 implements only the kind resolution. Actual rendering is added incrementally in
+// each submodule (M2: image / M3: markdown / later: code, command).
 
 pub mod archive;
 pub mod code;
@@ -90,7 +90,7 @@ impl PreviewKind {
                 "video" => PreviewKind::Video(p),
                 "pdf" => PreviewKind::Pdf(p),
                 "code" => PreviewKind::Code(p),
-                // csv=カンマ / tsv=タブ区切り。どちらも同じテーブルレンダラへ(区切り文字だけ違う)。
+                // csv = comma / tsv = tab-delimited. Both go to the same table renderer (only the delimiter differs).
                 "csv" => PreviewKind::Table {
                     path: p,
                     delimiter: b',',
@@ -135,12 +135,12 @@ mod tests {
 
     #[test]
     fn can_not_preview_captures_extension_or_empty() {
-        // 拡張子つき: ext を保持する。
+        // With an extension: keeps ext.
         match PreviewKind::can_not_preview(Path::new("/x/foo.xyz")) {
             PreviewKind::CanNotPreview { ext } => assert_eq!(ext, "xyz"),
             other => panic!("CanNotPreview を期待: {other:?}"),
         }
-        // 拡張子なし: 空文字(クラッシュしない)。
+        // Without an extension: empty string (does not crash).
         match PreviewKind::can_not_preview(Path::new("/x/Makefile")) {
             PreviewKind::CanNotPreview { ext } => assert_eq!(ext, "", "拡張子なしは空"),
             other => panic!("CanNotPreview を期待: {other:?}"),

@@ -1,7 +1,9 @@
-// 軽量な多言語対応 (i18n)。設定 `ui.lang` で切替 (既定 en)。
-// 文言は列挙キー `Msg` と言語別テーブル (en()/jp()) に集約する「言語ファイル」方式。
-// 文言を追加: `Msg` に variant を足し、en()/jp() 双方に行を足す (網羅性はコンパイラが強制)。
-// 言語を追加: `Lang` に variant、対応するテーブル関数、`tr` の分岐を足す。
+// Lightweight internationalization (i18n). Switched via the `ui.lang` setting (default en).
+// A "language file" scheme that gathers strings into the enum key `Msg` and per-language tables
+// (en()/jp()).
+// To add a string: add a variant to `Msg` and add a line to both en()/jp() (exhaustiveness is
+// enforced by the compiler).
+// To add a language: add a variant to `Lang`, its corresponding table function, and a branch in `tr`.
 
 /// Display language. Selected by the `ui.lang` setting (default en).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +16,7 @@ impl Lang {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "jp" | "ja" | "japanese" | "日本語" => Self::Jp,
-            _ => Self::En, // 既定は英語
+            _ => Self::En, // default to English
         }
     }
 
@@ -398,7 +400,7 @@ pub enum Msg {
     HintVisual,
     AgoYears,
     WkCopyPathTitle,
-    // --- CSV/TSV テーブルプレビュー ---
+    // --- CSV/TSV table preview ---
     StTable,
     PreviewTable,
     WkTableCopyTitle,
@@ -408,19 +410,19 @@ pub enum Msg {
     HintCell,
     TableMoveHelp,
     TableColsHelp,
-    // --- テーブルセル全文ポップアップ(`Enter`) ---
+    // --- Table-cell full-text popup (`Enter`) ---
     StTableCell,
     TableCellTitle,
     TableCellActions,
     HintViewCell,
     TableCellViewHelp,
     TableCellEmpty,
-    // --- テキスト/コードプレビューの選択(v=文字範囲 / V=行) ---
+    // --- Text/code preview selection (v = character range / V = line) ---
     PreviewVisualHint,
     PreviewVisualLineHint,
     PreviewSelectHelp,
     StVisualLine,
-    // --- Agent Watch (①変更フィルタ ②フォロー ③@参照コピー) ---
+    // --- Agent Watch (① changed filter ② follow ③ @-reference copy) ---
     WkAtRef,
     /// which-key label for `y → c`: copy the focused Markdown code block.
     WkCodeBlock,
@@ -450,7 +452,8 @@ pub enum Msg {
     BookmarkOverwriteConfirm,
     StMarkOverwrite,
     StMarkOverwriteHint,
-    // 以下は git コピー機能専用ラベル。no-git では構築されないので dead_code を許容する。
+    // The following are labels dedicated to the git copy feature. They aren't constructed under
+    // no-git, so dead_code is allowed.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     WkGitCopyTitle,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -1406,18 +1409,22 @@ mod tests {
 
     #[test]
     fn resolve_explicit_overrides_auto() {
-        // 明示指定はそのまま。
+        // An explicit specification passes through as-is.
         assert_eq!(Lang::resolve("jp"), Lang::Jp);
         assert_eq!(Lang::resolve("en"), Lang::En);
-        // 未指定相当 (空 / auto / system) は OS 判定へ。テストでは from_os=En に固定。
+        // Unspecified-equivalent values (empty / auto / system) go to the OS judgment. In tests,
+        // from_os is fixed to En.
         assert_eq!(Lang::resolve(""), Lang::En);
         assert_eq!(Lang::resolve("auto"), Lang::En);
         assert_eq!(Lang::resolve(" System "), Lang::En);
     }
 
-    // 全 Msg variant を1つの配列に集め、en()/jp() の**全 match arm**を実行する網羅スイープ。
-    // 文言追加時にここへ足し忘れるとカバレッジ低下で気付ける(コンパイラの網羅性とは別の保険)。
-    // 言語ゲートが allow(dead_code) のみ(cfg 削除でない)ため、両 feature で全 variant を参照できる。
+    // Gathers every Msg variant into one array and runs **every match arm** of en()/jp() as an
+    // exhaustive sweep.
+    // If a new message is added but forgotten here, the coverage drop makes it noticeable (a
+    // safety net separate from the compiler's exhaustiveness check).
+    // Since the language gate is only allow(dead_code) (not a removed cfg), every variant can be
+    // referenced under both features.
     const ALL_MSGS: &[Msg] = &[
         Msg::GitNoBranchesItem,
         Msg::GitNoChangesItem,
@@ -1828,7 +1835,8 @@ mod tests {
 
     #[test]
     fn every_message_has_text_in_both_languages() {
-        // Empty は意図的に空文字(両言語とも "")。それ以外は en/jp 双方で非空であること。
+        // Empty is intentionally an empty string (both languages ""). Everything else must be
+        // non-empty in both en/jp.
         for &m in ALL_MSGS {
             let en = tr(Lang::En, m);
             let jp = tr(Lang::Jp, m);
@@ -1844,13 +1852,15 @@ mod tests {
 
     #[test]
     fn message_catalog_is_unique_and_mostly_translated() {
-        // 配列に重複 variant が無い(コピペ事故の検出)。Msg は Hash 非実装なので素朴な総当りで照合。
+        // No duplicate variant in the array (catches copy-paste accidents). Since Msg doesn't
+        // implement Hash, check via a naive all-pairs comparison.
         for (i, &a) in ALL_MSGS.iter().enumerate() {
             for &b in &ALL_MSGS[i + 1..] {
                 assert_ne!(a, b, "ALL_MSGS に重複 variant がある: {a:?}");
             }
         }
-        // 英日で別文字列の variant が過半数(固有名詞 Git 等で一致するものはあるが大半は異なる)。
+        // A majority of variants have different strings in English and Japanese (some, like the
+        // Git proper noun, match, but most differ).
         let differ = ALL_MSGS
             .iter()
             .filter(|&&m| tr(Lang::En, m) != tr(Lang::Jp, m))

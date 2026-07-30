@@ -38,17 +38,21 @@ impl App {
 
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
-        // エントリはキック時(ensure_mermaid_fence_render / ensure_md_image)に必ず先置きされる。
-        // 無い=陳腐化した結果(ファイル切替でキャッシュ破棄済み/prune 済み)なので、復活させずに
-        // 捨てる(or_default だと旧図のラスタが再挿入されて次の enter_preview まで残留し、しかも
-        // 下の md_cache 無効化が**無関係な現文書**を 1 回無駄に全再構築していた)。
+        // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
+        // ensure_md_image). Missing = a stale result (already evicted from the cache on a file
+        // switch / already pruned), so drop it instead of reviving it (with or_default, the old
+        // diagram's raster would be re-inserted and linger until the next enter_preview, and on
+        // top of that the md_cache invalidation below would needlessly do a full rebuild once for
+        // **an unrelated current document**).
         if !self.md_image_cache.contains_key(&res.path) {
             return false;
         }
-        // フェンス図・数式(合成キー)は寸法がここで初めて決まる=ローディング行→実配置に組み直す
-        // ため装飾キャッシュを無効化する(remote 画像の apply_remote_fetch と同じ流儀)。
-        // **シャープ化の再ラスタは除く**: ピクセル密度の差し替えだけで、レイアウト(予約セル数)は
-        // layout_px 固定なので装飾を組み直さない(=md 上の表示サイズは不変・ユーザー要件)。
+        // For a fence diagram / math expression (synthetic key), the dimensions are decided here
+        // for the first time = the loading row needs to be rebuilt into the real placement, so
+        // invalidate the decoration cache (same convention as remote images' apply_remote_fetch).
+        // **Excludes a sharpening re-raster**: that's just swapping pixel density, and since the
+        // layout (reserved cell count) is pinned by layout_px, decoration is not rebuilt (= the
+        // display size on the page stays fixed — a user requirement).
         let url_str = res.path.to_string_lossy().to_string();
         let is_math = crate::preview::markdown::is_math_url(&url_str);
         if !res.reraster && (crate::preview::markdown::is_mermaid_fence_url(&url_str) || is_math) {
@@ -62,9 +66,11 @@ impl App {
             Ok(img) => {
                 use image::GenericImageView;
                 if entry.layout_px.is_none() {
-                    // 数式は SVG の**内在サイズ(単位)**を layout_px に載せる(ラスタ px でなく): em 高さから
-                    // 行数、内在アスペクトから桁数を導いてテキストと釣り合うサイズにするため(math_cells)。
-                    // 内在サイズが取れない時のみラスタ寸法へフォールバック。フェンス/通常画像は従来どおり。
+                    // For math, load the SVG's **intrinsic size (in units)** into layout_px
+                    // (rather than raster px): rows are derived from the em height and columns
+                    // from the intrinsic aspect, sizing it to balance against the text
+                    // (math_cells). Fall back to the raster dimensions only when the intrinsic
+                    // size can't be obtained. Fences / regular images work as before.
                     entry.layout_px = if is_math {
                         res.svg
                             .as_deref()
@@ -95,14 +101,16 @@ impl App {
                     entry.svg = Some(svg);
                 }
                 if res.reraster {
-                    // 高密度ラスタで再エンコードさせる: キーだけ無効化し、旧 protocol は
-                    // 新しいエンコードが届くまでの表示用に残す(消すと一瞬空白になる)。
+                    // Trigger a re-encode with the high-density raster: invalidate only the key,
+                    // and keep the old protocol displayed until the new encode arrives (clearing
+                    // it would leave a momentary blank).
                     entry.proto_size = None;
                     entry.clip_key = None;
                     entry.zoom_key = None;
                 }
             }
-            // 再ラスタ失敗は現ラスタ据え置き(表示は生きたまま)。初回失敗のみテキスト降格。
+            // A re-raster failure leaves the current raster in place (the display stays alive).
+            // Only an initial failure degrades to text.
             Err(_) if res.reraster => {}
             Err(_) => entry.failed = true,
         }
@@ -126,18 +134,20 @@ impl App {
             return;
         };
         let (sw, sh) = img.dimensions();
-        // シャープ化: 表示に必要な密度(セル×フォントpx×ズーム)が現ラスタを超えたら、保持 SVG を
-        // 高密度に再ラスタ(全画面のシャープズームと同じ・レイアウトは layout_px 固定で不変)。
+        // Sharpen: once the density needed for display (cells × font px × zoom) exceeds the
+        // current raster, re-raster the retained SVG at high density (same as the full-screen
+        // sharp zoom; the layout stays fixed via layout_px).
         if let Some(f) = font {
             let disp = ((cols as f64 * f.width as f64).max(rows as f64 * f.height as f64) * zoom)
                 .ceil() as u32;
             if self.fence_sharpen_if_needed(&key_path, disp) == FenceSharpen::AppliedSync {
-                // 同期フォールバック(テスト): 新しいラスタで最初からやり直す。
+                // Synchronous fallback (tests): start over from scratch with the new raster.
                 drop(img);
                 return self.ensure_md_fence_zoom(url, cols, rows);
             }
         }
-        // 現ラスタから可視窓を切り出す(比率ベース=再ラスタ後も同じ窓)。中心は端でクランプし書き戻す。
+        // Cut the visible window out of the current raster (ratio-based, so it's the same window
+        // after a re-raster). Clamp the center at the edges and write it back.
         let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
         let (crop, center) = fence_crop((sw, sh), f, self.tab.fence_center);
         self.tab.fence_center = center;
@@ -212,9 +222,10 @@ impl App {
             FenceSharpen::Spawned
         } else {
             let res = job();
-            // 失敗は AppliedSync を名乗らない: 呼び元(ensure_md_fence_zoom)は AppliedSync で
-            // 「新しいラスタでやり直す」再帰をするため、失敗が続くと堂々巡りになる。成功時の
-            // 再帰は 1 回で必ず収束する(次パスは needed<=cur か 4096 上限で NotNeeded)。
+            // A failure must not claim AppliedSync: the caller (ensure_md_fence_zoom) recurses on
+            // AppliedSync to "start over with the new raster", so repeated failures would loop
+            // forever. On success the recursion always converges in one step (the next pass hits
+            // NotNeeded, either because needed<=cur or the 4096 cap).
             let ok = res.image.is_ok();
             self.apply_md_image(res);
             if ok {
@@ -291,8 +302,9 @@ impl App {
         };
         if let Some(tx) = self.md_img_tx.clone() {
             std::thread::spawn(move || {
-                // render()(rasterize_bytes=resvg)が panic してもスレッドを殺さず必ず結果を返す:
-                // 返さないとエントリが decoded=None && !failed のまま固着し busy が恒久 true になる。
+                // Even if render() (rasterize_bytes = resvg) panics, don't kill the thread — always
+                // return a result: otherwise the entry stays stuck at decoded=None && !failed and
+                // busy latches true forever.
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
                     .unwrap_or_else(|| (Err("mermaid render panicked".to_string()), None));
                 let _ = tx.send(MdImageResult {
@@ -329,8 +341,9 @@ impl App {
         self.md_image_cache
             .insert(key.clone(), MdImgEntry::default());
         let max_px = self.math_px();
-        // グリフ色(サニタイズ済み)を worker へ move。RaTeX の既定は純黒=ダーク端末で不可視のため、
-        // 端末背景に映える色で塗る(config `[ui] math_color`・既定は明るいグレー)。
+        // Move the glyph color (already sanitized) into the worker. RaTeX's default is pure black,
+        // which is invisible on a dark terminal, so paint it a color that stands out against the
+        // terminal background (config `[ui] math_color`, default a light gray).
         let color = self.cfg.ui.math_color().to_string();
         let render =
             move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
@@ -413,7 +426,8 @@ impl App {
             }
         }
         if degrade {
-            // 新規に failed へ降格した画像はテキスト行へ再レイアウト(見えない空白のまま残さない)。
+            // An image that has newly degraded to failed gets re-laid-out as a text row (never
+            // left as an invisible blank).
             self.md_cache = None;
         }
         true
@@ -474,8 +488,8 @@ impl App {
         self.md_remote_inflight.insert(url.to_string());
         let u = url.to_string();
         std::thread::spawn(move || {
-            // ダウンロードが panic しても md_remote_inflight を残さない(残すと busy 固着):
-            // panic は取得失敗(ok=false)として必ず報告する。
+            // Don't leave the entry stuck in md_remote_inflight even if the download panics
+            // (leaving it in would latch busy): always report a panic as a fetch failure (ok=false).
             let ok = crate::preview::markdown::catch_silent(|| fetch_remote_image(&u, &dest))
                 .unwrap_or(false);
             let _ = tx.send(RemoteFetch { url: u, ok });
@@ -496,9 +510,11 @@ impl App {
         row_off: u16,
         vis_rows: u16,
     ) {
-        // 合成キー(フェンス図・数式)はそのままキャッシュキー(デコードは ensure_mermaid_fence_render /
-        // ensure_math_render 済み)。実ファイル画像だけディスク解決する。数式 `math://` を実ファイル扱い
-        // すると resolve が None を返し、エンコードを一度も要求せず予約行が空白のまま残っていた。
+        // A synthetic key (fence diagram / math expression) is used as-is for the cache key
+        // (decoding was already done by ensure_mermaid_fence_render / ensure_math_render). Only a
+        // real file image gets resolved on disk. Treating the math `math://` key as a real file
+        // made resolve return None, so an encode was never requested and the reserved row stayed
+        // blank.
         let path = if crate::preview::markdown::is_synthetic_md_url(url) {
             PathBuf::from(url)
         } else {
@@ -515,9 +531,11 @@ impl App {
         };
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
-            // 合成キー(フェンス図・数式)はここでは作れない(元の code/latex が要る)。配置が在る以上
-            // キャッシュ済みのはずで、来ない前提の防御(次の再装飾で ensure_mermaid_fence_render /
-            // ensure_math_render が作り直す)。`math://` を実ファイルとしてデコードさせない。
+            // A synthetic key (fence diagram / math expression) cannot be built here (the original
+            // code/latex is needed). If a placement exists it should already be cached, so this is
+            // a defensive guard for the case it never arrives (the next re-decoration has
+            // ensure_mermaid_fence_render / ensure_math_render rebuild it). Never let `math://` be
+            // decoded as a real file.
             if crate::preview::markdown::is_synthetic_md_url(url) {
                 return;
             }
@@ -533,7 +551,8 @@ impl App {
                     // full-screen path bounds memory when a document embeds several GIFs at once.
                     // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
                     // falls through unchanged to the normal still-image decode.
-                    // panic(病的画像/SVG)も捕捉して必ず結果を返す(返さないと busy 固着)。
+                    // Catch a panic (pathological image/SVG) too and always return a result
+                    // (not returning would latch busy).
                     let (still, frames) = crate::preview::markdown::catch_silent(|| {
                         if App::looks_like_gif(&p) {
                             if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
@@ -642,8 +661,8 @@ impl App {
                 return entry.protocol.as_ref();
             }
         } else if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
-            // クリップのエンコードに失敗していた場合(clip_protocol 無しでキーだけ記録)は
-            // 全体 protocol へ降格(空白のまま残さない)。
+            // If the clip's encode had failed (only the key recorded, with no clip_protocol),
+            // degrade to the full protocol (never leave it blank).
             return entry.clip_protocol.as_ref().or(entry.protocol.as_ref());
         }
         // Not yet encoded for this exact position: keep the last band (or the full image) visible.
@@ -666,7 +685,7 @@ impl App {
                 continue;
             }
             let Some(shown_at) = entry.shown_at else {
-                // 最初の tick: 計時を開始するだけ(先頭フレームは decoded に表示済み)。
+                // First tick: just start the timer (the first frame is already shown in decoded).
                 entry.shown_at = Some(now);
                 continue;
             };
@@ -677,8 +696,9 @@ impl App {
             entry.idx = (entry.idx + 1) % entry.frames.len();
             entry.shown_at = Some(now);
             entry.decoded = Some(entry.frames[entry.idx].0.clone());
-            // 次フレームは再エンコードが要る: キーだけ無効化する。旧 protocol は次のエンコードが
-            // 届くまでの表示用に残す(消すと一瞬空白になる=フェンスの再ラスタと同じ流儀)。
+            // The next frame needs a re-encode: invalidate only the key. Keep the old protocol
+            // displayed until the next encode arrives (clearing it would leave a momentary blank —
+            // the same convention as the fence re-raster).
             entry.proto_size = None;
             entry.clip_key = None;
             entry.zoom_key = None;
@@ -698,7 +718,7 @@ impl App {
                 continue;
             }
             let remaining = match entry.shown_at {
-                None => Duration::ZERO, // まだ計時前: すぐ次の tick を回して計時開始
+                None => Duration::ZERO, // not timed yet: run the next tick right away to start timing
                 Some(t) => entry.frames[entry.idx]
                     .1
                     .checked_sub(t.elapsed())

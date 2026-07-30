@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    // --- Git ビュー(変更ハブ・既定キー `o`・keymap で変更可) -----------------
+    // --- Git view (changes hub, default key `o`, changeable via keymap) -----------------
     /// `o`: Open the Git view. Reads the change list for the current root and moves the cursor to the top.
     /// When the feature is disabled, `[external] git = false`, this is not a repo, or (in the `git`
     /// build only) no `git` executable exists on this machine, do nothing (`is_git_view` stays false =
@@ -13,7 +13,7 @@ impl App {
     /// installed" and keeps flashing "not a repo" as before.
     pub fn open_git_view(&mut self) {
         if !self.cfg.external.git {
-            // 設定で明示的に無効(feature は有効・repo でもありうる): "not a repo" と区別して知らせる。
+            // Explicitly disabled by config (the feature itself is on, and it could still be a repo): notify distinctly from "not a repo".
             self.flash =
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ExternalGitDisabled).into());
             return;
@@ -21,15 +21,15 @@ impl App {
         #[cfg(feature = "git")]
         {
             if !crate::git::git_binary_available() {
-                // 設定は許可しているが git 実行ファイルが無い。repo かどうかは判定できていない
-                // (discover は in-process の libgit2 で通る)ので "not a repo" とは言わない。
+                // Config allows it but there's no git executable. We haven't determined whether this
+                // is a repo (discover goes through in-process libgit2), so we don't say "not a repo".
                 self.flash =
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::GitNotInstalled).into());
                 return;
             }
         }
         if crate::git::branch(&self.tab.root).is_none() {
-            // repo でない(または feature 無効)。安全に無視し、flash で知らせる。
+            // Not a repo (or the feature is disabled). Ignore safely and notify via flash.
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
             return;
         }
@@ -77,8 +77,8 @@ impl App {
         if self.tab.git_view_sel >= self.tab.git_view_entries.len() {
             self.tab.git_view_sel = self.tab.git_view_entries.len().saturating_sub(1);
         }
-        self.git_status_for = None; // ツリーの git status も次回再取得
-        self.git_status_dirty = true; // git 操作で status が変わった=workdir キャッシュを無効化
+        self.git_status_for = None; // also re-fetch the tree's git status next time
+        self.git_status_dirty = true; // status changed due to a git operation = invalidate the workdir cache
     }
     /// `s` in the Git view = stage. Flashes success/failure and rebuilds the list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -194,13 +194,13 @@ impl App {
         });
     }
 
-    // --- Git ビューのスタブ (phase 4/5 が置き換える) -------------------------
+    // --- Git view stubs (replaced by phase 4/5) -------------------------
     /// `Enter`/`l`: Open the selected file's diff in the GitDiff preview. Closes the Git view and
     /// remembers where it came from (came_from_git_view) so Esc/q can return to the Git view.
     pub fn open_git_diff(&mut self, path: &Path) {
         self.tab.preview_path = Some(path.to_path_buf());
         self.tab.preview_kind = Some(PreviewKind::GitDiff(path.to_path_buf()));
-        // diff プレビューは独自描画(window/image/md を使わない)。関連状態をリセット。
+        // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
@@ -209,14 +209,14 @@ impl App {
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
-        self.diff_cache = None; // 別ファイルの diff を開く: 生 diff キャッシュを無効化
+        self.diff_cache = None; // opening another file's diff: invalidate the raw diff cache
         self.md_items.clear();
         self.tab.focused_item = None;
         self.hl_pending = false;
         self.hl_warming = false;
         self.tab.came_from_git_view = self.tab.git_view;
         self.tab.git_view = false;
-        // 既定はフルの git 変更スコープ(フォロー由来のときだけ呼び出し側が true に上書きする)。
+        // Defaults to the full git change scope (only the follow-originated case has the caller override it to true).
         self.diff_follow_scope = false;
         self.tab.mode = Mode::Preview;
     }
@@ -236,7 +236,7 @@ impl App {
         };
         let hit = matches!(&self.diff_cache, Some(c) if c.path == p);
         if !hit {
-            // フォロー由来(diff_follow_scope)なら開始以降のベースライン差分・それ以外はフル diff。
+            // If follow-originated (diff_follow_scope), the since-start baseline diff; otherwise the full diff.
             let lines = self.compute_gitdiff_lines(&p, self.diff_follow_scope);
             self.diff_cache = Some(DiffCache {
                 path: p.clone(),
@@ -252,8 +252,8 @@ impl App {
     /// If the file at the tree cursor has git changes, open its diff **directly** (without going through `o`).
     /// For a directory / no changes / outside a repo, only flashes. Closing (q/Esc) returns to the tree.
     pub fn tree_open_git_diff(&mut self) {
-        // `d` は status から「変更あり/なし」を判定する=走行中なら待つ。非同期のまま読むと、
-        // スキャン中に押しただけで「no changes」と拒否され機能が壊れて見える。
+        // `d` judges "has changes / no changes" from status = if a scan is in flight, wait. Reading
+        // while it's still async would let a mere press during the scan be rejected as "no changes", looking like a broken feature.
         self.ensure_git_status_now();
         let Some(e) = self.tab.entries.get(self.tab.selected) else {
             return;
@@ -267,7 +267,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;
         }
-        self.open_git_diff(&path); // came_from_git_view=false(ツリー由来)→ q でツリーへ
+        self.open_git_diff(&path); // came_from_git_view=false (tree-originated) → `q` returns to the tree
     }
 
     /// Whether to lay the diff side by side at display width `width` (resolves Auto).
@@ -279,7 +279,7 @@ impl App {
     pub fn cycle_diff_layout(&mut self) {
         self.diff_layout = self.diff_layout.next();
         self.tab.preview_hscroll = 0;
-        self.tab.git_detail_hscroll = 0; // 並び替えで横位置はリセット(意味が変わるため)
+        self.tab.git_detail_hscroll = 0; // reset the horizontal position on layout switch (its meaning changes)
         let label = match self.diff_layout {
             DiffLayout::Unified => crate::i18n::tr(self.lang, crate::i18n::Msg::DiffUnified),
             DiffLayout::Split => crate::i18n::tr(self.lang, crate::i18n::Msg::DiffSideBySide),
@@ -315,7 +315,7 @@ impl App {
             "{} {name} ?",
             crate::i18n::tr(self.lang, crate::i18n::Msg::DiscardChangesTo)
         );
-        // 破棄後は Git ビューへ戻したいので、戻り元フラグを立てておく。
+        // Since we want to return to the Git view after discarding, set the return-origin flag ahead of time.
         self.tab.came_from_git_view = true;
         self.dialog = Some(Dialog {
             op: PendingOp::GitDiscard { path },
@@ -349,7 +349,7 @@ impl App {
         }
         self.tab.git_log = Some(commits);
         self.tab.git_log_sel = 0;
-        // log は Git ビューの上位ビュー。開いている Git ビューは閉じておく(戻り先は close で復元)。
+        // The log is a higher-level view than the Git view. Close the open Git view (the return target is restored on close).
         self.tab.git_view = false;
     }
 
@@ -389,11 +389,11 @@ impl App {
     pub fn close_git_log(&mut self) {
         self.tab.git_log = None;
         self.tab.git_log_sel = 0;
-        // log は Git ビューの上に開く想定なので、閉じたら Git ビューへ復帰させる。
+        // The log is assumed to open on top of the Git view, so closing it returns to the Git view.
         self.open_git_view();
     }
 
-    // --- ブランチ操作 (`b`一覧 / Enter切替 / n新規 / d削除 / `/`絞り込み) ----------
+    // --- Branch operations (`b` list / Enter switch / n new / d delete / `/` filter) ----------
     /// `b`: Open the local branch list. Opened from the Git view, so the view closes. Cursor moves to the current branch. The filter is reset.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_branches(&mut self) {
@@ -467,7 +467,7 @@ impl App {
         match crate::git::checkout(&self.tab.root, &name) {
             Ok(()) => {
                 self.refresh()?;
-                self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
+                self.ensure_git_status_now(); // update branch name/status immediately (correct even before the next draw)
                 self.close_git_branches();
                 self.flash = Some(format!(
                     "{}: {name}",
@@ -528,7 +528,7 @@ impl App {
         }
     }
 
-    // --- ブランチ絞り込み (`/`) ----------------------------------------------
+    // --- Branch filtering (`/`) ----------------------------------------------
     /// Whether branch-filter input is active (while true, main captures keys as characters).
     pub fn git_branch_filtering(&self) -> bool {
         self.tab.git_branch_filtering
@@ -572,18 +572,18 @@ impl App {
         }
     }
 
-    // --- コミットグラフ (`G`: SourceTree / Git Graph 風) -----------------------
+    // --- Commit graph (`G`: SourceTree / Git Graph style) -----------------------
     /// `G`: Open the commit graph (colored output like `git log --all --graph`). Closes the Git view.
     /// Moves the cursor to the first commit row. Flashes if there are no commits.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_graph(&mut self) {
-        // 優先順(config→HEAD→最近順)を用意。既存ブランチに合わせて整える(削除を除き新規を末尾へ)。
+        // Prepare the priority order (config→HEAD→recency). Reconcile it against existing branches (drop removed ones, append new ones at the end).
         self.ensure_graph_order();
-        // 起動時(初回 or 表示集合が空)は上限つき既定選択を入れる。基準が別枝でも HEAD は必ず含む。
+        // On open (first time, or the visible set is empty), fill in the capped default selection. HEAD is always included even if the base is a different branch.
         if self.tab.git_graph_visible.is_empty() {
             self.tab.git_graph_visible = self.default_graph_visible();
         }
-        // 基準が未設定なら config の優先ブランチ(左から最初に存在し表示中のもの)を基準にする。
+        // If the base is unset, use config's priority branch (the leftmost one that both exists and is currently visible) as the base.
         if self.tab.git_graph_base.is_none() && !self.cfg.ui.graph_base_branches.is_empty() {
             if let Some((oid, label)) = self.derive_base_from_order() {
                 self.tab.git_graph_base = Some(oid);
@@ -595,7 +595,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoCommits).into());
             return;
         }
-        // 変更がある時は worktree 行(先頭)にカーソルを置き、無ければ最初のコミット行へ。
+        // When there are changes, put the cursor on the worktree row (at the top); otherwise the first commit row.
         self.tab.git_graph_sel = if has_wt {
             0
         } else {
@@ -612,15 +612,15 @@ impl App {
     /// In later sessions, keep the reordering while dropping removed branches and appending new ones in recency order.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     fn ensure_graph_order(&mut self) {
-        let by_rec = crate::git::branches_by_recency(&self.tab.root); // (name, is_current, time) 新しい順
+        let by_rec = crate::git::branches_by_recency(&self.tab.root); // (name, is_current, time), newest first
         let exists: std::collections::HashSet<&str> =
             by_rec.iter().map(|(n, _, _)| n.as_str()).collect();
-        // 消えたブランチを除去(並び替えは維持)。
+        // Remove branches that vanished (keeping the reordering).
         self.tab
             .git_graph_order
             .retain(|n| exists.contains(n.as_str()));
         if self.tab.git_graph_order.is_empty() {
-            // 初期構築: config 優先 → HEAD → 最近順。
+            // Initial construction: config priority → HEAD → recency order.
             let mut order: Vec<String> = Vec::new();
             let mut seen = std::collections::HashSet::new();
             for b in &self.cfg.ui.graph_base_branches {
@@ -640,7 +640,7 @@ impl App {
             }
             self.tab.git_graph_order = order;
         } else {
-            // 新規ブランチを最近順で末尾に追加。
+            // Append new branches at the end in recency order.
             let known: std::collections::HashSet<String> =
                 self.tab.git_graph_order.iter().cloned().collect();
             for (n, _, _) in &by_rec {
@@ -671,13 +671,13 @@ impl App {
     fn default_graph_visible(&self) -> std::collections::HashSet<String> {
         let cap = self.cfg.ui.graph_max_branches;
         let mut set = std::collections::HashSet::new();
-        // HEAD は常に。
+        // HEAD is always included.
         for (name, is_cur, _) in crate::git::branches_by_recency(&self.tab.root) {
             if is_cur {
                 set.insert(name);
             }
         }
-        // 優先順の先頭から上限まで(0=無制限)。
+        // From the head of the priority order up to the cap (0=unlimited).
         for name in &self.tab.git_graph_order {
             if cap != 0 && set.len() >= cap {
                 break;
@@ -701,7 +701,7 @@ impl App {
     ) {
         let total = crate::git::branches_by_recency(&self.tab.root).len();
         let visible: Vec<String> = self.tab.git_graph_visible.iter().cloned().collect();
-        // 空 or 全ブランチ網羅 → --all(None)。それ以外は指定ブランチのみ。
+        // Empty or covers all branches → --all (None). Otherwise, only the specified branches.
         let use_all = visible.is_empty() || visible.len() >= total;
         let refs = if use_all {
             None
@@ -714,8 +714,9 @@ impl App {
             self.lang,
             refs,
         );
-        // 非表示ブランチを行の装飾(refs)からも除く(レーン非表示と一貫させる)。
-        // 同じコミットに同居する非表示ブランチ名でラベル/凡例が膨らむのを防ぐ。
+        // Also strip hidden branches from a row's decoration (refs) (keeping it consistent with the
+        // lane's visibility). Prevents the label/legend from bloating with hidden branch names that
+        // happen to sit on the same commit.
         if !use_all {
             let allowed = &self.tab.git_graph_visible;
             for r in &mut rows {
@@ -742,7 +743,7 @@ impl App {
             &self.tab.root,
             self.tab.git_graph_base_label.as_deref(),
         );
-        // 凡例を**優先順(`git_graph_order`)**に並べ替える(config 優先→HEAD→最近)。順序外は末尾。
+        // Sort the legend by **priority order (`git_graph_order`)** (config priority→HEAD→recency). Anything out of order goes to the end.
         legend.sort_by_key(|e| {
             self.tab
                 .git_graph_order
@@ -750,7 +751,7 @@ impl App {
                 .position(|n| n == &e.name)
                 .unwrap_or(usize::MAX)
         });
-        // 非表示数 = 全ローカルブランチ − 表示中ブランチ数。
+        // hidden count = total local branches − currently visible branch count.
         let shown = if use_all { total } else { visible.len() };
         let hidden = total.saturating_sub(shown);
         (rows, has_wt, legend, hidden)
@@ -824,7 +825,7 @@ impl App {
         self.tab.git_graph_hidden
     }
 
-    // --- ブランチ表示パネル(`b`: 多ブランチ時の表示トグル＋優先順の並び替え) ----------
+    // --- Branch display panel (`b`: visibility toggle + priority-order reordering for many branches) ----------
     /// Open the panel. Initializes the tentative selection from the current visible set and moves the cursor to the top (= head of priority order).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_graph_open_picker(&mut self) {
@@ -832,7 +833,7 @@ impl App {
             return;
         }
         self.ensure_graph_order();
-        // 表示集合が空(=全表示扱い)のときは全ブランチを選択済みとして見せる。
+        // When the visible set is empty (= treated as "show all"), show all branches as already selected.
         if self.tab.git_graph_visible.is_empty() {
             self.tab.git_graph_visible = self.tab.git_graph_order.iter().cloned().collect();
         }
@@ -915,7 +916,7 @@ impl App {
         if is_cur {
             self.flash =
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::GraphPickerHeadLocked).into());
-            return; // HEAD は外せない。
+            return; // HEAD cannot be turned off.
         }
         if self.git_graph_picker_set.contains(&name) {
             self.git_graph_picker_set.remove(&name);
@@ -1050,10 +1051,10 @@ impl App {
             return;
         };
         self.tab.git_detail = Some(lines);
-        self.tab.git_detail_meta = meta; // コミットなら全文メッセージを上部に出す
+        self.tab.git_detail_meta = meta; // for a commit, show the full message at the top
         self.tab.git_detail_scroll = 0;
         self.tab.git_detail_hscroll = 0;
-        self.tab.git_detail_title = None; // タイトルはグラフ選択行(worktree/commit)から出す
+        self.tab.git_detail_title = None; // the title is derived from the graph's selected row (worktree/commit)
     }
 
     /// `Enter`: Read the selected commit's detail (commit_diff) and show it as a full-screen diff.
@@ -1081,7 +1082,7 @@ impl App {
             return;
         }
         self.tab.git_detail = Some(lines);
-        self.tab.git_detail_meta = None; // 未コミットなのでメッセージ無し
+        self.tab.git_detail_meta = None; // no message since it's uncommitted
         self.tab.git_detail_scroll = 0;
         self.tab.git_detail_hscroll = 0;
         self.tab.git_detail_title =
@@ -1111,8 +1112,8 @@ impl App {
     /// Vertically scroll the commit detail. The bottom is clamped by the viewport the renderer updates.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_detail_scroll_by(&mut self, delta: i32) {
-        // 描画側が更新する総行数(コミットメッセージ＋diff)でクランプ。
-        // diff 行数だけだとヘッダ分スクロールできず末尾が隠れてしまう。
+        // Clamped by the total line count (commit message + diff) that the render side updates.
+        // Using only the diff line count would leave no room to scroll past the header, hiding the tail.
         let total = self.tab.git_detail_total;
         let max = total.saturating_sub(self.tab.git_detail_viewport as usize) as i32;
         let next = (self.tab.git_detail_scroll as i32)

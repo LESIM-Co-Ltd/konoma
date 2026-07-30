@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    // ---- タブ (FR-5) ----
+    // ---- Tabs (FR-5) ----
 
     /// Snapshot the current tree working state.
     pub(super) fn snapshot_tab(&self) -> PerTab {
@@ -10,8 +10,8 @@ impl App {
 
     /// Save the current working state to the active tab.
     pub(super) fn save_active(&mut self) {
-        // このタブのメディアはこの後 clear_image で捨てられる。1枠だけ退避しておき、戻ってきた時に
-        // デコード/ラスタライズ/外部ツール起動をやり直さずに済ませる。
+        // This tab's media is about to be discarded by clear_image. Stash the one slot so that
+        // when we return, decoding/rasterizing/launching external tools doesn't need to be redone.
         self.stash_media_cache();
         let snap = self.snapshot_tab();
         self.tabs[self.active_tab] = snap;
@@ -35,23 +35,27 @@ impl App {
         // pure per-tab copies with no read anywhere below before `self.tab = t` restores the whole
         // PerTab bundle at the end of this function — nothing in between reads them, so no individual
         // line is needed here.
-        // グラフのブランチ可視ピッカー(モーダル)はタブ跨ぎで持ち越さない: 復元時は閉じておく。
-        // (git オーバーレイ本体・グラフ装飾状態は `self.tab = t` で後段まとめて復元される。)
+        // The graph's branch-visibility picker (modal) is not carried across tabs: keep it closed
+        // on restore.
+        // (The git overlay itself and the graph decoration state are restored together later via
+        // `self.tab = t`.)
         self.git_graph_picker = false;
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();
         self.git_graph_reordered = false;
-        // 見出しアウトラインオーバーレイもタブ跨ぎで持ち越さない。
+        // The heading outline overlay is not carried across tabs either.
         self.outline_open = false;
-        // テーブルセル全文ポップアップも同様(表示中のセルはタブごとに意味が変わる)。
+        // Same for the table-cell full-text popup (the meaning of the shown cell changes per tab).
         self.table_cell_open = false;
-        // <details> の開閉状態も文書ごと=タブ跨ぎで持ち越さない。
+        // The <details> open/closed state is also per-document = not carried across tabs.
         self.details_open.clear();
-        // `table_search_hits` は `search_matches` から導出される描画用の集合。PerTab には持たず
-        // (二重管理を避ける)、復元した(まだ `t` に載ったままの)search_matches から作り直す
-        // (`self.tab` 自体は末尾の `self.tab = t` まで前タブの値のままなので、ここでは `t` を
-        // 直接読む=借用のみで `t` は消費しない)。表以外は空にする — さもないと別タブの一致セル
-        // 座標が居残り、表 renderer(`table_cell_is_hit` を無条件参照)が誤って強調する。
+        // `table_search_hits` is a display-only set derived from `search_matches`. It isn't held in
+        // PerTab (to avoid dual bookkeeping); rebuild it from the restored `search_matches` (still
+        // sitting on `t`) (`self.tab` itself keeps the previous tab's values until `self.tab = t`
+        // at the end, so read `t` directly here — a borrow only, `t` isn't consumed). Empty it for
+        // anything but a table — otherwise another tab's matched-cell coordinates would linger and
+        // the table renderer (which refers to `table_cell_is_hit` unconditionally) would highlight
+        // them by mistake.
         self.table_search_hits = if matches!(
             self.tab.preview_kind,
             Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
@@ -60,82 +64,100 @@ impl App {
         } else {
             std::collections::HashSet::new()
         };
-        // 装飾キャッシュは持ち越さない (decorated_lines が再生成)。
+        // The decoration cache isn't carried over (decorated_lines regenerates it).
         self.md_cache = None;
-        // 復元した diff プレビューはフォロー由来の印を持ち越さない(セッションはタブ横断の概念でない)。
+        // A restored diff preview doesn't carry over the follow-origin mark (a session isn't a
+        // cross-tab concept).
         self.diff_follow_scope = false;
-        // 画像は重い状態(protocol/元画像/GIFフレーム)を持ち越さず、画像系プレビューなら再読込で復元する。
-        // (clear_image は tab.image_center/tab.pdf_page/tab.pdf_pages も既定値へ戻すが、この関数の
-        // 最後で `self.tab = t` が復元値を上書きするので、間で誰も読まない限り無害。)
+        // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
+        // image-type preview, restore it by reloading instead.
+        // (clear_image also resets tab.image_center/tab.pdf_page/tab.pdf_pages to their defaults,
+        // but `self.tab = t` at the end of this function overwrites them with the restored values,
+        // so this is harmless as long as nothing in between reads them.)
         self.clear_image();
         if let (Some(kind), Some(path)) =
             (self.tab.preview_kind.clone(), self.tab.preview_path.clone())
         {
-            // Mermaid(.mmd 画像モード)/全画面フェンスも媒体復元の対象(kind_loads_media)。
-            // 漏れると clear_image 後に誰も start_media_load を呼ばず、reload_media_if_changed も
-            // mtime 一致で早期 return するため、タブ復帰でテキスト図/偽エラーに劣化していた。
+            // Mermaid (.mmd image mode) / a full-screen fence are also targets of media
+            // restoration (kind_loads_media). Missing them meant nobody called start_media_load
+            // after clear_image, and reload_media_if_changed also returned early on a matching
+            // mtime, so returning to the tab degraded to a text diagram / a spurious error.
             if self.kind_loads_media(&kind) {
-                // SVG/動画サムネ/GIF は別スレッドで読み込み開始(set_* は zoom/center を触らない)。
-                // 保存値を即セットしておけば、後から結果が届いても復元したズーム/中心が保たれる。
-                // GIF は先頭フレームから再生。
-                // PDF は保存ページを start_media_load の前に戻す(その世代でそのページをラスタライズする)。
-                // `t.pdf_page` をその場でクランプしておく: これから読む restore_media_cache の
-                // 引数にも、末尾の `self.tab = t` が運ぶ最終値にも同じクランプ後の値を使わせる。
+                // SVG/video thumbnail/GIF loading starts on a separate thread (set_* doesn't touch
+                // zoom/center). Setting the saved values right away means the restored zoom/center
+                // is kept even if the result arrives later.
+                // A GIF plays from its first frame.
+                // For PDF, put the saved page back before start_media_load (that generation
+                // rasterizes that page).
+                // Clamp `t.pdf_page` right here: use the same clamped value both as the argument
+                // to restore_media_cache below and as the final value carried by `self.tab = t` at the end.
                 t.pdf_page = t.pdf_page.max(1);
-                // pdf_pages: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
-                // 直前に見ていたタブへ戻る等、同じファイル・同じ mtime・同じページなら、退避した
-                // デコード済み画像をそのまま使う(PDF/動画の外部ツール起動やラスタライズをやり直さない)。
+                // pdf_pages: a plain copy with no transformation. Not read here, so leave it to the
+                // bulk restore at the end.
+                // If it's the same file, same mtime, same page — e.g. returning to a tab you just
+                // viewed — reuse the stashed decoded image as-is (skip re-launching external
+                // tools/re-rasterizing for PDF/video).
                 let reused = self.restore_media_cache(&path, t.pdf_page);
                 if !reused {
                     self.start_media_load(&kind, &path);
                 }
                 self.tab.image_zoom = t.image_zoom;
-                // image_center: 変換無しの純コピー。ここでは読まないので末尾の一括復元に任せる。
+                // image_center: a plain copy with no transformation. Not read here, so leave it to
+                // the bulk restore at the end.
                 self.image_crop = None;
                 if reused {
-                    // 復元は apply_payload を通らないので、そこで走るはずのシャープ再ラスタが
-                    // 起動しない。再ラスタ中にタブを離れた SVG/mermaid がボケたまま戻るのを防ぐ
-                    // (ズーム復元後に呼ぶ＝必要密度は復元後の値で判定される)。
+                    // Restore doesn't go through apply_payload, so the sharp reraster that would
+                    // normally fire there doesn't run. This prevents an SVG/mermaid that left its
+                    // tab mid-reraster from coming back still blurry (called after the zoom is
+                    // restored = the needed density is judged from the restored value).
                     self.maybe_sharpen_vector();
                 }
             }
         }
-        // raw ソース表示状態を復元してから windowed を張り直す(raw md は窓読みにするため順序が重要)。
-        // setup_windowed が is_raw_source 経由で読むので、末尾の一括復元を待たずここで写す
-        // (Copy なので t は消費されず、末尾の `self.tab = t` にも同じ値がそのまま乗る)。
+        // Restore the raw-source display state before re-arming windowed (order matters since raw
+        // md is windowed reading). setup_windowed reads it via is_raw_source, so copy it here
+        // without waiting for the bulk restore at the end
+        // (it's Copy, so `t` isn't consumed, and the same value still lands on `self.tab = t` at the end).
         self.tab.md_raw = t.md_raw;
-        // Tab フォーカス/インライン図のズーム/全画面復帰情報はこのタブの保存値へ(前タブの値を
-        // 別文書に適用しない)。md_items は次描画の ensure_md_cache がこのタブの文書で再構築し、
-        // focused_item はその時に範囲へクランプされる(それまで旧文書の items を参照しないよう空に)。
-        // (focused_item/fence_zoom/fence_center/fence_return はここでは読まれないので末尾の
-        // `self.tab = t` に任せる。)
+        // Tab focus / the inline diagram's zoom / full-screen-return info go to this tab's saved
+        // values (never apply the previous tab's values to a different document). md_items gets
+        // rebuilt by the next render's ensure_md_cache for this tab's document, and focused_item is
+        // clamped to range at that point (emptied here so nothing references the old document's
+        // items in the meantime).
+        // (focused_item/fence_zoom/fence_center/fence_return aren't read here, so leave them to
+        // `self.tab = t` at the end.)
         self.md_items.clear();
-        // 大きい Code/Text(＋raw の Markdown/Mermaid)なら ウィンドウ読みリーダを張り直す(byte_top は末尾で復元される)。
+        // For a large Code/Text (+ raw Markdown/Mermaid), re-arm the windowed-reading reader
+        // (byte_top is restored at the end).
         self.setup_windowed();
-        // windowed プレビューの 2D キャレットは末尾の `self.tab = t` で復元される(選択は持ち越さない)。
-        // 範囲は次描画/移動でクランプされる。
+        // The windowed preview's 2D caret is restored by `self.tab = t` at the end (the selection
+        // isn't carried over). The range is clamped on the next render/move.
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // CSV/TSV テーブルは本体を再パースし、保存済みカーソル/スクロールを復元してクランプする。
+        // For a CSV/TSV table, re-parse the body and restore the saved cursor/scroll, then clamp it.
         self.load_table();
         self.tab = t;
         self.clamp_table_cursor();
 
-        // 切替でアクティブになったタブを**ディスクから再読み込み**する。ファイル監視はアクティブな
-        // root しか見ていない(rewatch)ため、裏に居た間の外部変更(ファイルの作成/削除/リネーム・git
-        // 状態・変更ガター/diff)がスナップショットのまま古い。fs イベント時と同じ refresh_fs 経路を
-        // 通して、ツリー再構築・git status・diff/gutter キャッシュ・変更フィルタ・git ビュー・プレビュー
-        // 再読込を一括で追従させる。`false`=重い ignore セット(gitignore)は作り直さずキャッシュ保持
-        // (root が変われば次の描画の refresh_git_if_needed が workdir 単位キャッシュで面倒を見る＝
-        // 巨大 repo の性能対策[[git-watch-feedback-loop-perf]]を壊さない)。プレビューの表示位置は
-        // reload_preview が保持する(スクロール/ズーム/テーブルカーソル)。
-        // タブは背面に居た間 fs 監視の対象外なので、そのタブの git status は外部変更を取りこぼして
-        // いる可能性がある(同一 repo の別タブなら workdir 単位キャッシュで流用され陳腐化が居残る)。
-        // 切替=再検証の節目として dirty を立て、次の描画の refresh_git_if_needed に取り直させる
-        // (back_to_tree と同型。h/l 連打は dirty を立てないので最適化は保たれる)。
+        // **Reload the tab that just became active from disk.** File watching only looks at the
+        // active root (rewatch), so external changes made while this tab sat in the background
+        // (file create/delete/rename, git status, the change gutter/diff) are still stale in the
+        // snapshot. Route it through the same refresh_fs path used for fs events, so the tree
+        // rebuild, git status, diff/gutter cache, changed filter, git view, and preview reload all
+        // catch up together. `false` = keep the cache for the heavy ignore set (gitignore) instead
+        // of rebuilding it (if the root changes, the next render's refresh_git_if_needed handles it
+        // via the per-workdir cache anyway = doesn't break the huge-repo perf work
+        // [[git-watch-feedback-loop-perf]]). The preview's display position is preserved by
+        // reload_preview (scroll/zoom/table cursor).
+        // While this tab sat in the background it was outside fs watching, so its git status may
+        // have missed an external change (for another tab on the same repo, the per-workdir cache
+        // gets reused and the staleness lingers). Mark it dirty at the tab-switch checkpoint for
+        // re-verification, and let the next render's refresh_git_if_needed refetch it (the same
+        // shape as back_to_tree; rapid h/l presses don't mark it dirty, so that optimization is preserved).
         self.git_status_dirty = true;
-        // プレビュー本体は上で既にディスクから組み直しているので、ここでは**再読込しない**
-        // (従来は refresh_fs → reload_preview が同じ仕事を繰り返し、CSV タブは全行パースが2回走っていた)。
+        // The preview itself has already been rebuilt from disk above, so **don't reload it again**
+        // here (previously refresh_fs → reload_preview repeated the same work, running the
+        // full-row CSV parse twice for a CSV tab).
         let _ = self.refresh_fs_after_tab_switch();
     }
 
@@ -151,7 +173,7 @@ impl App {
     /// the **preview target's file name**. The active tab references the latest working state (App fields),
     /// while inactive tabs reference the snapshot (`PerTab`) (since saving happens only on switch).
     pub fn tab_label(&self, i: usize) -> String {
-        // (mode, root, preview_path) をアクティブ/非アクティブで使い分ける。
+        // Use (mode, root, preview_path) differently depending on whether this is the active tab.
         let (mode, root, preview) = if i == self.active_tab {
             (
                 self.tab.mode,
@@ -164,7 +186,7 @@ impl App {
             return String::new();
         };
         let path = match mode {
-            Mode::Preview => preview.unwrap_or(root), // 念のため preview 無しは root へ
+            Mode::Preview => preview.unwrap_or(root), // just in case: no preview falls back to root
             Mode::Tree => root,
         };
         path.file_name()
@@ -177,9 +199,10 @@ impl App {
     /// preserved by `save_active`, so it is not lost.
     pub fn tab_new(&mut self) -> Result<()> {
         self.save_active();
-        // 見出しアウトラインオーバーレイは新タブへ持ち越さない(空タブ上の空オーバーレイを防ぐ)。
+        // The heading outline overlay isn't carried into the new tab (prevents an empty overlay
+        // on an empty tab).
         self.outline_open = false;
-        // テーブルセル全文ポップアップも同様。
+        // Same for the table-cell full-text popup.
         self.table_cell_open = false;
         let root = self.tab.root.clone();
         self.tab.open_dir = root.clone();
@@ -187,7 +210,8 @@ impl App {
         self.tab.selected = 0;
         self.tab.entries.clear();
         self.rebuild_tree()?;
-        // snapshot 前に Tree へリセットする (snapshot がプレビュー状態も取り込むため順序が重要)。
+        // Reset to Tree before the snapshot (order matters since the snapshot also captures
+        // preview state).
         self.tab.mode = Mode::Tree;
         self.clear_image();
         self.tab.preview_path = None;
@@ -200,13 +224,15 @@ impl App {
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
-        // 新規タブは md フォーカス/インライン図ズームも素の状態から(PerTab 複製対象)。
+        // A new tab also starts md focus / the inline diagram zoom from scratch (part of the
+        // PerTab duplication set).
         self.md_items.clear();
         self.tab.focused_item = None;
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
         self.tab.fence_return = None;
-        // 新規タブは git オーバーレイ無しの素の Tree から始める(現タブの git 状態は save_active で保持済み)。
+        // A new tab starts as a plain Tree with no git overlay (the current tab's git state was
+        // already preserved by save_active).
         self.tab.git_view = false;
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
@@ -226,8 +252,9 @@ impl App {
         self.tab.git_branch_filtering = false;
         self.tab.git_graph = None;
         self.tab.git_graph_sel = 0;
-        // 新規タブはグラフの装飾状態(基準/凡例/表示ブランチ/優先順)とピッカーも素から始める
-        // (現タブのこれらは直前の save_active で PerTab に保持済み)。次に開くとき再導出される。
+        // A new tab also starts the graph's decoration state (base/legend/visible branches/order)
+        // and picker from scratch (the current tab's were already preserved in PerTab by the
+        // preceding save_active). They get re-derived the next time it's opened.
         self.tab.git_graph_base = None;
         self.tab.git_graph_base_label = None;
         self.tab.git_graph_visible.clear();
@@ -238,15 +265,16 @@ impl App {
         self.git_graph_picker_sel = 0;
         self.git_graph_picker_set.clear();
         self.git_graph_reordered = false;
-        // 新規タブは選択 / 絞り込み / プレビュー検索を空から始める
-        // (現タブのこれらは直前の save_active で PerTab に保持済み)。
+        // A new tab starts selection / filter / preview search empty
+        // (the current tab's were already preserved in PerTab by the preceding save_active).
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
         self.tabs.push(self.snapshot_tab());
         self.active_tab = self.tabs.len() - 1;
-        // タブ集合が変わる節目でセッションを保存する(異常終了でも直近のタブ構成が残る)。
+        // Save the session at the checkpoint where the tab set changes (the most recent tab
+        // layout survives even an abnormal exit).
         self.save_session();
         Ok(())
     }
@@ -281,8 +309,8 @@ impl App {
             self.flash = Some(tr(self.lang, crate::i18n::Msg::CantCloseLastTab).into());
             return;
         }
-        // 閉じるタブのメディアはもう誰も戻ってこない。1枠のキャッシュが握り続けると、
-        // どのタブとも無関係な画像が常駐したままになる。
+        // Nobody will come back to the tab that's closing, so its media is done for. If the
+        // one-slot cache kept holding it, an image unrelated to any tab would stay resident.
         self.drop_media_cache_for_active();
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
@@ -294,7 +322,7 @@ impl App {
 
     /// Move tabs relatively (dir: +1=next / -1=previous). Wraps at the ends.
     pub fn tab_cycle(&mut self, dir: i32) {
-        self.tab_list = false; // 一覧から [/] で切替えた場合も一覧は用済み
+        self.tab_list = false; // switching via [/] from the list also means the list is done
         if self.tabs.len() <= 1 {
             return;
         }
@@ -307,7 +335,7 @@ impl App {
 
     /// Select a tab by number (0-based). Out-of-range or the same tab is ignored.
     pub fn tab_goto(&mut self, i: usize) {
-        self.tab_list = false; // 一覧(1-9/Enter)からの切替で一覧を閉じる
+        self.tab_list = false; // switching from the list (1-9/Enter) closes the list
         if i >= self.tabs.len() || i == self.active_tab {
             return;
         }
@@ -317,7 +345,7 @@ impl App {
         self.save_session();
     }
 
-    // --- タブ一覧オーバーレイ (`T`) ----------------------------------------
+    // --- Tab-list overlay (`T`) ----------------------------------------
     pub fn is_tab_list(&self) -> bool {
         self.tab_list
     }
@@ -355,7 +383,7 @@ impl App {
         if i == self.active_tab {
             self.tab_close();
         } else {
-            // 閉じる(非アクティブ)タブのメディアをキャッシュが握っていたら手放す。
+            // If the cache is holding the media of the (inactive) tab being closed, release it.
             if let Some(t) = self.tabs.get(i) {
                 let closing = t.preview_path.clone();
                 if matches!((&self.media_cache, &closing), (Some(c), Some(p)) if &c.path == p) {

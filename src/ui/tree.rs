@@ -31,7 +31,7 @@ fn truncate_width(s: &str, max: usize) -> (String, usize) {
     for ch in s.chars() {
         let cw = ch.width().unwrap_or(0);
         if used + cw > max - 1 {
-            break; // 末尾の `…`(幅1)分を残す
+            break; // reserve room for the trailing `…` (width 1)
         }
         out.push(ch);
         used += cw;
@@ -51,8 +51,8 @@ fn highlight_match(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
     if q.is_empty() {
         return vec![Span::styled(name.to_string(), base)];
     }
-    // name の各文字を小文字化しつつ、その文字が name 上で占めるバイト範囲 [start,end) を保持する。
-    // to_lowercase は 1 文字を複数文字に展開し得るので、小文字単位ごとに同じ name バイト範囲を紐付ける。
+    // Lowercase each character of name while keeping the byte range [start,end) it occupies in name.
+    // to_lowercase can expand one character into several, so each lowercased unit is tied to the same name byte range.
     let mut units: Vec<(char, usize, usize)> = Vec::new();
     for (b, ch) in name.char_indices() {
         let end = b + ch.len_utf8();
@@ -60,7 +60,7 @@ fn highlight_match(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
             units.push((lc, b, end));
         }
     }
-    // クエリに一致した name バイト範囲を昇順・非重複で集める(範囲端は常に name の文字境界)。
+    // Collect the name byte ranges that matched the query, ascending and non-overlapping (the range edges are always name's char boundaries).
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut k = 0;
     while k + q.len() <= units.len() {
@@ -72,7 +72,7 @@ fn highlight_match(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
             let start = units[k].1;
             let end = units[k + q.len() - 1].2;
             match ranges.last_mut() {
-                // 直前の範囲と接する/重なる場合は結合(同一文字内の重複強調を避ける)。
+                // Merge when it touches/overlaps the previous range (avoid double-highlighting within the same character).
                 Some(last) if start <= last.1 => last.1 = last.1.max(end),
                 _ => ranges.push((start, end)),
             }
@@ -102,9 +102,9 @@ fn highlight_match(name: &str, query: &str, base: Style) -> Vec<Span<'static>> {
 
 /// Context appendix for the Tree view (the mode chip is prepended by `status`). Sort order + selection count.
 pub fn context(app: &App) -> Vec<Span<'static>> {
-    // 現在の並び (例: "sort: mod ↑")。
+    // Current sort order (e.g. "sort: mod ↑").
     let mut spans = vec![Span::from(format!("  {}", app.sort_label())).dim()];
-    // 選択/ビジュアル中は件数 (例: "sel: 3")。
+    // While selecting/in Visual, show the count (e.g. "sel: 3").
     if app.show_selection_gutter() {
         spans.push(
             Span::from(format!(
@@ -115,7 +115,7 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
             .bold(),
         );
     }
-    // クリップボードに積まれていれば表示 (例: "[copy 3]")。ペースト可能の合図。
+    // Show when something is queued on the clipboard (e.g. "[copy 3]"). Signals that a paste is available.
     if let Some(label) = app.clipboard_label() {
         spans.push(Span::from(format!("  [{label}]")).dim());
     }
@@ -150,8 +150,8 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("s", l(crate::i18n::Msg::SortHint))
             .row("m / '", l(crate::i18n::Msg::TreeBookmarkHint))
             .row(crate::ui::status::page_help(app), ""),
-        // ファイル管理(Space リーダー)は実際のキーマップ(設定反映済み)から組み立てる。
-        // 削除は y=ゴミ箱 / !=完全削除、作成は末尾 / でフォルダ。
+        // File management (the Space leader) is built from the actual keymap (config already reflected).
+        // Delete is y = trash / ! = permanent delete; create uses a trailing / for a folder.
         crate::ui::help::leader_section(app, crate::keymap::LeaderId::File, "Space")
             .unwrap_or_else(|| HelpSection::new(l(crate::i18n::Msg::TreeFile))),
         HelpSection::new(l(crate::i18n::Msg::TreeSelection))
@@ -174,7 +174,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 /// It reads `&App`, so in the future it can also switch by cursor position or selection state.
 pub fn footer_hints(app: &App) -> Vec<String> {
     let lang = app.lang;
-    // 複数タブなら q=タブを閉じる(＋Q=終了)、最後の1つなら q=終了。
+    // With multiple tabs, q = close the tab (+ Q = quit); with the last one, q = quit.
     let multi = app.tab_count() > 1;
     let mut v = vec![
         hint(lang, "jk", crate::i18n::Msg::GitMove),
@@ -222,19 +222,19 @@ pub fn footer_hints(app: &App) -> Vec<String> {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    // root が変わっていれば git status を取り直す (FR-7)。同一 root では再計算しない。
+    // Re-fetch git status if root has changed (FR-7). No recomputation for the same root.
     app.refresh_git_if_needed();
 
     let icons_on = app.cfg.ui.icons;
-    // 変更が1つでもあれば、整列のため全行の先頭に状態ガター(2桁)を出す。
+    // If there is even one change, show a status gutter (2 columns) at the start of every row for alignment.
     let show_gutter = app.git_has_changes();
-    // 複数選択中/ビジュアル中は、各行の最左に選択マーカー列(2桁)を出す(空なら出さない)。
+    // While multi-selecting/in Visual, show a selection-marker column (2 columns) at the leftmost of each row (skipped when empty).
     let show_sel = app.show_selection_gutter();
-    // 絞り込み中/変更のみ表示中はフラットな結果一覧なので、各行に root からの相対パスを出して場所が分かるようにする。
+    // While filtering/showing changes-only, the result list is flat, so show each row's path relative to root so its location is clear.
     let filtering = app.filter_query().is_some() || app.changed_filter();
     let query = app.filter_query().unwrap_or("").to_string();
     let root_for_rel = app.tab.root.clone();
-    // 詳細リスト列 (設定 [ui] details)。有効な列のみ採用し、右端に固定幅で並べる。
+    // Detail list columns (config [ui] details). Only enabled columns are adopted, laid out at fixed width on the right edge.
     let detail_cols: Vec<String> = app
         .cfg
         .ui
@@ -246,24 +246,25 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let show_details = !detail_cols.is_empty();
     let details_w: usize = detail_cols
         .iter()
-        .map(|id| 2 + fileops::detail_column_width(id).unwrap()) // "  " 区切り + 列幅
+        .map(|id| 2 + fileops::detail_column_width(id).unwrap()) // "  " separator + column width
         .sum();
-    let inner_w = area.width.saturating_sub(2) as usize; // 左右ボーダー
-    let name_region_w = inner_w.saturating_sub(details_w); // 名前＋パディングの領域
+    let inner_w = area.width.saturating_sub(2) as usize; // left/right border
+    let name_region_w = inner_w.saturating_sub(details_w); // the name + padding region
 
-    // 可視範囲だけを整形する(C3)。数千エントリでも整形/`quick_meta` の stat syscall を
-    // 画面に映る行(≒ビューポート高)に限定し、スクロールごとの全件再整形を避ける。
-    // 選択行が常に見えるようスクロール量を先に決め、`[offset..end]` だけを Line 化する。
-    let visible = area.height.saturating_sub(2) as usize; // 上下ボーダー分を除く
-    app.tab.tree_viewport = visible as u16; // ページ送りの1ページ量に使う
+    // Only format the visible range (C3). Even with thousands of entries, limit formatting/`quick_meta`'s
+    // stat syscall to the rows that actually appear on screen (≈ viewport height), avoiding a full
+    // re-format on every scroll. Decide the scroll amount up front so the selected row is always
+    // visible, then turn only `[offset..end]` into Lines.
+    let visible = area.height.saturating_sub(2) as usize; // excluding the top/bottom border
+    app.tab.tree_viewport = visible as u16; // used as one page's worth for paging
     let offset = if visible > 0 && app.tab.selected >= visible {
         app.tab.selected - visible + 1
     } else {
         0
     };
     let end = offset.saturating_add(visible).min(app.tab.entries.len());
-    // 詳細セルは App 側の (path → cells) キャッシュを可視行分だけ先に埋める(プリパス)。
-    // 行ごとの stat(`items` 列は read_dir)がキー入力のたびに走るのを防ぎ、ツリー再構築で破棄される。
+    // Pre-pass: fill only the visible rows into App's (path → cells) detail-cell cache first.
+    // Prevents the per-row stat (the `items` column is read_dir) from running on every keypress; discarded on tree rebuild.
     if show_details {
         let vis: Vec<(std::path::PathBuf, bool)> = app.tab.entries[offset..end]
             .iter()
@@ -275,7 +276,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(vi, e)| {
-            let i = offset + vi; // entries 内の元の添字(選択/ビジュアル判定に使う)
+            let i = offset + vi; // the original index within entries (used for selection/Visual checks)
             let indent = "  ".repeat(e.depth);
             let fname = || {
                 e.path
@@ -284,7 +285,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     .unwrap_or("?")
                     .to_string()
             };
-            // 絞り込み中は root からの相対パス、通常はファイル名(所有 String にして Line に載せる)。
+            // While filtering, the path relative to root; otherwise the file name (as an owned String, put into a Line).
             let name: String = if filtering {
                 e.path
                     .strip_prefix(&root_for_rel)
@@ -316,10 +317,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 format!("{indent}{chevron}")
             };
 
-            // 行頭(インデント前)= 複数選択マーカー → git 状態ガター。色＝意味。
+            // Row start (before the indent) = multi-select marker → git status gutter. Color = meaning.
             let mut spans: Vec<Span> = Vec::new();
             if show_sel {
-                // 確定済み選択 ∪ ビジュアルの進行中範囲をマーク表示。
+                // Show a mark for confirmed selection ∪ the in-progress Visual range.
                 if app.is_selected(&e.path) || app.is_in_visual_range(i) {
                     spans.push(Span::from("● ").bold());
                 } else {
@@ -336,15 +337,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             let prefix_w = prefix.width();
-            // gitignore 除外(自身 or 祖先が ignored)は Zed 風に少し暗く(DIM)する。
-            // 変更ステータス(色=意味)があるエントリは従来どおり着色を優先(ignored 扱いしない)。
+            // gitignore-excluded (self or an ancestor is ignored) is dimmed slightly (DIM), Zed-style.
+            // An entry with a change status (color = meaning) keeps its color as before (not treated as ignored).
             let ignored = status.is_none() && app.is_ignored(&e.path);
             let dim = Style::new().add_modifier(Modifier::DIM);
             spans.push(Span::styled(
                 prefix,
                 if ignored { dim } else { Style::default() },
             ));
-            // 名前は git 状態色 > ignored(暗く) > 既定色(テーマ追従)。
+            // Name color priority: git status color > ignored (dimmed) > default color (follows theme).
             let name_style = if let Some(st) = status {
                 Style::new().fg(st.color())
             } else if ignored {
@@ -353,7 +354,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default()
             };
             if show_details {
-                // 名前を領域幅に詰め、残りを空白で埋めてから固定幅の列を右端に並べる(縦に揃う)。
+                // Pack the name into the region width, pad the rest with spaces, then lay the fixed-width columns out on the right edge (vertically aligned).
                 let left_w = (show_sel as usize) * 2 + (show_gutter as usize) * 2 + prefix_w;
                 let budget = name_region_w.saturating_sub(left_w);
                 let (tname, nw) = truncate_width(&name, budget);
@@ -373,7 +374,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     spans.push(Span::from(format!("  {cell_t:>w$}")).dim());
                 }
             } else if filtering && !query.is_empty() {
-                // 絞り込み中はマッチ箇所(クエリ部分)を強調する。
+                // While filtering, highlight the matching part (the query portion).
                 spans.extend(highlight_match(&name, &query, name_style));
             } else {
                 spans.push(Span::styled(name, name_style));
@@ -381,7 +382,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let line = Line::from(spans);
             if i == app.tab.selected {
-                line.reversed() // 選択行は反転 (色付き span も含む)
+                line.reversed() // the selected row is reversed (including colored spans)
             } else {
                 line
             }
@@ -389,8 +390,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let root = app.tab.root.clone();
-    // タイトル枠にパス＋(git リポジトリなら) ブランチ名を併記する。絞り込み中はクエリ件数も、
-    // 変更のみ表示中は変更件数を出す。
+    // The title border shows the path + (if a git repo) the branch name alongside it. While filtering,
+    // also show the query's match count; while showing changes-only, show the change count.
     let title = match (app.filter_query(), app.git_branch()) {
         (Some(q), _) => format!(
             " {}  /{}  ({}) ",
@@ -408,8 +409,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         (None, None) => format!(" {} ", app.format_path(&root)),
     };
 
-    // 既に `[offset..end]` だけを Line 化済みなので、Paragraph 側の縦スクロールは 0
-    // (offset 行ぶんは描かずに飛ばすのではなく、最初から作っていない)。
+    // Only `[offset..end]` has already been turned into Lines, so Paragraph's vertical scroll is 0
+    // (rather than skipping past offset rows without drawing them, they were never created in the first place).
     let widget = Paragraph::new(lines).block(Block::bordered().title(title));
     frame.render_widget(widget, area);
 }
@@ -421,10 +422,10 @@ mod tests {
     #[test]
     fn highlight_match_marks_query_in_yellow() {
         let spans = highlight_match("src/main.rs", "rs", Style::default());
-        // 連結すると元の文字列に戻る(欠落/重複なし)。
+        // Joining the spans reconstructs the original string (no missing/duplicated content).
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "src/main.rs");
-        // マッチ部 "rs" の span が黄色＋太字で強調される。
+        // The span for the matched "rs" is highlighted yellow + bold.
         assert!(
             spans.iter().any(|s| s.content.as_ref() == "rs"
                 && s.style.fg == Some(Color::Yellow)
@@ -442,7 +443,7 @@ mod tests {
 
     #[test]
     fn highlight_match_non_ascii_marks_query() {
-        // 非 ASCII 名でも強調が出る(silent degradation しない)。
+        // Highlighting still shows up for a non-ASCII name (no silent degradation).
         let spans = highlight_match("café.txt", "É", Style::default());
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "café.txt");
@@ -456,12 +457,12 @@ mod tests {
 
     #[test]
     fn highlight_match_lowercase_expands_no_panic() {
-        // 小文字化で文字境界がズレ得る組合せでも panic せず、連結で元に戻る。
-        // 'İ'(U+0130) は to_lowercase で 'i' + 結合ドットの 2 文字に展開される。
+        // Even a combination where lowercasing can shift char boundaries doesn't panic, and joining restores the original.
+        // 'İ' (U+0130) expands via to_lowercase into 2 characters: 'i' + a combining dot.
         let spans = highlight_match("İẞ", "ß", Style::default());
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "İẞ");
-        // 'ẞ'(U+1E9E) は小文字 'ß' に一致し強調される。
+        // 'ẞ' (U+1E9E) matches lowercase 'ß' and gets highlighted.
         assert!(
             spans
                 .iter()
@@ -481,7 +482,7 @@ mod tests {
             secs.len() >= 3,
             "ツリー/ファイル管理/選択など複数セクション"
         );
-        // 先頭セクションはツリー操作。代表的なキー行を含む。
+        // The first section is tree operations. It includes representative key rows.
         let tree = &secs[0];
         assert_eq!(tree.title, tr(app.lang, crate::i18n::Msg::TreeSection));
         assert!(
@@ -493,7 +494,7 @@ mod tests {
             tree.rows.iter().any(|(k, _)| k == "o"),
             "git 変更ハブ(o)の行が無い"
         );
-        // どのセクションも空ではない(タイトルだけのセクションは作らない方針の確認)。
+        // No section is empty (confirms the policy of never creating a title-only section).
         assert!(
             secs.iter().all(|s| !s.title.is_empty()),
             "空タイトルのセクションがある"

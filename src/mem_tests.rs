@@ -63,7 +63,7 @@ fn mem_calibration() {
     eprintln!("size_of PerTab     = {}", crate::app::sizeof_pertab());
     eprintln!("size_of Config     = {}", std::mem::size_of::<Config>());
 
-    // md スクロールの装飾コスト vs 再スクロールコスト(キャッシュ再利用の証明用)。
+    // md scroll's decoration cost vs re-scroll cost (to prove cache reuse).
     let dir = std::env::temp_dir().join("konoma_mem_calib_md");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -87,7 +87,7 @@ fn mem_calibration() {
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
     let first_draw = allocated_by(|| {
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap(); // 装飾キャッシュ構築
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap(); // build the decoration cache
     });
     let one_scroll = allocated_by(|| {
         app.preview_scroll(3);
@@ -99,7 +99,7 @@ fn mem_calibration() {
         one_scroll as f64 / first_draw as f64
     );
 
-    // 巨大ファイルのプレビュー: ファイルサイズに比例するか(比例=O(file)=windowed 違反)。
+    // Preview of a huge file: does it scale with file size (scaling = O(file) = a windowed violation)?
     let open_alloc = |lines: usize| -> (u64, u64) {
         let mut body = String::new();
         for i in 0..lines {
@@ -117,7 +117,7 @@ fn mem_calibration() {
         (body.len() as u64, alloc)
     };
     let (sz1, al1) = open_alloc(50_000);
-    let (sz2, al2) = open_alloc(200_000); // 4x の行数
+    let (sz2, al2) = open_alloc(200_000); // 4x the line count
     eprintln!("huge 50k : size={sz1} open_alloc={al1}");
     eprintln!(
         "huge 200k: size={sz2} open_alloc={al2}  (alloc ratio {:.2}, size ratio {:.2})",
@@ -213,7 +213,7 @@ fn windowed_preview_does_not_scale_with_file_size() {
     write_lines("small.txt", 5_000);
     write_lines("large.txt", 80_000); // 16x small
 
-    // ウォームアップ(初回 syntect/テーマ init を計測から除外)。
+    // Warm-up (excludes the first-time syntect/theme init from the measurement).
     let _ = mem_preview(&dir, "warm.txt");
 
     let small_alloc = allocated_by(|| {

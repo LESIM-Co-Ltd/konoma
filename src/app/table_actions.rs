@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    // ---- CSV/TSV テーブルプレビュー ------------------------------------------
+    // ---- CSV/TSV table preview ------------------------------------------
 
     /// Parse the current Table/Archive-kind preview into `table_data` (None on failure = raw-text
     /// fallback / can-not-preview). Does not touch the cursor/scroll (callers reset or restore
@@ -14,8 +14,8 @@ impl App {
                     self.table_data = Some(t);
                 }
             }
-            // アーカイブの一覧化はサードパーティクレート(zip/tar)頼み。万一のパニックも
-            // catch_silent で握り潰し、失敗は None(→ [can not preview] へ安全降格)にする。
+            // Listing an archive relies on third-party crates (zip/tar). Even an unlikely panic is
+            // swallowed by catch_silent, and a failure becomes None (→ safely degrades to [can not preview]).
             Some(PreviewKind::Archive { path, kind }) => {
                 self.table_data = crate::preview::markdown::catch_silent(|| {
                     crate::preview::archive::list(&path, kind)
@@ -197,10 +197,11 @@ impl App {
         self.table_search_hits.contains(&(row, col))
     }
 
-    // ---- テーブルセル全文ポップアップ (`Enter` in a table preview) --------------
-    // konoma の表グリッドは列幅に収まらないセルを `…` で切り詰めるので、`y→c` でクリップボードへ
-    // コピーはできても画面上で読めない(コピー先は常に生のセル値=切り詰め無し)。この穴を埋める、
-    // Outline/Info と同型の App-global(非 per-tab)トグルオーバーレイ。
+    // ---- Table cell full-text popup (`Enter` in a table preview) --------------
+    // konoma's table grid truncates any cell that doesn't fit the column width with `…`, so while
+    // `y→c` can copy it to the clipboard, it can't be read on screen (the copy target is always the
+    // raw cell value = no truncation). To fill this gap: an App-global (not per-tab) toggle
+    // overlay, the same shape as Outline/Info.
 
     /// `Enter`: open/close the full-cell popup (mirrors `toggle_outline`/`toggle_info`). The real
     /// trigger is the fixed `Enter` key (`handle_enter`/`handle_esc` in main.rs); `Action::ToggleTableCell`
@@ -236,7 +237,7 @@ impl App {
         }
         let (r, c) = (self.tab.table_cur_row, self.tab.table_cur_col);
         let text = if t.nrows() == 0 {
-            String::new() // ヘッダのみのファイル: 中身は空。
+            String::new() // a header-only file: the content is empty.
         } else {
             t.cell(r, c).to_string()
         };

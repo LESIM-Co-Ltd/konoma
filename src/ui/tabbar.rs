@@ -1,12 +1,12 @@
-// タブバー描画 (M4 / FR-5)。
+// Tab bar rendering (M4 / FR-5).
 //
-// 複数のツリーコンテキストをタブとして上端に並べる。表示可否は ui::render が
-// config `ui.tabbar` ("always" | "auto" | "hidden") を見て決め、ここは描画だけを担う。
-// アクティブタブは反転＋太字。各タブは「番号:ディレクトリ名」。
+// Lays out multiple tree contexts as tabs along the top edge. Whether they're shown is decided by
+// ui::render based on the `ui.tabbar` config ("always" | "auto" | "hidden"); this module only draws.
+// The active tab is reversed + bold. Each tab reads "number:directory name".
 //
-// 幅に収まらないときは**アクティブタブを中心に**左右交互へ広げた可視窓だけを描き、
-// 端に隠れているタブ数を「‹n / n›」で示す(アクティブが見えなくなる回帰の防止・
-// タブ一覧は `T`)。
+// When it doesn't fit the width, it draws only a visible window that grows **centered on the
+// active tab**, alternating sides, and shows the number of tabs hidden at each edge as "‹n / n›"
+// (guards against the regression where the active tab becomes invisible — the full tab list is `T`).
 
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -77,7 +77,8 @@ fn visible_range(widths: &[usize], active: usize, avail: usize) -> (usize, usize
     };
     let (mut s, mut e) = (active, active + 1);
     loop {
-        // 中央寄せ: 埋まりの少ない側から先に試し、入らなければもう片側、両方駄目なら確定。
+        // Center: try the side with less fill first; if it doesn't fit, try the other side; if
+        // neither fits, settle.
         let prefer_right = (e - active) <= (active - s);
         let first = if prefer_right && e < n {
             Some((s, e + 1))
@@ -114,26 +115,28 @@ mod tests {
 
     #[test]
     fn visible_range_keeps_active_visible_and_centers() {
-        // 全部収まる: そのまま全表示。
+        // Everything fits: show it all as-is.
         let w = vec![8, 8, 8];
         assert_eq!(visible_range(&w, 1, 80), (0, 3));
-        // あふれ: アクティブ(4)を含む窓が中央寄せで選ばれ、両端にマーカー幅が確保される。
-        let w = vec![10; 9]; // 各10桁+区切り → 全体98桁
+        // Overflow: a window containing the active tab (4) is chosen, centered, with marker width
+        // reserved on both ends.
+        let w = vec![10; 9]; // each 10 columns + separator → 98 columns total
         let (s, e) = visible_range(&w, 4, 40);
         assert!((s..e).contains(&4), "アクティブは必ず可視: {s}..{e}");
         assert!(s > 0 && e < 9, "両側に隠れタブ: {s}..{e}");
         let used: usize =
             w[s..e].iter().sum::<usize>() + (e - s - 1) + marker_width(s) + marker_width(9 - e);
         assert!(used <= 40, "マーカー込みで幅内: {used}");
-        // 端: アクティブが先頭なら左マーカー無しで右へ伸びる。
+        // Edge: when the active tab is first, it extends right with no left marker.
         let (s, e) = visible_range(&w, 0, 40);
         assert_eq!(s, 0);
         assert!(e < 9);
-        // 端: アクティブが末尾なら右マーカー無しで左へ伸びる。
+        // Edge: when the active tab is last, it extends left with no right marker.
         let (s, e) = visible_range(&w, 8, 40);
         assert_eq!(e, 9);
         assert!(s > 0);
-        // 極端に狭い: アクティブ1枚だけでも返す(描画側で切れるのは許容)。
+        // Extremely narrow: still returns at least the active tab alone (letting the renderer
+        // clip it is acceptable).
         let (s, e) = visible_range(&w, 4, 8);
         assert_eq!((s, e), (4, 5));
     }

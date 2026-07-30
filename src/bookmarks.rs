@@ -26,8 +26,8 @@ pub type Bookmark = (char, PathBuf);
 
 /// A set of bookmarks. On load it reads the "global" set and the "local" set for the current start dir.
 pub struct Bookmarks {
-    base: PathBuf,     // 設定ベース (<base>/bookmarks.toml と <base>/bookmarks/)
-    open_dir: PathBuf, // ローカルの鍵 (起動dir)
+    base: PathBuf,     // config base (<base>/bookmarks.toml and <base>/bookmarks/)
+    open_dir: PathBuf, // the local key (the start dir)
     global: BTreeMap<char, PathBuf>,
     local: BTreeMap<char, PathBuf>,
 }
@@ -212,7 +212,7 @@ mod tests {
     fn encode_path_is_reversible_and_safe() {
         let enc = encode_path(Path::new("/Users/me/work/konoma"));
         assert_eq!(enc, "%2FUsers%2Fme%2Fwork%2Fkonoma");
-        // ファイル名に使えない文字を含まない(英数と % . _ - のみ)。
+        // Contains no character unusable in a file name (only alphanumerics and % . _ -).
         assert!(enc
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '%' | '.' | '_' | '-')));
@@ -226,7 +226,7 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
 
         let mut bm = Bookmarks::with_base(base.clone(), &proj);
-        // 小文字=ローカル / 大文字=グローバル。
+        // lowercase = local / uppercase = global.
         assert!(bm.set('a', PathBuf::from("/tmp/local_a")).unwrap());
         assert!(bm.set('A', PathBuf::from("/tmp/global_A")).unwrap());
         assert!(
@@ -237,12 +237,12 @@ mod tests {
         assert_eq!(bm.get('A'), Some(PathBuf::from("/tmp/global_A")));
         assert_eq!(bm.get('b'), None);
 
-        // 別インスタンスで読み直してもスコープごとに復元される(永続化)。
+        // Reading it back with a separate instance restores it per scope too (persisted).
         let bm2 = Bookmarks::with_base(base.clone(), &proj);
         assert_eq!(bm2.get('a'), Some(PathBuf::from("/tmp/local_a")));
         assert_eq!(bm2.get('A'), Some(PathBuf::from("/tmp/global_A")));
 
-        // 別の起動dir では a(ローカル)は見えないが A(グローバル)は共有される。
+        // From a different start dir, `a` (local) is invisible but `A` (global) is shared.
         let proj2 = std::env::temp_dir().join("konoma_bm_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
         let bm3 = Bookmarks::with_base(base.clone(), &proj2);
@@ -253,7 +253,7 @@ mod tests {
             "グローバルは共有"
         );
 
-        // 削除も永続化される。
+        // Removal is persisted too.
         let mut bm4 = Bookmarks::with_base(base.clone(), &proj);
         bm4.remove('a').unwrap();
         let bm5 = Bookmarks::with_base(base.clone(), &proj);
@@ -267,29 +267,29 @@ mod tests {
 
     #[test]
     fn fnv1a_is_stable_and_distinguishes_inputs() {
-        // FNV-1a 32bit の既知値(空=オフセット基底, "a"=0xe40c292c)。
+        // FNV-1a 32-bit known values (empty = offset basis, "a" = 0xe40c292c).
         assert_eq!(fnv1a(b""), 0x811c_9dc5, "空入力はオフセット基底");
         assert_eq!(fnv1a(b"a"), 0xe40c_292c, "\"a\" の既知ハッシュ");
-        // 決定的(同入力は同値)。
+        // Deterministic (the same input gives the same value).
         assert_eq!(fnv1a(b"konoma"), fnv1a(b"konoma"));
-        // 異なる入力は(まず)異なる。
+        // Different inputs are (usually) different.
         assert_ne!(fnv1a(b"hello"), fnv1a(b"world"));
         assert_ne!(fnv1a(b"ab"), fnv1a(b"ba"), "順序も効く");
     }
 
     #[test]
     fn write_marks_and_read_marks_round_trip() {
-        // write_marks(親作成込み)→ read_marks で同じ内容が復元される。
+        // write_marks (parent creation included) → read_marks restores the same content.
         let dir = std::env::temp_dir().join("konoma_write_marks_test");
         let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("nested").join("marks.toml"); // 親(nested)は未作成 = create_dir_all 経路
+        let path = dir.join("nested").join("marks.toml"); // the parent (nested) doesn't exist yet = the create_dir_all path
         let mut mf = MarksFile {
             dir: "/some/start/dir".into(),
             ..Default::default()
         };
         mf.marks.insert("a".into(), "/tmp/local_a".into());
         mf.marks.insert("Z".into(), "/tmp/global_z".into());
-        // 不正キー(複数文字)/空値は read 側で弾かれる。
+        // An invalid key (multiple characters) / empty value gets rejected on the read side.
         mf.marks.insert("ab".into(), "/tmp/bad".into());
         mf.marks.insert("c".into(), "".into());
         write_marks(&path, &mf).unwrap();
@@ -315,7 +315,7 @@ mod tests {
         bm.set('B', PathBuf::from("/tmp/B")).unwrap();
         bm.set('A', PathBuf::from("/tmp/A")).unwrap();
         let (local, global) = bm.list();
-        // BTreeMap なので各スコープは昇順。
+        // Since it's a BTreeMap, each scope is in ascending order.
         assert_eq!(
             local,
             vec![

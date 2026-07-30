@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut top, mut left) = app.table_scroll();
 
     let Some(t) = app.table_data() else {
-        return; // 呼び出し側(preview::render)が is_table_preview を確認済み。防御的に無処理。
+        return; // The caller (preview::render) has already confirmed is_table_preview. Defensive no-op.
     };
     let nrows = t.nrows();
     let ncols = t.ncols;
@@ -49,7 +49,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
 
-    // 列が無い(空ファイル)ときはプレースホルダのみ。
+    // When there are no columns (an empty file), show only a placeholder.
     if ncols == 0 || inner.width == 0 || inner.height == 0 {
         let para = Paragraph::new(Line::from(Span::styled(
             " (empty) ",
@@ -60,17 +60,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // レイアウト: 0=ヘッダ / 1=区切り線 / 2.. =データ行。高さが足りなければデータ0行。
+    // Layout: 0 = header / 1 = separator line / 2.. = data rows. 0 data rows if the height doesn't allow it.
     let visible_rows = (inner.height as usize).saturating_sub(2);
 
-    // --- 縦スクロール: カーソル行が見えるよう top を調整 ---
+    // --- Vertical scroll: adjust top so the cursor row is visible ---
     if visible_rows > 0 {
         if cur_row < top {
             top = cur_row;
         } else if cur_row >= top + visible_rows {
             top = cur_row + 1 - visible_rows;
         }
-        // 末尾側の無駄なスクロールを抑える(下端に空きを作らない)。ただしカーソルは見える範囲に保つ。
+        // Suppress wasted scroll toward the end (don't leave empty space at the bottom edge). But keep the cursor within the visible range.
         let max_top = nrows.saturating_sub(visible_rows);
         top = top.min(max_top).min(cur_row);
     } else {
@@ -78,7 +78,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let row_end = (top + visible_rows).min(nrows);
 
-    // --- 横スクロール: カーソル列が見えるよう left を調整して、収まる列と幅を確定 ---
+    // --- Horizontal scroll: adjust left so the cursor column is visible, and settle which columns fit and at what width ---
     if cur_col < left {
         left = cur_col;
     }
@@ -97,10 +97,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         left += 1;
     };
 
-    // --- 行の組み立て(すべて所有 String = 'static) ---
+    // --- Assembling rows (all owned String = 'static) ---
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows + 2);
 
-    // ヘッダ行(太字・列色)。
+    // Header row (bold, column color).
     lines.push(compose_line(&cols, |col, w| {
         let text = fit_to_width(t.header(col), w);
         Span::styled(
@@ -111,7 +111,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         )
     }));
 
-    // 区切り線(dim)。
+    // Separator line (dim).
     let sep_w: usize =
         cols.iter().map(|(_, w)| *w).sum::<usize>() + COL_GAP * cols.len().saturating_sub(1);
     lines.push(Line::from(Span::styled(
@@ -119,8 +119,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    // データ行。カーソルセルは反転。検索中の一致セルは下線 + 太字で示す(列レインボーの色を
-    // 潰さないよう、背景ではなく修飾で差をつける)。現在の一致はカーソルがそこに居るので反転で分かる。
+    // Data rows. The cursor cell is reversed. A search-match cell is shown underlined + bold (using a
+    // modifier rather than a background so as not to blot out the rainbow column color). The current match is at the cursor, so reversal makes it clear.
     for r in top..row_end {
         lines.push(compose_line(&cols, |col, w| {
             let text = fit_to_width(t.cell(r, col), w);
@@ -137,7 +137,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }));
     }
 
-    // ここで t の借用が終わる(lines は所有 String のみ) → App を可変で更新できる。
+    // The borrow of t ends here (lines holds only owned Strings) → App can now be updated mutably.
     let viewport_rows = visible_rows as u16;
     app.set_table_view(top, left, viewport_rows);
 
@@ -159,7 +159,7 @@ const CELL_POPUP_DENOM: u32 = 5;
 /// render/`set_table_view` convention used by the grid above.
 pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(view): Option<TableCellView> = app.table_cell_view() else {
-        return; // 呼び出し側(ui::render)が is_table_cell_open を確認済み。防御的に無処理。
+        return; // The caller (ui::render) has already confirmed is_table_cell_open. Defensive no-op.
     };
 
     let title = format!(
@@ -172,8 +172,8 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
         view.ncols
     );
 
-    // ポップアップサイズ: 画面の80%を基本に、余白を確保して収める(Outline/Info より大きい =
-    // 「長い内容を読む」用途のため)。
+    // Popup size: base it on 80% of the screen, fitting it with margin reserved (larger than
+    // Outline/Info because this one is for the "read long content comfortably" use case).
     let w = ((area.width as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
         .clamp(20, area.width.saturating_sub(2));
     let h = ((area.height as u32 * CELL_POPUP_FRACTION / CELL_POPUP_DENOM) as u16)
@@ -197,9 +197,10 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(popup);
 
-    // ratatui はタブ文字を端末のタブストップへ展開せず(unicode-width の幅計算と食い違う)そのまま
-    // 1桁として描くので、折返し前に空白へ均す。実改行(引用符内に改行を持つ CSV セル等)は
-    // Text::raw(String::from 経由)がそのまま行分割するので、ここでは触らない。
+    // ratatui doesn't expand tab characters to the terminal's tab stops (which would mismatch
+    // unicode-width's width calculation) and instead draws them as a single column as-is, so we
+    // flatten them to spaces before wrapping. Real newlines (e.g. a CSV cell with an embedded newline
+    // inside quotes) are already line-split by Text::raw (via String::from), so they're left untouched here.
     let body = if view.text.contains('\t') {
         view.text.replace('\t', " ")
     } else {
@@ -207,8 +208,8 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let mut para = Paragraph::new(body).wrap(Wrap { trim: false });
-    // 総表示行数(折返し込み)を ratatui に計算させ、末尾を超えてスクロールしないようクランプする
-    // (render_windowed/render_decorated と同じ流儀)。
+    // Have ratatui compute the total display row count (wrapping included), and clamp so it never
+    // scrolls past the end (the same convention as render_windowed/render_decorated).
     let total_rows = para.line_count(inner.width);
     let max_scroll = total_rows.saturating_sub(inner.height as usize) as u16;
     let scroll = app.table_cell_scroll().min(max_scroll);
@@ -219,7 +220,7 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup); // 下地を消してから描く
+    frame.render_widget(Clear, popup); // clear the background before drawing
     frame.render_widget(para, popup);
 }
 
@@ -233,7 +234,7 @@ fn build_title(app: &App, nrows: usize, ncols: usize, cur_row: usize, cur_col: u
         .unwrap_or_else(|| "table".to_string());
     let truncated = app.table_data().map(|t| t.truncated).unwrap_or(false);
     let cap = if truncated { "  (capped)" } else { "" };
-    // 例: " data.csv  r3/100 c2/5  100×5  (capped) "
+    // e.g. " data.csv  r3/100 c2/5  100×5  (capped) "
     format!(
         " {path}  r{}/{} c{}/{}  {}×{}{cap} ",
         cur_row + 1,
@@ -281,7 +282,7 @@ fn fit_columns(
         used += gap + w;
     }
     if out.is_empty() {
-        // 幅が極端に狭くても先頭列だけは出す。
+        // Show at least the first column even when the width is extremely narrow.
         out.push((left, MIN_COL_W.min(avail.max(1))));
     }
     out
@@ -327,7 +328,7 @@ fn fit_to_width(s: &str, w: usize) -> String {
         out.push_str(&s);
         used = total;
     } else {
-        let budget = w.saturating_sub(1); // '…' の1桁分を残す
+        let budget = w.saturating_sub(1); // reserve 1 column for '…'
         for ch in s.chars() {
             let cw = ch.width().unwrap_or(0);
             if used + cw > budget {
@@ -364,9 +365,9 @@ mod tests {
 
     #[test]
     fn fit_handles_full_width_cjk() {
-        // 全角2文字=幅4。幅4にちょうど収まる。
+        // 2 full-width characters = width 4. Fits exactly into width 4.
         assert_eq!(fit_to_width("あい", 4).width(), 4);
-        // 幅3に切り詰め: 全角1(幅2)+…(幅1)=3。
+        // Truncated to width 3: 1 full-width char (width 2) + … (width 1) = 3.
         assert_eq!(fit_to_width("あい", 3).width(), 3);
     }
 
@@ -378,10 +379,10 @@ mod tests {
             ncols: 2,
             truncated: false,
         };
-        // 極端に狭くても最低1列。
+        // At least 1 column even when extremely narrow.
         let cols = fit_columns(&t, 0, 1, 0, 1);
         assert!(!cols.is_empty());
-        // 十分広ければ両列。
+        // Both columns when wide enough.
         let cols = fit_columns(&t, 0, 1, 0, 80);
         assert_eq!(cols.len(), 2);
     }

@@ -486,9 +486,9 @@ mod tests {
 
     #[test]
     fn line_anchor_edge_cases() {
-        // `#L5` のみ(パス無し) → None(空パスは棄却)。
+        // `#L5` alone (no path) → None (an empty path is rejected).
         assert_eq!(parse_paste_target("#L5"), None);
-        // `#` の後が行番号でなければ分割せずパスに残す。
+        // If what follows `#` is not a line number, don't split it off — leave it in the path.
         assert_eq!(
             parse_paste_target("file#foo"),
             Some(PasteTarget::Local {
@@ -496,7 +496,7 @@ mod tests {
                 line: None,
             })
         );
-        // `:0` は 1 始まりの行として無効 → パスに残す。
+        // `:0` is invalid as a 1-based line → leave it in the path.
         assert_eq!(
             parse_paste_target("file:0"),
             Some(PasteTarget::Local {
@@ -504,7 +504,7 @@ mod tests {
                 line: None,
             })
         );
-        // 小文字 `#l5` も行として解釈する。
+        // Lowercase `#l5` is also interpreted as a line.
         assert_eq!(
             parse_paste_target("file#l5"),
             Some(PasteTarget::Local {
@@ -516,14 +516,14 @@ mod tests {
 
     #[test]
     fn github_url_without_path_is_none() {
-        // ホストのみ(パス成分なし)は解決先が無いので None。
+        // A host alone (no path component) has nothing to resolve to, so None.
         assert_eq!(parse_paste_target("https://github.com"), None);
         assert_eq!(parse_paste_target("https://github.com/"), None);
     }
 
     #[test]
     fn percent_decode_handles_all_hex_and_invalid() {
-        // %2f(小文字)/%2F(大文字)=`/`、不正 %zz はリテラルのまま残す。
+        // %2f (lowercase) / %2F (uppercase) = `/`; an invalid %zz is left as a literal.
         let t = parse_paste_target("https://github.com/o/r/blob/main/a%2fb%2Fc%zz.rs").unwrap();
         match t {
             PasteTarget::Url { components, .. } => {
@@ -540,7 +540,7 @@ mod tests {
             assert_eq!(expand_tilde("~"), home);
             assert_eq!(expand_tilde("~/docs/a.md"), format!("{home}/docs/a.md"));
         }
-        // チルダ以外はそのまま。
+        // Anything other than a tilde is left as-is.
         assert_eq!(expand_tilde("/abs/x"), "/abs/x");
         assert_eq!(expand_tilde("rel/y"), "rel/y");
     }

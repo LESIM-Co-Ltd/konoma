@@ -85,7 +85,7 @@ impl App {
         }
         let mut message = crate::i18n::tr(self.lang, crate::i18n::Msg::QuitConfirm).to_string();
         if file_op_running {
-            // 2行目=実行中の警告(ダイアログ描画は `\n` 区切りの複数行に対応済み)。
+            // Line 2 = the in-progress warning (the dialog renderer already supports `\n`-separated multi-line text).
             message.push('\n');
             message.push_str(crate::i18n::tr(
                 self.lang,
@@ -108,9 +108,9 @@ impl App {
             return Ok(());
         };
         let DialogKind::Input { buffer, .. } = dialog.kind else {
-            return Ok(()); // 確認ダイアログはここへ来ない
+            return Ok(()); // a confirmation dialog never reaches here
         };
-        // コミットは名前と扱いが違う(末尾 / を剥がさない・独自の空チェック)ので先に分岐。
+        // Commit is handled differently from a name (we don't strip a trailing / and use its own emptiness check), so branch on it first.
         if matches!(dialog.op, PendingOp::GitCommit) {
             let message = buffer.trim();
             if message.is_empty() {
@@ -120,7 +120,7 @@ impl App {
             }
             match crate::git::commit(&self.tab.root, message) {
                 Ok(()) => {
-                    // ステージ済み index でコミット成功 → git データ再取得＋ビュー更新。
+                    // Commit succeeded against the staged index → re-fetch git data and update the view.
                     self.refresh()?;
                     if self.is_git_view() {
                         self.git_view_reload();
@@ -129,7 +129,7 @@ impl App {
                         Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Committed).into());
                 }
                 Err(e) => {
-                    // 失敗(stderr)を表示し、同じメッセージで入力ダイアログを再オープン(やり直せる)。
+                    // Show the failure (stderr) and reopen the input dialog with the same message (so it can be retried).
                     self.flash = Some(format!("{e}"));
                     let cursor = message.chars().count();
                     self.dialog = Some(Dialog {
@@ -145,7 +145,7 @@ impl App {
             }
             return Ok(());
         }
-        // 新規ブランチ作成(コミット同様、名前を素直に trim して扱う)。
+        // Creating a new branch (like commit, just trim the name and use it as-is).
         if matches!(dialog.op, PendingOp::GitCreateBranch) {
             let bname = buffer.trim();
             if bname.is_empty() {
@@ -155,8 +155,8 @@ impl App {
             match crate::git::create_branch(&self.tab.root, bname) {
                 Ok(()) => {
                     self.refresh()?;
-                    self.ensure_git_status_now(); // ブランチ名/状態を即更新(描画前でも正)
-                    self.close_git_branches(); // 作成＆切替済み → 一覧を閉じて Git ビューへ
+                    self.ensure_git_status_now(); // update branch name/status immediately (correct even before the next draw)
+                    self.close_git_branches(); // created & switched → close the list and go to the Git view
                     self.flash = Some(format!(
                         "{}: {bname}",
                         crate::i18n::tr(self.lang, crate::i18n::Msg::CreatedBranch)
@@ -228,7 +228,7 @@ impl App {
             PendingOp::BatchRenameInput { targets } => {
                 match build_rename_plan(&targets, name) {
                     Ok(plan) => {
-                        // プレビュー(旧 → 新)へ遷移。適用は dialog_preview_apply。
+                        // Move to the preview (old → new). Applying it happens in dialog_preview_apply.
                         let lines: Vec<String> = plan
                             .iter()
                             .map(|(s, d)| {
@@ -255,7 +255,7 @@ impl App {
                         });
                     }
                     Err(e) => {
-                        // 入力をやり直せるよう、同じテンプレで入力ダイアログを再オープン。
+                        // Reopen the input dialog with the same template so the input can be retried.
                         self.flash = Some(format!(
                             "{}: {e}",
                             crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
@@ -273,8 +273,8 @@ impl App {
                     }
                 }
             }
-            // 削除/Git 破棄は確認ダイアログ側 / 一括リネーム適用はプレビュー側。
-            // GitCommit は上で早期 return 済みなので到達しない。
+            // Delete/Git discard live on the confirmation-dialog side / batch rename apply lives on the preview side.
+            // GitCommit already returned early above, so it never reaches here.
             PendingOp::Delete { .. }
             | PendingOp::BatchRenameApply { .. }
             | PendingOp::GitDiscard { .. }
@@ -326,34 +326,35 @@ impl App {
         }
         match dialog.op {
             PendingOp::Delete { targets } => {
-                // 削除(ゴミ箱)も他の一括ファイル操作と同じくバックグラウンドで実行する(原則#4)。
+                // Delete (to trash) runs in the background too, same as other bulk file operations (principle #4).
                 let job = FileOpJob {
                     kind: FileOpKind::Trash,
                     targets,
                     dest: None,
-                    root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+                    root: PathBuf::new(), // start_file_op fills this with tab.root at dispatch time
                     err_self_paste: String::new(),
                     err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
                         .to_string(),
                 };
-                // 選択解除は**成功して初めて**(`apply_file_op`)。途中で失敗した削除で選択ごと
-                // 失うと選び直しからやり直しになる(旧同期版も Ok(()) の中でだけ解除していた)。
+                // Selection is cleared **only on success** (`apply_file_op`). If a partially-failed
+                // delete also lost the selection, you'd have to redo the selection from scratch
+                // (the old synchronous version also cleared it only inside the Ok(()) arm).
                 self.start_file_op(job);
             }
-            // Git ビューの破棄: git::discard → 一覧/ツリーの git status を取り直す。
-            // GitDiff プレビューからの破棄(came_from_git_view)なら Git ビューを開き直して戻す。
+            // Git-view discard: git::discard → re-fetch the git status for the list/tree.
+            // If discarded from the GitDiff preview (came_from_git_view), reopen the Git view to return to it.
             PendingOp::GitDiscard { path } => match crate::git::discard(&self.tab.root, &path) {
                 Ok(()) => {
                     let from_diff = self.is_git_diff_preview();
                     if from_diff {
-                        // プレビューを畳んで Git ビューへ復帰。
+                        // Collapse the preview and go back to the Git view.
                         self.tab.came_from_git_view = false;
                         self.back_to_tree();
                         self.open_git_view();
                     }
                     self.git_view_reload();
-                    // 破棄自体は成功。ツリー再構築が失敗した時はその旨を通知し、
-                    // 成功 flash で上書きしない(誤って「成功」と見せない)。
+                    // The discard itself succeeded. If the tree rebuild fails, notify about that
+                    // and don't overwrite it with a success flash (never falsely show "success").
                     if self.rebuild_tree_notify() {
                         self.flash = Some(format!(
                             "{}: {}",
@@ -369,9 +370,9 @@ impl App {
                     ))
                 }
             },
-            // ブランチ削除(安全): git branch -d。失敗(未マージ等)は git の stderr を flash。
+            // Delete branch (safe): git branch -d. On failure (unmerged etc.) flash git's stderr.
             PendingOp::GitDeleteBranch { name } => self.git_delete_branch(&name, false),
-            // ブックマーク上書きの確定: 実際に登録する(mark_input と同じ経路)。
+            // Confirming a bookmark overwrite: actually register it (same path as mark_input).
             PendingOp::BookmarkOverwrite { key, target } => self.perform_mark_set(key, target),
             _ => {}
         }
@@ -383,23 +384,23 @@ impl App {
         let Some(dialog) = self.dialog.take() else {
             return Ok(());
         };
-        // ブランチの強制削除 (`-D`)。
+        // Force-delete the branch (`-D`).
         if let PendingOp::GitDeleteBranch { name } = &dialog.op {
             self.git_delete_branch(&name.clone(), true);
             return Ok(());
         }
         if let PendingOp::Delete { targets } = dialog.op {
-            // 完全削除も他の一括ファイル操作と同じくバックグラウンドで実行する(原則#4)。
+            // Permanent delete also runs in the background, same as other bulk file operations (principle #4).
             let job = FileOpJob {
                 kind: FileOpKind::DeletePermanent,
                 targets,
                 dest: None,
-                root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
+                root: PathBuf::new(), // start_file_op fills this with tab.root at dispatch time
                 err_self_paste: String::new(),
                 err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed)
                     .to_string(),
             };
-            // 選択解除は**成功して初めて**(`apply_file_op`)。途中失敗で選択を失わせない。
+            // Selection is cleared **only on success** (`apply_file_op`). A partial failure never loses the selection.
             self.start_file_op(job);
         }
         Ok(())

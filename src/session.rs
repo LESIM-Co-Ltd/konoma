@@ -97,7 +97,7 @@ impl SessionStore {
         let tmp = PathBuf::from(tmp);
         std::fs::write(&tmp, text)
             .with_context(|| format!("セッション一時保存: {}", tmp.display()))?;
-        // rename は同一ディレクトリ=同一 FS なのでアトミック(既存ファイルを瞬時に置換)。
+        // rename is within the same directory = the same FS, so it's atomic (replaces the existing file instantly).
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("セッション保存: {}", self.path.display()))
     }
@@ -122,7 +122,7 @@ mod tests {
 
         let store = SessionStore::with_base(base.clone(), &proj);
         let sess = SavedSession {
-            dir: String::new(), // write が埋める
+            dir: String::new(), // filled in by write
             active: 1,
             tabs: vec![
                 SavedTab {
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(got.active, 1);
         assert_eq!(got.tabs, sess.tabs);
 
-        // 別の起動 dir のストアからは見えない(ディレクトリ毎に1ファイル)。
+        // Invisible from a different start dir's store (one file per directory).
         let proj2 = std::env::temp_dir().join("konoma_session_store_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
         assert!(SessionStore::with_base(base.clone(), &proj2)
@@ -168,7 +168,7 @@ mod tests {
         let store = SessionStore::with_base(base.clone(), &proj);
         assert!(store.read().is_none(), "ファイル無し = セッション無し");
 
-        // 壊れた TOML は None(= まっさら起動)に安全降格する。
+        // A corrupt TOML file safely degrades to None (= a fresh start).
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(&store.path, "this is [not toml").unwrap();
         assert!(store.read().is_none(), "壊れたファイルはクラッシュせず無視");
@@ -194,7 +194,7 @@ mod tests {
             ..Default::default()
         };
         store.write(mk("/x")).unwrap();
-        // 2回目: temp 書き→rename で既存を瞬時に置換する。
+        // 2nd time: temp write → rename replaces the existing file instantly.
         store.write(mk("/y")).unwrap();
         assert_eq!(
             store.read().unwrap().tabs[0].root,
@@ -202,7 +202,7 @@ mod tests {
             "2回目の書込みが反映"
         );
 
-        // アトミック書込みの temp ファイルを残さない。
+        // No leftover temp file from the atomic write.
         let leftovers = std::fs::read_dir(base.join("sessions"))
             .unwrap()
             .filter_map(|e| e.ok())

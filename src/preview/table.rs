@@ -64,8 +64,8 @@ pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
     PARSE_CALLS.with(|c| c.set(c.get() + 1));
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(delimiter)
-        .flexible(true) // 可変列数(ragged)を許容。短い行は表示側でパディング。
-        .has_headers(false) // 先頭行のヘッダ扱いは自前で行う。
+        .flexible(true) // allow a variable column count (ragged rows); short rows are padded on display.
+        .has_headers(false) // we handle the "first row is the header" convention ourselves.
         .from_path(path)
         .with_context(|| format!("open csv/tsv: {}", path.display()))?;
 
@@ -76,7 +76,7 @@ pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
     };
 
     let mut rec = csv::ByteRecord::new();
-    // ヘッダ = 先頭レコード。空ファイルなら空テーブル。
+    // header = the first record. An empty file yields an empty table.
     if !rdr
         .read_byte_record(&mut rec)
         .context("read csv/tsv header")?
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn quoted_comma_stays_one_cell() {
-        // 引用符内カンマは1セル(素朴な split なら壊れる)。
+        // A comma inside quotes stays one cell (a naive split would break on it).
         let p = write_temp("quoted.csv", "name,note\n\"Doe, John\",hi\n");
         let t = parse(&p, b',').unwrap();
         assert_eq!(t.cell(0, 0), "Doe, John");
@@ -152,11 +152,11 @@ mod tests {
 
     #[test]
     fn ragged_rows_report_max_columns() {
-        // 行ごとに列数が違ってもクラッシュせず ncols=最大。短い行の欠けは空セル。
+        // A varying column count per row doesn't crash; ncols = the max. Short rows get empty cells.
         let p = write_temp("ragged.csv", "a,b,c\n1\n4,5,6,7\n");
         let t = parse(&p, b',').unwrap();
         assert_eq!(t.ncols, 4);
-        assert_eq!(t.cell(0, 2), ""); // 1 行目は 1 セルのみ
+        assert_eq!(t.cell(0, 2), ""); // row 0 has only 1 cell
         assert_eq!(t.cell(1, 3), "7");
     }
 

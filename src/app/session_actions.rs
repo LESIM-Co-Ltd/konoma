@@ -17,16 +17,18 @@ impl App {
     /// (tests). Write errors are deliberately swallowed: losing one session snapshot must never
     /// disturb the UI, and the next tab event or quit writes again anyway.
     pub(crate) fn save_session(&self) {
-        // session_restoring: 復元ループ中の tab_new/tab_goto が撃つ保存を握り潰す(部分集合で
-        // 上書きしない・完全集合の書き込みは restore_session 末尾で1回だけ)。
+        // session_restoring: swallows the saves fired by tab_new/tab_goto during the restore loop
+        // (never overwrite with a partial set; the full set is written exactly once at the end of
+        // restore_session).
         if self.session_restoring || !self.cfg.ui.restore_tabs {
             return;
         }
         let Some(store) = &self.session_store else {
             return;
         };
-        // 単一タブ復元を無効化(`restore_single_tab=false`)している時、タブ1枚のセッションは
-        // 保存せずに削除する=次回起動はまっさら(ユーザー選択・2タブ以上は従来どおり保存)。
+        // While single-tab restore is disabled (`restore_single_tab=false`), a single-tab session
+        // is deleted instead of saved = the next launch starts completely fresh (user's choice; 2+
+        // tabs still save as before).
         if !self.cfg.ui.restore_single_tab && self.tabs.len() <= 1 {
             store.delete();
             return;
@@ -39,7 +41,7 @@ impl App {
     fn session_snapshot(&self) -> SavedSession {
         let mut tabs = Vec::with_capacity(self.tabs.len());
         for (i, slot) in self.tabs.iter().enumerate() {
-            // アクティブタブはライブ App fields から読む(tabs スロットは在職中 stale=tab_label と同じ規則)。
+            // The active tab is read from the live App fields (its `tabs` slot is stale while it's active — same rule as `tab_label`).
             let (mode, root, open_dir, show_hidden, cursor, preview, is_diff) =
                 if i == self.active_tab {
                     (
@@ -69,20 +71,20 @@ impl App {
             tabs.push(SavedTab {
                 root: root.to_string_lossy().to_string(),
                 cursor: cursor.map(|e| e.path.to_string_lossy().to_string()),
-                // プレビュー面のまま置いたタブだけ preview を持つ(Tree に戻っていたら復元もツリー)。
+                // Only a tab left in the preview surface carries a preview (if it had returned to Tree, it restores as Tree too).
                 preview: if in_preview {
                     preview.map(|p| p.to_string_lossy().to_string())
                 } else {
                     None
                 },
-                // git diff プレビューは通常ビューアと復元経路が違うのでフラグで区別する。
+                // A git diff preview follows a different restore path from the normal viewer, so a flag distinguishes it.
                 preview_diff: in_preview && is_diff,
                 show_hidden,
                 open_dir: Some(open_dir.to_string_lossy().to_string()),
             });
         }
         SavedSession {
-            dir: String::new(), // SessionStore::write が埋める
+            dir: String::new(), // filled in by SessionStore::write
             active: self.active_tab,
             tabs,
         }
@@ -102,13 +104,14 @@ impl App {
         let Some(sess) = store.read() else {
             return;
         };
-        // 単一タブ復元を無効化している時、既存の1タブ・セッションファイル(設定を後から false に
-        // 切替えた場合の残骸)は復元せず削除する=次回以降このファイルで無駄な判定を繰り返さない。
+        // While single-tab restore is disabled, an existing single-tab session file (a leftover from
+        // switching the config to false later) is deleted instead of restored = this file won't be
+        // pointlessly checked again on future launches.
         if !self.cfg.ui.restore_single_tab && sess.tabs.len() <= 1 {
             store.delete();
             return;
         }
-        // 存在しない root のタブを落とす。**元 index を保持**して active の再マップに使う。
+        // Drop tabs whose root no longer exists. **Keep the original index** for remapping `active`.
         let kept: Vec<(usize, SavedTab)> = sess
             .tabs
             .into_iter()
@@ -118,18 +121,20 @@ impl App {
         if kept.is_empty() {
             return;
         }
-        // active を除外後の index へ**再マップ**する: 元 active より前に生き残ったタブ数が新しい位置。
-        // (元 active 自身が落ちていた場合はその位置へ滑り込んだ次のタブに乗る。単純クランプだと
-        //  先頭側に落ちたタブがあるぶん焦点が後ろへずれる — restore 焦点ずれバグの真因。)
+        // **Remap** `active` to its index after exclusion: the number of tabs that survived before
+        // the original active becomes the new position. (If the original active itself was dropped,
+        // it lands on whichever tab slid into that slot next. A plain clamp would shift focus back
+        // by however many tabs were dropped ahead of it — the root cause of the restore-focus-drift bug.)
         let want = kept
             .iter()
             .take_while(|(orig, _)| *orig < sess.active)
             .count();
-        // 復元ループ中の tab_new/tab_goto が撃つ保存を抑止(部分集合で上書きさせない)。
+        // Suppress the saves fired by tab_new/tab_goto during the restore loop (don't let them overwrite with a partial set).
         self.session_restoring = true;
         for (i, (_, t)) in kept.iter().enumerate() {
-            // 1枚目は起動時のタブをそのまま作り替え、2枚目以降は tab_new(現 root の素の Tree)を
-            // 足してから中身を適用する(tab_new_from_selection と同じ組み立て順)。
+            // The first tab reshapes the startup tab in place; the second and later ones are added
+            // via tab_new (a plain Tree at the current root) before applying their contents (the
+            // same assembly order as tab_new_from_selection).
             if i > 0 && self.tab_new().is_err() {
                 break;
             }
@@ -139,7 +144,7 @@ impl App {
         if want != self.active_tab {
             self.tab_goto(want);
         }
-        // 抑止を解除してから、復元し終えた**完全な集合**で1回だけ保存する。
+        // After lifting the suppression, save once with the **complete set** now that restore has finished.
         self.session_restoring = false;
         self.save_session();
     }
@@ -148,27 +153,28 @@ impl App {
     /// root if it differs, restore the per-tab @-ref base, reveal the cursor, then reopen the preview
     /// (a git diff is reopened as a diff; mirrors `tab_new_from_selection`).
     fn apply_saved_tab(&mut self, t: &SavedTab) {
-        // show_hidden は rebuild の前に適用する(保存カーソルがドットファイルでも reveal できるように)。
+        // Apply show_hidden before rebuild (so the saved cursor can be revealed even if it's a dotfile).
         self.tab.show_hidden = t.show_hidden;
         let root = PathBuf::from(&t.root);
         let prev_root = self.tab.root.clone();
         if root != self.tab.root {
-            // root 変更は `l` 潜行/Ctrl-t と同じ経路(clear_for_root_change→rebuild)。
+            // A root change follows the same path as `l` descend/Ctrl-t (clear_for_root_change→rebuild).
             self.clear_for_root_change();
             self.tab.root = root;
         }
         self.tab.entries.clear();
         self.tab.selected = 0;
         if self.rebuild_tree().is_err() {
-            // is_dir() は通るが read_dir 失敗(権限/stale mount)= 読めない root。**直前の良い root へ
-            // ロールバック**して、壊れた空ツリーを表示も永続化もしない(起動を止めない・原則#3)。
+            // is_dir() passes but read_dir fails (permissions/stale mount) = an unreadable root.
+            // **Roll back to the last-known-good root** so a broken empty tree is neither displayed
+            // nor persisted (startup never halts — principle #3).
             self.tab.root = prev_root;
             self.tab.entries.clear();
             self.tab.selected = 0;
             let _ = self.rebuild_tree();
             return;
         }
-        // per-tab の @参照基準(open_dir)を正確に復元する(通常は起動 dir・潜行タブは別 root)。
+        // Precisely restore the per-tab @-reference base (open_dir) (normally the startup dir; a descended tab has a different root).
         if let Some(od) = &t.open_dir {
             self.tab.open_dir = PathBuf::from(od);
         }
@@ -180,13 +186,14 @@ impl App {
         }
         if let Some(pv) = &t.preview {
             let p = Path::new(pv);
-            // 消えたファイルはプレビューを開かずツリーのまま(原則#3)。reveal を先にやるのは
-            // q でツリーへ戻ったときそのファイルの上に居るため(tab_new_from_selection と同じ)。
+            // A file that's gone stays as a tree instead of opening a preview (principle #3). Reveal
+            // runs first so that returning to the tree via `q` lands on that file (same as tab_new_from_selection).
             if p.is_file() {
                 let _ = self.reveal_path_deep(p);
                 if t.preview_diff {
-                    // 見ていた全画面 git diff を再現する。diff が無い(以後コミット済み/no-git ビルド)
-                    // なら通常プレビューへフォールバック(follow_jump と同じ判定)。
+                    // Reproduce the full-screen git diff that was being viewed. Falls back to the
+                    // normal preview if there is no diff (since committed / a no-git build) —
+                    // the same judgment as follow_jump.
                     let diff = crate::git::file_diff(&self.tab.root, p);
                     if !diff.is_empty() {
                         self.open_git_diff(p);
@@ -228,7 +235,7 @@ mod tests {
     #[test]
     fn session_restore_rebuilds_tabs_cursor_and_preview() {
         let (dir, base) = setup("konoma_sess_restore_test");
-        // セッション1: タブ1= a.txt をプレビューのまま / タブ2(アクティブ)= ツリーで b.txt にカーソル。
+        // Session 1: tab 1 = a.txt left in preview / tab 2 (active) = tree with the cursor on b.txt.
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
         let a = dir.join("a.txt");
@@ -237,10 +244,10 @@ mod tests {
         app.enter_preview(&a);
         app.tab_new().unwrap();
         let _ = app.reveal_path_deep(&b);
-        app.save_session(); // 終了時保存に相当(main が run 後に呼ぶ)
+        app.save_session(); // corresponds to the on-quit save (main calls this after run)
         drop(app);
 
-        // セッション2: 同じ起動 dir で復元。
+        // Session 2: restore in the same startup dir.
         let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
         app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
         app2.restore_session();
@@ -251,7 +258,7 @@ mod tests {
             app2.tab.entries[app2.tab.selected].path, b,
             "カーソル位置を復元"
         );
-        // タブ1へ切替 = a.txt のプレビューが開き直っている。
+        // Switch to tab 1 = a.txt's preview reopens.
         app2.tab_goto(0);
         assert_eq!(app2.tab.mode, Mode::Preview, "プレビュー面ごと復元");
         assert_eq!(app2.tab.preview_path.as_deref(), Some(a.as_path()));
@@ -267,10 +274,10 @@ mod tests {
         store
             .write(SavedSession {
                 dir: String::new(),
-                active: 5, // 範囲外 index はクランプされる
+                active: 5, // an out-of-range index gets clamped
                 tabs: vec![
                     SavedTab {
-                        // 消えた root のタブは丸ごと捨てる。
+                        // A tab whose root is gone is discarded entirely.
                         root: dir.join("no_such_dir").to_string_lossy().into(),
                         cursor: None,
                         preview: None,
@@ -279,7 +286,7 @@ mod tests {
                     SavedTab {
                         root: dir.to_string_lossy().into(),
                         cursor: Some(dir.join("b.txt").to_string_lossy().into()),
-                        // 消えたファイルのプレビューはツリーに降格。
+                        // A preview of a file that's gone degrades to the tree.
                         preview: Some(dir.join("gone.txt").to_string_lossy().into()),
                         ..Default::default()
                     },
@@ -308,14 +315,14 @@ mod tests {
         let mut cfg = Config::default();
         cfg.ui.restore_tabs = false;
 
-        // OFF なら保存しない(タブ操作でもファイルが生えない)。
+        // When OFF, it saves nothing (no file appears even after tab operations).
         let mut app = App::new(dir.clone(), cfg.clone()).unwrap();
         app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
         app.tab_new().unwrap();
         app.save_session();
         assert!(!base.exists(), "restore_tabs=false は書き込みもしない");
 
-        // ファイルが在っても OFF なら読まない。
+        // Even if a file exists, it isn't read when OFF.
         SessionStore::with_base(base.clone(), &dir)
             .write(SavedSession {
                 dir: String::new(),
@@ -351,7 +358,7 @@ mod tests {
     fn session_restore_remaps_active_index_past_dropped_tabs() {
         let (dir, base) = setup("konoma_sess_remap_test");
         let store = SessionStore::with_base(base.clone(), &dir);
-        // 3 tabs: [A(root=消), B(=dir, active), C(root=dir/sub)]. A を落とすと B が新 index 0。
+        // 3 tabs: [A(root=gone), B(=dir, active), C(root=dir/sub)]. Dropping A makes B the new index 0.
         store
             .write(SavedSession {
                 dir: String::new(),
@@ -486,9 +493,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        // 000 = is_dir()(親経由の stat)は通るが read_dir は失敗する。
+        // 000 = is_dir() (a stat via the parent) passes, but read_dir fails.
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
-        let readable_as_root = fs::read_dir(&bad).is_ok(); // root 実行時は読めてしまう→検証を飛ばす
+        let readable_as_root = fs::read_dir(&bad).is_ok(); // running as root can read it anyway → skip verification
 
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         app.attach_session_store(store);
@@ -505,7 +512,7 @@ mod tests {
             );
         }
 
-        let _ = fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)); // 掃除できるよう戻す
+        let _ = fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)); // restore so it can be cleaned up
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&base).ok();
     }
@@ -520,7 +527,7 @@ mod tests {
         let mut app = App::new(dir.clone(), cfg).unwrap();
         let store = SessionStore::with_base(base.clone(), &dir);
         app.attach_session_store(store);
-        // 前回セッションが在る状態から始める(残骸ファイルが本当に消えることを確認するため)。
+        // Start from a state where a previous session exists (to confirm the leftover file is actually deleted).
         SessionStore::with_base(base.clone(), &dir)
             .write(SavedSession {
                 dir: String::new(),

@@ -276,7 +276,7 @@ mod tests {
             ArchiveKind::from_path(Path::new("a.TAR")),
             Some(ArchiveKind::Tar)
         );
-        // 複合拡張子: Path::extension() は "gz" しか返さないので全体名の suffix 判定が要る。
+        // Compound extension: Path::extension() only returns "gz", so we need a whole-name suffix check.
         assert_eq!(
             ArchiveKind::from_path(Path::new("a.tar.gz")),
             Some(ArchiveKind::TarGz)
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(t.ncols, 3);
         assert!(!t.truncated);
         assert_eq!(t.rows.len(), 3);
-        // 格納順のまま(並べ替えない)。
+        // Kept in storage order (no reordering).
         assert_eq!(t.rows[0][0], "hello.txt");
         assert_eq!(t.rows[0][1], "12 B");
         assert_eq!(t.rows[1][0], "dir/");
@@ -316,7 +316,7 @@ mod tests {
         );
         assert_eq!(t.rows[2][0], "dir/nested.txt");
         assert_eq!(t.rows[2][1], "6 B");
-        // 更新日時は空でない(1980-01-01 デフォルトでも何かは入る)。
+        // Modified time is non-empty (even the 1980-01-01 default fills in something).
         assert!(!t.rows[0][2].is_empty());
     }
 
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn garbage_bytes_are_err_not_panic_for_all_three_formats() {
-        // ゼロ長でない、しかしどの形式のシグネチャも持たない中身(壊れたファイル/拡張子詐称の代表例)。
+        // Not zero-length, but doesn't carry any format's signature (a stand-in for a corrupt file / mislabeled extension).
         let dir = tmp_dir("garbage");
         let junk = vec![0x41u8; 4096];
         for (name, kind) in [
@@ -405,9 +405,9 @@ mod tests {
 
     #[test]
     fn traversal_and_absolute_looking_names_are_display_strings_only() {
-        // Zip Slip 型の名前(../ や絶対パス)が入っていても、konoma はそれをファイルシステムパスと
-        // 結合しない(展開しない・一覧するだけ)。名前はそのまま不透明な表示文字列として出て、
-        // 実際にそのパスへ触れることは一切ない、というのがこのテストの主張。
+        // Even when a Zip-Slip-style name (../ or an absolute path) is present, konoma never joins
+        // it onto a filesystem path (no extraction — listing only). The name flows straight through
+        // as an opaque display string, and this test's whole point is that path is never touched.
         let dir = tmp_dir("evil");
         let p = dir.join("evil.zip");
         write_zip(

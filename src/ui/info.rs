@@ -25,7 +25,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(name).bold());
     lines.push(Line::from(""));
 
-    // ラベル: 値 の1行を作る。
+    // Build one "label: value" line.
     let row = |label: &str, value: String| -> Line<'static> {
         Line::from(vec![
             Span::from(format!("{label:<10}")).fg(Color::Cyan),
@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 kind.to_string(),
             ));
 
-            // サイズ(ディレクトリは項目数も)。
+            // Size (directories also show item count).
             let size = match fi.child_count {
                 Some(n) => format!(
                     "{}  ({} {})",
@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             lines.push(row(tr(app.lang, crate::i18n::Msg::InfoSize), size));
 
-            // 更新日時(UTC 絶対 ＋ 相対)。
+            // Modified time (UTC absolute + relative).
             if let Some(epoch) = fi.modified_epoch {
                 let abs = fileops::format_epoch_utc(epoch);
                 let rel = now_epoch().map(|now| format_ago(app.lang, now.saturating_sub(epoch)));
@@ -96,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(tr(app.lang, crate::i18n::Msg::InfoClose)).dim());
 
-    // ポップアップ(bookmarks を踏襲)。
+    // Popup (follows the bookmarks style).
     let w = 72.min(area.width.saturating_sub(2)).max(28);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(format_ago(Lang::En, 120), "2 min ago");
         assert_eq!(format_ago(Lang::En, 7200), "2 hr ago");
         assert_eq!(format_ago(Lang::En, 86400 * 3), "3 days ago");
-        // months バケット(30日〜1年): 60日 → 2 months。
+        // months bucket (30 days to 1 year): 60 days → 2 months.
         assert_eq!(format_ago(Lang::En, 86400 * 60), "2 months ago");
         assert_eq!(format_ago(Lang::En, 86400 * 400), "1 years ago");
     }

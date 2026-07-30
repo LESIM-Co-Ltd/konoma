@@ -75,7 +75,7 @@ impl FileWindow {
         loop {
             let read = self.file.read(&mut buf)?;
             if read == 0 {
-                return Ok((self.len, found)); // 進みきれない＝末尾(呼び出し側で clamp)
+                return Ok((self.len, found)); // couldn't advance the full amount = EOF (caller clamps)
             }
             for (i, &b) in buf[..read].iter().enumerate() {
                 if b == b'\n' {
@@ -96,10 +96,11 @@ impl FileWindow {
         if n == 0 || from == 0 {
             return Ok((0, 0));
         }
-        // 後方へ '\n' を数える。1個目は `from` 直前の境界。(n+1)個目の次が n 行前の行頭。
-        // 先頭まで尽きたら行0(オフセット0)で、戻れた行数 = 見つけた '\n' 数。
+        // Count '\n' going backward. The 1st one is the boundary just before `from`. The one after
+        // the (n+1)-th is the line start n lines earlier. If it runs out before the start, that's
+        // line 0 (offset 0), and the number of lines moved back = the number of '\n' found.
         let mut found = 0usize;
-        let mut end = from; // [0, end) を後方へ走査
+        let mut end = from; // scan backward over [0, end)
         let mut buf = vec![0u8; CHUNK];
         while end > 0 {
             let chunk_len = (CHUNK as u64).min(end) as usize;
@@ -141,7 +142,7 @@ impl FileWindow {
             }
             last = buf[read - 1];
         }
-        // 末尾が \n でなければ最終行(改行なし)を 1 行として加える。
+        // If the last byte isn't \n, count the final (unterminated) line as one more line.
         if last != b'\n' {
             count += 1;
         }
@@ -173,7 +174,8 @@ impl FileWindow {
             if n == 0 {
                 break;
             }
-            // 行内の全出現を左から拾う。col は行頭からのバイト位置(小文字化済み文字列基準)。
+            // Pick up every occurrence in the line, left to right. `col` is the byte position from
+            // the line start (relative to the lowercased string).
             let line = String::from_utf8_lossy(&buf).to_lowercase();
             let mut from = 0usize;
             while let Some(rel) = line[from..].find(&q) {
@@ -213,11 +215,11 @@ impl FileWindow {
         if self.len == 0 {
             return Ok(0);
         }
-        // 末尾バイトが \n なら、その直前の文字が最終行の一部。
+        // If the last byte is \n, the character just before it belongs to the final line.
         let last_byte = self.byte_at(self.len - 1)?;
         let probe = if last_byte == b'\n' {
             if self.len < 2 {
-                return Ok(0); // ファイルが "\n" のみ
+                return Ok(0); // the file is just "\n"
             }
             self.len - 2
         } else {
@@ -228,7 +230,7 @@ impl FileWindow {
 
     /// Line-start offset of the line containing byte `pos` (the byte after the preceding `\n`, or 0 if none).
     fn line_start_at(&mut self, pos: u64) -> std::io::Result<u64> {
-        let mut end = pos + 1; // [0, end) に \n を後方探索
+        let mut end = pos + 1; // search backward for \n over [0, end)
         let mut buf = vec![0u8; CHUNK];
         while end > 0 {
             let chunk_len = (CHUNK as u64).min(end) as usize;
@@ -273,7 +275,7 @@ mod tests {
         let p = tmp("basic", b"l0\nl1\nl2\nl3\nl4\n");
         let mut w = FileWindow::open(&p).unwrap();
         assert_eq!(w.read_lines(0, 2).unwrap(), vec!["l0", "l1"]);
-        // 2 行進んだ行頭から 2 行。
+        // 2 lines from the line start reached by advancing 2 lines.
         let (t2, moved) = w.advance(0, 2).unwrap();
         assert_eq!(moved, 2);
         assert_eq!(w.read_lines(t2, 2).unwrap(), vec!["l2", "l3"]);
@@ -282,19 +284,19 @@ mod tests {
 
     #[test]
     fn advance_retreat_report_moved_line_counts() {
-        let p = tmp("moved", b"a\nb\nc\nd\ne\n"); // 5 行
+        let p = tmp("moved", b"a\nb\nc\nd\ne\n"); // 5 lines
         let mut w = FileWindow::open(&p).unwrap();
-        let (t3, m) = w.advance(0, 3).unwrap(); // 行3(d)へ
+        let (t3, m) = w.advance(0, 3).unwrap(); // to line 3 (d)
         assert_eq!(m, 3);
         assert_eq!(w.read_lines(t3, 1).unwrap(), vec!["d"]);
-        // 1 行戻る → c。
+        // Move back 1 line → c.
         let (b1, m1) = w.retreat(t3, 1).unwrap();
         assert_eq!(m1, 1);
         assert_eq!(w.read_lines(b1, 1).unwrap(), vec!["c"]);
-        // 行3から10行戻る → 行0で頭打ち、moved=3。
+        // Move back 10 lines from line 3 → capped at line 0, moved=3.
         let (b0, m0) = w.retreat(t3, 10).unwrap();
         assert_eq!((b0, m0), (0, 3));
-        // 総行数。
+        // Total line count.
         assert_eq!(w.count_lines().unwrap(), 5);
         std::fs::remove_file(&p).ok();
     }
@@ -303,11 +305,11 @@ mod tests {
     fn advance_then_retreat_roundtrip() {
         let p = tmp("rt", b"a\nbb\nccc\ndddd\ne\n");
         let mut w = FileWindow::open(&p).unwrap();
-        let (t3, _) = w.advance(0, 3).unwrap(); // -> "dddd" の行頭
+        let (t3, _) = w.advance(0, 3).unwrap(); // -> the line start of "dddd"
         assert_eq!(w.read_lines(t3, 1).unwrap(), vec!["dddd"]);
-        let (back, _) = w.retreat(t3, 3).unwrap(); // 戻ると先頭
+        let (back, _) = w.retreat(t3, 3).unwrap(); // moving back reaches the start
         assert_eq!(back, 0);
-        let (back1, _) = w.retreat(t3, 1).unwrap(); // 1 行前 = "ccc"
+        let (back1, _) = w.retreat(t3, 1).unwrap(); // 1 line earlier = "ccc"
         assert_eq!(w.read_lines(back1, 1).unwrap(), vec!["ccc"]);
         std::fs::remove_file(&p).ok();
     }
@@ -316,7 +318,7 @@ mod tests {
     fn find_all_matches_returns_each_occurrence_with_column() {
         let p = tmp("find", b"alpha\nBETA beta\ngamma\nbeta2\n");
         let mut w = FileWindow::open(&p).unwrap();
-        // "beta"(大小無視)の出現: line1 に2つ("BETA"@0,"beta"@5), line3 に1つ("beta2"@0)。
+        // Occurrences of "beta" (case-insensitive): 2 on line1 ("BETA"@0, "beta"@5), 1 on line3 ("beta2"@0).
         let hits = w.find_all_matches("beta", 100).unwrap();
         assert_eq!(hits.len(), 3, "出現単位で3件: {hits:?}");
         // (offset, line, col)
@@ -325,20 +327,20 @@ mod tests {
         assert_eq!(hits[2], (22, 3, 0), "line3 の beta2(col0)");
         assert_eq!(w.read_lines(hits[0].0, 1).unwrap(), vec!["BETA beta"]);
         assert_eq!(w.read_lines(hits[2].0, 1).unwrap(), vec!["beta2"]);
-        // 一致なし。
+        // No match.
         assert!(w.find_all_matches("zzz", 100).unwrap().is_empty());
-        // cap で打ち切り(同一行の2つ目で頭打ち)。
+        // Cut off by cap (capped at the 2nd occurrence on the same line).
         assert_eq!(w.find_all_matches("beta", 1).unwrap().len(), 1);
         std::fs::remove_file(&p).ok();
     }
 
     #[test]
     fn no_trailing_newline_keeps_last_line() {
-        let p = tmp("notrail", b"x\ny\nz"); // 末尾改行なし
+        let p = tmp("notrail", b"x\ny\nz"); // no trailing newline
         let mut w = FileWindow::open(&p).unwrap();
         let all = w.read_lines(0, 10).unwrap();
         assert_eq!(all, vec!["x", "y", "z"]);
-        // 末尾ページ(2 行)。
+        // Last page (2 lines).
         let top = w.last_page_top(2).unwrap();
         assert_eq!(w.read_lines(top, 2).unwrap(), vec!["y", "z"]);
         std::fs::remove_file(&p).ok();
@@ -346,10 +348,10 @@ mod tests {
 
     #[test]
     fn trailing_newline_no_phantom_empty_line() {
-        let p = tmp("trail", b"x\ny\n"); // 末尾改行あり → 空行を作らない
+        let p = tmp("trail", b"x\ny\n"); // has a trailing newline → doesn't create an empty line
         let mut w = FileWindow::open(&p).unwrap();
         assert_eq!(w.read_lines(0, 10).unwrap(), vec!["x", "y"]);
-        let top = w.last_page_top(1).unwrap(); // 最終行 = "y"
+        let top = w.last_page_top(1).unwrap(); // last line = "y"
         assert_eq!(w.read_lines(top, 1).unwrap(), vec!["y"]);
         std::fs::remove_file(&p).ok();
     }

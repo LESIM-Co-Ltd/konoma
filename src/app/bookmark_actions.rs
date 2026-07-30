@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    // --- ブックマーク (M7 補助) ----------------------------------------------
+    // --- Bookmarks (M7 auxiliary) ----------------------------------------------
     /// Whether we are waiting for an alphabetic key after `m` (while true, main intercepts keys).
     pub fn is_marking(&self) -> bool {
         self.mark_set_pending
@@ -28,8 +28,9 @@ impl App {
             return;
         }
         let target = self.bookmark_target();
-        // 上書き確認: 既にそのキーが**別のパス**に割り当て済みで、確認が有効なら、直に上書きせず
-        // 確認ダイアログを出す(同じパスの再登録・未使用キーは無条件で登録=無駄な確認を出さない)。
+        // Overwrite confirmation: if that key is already assigned to a **different** path and
+        // confirmation is enabled, show a confirmation dialog instead of overwriting directly
+        // (re-registering the same path, or an unused key, registers unconditionally = no needless confirmation).
         if self.cfg.ui.confirm_bookmark_overwrite {
             if let Some(existing) = self.bookmarks.get(c) {
                 if existing != target {
@@ -69,7 +70,7 @@ impl App {
                     self.bookmark_display_path(c.is_ascii_lowercase(), &target),
                 ));
             }
-            // 保存失敗: メモリ上には登録済みだが再起動で消える旨を通知(握り潰さない)。
+            // Save failed: notify that it's registered in memory but will vanish on restart (don't swallow the error).
             Err(e) => {
                 self.flash = Some(format!(
                     "{}{e}",
@@ -135,8 +136,9 @@ impl App {
     }
     /// Make the bookmark target (a directory) the new root and show the Tree. Does not change open_dir (the local key).
     pub(super) fn jump_to_dir(&mut self, dir: std::path::PathBuf) {
-        // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越すと
-        // マーカー不可視のまま旧 root のファイルが誤操作対象になる footgun)。
+        // Since root is changing, discard the old root's selection/visual/filter/search state
+        // (carrying them over is a footgun: the old root's files could become targets of a
+        // mistaken operation while the markers stay invisible).
         self.clear_for_root_change();
         self.tab.root = dir;
         self.tab.entries.clear();
@@ -180,7 +182,7 @@ impl App {
         ));
     }
 
-    // --- ブックマーク一覧オーバーレイ ----------------------------------------
+    // --- Bookmark list overlay ----------------------------------------
     pub fn is_bookmark_list(&self) -> bool {
         self.bookmark_list
     }
@@ -222,7 +224,7 @@ impl App {
             if p.is_dir() {
                 self.jump_to_dir(p);
             } else if p.is_file() {
-                self.enter_preview(&p); // ファイルはプレビューで開く(tree は変えない)
+                self.enter_preview(&p); // a file opens in the preview (tree is left unchanged)
             } else {
                 self.flash = Some(format!(
                     "{}: {}",
@@ -357,11 +359,11 @@ impl App {
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
-        // 絞り込み結果は別 entries 集合なので visual_anchor(添字)は stale。無効化する。
+        // The filtered result is a different entries set, so visual_anchor (an index) is stale. Invalidate it.
         self.tab.visual_anchor = None;
     }
 
-    // --- 変更ファイルのみフィルタ (`C`) ＋ 変更間ジャンプ (`n`/`N`) — Agent Watch ① ----------
+    // --- Changed-files-only filter (`C`) + jump between changes (`n`/`N`) — Agent Watch ① ----------
     /// Whether the changed-files-only tree filter is active (drives the flat relative-path rendering).
     pub fn changed_filter(&self) -> bool {
         self.tab.changed_filter
@@ -390,12 +392,12 @@ impl App {
             self.rebuild_tree_notify();
             return;
         }
-        self.ensure_git_status_now(); // `C` は status から答えを出す=走行中なら待つ(偽の「変更なし」を出さない)
+        self.ensure_git_status_now(); // `C` answers from status = if a scan is in flight, wait (never show a false "no changes")
         if self.changed_paths().is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
             return;
         }
-        self.clear_filter_state(); // 名前絞り込み(`/`)とは排他
+        self.clear_filter_state(); // mutually exclusive with the name filter (`/`)
         self.tab.changed_filter = true;
         self.tab.selected = 0;
         self.reapply_changed_filter();
@@ -433,13 +435,14 @@ impl App {
     /// In the normal tree the target is revealed (collapsed ancestors expanded); in the changed-only
     /// filter it moves within the flat list.
     pub fn jump_changed(&mut self, dir: i64) {
-        // diff ビュー表示中は「次/前の変更ファイルの diff へ切替」= ビューを出ずに変更を回遊する
-        // (hunk/lazygit 流のレビュー動線)。ツリーでは従来どおりカーソルジャンプ。
+        // While a diff view is shown, "switch to the next/previous changed file's diff" cycles
+        // through changes without leaving the view (a hunk/lazygit-style review flow). In the tree it's
+        // still the usual cursor jump.
         if self.is_git_diff_preview() {
             self.diff_jump_changed(dir);
             return;
         }
-        self.ensure_git_status_now(); // `n`/`N` も status から答えを出す
+        self.ensure_git_status_now(); // `n`/`N` also answer from status
         let paths = self.changed_paths();
         if paths.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChangedFiles).into());
@@ -454,7 +457,7 @@ impl App {
         {
             Some(cur) => match paths.binary_search(&cur) {
                 Ok(i) => (i as i64 + dir).rem_euclid(len) as usize,
-                // カーソルが変更ファイル上にない: 挿入位置の次(前)へ(wrap)。
+                // The cursor is not on a changed file: go to the next (previous) insertion point (wrapping).
                 Err(ins) => {
                     if dir > 0 {
                         (ins as i64).rem_euclid(len) as usize
@@ -474,7 +477,7 @@ impl App {
         }
         match self.reveal_path_deep(&target) {
             Ok(true) => {}
-            // 対象が隠しディレクトリ配下などで可視化できない(`.` で隠し表示に切替すれば届く)。
+            // The target can't be made visible, e.g. it's under a hidden directory (switching to show hidden with `.` would reach it).
             Ok(false) => {
                 self.flash =
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JumpTargetHidden).into());
@@ -510,7 +513,7 @@ impl App {
         let len = paths.len() as i64;
         let idx = match paths.iter().position(|p| *p == cur) {
             Some(i) => (i as i64 + dir).rem_euclid(len) as usize,
-            // 表示中ファイルが集合に無い(直前にコミットされた等): 先頭/末尾から。
+            // The currently shown file isn't in the set (e.g. it was just committed): start from the first/last.
             None => {
                 if dir > 0 {
                     0
@@ -521,9 +524,9 @@ impl App {
         };
         let target = paths[idx].clone();
         if target == cur {
-            return; // 対象が1つだけ
+            return; // only one target
         }
-        // ツリーのカーソルも同期(q で戻ったとき、いま見ていたファイルの上に居る)。
+        // Sync the tree cursor too (so returning with `q` lands on the file that was just being viewed).
         if self.tab.changed_filter {
             self.reapply_changed_filter();
             if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
@@ -532,8 +535,8 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // open_git_diff は came_from_git_view / diff_follow_scope を初期化するため保存/復元する
-        // (ハブ経由の diff から回遊しても q でハブへ戻れる・フォロースコープの回遊が続く)。
+        // open_git_diff resets came_from_git_view / diff_follow_scope, so save and restore them
+        // (so cycling from a hub-opened diff still returns to the hub with `q`, and a follow-scoped cycle keeps going).
         let came = self.tab.came_from_git_view;
         let scope = self.diff_follow_scope;
         self.open_git_diff(&target);
@@ -573,26 +576,28 @@ impl App {
     /// **heavy `ignored` (~800ms on large repos) is offloaded to a separate thread** (the "don't block the UI" principle). Rendering stays responsive, and
     /// only the dimming based on ignore rules appears after the result arrives (`apply_ignored`).
     pub fn refresh_git_if_needed(&mut self) {
-        // 同一 root かつ dirty でなければ何もしない。dirty(再検証要求)は同一 root でも取り直す。
+        // Do nothing if root is the same and not dirty. dirty (a re-validation request) refetches even for the same root.
         if self.git_status_for.as_deref() == Some(self.tab.root.as_path()) && !self.git_status_dirty
         {
             return;
         }
         let wd = crate::git::workdir(&self.tab.root);
-        // statuses/branch は **workdir から** `git status` を回す=同一リポジトリ内ならどのサブディレクトリでも
-        // 結果は同一。よって **workdir が同じで dirty でなければ再計算せず流用**する(`l`/`h` 潜行のたびに
-        // 全 worktree を走査する `git status` が同期実行されるのを回避=大 repo での h/l の重さの主因)。
-        // dirty(ファイル変更/コミット/チェックアウト/無視ルール変更)や別 repo への移動時のみ取り直す。
-        // ignored の Phase G(workdir 単位キャッシュ)と同型。
+        // statuses/branch run `git status` **from the workdir**: within the same repository the
+        // result is identical from any subdirectory. So **when workdir is the same and not dirty,
+        // reuse it instead of recomputing** (this avoids synchronously running a whole-worktree-scanning
+        // `git status` on every `l`/`h` descent = the main reason h/l felt heavy in a large repo).
+        // Only refetch when dirty (file change / commit / checkout / ignore-rule change) or when moving to a different repo.
+        // Mirrors `ignored`'s Phase G (per-workdir cache).
         let status_reusable = self.git_status_workdir.is_some()
             && self.git_status_workdir == wd
             && !self.git_status_dirty;
         if status_reusable {
-            // 同一 repo かつ再検証要求なし: 既存の status をそのまま流用する(`l`/`h` 潜行の最適化)。
+            // Same repo, no re-validation request: reuse the existing status as-is (an optimization for `l`/`h` descent).
             self.git_status_for = Some(self.tab.root.clone());
         } else {
-            // フル `git status`(全 worktree 走査)は**別スレッドへ**逃がす。到着まで直前の status を
-            // 見せ続けるので、ツリーは即座に描ける(原則「UI をブロックしない」)。
+            // Offload the full `git status` (a whole-worktree scan) **to a separate thread**. The
+            // previous status keeps showing until it arrives, so the tree draws instantly
+            // (principle "don't block the UI").
             self.kick_status_refresh(wd.clone());
         }
         self.refresh_ignored_if_needed(wd);
@@ -601,14 +606,17 @@ impl App {
     /// The `ignored` half of `refresh_git_if_needed`, split out so the synchronous
     /// `ensure_git_status_now` can reuse it without also going through the async status dispatch.
     fn refresh_ignored_if_needed(&mut self, wd: Option<PathBuf>) {
-        // 重い ignored(無視セット)は **repo(workdir)が変わった時だけ** 作り直す。同一リポジトリ内の
-        // サブディレクトリへ潜っても無視ルールは同一なので流用する(`l` 潜行時の再計算を回避)。
+        // The heavy `ignored` (ignore set) is only rebuilt **when repo (workdir) changes**. Descending
+        // into a subdirectory within the same repository keeps the same ignore rules, so it's reused
+        // (avoids recomputation on `l` descent).
         let different_repo = self.git_ignored_for != wd;
         let need = self.git_ignored_dirty || different_repo;
-        // 同一 workdir の計算が既に走行中なら待つ(無視ルール変更 dirty の時はそれより新しい結果が要る)。
-        // `is_some()` が要る: repo でない root では `wd` も `git_ignored_pending` も None なので、
-        // それ無しでは「計算中」が**常に成立**して早期 return し、下の None 分岐(前の repo の
-        // 無視セットを捨てる処理)へ永久に到達しなかった。計算が走るのは必ず実在の workdir に対してだけ。
+        // If a computation for the same workdir is already in flight, wait (when ignore-rule-change
+        // dirty is set, a newer result than that is needed).
+        // The `is_some()` check is required: for a root that isn't a repo, both `wd` and
+        // `git_ignored_pending` are None, so without it "in progress" would **always hold**, causing
+        // an early return that never reached the None branch below (which discards the previous
+        // repo's ignore set). A computation only ever runs against a real workdir.
         let inflight = self.git_ignored_pending.is_some()
             && self.git_ignored_pending == wd
             && !self.git_ignored_dirty;
@@ -617,15 +625,16 @@ impl App {
         }
         match wd {
             None => {
-                // repo でない: 即クリア(計算不要)。
+                // Not a repo: clear immediately (no computation needed).
                 self.git_ignored.clear();
                 self.git_ignored_for = None;
                 self.git_ignored_pending = None;
                 self.git_ignored_dirty = false;
             }
             Some(wd) => {
-                // 別 repo へ移った時だけ旧セットを消す(暗転の混在を防ぐ)。無視ルール変更(dirty)で
-                // 同一 repo を作り直す時は、新セット到着まで旧セットを見せ続ける(チラつき回避)。
+                // Only clear the old set when moving to a different repo (avoids a mix of dimmed
+                // states). When rebuilding the same repo due to an ignore-rule change (dirty), keep
+                // showing the old set until the new one arrives (avoids flicker).
                 if different_repo {
                     self.git_ignored.clear();
                     self.git_ignored_for = None;
@@ -657,16 +666,19 @@ impl App {
     /// because `git_branch` (the tree title) and `git_has_changes()` (the gutter column) are *not*
     /// path-keyed and would otherwise show the previous repository's branch for the length of a scan.
     fn kick_status_refresh(&mut self, wd: Option<PathBuf>) {
-        // 同一 root のスキャンが既に走行中なら **新たに spawn しない**。再検証要求(dirty)は立てたまま
-        // 残し、結果到着時(`apply_statuses`)に1回だけ引き継いで再実行する = **要求の合体**。
-        // 同期実行だった頃はスキャン所要時間が次の要求を自然に律速していたが、非同期化でその律速が
-        // 消えるため、ここで合体させないと fs イベント毎に全 worktree 走査が積み上がる
-        // (エージェントが書き続ける大 repo ほど悪化する = この修正が狙った状況そのもの)。
+        // If a scan for the same root is already in flight, **don't spawn a new one**. Keep the
+        // re-validation request (dirty) set as-is, and pick it up exactly once when the result
+        // arrives (`apply_statuses`) to re-run = **request coalescing**.
+        // Back when this ran synchronously, the scan's own duration naturally rate-limited the next
+        // request, but that rate-limiting disappears once it's async, so without coalescing here a
+        // whole-worktree scan would pile up on every fs event (worse the bigger the repo an agent
+        // keeps writing to = exactly the situation this fix targets).
         if self.git_status_pending.as_deref() == Some(self.tab.root.as_path()) {
             return;
         }
-        // 別 repo へ移ったら、パスキーでない派生表示(ブランチ名/ガター列の有無)が前の repo のまま
-        // 残らないよう捨てる。同一 repo 内(`l`/`h`)ではここを通らないのでチラつかない。
+        // When moving to a different repo, discard the non-path-keyed derived displays (branch name /
+        // whether the gutter column shows) so they don't keep showing the previous repo's. This path
+        // isn't taken within the same repo (`l`/`h`), so there's no flicker there.
         if self.git_status_workdir != wd {
             self.git_status.clear();
             self.git_branch = None;
@@ -674,10 +686,10 @@ impl App {
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
         self.git_status_pending = Some(self.tab.root.clone());
-        // 要求はこの世代の計算が引き受けた。以後の再検証要求は次の世代で拾う。
+        // This generation's computation has taken over the request. Any further re-validation requests are picked up in the next generation.
         self.git_status_dirty = false;
-        // 「この root の status を持っている/取得中」の印。これを進めておかないと、結果が届くまで
-        // 毎描画で kick し直してしまう(上の inflight ガードと二重防御)。
+        // A marker meaning "we have / are fetching status for this root". Without setting this ahead
+        // of time, we'd re-kick on every render until the result arrives (double protection along with the inflight guard above).
         self.git_status_for = Some(self.tab.root.clone());
         let gen = self.git_status_gen;
         let root = self.tab.root.clone();
@@ -688,7 +700,7 @@ impl App {
     /// (tests / no channel), fall back to **synchronous** computation and application, so unit tests that don't
     /// drive a run loop still observe the result immediately (same contract as `spawn_or_sync_ignored`).
     fn spawn_or_sync_statuses(&mut self, root: PathBuf, workdir: Option<PathBuf>, gen: u64) {
-        // repo でない(no-git ビルド含む)なら結果は自明に空。スレッドを起こさず即座に確定させる。
+        // If it's not a repo (including a no-git build), the result is trivially empty. Settle it immediately without spawning a thread.
         if workdir.is_none() {
             let res = crate::app::StatusResult {
                 gen,
@@ -705,8 +717,8 @@ impl App {
             return;
         };
         std::thread::spawn(move || {
-            // ワーカーが panic すると結果が返らず `git_status_pending` が永久に残り、スピナーが
-            // 回り続け status も凍結する。他のワーカーと同じ安全網で必ず結果を返す(原則#3)。
+            // If the worker panics, no result comes back and `git_status_pending` stays set forever,
+            // spinning the spinner and freezing status. Always return a result, with the same safety net as the other workers (principle #3).
             if let Some(res) =
                 crate::preview::markdown::catch_silent(|| Self::scan_statuses(root, workdir, gen))
             {
@@ -741,7 +753,7 @@ impl App {
     ///   feature rather than a slow one.
     pub fn ensure_git_status_now(&mut self) {
         let wd = crate::git::workdir(&self.tab.root);
-        // 走行中でなく、同一 repo の最新を既に持っているなら何もしない(`l`/`h` の流用と同じ判定)。
+        // Do nothing if not in flight and we already have the latest for the same repo (the same judgment as `l`/`h`'s reuse).
         let fresh = self.git_status_pending.is_none()
             && self.git_status_workdir.is_some()
             && self.git_status_workdir == wd
@@ -749,9 +761,10 @@ impl App {
         if fresh {
             self.git_status_for = Some(self.tab.root.clone());
         } else {
-            // ここでは**別スレッドへ投げない**。投げてから同期計算すると、捨てるだけのフル走査を
-            // 1本余計に走らせることになる(大 repo ほど無駄が大きい)。世代を進めることで、既に
-            // 走行中だったスキャンの結果は届いても破棄される。
+            // We deliberately **don't dispatch to a separate thread here**. Dispatching and then also
+            // computing synchronously would run one extra full scan just to be discarded (more waste
+            // the bigger the repo). By bumping the generation, any scan already in flight will have
+            // its result discarded even if it arrives.
             self.git_status_gen = self.git_status_gen.wrapping_add(1);
             self.git_status_dirty = false;
             self.git_status_pending = None;
@@ -765,23 +778,24 @@ impl App {
     /// moved to another root/tab while it was computing). Returns true if state changed (the caller redraws).
     pub fn apply_statuses(&mut self, res: crate::app::StatusResult) -> bool {
         if res.gen != self.git_status_gen {
-            return false; // 陳腐化: 既に別 root/タブへ移っている
+            return false; // stale: already moved to a different root/tab
         }
         self.git_status = res.statuses;
         self.git_branch = res.branch;
         self.git_status_workdir = res.workdir;
-        // 世代が一致 = この結果は現在の workdir のもの。スキャン開始時点の root は、同一 repo 内で
-        // `l`/`h` が動いていると現在の root と食い違う。食い違ったまま記録すると、次の fs イベントで
-        // `refresh_git_status_only` が早期 return して**再検証を丸ごと取りこぼす**ため、現在の root を入れる。
+        // A matching generation = this result belongs to the current workdir. The root at the time
+        // the scan started can differ from the current root if `l`/`h` moved within the same repo.
+        // Recording that stale value would make `refresh_git_status_only` return early on the next fs
+        // event and **completely miss a re-validation**, so record the current root instead.
         self.git_status_for = Some(self.tab.root.clone());
         self.git_status_pending = None;
-        // 計算中に届いていた再検証要求(合体分)をここで1回だけ実行する。
+        // Run the re-validation request that arrived while computing (the coalesced one) exactly once here.
         if self.git_status_dirty {
             let wd = crate::git::workdir(&self.tab.root);
             self.kick_status_refresh(wd);
         }
-        // 「変更ファイルのみ」フィルタの一覧は statuses から**導出済みの entries** なので、再描画では
-        // 直らない。新しい status が届いたこの瞬間に作り直す(エージェントの編集への live 追従)。
+        // The "changed files only" filter's list is entries **already derived** from statuses, so a
+        // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
         if self.tab.changed_filter {
             self.reapply_changed_filter();
         }
@@ -792,7 +806,7 @@ impl App {
     /// no channel), fall back to **synchronous** immediate computation and application (keeping unit tests that don't assume rendering working).
     fn spawn_or_sync_ignored(&mut self, root: PathBuf, workdir: PathBuf, gen: u64) {
         let Some(tx) = self.ignored_tx.clone() else {
-            // 同期フォールバック: その場で計算して反映(陳腐化なし)。
+            // Synchronous fallback: compute and apply it on the spot (no staleness).
             let set = crate::git::ignored(&root);
             self.apply_ignored(IgnoredResult { gen, workdir, set });
             return;
@@ -807,7 +821,7 @@ impl App {
     /// Returns true if applying changed the state (the caller redraws).
     pub fn apply_ignored(&mut self, res: IgnoredResult) -> bool {
         if res.gen != self.git_ignored_gen {
-            return false; // 陳腐化: 既に別 repo / 別世代へ移っている
+            return false; // stale: already moved to a different repo / generation
         }
         self.git_ignored = res.set;
         self.git_ignored_for = Some(res.workdir);
@@ -871,7 +885,7 @@ impl App {
     ///   same spirit as the root guard in `refresh_git_if_needed`): in the Git view, the change list; in Preview mode,
     ///   refetch the current preview (reflecting git_view_entries staleness on return from an external git tool #4 / preview staleness on external edit).
     pub fn refresh(&mut self) -> Result<()> {
-        // 明示的な再読込(`r`・fileops・外部ツール復帰)は無視セットも作り直す(全再計算)。
+        // An explicit reload (`r` / fileops / returning from an external tool) also rebuilds the ignore set (full recompute).
         self.refresh_fs(true)
     }
 
@@ -880,16 +894,16 @@ impl App {
     /// `.git/info/exclude`) rarely change, so this is called with `true` only when they actually change, also rebuilding
     /// `ignored`. This avoids a few-hundred-ms freeze per event on large repositories.
     pub fn refresh_fs(&mut self, recompute_ignored: bool) -> Result<()> {
-        // 変更パス不明 = 安全側(プレビューも再読込)。
+        // Unknown changed paths = the safe side (also reload the preview).
         self.refresh_fs_changed(recompute_ignored, &[])
     }
 
-    /// `refresh_fs` の**変更パスを知っている**版。`changed` が空でなければ、現プレビューが
-    /// その変更の影響を受けるときだけ再読込する（`preview_affected_by` 参照）。
+    /// The **changed-paths-aware** version of `refresh_fs`. When `changed` is non-empty, reload the
+    /// current preview only when it's actually affected by that change (see `preview_affected_by`).
     ///
-    /// 目的: エージェントが `src/` を書き換え続けている間に、無関係な `docs/foo.md` の装飾を
-    /// 毎イベント作り直す（＝Markdown 全文の再レンダ / CSV 全体の再パース）のを避ける。
-    /// ツリー再構築・git status・変更フィルタ・git ビューは従来どおり毎回追従する。
+    /// Purpose: while an agent keeps rewriting `src/`, avoid rebuilding the decoration of an
+    /// unrelated `docs/foo.md` on every single event (= re-rendering the whole Markdown / re-parsing
+    /// the entire CSV). Tree rebuild, git status, the changed filter, and the git view still follow along on every event as before.
     pub fn refresh_fs_changed(
         &mut self,
         recompute_ignored: bool,
@@ -914,39 +928,42 @@ impl App {
         reload_preview: bool,
     ) -> Result<()> {
         if recompute_ignored {
-            self.git_status_for = None; // 次の描画で statuses+branch を再計算
-            self.git_status_dirty = true; // 無視ルール変更で status 出力も変わり得る=workdir キャッシュを無効化
-            self.git_ignored_dirty = true; // 重い ignored も作り直す(無視ルール変更/明示 refresh)。
-                                           // 旧セットは反映まで維持(別スレッド計算・チラつき回避)。
+            self.git_status_for = None; // recompute statuses+branch on the next render
+            self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
+            self.git_ignored_dirty = true; // rebuild the heavy ignored too (ignore-rule change / explicit refresh).
+                                           // The old set is kept until the new one lands (computed on a separate thread, avoids flicker).
         } else {
-            self.refresh_git_status_only(); // statuses+branch のみ(ignored はキャッシュ保持)
+            self.refresh_git_status_only(); // statuses+branch only (ignored keeps its cache)
         }
-        self.diff_cache = None; // 作業ツリーが変わった可能性 → diff キャッシュを落とす(外部編集の追従)
-        self.gutter_cache = None; // 同上: git 変更ガターも作業ツリー変更で作り直す
-                                  // ツリー再構築は行うが、その一時的な失敗(エージェントが一括でファイルを書き替える最中に
-                                  // 展開中サブディレクトリが一瞬読めなくなる等)で、下のプレビュー/ビュー再読込を**スキップさせない**。
-                                  // それらは preview_path / git 状態だけで動き、新しいツリーには依存しない。ツリーの Err は末尾で返す。
+        self.diff_cache = None; // the working tree may have changed → drop the diff cache (keeps up with external edits)
+        self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
+                                  // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
+                                  // expanded briefly becomes unreadable while an agent bulk-rewrites files)
+                                  // must **not skip** the preview/view reload below. Those only depend on
+                                  // preview_path / git state, not the new tree, so the tree's Err is returned at the end.
         let tree = self.rebuild_tree();
-        // 変更ファイルのみフィルタ中は一覧を最新の statuses から作り直す(エージェントの編集に追従)。
+        // While the changed-files-only filter is active, rebuild the list from the latest statuses (follows an agent's edits).
         if self.tab.changed_filter {
             self.refresh_git_if_needed();
-            // スキャン走行中に作り直してはいけない。別 repo のタブから戻った直後は `git_status` が
-            // 空(kick が別 repo の残骸を捨てた直後)なので、ここで作り直すとフィルタが「変更ゼロ」と
-            // 判断されて**黙って解除され、嘘の「no changed files」まで出る**。結果到着時に
-            // `apply_statuses` が作り直すので、待てばよい。
+            // Must not rebuild while a scan is in flight. Right after switching back from a
+            // different repo's tab, `git_status` is empty (right after the kick discarded the other
+            // repo's leftovers), so rebuilding here would make the filter judge "zero changes" and
+            // **silently turn itself off, even showing a false "no changed files"**. Wait instead —
+            // `apply_statuses` rebuilds it once the result arrives.
             if self.git_status_pending.is_none() {
                 self.reapply_changed_filter();
             }
         } else if self.tab.tree_filter.is_some() {
-            // テキストフィルタ(`/`)中は rebuild_tree が entries を全表示に戻してしまう。プールを現在の
-            // ツリーから取り直して(外部の追加/削除に追従)、保存/復元された query で絞り込み直す
-            // (query は復元されるのにリストが全表示になる不整合を解消)。
+            // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
+            // everything. Re-collect the pool from the current tree (follows external
+            // additions/deletions), then re-filter with the saved/restored query (fixing the
+            // inconsistency where the query is restored but the list shows everything).
             self.tab.filter_pool = collect_all(&self.tab.root, self.tab.show_hidden);
             self.reapply_filter();
         }
-        // 消えたパスを選択集合から除く(retain で実在のみ残す。シンボリックリンクは辿らない)。
+        // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
-        // アクティブな派生ビューのみ追従させる。
+        // Only make the active derived view follow along.
         if self.is_git_view() {
             self.git_view_reload();
         }
@@ -973,8 +990,8 @@ impl App {
         if changed.is_empty() {
             return true;
         }
-        // git の diff 表示は「ファイル + git 状態」の関数。同じイベントに `.git` の変更が
-        // 混ざっていても(=ここには現れない)取りこぼさないよう、常に追従させる。
+        // A git diff display is a function of "file + git state". Even if a `.git` change is mixed
+        // into the same event (= it doesn't appear here), always follow along to avoid missing it.
         if self.is_git_diff_preview() {
             return true;
         }
@@ -991,15 +1008,16 @@ impl App {
         if self.git_status_for.as_deref() != Some(self.tab.root.as_path()) {
             return;
         }
-        // 再取得は**別スレッド**へ。ここは `handle_key` の中(fs イベント/タブ切替)から呼ばれるので、
-        // 同期実行するとキー入力そのものが `git status` の時間だけ固まっていた。
+        // Refetching goes to **a separate thread**. This is called from within `handle_key` (fs
+        // events / tab switches), so running it synchronously froze key input itself for the
+        // duration of `git status`.
         let wd = crate::git::workdir(&self.tab.root);
-        self.git_status_dirty = true; // 同一 workdir でも取り直す(再検証要求)
+        self.git_status_dirty = true; // refetch even for the same workdir (a re-validation request)
         self.kick_status_refresh(wd);
     }
 }
 
-// --- ツリー絞り込み(`/`)のファジー照合 -----------------------------------------------------
+// --- Fuzzy matching for tree filtering (`/`) -----------------------------------------------------
 
 thread_local! {
     // `nucleo_matcher::Matcher::new` eagerly allocates ~135KB, so nucleo's own docs recommend

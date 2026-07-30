@@ -112,7 +112,7 @@ pub fn format_epoch_utc(secs: u64) -> String {
     let days = (secs / 86400) as i64;
     let rem = secs % 86400;
     let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    // civil_from_days: 1970-01-01 からの日数 → 年月日。
+    // civil_from_days: days since 1970-01-01 → calendar date.
     let z = days + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = z - era * 146097; // [0, 146096]
@@ -210,8 +210,8 @@ pub fn detail_cell(id: &str, path: &Path, m: &RowMeta) -> Option<String> {
 /// these are just a progress readout, never used to synchronize other state).
 #[derive(Debug, Default)]
 pub struct Progress {
-    items: std::sync::atomic::AtomicUsize, // 上位ターゲット(paste/duplicate の1件=1ファイル or 1ディレクトリ)の完了数
-    files: std::sync::atomic::AtomicUsize, // 末端エントリ(実際にコピー/移動したファイル/symlink)の累積数
+    items: std::sync::atomic::AtomicUsize, // count of finished top-level targets (one paste/duplicate entry = one file or one directory)
+    files: std::sync::atomic::AtomicUsize, // running count of leaf entries (files/symlinks actually copied or moved)
 }
 
 impl Progress {
@@ -318,7 +318,8 @@ pub fn render_rename_template(template: &str, n: usize, stem: &str, ext: &str) -
     let bytes = template.as_bytes();
     let mut i = 0;
     while i < template.len() {
-        // `{` は ASCII(0x7B)。UTF-8 の多バイト文字の途中に現れないので byte 判定で安全。
+        // `{` is ASCII (0x7B). It never appears mid-way through a UTF-8 multi-byte character, so a
+        // byte check is safe.
         if bytes[i] == b'{' {
             if let Some(rel) = template[i + 1..].find('}') {
                 let token = &template[i + 1..i + 1 + rel];
@@ -347,7 +348,7 @@ fn render_token(token: &str, n: usize, stem: &str, ext: &str) -> Option<String> 
         "n" => Some(n.to_string()),
         "name" => Some(stem.to_string()),
         "ext" => Some(ext.to_string()),
-        // `{n:0W}` = 幅 W のゼロ埋め連番。
+        // `{n:0W}` = a zero-padded sequence number of width W.
         _ => token
             .strip_prefix("n:0")
             .and_then(|w| w.parse::<usize>().ok())
@@ -363,9 +364,10 @@ fn render_token(token: &str, n: usize, stem: &str, ext: &str) -> Option<String> 
 /// best-effort in reverse order before returning the **original error**. Secondary failures during rollback are appended to the context.
 /// This prevents staged files (`.konoma-rename-tmp-*`) from being orphaned so that data appears to have been lost.
 pub fn batch_rename(plan: &[(PathBuf, PathBuf)]) -> Result<()> {
-    // 第1ループで退避したもの: (一時名 tmp, 元src, 最終dst)。
+    // What was set aside in the first loop: (temp name tmp, original src, final dst).
     let mut staged: Vec<(PathBuf, PathBuf, PathBuf)> = Vec::new();
-    // 第2ループで確定した件数(staged の先頭から数える)。`staged[..committed]` が確定済み。
+    // The count committed in the second loop (counted from the front of staged). `staged[..committed]`
+    // has already been committed.
     let mut committed = 0usize;
 
     for (i, (src, dst)) in plan.iter().enumerate() {
@@ -413,9 +415,11 @@ fn rollback_batch_rename(
     staged: &[(PathBuf, PathBuf, PathBuf)],
     committed: usize,
 ) -> anyhow::Error {
-    // 1) 確定済みを dst → tmp へ戻す。tmp 名(`.konoma-rename-tmp-{i}`)は未使用なので衝突しない。
-    //    これで未確定分(既に tmp)と合わせ全 staged が tmp に揃い、入れ替え/巡回でも src 同士の
-    //    上書き衝突が起きなくなる。逆順に処理して前進の確定順を巻き戻す。
+    // 1) Move the already-committed entries back from dst → tmp. The tmp name
+    //    (`.konoma-rename-tmp-{i}`) is unused, so there's no collision.
+    //    This lines every staged entry up at tmp (together with the not-yet-committed ones, which
+    //    are already at tmp), so a swap/cycle can no longer collide by overwriting each other's
+    //    src. Process in reverse order to unwind the forward commit order.
     for (tmp, _src, dst) in staged[..committed].iter().rev() {
         if let Err(e) = std::fs::rename(dst, tmp) {
             err = err.context(format!(
@@ -425,7 +429,8 @@ fn rollback_batch_rename(
             ));
         }
     }
-    // 2) 全 staged を tmp → src へ戻す。全 src は空いているので入れ替え/巡回でも衝突しない。
+    // 2) Move every staged entry back from tmp → src. Every src is now free, so a swap/cycle
+    //    can't collide either.
     for (tmp, src, _dst) in staged.iter().rev() {
         if let Err(e) = std::fs::rename(tmp, src) {
             err = err.context(format!(
@@ -475,9 +480,9 @@ fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
 /// `p` is bumped once per leaf file and per symlink recreated, so a caller polling it from another
 /// thread sees the counter advance **inside** a large directory instead of jumping only at the end.
 fn copy_dir_all(src: &Path, dst: &Path, p: &Progress) -> Result<()> {
-    // 自己包含ガード: `dst` が `src` の部分木内だと read_dir が増殖中の `dst` を拾い続け
-    // 無限再帰する(例: Finder から親フォルダを子へ D&D)。paste() の starts_with ガードと対称に、
-    // コピー/移動/ドロップの全経路をここで一括防御する。
+    // Self-containment guard: if `dst` is inside the `src` subtree, read_dir keeps picking up the
+    // growing `dst` and recurses forever (e.g. dragging a parent folder into its child in Finder).
+    // Symmetric to paste()'s starts_with guard — defend every copy/move/drop path here in one place.
     if dst.starts_with(src) {
         anyhow::bail!(
             "コピー先がコピー元の配下です: {} ⊂ {}",
@@ -555,14 +560,15 @@ pub fn move_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
         .context("名前の取得に失敗")?;
     let same = dir.join(name);
     if same == src {
-        return Ok(same); // 既に同じ場所
+        return Ok(same); // already in the same place
     }
     let dst = dir.join(unique_name(dir, name));
     if std::fs::rename(src, &dst).is_ok() {
         p.bump_file();
         return Ok(dst);
     }
-    // 別ボリューム等 → コピーして元を削除。symlink はリンク自体を複製し参照先を辿らない。
+    // Different volume, etc. → copy then delete the original. A symlink duplicates the link
+    // itself and does not follow its target.
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         copy_symlink(src, &dst)?;
@@ -585,9 +591,10 @@ mod tests {
 
     #[test]
     fn copy_into_self_subtree_is_rejected_not_infinite() {
-        // 親フォルダをその子へコピー(Finder ドロップ等)。自己包含ガードが無いと
-        // read_dir が増殖中のコピー先を拾い続け `/parent/child/parent/child/…` を無限生成する。
-        // ガードにより「コピー先がコピー元の配下」で即エラーになることを確認する(D1)。
+        // Copy a parent folder into its own child (e.g. a Finder drop). Without the
+        // self-containment guard, read_dir keeps picking up the growing copy destination and
+        // generates `/parent/child/parent/child/…` forever. Confirm the guard makes this fail
+        // immediately with "the copy destination is inside the copy source" (D1).
         let root = std::env::temp_dir().join("konoma_selfcopy_test");
         let _ = std::fs::remove_dir_all(&root);
         let parent = root.join("parent");
@@ -595,20 +602,21 @@ mod tests {
         std::fs::create_dir_all(&child).unwrap();
         std::fs::write(parent.join("f.txt"), b"x").unwrap();
 
-        // parent を child の中へコピー → 自己包含なので Err(無限再帰しない)。
+        // Copy parent into child → self-contained, so Err (does not recurse forever).
         let err = copy_into(&child, &parent).unwrap_err();
         assert!(
             err.to_string().contains("配下"),
             "自己包含エラーであるべき: {err}"
         );
-        // 無限ネストが作られていない(child 配下に parent が生えていない)。
+        // No infinite nesting was created (parent was not grown under child).
         assert!(
             !child.join("parent").join("parent").exists(),
             "増殖したネストが残ってはならない"
         );
 
-        // move_into も同じガードを通る(rename 失敗→copy_dir_all 経路)。ただし rename が
-        // 成功してしまう環境では move されるだけなので、ここでは copy 経路のみを検証対象とする。
+        // move_into goes through the same guard too (the rename-fails → copy_dir_all path). But
+        // in an environment where rename succeeds it would just move, so this test only targets
+        // the copy path.
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -619,18 +627,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 作成。
+        // Create.
         let f = create_file(&dir, "a.txt").unwrap();
         assert!(f.is_file());
-        // 既存は上書きせずエラー。
+        // An existing one errors instead of being overwritten.
         assert!(
             create_file(&dir, "a.txt").is_err(),
             "既存ファイルは上書きしない"
         );
-        // 階層付き作成 (sub/b.txt)。
+        // Nested creation (sub/b.txt).
         let nested = create_file(&dir, "sub/b.txt").unwrap();
         assert!(nested.is_file());
-        // ディレクトリ作成。
+        // Create a directory.
         let d = create_dir(&dir, "newdir").unwrap();
         assert!(d.is_dir());
         assert!(
@@ -638,13 +646,13 @@ mod tests {
             "既存ディレクトリはエラー"
         );
 
-        // リネーム。
+        // Rename.
         let renamed = rename(&f, "a2.txt").unwrap();
         assert!(renamed.is_file() && !f.exists());
         assert_eq!(renamed.file_name().unwrap(), "a2.txt");
-        // 同名は no-op で成功。
+        // The same name succeeds as a no-op.
         assert!(rename(&renamed, "a2.txt").is_ok());
-        // 既存名へのリネームはエラー(上書きしない)。
+        // Renaming to an existing name errors (does not overwrite).
         create_file(&dir, "c.txt").unwrap();
         assert!(rename(&renamed, "c.txt").is_err());
 
@@ -656,7 +664,7 @@ mod tests {
         let dir = std::env::temp_dir().join("konoma_perm_delete_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // ファイルとディレクトリ(中身あり)を完全削除。
+        // Permanently delete a file and a directory (with contents).
         let f = dir.join("f.txt");
         std::fs::write(&f, b"x").unwrap();
         let sub = dir.join("sub");
@@ -666,7 +674,7 @@ mod tests {
         delete_permanently(&[f.clone(), sub.clone()]).unwrap();
         assert!(!f.exists(), "ファイルが完全削除される");
         assert!(!sub.exists(), "ディレクトリが中身ごと完全削除される");
-        // 存在しないパスはエラー。
+        // A nonexistent path errors.
         assert!(delete_permanently(std::slice::from_ref(&f)).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
@@ -687,12 +695,12 @@ mod tests {
             render_rename_template("base.{ext}", 1, "a", "txt"),
             "base.txt"
         );
-        // 未知トークンはリテラル。
+        // An unknown token is literal.
         assert_eq!(
             render_rename_template("a{bogus}b", 1, "x", "y"),
             "a{bogus}b"
         );
-        // マルチバイトのリテラルも保持。
+        // Multi-byte literals are preserved too.
         assert_eq!(render_rename_template("写真_{n}", 2, "x", "y"), "写真_2");
     }
 
@@ -705,7 +713,7 @@ mod tests {
         let b = dir.join("b.txt");
         std::fs::write(&a, b"AAA").unwrap();
         std::fs::write(&b, b"BBB").unwrap();
-        // a→c, b→a (a が既存のまま b を a にする入れ替え系)。
+        // a→c, b→a (a swap-like case where b becomes a while a still exists).
         let plan = vec![(a.clone(), dir.join("c.txt")), (b.clone(), a.clone())];
         batch_rename(&plan).unwrap();
         assert!(!b.exists(), "b は無くなる");
@@ -717,7 +725,8 @@ mod tests {
 
     #[test]
     fn batch_rename_rolls_back_on_failure() {
-        // 第2ループの dst.exists() で中断させ、それまでの操作が原状回復されることを確認する。
+        // Force an abort at the second loop's dst.exists() check, and confirm everything done up
+        // to that point is restored to its original state.
         let dir = std::env::temp_dir().join("konoma_batch_rename_rollback_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -725,25 +734,25 @@ mod tests {
         let b = dir.join("b.txt");
         std::fs::write(&a, b"AAA").unwrap();
         std::fs::write(&b, b"BBB").unwrap();
-        // plan: a→c, b→d。だが d を事前に作っておき、第2ループの 2 件目 (b→d) で bail させる。
-        // 1 件目 (a→c) は確定済みになるので、巻き戻しは「確定分 dst→src」と
-        // 「退避分 tmp→src」の両経路を通る。
+        // plan: a→c, b→d. But create d beforehand so it bails on the second loop's 2nd entry
+        // (b→d). The 1st entry (a→c) will already be committed, so the rollback goes through both
+        // the "committed dst→src" and "staged tmp→src" paths.
         let c = dir.join("c.txt");
         let d = dir.join("d.txt");
-        std::fs::write(&d, b"DDD").unwrap(); // 衝突を仕込む。
+        std::fs::write(&d, b"DDD").unwrap(); // rig the collision.
         let plan = vec![(a.clone(), c.clone()), (b.clone(), d.clone())];
 
         let res = batch_rename(&plan);
         assert!(res.is_err(), "リネーム先衝突で失敗すること");
 
-        // 全 src が元の名前・内容のまま(巻き戻し成功)。
+        // Every src stays at its original name/content (rollback succeeded).
         assert_eq!(std::fs::read(&a).unwrap(), b"AAA", "a は原状復帰");
         assert_eq!(std::fs::read(&b).unwrap(), b"BBB", "b は原状復帰");
-        // 確定しかけた c は残らない。
+        // c, which was about to be committed, does not remain.
         assert!(!c.exists(), "c は巻き戻しで消える");
-        // 事前に作った既存 d は無傷。
+        // The pre-existing d created beforehand is untouched.
         assert_eq!(std::fs::read(&d).unwrap(), b"DDD", "既存 d は無傷");
-        // 孤立した一時ファイル(.konoma-rename-tmp-*)が残らない。
+        // No orphaned temp file (.konoma-rename-tmp-*) is left behind.
         let orphans: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -760,9 +769,10 @@ mod tests {
 
     #[test]
     fn batch_rename_rolls_back_swap_on_failure() {
-        // 確定済みの入れ替え(swap)後に後続が第2ループで失敗するケース。
-        // 直接 dst→src で巻き戻すと swap の各要素が互いの src を占有しており生存ファイルを
-        // 上書き破壊する(回帰)。二段階(dst→tmp→src)で完全復元することを確認する。
+        // The case where a subsequent entry fails in the second loop after a swap has already
+        // been committed. Rolling back directly with dst→src would corrupt a surviving file by
+        // overwriting it, since each swap element occupies the other's src (a regression). Confirm
+        // the two-phase approach (dst→tmp→src) fully restores it.
         let dir = std::env::temp_dir().join("konoma_batch_rename_swap_rollback_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -773,9 +783,9 @@ mod tests {
         std::fs::write(&one, b"ONE").unwrap();
         std::fs::write(&two, b"TWO").unwrap();
         std::fs::write(&c, b"CCC").unwrap();
-        std::fs::write(&d, b"DDD").unwrap(); // 3 件目の dst を既存にして第2ループで bail させる。
+        std::fs::write(&d, b"DDD").unwrap(); // make the 3rd entry's dst pre-exist so the second loop bails.
 
-        // plan: 2→1, 1→2(swap・確定する) と c→d(d 既存で失敗)。
+        // plan: 2→1, 1→2 (a swap that commits) and c→d (fails because d already exists).
         let plan = vec![
             (two.clone(), one.clone()),
             (one.clone(), two.clone()),
@@ -784,13 +794,14 @@ mod tests {
         let res = batch_rename(&plan);
         assert!(res.is_err(), "リネーム先衝突で失敗すること");
 
-        // swap が確定後に失敗しても 1=ONE / 2=TWO / c=CCC に完全復元する(TWO 消失が起きない)。
+        // Even if it fails after the swap has been committed, it fully restores to 1=ONE /
+        // 2=TWO / c=CCC (TWO is never lost).
         assert_eq!(std::fs::read(&one).unwrap(), b"ONE", "1.txt は原状復帰");
         assert_eq!(std::fs::read(&two).unwrap(), b"TWO", "2.txt は原状復帰");
         assert_eq!(std::fs::read(&c).unwrap(), b"CCC", "c.txt は原状復帰");
-        // 事前に作った既存 d は無傷。
+        // The pre-existing d created beforehand is untouched.
         assert_eq!(std::fs::read(&d).unwrap(), b"DDD", "既存 d は無傷");
-        // 孤立した一時ファイルが残らない。
+        // No orphaned temp file is left behind.
         let orphans: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -814,17 +825,17 @@ mod tests {
         let sub = dir.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
 
-        // 同ディレクトリへコピー → "a copy.txt"(上書きしない)。
+        // Copy into the same directory → "a copy.txt" (does not overwrite).
         let d = copy_into(&dir, &dir.join("a.txt")).unwrap();
         assert_eq!(d.file_name().unwrap(), "a copy.txt");
         assert_eq!(std::fs::read(&d).unwrap(), b"AAA");
-        // もう一度 → "a copy 2.txt"。
+        // Once more → "a copy 2.txt".
         let d2 = copy_into(&dir, &dir.join("a.txt")).unwrap();
         assert_eq!(d2.file_name().unwrap(), "a copy 2.txt");
-        // 別ディレクトリへは同名でコピー。
+        // Copying into a different directory keeps the same name.
         let d3 = copy_into(&sub, &dir.join("a.txt")).unwrap();
         assert_eq!(d3, sub.join("a.txt"));
-        // ディレクトリの再帰コピー。
+        // Recursive directory copy.
         let tree = dir.join("tree");
         std::fs::create_dir_all(tree.join("inner")).unwrap();
         std::fs::write(tree.join("inner").join("x.txt"), b"x").unwrap();
@@ -843,11 +854,11 @@ mod tests {
         let sub = dir.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
 
-        // 別ディレクトリへ移動。
+        // Move to a different directory.
         let d = move_into(&sub, &dir.join("a.txt")).unwrap();
         assert!(d.is_file() && !dir.join("a.txt").exists());
         assert_eq!(d, sub.join("a.txt"));
-        // 同ディレクトリへの移動 = no-op。
+        // Moving within the same directory = no-op.
         let back = move_into(&sub, &sub.join("a.txt")).unwrap();
         assert_eq!(back, sub.join("a.txt"));
         assert!(sub.join("a.txt").is_file());
@@ -861,13 +872,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 実体: ファイルとディレクトリ。
+        // Real entries: a file and a directory.
         std::fs::write(dir.join("target.txt"), b"REAL").unwrap();
         let real_dir = dir.join("realdir");
         std::fs::create_dir_all(&real_dir).unwrap();
         std::fs::write(real_dir.join("inner.txt"), b"in").unwrap();
 
-        // symlink→file / symlink→dir。
+        // symlink→file / symlink→dir
         let link_f = dir.join("link_f");
         let link_d = dir.join("link_d");
         std::os::unix::fs::symlink(dir.join("target.txt"), &link_f).unwrap();
@@ -876,7 +887,7 @@ mod tests {
         let into = dir.join("into");
         std::fs::create_dir_all(&into).unwrap();
 
-        // symlink→file のコピー: リンクを保つ(実体化しない)。
+        // Copying a symlink→file: keeps it a link (does not materialize it).
         let cf = copy_into(&into, &link_f).unwrap();
         assert!(
             std::fs::symlink_metadata(&cf)
@@ -887,7 +898,7 @@ mod tests {
         );
         assert_eq!(std::fs::read_link(&cf).unwrap(), dir.join("target.txt"));
 
-        // symlink→dir のコピー: リンクを保つ(中身を辿らない)。
+        // Copying a symlink→dir: keeps it a link (does not follow its contents).
         let cd = copy_into(&into, &link_d).unwrap();
         assert!(
             std::fs::symlink_metadata(&cd)
@@ -898,7 +909,7 @@ mod tests {
         );
         assert_eq!(std::fs::read_link(&cd).unwrap(), real_dir);
 
-        // ディレクトリ内部の dir-symlink を再帰コピーしても symlink を保つ。
+        // A dir-symlink inside a directory stays a symlink even through a recursive copy.
         let parent = dir.join("parent");
         std::fs::create_dir_all(&parent).unwrap();
         std::os::unix::fs::symlink(&real_dir, parent.join("nested_link")).unwrap();
@@ -916,21 +927,21 @@ mod tests {
 
     #[test]
     fn file_info_and_formatters() {
-        // 整形ヘルパ。
+        // Formatting helpers.
         assert_eq!(human_size(0), "0 B");
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1024), "1.0 KB");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(1048576), "1.0 MB");
         assert_eq!(permission_string(0o755), "rwxr-xr-x (755)");
-        assert_eq!(permission_string(0o100644), "rw-r--r-- (644)"); // 種別ビット込みでも下位9bit
+        assert_eq!(permission_string(0o100644), "rw-r--r-- (644)"); // low 9 bits even with the type bits included
         assert_eq!(format_epoch_utc(0), "1970-01-01 00:00:00 UTC");
         assert_eq!(format_epoch_utc(1577836800), "2020-01-01 00:00:00 UTC");
         assert_eq!(
             format_epoch_utc(1718323200 + 45296),
             "2024-06-14 12:34:56 UTC"
         );
-        // 列表示用の短い形式・rwx・セル。
+        // The short form for column display, rwx, and cells.
         assert_eq!(format_epoch_short(1718323200 + 45296), "2024-06-14 12:34");
         assert_eq!(permission_rwx(0o100755), "rwxr-xr-x");
         assert_eq!(detail_column_width("size"), Some(9));
@@ -938,7 +949,7 @@ mod tests {
         assert_eq!(detail_column_width("items"), Some(6));
         assert_eq!(detail_column_width("bogus"), None);
 
-        // 実ファイル/ディレクトリの取得。
+        // Fetching a real file/directory.
         let dir = std::env::temp_dir().join("konoma_fileinfo_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -948,7 +959,7 @@ mod tests {
         let di = file_info(&dir).unwrap();
         assert!(di.is_dir && di.child_count == Some(1));
 
-        // detail_cell(RowMeta + path)。size/type/items を実物で確認。
+        // detail_cell(RowMeta + path). Confirm size/type/items against the real thing.
         let fm = quick_meta(&dir.join("a.txt")).unwrap();
         assert_eq!(
             detail_cell("size", &dir.join("a.txt"), &fm).as_deref(),
@@ -961,14 +972,14 @@ mod tests {
         let dm = quick_meta(&dir).unwrap();
         assert_eq!(detail_cell("size", &dir, &dm).as_deref(), Some("--"));
         assert_eq!(detail_cell("type", &dir, &dm).as_deref(), Some("dir"));
-        assert_eq!(detail_cell("items", &dir, &dm).as_deref(), Some("1")); // a.txt の1件
+        assert_eq!(detail_cell("items", &dir, &dm).as_deref(), Some("1")); // the one entry, a.txt
         assert_eq!(detail_cell("bogus", &dir, &dm), None);
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    #[ignore] // 実ゴミ箱を汚すため通常は走らせない (cargo test -- --ignored で実行)
+    #[ignore] // not run normally since it dirties the real trash (run with cargo test -- --ignored)
     fn trash_moves_file_out_of_place() {
         let dir = std::env::temp_dir().join("konoma_trash_test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -985,16 +996,18 @@ mod tests {
     // the freedesktop path is used at runtime; only this live test is gated.
     #[cfg(target_os = "macos")]
     fn move_to_trash_removes_from_original_then_cleanup() {
-        // 元の場所から消えることを確認し、ゴミ箱側の痕跡はベストエフォートで掃除する。
+        // Confirm it disappears from the original location, and best-effort clean up its trace
+        // on the trash side.
         let dir = std::env::temp_dir().join("konoma_trash_live_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let name = "konoma_trash_probe_5f3a9.txt"; // 衝突しにくいユニーク名
+        let name = "konoma_trash_probe_5f3a9.txt"; // a unique name unlikely to collide
         let f = dir.join(name);
         std::fs::write(&f, b"trash me").unwrap();
         move_to_trash(std::slice::from_ref(&f)).unwrap();
         assert!(!f.exists(), "ゴミ箱送りで元の場所から消える");
-        // macOS のゴミ箱(~/.Trash/<name>)を掃除(実ゴミ箱を汚さない)。衝突時の改名分は best-effort。
+        // Clean up macOS's trash (~/.Trash/<name>) so the real trash isn't left dirty. Any
+        // rename-on-collision variant is cleaned up best-effort.
         if let Some(home) = std::env::var_os("HOME") {
             let _ = std::fs::remove_file(PathBuf::from(home).join(".Trash").join(name));
         }
@@ -1003,7 +1016,8 @@ mod tests {
 
     #[test]
     fn create_file_errors_when_parent_is_a_file() {
-        // 親に当たるパスが既存ファイルだと create_dir_all が失敗 → エラー(クラッシュしない)。
+        // If the path standing in for the parent is an existing file, create_dir_all fails →
+        // error (does not crash).
         let dir = std::env::temp_dir().join("konoma_create_file_parent_err_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1018,7 +1032,7 @@ mod tests {
 
     #[test]
     fn copy_and_move_into_error_on_missing_source() {
-        // 存在しない src は symlink_metadata で失敗 → Err(握りつぶさない)。
+        // A nonexistent src fails at symlink_metadata → Err (not swallowed).
         let dir = std::env::temp_dir().join("konoma_copy_move_missing_src_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1038,11 +1052,12 @@ mod tests {
 
     #[test]
     fn human_size_scales_through_large_units() {
-        // 既存テストは B/KB/MB のみ。GB/TB/PB と PB クランプ(最大単位)も確認する。
+        // The existing test only covers B/KB/MB. Also confirm GB/TB/PB and the PB clamp
+        // (the top unit).
         assert_eq!(human_size(1024u64.pow(3)), "1.0 GB");
         assert_eq!(human_size(1024u64.pow(4)), "1.0 TB");
         assert_eq!(human_size(1024u64.pow(5)), "1.0 PB");
-        // PB を超えても最上位単位(PB)で留まる。
+        // Stays at the top unit (PB) even beyond PB.
         assert_eq!(human_size(2 * 1024u64.pow(5)), "2.0 PB");
     }
 
@@ -1057,8 +1072,10 @@ mod tests {
 
     #[test]
     fn delete_permanently_reports_progress_per_path() {
-        // 完全削除はパスごとに回れるので、1件ずつ進捗が進む(最後にまとめて、ではない)。
-        // ゴミ箱送りは `trash::delete_all` の1回呼び出しなので同じことはできない(完了時に一括)。
+        // Permanent deletion can loop per path, so progress advances one at a time (not all at
+        // once at the end).
+        // Sending to trash is a single call to `trash::delete_all`, so it can't do the same
+        // (it jumps all at once when done).
         let dir = unique_tmp("konoma_progress_delete_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1085,9 +1102,9 @@ mod tests {
 
     #[test]
     fn file_op_progress_counts_leaf_files() {
-        // ネストしたサブディレクトリを含む木を丸ごとコピーし、末端ファイル数だけ Progress が
-        // 進むこと(ディレクトリ自体は数えない)を確認する。バックグラウンド file-op ワーカーの
-        // 進捗表示("N/M · files")がこのカウンタに依存する。
+        // Copy a whole tree containing nested subdirectories, and confirm Progress advances only
+        // by the leaf-file count (directories themselves are not counted). The background file-op
+        // worker's progress display ("N/M · files") depends on this counter.
         let dir = unique_tmp("konoma_progress_leaf_count_test");
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");

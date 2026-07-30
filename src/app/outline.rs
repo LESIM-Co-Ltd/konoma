@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    // --- 見出しアウトラインオーバーレイ (`o` in a Markdown preview) --------
+    // --- Heading outline overlay (`o` in a Markdown preview) --------
     pub fn is_outline(&self) -> bool {
         self.outline_open
     }

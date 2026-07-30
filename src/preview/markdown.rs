@@ -1,29 +1,32 @@
-// 内蔵 Markdown / Mermaid レンダラ (M3)。
+// Built-in Markdown / Mermaid renderer (M3).
 //
-// 構成 (2026-06 確定):
-//   - md 装飾   : `tui-markdown`(ratatui-core 0.1 = 我々の 0.30 と同一型)の `from_str`。
-//                 見出し/強調/コード/リスト/表/引用/リンク等を装飾する。tui-markdown の
-//                 highlight-code(syntect 既定=oniguruma C)は無効化し、```lang フェンスの
-//                 コードは konoma 側で純 Rust syntect(`preview::code::highlight_lang`)で着色する
-//                 ＝ oniguruma 不要で配布容易性(PRD §5)を保つ。単体コードファイルと同一経路。
-//   - Mermaid   : `mermaid-text`(依存 unicode-width のみ・純 Rust)で Unicode 罫線テキスト化。
-//                 ブラウザ・画像プロトコル不要。md 内の ```mermaid フェンスは横取りして合成する。
+// Structure (settled 2026-06):
+//   - Markdown decoration: `tui-markdown`'s `from_str` (ratatui-core 0.1 = the same type as our
+//                 0.30). Decorates headings/emphasis/code/lists/tables/blockquotes/links etc.
+//                 tui-markdown's highlight-code (syntect default = the oniguruma C library) is
+//                 disabled, and code inside ```lang fences is instead colored on konoma's side
+//                 with pure-Rust syntect (`preview::code::highlight_lang`) = no oniguruma needed,
+//                 preserving ease of distribution (PRD §5). Same path as a standalone code file.
+//   - Mermaid   : rendered as Unicode box-drawing text via `mermaid-text` (its only dependency is
+//                 unicode-width, pure Rust). No browser or image protocol needed. ```mermaid
+//                 fences inside the md are intercepted and composed.
 //
-// 当初候補の `ratatui-markdown` は ratatui ^0.29 依存で、画像プレビュー(ratatui-image 11 =
-// ratatui 0.30 必須)と両立できないため不採用。詳細は Cargo.toml のコメント参照。
+// The initially considered `ratatui-markdown` depends on ratatui ^0.29, which is incompatible with
+// image preview (ratatui-image 11 requires ratatui 0.30), so it was rejected. See the comment in
+// Cargo.toml for details.
 //
-// 失敗時の安全側 (設計原則3): mermaid の描画に失敗/未対応(例: state 図)なら、生ソースを
-// 淡色で全画面表示する (クラッシュさせない)。
+// Safe fallback on failure (design principle 3): if mermaid rendering fails or is unsupported
+// (e.g. a state diagram), show the raw source full-screen in a dim color (never crash).
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use tui_markdown::{Options, StyleSheet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-// 装飾の配色。コードブロックは「特殊エリア」として背景＋左ガターで囲う。
+// Decoration colors. A code block is enclosed as a "special area" with a background + left gutter.
 const CODE_GUTTER_FG: Color = Color::Cyan;
 const HEAD_FG: Color = Color::Cyan;
-const TABLE_BORDER_FG: Color = Color::Rgb(90, 98, 120); // 淡い罫線(本文より控えめ)
+const TABLE_BORDER_FG: Color = Color::Rgb(90, 98, 120); // a subdued rule line (more understated than body text)
 
 /// Colors and layout for code decoration (built from the `ui.theme` setting).
 #[derive(Clone, Copy, Debug, Default)]
@@ -55,7 +58,7 @@ impl StyleSheet for KonomaStyles {
     fn heading(&self, level: u8) -> Style {
         let base = Style::new().fg(HEAD_FG).add_modifier(Modifier::BOLD);
         match level {
-            1 | 2 => base, // 直下に全幅ルールを足して“大きさ”を表現
+            1 | 2 => base, // a full-width rule is added right below to express "size"
             3 => base.add_modifier(Modifier::ITALIC),
             _ => Style::new()
                 .fg(Color::Cyan)
@@ -63,7 +66,7 @@ impl StyleSheet for KonomaStyles {
         }
     }
     fn code(&self) -> Style {
-        // インラインコード (`...`)。背景色は設定で可変 (None なら背景なし)。
+        // Inline code (`...`). The background color is configurable (None = no background).
         let s = Style::new().fg(Color::White);
         match self.code_bg {
             Some(bg) => s.bg(bg),
@@ -239,28 +242,29 @@ fn render_md_text_inner(
         icons,
         tasks,
     };
-    // tui-markdown は GFM 表を1行に潰すため、表ブロックだけ先に横取りして
-    // 自前で罫線描画する。残りのテキストは従来どおり tui-markdown へ。
+    // tui-markdown collapses a GFM table into one line, so table blocks alone are intercepted
+    // first and drawn with our own borders. The rest of the text still goes to tui-markdown as before.
     for part in split_tables(text) {
         match part {
             MdPart::Text(t) => {
                 if t.trim().is_empty() {
                     continue;
                 }
-                // HTML ブロック(<details> 等)は tui-markdown が中身ごと捨てるため、
-                // 先に横取りしてタグを剥いだテキストで見せる(原則#3)。
+                // An HTML block (`<details>` etc.) gets thrown away, contents and all, by
+                // tui-markdown, so intercept it first and show it as text with the tags stripped (principle #3).
                 for hp in split_html_blocks(&t) {
                     match hp {
                         HtmlPart::Text(t2) => {
                             if t2.trim().is_empty() {
                                 continue;
                             }
-                            // from_str_with_options は借用した Text<'_> を返すので即 'static へ複製。
-                            // tui-markdown は特定入力(例: loose リスト内のタスク項目)で
-                            // panic する(0.3.7/0.3.8 で確認)。原則#3=クラッシュさせない:
-                            // 捕捉し、二分割の再帰で**最小の失敗ブロックだけ**を素の
-                            // テキストへ降格する(丸ごと降格だと実在の文書が全編
-                            // 無装飾になる — 2026-07-07 ユーザー報告)。
+                            // from_str_with_options returns a borrowed Text<'_>, so clone it to
+                            // 'static right away. tui-markdown panics on certain input (e.g. a task
+                            // item inside a loose list — confirmed on 0.3.7/0.3.8). Principle #3 =
+                            // never crash: catch it and, by recursively bisecting, degrade **only
+                            // the smallest failing block** to plain text (degrading the whole thing
+                            // would leave a real document entirely undecorated — reported by the
+                            // user on 2026-07-07).
                             render_text_block_safe(out, &t2, &opts, &ctx, 0);
                         }
                         HtmlPart::Html(h) => out.extend(render_html_block(&h)),
@@ -314,7 +318,7 @@ fn silence_panics<T>(f: impl FnOnce() -> T) -> T {
 /// inputs, e.g. a loose list followed by a task item — seen in 0.3.7/0.3.8). Returns
 /// None on panic so the caller degrades that segment to plain text (principle #3).
 fn render_md_segment(src: &str, opts: &Options<KonomaStyles>) -> Option<Vec<Line<'static>>> {
-    // 既定の panic hook は stderr に書き raw mode の画面を汚すので、捕捉中だけ黙らせる。
+    // The default panic hook writes to stderr and corrupts the raw-mode screen, so silence it only while catching.
     silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             into_static_lines(tui_markdown::from_str_with_options(src, opts))
@@ -416,7 +420,7 @@ pub enum ImageSlot {
 /// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
 /// degrades to a one-line text placeholder (design principle #3). Text runs are rendered by
 /// `render_markdown` unchanged, so all existing decoration behavior is preserved.
-#[allow(clippy::too_many_arguments)] // 既存7引数+mermaid/math スロット(呼び口は app 1箇所+テスト)
+#[allow(clippy::too_many_arguments)] // the existing 7 args + mermaid/math slots (only one call site in app + tests)
 pub fn render_markdown_with_images(
     src: &str,
     width: u16,
@@ -433,8 +437,9 @@ pub fn render_markdown_with_images(
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut placements: Vec<ImagePlacement> = Vec::new();
-    // mermaid フェンスの抽出は「1つでも Image/Loading になり得る時」だけ(=Text 固定なら従来どおり
-    // テキスト run に残し、既存の描画・テストを一切変えない)。判定は空 probe で代表させる。
+    // Mermaid fence extraction only happens "when even one could become Image/Loading" (= if it's
+    // pinned to Text, it stays in the text run as before, changing no existing rendering or tests
+    // whatsoever). The check is represented by an empty probe.
     let fences_on = !matches!(mermaid_slot(""), MermaidSlot::Text);
     let mut fence_ord = 0usize;
     // In math image mode, lift math out of each text run onto its own part (inline `$…$` becomes its
@@ -479,9 +484,10 @@ pub fn render_markdown_with_images(
             BlockPart::Mermaid { code: fence } => {
                 let ord = fence_ord;
                 fence_ord += 1;
-                // 空フェンス(書きかけの ```mermaid だけ)は図になり得ない: slot を経由せず
-                // テキスト描画へ。slot の空文字は「抽出 ON か」の probe と区別できないため、
-                // 従来は probe 応答の Loading を拾って永久に「loading」行のままだった。
+                // An empty fence (just a half-written ```mermaid) can never become a diagram: skip
+                // the slot and go straight to text rendering. An empty string passed to slot is
+                // indistinguishable from the "is extraction on?" probe, so previously this would
+                // pick up the probe's Loading response and get permanently stuck on a "loading" line.
                 if fence.trim().is_empty() {
                     out.extend(render_mermaid_block(&fence, width));
                     continue;
@@ -490,7 +496,7 @@ pub fn render_markdown_with_images(
                     MermaidSlot::Image { cols, rows } => {
                         let url = mermaid_fence_url(&fence);
                         let mut ls = mermaid_placeholder_lines(cols, rows, width, mermaid_caption);
-                        // 先頭はキャプション行(フォーカス番兵)。予約行=画像の重畳先はその次から。
+                        // The first entry is the caption line (a focus sentinel). The reserved rows = where the image overlays start right after it.
                         out.push(ls.remove(0));
                         placements.push(ImagePlacement {
                             url,
@@ -559,8 +565,8 @@ fn math_raw_lines(latex: &str, display: bool) -> Vec<Line<'static>> {
 /// Sentinel style of the caption line above an inline mermaid diagram. Doubles as the Tab-focus
 /// marker (`is_mermaid_header_span`) — same trick as the task-marker / code-header sentinels.
 fn mermaid_header_style() -> Style {
-    // DIM は付けない: フォーカスの REVERSED と重なると文字が背景に沈んで読めなくなる
-    // (Ghostty 実機で白バー化して捕まった)。Cyan+ITALIC+接頭辞で番兵として十分に一意。
+    // Don't add DIM: overlapping with focus's REVERSED would sink the character into the background
+    // and make it unreadable (caught on a real Ghostty as a white bar). Cyan+ITALIC+prefix is unique enough as a sentinel.
     Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::ITALIC)
@@ -593,7 +599,7 @@ fn mermaid_placeholder_lines(
     for _ in 0..rows {
         lines.push(Line::from(String::new()));
     }
-    // 下マージン行: フォーカス枠の下辺を描く場所(予約域の外の本文行を上書きしないため)。
+    // Bottom margin row: where the focus border's bottom edge is drawn (so it doesn't overwrite a body-text row outside the reserved area).
     lines.push(Line::from(String::new()));
     lines
 }
@@ -682,7 +688,7 @@ fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
             }
         }
     }
-    // 未クローズの mermaid フェンス: 生テキストとして安全に戻す(原則#3・欠落させない)。
+    // An unclosed mermaid fence: safely revert it to raw text (principle #3, never drop it).
     if let Some(code) = mermaid {
         text.push_str("```mermaid\n");
         text.push_str(&code);
@@ -892,7 +898,7 @@ fn decorate_extras(
             let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             let t = joined.trim();
             if t == "---" || t == "***" || t == "___" {
-                // 水平線: tui-markdown は Rule をテキストのまま出すので全幅の罫線へ。
+                // Thematic break: tui-markdown emits a Rule as literal text, so replace it with a full-width rule line.
                 return Line::from(Span::styled(
                     "─".repeat(width as usize),
                     Style::new().fg(TABLE_BORDER_FG),
@@ -919,15 +925,16 @@ fn replace_task_checkbox(
     let Some(pos) = joined.find(&pat) else {
         return l;
     };
-    // 直後の半角スペースもマーカー span に取り込む(必ず在る: 検出条件が "] " 必須)。
-    // フォーカスの反転がグリフ+空白の2セルを覆うので、Nerd Font グリフを全角(2セル)幅で
-    // 描くフォント(HackGen NF 等)でもグリフ全体が反転域に収まる。ツリーの
-    // 「アイコン+空白」と同じ、はみ出し許容の流儀。
+    // Fold the following half-width space into the marker span too (it's always there, since the
+    // detection condition requires "] "). Focus's reversal then covers 2 cells — glyph + space —
+    // so even a font that draws the Nerd Font glyph at full-width (2 cells), like HackGen NF, still
+    // fits the whole glyph inside the reversed area. Same overflow-tolerant convention as the
+    // tree's "icon + space".
     let trail_space = joined[pos + pat.len()..].starts_with(' ');
     let end = pos + pat.len() + usize::from(trail_space);
     let (style, alignment) = (l.style, l.alignment);
-    // joined 上のマーカー範囲 [pos, end) を専用 span に置き換える。tui-markdown はカスタム状態
-    // (`[/]` 等)を複数 span に割ることがあるので、span 単位でなく範囲で分割する。
+    // Replace the marker range [pos, end) on `joined` with a dedicated span. Since tui-markdown can
+    // split a custom state (e.g. `[/]`) across multiple spans, split by range rather than per-span.
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut off = 0usize;
     let mut inserted = false;
@@ -936,10 +943,10 @@ fn replace_task_checkbox(
         let (a, b) = (off, off + s.len());
         off = b;
         if b <= pos || a >= end {
-            out.push(sp); // マーカー範囲外はそのまま
+            out.push(sp); // outside the marker range, keep as-is
             continue;
         }
-        // マーカー範囲と重なる span: 範囲外にはみ出す前後だけ元様式で残す。
+        // A span overlapping the marker range: keep only the parts spilling outside the range in their original style.
         if a < pos {
             out.push(Span::styled(s[..pos - a].to_string(), sp.style));
         }
@@ -1089,9 +1096,10 @@ fn code_block_source_locs_inner(
     let mut i = 0;
     while i < lines.len() {
         let t = lines[i].trim_start();
-        // アラート本文は `>` を剥がした Markdown として描かれるので、中のフェンスも**画面では
-        // コードブロック**になる。剥がしてから同じ規則で拾わないと、画面のヘッダ数と合わず
-        // `y c` のコピーが(その文書の全ブロックで)拒否される。剥がした本文がそのままコピー内容。
+        // An alert body is drawn as Markdown with the `>` stripped, so a fence inside it **also
+        // becomes a code block on screen**. Unless we strip it and collect under the same rule, the
+        // count won't match the on-screen headers and `y c` copy gets refused (for every block in
+        // that document). The stripped body is exactly the copy content.
         if parse_alert_header(lines[i]).is_some() {
             i += 1;
             let mut body = String::new();
@@ -1103,8 +1111,8 @@ fn code_block_source_locs_inner(
             out.extend(code_block_source_locs_inner(&body, &[], true));
             continue;
         }
-        // `<details>` は**開いているブロックの本文だけ**が描かれる(閉じていれば中のフェンスは
-        // 画面に出ない)。開閉は実行時状態なので呼び出し側から受け取る。
+        // `<details>` only draws **the body of a block that's open** (if closed, a fence inside it
+        // never appears on screen). Open/closed is runtime state, so it's received from the caller.
         if let Some(open_attr) = details_open_tag(lines[i]) {
             let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
             details_idx += 1;
@@ -1204,9 +1212,10 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
             i += 1;
             continue;
         }
-        // GitHub alert(`> [!NOTE]` …): 描画側(`split_alerts`→`render_alert`)は `>` を剥がした本文を
-        // 通常の Markdown として描くので、中のタスクは**画面ではチェックボックスになる**。
-        // ここでも同じように `>` を剥がして拾わないと、画面と個数が合わずトグルが全部中止される。
+        // A GitHub alert (`> [!NOTE]` …): the render side (`split_alerts`→`render_alert`) strips the
+        // `>` and draws the body as ordinary Markdown, so a task inside it **becomes a checkbox on
+        // screen**. Unless we strip `>` here too and collect the same way, the count won't match
+        // what's on screen and every toggle gets cancelled.
         if parse_alert_header(line).is_some() {
             i += 1;
             while i < lines.len() && is_blockquote_line(lines[i]) {
@@ -1214,7 +1223,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
                 let stripped = strip_blockquote(raw);
                 let body = stripped.trim_start();
                 if let Some(state) = task_prefix_state(body, tasks) {
-                    // `state_off` は**元の行**でのバイト位置。`>` 接頭辞ぶんを足して求める。
+                    // `state_off` is the byte position in the **original line**. Derived by adding the `>` prefix's length.
                     let prefix = raw.len() - stripped.len();
                     let indent = stripped.len() - body.len();
                     out.push(TaskLoc {
@@ -1227,13 +1236,14 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
             }
             continue;
         }
-        // `<details>`: 描画側は**開いているブロックの本文だけ**を Markdown として描く(閉じていれば
-        // 本文は画面に出ない)。開閉状態は実行時なので呼び出し側から受け取り、閉じているブロックの
-        // 本文は数えない(数えると閉じた details を含む文書全体でトグルが中止される)。
+        // `<details>`: the render side only draws **the body of a block that's open** as Markdown
+        // (if closed, the body doesn't appear on screen). Open/closed is runtime state, so it's
+        // received from the caller, and a closed block's body is not counted (counting it would
+        // cancel toggles across the whole document that contains a closed details).
         if let Some(open_attr) = details_open_tag(line) {
-            // フォールバックは**レンダラと同じ**(`next_details_open`)＝タグの `open` 属性。
-            // 本番は呼び出し側が全ブロック分を渡すのでここには落ちてこないが、ズレたときに
-            // 描画と食い違わない側へ倒す。
+            // The fallback is **the same as the renderer's** (`next_details_open`) = the tag's
+            // `open` attribute. In production the caller supplies a value for every block so this
+            // never gets hit, but if it drifts, fall on the side that matches the render.
             let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
             details_idx += 1;
             i += 1;
@@ -1243,13 +1253,13 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
                 i += 1;
             }
             if i < lines.len() {
-                i += 1; // `</details>` を飛ばす
+                i += 1; // skip `</details>`
             }
             if open {
                 for &bi in &body {
                     let raw = lines[bi];
                     let bt = raw.trim_start();
-                    // `<summary>` 行は見出しとして描かれるのでタスクにならない。
+                    // A `<summary>` line is drawn as a heading, so it never becomes a task.
                     if bt.starts_with("<summary") {
                         continue;
                     }
@@ -1281,7 +1291,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         if let Some(state) = task_prefix_state(t, tasks) {
             out.push(TaskLoc {
                 line: i,
-                state_off: indent + 3, // "- [" の直後
+                state_off: indent + 3, // right after "- ["
                 state,
             });
         }
@@ -1332,19 +1342,19 @@ fn decorate_code_blocks(
                 code.tab_width,
                 code.wrap,
             ));
-            // 下端のパディング行 (ガターだけ) でブロックの終端を示す。
+            // Signal the block's end with a bottom padding row (gutter only).
             out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
             body.clear();
             continue;
         }
         if in_code {
-            // 本文行は生テキストを集める(着色は閉じフェンスで一括＝複数行構文を正しく追う)。
+            // Collect body lines as raw text (highlighting happens all at once at the closing fence = correctly tracks multi-line syntax).
             body.push(text);
             continue;
         }
         out.push(line);
     }
-    // 閉じフェンスが無いまま終端した場合も本文を流す(安全側)。
+    // Also flush the body if it ends without a closing fence (the safe side).
     if in_code {
         out.extend(highlight_body(
             &body,
@@ -1434,16 +1444,17 @@ fn highlight_body(
             return lines.clone();
         }
     }
-    // タブ展開は **ガター/全幅パディングを付ける前** に行う(後だと幅計算が狂って帯が崩れる)。
-    // 桁追跡はコード先頭(0桁)基準。ガター付与で全行が一律右シフトするので整列は保たれる。
+    // Tab expansion happens **before adding the gutter/full-width padding** (doing it after would
+    // throw off the width calculation and break the band). Column tracking is anchored at the code's
+    // start (column 0); since the gutter shifts every line right uniformly, alignment is preserved.
     let hl = crate::preview::code::expand_tabs(
         crate::preview::code::highlight_lang(&src, lang, theme),
         tab_width,
     );
-    // 折返し有効時はここで幅に合わせて**事前折返し**する(ガター2桁を差し引いた幅)。
-    // Paragraph の折返しに任せると、折返し2行目以降に ▎ ガターも背景帯も付かず縦の帯が
-    // 途切れる(ユーザー報告 2026-07-07)。全視覚行をここで確定させれば Paragraph は
-    // 折返し不要になり、ガター/帯が必ず連続する。
+    // When wrap is enabled, **pre-wrap** here to the width (the gutter's 2 columns subtracted).
+    // Leaving the wrapping to Paragraph means the 2nd+ wrapped rows carry neither the `▎` gutter nor
+    // the background band, breaking the vertical band (reported by the user on 2026-07-07). Fixing
+    // every visual row here removes the need for Paragraph to wrap, so the gutter/band always stays continuous.
     let content_w = w.saturating_sub(GUTTER_COLS).max(1);
     let out: Vec<Line<'static>> = hl
         .into_iter()
@@ -1474,7 +1485,7 @@ fn highlight_body(
     if let Ok(mut cache) = code_block_cache().lock() {
         let tick = cache.tick;
         cache.map.insert(key, (tick, out.clone()));
-        // 上限超過は最も昔に使われたエントリから追い出す(有界 LRU)。
+        // Evict the least-recently-used entry when over the cap (bounded LRU).
         while cache.map.len() > CODE_BLOCK_CACHE_CAP {
             let oldest = cache
                 .map
@@ -1511,7 +1522,7 @@ fn render_text_block_safe(
         ));
         return;
     }
-    // 深さ上限 or これ以上割れない → このブロックだけ素のテキストで(内容は失わない)。
+    // Depth limit reached, or it can't be split further → plain text for just this block (nothing is lost).
     if depth >= 8 {
         out.extend(src.lines().map(|l| Line::from(l.to_string())));
         return;
@@ -1529,8 +1540,8 @@ fn render_text_block_safe(
 /// inside a code fence (splitting a fence would corrupt its rendering). Falls back to the
 /// non-fenced newline nearest the middle; None when the block is a single line.
 fn split_block_for_retry(src: &str) -> Option<(&str, &str)> {
-    let mut blanks: Vec<usize> = Vec::new(); // 空行の開始オフセット
-    let mut newlines: Vec<usize> = Vec::new(); // 改行位置(フェンス外)
+    let mut blanks: Vec<usize> = Vec::new(); // start offsets of blank lines
+    let mut newlines: Vec<usize> = Vec::new(); // newline positions (outside fences)
     let mut in_fence = false;
     let mut off = 0usize;
     for line in src.split_inclusive('\n') {
@@ -1548,7 +1559,8 @@ fn split_block_for_retry(src: &str) -> Option<(&str, &str)> {
         off = end;
     }
     let mid = src.len() / 2;
-    // 空行 = その行ごと前半に含め、後半は空行の次から。前後どちらかが空にならない候補のみ。
+    // A blank line = include that whole line in the first half; the second half starts right after
+    // it. Only consider candidates where neither half ends up empty.
     let pick = |cands: &[usize]| -> Option<usize> {
         cands
             .iter()
@@ -1606,7 +1618,7 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
         if let Some(level) = heading_level(&line) {
             let style = line.style;
             let mut spans = line.spans;
-            spans.remove(0); // 先頭の "#.. " を捨てる
+            spans.remove(0); // drop the leading "#.. "
             out.push(Line::from(spans).style(style));
             if level <= 2 {
                 let ch = if level == 1 { "━" } else { "─" };
@@ -1695,7 +1707,7 @@ fn gutter_span(code_bg: Option<Color>) -> Span<'static> {
 /// so it stands out from the body code. When `code.label_bg`=None, it is shown dimmed with no background.
 fn code_header(label: &str, w: usize, code: CodeStyle) -> Line<'static> {
     let code_bg = code.bg;
-    // ヘッダのガターは番兵スタイル(is_code_header_span)で識別=Tab フォーカス対象の目印。
+    // The header's gutter is identified by its sentinel style (is_code_header_span) = the marker for a Tab-focus target.
     let gutter = {
         let st = code_header_marker_style();
         let st = match code_bg {
@@ -1704,8 +1716,8 @@ fn code_header(label: &str, w: usize, code: CodeStyle) -> Line<'static> {
         };
         Span::styled("▎ ", st)
     };
-    let badge_text = format!(" {label} "); // 前後に余白を持つバッジ
-                                           // バッジのスタイル: 背景ありなら(指定背景＋太字白)、無しなら淡色イタリック。
+    let badge_text = format!(" {label} "); // a badge with padding on both sides
+                                           // Badge style: with a background (the given background + bold white), without one, dim italic.
     let badge_style = match code.label_bg {
         Some(bg) => Style::new()
             .fg(Color::White)
@@ -1721,11 +1733,11 @@ fn code_header(label: &str, w: usize, code: CodeStyle) -> Line<'static> {
     let fill_style = code_bg.map(|bg| Style::new().bg(bg)).unwrap_or_default();
     let mut spans = vec![gutter];
     if code.label_right && w > gutter_w + badge_w {
-        // 右寄せ: ガターとバッジの間を本文背景色で埋め、バッジを右端へ。
+        // Right-aligned: fill the gap between the gutter and the badge with the body background color, and push the badge to the right edge.
         spans.push(Span::styled(" ".repeat(w - gutter_w - badge_w), fill_style));
         spans.push(badge);
     } else {
-        // 左寄せ(または幅不足): ガター直後にバッジ、残りを本文背景色で埋める。
+        // Left-aligned (or too narrow): the badge right after the gutter, filling the rest with the body background color.
         let used = gutter_w + badge_w;
         spans.push(badge);
         if w > used {
@@ -1794,7 +1806,7 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
     match caught {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(e)) => Err(format!("cannot render mermaid: {e}")),
-        // panic: mermaid-text 内部のバグ (CJK 境界等)。生ソース表示で安全に継続。
+        // panic: an internal mermaid-text bug (CJK boundaries etc.). Continue safely by showing the raw source.
         Err(_) => Err(
             "cannot render mermaid (internal error: this diagram/char may be unsupported)"
                 .to_string(),
@@ -1814,14 +1826,16 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
         "classic" | "mermaid" => Theme::mermaid_default(),
         "forest" => Theme::forest(),
         "neutral" => Theme::neutral(),
-        _ => Theme::dark(), // 既定: konoma のダーク基調に馴染む(mermaid-js dark 移植)
+        _ => Theme::dark(), // default: fits konoma's dark tone (a port of mermaid-js dark)
     };
-    // 背景は描かない(fill="none")= kitty graphics では端末背景が透ける。図がテーマ色の
-    // 「白いカード」にならず、どの端末テーマにも馴染む(ユーザー指摘 2026-07-17)。
+    // No background is drawn (fill="none") = on kitty graphics the terminal background shows
+    // through. The diagram never becomes a theme-colored "white card" and fits any terminal theme
+    // (user feedback 2026-07-17).
     t.background = "none".to_string();
-    // フォント計測は**全テーマで modern に統一**する。テーマ毎にフォント(trebuchet 16 等)が違うと
-    // ラベル箱の実測サイズが変わり、経路探索が「大きく左へ迂回するリング」を選ぶ配置バグを実測で
-    // 再現・解消した(2026-07-17 ユーザー報告)。色はテーマのまま・レイアウトだけ検証済みの計測に固定。
+    // Font measurement is **unified to modern across every theme**. When each theme used a
+    // different font (e.g. trebuchet 16), the label boxes' measured size changed, and path routing
+    // could pick a placement bug — "a big detour ring to the left" — which was reproduced and
+    // resolved by direct measurement (user report 2026-07-17). Colors stay theme-specific; only the layout is pinned to the verified measurement.
     t.font_family = modern.font_family.clone();
     t.font_size = modern.font_size;
     let opts = RenderOptions {
@@ -2208,7 +2222,7 @@ fn split_segments(src: &str) -> Vec<Segment> {
     let mut segments = Vec::new();
     let mut md = String::new();
     let mut mermaid = String::new();
-    // 開いているフェンス。bool は「mermaid ブロックか」。
+    // The currently open fence. The bool is "is this a mermaid block".
     let mut open: Option<(Fence, bool)> = None;
 
     for line in src.split_inclusive('\n') {
@@ -2217,13 +2231,13 @@ fn split_segments(src: &str) -> Vec<Segment> {
             None => {
                 if let Some((fence, info)) = parse_fence(bare) {
                     if is_mermaid_info(&info) {
-                        // mermaid ブロック開始: それまでの md を確定し、フェンス行自体は捨てる。
+                        // A mermaid block starts: finalize the md accumulated so far, and drop the fence line itself.
                         if !md.is_empty() {
                             segments.push(Segment::Md(std::mem::take(&mut md)));
                         }
                         open = Some((fence, true));
                     } else {
-                        // 通常のコードフェンス: tui-markdown に渡すため md にそのまま積む。
+                        // An ordinary code fence: append it to md as-is, to be passed on to tui-markdown.
                         md.push_str(line);
                         open = Some((fence, false));
                     }
@@ -2239,7 +2253,7 @@ fn split_segments(src: &str) -> Vec<Segment> {
                     if *is_mermaid {
                         segments.push(Segment::Mermaid(std::mem::take(&mut mermaid)));
                     } else {
-                        md.push_str(line); // 閉じフェンスも md に含める
+                        md.push_str(line); // include the closing fence in md too
                     }
                     open = None;
                 } else if *is_mermaid {
@@ -2251,7 +2265,7 @@ fn split_segments(src: &str) -> Vec<Segment> {
         }
     }
 
-    // 末尾の積み残しを確定。未閉鎖の mermaid は描画を試みる(失敗時は raw 表示にフォールバック)。
+    // Finalize whatever's left at the end. An unclosed mermaid still attempts to render (falls back to raw display on failure).
     if !md.is_empty() {
         segments.push(Segment::Md(md));
     }
@@ -2263,9 +2277,10 @@ fn split_segments(src: &str) -> Vec<Segment> {
     segments
 }
 
-// ---- GFM 表のレンダリング ----
-// tui-markdown 0.3.7 は表を1行に潰す(表未対応)。そこで表ブロックを横取りし、列の表示幅
-// (全角=2)を測って罫線(┌┬┐ │ ├┼┤ └┴┘)で描く。幅超過時はセルを折り返して収める。
+// ---- GFM table rendering ----
+// tui-markdown 0.3.7 collapses a table into one line (no table support). So table blocks are
+// intercepted, column display widths (full-width = 2) are measured, and it's drawn with borders
+// (┌┬┐ │ ├┼┤ └┴┘). When it overflows the width, cells wrap to fit.
 
 enum MdPart {
     Text(String),
@@ -2306,10 +2321,10 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
     mask
 }
 
-// ---- HTML ブロックの救出 --------------------------------------------------------
-// tui-markdown(pulldown-cmark) は Html イベントを黙って捨てるため、`<details>` 等の
-// ブロックの**中身のテキストごと**消えていた。ブロックを横取りしてタグを剥いだテキストを
-// 表示する(konoma は HTML を描画しない=安全な降格・原則#3)。コメント <!-- --> は丸ごと非表示。
+// ---- HTML block rescue --------------------------------------------------------
+// tui-markdown (pulldown-cmark) silently drops Html events, so a block like `<details>` vanished
+// **along with its inner text content**. Intercept the block and display its text with the tags
+// stripped (konoma doesn't render HTML = a safe degradation, principle #3). A `<!-- -->` comment is hidden entirely.
 
 enum HtmlPart {
     Text(String),
@@ -2382,7 +2397,7 @@ fn split_html_blocks(md: &str) -> Vec<HtmlPart> {
 
 /// Render an HTML block as its tag-stripped text (entities decoded, comments dropped entirely).
 fn render_html_block(raw: &str) -> Vec<Line<'static>> {
-    // タグ/コメントを文字走査で除去(行を跨ぐ <!-- --> にも対応)。
+    // Strip tags/comments by scanning characters (also handles a `<!-- -->` that spans multiple lines).
     let mut text = String::new();
     let mut rest = raw;
     while let Some(pos) = rest.find('<') {
@@ -3173,7 +3188,7 @@ fn split_tables(md: &str) -> Vec<MdPart> {
     let mut text = String::new();
     let mut i = 0;
     while i < lines.len() {
-        // 表開始 = 現在行がヘッダ候補 かつ 次行が区切り行 かつ どちらもフェンス外。
+        // A table starts = the current line is a header candidate AND the next line is a delimiter row AND both are outside a fence.
         if !fenced[i]
             && i + 1 < lines.len()
             && !fenced[i + 1]
@@ -3212,13 +3227,13 @@ fn split_tables(md: &str) -> Vec<MdPart> {
 fn parse_table_row(line: &str) -> Vec<String> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
-    // 末尾の区切り `|` を除く。ただし `\|`(エスケープ=リテラル)は区切りではないので残す。
+    // Drop the trailing delimiter `|`. But `\|` (escaped = literal) is not a delimiter, so keep it.
     let t = if t.ends_with('|') && !t.ends_with("\\|") {
         &t[..t.len() - 1]
     } else {
         t
     };
-    // GFM: セル分割は**エスケープされていない** `|` で行い、`\|` はリテラルの `|` に戻す。
+    // GFM: split cells on an **unescaped** `|`, and turn `\|` back into a literal `|`.
     let mut cells = Vec::new();
     let mut cur = String::new();
     let mut chars = t.chars().peekable();
@@ -3260,11 +3275,12 @@ fn parse_table_aligns(line: &str) -> Vec<ColAlign> {
         .collect()
 }
 
-// ---- テーブルセル内のインラインリンク --------------------------------------------
-// 表は tui-markdown を通らない自前描画のため、セル内の `[label](url)` をここで解釈する。
-// 表示は**ラベルのみ**(リンク様式=青下線)。URL はラベル直後に HIDDEN 修飾の「隠しターゲット」
-// スパンとして埋め、app 側の collapse_links が描画直前に取り除いて targets(Tab/Enter の
-// リンク先)へ回収する。桁揃えはラベル幅で計算する(隠しスパンは表示前に消えるので数えない)。
+// ---- Inline links inside table cells --------------------------------------------
+// Tables are our own custom rendering that doesn't go through tui-markdown, so a `[label](url)`
+// inside a cell is interpreted here. Only the **label** is displayed (link style = blue
+// underline). The URL is embedded right after the label as a HIDDEN-modified "hidden target"
+// span, which the app's collapse_links strips just before display and recovers into targets
+// (the link destination for Tab/Enter). Column alignment is computed from the label width (the hidden span vanishes before display, so it isn't counted).
 
 /// The link-label style shared with the app's link machinery (`is_link_span`: blue + underlined).
 pub fn link_label_style() -> Style {
@@ -3324,20 +3340,20 @@ fn try_inline_styled(rest: &str) -> Option<(usize, CellSeg)> {
             continue;
         };
         if end == 0 {
-            continue; // 空(`****` 等)は素通し
+            continue; // empty (e.g. `****`) passes through unchanged
         }
         let inner = &r[..end];
         if *open != "`"
             && (inner.starts_with(char::is_whitespace) || inner.ends_with(char::is_whitespace))
         {
-            continue; // 強調は内側の空白を許さない(乗算 `2 * 3` 等の誤検出防止)
+            continue; // emphasis doesn't allow inner whitespace (prevents misdetecting e.g. multiplication `2 * 3`)
         }
         let style = match *open {
             "***" => Style::new().add_modifier(Modifier::BOLD | Modifier::ITALIC),
             "**" => Style::new().add_modifier(Modifier::BOLD),
             "*" => Style::new().add_modifier(Modifier::ITALIC),
             "~~" => Style::new().add_modifier(Modifier::CROSSED_OUT),
-            // インラインコード: tui-markdown の段落内コードと同じ白前景。
+            // Inline code: the same white foreground as tui-markdown's in-paragraph code.
             "`" => Style::new().fg(Color::White),
             _ => unreachable!(),
         };
@@ -3365,7 +3381,7 @@ fn parse_cell_segments(cell: &str) -> Vec<CellSeg> {
     let mut i = 0;
     while i < cell.len() {
         let rest = &cell[i..];
-        // インライン強調/コード/打消し(リンクより先に判定しても衝突しない=開始文字が異なる)。
+        // Inline emphasis/code/strikethrough (checking these before a link doesn't conflict = they start with different characters).
         if let Some((consumed, seg)) = try_inline_styled(rest) {
             if !text.is_empty() {
                 out.push(CellSeg::plain(std::mem::take(&mut text)));
@@ -3390,7 +3406,7 @@ fn parse_cell_segments(cell: &str) -> Vec<CellSeg> {
                                 label: label.to_string(),
                                 url: url.to_string(),
                             });
-                            // "[label](url)" 全体を消費して続きから。
+                            // Consume the whole "[label](url)" and continue from after it.
                             i += close + 2 + par + 1;
                             continue;
                         }
@@ -3513,12 +3529,12 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
 /// hidden target span) instead of raw Markdown; column widths are measured on the displayed form.
 fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
     let mut rows: Vec<Vec<Vec<CellSeg>>> = Vec::new();
-    let mut header_rows = 0usize; // 区切り行より前(=ヘッダ)の行数
+    let mut header_rows = 0usize; // number of rows before the delimiter row (= the header)
     let mut aligns: Vec<ColAlign> = Vec::new();
     for line in raw.lines() {
         if is_table_delimiter(line) {
             header_rows = rows.len();
-            aligns = parse_table_aligns(line); // 整列コロン(:---:)を列ごとに反映
+            aligns = parse_table_aligns(line); // apply the alignment colons (:---:) per column
             continue;
         }
         rows.push(
@@ -3526,8 +3542,8 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
                 .into_iter()
                 .map(|c| {
                     let mut segs = parse_cell_segments(&c);
-                    // 段落リンクと同じ見た目にする: アイコン有効ならラベルへ前置し、
-                    // **幅計算の前に**組み込む(後付けだと桁揃えが崩れる)。
+                    // Make it look the same as a paragraph link: if icons are enabled, prepend to the
+                    // label and fold it in **before the width calculation** (adding it after would break column alignment).
                     if icons {
                         for seg in &mut segs {
                             if let CellSeg::Link { label, .. } = seg {
@@ -3547,15 +3563,15 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
     for r in &mut rows {
         r.resize(ncol, Vec::new());
     }
-    // 自然列幅(全角考慮・リンクはラベル幅)。最低1。
+    // Natural column widths (full-width chars counted, a link uses its label width). Minimum 1.
     let mut col_w = vec![1usize; ncol];
     for r in &rows {
         for (c, cell) in r.iter().enumerate() {
             col_w[c] = col_w[c].max(segs_width(cell));
         }
     }
-    // 表の総表示幅 = Σcol_w + 罫線│(ncol+1) + 各列の左右余白(2*ncol)。
-    // 幅を超える間、最も広い列を1ずつ削る(最低1)。削られた列はセルを折返して収める。
+    // The table's total display width = Σcol_w + border bars │ (ncol+1) + each column's left/right padding (2*ncol).
+    // While it exceeds the width, shave 1 off the widest column at a time (minimum 1). A shaved column wraps its cells to fit.
     let frame = (ncol + 1) + 2 * ncol;
     let budget = (width as usize).saturating_sub(frame).max(ncol);
     let mut total: usize = col_w.iter().sum();
@@ -3585,7 +3601,7 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
     out.push(rule('┌', '┬', '┐'));
     for (ri, r) in rows.iter().enumerate() {
         let is_head = ri < header_rows;
-        // 各セルを列幅で折返し、行内の最大物理行数に合わせて縦に展開する。
+        // Wrap each cell to the column width, then expand vertically to the row's max physical line count.
         let wrapped: Vec<Vec<Vec<CellSeg>>> = r
             .iter()
             .enumerate()
@@ -3602,7 +3618,7 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
             for c in 0..ncol {
                 let segs: &[CellSeg] = wrapped[c].get(p).map(|v| v.as_slice()).unwrap_or(&[]);
                 let pad = col_w[c].saturating_sub(segs_width(segs));
-                // 整列コロン(:---:)に従いパディングを左右へ配分(既定は左寄せ)。
+                // Distribute the padding left/right according to the alignment colons (:---:) (default is left-aligned).
                 let (lp, rp) = match aligns.get(c).copied().unwrap_or(ColAlign::Left) {
                     ColAlign::Left => (0, pad),
                     ColAlign::Right => (pad, 0),
@@ -3611,13 +3627,13 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
                 spans.push(Span::styled(format!(" {}", " ".repeat(lp)), cell_style));
                 for seg in segs {
                     match seg {
-                        // スタイル付きテキスト(セル内の **bold**/*italic*/`code`/~~strike~~)。
-                        // ヘッダの太字等(cell_style)の上に patch で重ねる。
+                        // Styled text (**bold**/*italic*/`code`/~~strike~~ inside the cell).
+                        // Layer it on top of the header's bold etc. (cell_style) via patch.
                         CellSeg::Text { text, style } => {
                             spans.push(Span::styled(text.clone(), cell_style.patch(*style)))
                         }
-                        // リンク: ラベル(青下線)＋隠しターゲット(URL・表示前に collapse_links が
-                        // 除去して Tab/Enter のリンク先へ回収)。幅はラベルのみで数えてある。
+                        // Link: the label (blue underline) + hidden target (the URL, stripped by
+                        // collapse_links before display and recovered as the Tab/Enter link destination). Only the label is counted for width.
                         CellSeg::Link { label, url } => {
                             spans.push(Span::styled(label.clone(), link_label_style()));
                             spans.push(Span::styled(url.clone(), hidden_link_target_style()));
@@ -3629,7 +3645,7 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
             }
             out.push(Line::from(spans));
         }
-        // ヘッダ最終行の直後に区切り罫線。
+        // A divider rule right after the header's last row.
         if header_rows > 0 && ri + 1 == header_rows {
             out.push(rule('├', '┼', '┤'));
         }
@@ -3666,8 +3682,9 @@ mod tests {
         UnicodeWidthStr::width(s.as_str())
     }
 
-    /// `truncate_to_width`: 表示幅で切り詰める純関数。全角(2桁)文字を境界で割らず、幅を超えない
-    /// 最大までで止める(CJK ラベルの列詰めで桁溢れ・バイト破壊を起こさないための土台)。
+    /// `truncate_to_width`: a pure function that truncates by display width. It never splits a
+    /// full-width (2-column) character at its boundary, stopping at the largest amount that doesn't
+    /// exceed the width (the foundation for column truncation of CJK labels without overflowing or corrupting bytes).
     #[test]
     fn truncate_to_width_is_cjk_aware() {
         assert_eq!(truncate_to_width("hello", 3), "hel");
@@ -3677,26 +3694,26 @@ mod tests {
             "ちょうど収まれば全部"
         );
         assert_eq!(truncate_to_width("hello", 99), "hello", "余れば全部");
-        // 全角は各2桁。幅3では1文字ぶん(幅2)だけ入り、割って桁溢れさせない。
+        // A full-width char is 2 columns each. At width 3 only one character (width 2) fits, without splitting it and overflowing.
         assert_eq!(truncate_to_width("あいう", 3), "あ");
         assert_eq!(truncate_to_width("あいう", 4), "あい");
-        // 半角/全角の混在も表示幅で数える。
+        // A mix of half-width and full-width is also counted by display width.
         assert_eq!(truncate_to_width("aあb", 2), "a");
         assert_eq!(truncate_to_width("aあb", 3), "aあ");
-        // 幅0では何も入らない。
+        // Nothing fits at width 0.
         assert_eq!(truncate_to_width("hi", 0), "");
     }
 
     #[test]
     fn code_block_tabs_expand_to_marker() {
-        // Markdown のコードブロック内のタブも単体コードと同様に「→＋空白」に展開する(設定 tab_width)。
+        // A tab inside a Markdown code block also expands to "→ + spaces", the same as standalone code (the `tab_width` setting).
         let md = "```ts\nfunction f() {\n\tconst x = 1;\n}\n```\n";
         let lines = render_markdown(md, 40, BG, "TwoDark", false);
         let texts: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        // タブ行はマーカー → を含み、生のタブ文字は残さない。
+        // The tab line contains the marker → and no raw tab character remains.
         let tab_line = texts
             .iter()
             .find(|t| t.contains("const x"))
@@ -3706,20 +3723,20 @@ mod tests {
             "タブが可視化されていない: {tab_line:?}"
         );
         assert!(!tab_line.contains('\t'), "生タブが残っている: {tab_line:?}");
-        // ガター(▎)→ マーカー(→) → コードの順で、インデントが入っている。
+        // In order gutter (▎) → marker (→) → code, with the indent inside.
         assert!(
             tab_line.starts_with("▎ →"),
             "ガター+マーカーの並びが違う: {tab_line:?}"
         );
-        // render は1回ぶんのコードブロック(マーカー行は1行だけ)。
+        // The render is for one code block (only one marker line).
         let marker_lines = texts.iter().filter(|t| t.contains('→')).count();
         assert_eq!(marker_lines, 1, "マーカー行数が想定外: {marker_lines}");
     }
 
     #[test]
     fn table_cell_link_renders_label_with_hidden_target() {
-        // 表セル内の [label](url) はラベルのみ(青下線)で描画し、URL は HIDDEN の隠しスパンで携える。
-        // 生の "[label](url)" テキストを表に出さない(ユーザー報告のバグ)。
+        // A [label](url) inside a table cell is drawn as just its label (blue underline), carrying
+        // the URL as a HIDDEN hidden span. The raw "[label](url)" text must never show in the table (a bug reported by the user).
         let md = "| name | doc |\n|---|---|\n| konoma | [Docs](./docs/readme.md) |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let row = lines
@@ -3731,7 +3748,7 @@ mod tests {
             !joined.contains("[Docs]"),
             "生の Markdown 記法が残っている: {joined:?}"
         );
-        // ラベル span はリンク様式(青下線・HIDDEN 無し)。
+        // The label span is in link style (blue underline, no HIDDEN).
         let label = row
             .spans
             .iter()
@@ -3740,7 +3757,7 @@ mod tests {
         assert_eq!(label.style.fg, Some(Color::Blue));
         assert!(label.style.add_modifier.contains(Modifier::UNDERLINED));
         assert!(!label.style.add_modifier.contains(Modifier::HIDDEN));
-        // 直後に URL の隠しターゲット span。
+        // Right after it, the URL's hidden target span.
         let li = row
             .spans
             .iter()
@@ -3753,8 +3770,9 @@ mod tests {
 
     #[test]
     fn table_link_rows_align_after_hiding_targets() {
-        // 桁揃えは「隠しスパンを除いた表示幅」で成立する(collapse_links が描画前に除去する前提)。
-        // 全行(罫線含む)が同じ表示幅になること。リンク行だけ広い/狭いは崩れ。
+        // Column alignment holds by "display width excluding the hidden span" (assuming
+        // collapse_links strips it before display). Every row (including the border) must end up
+        // the same display width; a link row being wider/narrower would be a break.
         let md = "| name | doc |\n|---|---|\n| konoma | [Docs](./docs/readme.md) |\n| plain | text cell |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let widths: Vec<usize> = lines
@@ -3776,10 +3794,10 @@ mod tests {
 
     #[test]
     fn table_link_wraps_atomically_in_narrow_width() {
-        // 狭い幅ではセルが折返されるが、リンクのラベル span は分割されない(ターゲット対応の維持)。
+        // At a narrow width the cell wraps, but a link's label span is never split (keeps the target pairing intact).
         let md = "| doc |\n|---|\n| intro text [Guide](./guide.md) tail |\n";
         let lines = render_markdown(md, 18, BG, "TwoDark", false);
-        // ラベル "Guide" がどこかの物理行に**1つの span**として存在し、直後が隠し URL。
+        // The label "Guide" exists as **one span** on some physical line, immediately followed by the hidden URL.
         let mut found = false;
         for l in &lines {
             if let Some(i) = l.spans.iter().position(|sp| sp.content.as_ref() == "Guide") {
@@ -3788,7 +3806,7 @@ mod tests {
             }
         }
         assert!(found, "折返し後もリンクラベルが1スパンで残る");
-        // 隠しスパン除去後の幅は全行一致。
+        // The width matches on every row once the hidden spans are removed.
         let widths: Vec<usize> = lines
             .iter()
             .map(|l| {
@@ -3804,7 +3822,7 @@ mod tests {
 
     #[test]
     fn cell_segments_parse_links_and_leave_images_as_text() {
-        // 基本形・前後テキスト・画像(!付き)は素通し・未対応括弧は素通し。
+        // The basic form, surrounding text, and an image (with `!`) pass through unchanged; unsupported brackets also pass through unchanged.
         let segs = parse_cell_segments("see [a](b.md) end");
         assert_eq!(segs.len(), 3);
         assert!(matches!(&segs[1], CellSeg::Link { label, url } if label == "a" && url == "b.md"));
@@ -3812,7 +3830,7 @@ mod tests {
         assert!(matches!(&img[..], [CellSeg::Text { text, .. }] if text == "![alt](x.png)"));
         let broken = parse_cell_segments("[no url] and [y](");
         assert!(broken.iter().all(|s| matches!(s, CellSeg::Text { .. })));
-        // title 付き・<> 囲みのリンク先は URL/パスだけに縮める(開けるターゲットにする)。
+        // A link destination with a title, or wrapped in <>, is reduced to just the URL/path (making it an openable target).
         let titled = parse_cell_segments("[t](./g.md \"Title\")");
         assert!(
             matches!(&titled[..], [CellSeg::Link { url, .. }] if url == "./g.md"),
@@ -3827,8 +3845,8 @@ mod tests {
 
     #[test]
     fn table_link_icon_matches_paragraph_links_and_keeps_alignment() {
-        // `ui.icons` 有効時: 表内リンクにも段落リンクと同じアイコンが付き(見た目の一貫性)、
-        // アイコンは**幅計算前に**ラベルへ組み込むので桁揃えは崩れない。
+        // When `ui.icons` is on: a table-internal link also gets the same icon as a paragraph link
+        // (visual consistency), and since the icon is folded into the label **before the width calculation**, column alignment isn't broken.
         let md = "| a | b |\n|---|---|\n| [Docs](./g.md) | plain |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", true);
         let row = lines
@@ -3850,7 +3868,7 @@ mod tests {
             "アイコンが前置される: {:?}",
             label.content
         );
-        // 隠しスパン除去後(=表示)の幅が全行一致。
+        // The width matches on every row once the hidden spans are removed (= as displayed).
         let widths: Vec<usize> = lines
             .iter()
             .map(|l| {
@@ -3866,7 +3884,7 @@ mod tests {
 
     #[test]
     fn table_escaped_pipe_stays_in_one_cell() {
-        // GFM: `\|` はリテラルの `|`(セル区切りではない)。従来は分割されて幽霊列が生えていた。
+        // GFM: `\|` is a literal `|` (not a cell delimiter). Previously it got split, growing a phantom column.
         let md = "| a | b |\n|---|---|\n| x \\| y | z |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let row: String = lines
@@ -3888,7 +3906,7 @@ mod tests {
 
     #[test]
     fn table_alignment_colons_are_respected() {
-        // :---(左) / :---:(中央) / ---:(右) のパディング配分。
+        // Padding distribution for :--- (left) / :---: (center) / ---: (right).
         let md = "| xxxx | yyyy | zzzz |\n|:-----|:----:|-----:|\n| a | b | c |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let row: String = lines
@@ -3906,7 +3924,7 @@ mod tests {
 
     #[test]
     fn table_cell_inline_styles_render_without_markers() {
-        // セル内の **bold** / *italic* / `code` / ~~strike~~ が記号なしのスタイル付きで出る。
+        // A cell's **bold** / *italic* / `code` / ~~strike~~ shows up styled with the markers removed.
         let md = "| a |\n|---|\n| **b** and *i* and `c` and ~~s~~ |\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let row = lines
@@ -3932,7 +3950,7 @@ mod tests {
                 .any(|sp| sp.content.as_ref() == "c" && sp.style.fg == Some(Color::White)),
             "code fg"
         );
-        // 誤検出防止: 乗算風の * は素通し。
+        // Prevents misdetection: a multiplication-like `*` passes through unchanged.
         let plain = parse_cell_segments("2 * 3 * 4");
         assert!(matches!(&plain[..], [CellSeg::Text { text, .. }] if text == "2 * 3 * 4"));
     }
@@ -4148,8 +4166,8 @@ mod tests {
 
     #[test]
     fn html_block_text_survives_and_autolink_untouched() {
-        // <details>(open 無し)は既定で折りたたみ: summary は残り本文は隠れる(GitHub 流)。
-        // <details open> は展開して本文が出る。コメントは非表示・autolink は誤検知しない。
+        // `<details>` (no `open`) is collapsed by default: the summary stays and the body is hidden
+        // (GitHub's convention). `<details open>` expands and shows the body. A comment is hidden; autolink is not misdetected.
         let md = "before\n\n<details>\n<summary>Summary text</summary>\nhidden body\n</details>\n\n<details open>\n<summary>Open Summary</summary>\nvisible body\n</details>\n\n<!-- secret comment -->\n\nsee <https://ratatui.rs> end\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let all: Vec<String> = lines
@@ -4197,13 +4215,13 @@ mod tests {
             all.iter().any(|t| t.trim() == "─".repeat(40)),
             "--- が全幅罫線になる: {all:?}"
         );
-        // icons=false: ASCII ブラケット表示(☐/☑ は CJK フォールバックで全角描画されるため廃止)。
+        // icons=false: ASCII bracket display (☐/☑ were dropped since CJK fallback fonts draw them full-width).
         assert!(
             all.iter().any(|t| t.contains("[ ] open task")),
             "未完 [ ]: {all:?}"
         );
         assert!(all.iter().any(|t| t.contains("[x] done task")), "完了 [x]");
-        // マーカーは専用 span(スタイル番兵)として発出される。
+        // A marker is emitted as its own dedicated span (a style sentinel).
         let markers: Vec<String> = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -4216,22 +4234,23 @@ mod tests {
     #[test]
     fn code_block_wrap_keeps_gutter_on_every_row() {
         use unicode_width::UnicodeWidthStr;
-        // 幅超過のコード行は**事前折返し**され、折返し後の全視覚行に ▎ ガターが付き、
-        // どの行も幅を超えない(Paragraph 任せだと2行目以降のガター/帯が途切れる回帰)。
-        let long = "abcdefghij".repeat(6); // 60 桁
+        // A code line that overflows the width is **pre-wrapped**, and every visual row after
+        // wrapping carries the ▎ gutter, with no row exceeding the width (leaving it to Paragraph is
+        // a regression where the gutter/band breaks on the 2nd+ row).
+        let long = "abcdefghij".repeat(6); // 60 columns
         let md = format!("```\n{long}\nshort\n```\n");
         let lines = render_markdown(&md, 30, BG, "TwoDark", false);
         let code_rows: Vec<&Line> = lines
             .iter()
             .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with('▎')))
             .collect();
-        // バッジ行 1 + 60桁は 28桁(=30-ガター2)ごとに 3 行 + short 1 行 + 終端パディング 1 行。
+        // 1 badge row + 60 columns split every 28 columns (=30-gutter 2) into 3 rows + 1 "short" row + 1 end-padding row.
         assert_eq!(code_rows.len(), 6, "{:?}", code_rows.len());
         for l in &code_rows {
             let w: usize = l.spans.iter().map(|s| s.content.as_ref().width()).sum();
             assert!(w <= 30, "行幅が枠を超えない: {w}");
         }
-        // 中身が失われていない(全行の連結に元テキストが含まれる)。
+        // Nothing is lost (joining all rows contains the original text).
         let joined: String = code_rows
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -4240,7 +4259,7 @@ mod tests {
             .replace(' ', "");
         assert!(joined.contains(&long), "折返しで文字が欠けない");
 
-        // CJK: 全角20文字(40桁)は 28桁境界で分割され、境界で桁を壊さない。
+        // CJK: 20 full-width chars (40 columns) split at the 28-column boundary, without breaking a character at the boundary.
         let cjk = "あ".repeat(20);
         let md = format!("```\n{cjk}\n```\n");
         let lines = render_markdown(&md, 30, BG, "TwoDark", false);
@@ -4254,7 +4273,7 @@ mod tests {
             assert!(w <= 30, "CJK でも行幅が枠内: {w}");
         }
 
-        // wrap=false(横スクロール運用)では従来どおり1論理行のまま(事前折返ししない)。
+        // With wrap=false (horizontal-scroll workflow), it stays one logical line as before (no pre-wrapping).
         let nowrap = CodeStyle { wrap: false, ..BG };
         let md = format!("```\n{long}\n```\n");
         let lines = render_markdown_tasks(&md, 30, nowrap, "TwoDark", false, DEFAULT_TASK_STATES);
@@ -4277,10 +4296,11 @@ mod tests {
 
     #[test]
     fn loose_list_task_item_does_not_panic() {
-        // tui-markdown 0.3.7/0.3.8 は「loose リスト(空行区切り)内のタスク項目」で panic する
-        // (insertion index should be <= len)。konoma は捕捉して**空行境界の二分割で再試行**し、
-        // 割れた各半分は普通に描ける=装飾(タスクマーカー等)が生き残る。丸ごと素テキスト降格に
-        // していた頃は、この記法を1箇所含むだけで文書全編が無装飾になった(実文書で報告)。
+        // tui-markdown 0.3.7/0.3.8 panics on "a task item inside a loose list (blank-line separated)"
+        // (insertion index should be <= len). konoma catches it and **retries by bisecting at a
+        // blank-line boundary**, and each resulting half renders normally = decoration (task markers
+        // etc.) survives. Back when the whole thing degraded to plain text, just one instance of this
+        // syntax turned an entire real document undecorated (reported against an actual document).
         let md = "# title\n\n- a\n\n- [ ] b\n\n**bold**\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let all: Vec<String> = lines
@@ -4291,7 +4311,7 @@ mod tests {
             all.iter().any(|t| t.contains("- a")),
             "内容は読める形で残る: {all:?}"
         );
-        // 二分割の再試行で装飾が生きる: タスクは専用マーカー span・bold は記号が剥がれる。
+        // Decoration survives the bisect-and-retry: the task gets its dedicated marker span, and bold has its markers stripped.
         let markers: Vec<String> = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -4311,7 +4331,7 @@ mod tests {
 
     #[test]
     fn split_block_for_retry_avoids_fences() {
-        // 再試行の分割点はフェンス外の空行。フェンス内の空行では割らない。
+        // The retry's split point is a blank line outside a fence. A blank line inside a fence is not split on.
         let src = "para1\n\n```\ncode\n\nmore\n```\n\npara2\n";
         let (a, b) = split_block_for_retry(src).expect("分割できる");
         assert!(
@@ -4322,13 +4342,13 @@ mod tests {
             b.matches("```").count() % 2 == 0,
             "後半のフェンスは閉じている: {b:?}"
         );
-        // 1行だけのブロックは割れない。
+        // A single-line block can't be split.
         assert!(split_block_for_retry("only-one-line").is_none());
     }
 
     #[test]
     fn task_markers_become_dedicated_spans_with_custom_states() {
-        // 標準 (` `/`x`) は専用 span(icons=NF アイコン/false=ブラケット)、カスタム `/` は設定時のみ対象。
+        // The standard states (` `/`x`) get a dedicated span (icons=NF icon / false=bracket); the custom `/` is only in scope when configured.
         let md = "- [ ] open\n- [x] done\n- [/] doing\n";
         let dflt = render_markdown(md, 40, BG, "TwoDark", false);
         let markers = |lines: &[Line<'static>]| -> Vec<String> {
@@ -4342,7 +4362,7 @@ mod tests {
         assert_eq!(markers(&dflt), vec!["[ ] ", "[x] "], "既定では / は対象外");
         let custom = render_markdown_tasks(md, 40, BG, "TwoDark", false, &[' ', '/', 'x']);
         assert_eq!(markers(&custom), vec!["[ ] ", "[x] ", "[/] "]);
-        // icons=true: 標準状態は Nerd Font アイコン(1セル固定)・カスタムはブラケットのまま。
+        // icons=true: a standard state gets a Nerd Font icon (fixed 1 cell); a custom one stays a bracket.
         let nf_off = format!("{} ", crate::ui::icons::task_icon(false));
         let nf_on = format!("{} ", crate::ui::icons::task_icon(true));
         let iconed = render_markdown_tasks(md, 40, BG, "TwoDark", true, &[' ', '/', 'x']);
@@ -4350,7 +4370,7 @@ mod tests {
             markers(&iconed),
             vec![nf_off.clone(), nf_on.clone(), "[/] ".into()]
         );
-        // 状態の復元(トグルの照合に使う)。
+        // Recovering the state (used to cross-check the toggle).
         assert_eq!(
             task_span_state(&nf_off),
             Some(' '),
@@ -4360,7 +4380,7 @@ mod tests {
         assert_eq!(task_span_state("[ ]"), Some(' '));
         assert_eq!(task_span_state("[/]"), Some('/'));
         assert_eq!(task_span_state("[ab]"), None, "2文字はマーカーでない");
-        // 文中の [ ] は不変(既存保証の再確認)。
+        // A `[ ]` mid-sentence stays unchanged (reconfirming an existing guarantee).
         let mid = render_markdown("text with [ ] brackets\n", 40, BG, "TwoDark", false);
         assert!(mid
             .iter()
@@ -4370,8 +4390,9 @@ mod tests {
 
     #[test]
     fn task_source_locs_skip_fences_html_and_tables() {
-        // 描画パイプラインが decorate_extras に流さない領域(フェンス/HTML/表)を同じ規則でスキップし、
-        // 実タスクの行番号・状態文字・バイト位置を正しく返す(トグル書込みの座標になる)。
+        // Skip, using the same rules, the regions the render pipeline never routes through
+        // decorate_extras (fences/HTML/tables), and correctly return the real tasks' line number,
+        // state char, and byte position (these become the coordinates for a toggle's write).
         let src = "\
 - [ ] first
 ```
@@ -4396,7 +4417,7 @@ mod tests {
             vec![(0, ' '), (12, 'X'), (13, '/')],
             "実タスクのみ: {got:?}"
         );
-        // state_off は行内の状態文字を正確に指す(CJK/インデント混在でも)。
+        // state_off points exactly at the state char within the line (even with CJK/indentation mixed in).
         let lines: Vec<&str> = src.lines().collect();
         for l in &locs {
             assert!(
@@ -4409,9 +4430,9 @@ mod tests {
 
     #[test]
     fn task_source_locs_accepts_all_gfm_bullets() {
-        // GFM(と tui-markdown)は `-`/`*`/`+` すべてをタスクの箇条書きとして描画する。source scanner
-        // が `-` しか認識しないと、`*`/`+` タスクは描画されるのに再スキャンで見つからず、トグルの
-        // 個数照合が外れて全トグルが「file changed on disk」でキャンセルされる(ユーザー報告 2026-07-22)。
+        // GFM (and tui-markdown) render `-`/`*`/`+` bullets all alike as task items. If the source
+        // scanner only recognized `-`, a `*`/`+` task would be rendered but not found by the
+        // rescan, so the toggle's count check fails and every toggle gets cancelled with "file changed on disk" (user report 2026-07-22).
         let src = "- [ ] dash\n* [ ] star\n+ [x] plus\n  * [ ] nested star\n";
         let locs = task_source_locs(src, &[' ', 'x'], &[]);
         let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
@@ -4420,7 +4441,7 @@ mod tests {
             vec![(0, ' '), (1, ' '), (2, 'x'), (3, ' ')],
             "3 種の箇条書き全てをタスクとして検出: {got:?}"
         );
-        // state_off は3種とも `<bullet> [` の直後(indent + 3)=状態文字を正確に指す。
+        // state_off is right after `<bullet> [` for all three (indent + 3) = points exactly at the state char.
         let lines: Vec<&str> = src.lines().collect();
         for l in &locs {
             assert!(
@@ -4433,12 +4454,12 @@ mod tests {
 
     #[test]
     fn cjk_table_is_rectangular_and_aligned() {
-        // tui-markdown は表を1行に潰す(#1)。横取りした自前レンダラは全角幅を測って
-        // 桁揃えする。全角ヘッダ + ASCII データが混在しても全行が同一表示幅=矩形になること。
+        // tui-markdown collapses a table into one line (#1). The custom renderer that intercepts it
+        // measures full-width columns for alignment. Confirm every row ends up the same display width = rectangular, even with a full-width header mixed with ASCII data.
         let md = "| 種別 | ライブラリ | 依存 |\n|------|------------|------|\n\
                   | md   | tui-markdown | ratatui-core |\n| 図   | mermaid-text | unicode-width |\n";
         let lines = render_markdown(md, 80, BG, "TwoDark", false);
-        // 1行潰れ(tui-markdown 既定)でなく、罫線込みで複数行になっていること。
+        // Not collapsed into one line (tui-markdown's default); confirm it spans multiple lines with borders.
         assert!(
             lines.len() >= 6,
             "表が行に展開されていない: {}",
@@ -4449,7 +4470,7 @@ mod tests {
         for (i, l) in lines.iter().enumerate() {
             assert_eq!(line_disp_width(l), w0, "{i}行目の表示幅が不揃い(右枠ズレ)");
         }
-        // 罫線(箱の角)を含む。
+        // Contains the border (box corners).
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|sp| sp.content.as_ref()))
@@ -4459,14 +4480,14 @@ mod tests {
 
     #[test]
     fn wide_table_wraps_within_terminal_width() {
-        // 長いセルは端末幅にキャップして折り返す(罫線が画面外へ溢れない)。
+        // A long cell wraps, capped at the terminal width (the border never overflows off-screen).
         let md = "| 名前 | 説明 |\n|---|---|\n\
                   | konoma | 全画面プレビュー特化のターミナルファイルブラウザです長い説明 |\n";
         let lines = render_markdown(md, 30, BG, "TwoDark", false);
         for (i, l) in lines.iter().enumerate() {
             assert!(line_disp_width(l) <= 30, "{i}行目が幅30を超過");
         }
-        // 同一表示幅で矩形を保つこと。
+        // Keeps a rectangular shape with a uniform display width.
         let w0 = line_disp_width(&lines[0]);
         assert!(lines.iter().all(|l| line_disp_width(l) == w0), "矩形でない");
     }
@@ -4479,13 +4500,13 @@ mod tests {
         assert!(matches!(&segs[0], Segment::Md(s) if s.contains("Title")));
         assert!(matches!(&segs[1], Segment::Mermaid(s) if s.contains("graph TD")));
         assert!(matches!(&segs[2], Segment::Md(s) if s.contains("after")));
-        // mermaid 区間にフェンス行は含めない。
+        // The fence lines are not included in the mermaid section.
         assert!(matches!(&segs[1], Segment::Mermaid(s) if !s.contains("```")));
     }
 
     #[test]
     fn normal_code_fence_is_kept_in_markdown() {
-        // ```rust ブロックは横取りせず md に残す (tui-markdown がハイライトする)。
+        // A ```rust block is not intercepted and is left in md (tui-markdown highlights it).
         let src = "text\n\n```rust\nlet x = 1;\n```\n";
         let segs = split_segments(src);
         assert_eq!(segs.len(), 1, "got {segs:?}");
@@ -4494,7 +4515,7 @@ mod tests {
 
     #[test]
     fn mermaid_inside_normal_fence_is_not_intercepted() {
-        // 通常フェンス内の ```mermaid 風行は (既にフェンス内なので) 図にしない。
+        // A ```mermaid-looking line inside a normal fence never becomes a diagram (it's already inside a fence).
         let src = "~~~\n```mermaid\nnot a diagram\n```\n~~~\n";
         let segs = split_segments(src);
         assert!(
@@ -4511,17 +4532,17 @@ mod tests {
 
     #[test]
     fn invalid_mermaid_falls_back_to_raw() {
-        // パースできないソースは raw 表示 (先頭に注記、本文を保持) になる。
+        // Unparseable source falls back to a raw display (a note at the top, the body kept).
         let lines = render_mermaid_file("this is definitely not mermaid syntax", 80);
         assert!(!lines.is_empty());
     }
 
     #[test]
     fn cjk_sequence_diagram_renders_not_fallback() {
-        // upstream mermaid-text 0.56 は CJK 参加者/メッセージで内部 panic していた
-        // (strip_keyword_prefix のバイト境界無視スライス)。vendor/mermaid-text の
-        // is_char_boundary ガードで解消済み → 罫線図として「実際に描画」される。
-        // これが回帰ガード: patch が外れると panic→raw fallback で罫線が消え、本テストが落ちる。
+        // upstream mermaid-text 0.56 used to panic internally on CJK participants/messages
+        // (strip_keyword_prefix slicing without regard for byte boundaries). Resolved by the
+        // is_char_boundary guard in vendor/mermaid-text → it's "actually drawn" as a box-drawing
+        // diagram. This is the regression guard: if the patch is dropped, it panics → falls back to raw, the box-drawing disappears, and this test fails.
         let src = "sequenceDiagram\n  U->>K: ツリーで .mmd を選ぶ\n  K-->>U: 全画面プレビュー";
         let lines = render_mermaid_file(src, 70);
         assert!(!lines.is_empty(), "CJK 入力でも行を返すこと");
@@ -4530,7 +4551,7 @@ mod tests {
             !joined.contains("cannot render mermaid"),
             "fallback に落ちている (patch 不在の疑い): {joined}"
         );
-        // U+2500..U+257F = 罫線描画ブロック。図になっていれば含む。
+        // U+2500..U+257F = the box-drawing block. Present if it's an actual diagram.
         assert!(
             joined
                 .chars()
@@ -4541,7 +4562,7 @@ mod tests {
 
     #[test]
     fn ascii_sequence_diagram_renders_box_drawing() {
-        // ASCII ラベルの sequence 図は実際に罫線図として描画される (fallback でない)。
+        // A sequence diagram with ASCII labels actually renders as a box-drawing diagram (not a fallback).
         let src = "sequenceDiagram\n  participant U as User\n  participant K as konoma\n  U->>K: open\n  K-->>U: preview";
         let lines = render_mermaid_file(src, 70);
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -4549,7 +4570,7 @@ mod tests {
             !joined.contains("cannot render mermaid"),
             "fallback に落ちている: {joined}"
         );
-        // U+2500..U+257F は罫線描画ブロック。図になっていれば必ず含む。
+        // U+2500..U+257F is the box-drawing block. It's always present if it's an actual diagram.
         assert!(
             joined
                 .chars()
@@ -4561,9 +4582,9 @@ mod tests {
     #[test]
     fn heading_hash_is_stripped_and_rule_added() {
         let lines = render_markdown("# Title\n\nbody\n", 20, BG, "TwoDark", false);
-        // 先頭 `#` が消え、見出しテキストだけになる。
+        // The leading `#` disappears, leaving just the heading text.
         assert_eq!(lines[0].to_string(), "Title");
-        // 直下に全幅ルール (━) が入る。
+        // A full-width rule (━) is placed right below.
         assert!(
             lines[1].to_string().chars().all(|c| c == '━'),
             "rule 行が無い: {:?}",
@@ -4580,7 +4601,7 @@ mod tests {
             "TwoDark",
             false,
         );
-        // コードブロック由来の行は背景色 (DEFAULT_CODE_BG) を持ち、左ガターで始まる。
+        // A line from a code block has the background color (DEFAULT_CODE_BG) and starts with the left gutter.
         let coded = lines
             .iter()
             .find(|l| l.to_string().contains("let x = 1;"))
@@ -4591,14 +4612,14 @@ mod tests {
             "背景が敷かれていない"
         );
         assert!(coded.to_string().starts_with("▎"), "左ガターが無い");
-        // フェンス行 ``` はそのまま出さず、言語ヘッダ(rust)に置換されている。
+        // A fence line ``` is never shown as-is; it's replaced by the language header (rust).
         assert!(lines.iter().all(|l| !l.to_string().contains("```")));
         assert!(lines.iter().any(|l| l.to_string().contains("rust")));
     }
 
     #[test]
     fn code_block_content_is_syntax_highlighted_and_indented() {
-        // tui-markdown の highlight-code を無効化し、md フェンスコードも自前 syntect で着色する。
+        // Disable tui-markdown's highlight-code, and color md fence code with our own syntect too.
         let lines = render_markdown(
             "```rust\nfn f() {\n    let x = 1;\n}\n```\n",
             40,
@@ -4606,13 +4627,13 @@ mod tests {
             "TwoDark",
             false,
         );
-        // ハイライト: キーワード等に Rgb 前景色が付く。
+        // Highlighting: a keyword etc. gets an Rgb foreground color.
         let colored = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _))));
         assert!(colored, "md コードがハイライトされていない");
-        // インデント保持: ガターの後に元の 4 スペースが残る。
+        // Indentation preserved: the original 4 spaces remain right after the gutter.
         let indented = lines
             .iter()
             .find(|l| l.to_string().contains("let x = 1;"))
@@ -4626,8 +4647,8 @@ mod tests {
 
     #[test]
     fn code_header_gutter_is_sentinel_and_body_gutter_is_not() {
-        // ヘッダのガター span は is_code_header_span で識別でき(Tab フォーカスの目印)、
-        // 本文行のガター(番兵でない)は識別されない。
+        // The header's gutter span can be identified with is_code_header_span (the marker for Tab
+        // focus), while a body line's gutter (not a sentinel) is never identified as one.
         let lines = render_markdown("```rust\nlet x = 1;\n```\n", 28, BG, "TwoDark", false);
         let header = lines
             .iter()
@@ -4637,7 +4658,7 @@ mod tests {
             header.spans.iter().any(is_code_header_span),
             "ヘッダに番兵ガターが無い"
         );
-        // 本文行(コード行)のガターは番兵ではない。
+        // A body line's (code line's) gutter is not a sentinel.
         let body = lines
             .iter()
             .find(|l| l.to_string().contains("let x = 1;"))
@@ -4681,13 +4702,13 @@ plain body
             .iter()
             .find(|l| l.to_string().contains("rust"))
             .expect("言語ヘッダが無い");
-        // 言語名は行末(右寄せ)に置かれる。
+        // The language name is placed at the end of the line (right-aligned).
         assert!(
             header.to_string().trim_end().ends_with("rust"),
             "右寄せでない: {:?}",
             header.to_string()
         );
-        // バッジ span は本文背景より明るい背景を持つ(区別可能)。
+        // The badge span has a lighter background than the body (distinguishable).
         let badge = header
             .spans
             .iter()
@@ -4703,7 +4724,7 @@ plain body
 
     #[test]
     fn code_header_align_left_and_right() {
-        // 右寄せ(既定): 言語名は行末。
+        // Right-aligned (default): the language name is at the line's end.
         let right = render_markdown("```rust\nx\n```\n", 28, BG, "TwoDark", false);
         let rh = right
             .iter()
@@ -4712,7 +4733,7 @@ plain body
         let rs = rh.to_string();
         assert!(rs.trim_end().ends_with("rust"), "右寄せでない: {rs:?}");
         let right_pos = rs.find("rust").unwrap();
-        // 左寄せ: ガター直後(行頭側)に言語名。
+        // Left-aligned: the language name right after the gutter (the line-start side).
         let left = render_markdown(
             "```rust\nx\n```\n",
             28,
@@ -4737,7 +4758,7 @@ plain body
 
     #[test]
     fn code_label_bg_is_configurable() {
-        // バッジ背景を任意色に指定できる。
+        // The badge background can be set to any color.
         let style = CodeStyle {
             label_bg: Some(Color::Rgb(200, 50, 50)),
             ..BG
@@ -4753,7 +4774,7 @@ plain body
 
     #[test]
     fn code_header_badge_has_no_bg_when_code_bg_none() {
-        // code_bg=None: バッジは背景なし(淡色で区別)。
+        // code_bg=None: the badge has no background (distinguished by a dim color instead).
         let lines = render_markdown("```rust\nx\n```\n", 28, NO_CODE, "TwoDark", false);
         let badge = lines
             .iter()
@@ -4765,7 +4786,7 @@ plain body
 
     #[test]
     fn code_bg_color_is_configurable() {
-        // 設定色 (緑) が inline code とコードブロックの両方に反映される。
+        // The configured color (green) applies to both inline code and code blocks.
         let green = Color::Rgb(10, 80, 20);
         let md = "本文 `inline` 続き\n\n```rust\nlet x = 1;\n```\n";
         let style = CodeStyle {
@@ -4773,14 +4794,14 @@ plain body
             ..BG
         };
         let lines = render_markdown(md, 40, style, "TwoDark", false);
-        // inline code span が設定色の背景。
+        // The inline code span has the configured color as its background.
         let inline_bg = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.as_ref() == "inline")
             .and_then(|s| s.style.bg);
         assert_eq!(inline_bg, Some(green), "inline code に設定色が乗っていない");
-        // コードブロック行も設定色。
+        // A code-block line also uses the configured color.
         let coded = lines
             .iter()
             .find(|l| l.to_string().contains("let x = 1;"))
@@ -4794,7 +4815,7 @@ plain body
 
     #[test]
     fn code_bg_none_removes_all_backgrounds() {
-        // code_bg=None: inline code もコードブロックも背景なし (左ガターは残る)。
+        // code_bg=None: no background on either inline code or a code block (the left gutter stays).
         let md = "本文 `inline` 続き\n\n```rust\nlet x = 1;\n```\n";
         let lines = render_markdown(md, 40, NO_CODE, "TwoDark", false);
         let inline_bg = lines
@@ -4808,13 +4829,13 @@ plain body
             .find(|l| l.to_string().contains("let x = 1;"))
             .expect("コード行が無い");
         assert_eq!(coded.style.bg, None, "コードブロックの背景が消えていない");
-        // 背景を消してもコードと分かるよう左ガターは維持。
+        // The left gutter is kept even without a background, so it's still recognizable as code.
         assert!(coded.to_string().starts_with("▎"), "左ガターは残すべき");
     }
 
     #[test]
     fn cjk_in_markdown_with_mermaid_fence_does_not_panic() {
-        // md 内 mermaid フェンス + CJK でもアプリ経路 (render_markdown) が panic しないこと。
+        // Confirm the app path (render_markdown) doesn't panic even with a mermaid fence + CJK inside the md.
         let src =
             "# 図\n\n```mermaid\nsequenceDiagram\n  甲->>乙: こんにちは\n  乙-->>甲: どうも\n```\n";
         let lines = render_markdown(src, 70, BG, "TwoDark", false);
@@ -4823,35 +4844,35 @@ plain body
 
     #[test]
     fn konoma_stylesheet_arms_return_expected_styles() {
-        // 使用中の tui-markdown は blockquote/metadata の StyleSheet メソッドを出力 span へ
-        // 反映しない(描画経路では到達しない)ため、StyleSheet 実装を直接検証して全 arm を網羅する。
+        // The tui-markdown version in use doesn't reflect the blockquote/metadata StyleSheet methods
+        // into the output spans (never reached via the render path), so directly verify the StyleSheet implementation to cover every arm.
         let s = KonomaStyles {
             code_bg: Some(Color::Rgb(1, 2, 3)),
         };
-        // blockquote = 緑 + イタリック。
+        // blockquote = green + italic.
         let bq = s.blockquote();
         assert_eq!(bq.fg, Some(Color::Green));
         assert!(bq.add_modifier.contains(Modifier::ITALIC));
-        // metadata block = LightYellow。
+        // metadata block = LightYellow.
         assert_eq!(s.metadata_block().fg, Some(Color::LightYellow));
-        // heading_meta = DIM。
+        // heading_meta = DIM.
         assert!(s.heading_meta().add_modifier.contains(Modifier::DIM));
-        // 見出しレベル別(1/2=太字, 3=イタリック, それ以外=DIM+イタリック)。
+        // Per heading level (1/2=bold, 3=italic, anything else=DIM+italic).
         assert_eq!(s.heading(1).fg, Some(HEAD_FG));
         assert!(s.heading(1).add_modifier.contains(Modifier::BOLD));
         assert!(s.heading(3).add_modifier.contains(Modifier::ITALIC));
         assert!(s.heading(6).add_modifier.contains(Modifier::DIM));
-        // インラインコード: 設定の背景色を反映 / None なら背景なし。
+        // Inline code: reflects the configured background color / no background if None.
         assert_eq!(s.code().bg, Some(Color::Rgb(1, 2, 3)));
         let no_bg = KonomaStyles { code_bg: None };
         assert_eq!(no_bg.code().bg, None);
-        // リンクは下線。
+        // A link is underlined.
         assert!(s.link().add_modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]
     fn render_markdown_with_mermaid_fence_renders_box_drawing() {
-        // md 内の ```mermaid フェンスは横取りされ render_mermaid_safe 経由で罫線図になる。
+        // A ```mermaid fence inside the md is intercepted and becomes a box-drawing diagram via render_mermaid_safe.
         let md = "# Title\n\n```mermaid\nsequenceDiagram\n  A->>B: hi\n  B-->>A: yo\n```\n";
         let lines = render_markdown(md, 70, BG, "TwoDark", false);
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -5030,7 +5051,7 @@ plain body
 
     #[test]
     fn code_block_cache_hits_are_identical_and_bounded() {
-        // 同一フェンスの再ハイライトはキャッシュヒットになり、出力(グリフ・スタイル)が完全一致する。
+        // Re-highlighting the same fence is a cache hit, and the output (glyphs, styles) matches exactly.
         let body: Vec<String> = vec!["fn main() {}".into(), "let x = 1;".into()];
         let a = highlight_body(&body, "rust", 60, None, "TwoDark", 4, true);
         let b = highlight_body(&body, "rust", 60, None, "TwoDark", 4, true);
@@ -5044,7 +5065,7 @@ plain body
                 );
             }
         }
-        // 容量は有界: 上限より多くの異なるキーを流し込んでもエントリ数は CAP を超えない。
+        // Bounded capacity: even feeding in more distinct keys than the cap, the entry count never exceeds CAP.
         for i in 0..(CODE_BLOCK_CACHE_CAP + 20) {
             let one = vec![format!("let v{i} = {i};")];
             let _ = highlight_body(&one, "rust", 60, None, "TwoDark", 4, true);
@@ -5052,10 +5073,10 @@ plain body
         assert!(code_block_cache_len() <= CODE_BLOCK_CACHE_CAP);
     }
 
-    // ---- mermaid 画像化 (v0.15 feature) ----------------------------------
+    // ---- mermaid image rendering (v0.15 feature) ----------------------------------
 
-    /// SVG 互換の回帰テスト: mermaid-rs-renderer の SVG 出力が konoma 側の resvg/usvg で
-    /// そのままラスタライズできること(レンダラと usvg のバージョン乖離を封じる)。CJK 込み。
+    /// SVG-compatibility regression test: confirm mermaid-rs-renderer's SVG output can be rasterized
+    /// as-is by konoma's own resvg/usvg (seals off any version drift between the renderer and usvg). Includes CJK.
     #[test]
     fn mermaid_to_svg_output_rasterizes_with_konoma_resvg() {
         let svg = mermaid_to_svg(
@@ -5073,8 +5094,8 @@ plain body
         assert!(img.width() > 0 && img.height() > 0);
     }
 
-    /// レイアウト計測は全テーマで modern に固定される(dark のフォント計測差で
-    /// エッジが迂回リングを描く配置バグの回帰防止・2026-07-17 実測)。
+    /// Layout measurement is pinned to modern across every theme (regression guard against the
+    /// placement bug where a dark-theme font-metric difference made an edge draw a detour ring — measured 2026-07-17).
     #[test]
     fn mermaid_dark_theme_uses_modern_font_metrics() {
         let svg = mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
@@ -5084,27 +5105,28 @@ plain body
 
     #[test]
     fn mermaid_to_svg_fails_safely_on_garbage() {
-        // 未対応/壊れた入力は None(呼び出し側がテキスト図へ降格)。パニックしない。
+        // Unsupported/broken input is None (the caller degrades to the text diagram). Never panics.
         assert!(mermaid_to_svg("definitely not a diagram !!!", "dark").is_none());
     }
 
     #[test]
     fn catch_silent_returns_none_on_panic_and_some_on_success() {
-        // ワーカーの安全網: panic は None(呼び出し側が失敗結果を送って inflight を解く)、
-        // 正常値は Some でそのまま返る。抑制フラグはどちらの経路でも残留しない。
+        // The worker safety net: a panic yields None (the caller sends a failure result to clear the
+        // inflight state); a normal value comes back as Some, unchanged. The suppression flag never lingers on either path.
         assert_eq!(catch_silent(|| 42), Some(42));
         let paniced: Option<i32> = catch_silent(|| panic!("worker blew up"));
         assert_eq!(paniced, None);
         PANIC_SILENCED.with(|c| assert!(!c.get(), "panic 経路でも抑制フラグが残らない"));
-        // 続けて通常の panic メッセージが出せる状態か(フックが黙らせ固定になっていない)。
+        // Confirm a subsequent normal panic message can still be emitted (the hook isn't stuck silencing).
         assert_eq!(catch_silent(|| "ok"), Some("ok"));
     }
 
     #[test]
     fn concurrent_mermaid_renders_keep_panic_hook_sane() {
-        // 回帰 2026-07-18: 旧実装は呼び出し毎に take_hook/set_hook を swap しており、フェンス
-        // ワーカーの並行レンダで復元順序が交錯すると「無音フック」が恒久残留し得た。
-        // 現実装は Once+thread-local: 並行実行後もこのスレッドの抑制フラグは倒れている。
+        // Regression 2026-07-18: the old implementation swapped take_hook/set_hook on every call, so
+        // if the restore order got interleaved during a fence worker's concurrent renders, the
+        // "silent hook" could permanently stick. The current implementation uses Once+thread-local:
+        // after concurrent execution, this thread's suppression flag is back down.
         let hs: Vec<_> = (0..8)
             .map(|i| {
                 std::thread::spawn(move || {
@@ -5130,7 +5152,7 @@ plain body
         let fences = collect_mermaid_fences(src);
         assert_eq!(fences.len(), 1, "外側フェンス内の mermaid は抽出しない");
         assert_eq!(fences[0], "graph LR\nA-->B\n");
-        // 閉じられていないフェンスは安全にテキストへ戻る(欠落しない)。
+        // An unclosed fence safely reverts to text (nothing is lost).
         let unterminated = "```mermaid\ngraph LR\nA-->B\n";
         assert!(collect_mermaid_fences(unterminated).is_empty());
     }
@@ -5155,13 +5177,13 @@ plain body
         );
         assert_eq!(imgs.len(), 1, "フェンスが placement になる");
         assert!(is_mermaid_fence_url(&imgs[0].url), "合成キー URL");
-        // キャプション行(フォーカス番兵)が予約行の直前にある。
+        // The caption line (a focus sentinel) sits right before the reserved row.
         let cap = &lines[imgs[0].line - 1];
         assert!(
             cap.spans.iter().any(is_mermaid_header_span),
             "キャプション行に番兵 span"
         );
-        // Loading: placement 無し・ローディング行あり。
+        // Loading: no placement, but a loading line is present.
         let (lines, imgs) = render_markdown_with_images(
             src,
             60,
@@ -5179,7 +5201,7 @@ plain body
         assert!(imgs.is_empty());
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("loading"), "ローディング行: {joined}");
-        // Text: probe も Text = 抽出そのものが OFF → 従来のテキスト図(罫線)経路。
+        // Text: the probe is also Text = extraction itself is OFF → the legacy text diagram (box-drawing) path.
         let (lines, imgs) = render_markdown_with_images(
             src,
             60,
@@ -5202,8 +5224,9 @@ plain body
         );
     }
 
-    /// キャプションは呼び出し側から渡された翻訳済み文字列を使うが、`◇ mermaid` プレフィックスは
-    /// 不変で番兵(is_mermaid_header_span)として認識され続ける(i18n 化してもフォーカス巡回が壊れない)。
+    /// The caption uses the pre-translated string passed in by the caller, but the `◇ mermaid`
+    /// prefix stays fixed and keeps being recognized as the sentinel (is_mermaid_header_span) —
+    /// i18n-izing it doesn't break Tab-focus cycling.
     #[test]
     fn fence_caption_is_localizable_but_sentinel_survives() {
         let src = "```mermaid\ngraph LR\nA-->B\n```\n";
@@ -5237,7 +5260,7 @@ plain body
             "ja キャプション: {cap_ja}"
         );
         assert_ne!(cap_en, cap_ja, "言語でキャプションが変わる");
-        // どちらの言語でも番兵として認識される(プレフィックスが不変)。
+        // Recognized as the sentinel in either language (the prefix is unchanged).
         for (lines, imgs) in [(en, ei), (ja, ji)] {
             assert!(
                 lines[imgs[0].line - 1]
@@ -5553,12 +5576,13 @@ pub(crate) mod task_corpus {
             ("no trailing newline", "- [ ] a\n- [x] b"),
             ("crlf", "- [ ] a\r\n- [x] b\r\n"),
             ("front matter", "---\ntitle: t\n---\n\n- [ ] a\n"),
-            // 真因(b) の "front matter 内の疑似タスク" は**ここには入れない**: 前提が違う。この
-            // corpus を使う `md_task_toggle_is_byte_exact_across_the_corpus`(app/tests.rs)は
-            // 「期待する書込み位置」を素の(front matter 非対応の)`task_source_locs(src, ..)` から
-            // 逆算しており、front matter を実際に本文から剥がして走査する App 側(真因(b)の修正)
-            // とは別の実装になる。専用テスト
-            // `md_task_toggle_skips_pseudo_tasks_inside_front_matter`(app/tests.rs)で直接カバーする。
+            // Root cause (b)'s "a pseudo-task inside front matter" is **deliberately not included
+            // here**: the premise differs. `md_task_toggle_is_byte_exact_across_the_corpus`
+            // (app/tests.rs), which uses this corpus, derives its "expected write position" by
+            // working backward from the plain (front-matter-unaware) `task_source_locs(src, ..)`,
+            // which is a different implementation from the App side (root cause (b)'s fix) that
+            // actually strips front matter out of the body before scanning. Covered directly by the
+            // dedicated test `md_task_toggle_skips_pseudo_tasks_inside_front_matter` (app/tests.rs).
             ("footnote", "- [ ] a[^1]\n\n[^1]: note\n"),
             (
                 "fence containing a table lookalike",
@@ -5677,7 +5701,7 @@ mod task_scan_parity_tests {
                 "fence with tasks around",
                 "- [ ] t\n\n```\ncode\n```\n\n- [x] u\n",
             ),
-            // アラート内では mermaid 画像化が走らず**通常のコードブロック**として描かれる。
+            // Inside an alert, mermaid image rendering doesn't run and it's drawn as an **ordinary code block**.
             (
                 "mermaid inside an alert is a code block",
                 "> [!NOTE]\n> ```mermaid\n> flowchart TD\n> A-->B\n> ```\n",
@@ -5686,9 +5710,9 @@ mod task_scan_parity_tests {
                 "mermaid in alert + plain fence",
                 "> [!NOTE]\n> ```mermaid\n> A-->B\n> ```\n\n```\nreal\n```\n",
             ),
-            // 真因(a): split_tables がフェンスを見ずに中身のテーブルらしき行を横取りすると、
-            // フェンスが2つに割れて壊れたヘッダが2個できる(それぞれ空の本文で終端に達する) —
-            // 実際に開いていない/閉じていないフェンスの断片として tui-markdown が処理するため。
+            // Root cause (a): if split_tables intercepts a table-looking line inside the fence
+            // without looking at the fence, the fence splits into two broken headers (each reaching
+            // its end with an empty body) — because tui-markdown then processes it as fragments of a fence that was never actually opened/closed.
             (
                 "fence containing a table lookalike",
                 "```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n",
@@ -5740,7 +5764,7 @@ mod task_scan_parity_tests {
         }
     }
 
-    /// Content-level pin for 真因(a) on `split_html_blocks`: an HTML-tag-looking line inside a code
+    /// Content-level pin for root cause (a) on `split_html_blocks`: an HTML-tag-looking line inside a code
     /// fence must stay code (drawn with the `▎` code gutter), not get rescued as an HTML block —
     /// which also swallows the fence's closing marker (`is_code_header_span` count alone does not
     /// catch this: the broken render still produces exactly one — empty — header, so only the body
@@ -5774,7 +5798,7 @@ mod task_scan_parity_tests {
         );
     }
 
-    /// Content-level pin for 真因(a) on `split_alerts`: a `> [!NOTE]`-looking line inside a code
+    /// Content-level pin for root cause (a) on `split_alerts`: a `> [!NOTE]`-looking line inside a code
     /// fence must stay code, not open a (mostly empty) GitHub-alert callout box.
     #[test]
     fn fence_containing_alert_lookalike_stays_code() {
@@ -5878,8 +5902,9 @@ mod fence_and_math_extraction_tests {
                 "$$\n x+1\n$$\n",
                 vec![display("x+1")],
             ),
-            // 既知の制限: 開き `$$` と同じ行に本文が始まり、閉じが次行にある「密着形」は数式として
-            // 扱わず生の LaTeX のまま表示する(壊すのでなく素通し=原則#3)。変えるなら意図的に。
+            // Known limitation: a "tight form" where the body starts on the same line as the opening
+            // `$$` and the closer is on the next line is not treated as math — shown as raw LaTeX
+            // instead (pass-through rather than breaking = principle #3). Change this only deliberately.
             (
                 "display tight form is not math (known limit)",
                 "$$x+1\n$$\n",

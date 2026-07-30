@@ -12,7 +12,7 @@ impl App {
     /// flash + reload instead (safe fallback, principle #3).
     pub fn md_toggle_focused_task(&mut self) {
         if self.is_raw_source() {
-            return; // raw ソース表示は 2D キャレット面(md_items は装飾表示のもの)
+            return; // the raw-source view is the 2D-caret surface (md_items belongs to the decorated view)
         }
         let Some(f) = self.tab.focused_item else {
             return;
@@ -25,7 +25,7 @@ impl App {
             return;
         };
         let expected = *state;
-        // このチェックボックスが文書内で何個目か(リンクを除いたタスク序数)。
+        // Which number this checkbox is within the document (a task ordinal, excluding links).
         let ordinal = self.md_items[..=f]
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::Task { .. }))
@@ -41,8 +41,9 @@ impl App {
         };
         let states = self.cfg.ui.md_task_state_chars();
 
-        // 全文を1回だけ読む: 書込みは全文に対して行う(切り詰め接頭辞を書き戻すとファイルの
-        // 末尾を消し飛ばす)。走査だけはレンダラが実際に見た範囲に合わせる(下記)。
+        // Read the full text once: the write is done against the full text (writing back a
+        // truncated prefix would blow away the end of the file). Only the scan is matched to the
+        // range the renderer actually saw (below).
         let full_src = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -53,18 +54,20 @@ impl App {
                 return;
             }
         };
-        // レンダラ(`build_decorated`)は `preview::text::load` の上限(MAX_BYTES/MAX_LINES)で
-        // 切り詰めた接頭辞だけを見る。スキャナが全文を見ると、切り詰め範囲より後ろにある
-        // タスクまで数えてしまい、画面上の個数(rendered)と食い違って**そのファイルのトグルが
-        // 全部拒否される**(5,000行超のMarkdownで再現)。上限の定義は `preview::text` の
-        // ものを再利用する(ここで二重に定義しない)。前提: この接頭辞は生ファイルの先頭からの
-        // バイト位置と一致するので、走査で得た (line, state_off) はそのまま `full_src` にも
-        // 通用する — 書込みだけ `full_src` に対して行うことで安全に両立する。
+        // The renderer (`build_decorated`) only sees the prefix truncated by `preview::text::load`'s
+        // cap (MAX_BYTES/MAX_LINES). If the scanner looked at the full text, it would count tasks
+        // beyond the truncated range too, disagreeing with the on-screen count (rendered) and
+        // **rejecting every toggle for that file** (reproduced on a Markdown doc over 5,000 lines).
+        // The cap's definition is reused from `preview::text` (not redefined here). Premise: this
+        // prefix's byte positions match the raw file's from the start, so the (line, state_off)
+        // obtained from the scan also holds for `full_src` — writing only against `full_src` keeps
+        // both safely consistent.
         let (capped_lines, _) = crate::preview::text::cap_lines(full_src.as_bytes());
         let capped = capped_lines.join("\n");
-        // front matter もレンダラは本文から剥がして描く(タスクとしては扱わない)。同じ規則で
-        // 剥がし、除去した行数をオフセットとして見つかった行番号へ足し戻す(front matter が無い/
-        // 設定 OFF なら剥がれず offset=0)。
+        // The renderer also strips front matter from the body before drawing it (it isn't treated as
+        // a task). Strip it with the same rule and add the removed line count back onto the found
+        // line number as an offset (offset=0 if there's no front matter / the setting is OFF, so
+        // nothing is stripped).
         let (front_matter, body) = if self.cfg.ui.md_frontmatter {
             crate::preview::markdown::strip_front_matter(&capped)
         } else {
@@ -75,9 +78,11 @@ impl App {
         } else {
             0
         };
-        // 書込み前の照合: 個数と対象マーカーの現状態が画面表示と一致するときだけ書く。
-        // `<details>` の開閉は実行時状態。描画に使ったのと同じ開閉列を渡さないと、閉じたブロックの
-        // 本文まで数えてしまい個数が合わなくなる(直近の描画が md_cache に記録している)。
+        // Verify before writing: only write when the count and the target marker's current state
+        // match what's shown on screen. A `<details>` block's open/closed state is runtime state —
+        // without passing the same open/closed sequence used to render, the body of a closed block
+        // would also be counted and the count would disagree (the most recent render records it in
+        // md_cache).
         let details_states: Vec<bool> = self
             .md_cache
             .as_ref()
@@ -103,13 +108,14 @@ impl App {
             .position(|s| norm_state(*s) == norm_state(cur))
         {
             Some(i) => states[(i + 1) % states.len()],
-            None => states[0], // 配列外の状態は先頭へ正規化
+            None => states[0], // normalize an out-of-array state to the first entry
         };
-        // 状態文字 1 文字だけを置換(他バイトは不変・CRLF/末尾改行も保たれる)。全文(full_src)に
-        // 対して書くので、切り詰め/front matter で見えていない範囲もそのまま保存される。
+        // Replace only the single state character (all other bytes are unchanged; CRLF/trailing
+        // newline are also preserved). Since it writes against the full text (full_src), the range
+        // that's invisible due to truncation/front matter is preserved as-is.
         let mut lines: Vec<String> = full_src.split('\n').map(str::to_string).collect();
         let Some(line) = lines.get_mut(loc.line) else {
-            return; // task_source_locs 由来なので到達しない(防御)
+            return; // unreachable since this comes from task_source_locs (defensive)
         };
         line.replace_range(
             loc.state_off..loc.state_off + cur.len_utf8(),
@@ -123,7 +129,7 @@ impl App {
             ));
             return;
         }
-        // 再描画(md_cache 破棄)。アイテム数は不変なのでフォーカスは同じチェックボックスに残る。
+        // Redraw (discard md_cache). Since the item count is unchanged, focus stays on the same checkbox.
         self.reload_preview();
     }
 }

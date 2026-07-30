@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(tr(app.lang, crate::i18n::Msg::TabsActions)).dim());
 
-    // ポップアップ (bookmarks を踏襲)。幅最大66、高さ=内容+枠、画面に収める。
+    // A popup (follows bookmarks). Width up to 66, height = content + border, fits within the screen.
     let w = 66.min(area.width.saturating_sub(2)).max(20);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -46,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
 
-    // 選択行が見えるよう縦スクロール。
+    // Scroll vertically so the selected row is visible.
     let inner_h = h.saturating_sub(2);
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = sel_line

@@ -15,7 +15,7 @@ pub enum PreviewSelection {
 }
 
 impl App {
-    // ---- windowed プレビューの 2D キャレット / ビジュアル選択コピー -----------
+    // ---- 2D caret / visual-selection copy for windowed previews -----------
 
     /// Whether a visual selection is active in a windowed preview (routes the PreviewTextVisual surface).
     pub fn is_preview_visual(&self) -> bool {
@@ -181,7 +181,7 @@ fn selection_char_text(lines: &[&str], start: (usize, usize), end: (usize, usize
     }
     let el = el.min(lines.len() - 1);
     if sl == el {
-        // 単一行: [sc..=ec](正規化済みで sc ≤ ec)
+        // Single line: [sc..=ec] (normalized so sc ≤ ec)
         lines[sl]
             .chars()
             .skip(sc)
@@ -230,7 +230,8 @@ pub(super) fn apply_preview_caret(
     sel: PreviewSelection,
 ) -> Vec<Line<'static>> {
     use ratatui::style::Color;
-    // 暗色テーマ向け: 控えめな現在行背景と、選択範囲の少し強い青系背景。
+    // For dark themes: a subtle current-line background plus a slightly stronger blue-ish
+    // background for the selection.
     const CURSOR_BG: Color = Color::Rgb(55, 60, 74);
     const SEL_BG: Color = Color::Rgb(40, 66, 104);
     lines

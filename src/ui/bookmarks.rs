@@ -36,8 +36,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(header).bold().fg(Color::Cyan));
                 last = Some(*is_local);
             }
-            // ローカル=文脈相対表示 / グローバル=絶対(~短縮)表示。ツリー外を指すグローバルが
-            // `../../..` になる読みにくさを避ける。
+            // Local = context-relative display / global = absolute (~-shortened) display. Avoids the
+            // unreadable `../../..` a global bookmark pointing outside the tree would otherwise get.
             let row = format!("  {key}  {}", app.bookmark_display_path(*is_local, path));
             if i == sel {
                 sel_line = lines.len() as u16;
@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(tr(app.lang, crate::i18n::Msg::BmActions)).dim());
 
-    // ポップアップ (help を踏襲)。幅最大66、高さ=内容+枠、画面に収める。
+    // Popup (follows the help popup). Max width 66, height = content + border, fitted to the screen.
     let w = 66.min(area.width.saturating_sub(2)).max(20);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -64,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
 
-    // 選択行が見えるよう縦スクロール。
+    // Vertical scroll so the selected row stays visible.
     let inner_h = h.saturating_sub(2);
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = sel_line
@@ -80,6 +80,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup); // 下地を消してから描く
+    frame.render_widget(Clear, popup); // clear the backdrop before drawing
     frame.render_widget(para, popup);
 }

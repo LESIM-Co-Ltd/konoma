@@ -1,15 +1,16 @@
-// 内蔵 画像レンダラ (M2 実装済み。実体は分離配置)。
+// Built-in image renderer (implemented in M2; the actual code lives in a separate file).
 //
-// 方針: `ratatui-image` の StatefulImage で領域いっぱいに表示する (kitty graphics)。
-// リサイズ/エンコードは UI スレッドをブロックしないよう別スレッド(tokio)へオフロードする。
+// Policy: display it filling the whole area with `ratatui-image`'s StatefulImage (kitty graphics).
+// Resize/encode are offloaded to a separate thread (tokio) so the UI thread is never blocked.
 //
-// 実装の所在:
-//   - 状態(デコード/ThreadProtocol 保持・反映): `app.rs` の load_image / apply_image_resize。
-//   - 描画(枠＋StatefulImage): `ui/preview.rs` の render_image。
-//   - オフロード(ワーカースレッド・チャネル): `main.rs` の resize_worker / poll ループ。
+// Where the implementation lives:
+//   - State (decode / holding & applying ThreadProtocol): `app.rs`'s load_image / apply_image_resize.
+//   - Rendering (border + StatefulImage): `ui/preview.rs`'s render_image.
+//   - Offload (worker thread, channel): `main.rs`'s resize_worker / poll loop.
 //
-// GIF アニメーション(M6): 全フレームを RGBA に展開し、各フレームの表示時間とともに返す。
-// app 側が poll ティックで期限の来たフレームへ進め、image_src を差し替えて再エンコードさせる。
+// GIF animation (M6): expand all frames to RGBA and return them along with each frame's display
+// time. The app side advances to the frame whose deadline has arrived on each poll tick, swapping
+// image_src to trigger re-encoding.
 
 use std::path::Path;
 use std::time::Duration;
@@ -84,11 +85,12 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImag
     let file = std::fs::File::open(path).ok()?;
     let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).ok()?;
     let mut out: Vec<(DynamicImage, Duration)> = Vec::new();
-    let mut canvas: Option<(u32, u32)> = None; // 元キャンバス寸法(縮小率の基準)
+    let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)
     let mut shrink = 1u32;
     let mut bytes = 0usize;
     for f in decoder.into_frames() {
-        // 従来の collect_frames と同じく、1 フレームでも壊れていたら None=静止画へフォールバック。
+        // Same as the old collect_frames: if even one frame is corrupt, return None = fall back
+        // to a still image.
         let f = f.ok()?;
         let delay: Duration = f.delay().into();
         let delay = if delay < MIN_FRAME_DELAY {
@@ -104,8 +106,10 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImag
         }
         bytes += (img.width() as usize) * (img.height() as usize) * 4;
         out.push((img, delay));
-        // 予算超過: 縮小率を倍にし、既存フレームも同じターゲット寸法へ縮小し直す。
-        // (1<<16 ガード=病的な予算でも無限ループしない。1px まで縮んだら諦めて保持。)
+        // Over budget: double the shrink factor and re-shrink the existing frames to the same
+        // target dimensions too.
+        // (The 1<<16 guard means it never loops forever even with a pathological budget. Once it
+        // has shrunk down to 1px, give up and keep it as-is.)
         while bytes > budget && shrink < (1 << 16) {
             shrink *= 2;
             let (tw, th) = shrink_target(cw, ch, shrink);
@@ -119,7 +123,7 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImag
         }
     }
     if out.len() < 2 {
-        return None; // 単一フレーム = アニメ不要。静止画として扱わせる。
+        return None; // a single frame = no animation needed. Let the caller treat it as a still image.
     }
     Some(out)
 }
@@ -132,11 +136,12 @@ mod tests {
     fn decode_gif_real_sample_has_multiple_frames() {
         let p = Path::new("samples/sample.gif");
         if !p.exists() {
-            return; // パッケージから samples が除外された環境ではスキップ
+            return; // skip in environments where samples has been excluded from the package
         }
         let frames = decode_gif(p).expect("sample.gif はアニメーションとしてデコードできるはず");
         assert!(frames.len() > 1, "アニメ GIF は 2 フレーム以上");
-        // 各フレームは合成済みで同一キャンバスサイズ・delay は丸め済み下限以上。
+        // Each frame is already composited to the same canvas size, and delay is at or above the
+        // rounded floor.
         let (w0, h0) = (frames[0].0.width(), frames[0].0.height());
         assert!(w0 > 0 && h0 > 0);
         assert!(frames
@@ -150,7 +155,7 @@ mod tests {
         // the smaller inline budget (MAX_GIF_BYTES_INLINE) used for Markdown-embedded GIFs.
         let p = Path::new("samples/sample.gif");
         if !p.exists() {
-            return; // パッケージから samples が除外された環境ではスキップ
+            return; // skip in environments where samples has been excluded from the package
         }
         let frames = decode_gif_inline(p)
             .expect("sample.gif はインライン経路でもアニメとしてデコードできるはず");
@@ -161,8 +166,9 @@ mod tests {
 
     #[test]
     fn decode_gif_budget_downscales_but_keeps_all_frames() {
-        // 予算超過の GIF は「フレームを捨てる」のではなく「全フレームを同寸法へ縮小」する。
-        // 小さな合成 GIF + 極小予算で縮小経路を強制し、フレーム数維持・寸法一致・予算内を固定。
+        // A GIF that's over budget doesn't "drop frames" — it "shrinks every frame to the same
+        // size". Force the shrink path with a tiny synthetic GIF plus a tiny budget, and pin down
+        // that the frame count is kept, the dimensions match, and it stays within budget.
         use image::codecs::gif::GifEncoder;
         use image::{Delay, Frame, Rgba, RgbaImage};
         let dir = std::env::temp_dir().join("konoma_gif_budget_test");
@@ -182,7 +188,8 @@ mod tests {
             });
             enc.encode_frames(frames).unwrap();
         }
-        // 64x64 RGBA = 16,384B/枚 × 4枚 = 65,536B。予算 20,000B → 32x32(4,096B/枚)へ縮小されるはず。
+        // 64x64 RGBA = 16,384B/frame × 4 frames = 65,536B. With a 20,000B budget, it should shrink
+        // to 32x32 (4,096B/frame).
         let frames = decode_gif_with_budget(&p, 20_000).expect("アニメとしてデコードできる");
         assert_eq!(frames.len(), 4, "フレームは捨てない");
         let (w, h) = (frames[0].0.width(), frames[0].0.height());
@@ -198,7 +205,7 @@ mod tests {
             .map(|(im, _)| im.width() as usize * im.height() as usize * 4)
             .sum();
         assert!(total <= 20_000, "合計バイトが予算内: {total}");
-        // 既定予算では小さな GIF は無傷(縮小されない)。
+        // With the default budget, a small GIF is left untouched (not shrunk).
         let frames = decode_gif(&p).expect("既定予算でもデコードできる");
         assert_eq!((frames[0].0.width(), frames[0].0.height()), (64, 64));
         std::fs::remove_dir_all(&dir).ok();
@@ -209,18 +216,18 @@ mod tests {
         let dir = std::env::temp_dir().join("konoma_decode_static_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // 本物の PNG を書き出してデコード(寸法一致)。
+        // Write out a real PNG and decode it (dimensions should match).
         let png = dir.join("tiny.png");
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(7, 3, image::Rgb([9, 9, 9])))
             .save(&png)
             .unwrap();
         let img = decode_static(&png).expect("PNG はデコードできる");
         assert_eq!((img.width(), img.height()), (7, 3));
-        // 画像でないデータは None(クラッシュしない)。
+        // Non-image data returns None (does not crash).
         let bad = dir.join("notimg.png");
         std::fs::write(&bad, b"definitely not an image").unwrap();
         assert!(decode_static(&bad).is_none(), "非画像は None");
-        // 存在しないファイルも None。
+        // A missing file also returns None.
         assert!(decode_static(&dir.join("missing.png")).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }

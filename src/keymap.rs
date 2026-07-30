@@ -1,10 +1,12 @@
-// konoma キーマップ層 (Run2: キー体系再設計の下位純データ層)。
+// konoma keymap layer (Run2: the low-level pure-data layer of the key-system redesign).
 //
-// 役割: 「面(Surface) × キー(KeyPress) → コマンド(Action)」の宣言的マップを内蔵既定として持ち、
-// 設定(`[keys.<surface>]`)で上書き/追加/無効化し、起動時に衝突を検知してフォールバックする。
-// App 状態には一切触れない (面は引数で受ける)。crossterm の KeyCode/KeyModifiers のみ参照する。
+// Role: hold a declarative "Surface × KeyPress → Action (command)" map as the built-in
+// default, override/add/disable it via config (`[keys.<surface>]`), and detect conflicts at
+// startup, falling back to the default when they occur.
+// Touches no App state at all (the surface is passed in as an argument); it only references
+// crossterm's KeyCode/KeyModifiers.
 //
-// 上位 (main::handle_key / dispatch_action) はここで解決した `Action` を実行する。
+// The caller (main::handle_key / dispatch_action) executes the `Action` resolved here.
 
 use std::collections::HashMap;
 
@@ -17,7 +19,7 @@ use crate::app::{CopyKind, SortKey, TableCopyKind};
 use crate::i18n::Msg;
 
 // =============================================================================
-// Motion (共有の移動/スクロール量)。per-Surface 解釈は dispatch_action 側 (Stage 3)。
+// Motion (shared movement/scroll amount). Per-Surface interpretation lives on the dispatch_action side (Stage 3).
 // =============================================================================
 
 /// Abstract amount of cursor movement / scrolling, mapped to concrete behavior per surface (§1.1).
@@ -38,7 +40,7 @@ pub enum Motion {
 }
 
 // =============================================================================
-// Action (全コマンド集合)。
+// Action (the complete set of commands).
 // =============================================================================
 
 /// The full set of commands. Corresponds both ways between keymap values (`Binding::Run`) and config strings (§1.2).
@@ -50,7 +52,7 @@ pub enum Action {
     /// Move / scroll (interpreted per surface).
     Navigate(Motion),
 
-    // --- Global (タブ/ヘルプ/パスコピー) ---
+    // --- Global (tabs / help / path copy) ---
     TabNew,
     TabClose,
     TabPrev,
@@ -66,7 +68,7 @@ pub enum Action {
     /// `P` (global): read a path / GitHub link from the clipboard and jump there (reveal + preview).
     PasteJump,
 
-    // --- Tree (通常) ---
+    // --- Tree (normal) ---
     Quit,
     /// `q` at the tree top level: close the current tab if more than one is open, otherwise quit the app.
     CloseTabOrQuit,
@@ -101,7 +103,7 @@ pub enum Action {
     /// surface, or another `F` stops following; scroll/`n`/`N`/`f` keep it on.
     ToggleFollow,
 
-    // --- ファイル管理 (Space→ リーダー配下 / Visual も共有) ---
+    // --- File management (under the Space→ leader / also shared with Visual) ---
     FileCreate,
     FileRename,
     FileDelete,
@@ -110,7 +112,7 @@ pub enum Action {
     FilePaste,
     FileDuplicate,
 
-    // --- Tree:Visual サブ ---
+    // --- Tree:Visual sub ---
     VisualCommit,
     VisualSelectSiblings,
     VisualSelectAll,
@@ -153,7 +155,7 @@ pub enum Action {
     PdfNextPage,
     PdfPrevPage,
 
-    // --- Preview: file paging (text/image/table 共通) ---
+    // --- Preview: file paging (shared across text/image/table) ---
     /// Preview the next/previous **file** in tree display order (directories are skipped,
     /// wraps at the ends, and the tree cursor follows).
     PreviewFileNext,
@@ -163,7 +165,7 @@ pub enum Action {
     /// Copy the current cell / row / column of a CSV/TSV table (via the `y→` menu).
     TableCopy(TableCopyKind),
 
-    // --- Preview: gitdiff / GitDetail 共通 ---
+    // --- Preview: gitdiff / GitDetail shared ---
     #[cfg(feature = "git")]
     GitDiffDiscard,
     #[cfg(feature = "git")]
@@ -172,7 +174,7 @@ pub enum Action {
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
 
-    // --- Git 変更ハブ (o) ---
+    // --- Git changes hub (o) ---
     #[cfg(feature = "git")]
     GitStage,
     #[cfg(feature = "git")]
@@ -236,7 +238,7 @@ pub enum Action {
     #[cfg(feature = "git")]
     BranchDelete,
 
-    // --- Git コピー (y→ コミット情報 / branches ブランチ名) ---
+    // --- Git copy (y→ commit info / branches branch name) ---
     /// log/graph/detail: copy the selected commit's info (hash / subject / message / author / date).
     #[cfg(feature = "git")]
     GitCopy(GitCopyKind),
@@ -244,20 +246,20 @@ pub enum Action {
     #[cfg(feature = "git")]
     CopyBranchName,
 
-    // --- Git 系・閉じる ---
+    // --- Git-related: close ---
     #[cfg(feature = "git")]
     GitClose,
 
-    // --- Sort メニュー ---
+    // --- Sort menu ---
     SortSet(SortKey),
     SortToggleReverse,
     SortToggleDirsFirst,
 
-    // --- タブ一覧 (`T`) ---
+    // --- Tab list (`T`) ---
     ToggleTabList,
     TabListClose,
     ToggleOutline,
-    // --- Bookmark 一覧 ---
+    // --- Bookmark list ---
     BookmarkJump,
     BookmarkEdit,
     BookmarkDelete,
@@ -266,7 +268,7 @@ pub enum Action {
     // --- Info ---
     InfoClose,
 
-    // --- テーブルセル全文ポップアップ (`Enter` in a table preview) ---
+    // --- Table cell full-text popup (`Enter` in a table preview) ---
     /// Open/close the full-cell popup (mirrors `ToggleOutline`/`ToggleInfo`). The real trigger is
     /// the fixed `Enter` key (see `handle_enter`/`handle_esc` in main.rs, same pattern as
     /// `LinkOpen`); this variant exists so the action is nameable/config-registrable (e.g. `q`
@@ -276,14 +278,14 @@ pub enum Action {
 }
 
 // =============================================================================
-// Surface (最前面サーフェス = 唯一の真実源)。Stage 3 で internal_mode を置換する。
+// Surface (the frontmost surface = the single source of truth). Replaces internal_mode in Stage 3.
 // =============================================================================
 
 /// The frontmost "surface" currently receiving keys. Four categories: fixed text input / confirm
 /// modal / overlay / basic full-screen. Git-related surfaces exist only under `feature="git"` (§1.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Surface {
-    // --- 固定テキスト入力 (keymap 非適用・文字/編集キー横取り) ---
+    // --- Fixed text input (keymap does not apply; intercepts character/editing keys) ---
     DialogInput,
     Filter,
     Search,
@@ -291,7 +293,7 @@ pub enum Surface {
     #[cfg(feature = "git")]
     BranchFilter,
 
-    // --- 確認モーダル (y/n/c/m/! 固定) ---
+    // --- Confirm modal (y/n/c/m/! fixed) ---
     DialogConfirmDelete,
     DialogConfirmDrop,
     DialogRenamePreview,
@@ -300,7 +302,7 @@ pub enum Surface {
     /// Bookmark-overwrite confirmation (`y`/Enter = overwrite, `n`/Esc = cancel).
     DialogConfirmBookmark,
 
-    // --- オーバーレイ (keymap 駆動) ---
+    // --- Overlays (keymap-driven) ---
     Help,
     Sort,
     Bookmarks,
@@ -325,7 +327,7 @@ pub enum Surface {
     #[cfg(feature = "git")]
     GitChanges,
 
-    // --- 基本全画面 (keymap 駆動) ---
+    // --- Basic full-screen surfaces (keymap-driven) ---
     Visual,
     Tree,
     PreviewText,
@@ -381,7 +383,7 @@ impl Surface {
 }
 
 // =============================================================================
-// KeyPress / KeyChord / Binding。
+// KeyPress / KeyChord / Binding
 // =============================================================================
 
 /// Normalized representation of a single keystroke. SHIFT is folded into the uppercase char and ALT is unused, so it holds only CONTROL (§1.4).
@@ -459,7 +461,7 @@ impl KeyPress {
             "pageup" | "pgup" => KeyCode::PageUp,
             "pagedown" | "pgdn" | "pagedn" => KeyCode::PageDown,
             _ => {
-                // 単文字 (元の大文字小文字を保持)。複数文字なら不正トークン。
+                // A single character (keeps its original case). Multiple characters is an invalid token.
                 let mut chars = s.chars();
                 let c = chars
                     .next()
@@ -504,7 +506,7 @@ pub enum Binding {
 }
 
 // =============================================================================
-// リーダー (which-key) 定義。
+// Leader (which-key) definitions.
 // =============================================================================
 
 /// Leader kind. No anonymous leaders are created (avoids label-less which-key entries; §0).
@@ -562,7 +564,7 @@ impl LeaderMenu {
 }
 
 // =============================================================================
-// KeyMap (二層: per-Surface + Global) と解決結果。
+// KeyMap (two layers: per-Surface + Global) and the resolution result.
 // =============================================================================
 
 /// Per-surface "key → value" table.
@@ -647,7 +649,7 @@ impl KeyMap {
 
         let mut per_surface: HashMap<Surface, ContextMap> = HashMap::new();
 
-        // --- Tree (通常) ---
+        // --- Tree (normal) ---
         let mut tree: ContextMap = HashMap::new();
         tree.insert(KeyPress::ch('j'), nav(Motion::Down));
         tree.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -677,14 +679,15 @@ impl KeyMap {
         tree.insert(KeyPress::ch('A'), run(Action::ResetAnchor));
         tree.insert(KeyPress::ch('v'), run(Action::EnterVisual));
         tree.insert(KeyPress::ch('V'), run(Action::ToggleSelect));
-        // Agent Watch: C=変更ファイルのみ表示 / n・N=次/前の変更ファイルへジャンプ。
+        // Agent Watch: C = show only changed files / n·N = jump to the next/previous changed file.
         tree.insert(KeyPress::ch('C'), run(Action::ToggleChangedFilter));
         tree.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
         tree.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
         tree.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
         tree.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
-        // Ctrl-t=カーソル下のエントリを別タブで開く(ファイル=プレビュー / ディレクトリ=新タブの root)。
-        // preview の OpenLinkNewTab と同じキー/意味(「これを別タブで」)＝global t(新規タブ)と対。
+        // Ctrl-t = open the entry under the cursor in a new tab (file = preview / directory = the
+        // new tab's root). Same key/meaning ("open this in a new tab") as preview's OpenLinkNewTab
+        // — paired with global t (new tab).
         tree.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
         per_surface.insert(Surface::Tree, tree);
 
@@ -702,7 +705,7 @@ impl KeyMap {
         visual.insert(KeyPress::ch('a'), run(Action::VisualSelectSiblings));
         visual.insert(KeyPress::ch('A'), run(Action::VisualSelectAll));
         visual.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
-        visual.insert(KeyPress::ch('q'), run(Action::Quit)); // 旧 Visual の q=終了 を保全(回帰防止)
+        visual.insert(KeyPress::ch('q'), run(Action::Quit)); // preserves the old Visual q=quit (regression guard)
         per_surface.insert(Surface::Visual, visual);
 
         // --- Preview: text/markdown ---
@@ -724,18 +727,22 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
         ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
-        // Ctrl-t=フォーカス中の Markdown リンクを別タブで開く(Enter は同タブのまま)。
-        // TUI 定番(fzf/Telescope の Ctrl-t=新タブ)＋konoma の t=新規タブと一貫。Ctrl+英字は
-        // 全端末＋tmux で確実(Ctrl+Enter と違い kitty protocol 不要)。リンク未フォーカスでは no-op。
+        // Ctrl-t = open the focused Markdown link in a new tab (Enter still opens in the same tab).
+        // Consistent with the TUI convention (fzf/Telescope's Ctrl-t = new tab) + konoma's t = new
+        // tab. Ctrl+letter is reliable in every terminal + tmux (unlike Ctrl+Enter, no kitty
+        // protocol required). No-op when no link is focused.
         ptext.insert(KeyPress::ctrl_ch('t'), run(Action::OpenLinkNewTab));
-        // Ctrl-n/Ctrl-p=ツリー表示順で次/前のファイルをプレビュー(ファイル送り)。J/K は画像面の
-        // PDF ページ送りと衝突、Ctrl-j はレガシー端末/tmux で Enter(LF)と区別不能のため不採用。
+        // Ctrl-n/Ctrl-p = preview the next/previous file in tree display order (file paging). J/K
+        // conflict with the image surface's PDF page paging, and Ctrl-j is indistinguishable from
+        // Enter (LF) on legacy terminals/tmux, so neither is used.
         ptext.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         ptext.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // Y=キャレット行の @path#L 参照コピー(Claude Code へ場所を渡す)。選択中は範囲(visual 面の Y)。
+        // Y = copy an @path#L reference for the caret line (hands the location to Claude Code). If
+        // there's a selection, the range is used instead (Y in the visual surface).
         ptext.insert(KeyPress::ch('Y'), run(Action::PreviewCopySelectionRef));
-        // +/-/= : フォーカス中のインライン mermaid 図をその場でズーム/リセット(表示エリアは不変)。
-        // 図が非フォーカスなら no-op(image_zoom_by 側のガード)。0 は行頭(LineHome)のまま温存。
+        // +/-/= : zoom/reset the focused inline mermaid diagram in place (the display area stays
+        // fixed). No-op when no diagram is focused (guarded on the image_zoom_by side). `0` is kept
+        // as-is for LineHome (go to line start).
         ptext.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
         ptext.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
         ptext.insert(KeyPress::ch('='), run(Action::ImageZoomReset));
@@ -743,15 +750,15 @@ impl KeyMap {
         ptext.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptext, scheme);
         ptext.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
-        // ブックマーク: プレビュー中のファイルを m で登録・' で一覧(ツリーと同じ action)。
+        // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
         ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        // 見出しアウトライン(Markdown プレビュー)。o で開閉。
+        // Heading outline (Markdown preview). `o` toggles it open/closed.
         ptext.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
         per_surface.insert(Surface::PreviewText, ptext);
 
         // --- Preview: text/code visual selection (v charwise / V linewise) ---
-        // h/j/k/l で 2D キャレットを動かして範囲を伸ばし、y でコピー、v・V・q・Esc で抜ける。
+        // h/j/k/l move the 2D caret to extend the range, `y` copies it, and v/V/q/Esc exit.
         let mut pvis: ContextMap = HashMap::new();
         pvis.insert(KeyPress::ch('j'), nav(Motion::Down));
         pvis.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -782,14 +789,15 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('l'), nav(Motion::Right));
         pimg.insert(KeyPress::ch('k'), nav(Motion::Up));
         pimg.insert(KeyPress::ch('j'), nav(Motion::Down));
-        // PDF ページ送り(画像系で共有・非 PDF では handler が no-op)。lowercase jk=ページ内パン / 大文字 JK=ページ移動。
+        // PDF page paging (shared across the image surfaces; the handler no-ops for non-PDF).
+        // lowercase jk = pan within the page / uppercase JK = move to the next/previous page.
         pimg.insert(KeyPress::ch('J'), run(Action::PdfNextPage));
         pimg.insert(KeyPress::ch('K'), run(Action::PdfPrevPage));
         pimg.insert(KeyPress::key(KeyCode::PageDown), run(Action::PdfNextPage));
         pimg.insert(KeyPress::key(KeyCode::PageUp), run(Action::PdfPrevPage));
         pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        // Ctrl-n/Ctrl-p=ファイル送り(J/K は PDF ページ送りに割当済みなので Ctrl 側)。
+        // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
         pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
         pimg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
@@ -798,7 +806,8 @@ impl KeyMap {
         per_surface.insert(Surface::PreviewImage, pimg);
 
         // --- Preview: table (csv/tsv) ---
-        // hjkl = セルカーソル移動 / g・G = 先頭・末尾行 / 0・$ = 先頭・末尾列 / y→ = セル/行/列コピー。
+        // hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last column / y→ = copy
+        // the cell/row/column.
         let mut ptbl: ContextMap = HashMap::new();
         ptbl.insert(KeyPress::ch('q'), run(Action::PreviewBack));
         ptbl.insert(KeyPress::ch('j'), nav(Motion::Down));
@@ -814,10 +823,10 @@ impl KeyMap {
         apply_scheme_paging(&mut ptbl, scheme);
         ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        // Ctrl-n/Ctrl-p=ファイル送り(text/image と同キー)。
+        // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
         ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
-        // 表内検索(text プレビューと同じ `/` n N)。一致セルへカーソルが飛ぶ。
+        // In-table search (same `/` n N as the text preview). The cursor jumps to the matching cell.
         ptbl.insert(KeyPress::ch('/'), run(Action::SearchStart));
         ptbl.insert(KeyPress::ch('n'), run(Action::SearchNext));
         ptbl.insert(KeyPress::ch('N'), run(Action::SearchPrev));
@@ -826,7 +835,7 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('\''), run(Action::MarkJump));
         per_surface.insert(Surface::PreviewTable, ptbl);
 
-        // --- Git 系の面 (feature gate) ---
+        // --- Git-related surfaces (feature gate) ---
         #[cfg(feature = "git")]
         {
             // Preview: gitdiff
@@ -834,7 +843,8 @@ impl KeyMap {
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
             pgit.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
-            // f=フォロー由来 diff の範囲トグル(開始以降 ⇄ フル)。非フォロー diff では no-op。
+            // f = toggle the range of a follow-opened diff (since follow-start ⇄ full). No-op for
+            // a non-follow diff.
             pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
             pgit.insert(KeyPress::ch('j'), nav(Motion::Down));
             pgit.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -847,13 +857,14 @@ impl KeyMap {
             pgit.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
             pgit.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
             apply_scheme_paging(&mut pgit, scheme);
-            // n/N=次/前の変更ファイルの diff へ切替(ビューを出ずに変更を回遊。ツリーの n/N と同義)。
+            // n/N = switch to the next/previous changed file's diff (cycle through changes without
+            // leaving the view; same meaning as the tree's n/N).
             pgit.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
             pgit.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
             pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
             per_surface.insert(Surface::PreviewGitDiff, pgit);
 
-            // Git 変更ハブ (o)。Enter→GitOpenSelectedDiff は固定キーで発火。
+            // Git changes hub (o). Enter→GitOpenSelectedDiff fires as a fixed key.
             let mut gchg: ContextMap = HashMap::new();
             gchg.insert(KeyPress::ch('j'), nav(Motion::Down));
             gchg.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -869,11 +880,11 @@ impl KeyMap {
             gchg.insert(KeyPress::ch('g'), run(Action::GitOpenGraph));
             gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
             gchg.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ 選択中の変更ファイルのパスをコピー(ツリーと同じパスコピーメニューを流用)。
+            // y→ copies the selected changed file's path (reuses the same path-copy menu as the tree).
             gchg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
             per_surface.insert(Surface::GitChanges, gchg);
 
-            // Git log / graph (同一)。Enter→GitOpenDetail は固定キー。
+            // Git log / graph (identical). Enter→GitOpenDetail is a fixed key.
             let mut glog: ContextMap = HashMap::new();
             glog.insert(KeyPress::ch('j'), nav(Motion::Down));
             glog.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -881,20 +892,23 @@ impl KeyMap {
             glog.insert(KeyPress::ch('G'), nav(Motion::Bottom));
             glog.insert(KeyPress::ch('l'), run(Action::GitOpenDetail));
             glog.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ コミット情報コピー(短/完全ハッシュ・件名・全文メッセージ・著者・日付)。log/graph 共通。
+            // y→ copy commit info (short/full hash, subject, full message, author, date). Shared by
+            // log/graph.
             glog.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
-            // グラフは基準ブランチ固定(Phase 2)を持つ: s=設定 / x=解除 / b=ブランチ表示パネル。log には無いので別マップ。
+            // The graph has base-branch pinning (Phase 2): s = set / x = clear / b = branch
+            // visibility panel. log has none of this, hence a separate map.
             let mut ggraph = glog.clone();
             ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
             ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
-            // `0` でも解除できる(vim の「行頭=起点へ戻る」感覚。`x` と併用・どちらも同じ Action)。
+            // `0` also clears it (the vim feel of "line-home = return to the anchor". Coexists with
+            // `x`; both resolve to the same Action).
             ggraph.insert(KeyPress::ch('0'), run(Action::GitGraphClearBase));
             ggraph.insert(KeyPress::ch('b'), run(Action::GitGraphOpenPicker));
             per_surface.insert(Surface::GitGraph, ggraph);
             per_surface.insert(Surface::GitLog, glog);
 
-            // グラフのブランチ表示パネル: j/k/g/G ナビ ＋ Space:切替 / a:全部 / n:現在のみ。
-            // Enter:適用 / q・Esc:取消 は固定キー。
+            // The graph's branch visibility panel: j/k/g/G navigate + Space:toggle / a:all /
+            // n:current-only. Enter:apply / q·Esc:cancel are fixed keys.
             let mut gpick: ContextMap = HashMap::new();
             gpick.insert(KeyPress::ch('j'), nav(Motion::Down));
             gpick.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -903,13 +917,13 @@ impl KeyMap {
             gpick.insert(KeyPress::ch(' '), run(Action::GitGraphPickerToggle));
             gpick.insert(KeyPress::ch('a'), run(Action::GitGraphPickerAll));
             gpick.insert(KeyPress::ch('n'), run(Action::GitGraphPickerCurrentOnly));
-            // 優先順の並び替え(大文字 J/K)。小文字 j/k はカーソル移動。
+            // Reorder priority (uppercase J/K). Lowercase j/k move the cursor.
             gpick.insert(KeyPress::ch('K'), run(Action::GitGraphPickerMoveUp));
             gpick.insert(KeyPress::ch('J'), run(Action::GitGraphPickerMoveDown));
             gpick.insert(KeyPress::ch('q'), run(Action::GitClose));
             per_surface.insert(Surface::GitGraphPicker, gpick);
 
-            // Git branches。Enter→BranchCheckout は固定キー。
+            // Git branches. Enter→BranchCheckout is a fixed key.
             let mut gbr: ContextMap = HashMap::new();
             gbr.insert(KeyPress::ch('j'), nav(Motion::Down));
             gbr.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -920,11 +934,12 @@ impl KeyMap {
             gbr.insert(KeyPress::ch('n'), run(Action::BranchCreate));
             gbr.insert(KeyPress::ch('d'), run(Action::BranchDelete));
             gbr.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ 選択ブランチ名をコピー(対象が1つなのでメニュー無しで即コピー)。
+            // y→ copy the selected branch name (there's only one target, so it copies directly with
+            // no menu).
             gbr.insert(KeyPress::ch('y'), run(Action::CopyBranchName));
             per_surface.insert(Surface::GitBranches, gbr);
 
-            // Git detail (全 Motion 有効・scheme で page/half 差し替え)。
+            // Git detail (all Motions enabled; page/half are swapped per scheme).
             let mut gdet: ContextMap = HashMap::new();
             gdet.insert(KeyPress::ch('j'), nav(Motion::Down));
             gdet.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -938,13 +953,13 @@ impl KeyMap {
             gdet.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
             gdet.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
             gdet.insert(KeyPress::ch('q'), run(Action::GitClose));
-            // y→ コミット情報コピー(全文メッセージを読みながらコピーできる)。
+            // y→ copy commit info (can copy while reading the full message).
             gdet.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
             apply_scheme_paging(&mut gdet, scheme);
             per_surface.insert(Surface::GitDetail, gdet);
         }
 
-        // --- Sort メニュー (scheme 不問) ---
+        // --- Sort menu (scheme-independent) ---
         let mut sort: ContextMap = HashMap::new();
         sort.insert(KeyPress::ch('n'), run(Action::SortSet(SortKey::Name)));
         sort.insert(KeyPress::ch('s'), run(Action::SortSet(SortKey::Size)));
@@ -954,8 +969,9 @@ impl KeyMap {
         sort.insert(KeyPress::ch('.'), run(Action::SortToggleDirsFirst));
         per_surface.insert(Surface::Sort, sort);
 
-        // --- Bookmark 一覧。Enter→BookmarkJump は固定キー。素の英字はブックマーク名ジャンプに
-        // 予約(main の Unbound フォールバック)なので、編集/削除は Ctrl 修飾に置く。 ---
+        // --- Bookmark list. Enter→BookmarkJump is a fixed key. Plain letters are reserved for
+        // bookmark-name jumps (main's Unbound fallback), so edit/delete are placed on Ctrl-modified
+        // keys instead. ---
         let mut bm: ContextMap = HashMap::new();
         bm.insert(KeyPress::ch('j'), nav(Motion::Down));
         bm.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -965,7 +981,8 @@ impl KeyMap {
         bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
         per_surface.insert(Surface::Bookmarks, bm);
 
-        // --- タブ一覧 (`T` で開閉。Enter=切替 は固定キー・T は global 継承で閉じる) ---
+        // --- Tab list (`T` toggles it open/closed. Enter=switch is a fixed key; T closes it via
+        // Global inheritance) ---
         let mut tl: ContextMap = HashMap::new();
         tl.insert(KeyPress::ch('j'), nav(Motion::Down));
         tl.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -973,7 +990,7 @@ impl KeyMap {
         tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
         per_surface.insert(Surface::Tabs, tl);
 
-        // --- 見出しアウトライン一覧 (`o` で開閉。Enter=ジャンプ は固定キー) ---
+        // --- Heading outline list (`o` toggles it open/closed. Enter=jump is a fixed key) ---
         let mut outline: ContextMap = HashMap::new();
         outline.insert(KeyPress::ch('j'), nav(Motion::Down));
         outline.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -989,7 +1006,7 @@ impl KeyMap {
         info.insert(KeyPress::ch('q'), run(Action::InfoClose));
         per_surface.insert(Surface::Info, info);
 
-        // --- テーブルセル全文ポップアップ (`Enter` in a table preview opens it; fixed key, see
+        // --- Table cell full-text popup (`Enter` in a table preview opens it; fixed key, see
         // handle_enter). j/k/g/G/PageUp/PageDown scroll the (possibly wrapped/long) cell text.
         // `q` closes (Enter/Esc also close via the fixed-key path). ---
         let mut tcell: ContextMap = HashMap::new();
@@ -1002,7 +1019,7 @@ impl KeyMap {
         tcell.insert(KeyPress::ch('q'), run(Action::ToggleTableCell));
         per_surface.insert(Surface::TableCell, tcell);
 
-        // --- Help (?/Esc は Global/固定で閉じる。q もここで閉じる) ---
+        // --- Help (?/Esc close it via Global/fixed keys. `q` closes it here too) ---
         let mut help: ContextMap = HashMap::new();
         help.insert(KeyPress::ch('j'), nav(Motion::Down));
         help.insert(KeyPress::ch('k'), nav(Motion::Up));
@@ -1011,21 +1028,24 @@ impl KeyMap {
         help.insert(KeyPress::ch('q'), run(Action::ToggleHelp));
         per_surface.insert(Surface::Help, help);
 
-        // --- Global (allows_tabs 面が継承) ---
+        // --- Global (inherited by allows_tabs surfaces) ---
         let mut global: ContextMap = HashMap::new();
-        // Q=アプリ全終了。allows_tabs() の全面(入力/確認モーダル以外)が global を継承するので、
-        // どの面からでも Q で抜けられる。`[keys.global]` で変更可・起動時 validate() で衝突検知。
+        // Q = quit the whole app. Every allows_tabs() surface (all but text-input/confirm-modal)
+        // inherits global, so Q exits from any surface. Changeable via `[keys.global]`; conflicts
+        // are detected by validate() at startup.
         global.insert(KeyPress::ch('Q'), run(Action::Quit));
-        // F=フォローモード(外部変更へ自動ジャンプ)。Tree/Preview どちらからでも切替できるよう global。
+        // F = follow mode (auto-jump to externally changed files). Global so it can be toggled from
+        // either Tree or Preview.
         global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
         global.insert(KeyPress::ch('t'), run(Action::TabNew));
         global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
-        // P=クリップボードのパス/GitHub リンクを読んでその位置へ移動(reveal + preview)。
-        // Tree/Preview どちらからでも使えるよう global。`[keys.global]` で変更可。
+        // P = read a path/GitHub link from the clipboard and jump there (reveal + preview). Global
+        // so it works from either Tree or Preview. Changeable via `[keys.global]`.
         global.insert(KeyPress::ch('P'), run(Action::PasteJump));
-        // `w` に既定バインドは置かない: vim の単語移動の癖で誤爆しやすく、タブを閉じるのは
-        // ツリーの `q`(CloseTabOrQuit)に一本化(2026-07-07 ユーザー決定)。`tab_close` アクション
-        // 自体は残っているので `[keys.global] w = "tab_close"` で復活できる。
+        // No default binding is placed on `w`: vim's word-motion habit makes it easy to trigger by
+        // accident, so closing a tab is consolidated onto the tree's `q` (CloseTabOrQuit) (user
+        // decision, 2026-07-07). The `tab_close` action itself still exists, so it can be revived
+        // via `[keys.global] w = "tab_close"`.
         global.insert(KeyPress::ch('['), run(Action::TabPrev));
         global.insert(KeyPress::ch(']'), run(Action::TabNext));
         for i in 1..=9u8 {
@@ -1054,7 +1074,7 @@ impl KeyMap {
     /// defaults → merge config → validate conflicts (§6/§7). Always falls back and returns green (never panics).
     pub fn from_config(scheme: KeyScheme, cfg: &KeysFileConfig) -> KeyMap {
         let mut map = KeyMap::defaults(scheme);
-        let defaults = KeyMap::defaults(scheme); // ロールバック用の控え。
+        let defaults = KeyMap::defaults(scheme); // kept aside for rollback.
         let mut warnings: Vec<String> = Vec::new();
 
         for (sfc_name, table) in &cfg.surfaces {
@@ -1091,7 +1111,7 @@ impl KeyMap {
             }
         };
         let is_noop = action_str == "noop" || action_str == "disabled";
-        // 数字固定の TabGoto を設定しようとしたら明示警告 (§1.2)。
+        // Explicitly warn if the config tries to bind the digit-fixed TabGoto (§1.2).
         if action_str == "tab_goto" {
             warnings.push("tab_goto is fixed to digit keys and cannot be rebound".into());
             return;
@@ -1160,7 +1180,7 @@ impl KeyMap {
         let surfaces: Vec<Surface> = self.per_surface.keys().copied().collect();
 
         for sfc in surfaces {
-            // --- PrefixVsSingle: 既定でリーダー prefix だったキーが Run に奪われた ---
+            // --- PrefixVsSingle: a key that defaulted to a leader prefix was stolen by a Run ---
             let leader_keys: Vec<(KeyPress, LeaderId)> = defaults
                 .per_surface
                 .get(&sfc)
@@ -1190,10 +1210,11 @@ impl KeyMap {
                 }
             }
 
-            // --- GlobalShadow: allows_tabs 面で Global 既定キーを別 Action に奪った ---
-            // 既定マップ自身が持つ面別特化(例: タブ一覧の `w`=選択タブを閉じる)は合法。
-            // ユーザー config が**既定と違う形で** Global キーを奪った時だけ矯正し、
-            // 既定に面別バインドがあればそれへ、無ければ Global へ戻す。
+            // --- GlobalShadow: an allows_tabs surface stole a Global default key for another Action ---
+            // A per-surface specialization that the default map itself has (e.g. the tab list's
+            // `w` = close the selected tab) is legitimate. Only correct it when the user config
+            // steals a Global key **in a way that differs from the default**, restoring the
+            // default's per-surface binding if one exists, or Global otherwise.
             if sfc.allows_tabs() {
                 let shadows: Vec<(KeyPress, String, String, Option<Binding>)> = {
                     let cmap = match self.per_surface.get(&sfc) {
@@ -1211,7 +1232,7 @@ impl KeyMap {
                             }
                             let default_local = dmap.and_then(|m| m.get(gk));
                             if Some(local) == default_local {
-                                return None; // 既定どおりの面別特化
+                                return None; // per-surface specialization matching the default
                             }
                             let restore = default_local.cloned();
                             let kept = match &restore {
@@ -1299,20 +1320,20 @@ enum KeyTarget {
 #[cfg(test)]
 fn surface_config_name(sfc: Surface) -> Option<&'static str> {
     match sfc {
-        // --- 固定テキスト入力 (is_text_input): 設定不可 ---
+        // --- Fixed text input (is_text_input): not configurable ---
         Surface::DialogInput => None,
         Surface::Filter => None,
         Surface::Search => None,
         Surface::Mark => None,
         #[cfg(feature = "git")]
         Surface::BranchFilter => None,
-        // --- 確認モーダル (is_modal_confirm): 設定不可 ---
+        // --- Confirm modal (is_modal_confirm): not configurable ---
         Surface::DialogConfirmDelete => None,
         Surface::DialogConfirmDrop => None,
         Surface::DialogRenamePreview => None,
         Surface::DialogConfirmQuit => None,
         Surface::DialogConfirmBookmark => None,
-        // --- オーバーレイ (keymap 駆動): 設定可 ---
+        // --- Overlays (keymap-driven): configurable ---
         Surface::Help => Some("help"),
         Surface::Sort => Some("sort"),
         Surface::Bookmarks => Some("bookmarks"),
@@ -1332,7 +1353,7 @@ fn surface_config_name(sfc: Surface) -> Option<&'static str> {
         Surface::GitBranches => Some("git_branches"),
         #[cfg(feature = "git")]
         Surface::GitChanges => Some("git_changes"),
-        // --- 基本全画面 (keymap 駆動): 設定可 ---
+        // --- Basic full-screen surfaces (keymap-driven): configurable ---
         Surface::Visual => Some("tree_visual"),
         Surface::Tree => Some("tree"),
         Surface::PreviewText => Some("preview_text"),
@@ -1661,7 +1682,7 @@ fn leader_label(a: Action) -> Msg {
 }
 
 // =============================================================================
-// Action ↔ 設定文字列の双方向対応。
+// Action ↔ config-string two-way mapping.
 // =============================================================================
 
 fn motion_name(m: Motion) -> &'static str {
@@ -1744,7 +1765,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "jump_next_change" => Action::JumpNextChange,
         "jump_prev_change" => Action::JumpPrevChange,
         "toggle_follow" => Action::ToggleFollow,
-        // ファイル管理
+        // File management
         "file_create" => Action::FileCreate,
         "file_rename" => Action::FileRename,
         "file_delete" => Action::FileDelete,
@@ -1836,8 +1857,9 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "git_open_selected_diff" => Action::GitOpenSelectedDiff,
         #[cfg(feature = "git")]
         "git_open_detail" => Action::GitOpenDetail,
-        // グラフの基準固定とブランチ表示パネル。`action_name` にはあったが here が抜けており、
-        // config から再割り当てできなかった(`keymap_actions_round_trip` が再発を検知する)。
+        // The graph's base-branch pinning and branch visibility panel. These were present in
+        // `action_name` but missing here, so config could not reassign them
+        // (`keymap_actions_round_trip` catches a recurrence).
         #[cfg(feature = "git")]
         "git_graph_set_base" => Action::GitGraphSetBase,
         #[cfg(feature = "git")]
@@ -2058,7 +2080,7 @@ fn binding_name(b: &Binding) -> String {
 }
 
 // =============================================================================
-// 単体テスト (§10)。
+// Unit tests (§10).
 // =============================================================================
 
 #[cfg(test)]
@@ -2076,7 +2098,7 @@ mod tests {
         cfg
     }
 
-    // §10.1 defaults 網羅。
+    // §10.1 defaults coverage.
     #[test]
     fn defaults_tree_core_keys() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2100,7 +2122,7 @@ mod tests {
 
     #[test]
     fn visual_q_quits() {
-        // 回帰防止: 旧 Visual モードの q=アプリ終了 を保全する。
+        // Regression guard: preserve the old Visual mode's q = quit the app.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::Visual, None, KeyPress::ch('q')),
@@ -2110,7 +2132,8 @@ mod tests {
 
     #[test]
     fn tree_q_resolves_to_close_tab_or_quit() {
-        // ツリー最上位の q は「タブを閉じる or 最後なら終了」。Q は従来どおり Quit。
+        // At the tree top level, q means "close the tab, or quit if it's the last one". Q remains
+        // Quit as before.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('q')),
@@ -2124,7 +2147,7 @@ mod tests {
 
     #[test]
     fn paste_jump_p_is_global_and_config_roundtrips() {
-        // P はグローバル(allows_tabs 面が継承)＝Tree/Preview どちらからでも解決する。
+        // P is global (inherited by allows_tabs surfaces) = resolves from either Tree or Preview.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
             assert_eq!(
@@ -2133,15 +2156,16 @@ mod tests {
                 "P が {sfc:?} で paste_jump に解決する"
             );
         }
-        // config 文字列の双方向対応。
+        // config-string two-way mapping.
         assert_eq!(action_from_str("paste_jump"), Some(Action::PasteJump));
         assert_eq!(action_name(Action::PasteJump), "paste_jump");
     }
 
     #[test]
     fn preview_file_paging_is_ctrl_n_p_on_preview_surfaces() {
-        // Ctrl-n/Ctrl-p=ツリー表示順のファイル送り(text/画像/テーブルの3面)。
-        // J/K は画像面の PDF ページ送りと衝突、Ctrl-j はレガシー端末で Enter(LF)と同一のため不採用。
+        // Ctrl-n/Ctrl-p = file paging in tree display order (the three surfaces text/image/table).
+        // J/K conflict with the image surface's PDF page paging, and Ctrl-j is identical to Enter
+        // (LF) on legacy terminals, so neither is used.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [
             Surface::PreviewText,
@@ -2159,7 +2183,7 @@ mod tests {
                 "Ctrl-p が {sfc:?} で preview_prev_file に解決する"
             );
         }
-        // config 文字列の双方向対応。
+        // config-string two-way mapping.
         assert_eq!(
             action_from_str("preview_next_file"),
             Some(Action::PreviewFileNext)
@@ -2169,7 +2193,8 @@ mod tests {
 
     #[test]
     fn open_link_new_tab_is_ctrl_t_in_preview_text() {
-        // Ctrl-t=フォーカス中リンクを別タブ(PreviewText 専用)。Ctrl+英字は全端末で確実。
+        // Ctrl-t = focused link opens in a new tab (PreviewText-only). Ctrl+letter is reliable on
+        // every terminal.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('t')),
@@ -2185,7 +2210,8 @@ mod tests {
 
     #[test]
     fn open_in_new_tab_is_ctrl_t_in_tree() {
-        // Ctrl-t=カーソル下のエントリを別タブで開く(Tree)。preview の OpenLinkNewTab と同じキー/意味。
+        // Ctrl-t = open the entry under the cursor in a new tab (Tree). Same key/meaning as
+        // preview's OpenLinkNewTab.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ctrl_ch('t')),
@@ -2201,7 +2227,8 @@ mod tests {
 
     #[test]
     fn shift_q_quits_via_global_on_keymap_surfaces() {
-        // Q=アプリ全終了。global に置いたので allows_tabs() の面(入力/確認モーダル以外)が継承する。
+        // Q = quit the whole app. Placed on global, so every allows_tabs() surface (all but
+        // text-input/confirm-modal) inherits it.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [
             Surface::Tree,
@@ -2217,7 +2244,7 @@ mod tests {
         }
     }
 
-    // §10.2 leader。
+    // §10.2 leader
     #[test]
     fn leader_resolution() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2237,14 +2264,14 @@ mod tests {
             m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
-        // 未知 suffix は Unbound (リーダー取消)。
+        // An unknown suffix is Unbound (cancels the leader).
         assert_eq!(
             m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('z')),
             Resolution::Unbound
         );
     }
 
-    // §10 copy leader の到達範囲 (Preview 系継承・Visual/git 非継承)。
+    // §10 copy-leader reach (inherited by Preview-related surfaces; not by Visual/git).
     #[test]
     fn copy_leader_scope() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2256,18 +2283,19 @@ mod tests {
             m.resolve(Surface::PreviewImage, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
-        // Visual は copy leader 非継承。
+        // Visual does not inherit the copy leader.
         assert_eq!(
             m.resolve(Surface::Visual, None, KeyPress::ch('y')),
             Resolution::Unbound
         );
     }
 
-    // Preview:table (csv/tsv) の面のキー解決。hjkl=セル移動 / y→=セル/行/列コピー / q=戻る。
+    // Preview:table (csv/tsv) surface key resolution. hjkl = cell movement / y→ = cell/row/column
+    // copy / q = go back.
     #[test]
     fn table_surface_resolution() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        // hjkl = セルカーソル移動。
+        // hjkl = move the cell cursor.
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('l')),
             Resolution::Action(Action::Navigate(Motion::Right))
@@ -2276,7 +2304,7 @@ mod tests {
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('0')),
             Resolution::Action(Action::Navigate(Motion::LineHome))
         );
-        // y→ はテーブル専用の TableCopy リーダー(パスコピーの Copy とは別メニュー)。
+        // y→ is the table-specific TableCopy leader (a separate menu from the path-copy Copy leader).
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::TableCopy)
@@ -2297,7 +2325,7 @@ mod tests {
             ),
             Resolution::Action(Action::TableCopy(TableCopyKind::Column))
         );
-        // f はパスコピー(フル)を残してある。
+        // `f` is kept for the (full) path copy.
         assert_eq!(
             m.resolve(
                 Surface::PreviewTable,
@@ -2306,33 +2334,33 @@ mod tests {
             ),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
-        // q = 戻る。
+        // q = go back.
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('q')),
             Resolution::Action(Action::PreviewBack)
         );
     }
 
-    // Preview の行選択(v)モード。v で開始 → j/k 拡張 → y コピー → v/q 取消。
+    // Preview's line-selection (v) mode. v starts it → j/k extend → y copies → v/q cancels.
     #[test]
     fn preview_visual_resolution() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        // 通常テキストプレビューで v = 選択開始。
+        // In a normal text preview, v = start a selection.
         assert_eq!(
             m.resolve(Surface::PreviewText, None, KeyPress::ch('v')),
             Resolution::Action(Action::PreviewEnterVisual)
         );
-        // 選択面: j/k = 範囲拡張(カーソル移動)。
+        // Selection surface: j/k = extend the range (cursor movement).
         assert_eq!(
             m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('j')),
             Resolution::Action(Action::Navigate(Motion::Down))
         );
-        // y = 選択コピー。
+        // y = copy the selection.
         assert_eq!(
             m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('y')),
             Resolution::Action(Action::PreviewCopySelection)
         );
-        // v / q = 選択解除。
+        // v / q = clear the selection.
         assert_eq!(
             m.resolve(Surface::PreviewTextVisual, None, KeyPress::ch('v')),
             Resolution::Action(Action::PreviewExitVisual)
@@ -2343,7 +2371,7 @@ mod tests {
         );
     }
 
-    // §10.3 chord parse。
+    // §10.3 chord parse
     #[test]
     fn chord_parse() {
         assert_eq!(
@@ -2382,7 +2410,7 @@ mod tests {
             KeyChord::parse("enter").unwrap(),
             KeyChord::Single(KeyPress::key(KeyCode::Enter))
         );
-        // 大文字は SHIFT 込みとして保持。
+        // Uppercase is kept as SHIFT included.
         assert_eq!(
             KeyChord::parse("G").unwrap(),
             KeyChord::Single(KeyPress::ch('G'))
@@ -2392,10 +2420,10 @@ mod tests {
         assert!(KeyChord::parse("notakey").is_err());
     }
 
-    // §10.4 action_from_str ラウンドトリップ + navigate。
+    // §10.4 action_from_str round trip + navigate.
     #[test]
     fn action_roundtrip() {
-        // git 無効時は push が無く mut が不要になるため抑止する。
+        // Suppressed because with git disabled there's no push and `mut` becomes unneeded.
         #[allow(unused_mut)]
         let mut samples = vec![
             Action::Noop,
@@ -2432,20 +2460,20 @@ mod tests {
             Some(Action::Navigate(Motion::PageDown))
         );
         assert_eq!(action_from_str("totally_unknown"), None);
-        // tab_goto は数字固定 → None。
+        // tab_goto is digit-fixed → None.
         assert_eq!(action_from_str("tab_goto"), None);
     }
 
-    // §10.5 config merge: override / add / noop / 匿名リーダー禁止。
+    // §10.5 config merge: override / add / noop / anonymous leaders forbidden.
     #[test]
     fn config_merge_override_add_noop() {
         let cfg = cfg_with(
             "tree",
             &[
                 ("d", "refresh"),          // override
-                ("X", "refresh"),          // add (新キー)
-                ("i", "noop"),             // 無効化 (既定 i=ToggleInfo)
-                ("g s", "open_sort_menu"), // 匿名 g リーダー → 警告で無視
+                ("X", "refresh"),          // add (a new key)
+                ("i", "noop"),             // disable (default i=ToggleInfo)
+                ("g s", "open_sort_menu"), // anonymous g leader → warned and ignored
             ],
         );
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
@@ -2461,7 +2489,7 @@ mod tests {
             m.resolve(Surface::Tree, None, KeyPress::ch('i')),
             Resolution::Unbound
         );
-        // g は既定の Nav(Top) のまま (匿名リーダー化を拒否)。
+        // g stays the default Nav(Top) (refuses to become an anonymous leader).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('g')),
             Resolution::Action(Action::Navigate(Motion::Top))
@@ -2473,7 +2501,7 @@ mod tests {
         );
     }
 
-    // §10.5 config: 既存 suffix を別キーへ移す (リーダー上書き)。
+    // §10.5 config: move an existing suffix to another key (leader override).
     #[test]
     fn config_leader_suffix_override() {
         let cfg = cfg_with("tree", &[("y z", "copy_full")]);
@@ -2484,12 +2512,12 @@ mod tests {
         );
     }
 
-    // §10.6 validate PrefixVsSingle。
+    // §10.6 validate PrefixVsSingle
     #[test]
     fn validate_prefix_vs_single() {
         let cfg = cfg_with("tree", &[("space", "quit")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
-        // Space はリーダーのまま (override 破棄)。
+        // Space stays a leader (the override is discarded).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
@@ -2503,12 +2531,12 @@ mod tests {
         );
     }
 
-    // §10.7 validate GlobalShadow。
+    // §10.7 validate GlobalShadow
     #[test]
     fn validate_global_shadow() {
         let cfg = cfg_with("tree", &[("t", "refresh")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
-        // t は Global の TabNew に戻る (per-surface override 破棄)。
+        // t reverts to Global's TabNew (the per-surface override is discarded).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('t')),
             Resolution::Action(Action::TabNew)
@@ -2524,16 +2552,19 @@ mod tests {
 
     #[test]
     fn global_shadow_default_specialization_rule() {
-        // 既定 config に衝突が無いこと(既定マップ自身の面別特化があっても合法、の恒久検査)。
+        // The default config has no conflicts (a permanent check that per-surface specializations
+        // in the default map itself are legitimate).
         let m = KeyMap::from_config(KeyScheme::Vim, &crate::keymap::KeysFileConfig::default());
         assert!(
             m.conflicts.is_empty(),
             "既定 config に衝突なし: {:?}",
             m.conflicts
         );
-        // ユーザーが global キー(T)を面で別 Action に奪う → 検知し、既定に面別特化が無いので
-        // global の割当へ戻す。(既定特化への復元パスは、既定に面別特化が存在する時に効く
-        // 将来向けの規則 — 現状の既定には該当キーが無い。)
+        // The user steals a global key (T) for another Action on a surface → detected, and since
+        // the default has no per-surface specialization for it, it reverts to the global binding.
+        // (The restore-to-default-specialization path is a forward-looking rule that kicks in when
+        // the default does have a per-surface specialization — no such key exists in the current
+        // defaults.)
         let cfg = cfg_with("tabs", &[("T", "refresh")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert_eq!(
@@ -2575,7 +2606,7 @@ mod tests {
         assert_eq!(action_name(Action::ToggleOutline), "toggle_outline");
     }
 
-    // §10.8 固定キー rebind 拒否。
+    // §10.8 fixed-key rebind rejection.
     #[test]
     fn fixed_key_rebind_rejected() {
         let cfg = cfg_with("tree", &[("enter", "quit")]);
@@ -2589,7 +2620,8 @@ mod tests {
 
     #[test]
     fn bookmark_list_defaults_reserve_plain_letters_for_jump() {
-        // 一覧内の素の英字はブックマーク名ジャンプに予約: 編集/削除は Ctrl 修飾・`'`/q で閉じる。
+        // Plain letters in the list are reserved for bookmark-name jumps: edit/delete use Ctrl
+        // modifiers, and `'`/q close it.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::Bookmarks, None, KeyPress::ctrl_ch('e')),
@@ -2607,7 +2639,7 @@ mod tests {
             m.resolve(Surface::Bookmarks, None, KeyPress::ch('q')),
             Resolution::Action(Action::BookmarkClose)
         );
-        // 素の e/d は未割当(=main の Unbound フォールバックで英字ジャンプに落ちる)。
+        // Plain e/d are unbound (= falls through to letter-jump via main's Unbound fallback).
         assert_eq!(
             m.resolve(Surface::Bookmarks, None, KeyPress::ch('e')),
             Resolution::Unbound
@@ -2616,7 +2648,7 @@ mod tests {
             m.resolve(Surface::Bookmarks, None, KeyPress::ch('d')),
             Resolution::Unbound
         );
-        // プレビュー3面でも m=登録 / '=一覧(表示中ファイルのブックマーク)。
+        // The three preview surfaces also have m=register / '=list (bookmark the displayed file).
         for sfc in [
             Surface::PreviewText,
             Surface::PreviewImage,
@@ -2631,7 +2663,7 @@ mod tests {
                 Resolution::Action(Action::MarkJump)
             );
         }
-        // Tree の `'` は一覧を開く MarkJump のまま(config 名も不変)。
+        // In the Tree, `'` stays MarkJump, opening the list (the config name is unchanged too).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('\'')),
             Resolution::Action(Action::MarkJump)
@@ -2641,7 +2673,8 @@ mod tests {
     #[test]
     fn tab_list_defaults_resolve() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        // global T で開閉(全面から)・一覧内 w=選択タブを閉じる(global の TabClose を面で上書き)。
+        // global T toggles it open/closed (from any surface); in the list, w = close the selected
+        // tab (overrides global's TabClose on this surface).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('T')),
             Resolution::Action(Action::ToggleTabList)
@@ -2659,7 +2692,8 @@ mod tests {
             m.resolve(Surface::Tabs, None, KeyPress::ch('q')),
             Resolution::Action(Action::ToggleTabList)
         );
-        // 既定の `w` は**どこにも**タブを閉じる割当を持たない(誤爆防止・q に一本化)。
+        // The default `w` has **no** binding anywhere for closing a tab (avoids accidental
+        // triggers; consolidated onto q).
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('w')),
             Resolution::Unbound
@@ -2668,7 +2702,7 @@ mod tests {
             m.resolve(Surface::Tabs, None, KeyPress::ch('w')),
             Resolution::Unbound
         );
-        // config 文字列の往復。
+        // config-string round trip.
         assert_eq!(
             action_from_str("toggle_tab_list"),
             Some(Action::ToggleTabList)
@@ -2681,7 +2715,7 @@ mod tests {
         assert_eq!(action_name(Action::TabListClose), "tab_list_close");
     }
 
-    // §10.9 less プロファイル。
+    // §10.9 less profile.
     #[test]
     fn less_scheme_preview_paging() {
         let m = KeyMap::defaults(KeyScheme::Less);
@@ -2693,14 +2727,14 @@ mod tests {
             m.resolve(Surface::PreviewText, None, KeyPress::ch('d')),
             Resolution::Action(Action::Navigate(Motion::HalfDown))
         );
-        // Tree は scheme 不問で Space=File リーダーのまま。
+        // Tree stays Space=File leader regardless of scheme.
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
     }
 
-    // vim プロファイル (既定) の Ctrl ページ送り。
+    // vim profile (default) Ctrl page paging.
     #[test]
     fn vim_scheme_preview_paging() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2712,14 +2746,14 @@ mod tests {
             m.resolve(Surface::PreviewText, None, KeyPress::ctrl_ch('d')),
             Resolution::Action(Action::Navigate(Motion::HalfDown))
         );
-        // vim では素の f/Space は Preview で未割当。
+        // Under vim, plain f/Space are unbound in Preview.
         assert_eq!(
             m.resolve(Surface::PreviewText, None, KeyPress::ch('f')),
             Resolution::Unbound
         );
     }
 
-    // §10.10 scheme 非該当面は不変 (Sort)。
+    // §10.10 scheme-inapplicable surfaces are unaffected (Sort).
     #[test]
     fn scheme_does_not_affect_sort() {
         let vim = KeyMap::defaults(KeyScheme::Vim);
@@ -2732,7 +2766,7 @@ mod tests {
         }
     }
 
-    // §10.11 Tree は水平移動 (Left/Right/0/$) を持たない。
+    // §10.11 Tree has no horizontal movement (Left/Right/0/$).
     #[test]
     fn tree_has_no_horizontal_motion() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2750,7 +2784,7 @@ mod tests {
         );
     }
 
-    // Global タブ/ヘルプの継承とテキスト入力面での非継承。
+    // Global tab/help inheritance and its non-inheritance on text-input surfaces.
     #[test]
     fn global_tab_inheritance() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2770,14 +2804,14 @@ mod tests {
             m.resolve(Surface::Tree, None, KeyPress::ch('?')),
             Resolution::Action(Action::ToggleHelp)
         );
-        // テキスト入力面 (Filter) は Global を継承しない。
+        // A text-input surface (Filter) does not inherit Global.
         assert_eq!(
             m.resolve(Surface::Filter, None, KeyPress::ch('t')),
             Resolution::Unbound
         );
     }
 
-    // Surface 述語。
+    // Surface predicates.
     #[test]
     fn surface_predicates() {
         assert!(Surface::Filter.is_text_input());
@@ -2791,20 +2825,20 @@ mod tests {
         assert!(!Surface::Visual.inherits_copy_leader());
     }
 
-    // 不明な面名は警告して無視 (他面は壊さない)。
+    // An unknown surface name is warned and ignored (other surfaces stay intact).
     #[test]
     fn unknown_surface_warns() {
         let cfg = cfg_with("nonsense", &[("d", "refresh")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
         assert!(m.warnings.iter().any(|w| w.contains("unknown key surface")));
-        // 既定の Tree d は維持。
+        // The default Tree d is preserved.
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('d')),
             Resolution::Action(Action::OpenGitDiffCursor)
         );
     }
 
-    // §10.10/§10.12 Git 系: scheme 非該当面の不変 + git_detail の Motion 網羅。
+    // §10.10/§10.12 Git-related: scheme-inapplicable surfaces unaffected + git_detail Motion coverage.
     #[cfg(feature = "git")]
     #[test]
     fn git_changes_scheme_invariant() {
@@ -2844,12 +2878,12 @@ mod tests {
     #[test]
     fn git_surfaces_copy_bindings() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        // 変更ハブ: y→ パスコピーリーダー(変更ファイルのパス)。
+        // Changes hub: y→ path-copy leader (path of the changed file).
         assert_eq!(
             m.resolve(Surface::GitChanges, None, KeyPress::ch('y')),
             Resolution::EnterLeader(LeaderId::Copy)
         );
-        // log/graph/detail: y→ コミット情報コピーリーダー。
+        // log/graph/detail: y→ commit-info copy leader.
         for sfc in [Surface::GitLog, Surface::GitGraph, Surface::GitDetail] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('y')),
@@ -2857,7 +2891,7 @@ mod tests {
                 "{sfc:?} の y は GitCopy リーダー"
             );
         }
-        // GitCopy リーダー配下: m→ 全文メッセージ, h→ 完全ハッシュ。
+        // Under the GitCopy leader: m→ full message, h→ full hash.
         assert_eq!(
             m.resolve(Surface::GitLog, Some(LeaderId::GitCopy), KeyPress::ch('m')),
             Resolution::Action(Action::GitCopy(GitCopyKind::Message))
@@ -2870,7 +2904,7 @@ mod tests {
             ),
             Resolution::Action(Action::GitCopy(GitCopyKind::FullHash))
         );
-        // branches: y→ ブランチ名コピー(直接)。
+        // branches: y→ copy the branch name (directly).
         assert_eq!(
             m.resolve(Surface::GitBranches, None, KeyPress::ch('y')),
             Resolution::Action(Action::CopyBranchName)
@@ -2901,7 +2935,7 @@ mod tests {
 
     #[test]
     fn parse_code_named_keys_and_invalid() {
-        // 名前つきキー・別名・大小無視を網羅。
+        // Covers named keys, aliases, and case-insensitivity.
         assert_eq!(KeyPress::parse_code("space").unwrap(), KeyCode::Char(' '));
         assert_eq!(KeyPress::parse_code("tab").unwrap(), KeyCode::Tab);
         assert_eq!(KeyPress::parse_code("backtab").unwrap(), KeyCode::BackTab);
@@ -2925,18 +2959,18 @@ mod tests {
         assert_eq!(KeyPress::parse_code("pageup").unwrap(), KeyCode::PageUp);
         assert_eq!(KeyPress::parse_code("pgdn").unwrap(), KeyCode::PageDown);
         assert_eq!(KeyPress::parse_code("pagedown").unwrap(), KeyCode::PageDown);
-        // 単文字は元の大小を保持。
+        // A single character keeps its original case.
         assert_eq!(KeyPress::parse_code("a").unwrap(), KeyCode::Char('a'));
         assert_eq!(KeyPress::parse_code("Z").unwrap(), KeyCode::Char('Z'));
         assert_eq!(KeyPress::parse_code("$").unwrap(), KeyCode::Char('$'));
-        // 複数文字の未知トークンは Err。
+        // An unknown multi-character token is Err.
         assert!(KeyPress::parse_code("abc").is_err(), "未知の複数文字は Err");
         assert!(KeyPress::parse_code("nope").is_err());
     }
 
     #[test]
     fn leader_menu_set_find_and_remove() {
-        // LeaderMenu の set/find/remove を直接検証(リーダーメニュー編集の核)。
+        // Directly verify LeaderMenu's set/find/remove (the core of leader-menu editing).
         let mut menu = LeaderMenu {
             id: LeaderId::File,
             title: Msg::StFilter,
@@ -2946,11 +2980,11 @@ mod tests {
         menu.set(KeyPress::ch('b'), Action::ToggleInfo);
         assert_eq!(menu.items.len(), 2);
         assert_eq!(menu.find(KeyPress::ch('a')), Some(Action::ToggleHelp));
-        // 同じキーへの set は置き換え(重複しない)。
+        // A set on the same key replaces it (no duplicates).
         menu.set(KeyPress::ch('a'), Action::Refresh);
         assert_eq!(menu.items.len(), 2, "同一キーは置換");
         assert_eq!(menu.find(KeyPress::ch('a')), Some(Action::Refresh));
-        // remove で1件減り、見つからなくなる。
+        // remove decreases it by one item and it can no longer be found.
         menu.remove(KeyPress::ch('a'));
         assert_eq!(menu.items.len(), 1);
         assert_eq!(
@@ -2963,12 +2997,13 @@ mod tests {
             Some(Action::ToggleInfo),
             "他は残る"
         );
-        // 存在しないキーの remove は no-op。
+        // remove on a nonexistent key is a no-op.
         menu.remove(KeyPress::ch('z'));
         assert_eq!(menu.items.len(), 1);
     }
 
-    // Agent Watch: C=変更フィルタ / n・N=変更間ジャンプ / F=フォロー(global) / y@=@参照 / Y=@path#L。
+    // Agent Watch: C=changed-files filter / n·N=jump between changes / F=follow (global) /
+    // y@=@reference / Y=@path#L.
     #[test]
     fn agent_watch_keys_resolve() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -2984,7 +3019,7 @@ mod tests {
             m.resolve(Surface::Tree, None, KeyPress::ch('N')),
             Resolution::Action(Action::JumpPrevChange)
         );
-        // F は global 継承(Tree/Preview どちらからでも)。
+        // F is inherited via global (works from either Tree or Preview).
         for sfc in [Surface::Tree, Surface::PreviewText, Surface::PreviewImage] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('F')),
@@ -2992,12 +3027,13 @@ mod tests {
                 "F が {sfc:?} でフォロー切替に解決する"
             );
         }
-        // y→@ = @参照パスコピー(全 y リーダー面で共通メニュー)。
+        // y→@ = @reference path copy (a common menu item on every y-leader surface).
         assert_eq!(
             m.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('@')),
             Resolution::Action(Action::CopyPath(CopyKind::AtRef))
         );
-        // y→c = コードブロックコピー(Copy リーダーのメニュー項目。表示は面/フォーカスで出し分け)。
+        // y→c = code-block copy (a Copy-leader menu item; whether it's shown depends on the
+        // surface/focus).
         assert_eq!(
             m.resolve(
                 Surface::PreviewText,
@@ -3006,7 +3042,7 @@ mod tests {
             ),
             Resolution::Action(Action::CopyCodeBlock)
         );
-        // Y = 選択/キャレットの @path#L 参照(通常/visual 両面)。
+        // Y = @path#L reference for the selection/caret (both the normal and visual surfaces).
         for sfc in [Surface::PreviewText, Surface::PreviewTextVisual] {
             assert_eq!(
                 m.resolve(sfc, None, KeyPress::ch('Y')),
@@ -3014,7 +3050,8 @@ mod tests {
                 "Y が {sfc:?} で @参照コピーに解決する"
             );
         }
-        // diff ビュー内の n/N=変更ファイル回遊(ツリーの n/N と同じ Action に解決)。
+        // n/N inside the diff view = cycle through changed files (resolve to the same Action as
+        // the tree's n/N).
         #[cfg(feature = "git")]
         for (k, a) in [('n', Action::JumpNextChange), ('N', Action::JumpPrevChange)] {
             assert_eq!(
@@ -3023,14 +3060,14 @@ mod tests {
                 "diff ビューの {k} が変更間ジャンプに解決する"
             );
         }
-        // diff ビュー内の f=フォロー範囲トグル(開始以降 ⇄ フル)。
+        // f inside the diff view = toggle the follow range (since follow-start ⇄ full).
         #[cfg(feature = "git")]
         assert_eq!(
             m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('f')),
             Resolution::Action(Action::ToggleFollowDiffScope),
             "diff ビューの f がフォロー範囲トグルに解決する"
         );
-        // 設定文字列の往復。
+        // Config-string round trip.
         for s in [
             "toggle_changed_filter",
             "jump_next_change",
@@ -3048,12 +3085,12 @@ mod tests {
     #[test]
     fn file_duplicate_resolves_and_round_trips() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        // Space→ でファイル管理リーダーへ入る。
+        // Space→ enters the file-management leader.
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch(' ')),
             Resolution::EnterLeader(LeaderId::File)
         );
-        // Space→D = 複製(Tree と Visual は同じ File リーダーを共有)。
+        // Space→D = duplicate (Tree and Visual share the same File leader).
         for sfc in [Surface::Tree, Surface::Visual] {
             assert_eq!(
                 m.resolve(sfc, Some(LeaderId::File), KeyPress::ch('D')),
@@ -3061,14 +3098,15 @@ mod tests {
                 "{sfc:?} の Space→D が複製に解決する"
             );
         }
-        // 設定文字列の往復。
+        // Config-string round trip.
         let a = action_from_str("file_duplicate").expect("file_duplicate は既知アクション");
         assert_eq!(action_name(a), "file_duplicate");
         assert_eq!(a, Action::FileDuplicate);
     }
 
-    /// グラフの基準解除は `x` と `0` の両方で効く(`0` は「起点へ戻る」感覚の別名)。
-    /// `s`(基準設定)と `b`(ブランチパネル)は従来どおりで、log 面には基準キーが漏れない。
+    /// Clearing the graph's base works with both `x` and `0` (`0` is an alias for the "return to
+    /// the anchor" feel). `s` (set base) and `b` (branch panel) work as before, and no base keys
+    /// leak onto the log surface.
     #[cfg(feature = "git")]
     #[test]
     fn graph_base_clears_with_x_and_zero() {
@@ -3084,7 +3122,7 @@ mod tests {
             m.resolve(Surface::GitGraph, None, KeyPress::ch('s')),
             Resolution::Action(Action::GitGraphSetBase)
         );
-        // log 面はグラフ専用の基準キーを持たない(`0` も `x` も未割当)。
+        // The log surface has none of the graph's dedicated base keys (neither `0` nor `x` is bound).
         for k in ['x', '0', 's'] {
             assert_eq!(
                 m.resolve(Surface::GitLog, None, KeyPress::ch(k)),
@@ -3092,18 +3130,20 @@ mod tests {
                 "log 面に `{k}` は割り当てない"
             );
         }
-        // 設定文字列の往復。
+        // Config-string round trip.
         let a = action_from_str("git_graph_clear_base").expect("既知アクション");
         assert_eq!(action_name(a), "git_graph_clear_base");
         assert_eq!(a, Action::GitGraphClearBase);
     }
 
-    /// **既定でキーに割り当てられている全アクション**が `action_name` → `action_from_str` で
-    /// 往復すること＝「全コマンドが `[keys.*]` で再割り当てできる」という約束の機械的な検査。
+    /// A mechanical check that **every action bound to a key by default** round-trips through
+    /// `action_name` → `action_from_str` — i.e. the promise that "every command can be reassigned
+    /// via `[keys.*]`".
     ///
-    /// 個別テストは「自分が足したアクション」しか見ないので、片側だけ足した配線漏れを取り逃す。
-    /// 実際、グラフの基準固定/ブランチパネル 8 アクションは `action_name` にだけ在って
-    /// `action_from_str` に無く、config から再割り当てできなかった(2026-07-20 に本テストで検出)。
+    /// An individual test only ever looks at "the action I just added", so it misses a wiring gap
+    /// where only one side was added. In fact, the graph's base-pinning/branch-panel 8 actions
+    /// existed only in `action_name` and not in `action_from_str`, so they could not be reassigned
+    /// via config (detected by this test on 2026-07-20).
     #[test]
     fn keymap_actions_round_trip() {
         let m = KeyMap::defaults(KeyScheme::Vim);
@@ -3122,9 +3162,9 @@ mod tests {
         }
         assert!(!actions.is_empty(), "既定キーマップが空ではない");
 
-        // 意図的な例外: `tab_goto` は数字キー 1-9 に固定で、config で変えようとすると
-        // `apply_binding` が明示的に警告を出して無視する(§1.2)。よって往復しないのが正しい。
-        // 新たな例外を足すときは、ここに理由を書いて初めて許される。
+        // Intentional exception: `tab_goto` is fixed to digit keys 1-9, and trying to change it via
+        // config makes `apply_binding` explicitly warn and ignore it (§1.2). So not round-tripping
+        // is correct. A new exception may only be added once its reason is written here.
         const FIXED_KEY_ACTIONS: &[&str] = &["tab_goto"];
 
         let mut missing: Vec<String> = Vec::new();
@@ -3134,7 +3174,7 @@ mod tests {
                 continue;
             }
             match action_from_str(&name) {
-                // 往復して同じアクションに戻ること(別名に化けない)。
+                // Round-trip back to the same action (does not turn into an alias).
                 Some(back) if back == a => {}
                 _ => missing.push(name),
             }
@@ -3147,12 +3187,13 @@ mod tests {
         );
     }
 
-    /// バグ3の回帰テスト: `per_surface` に登録された(=キーバインドが実在し、押せば発火する)
-    /// 全 `Surface` が `[keys.<name>]` の名前を持ち、`key_target_from_name` で解決できること。
-    /// `Surface::GitGraphPicker` は `per_surface` に登録済みなのに `key_target_from_name` に名前が
-    /// 無く、グラフのブランチパネルの5アクション(`config.example.toml` は設定可能と案内していた)
-    /// が config で再割り当てできなかった。「登録簿(per_surface)」と「設定名の登録簿
-    /// (key_target_from_name)」の同期を、この機械検査で常時確認する。
+    /// Regression test for bug 3: every `Surface` registered in `per_surface` (= its key bindings
+    /// actually exist and fire when pressed) has a `[keys.<name>]` name and can be resolved via
+    /// `key_target_from_name`. `Surface::GitGraphPicker` was registered in `per_surface` but had no
+    /// name in `key_target_from_name`, so the graph branch panel's 5 actions (which
+    /// `config.example.toml` advertised as configurable) could not be reassigned via config. This
+    /// mechanical check keeps the "registry" (`per_surface`) and the "config-name registry"
+    /// (`key_target_from_name`) permanently in sync.
     #[test]
     fn keymap_names_cover_every_bindable_surface() {
         let m = KeyMap::defaults(KeyScheme::Vim);

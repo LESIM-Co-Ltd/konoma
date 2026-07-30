@@ -1,10 +1,12 @@
-// 内蔵テキスト読み込み (プレビュー共通基盤)。
+// Built-in text loading (shared preview foundation).
 //
-// 役割:
-//   - is_probably_text: 先頭バイトを見てテキスト/バイナリを判定 (NUL バイト有無)。
-//   - load: サイズ・行数上限つきでファイルを読み、行に分割して返す。
-// 外部依存ゼロ。素の環境でも必ず動く (外部依存が無くても動く、を満たす)。
-// 巨大ファイルで固まらないよう上限を設ける。重くなったら後で別スレッド化を検討。
+// Responsibilities:
+//   - is_probably_text: judge text vs. binary by looking at the leading bytes (NUL byte presence).
+//   - load: read a file with size/line-count caps and return it split into lines.
+// Zero external dependencies. Always works even in a bare environment (satisfies "works even
+// without external dependencies").
+// Caps are in place so huge files don't freeze the app; consider moving this to a separate thread
+// later if it gets heavy.
 
 use std::io::Read;
 use std::path::Path;
@@ -28,7 +30,7 @@ pub fn is_probably_text(path: &Path) -> bool {
         return false;
     };
     if n == 0 {
-        return true; // 空ファイルはテキスト扱い
+        return true; // treat an empty file as text
     }
     !buf[..n].contains(&0)
 }

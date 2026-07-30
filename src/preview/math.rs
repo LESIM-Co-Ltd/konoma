@@ -111,9 +111,10 @@ mod tests {
         assert!(d.contains("<svg") && i.contains("<svg"));
     }
 
-    /// 回帰 2026-07-20: RaTeX は全グリフを純黒 `rgba(0,0,0,1)` で塗るため、konoma のダーク端末では
-    /// 黒 on ダーク＝**不可視**(予約行に画像は描かれているのに空白に見える正体)。`color` で塗り替え、
-    /// 出力に黒が残らず・指定色が載り・不透明インクが実在することを機械検証する。
+    /// Regression 2026-07-20: RaTeX paints every glyph pure black (`rgba(0,0,0,1)`), so on konoma's
+    /// dark terminal black-on-dark is **invisible** (the reason the reserved slot showed an image yet
+    /// looked blank). Repaint with `color` and mechanically verify that no black remains in the output,
+    /// the specified color is applied, and opaque ink actually exists.
     #[test]
     fn recolors_glyphs_away_from_invisible_black() {
         use image::GenericImageView;
@@ -123,7 +124,7 @@ mod tests {
             "不可視の純黒フィルが残っていない"
         );
         assert!(svg.contains("#d0d0d0"), "指定色でグリフを塗る");
-        // ラスタの不透明ピクセルは黒(0,0,0)でなく指定した明色になっている。
+        // The raster's opaque pixels are the specified light color, not black (0,0,0).
         let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), Path::new("m.svg"), 1024)
             .expect("rasterizes");
         let opaque_non_black = img

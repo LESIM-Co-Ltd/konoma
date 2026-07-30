@@ -1,6 +1,8 @@
-// `?` ヘルプ: 全キーバインドの一覧オーバーレイ (発見性の最終手段)。
-// tui-design 規約「フッターは数個だけ常時表示、全部は ? の裏」に対応。
-// 中央にボーダー付きポップアップを出し、下地は Clear で消す。設定キー(コピー等)を反映。
+// `?` help: an overlay listing every keybinding (last resort for discoverability).
+// Follows the tui-design convention: "the footer always shows only a few keys, everything else
+// lives behind ?".
+// Shows a bordered popup centered on the screen, clearing what's underneath with Clear. Reflects
+// configured keys (copy, etc.).
 
 use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Rect};
@@ -36,8 +38,9 @@ impl HelpSection {
 /// Help body (lines). **View-specific sections are owned by each view** (`tree`/`preview`). Here we just gather the active
 /// view's sections + the common ones (Tabs/Copy/Global) and format them into a Line sequence. Reflects configured keys and language.
 pub fn help_lines(app: &App) -> Vec<Line<'static>> {
-    // Git オーバーレイ(o/L/G/b/詳細)が前面なら、その git 用節を出す(mode は裏で Tree/Preview のまま
-    // なので mode 分岐だと git キーが出ない=今回の不具合)。それ以外は通常モードの節。
+    // If a git overlay (o/L/G/b/detail) is in front, show its git-specific section (mode stays
+    // Tree/Preview underneath, so branching on mode alone would hide the git keys — the bug this
+    // fixes). Otherwise use the section for the normal mode.
     let git_active = app.is_git_view()
         || app.is_git_log()
         || app.is_git_graph()
@@ -118,7 +121,7 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
         .row("[ / ]", l(crate::i18n::Msg::PrevNextTab))
         .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))
         .row("T", l(crate::i18n::Msg::HelpTabList))];
-    // パスコピーは `y` リーダー(設定反映済み)から。タイトルは "Copy path"。
+    // Path copy comes from the `y` leader (reflects config). The title is "Copy path".
     if let Some(sec) = leader_section(app, LeaderId::Copy, "y") {
         out.push(sec);
     }
@@ -136,7 +139,8 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
 /// Render the full key list in a centered popup. `area` is the whole screen.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let lines = help_lines(app);
-    // ポップアップの大きさ: 幅は最大66、画面に収める。高さは内容＋枠、画面に収める。
+    // Popup size: width caps at 66, fitted to the screen. Height is content + border, fitted to
+    // the screen.
     let w = 66.min(area.width.saturating_sub(2)).max(20);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -150,7 +154,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
 
-    // 本文の縦スクロールを内側高さでクランプ。
+    // Clamp the body's vertical scroll to the inner height.
     let inner_h = h.saturating_sub(2);
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = app.help_scroll.min(max_scroll);
@@ -164,7 +168,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((scroll, 0))
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup); // 下地を消してから描く
+    frame.render_widget(Clear, popup); // clear what's underneath before drawing
     frame.render_widget(para, popup);
 }
 
@@ -196,7 +200,8 @@ mod tests {
 
     #[test]
     fn help_is_mode_specific() {
-        // Tree: ツリー操作と git マーカーを出し、プレビュー専用節は出さない。
+        // Tree: shows tree operations and the git marker section; does not show preview-only
+        // sections.
         let mut a = app();
         let tree = text(&a);
         assert!(tree.contains("Tree"), "Tree 節");
@@ -206,26 +211,27 @@ mod tests {
             !tree.contains("horizontal scroll"),
             "テキスト専用節は出さない"
         );
-        // 共通節 (タブ/コピー/共通) はどのモードでも出る。
+        // Common sections (Tabs/Copy/Global) show up in any mode.
         assert!(
             tree.contains("Tabs") && tree.contains("Copy") && tree.contains("Global"),
             "共通節"
         );
 
-        // テキストプレビュー (画像でない Preview): テキスト節のみ。Tree/Git/画像は出さない。
+        // Text preview (a Preview that isn't an image): only the text section. Does not show
+        // Tree/Git/image.
         a.tab.mode = Mode::Preview;
         let txt = text(&a);
         assert!(txt.contains("Preview: text"), "テキスト節");
         assert!(txt.contains("horizontal scroll"), "横スクロール行");
-        // 画像節の目印は専用タイトルで判定する(テキストプレビューにもインライン図の
-        // その場ズーム行があり "zoom" は共有語になったため)。
+        // Detect the image section by its dedicated title (text preview also has an in-place-zoom
+        // row for inline diagrams now, so "zoom" became a shared word).
         assert!(
             !txt.contains("Git status (row markers)") && !txt.contains("Preview: image"),
             "Tree/画像専用節は出さない"
         );
-        // スクロール行は矢印付き表記 (h/l/← → 行に揃える #3)。
+        // The scroll row uses arrow notation (matches the h/l/← → row, #3).
         assert!(txt.contains("j / k / ↑ ↓"), "矢印付きスクロール行");
-        // 共通のタブ節は残る (Preview 中もタブ操作可)。
+        // The common Tabs section remains (tab operations still work during Preview).
         assert!(txt.contains("Tabs"), "Preview でも共通タブ節");
     }
 }

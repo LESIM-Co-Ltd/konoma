@@ -1,5 +1,5 @@
-// 設定の読み込みと、フォーマット→プレビュー方法の解決。
-// 設定が無い・壊れている場合もデフォルトで動く（堅牢性優先）。
+// Config loading, and resolving format → preview method.
+// Works with defaults even when the config is absent/broken (robustness first).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -89,7 +89,7 @@ impl Default for GitConfig {
     fn default() -> Self {
         Self {
             tool: "lazygit".into(),
-            diff: "unified".into(), // 既定は縦。横/Auto は設定 or 実行時 `s`。
+            diff: "unified".into(), // default is vertical. horizontal/Auto via config or runtime `s`.
             main_branch: "".into(),
         }
     }
@@ -242,10 +242,10 @@ pub struct KeysConfig {
     /// Copy prefix (default "c"; "y" for vim-style yank). [backward-compat alias]
     pub copy_prefix: String,
     /// Suffix key for each copy target. [backward-compat alias]
-    pub copy_name: String, // ファイル名
-    pub copy_full: String,     // フルパス
-    pub copy_relative: String, // 相対パス
-    pub copy_parent: String,   // 親ディレクトリ
+    pub copy_name: String, // file name
+    pub copy_full: String,     // full path
+    pub copy_relative: String, // relative path
+    pub copy_parent: String,   // parent directory
     /// The raw new-form `[keys.<surface>]` table (surface name -> (chord string -> action string)).
     /// Example: `surfaces["tree"]["space d"] = "file_delete"`. Interpreted by `crate::keymap::KeyMap::from_config`.
     #[serde(flatten)]
@@ -317,9 +317,9 @@ pub struct UiConfig {
     /// falls back to `"fuzzy"` (see `UiConfig::filter_mode`).
     pub filter_mode: String,
     pub tabbar: String,     // "always" | "auto" | "hidden"
-    pub icons: bool, // ツリー行頭の Nerd Font アイコン (要 Nerd Font。無ければ false でプレーン記号)
-    pub wrap: bool, // テキストプレビューの折返し。true=折返して全文表示 / false=非折返し+横スクロール
-    pub line_numbers: bool, // コード/テキストプレビューに行番号ガターを出すか (既定 false)
+    pub icons: bool, // Nerd Font icon at the start of each tree row (needs Nerd Font; false for plain symbols if unavailable)
+    pub wrap: bool, // wrapping in text previews. true = wrap and show the whole line / false = no wrap + horizontal scroll
+    pub line_numbers: bool, // whether to show a line-number gutter in code/text previews (default false)
     /// Show an editor-style git change gutter (Zed-like: green added / blue modified / red deleted
     /// markers in the left margin) on code/text previews of files with working-tree changes. Default true.
     pub git_gutter: bool,
@@ -333,13 +333,13 @@ pub struct UiConfig {
     /// "indicator" (default) = show a loading display in the center of the screen, then the content / "progressive" = show plain text immediately
     /// and swap in highlighting as soon as it is ready (no freeze). Warmed-up languages display instantly, so neither applies.
     pub preview_loading: String,
-    pub path_style: String, // タイトルのパス表示既定。"relative" | "home" | "full" (p キーで巡回)
-    pub keys: String,       // プレビューのページ送りキー流儀。"vim" | "less" (既定 vim)
-    pub lang: String, // 表示言語。"auto"(既定:OS言語に追従) | "en" | "jp"。ヘルプ/ヒント/メッセージ等に適用。
+    pub path_style: String, // default path display in the title. "relative" | "home" | "full" (cycled with the p key)
+    pub keys: String,       // preview paging key style. "vim" | "less" (default vim)
+    pub lang: String, // display language. "auto" (default: follows the OS language) | "en" | "jp". Applied to help/hints/messages etc.
     /// Layout of the status chrome. "split" (default) = context (mode/path/zoom) on top, key hints at the bottom /
     /// "bottom" = everything on one bottom line / "top" = everything on one top line.
     pub statusbar: String,
-    pub theme: ThemeConfig, // 配色 (現状はコード背景色のみ)
+    pub theme: ThemeConfig, // colors (currently only the code background color)
     /// Image display size scale (0.1 to 1.0). Shrinks the center-filled rectangle to this factor for display.
     /// Smaller values reduce the pixels transferred to kitty (= draw/zoom wait) but also make the display smaller.
     /// The font is shrunk at actual size, so placement (centered) and aspect are always correct.
@@ -563,11 +563,11 @@ pub struct ThemeConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            bg: "none".into(),         // 既定は端末既定背景 (塗らない)
+            bg: "none".into(), // default is the terminal's default background (not painted)
             code_bg: "#2b303b".into(), // = DEFAULT_CODE_BG (rgb 43,48,59)
             code_label_align: "right".into(),
             code_label_bg: "auto".into(),
-            code_theme: "TwoDark".into(), // = Zed の One Dark
+            code_theme: "TwoDark".into(), // = Zed's One Dark
         }
     }
 }
@@ -635,9 +635,9 @@ pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
     pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "text"
-    pub command: Option<String>, // テンプレ: {path} {out}
-    pub render_as: Option<String>, // command 出力の扱い: "image" | "text"
-    pub detached: bool,          // 別プロセスで開きTUIをブロックしない（動画等）
+    pub command: Option<String>, // template: {path} {out}
+    pub render_as: Option<String>, // how to treat the command's output: "image" | "text"
+    pub detached: bool, // opens in a separate process so it doesn't block the TUI (video, etc.)
 }
 
 impl Default for UiConfig {
@@ -691,7 +691,7 @@ impl Default for UiConfig {
 
 impl Default for PreviewConfig {
     fn default() -> Self {
-        // デフォルトの委譲ルール。外部依存はあくまで任意。
+        // Default delegation rules. External dependencies are always optional.
         Self {
             rules: vec![
                 Rule {
@@ -701,11 +701,11 @@ impl Default for PreviewConfig {
                 },
                 Rule {
                     glob: Some("*.{mmd,mermaid}".into()),
-                    builtin: Some("mermaid".into()), // 単体 mermaid ファイルは mermaid-text で描画
+                    builtin: Some("mermaid".into()), // a standalone mermaid file is rendered via mermaid-text
                     ..Rule::empty()
                 },
                 Rule {
-                    // SVG はラスタ画像より先に拾う(infer は svg も image/* と判定するため順序が重要)。
+                    // SVG is picked up before raster images (infer also classifies svg as image/*, so order matters).
                     glob: Some("*.svg".into()),
                     builtin: Some("svg".into()),
                     ..Rule::empty()
@@ -716,7 +716,7 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
-                    // CSV/TSV は整列テーブル(列レインボー＋セルカーソル)で表示する。
+                    // CSV/TSV are shown as an aligned table (column rainbow + cell cursor).
                     glob: Some("*.csv".into()),
                     builtin: Some("csv".into()),
                     ..Rule::empty()
@@ -727,14 +727,15 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
-                    // アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない(中身は読まない・原則#3)。
+                    // Archive contents listing (name/size/modified date). Doesn't extract (doesn't read the contents — principle #3).
                     glob: Some("*.{zip,tar,tgz}".into()),
                     builtin: Some("archive".into()),
                     ..Rule::empty()
                 },
                 Rule {
-                    // globset の `*.{...}` alternation は単純ドット区切りの複合拡張子(.tar.gz)を
-                    // 拾えないので別ルール(csv/tsv の隣に2ルールで登録する形は既存の svg/image と同型)。
+                    // globset's `*.{...}` alternation can't catch a compound extension joined by
+                    // plain dots (.tar.gz), so it's a separate rule (registering 2 rules side by
+                    // side, as with csv/tsv, mirrors the existing svg/image shape).
                     glob: Some("*.tar.gz".into()),
                     builtin: Some("archive".into()),
                     ..Rule::empty()
@@ -745,16 +746,18 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
-                    // 動画はサムネイル(代表フレーム1枚)を内蔵表示する。端末内再生はしない。
-                    // 再生したい場合はユーザが command="mpv {path}" 等のルールに差し替える(委譲)。
+                    // Video shows a built-in thumbnail (one representative frame). It doesn't play
+                    // inside the terminal.
+                    // If playback is wanted, the user swaps in a rule like command="mpv {path}" (delegation).
                     mime: Some("video/*".into()),
                     builtin: Some("video".into()),
                     ..Rule::empty()
                 },
                 Rule {
-                    // PDF は純Rust(hayro)でページをラスタライズして内蔵表示する(外部ツール不要)。
-                    // hayro が描けない(暗号化/破損等)場合のみ pdftocairo/pdftoppm/qlmanage/sips へ
-                    // 降格し、それも無ければ安全にヒント表示へフォールバックする(原則#3)。
+                    // PDF is shown built-in by rasterizing the page in pure Rust (hayro) — no
+                    // external tool needed. Only when hayro can't render it (encrypted/corrupted,
+                    // etc.) does it degrade to pdftocairo/pdftoppm/qlmanage/sips, and if those are
+                    // absent too it safely falls back to a hint display (principle #3).
                     glob: Some("*.pdf".into()),
                     builtin: Some("pdf".into()),
                     ..Rule::empty()
@@ -784,21 +787,23 @@ impl Config {
         let Some(path) = dirs_config_path() else {
             return (Config::default(), None);
         };
-        // 設定ファイルが無いのは正常(既定で動く)。読めるが壊れている場合のみエラーを報告。
+        // An absent config file is normal (it runs on defaults). Only report an error when it can
+        // be read but is broken.
         let Ok(text) = std::fs::read_to_string(&path) else {
             return (Config::default(), None);
         };
         match toml::from_str::<Config>(&text) {
             Ok(cfg) => (cfg, None),
             Err(e) => {
-                // toml のエラーは複数行になりうるので1行に圧縮。
+                // A toml error can span multiple lines, so compress it to one line.
                 let msg = e
                     .to_string()
                     .lines()
                     .next()
                     .unwrap_or("parse error")
                     .to_string();
-                // 設定が壊れている=言語も読めないので、既定の英語で通知する。
+                // The config is broken = even the language setting can't be read, so notify in the
+                // default (English).
                 (
                     Config::default(),
                     Some(format!("config error (using defaults): {msg}")),
@@ -834,8 +839,8 @@ impl Config {
 
 fn rule_matches(rule: &Rule, path: &Path) -> bool {
     if let Some(glob) = &rule.glob {
-        // 大文字拡張子(README.MD / *.RS 等)も取りこぼさないよう case-insensitive で照合。
-        // 小文字パターンは元々小文字名にマッチするので既存挙動は不変。
+        // Match case-insensitively so uppercase extensions (README.MD / *.RS etc.) aren't missed.
+        // A lowercase pattern already matches lowercase names, so existing behavior is unchanged.
         if let Ok(set) = globset::GlobBuilder::new(glob)
             .case_insensitive(true)
             .build()
@@ -900,10 +905,10 @@ mod tests {
             vec![' ', '/', 'x'],
             "カスタム3状態"
         );
-        // 不正: 2文字の要素 → 既定へフォールバック。
+        // Invalid: a 2-character entry → falls back to the default.
         ui.md_task_states = vec![" ".into(), "xx".into()];
         assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
-        // 不正: 1要素だけ(巡回先が無い) → 既定へ。空も同様。
+        // Invalid: only 1 entry (nowhere to cycle to) → falls back to the default. Same for empty.
         ui.md_task_states = vec!["x".into()];
         assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
         ui.md_task_states = Vec::new();
@@ -920,7 +925,7 @@ mod tests {
 
     #[test]
     fn glob_matches_uppercase_extension() {
-        // 大文字拡張子(README.MD / *.RS 相当)も case-insensitive で規則にヒットする。
+        // Uppercase extensions (README.MD / equivalent to *.RS) also hit the rule case-insensitively.
         let p = tmp("README.MD", b"# title\n");
         let kind = Config::default().resolve_preview(&p);
         assert!(matches!(kind, PreviewKind::Markdown(_)), "got {kind:?}");
@@ -935,25 +940,25 @@ mod tests {
     #[test]
     fn editor_build_argv_substitutes_or_appends_path() {
         let path = Path::new("/tmp/a.rs");
-        // {path} があればその位置へ置換(行指定なし)。
+        // When {path} is present, substitute it in place (no line specified).
         assert_eq!(
             build_argv("code -g {path}:1", path, None),
             vec!["code", "-g", "/tmp/a.rs:1"]
         );
-        // 無ければ末尾に追加。
+        // Otherwise append it at the end.
         assert_eq!(build_argv("nvim", path, None), vec!["nvim", "/tmp/a.rs"]);
         assert_eq!(
             build_argv("code -w", path, None),
             vec!["code", "-w", "/tmp/a.rs"]
         );
-        // 空テンプレは vim フォールバック。
+        // An empty template falls back to vim.
         assert_eq!(build_argv("   ", path, None), vec!["vim", "/tmp/a.rs"]);
     }
 
     #[test]
     fn editor_build_argv_opens_at_line() {
         let path = Path::new("/tmp/a.rs");
-        // {line} トークンはその位置に行番号を差し込む(明示テンプレ優先=注入しない)。
+        // The {line} token inserts the line number in place (an explicit template takes priority = no injection).
         assert_eq!(
             build_argv("code -g {path}:{line}", path, Some(42)),
             vec!["code", "-g", "/tmp/a.rs:42"]
@@ -962,8 +967,8 @@ mod tests {
             build_argv("nvim +{line} {path}", path, Some(42)),
             vec!["nvim", "+42", "/tmp/a.rs"]
         );
-        // {line} トークン無し+行あり=既知エディタごとに自動注入。
-        // vim 系は +N(カーソル)＋ +normal! zt(その行を画面先頭へスクロール)。
+        // No {line} token + a line is given = auto-inject per known editor.
+        // The vim family gets +N (cursor) + +normal! zt (scroll that line to the top of the window).
         assert_eq!(
             build_argv("vim", path, Some(42)),
             vec!["vim", "+42", "+normal! zt", "/tmp/a.rs"]
@@ -972,12 +977,12 @@ mod tests {
             build_argv("nvim", path, Some(7)),
             vec!["nvim", "+7", "+normal! zt", "/tmp/a.rs"]
         );
-        // 空テンプレ(=vim フォールバック)でも行＋zt が効く。
+        // Even an empty template (= vim fallback) still gets the line + zt.
         assert_eq!(
             build_argv("   ", path, Some(9)),
             vec!["vim", "+9", "+normal! zt", "/tmp/a.rs"]
         );
-        // nano/emacs 等は +N のみ(zt は vim 専用コマンドなので付けない)。
+        // nano/emacs etc. get only +N (zt is a vim-only command, so it's not added).
         assert_eq!(
             build_argv("nano", path, Some(5)),
             vec!["nano", "+5", "/tmp/a.rs"]
@@ -986,19 +991,19 @@ mod tests {
             build_argv("emacs", path, Some(8)),
             vec!["emacs", "+8", "/tmp/a.rs"]
         );
-        // VS Code は -g path:line。
+        // VS Code is -g path:line.
         assert_eq!(
             build_argv("code -w", path, Some(15)),
             vec!["code", "-g", "-w", "/tmp/a.rs:15"]
         );
-        // Sublime/Helix は path:line。
+        // Sublime/Helix is path:line.
         assert_eq!(build_argv("hx", path, Some(3)), vec!["hx", "/tmp/a.rs:3"]);
-        // 未知エディタは注入せず(先頭=トップで開く)。
+        // An unknown editor gets no injection (opens at the top).
         assert_eq!(
             build_argv("weirded", path, Some(3)),
             vec!["weirded", "/tmp/a.rs"]
         );
-        // 行なし(ツリーからの編集など)は従来どおり注入しない。
+        // With no line (editing from the tree, etc.), no injection, as before.
         assert_eq!(build_argv("vim", path, None), vec!["vim", "/tmp/a.rs"]);
     }
 
@@ -1009,14 +1014,14 @@ mod tests {
             ext: HashMap::new(),
         };
         e.ext.insert("md".into(), "code -w".into());
-        e.ext.insert("blank".into(), "   ".into()); // 空白のみは無効
-                                                    // 拡張子別が最優先。
+        e.ext.insert("blank".into(), "   ".into()); // whitespace-only is invalid
+                                                    // per-extension takes highest priority.
         assert_eq!(e.configured("md").as_deref(), Some("code -w"));
-        // 拡張子別が無ければ command(全体既定)。
+        // Falls back to command (the overall default) when there's no per-extension entry.
         assert_eq!(e.configured("rs").as_deref(), Some("nvim"));
-        // 空白のみの拡張子別は無効 → command にフォールバック。
+        // A whitespace-only per-extension entry is invalid → falls back to command.
         assert_eq!(e.configured("blank").as_deref(), Some("nvim"));
-        // command も空なら None(=呼び出し側で env→vim)。
+        // If command is also empty, None (= the caller falls through to env → vim).
         let empty = EditorConfig::default();
         assert_eq!(empty.configured("rs"), None);
     }
@@ -1028,12 +1033,12 @@ mod tests {
             ext: HashMap::new(),
         };
         e.ext.insert("md".into(), "code -w".into());
-        // 大文字拡張子でも小文字照合でヒット、末尾にパス追加。
+        // Hits even an uppercase extension via lowercase matching, appends the path at the end.
         assert_eq!(
             e.resolve(Path::new("/x/NOTE.MD"), None),
             vec!["code", "-w", "/x/NOTE.MD"]
         );
-        // 未登録拡張子は command。
+        // An unregistered extension uses command.
         assert_eq!(
             e.resolve(Path::new("/x/a.rs"), None),
             vec!["nvim", "/x/a.rs"]
@@ -1042,7 +1047,7 @@ mod tests {
 
     #[test]
     fn unknown_text_falls_back_to_text() {
-        // 拡張子なし・どのルールにも当たらないテキスト (LICENSE/Makefile 相当)。
+        // No extension, matches no rule, plain text (equivalent to LICENSE/Makefile).
         let p = tmp("LICENSE", b"MIT License\n\nPermission...\n");
         let kind = Config::default().resolve_preview(&p);
         assert!(matches!(kind, PreviewKind::Text(_)), "got {kind:?}");
@@ -1051,15 +1056,15 @@ mod tests {
 
     #[test]
     fn theme_code_bg_parses_hex_none_and_invalid() {
-        // 既定 (空設定) は既定色。
+        // The default (empty config) is the default color.
         assert_eq!(ThemeConfig::default().code_bg(), Some(DEFAULT_CODE_BG));
-        // hex 指定。
+        // hex specification.
         let t = ThemeConfig {
             code_bg: "#101820".into(),
             ..Default::default()
         };
         assert_eq!(t.code_bg(), Some(Color::Rgb(16, 24, 32)));
-        // "none"/空白/大文字混じり → 背景なし。
+        // "none" / whitespace / mixed case → no background.
         for v in ["none", "  NONE  ", ""] {
             let t = ThemeConfig {
                 code_bg: v.into(),
@@ -1067,7 +1072,7 @@ mod tests {
             };
             assert_eq!(t.code_bg(), None, "{v:?} は None になるべき");
         }
-        // 不正値はクラッシュせず既定色にフォールバック。
+        // An invalid value doesn't crash — it falls back to the default color.
         let t = ThemeConfig {
             code_bg: "definitely-not-a-color".into(),
             ..Default::default()
@@ -1077,15 +1082,15 @@ mod tests {
 
     #[test]
     fn theme_bg_parses_and_defaults_to_none() {
-        // 全体背景: 既定は none (端末既定のまま)。
+        // Overall background: the default is none (stays the terminal default).
         assert_eq!(ThemeConfig::default().bg(), None);
-        // 色指定は反映。
+        // A color specification is applied.
         let t = ThemeConfig {
             bg: "#102030".into(),
             ..Default::default()
         };
         assert_eq!(t.bg(), Some(Color::Rgb(16, 32, 48)));
-        // 不正値は None (端末既定にフォールバック=塗らない)。
+        // An invalid value is None (falls back to the terminal default = not painted).
         let t = ThemeConfig {
             bg: "nope-xyz".into(),
             ..Default::default()
@@ -1105,23 +1110,23 @@ mod tests {
 
     #[test]
     fn code_label_align_and_bg_resolve() {
-        // 既定: 右寄せ・auto(=code_bg を明るく)。
+        // Default: right-aligned · auto (= code_bg brightened).
         let d = ThemeConfig::default();
         assert!(d.code_label_right());
         assert_eq!(d.code_label_bg(), Some(lighten(DEFAULT_CODE_BG)));
-        // 左寄せ指定。
+        // Left-aligned specification.
         let t = ThemeConfig {
             code_label_align: "left".into(),
             ..Default::default()
         };
         assert!(!t.code_label_right());
-        // 大小無視で left。
+        // "left" case-insensitively.
         let t = ThemeConfig {
             code_label_align: "LEFT".into(),
             ..Default::default()
         };
         assert!(!t.code_label_right());
-        // バッジ背景: 任意色 / none。
+        // Badge background: any color / none.
         let t = ThemeConfig {
             code_label_bg: "#ff0000".into(),
             ..Default::default()
@@ -1132,7 +1137,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(t.code_label_bg(), None);
-        // code_bg=none + auto → バッジも背景なし。
+        // code_bg=none + auto → the badge also has no background.
         let t = ThemeConfig {
             code_bg: "none".into(),
             code_label_bg: "auto".into(),
@@ -1143,23 +1148,23 @@ mod tests {
 
     #[test]
     fn broken_config_reports_error_and_falls_back() {
-        // 壊れた TOML はパースで Err になり、エラー文字列を伴って既定へフォールバックする。
-        let broken = "[keys]\ncopy_prefix = \n"; // 値が無い=構文エラー
+        // Broken TOML fails to parse (Err) and falls back to the default, along with an error string.
+        let broken = "[keys]\ncopy_prefix = \n"; // no value = syntax error
         let parsed = toml::from_str::<Config>(broken);
         assert!(parsed.is_err(), "壊れた TOML は Err になる");
-        // load_reporting の整形(1行化)を模す: Err なら Some(msg)。
+        // Mimics load_reporting's formatting (compressing to one line): Err → Some(msg).
         let msg = parsed.err().map(|e| e.to_string());
         assert!(msg.is_some());
     }
 
     #[test]
     fn copy_keys_default_and_custom() {
-        // 旧 [keys] copy_* スカラ (後方互換 alias) が TOML から正しく読める。
+        // The old [keys] copy_* scalars (backward-compat aliases) parse correctly from TOML.
         let d = KeysConfig::default();
         assert_eq!(d.copy_prefix, "c");
         assert_eq!(d.copy_name, "n");
         assert_eq!(d.copy_full, "p");
-        // vim 風: prefix を y に。
+        // vim-style: set the prefix to y.
         let p = tmp(
             "keys.toml",
             b"[keys]\ncopy_prefix = \"y\"\ncopy_full = \"P\"\n",
@@ -1174,7 +1179,8 @@ mod tests {
 
     #[test]
     fn keys_surfaces_parse_from_toml() {
-        // 新形式 [keys.<surface>] のサブテーブルを surfaces に拾い、旧 copy_* スカラと同居できる。
+        // The new-form [keys.<surface>] subtables are picked up into surfaces and can coexist with
+        // the old copy_* scalars.
         let p = tmp(
             "keys_surfaces.toml",
             br#"
@@ -1221,10 +1227,10 @@ d = "refresh"
     fn to_keymap_config_maps_changed_copy_alias_only() {
         use crate::app::CopyKind;
         use crate::keymap::{Action, KeyMap, KeyPress, KeyScheme, LeaderId, Resolution, Surface};
-        // 既定のままの copy_* は新既定 (n/r/f/p) を clobber しない。
+        // A copy_* left at its default doesn't clobber the new defaults (n/r/f/p).
         let def = KeysConfig::default();
         let km = KeyMap::from_config(KeyScheme::Vim, &def.to_keymap_config());
-        // f=Full / p=Parent (新既定) が保たれる。
+        // f=Full / p=Parent (the new defaults) are preserved.
         assert_eq!(
             km.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
@@ -1234,7 +1240,7 @@ d = "refresh"
             Resolution::Action(Action::CopyPath(CopyKind::Parent))
         );
 
-        // ユーザが copy_full を P に変えた → `y P` が Copy(Full) として追加される (新既定は残る)。
+        // The user changed copy_full to P → `y P` is added as Copy(Full) (the new default remains).
         let custom = KeysConfig {
             copy_full: "P".into(),
             ..KeysConfig::default()
@@ -1244,7 +1250,7 @@ d = "refresh"
             km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('P')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
         );
-        // 新既定の f=Full も残る (additive)。
+        // The new default f=Full also remains (additive).
         assert_eq!(
             km2.resolve(Surface::Tree, Some(LeaderId::Copy), KeyPress::ch('f')),
             Resolution::Action(Action::CopyPath(CopyKind::Full))
@@ -1277,7 +1283,7 @@ d = "refresh"
 
     #[test]
     fn env_nonempty_trims_and_filters_blank() {
-        // ユニークなキー名で並列テストの干渉を避ける。set/unset/空白を網羅。
+        // Use a unique key name to avoid interference from parallel tests. Covers set/unset/whitespace.
         let key = "KONOMA_TEST_ENV_NONEMPTY_PROBE";
         std::env::remove_var(key);
         assert_eq!(env_nonempty(key), None, "未設定は None");
@@ -1312,7 +1318,7 @@ d = "refresh"
 
     #[test]
     fn dirs_config_path_is_under_home_config() {
-        // HOME はこのテストでは変更しない(他テストと並列でも壊さない)。
+        // HOME isn't changed in this test (won't break even run in parallel with other tests).
         if std::env::var_os("HOME").is_some() {
             let p = dirs_config_path().expect("HOME があれば Some");
             assert!(
@@ -1326,7 +1332,7 @@ d = "refresh"
     #[test]
     fn editor_config_resolve_priority_ext_command_env_default() {
         use std::path::Path;
-        // 1) 拡張子別が最優先。
+        // 1) Per-extension takes highest priority.
         let mut ec = EditorConfig {
             command: "code -w".into(),
             ext: HashMap::new(),
@@ -1338,7 +1344,7 @@ d = "refresh"
             vec!["nvim".to_string(), "/x/main.rs".to_string()],
             "{{path}} 置換"
         );
-        // 2) 拡張子未指定なら command(末尾追記)。
+        // 2) When the extension isn't specified, command (appended at the end).
         let argv = ec.resolve(Path::new("/x/readme.md"), None);
         assert_eq!(
             argv,
@@ -1349,8 +1355,9 @@ d = "refresh"
             ]
         );
 
-        // 3) command も ext も空なら $VISUAL → $EDITOR → vim の順。
-        //    VISUAL/EDITOR を読むのはこの resolve のみ。1テスト内で完結させ、必ず復元する。
+        // 3) When both command and ext are empty: $VISUAL → $EDITOR → vim, in that order.
+        //    Only this resolve reads VISUAL/EDITOR. Keep it self-contained within one test and
+        //    always restore them.
         let empty = EditorConfig {
             command: String::new(),
             ext: HashMap::new(),
@@ -1376,7 +1383,7 @@ d = "refresh"
             vec!["vim".to_string(), "/x/f".to_string()],
             "最後は vim"
         );
-        // 復元。
+        // Restore.
         match save_v {
             Some(v) => std::env::set_var("VISUAL", v),
             None => std::env::remove_var("VISUAL"),
@@ -1389,8 +1396,9 @@ d = "refresh"
 
     #[test]
     fn load_reporting_returns_config_and_well_formed_error() {
-        // 実環境(~/.config/konoma/config.toml の有無/内容)に依存するため、不変条件のみ検証する:
-        // パースエラー時の文字列は決まった接頭辞を持つ。クラッシュしないこと。
+        // This depends on the real environment (whether ~/.config/konoma/config.toml exists and
+        // its contents), so only invariants are verified: on a parse error the string has a fixed
+        // prefix. It doesn't crash.
         let (_cfg, err) = Config::load_reporting();
         if let Some(e) = err {
             assert!(

@@ -29,13 +29,14 @@ impl App {
     /// locating matches and of moving to one, so `search_commit` / `jump_to_match` branch on this.
     fn search_target(&self) -> SearchTarget {
         if self.preview_win.is_some() {
-            // Code/Text と `R` の生 Markdown（バイトオフセットで窓を動かす）。
+            // Code/Text and the raw Markdown from `R` (the window moves via byte offset).
             SearchTarget::Windowed
         } else if self.table_data.is_some() {
             SearchTarget::Table
         } else if self.md_cache.is_some() {
-            // 装飾 Markdown / Mermaid。検索対象は**画面に出ている装飾行**であって
-            // ソースではない(装飾は行を増減させるので、ソース行番号では位置を指せない)。
+            // Decorated Markdown / Mermaid. The search target is **the decorated lines shown on
+            // screen**, not the source (decoration adds/removes lines, so a source line number
+            // cannot address a position).
             SearchTarget::Markdown
         } else {
             SearchTarget::Unsupported
@@ -145,7 +146,8 @@ impl App {
             return;
         }
         self.tab.search_idx = match target {
-            // 表: いま居るセル以降の最初の一致へ(読み順)。無ければ先頭へ巡回。
+            // Table: to the first match at or after the current cell (reading order). Wrap to
+            // the top if there is none.
             SearchTarget::Table => {
                 let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
                 self.tab
@@ -154,7 +156,8 @@ impl App {
                     .position(|(_, r, c)| (*r, *c) >= (cr, cc))
                     .unwrap_or(0)
             }
-            // 装飾 md: いま見えている先頭の論理行以降の最初の一致へ。無ければ先頭へ巡回。
+            // Decorated md: to the first match at or after the currently visible top logical
+            // line. Wrap to the top if there is none.
             SearchTarget::Markdown => {
                 let from = self.md_top_logical_line().unwrap_or(0);
                 self.tab
@@ -163,7 +166,8 @@ impl App {
                     .position(|(_, line, _)| *line >= from)
                     .unwrap_or(0)
             }
-            // 窓読み: 現在の表示位置(byte_top)以降の最初の出現へ。無ければ先頭へ巡回。
+            // Windowed: to the first occurrence at or after the current display position
+            // (byte_top). Wrap to the top if there is none.
             _ => {
                 let top = self.tab.preview_byte_top;
                 self.tab
@@ -202,12 +206,14 @@ impl App {
             return;
         };
         match self.search_target() {
-            // 表: (行, 列) はセル座標。カーソルを移すと描画側がスクロールして追従する。
+            // Table: (row, col) are cell coordinates. Moving the cursor makes the render side
+            // scroll to follow.
             SearchTarget::Table => {
                 self.tab.table_cur_row = a;
                 self.tab.table_cur_col = b;
             }
-            // 装飾 md: 一致した論理行を可視域へ(装飾表示のまま=raw に切替えない)。
+            // Decorated md: bring the matched logical line into view (stays in decorated
+            // display = does not switch to raw).
             SearchTarget::Markdown => self.md_scroll_line_into_view(a),
             _ => {
                 self.tab.preview_byte_top = off;

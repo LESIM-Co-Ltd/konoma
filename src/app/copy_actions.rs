@@ -3,7 +3,8 @@ use super::*;
 impl App {
     /// The path to copy. In Preview it is the preview target; in Tree it is the entry selected in the tree.
     pub(super) fn copy_target(&self) -> Option<PathBuf> {
-        // Git 変更ハブ表示中は、ツリーの選択ではなく**変更ファイル**のパスをコピー対象にする。
+        // While the Git changes hub is shown, the copy target is the **changed file** path, not the
+        // tree selection.
         #[cfg(feature = "git")]
         if self.surface() == crate::keymap::Surface::GitChanges {
             return self.git_view_selected();

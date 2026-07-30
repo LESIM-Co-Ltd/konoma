@@ -53,7 +53,7 @@ fn rust_source(n: usize) -> String {
 // GUARDS: preview::code::highlight_lang must stay roughly linear on big inputs (no per-line
 // re-compilation of the grammar). 5000 lines of Rust under a very loose 10s debug bound.
 #[test]
-#[ignore] // 重い(debug の syntect 5000 行)。cargo test -- --ignored で実行。
+#[ignore] // heavy (5000 lines of syntect in a debug build). Run with cargo test -- --ignored.
 fn highlight_lang_large_source_is_bounded() {
     let src = rust_source(5000);
     let t = Instant::now();
@@ -100,7 +100,7 @@ fn warm_then_highlight_is_fast() {
 // GUARDS: preview::markdown::render_markdown on a large document stays bounded (table/heading
 // post-processing and tui-markdown parse don't blow up). ~1000 mixed lines.
 #[test]
-#[ignore] // 大きめ md(コードフェンス込み)で重め。cargo test -- --ignored で実行。
+#[ignore] // on the heavier side (a large md including code fences). Run with cargo test -- --ignored.
 fn render_markdown_large_doc_is_bounded() {
     let mut md = String::new();
     for i in 0..400 {
@@ -142,7 +142,7 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
     }
     let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
 
-    // ツリー再構築(1000 件)が速いこと。
+    // Confirm the tree rebuild (1000 entries) is fast.
     let t = Instant::now();
     app.rebuild_tree().unwrap();
     let build_dt = t.elapsed();
@@ -152,7 +152,7 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
         "1000 件のツリー再構築が遅すぎる: {build_dt:?}"
     );
 
-    // 末尾を選んだ状態で1回描画(可視範囲計算を含む)が速いこと。
+    // Confirm one render pass with the last entry selected (including visible-range computation) is fast.
     app.tab.selected = app.tab.entries.len() - 1;
     let mut term = Terminal::new(TestBackend::new(60, 30)).unwrap();
     let t = Instant::now();
@@ -171,7 +171,7 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
 fn decode_gif_sample_is_bounded() {
     let p = Path::new("samples/sample.gif");
     if !p.exists() {
-        return; // samples 除外環境ではスキップ
+        return; // skip in an environment where samples are excluded
     }
     let t = Instant::now();
     let frames = crate::preview::image::decode_gif(p);
@@ -193,13 +193,13 @@ fn decode_gif_sample_is_bounded() {
 // timing, so the call count is the primary guard.)
 #[cfg(feature = "git")]
 #[test]
-#[ignore] // 重い(多数ファイルの git リポジトリを作る)。cargo test -- --ignored で実行。
+#[ignore] // heavy (builds a git repo with many files). Run with cargo test -- --ignored.
 fn same_repo_navigation_does_not_rescan_git_status() {
     use std::process::Command;
     let dir = std::env::temp_dir().join("konoma_speed_status_cache");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
-    // 多数ファイル = 1 回の `git status` スキャンが測定可能な時間になる。
+    // Many files = a single `git status` scan takes a measurable amount of time.
     for i in 0..4000 {
         std::fs::write(dir.join(format!("f{i:04}.txt")), b"x\n").unwrap();
     }
@@ -220,21 +220,22 @@ fn same_repo_navigation_does_not_rescan_git_status() {
     git(&["add", "-A"]);
     git(&["commit", "-qm", "init"]);
     for i in 0..200 {
-        std::fs::write(dir.join(format!("f{i:04}.txt")), b"y\n").unwrap(); // 変更 = status 非空
+        std::fs::write(dir.join(format!("f{i:04}.txt")), b"y\n").unwrap(); // change = non-empty status
     }
 
     let root = dir.canonicalize().unwrap();
     let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // 初回スキャンでキャッシュ確立(タイマ外)。
+    app.refresh_git_if_needed(); // establish the cache with an initial scan (outside the timer)
     assert!(
         app.git_has_changes(),
         "変更が status に反映(スキャンが走った)"
     );
 
-    // **決定的な**ガード: 同一 repo 内で root を 40 回往復しても `git::statuses`(全 worktree の
-    // スキャン)を1回も呼び直さない(workdir キャッシュ流用)。wall-clock 比較は git のウォーム/
-    // コールド差でブレて回帰を見逃す(実測: キャッシュ喪失時は 40 スキャン=約2.1s、流用時は約3ms)
-    // ので、実呼び出し回数で判定する。
+    // **Deterministic** guard: bouncing root back and forth 40 times within the same repo must never
+    // re-call `git::statuses` (a whole-worktree scan) even once (the workdir cache is reused). A
+    // wall-clock comparison is noisy across git's warm/cold timing and would miss a regression
+    // (measured: ~2.1s for 40 scans when the cache is lost, vs ~3ms when reused), so we judge by
+    // the actual call count instead.
     crate::git::STATUS_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
     let t = Instant::now();
     for i in 0..40 {
@@ -252,7 +253,7 @@ fn same_repo_navigation_does_not_rescan_git_status() {
         0,
         "同一 repo の 40 往復で git status を再スキャンした(workdir キャッシュ喪失)"
     );
-    // 参考の緩い上限(スキャンが40回走れば秒単位=必ず超える)。
+    // A loose bound as a sanity check (if 40 scans actually ran, it'd be second-scale = would definitely exceed this).
     assert!(
         dt < Duration::from_secs(1),
         "同一 repo 往復が遅すぎる: {dt:?}"
@@ -286,7 +287,7 @@ fn feature_markdown(blocks: usize) -> String {
 // stays responsive, and scrolling reuses the MdCache instead of re-decorating every frame. Covers
 // preview/markdown.rs + the app decorated path (ensure_md_cache / md_slice) + ui/preview.rs.
 #[test]
-#[ignore] // 重い(大きな装飾 md のビルド)。cargo test -- --ignored で実行。
+#[ignore] // heavy (building a large decorated md). Run with cargo test -- --ignored.
 fn preview_large_markdown_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -295,7 +296,7 @@ fn preview_large_markdown_is_bounded() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("big.md"), feature_markdown(120)).unwrap();
 
-    // 初回プレビュー(装飾キャッシュ構築 + 1 描画)が緩い上限内。
+    // The initial preview (building the decoration cache + 1 render) stays within a loose bound.
     let t = Instant::now();
     let mut app = preview_app(&dir, "big.md");
     let build_dt = t.elapsed();
@@ -304,7 +305,7 @@ fn preview_large_markdown_is_bounded() {
         "大きな装飾 md の初回プレビューが遅すぎる: {build_dt:?}"
     );
 
-    // スクロールしながら 60 描画: MdCache 流用で毎フレーム再装飾しない(遅ければ再装飾疑い)。
+    // 60 renders while scrolling: reusing the MdCache means we don't re-decorate every frame (slowness would suggest re-decoration).
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
     let t = Instant::now();
     for i in 0..60 {
@@ -343,7 +344,7 @@ fn preview_large_csv_is_bounded() {
         "大きな CSV のパース+初回描画が遅すぎる: {load_dt:?}"
     );
 
-    // セル移動 + 再描画 80 回(横スクロール/列幅再計算を含む)が緩い上限内。
+    // 80 rounds of cell move + re-render (including horizontal scroll / column-width recomputation) stay within a loose bound.
     let mut term = Terminal::new(TestBackend::new(60, 24)).unwrap();
     let t = Instant::now();
     for i in 0..80 {
@@ -382,7 +383,7 @@ fn preview_large_file_windowing_is_bounded() {
         "大きなテキストの初回プレビューが遅すぎる(全文走査?): {open_dt:?}"
     );
 
-    // ページ送り 100 回 + 描画: 各ステップは可視窓のみ読む(全文走査なら O(n) で遅い)。
+    // 100 page-downs + render: each step reads only the visible window (a full-file scan would be O(n) and slow).
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
     let t = Instant::now();
     for _ in 0..100 {
@@ -395,7 +396,7 @@ fn preview_large_file_windowing_is_bounded() {
         "ページ送り 100 描画が遅すぎる: {page_dt:?}"
     );
 
-    // 検索(FileWindow::find_all_matches は CAP で上限)。多数一致でも緩い上限内。
+    // Search (FileWindow::find_all_matches is capped by CAP). Stays within a loose bound even with many matches.
     let mut win = crate::preview::window::FileWindow::open(&dir.join("big.txt")).unwrap();
     let t = Instant::now();
     let hits = win.find_all_matches("MATCHME", 5000).unwrap();
@@ -418,21 +419,23 @@ fn kitty_transmit_large_image_is_bounded() {
         width: 8,
         height: 16,
     };
-    // build_from_source: 大きな元画像(スクショ大 1600x1000)を表示セルへ crop+resize+圧縮する経路。
+    // build_from_source: the path that crops+resizes+compresses a large source image (screenshot-sized 1600x1000) down to display cells.
     let mut big = RgbaImage::new(1600, 1000);
     for (x, y, px) in big.enumerate_pixels_mut() {
         *px = Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255]);
     }
     let src = DynamicImage::ImageRgba8(big);
-    // crop → resize_exact → 圧縮の経路が動くこと。ガードは**決定的**な項目（表示セルサイズ・o=z・
-    // 圧縮率）に絞る。画像 resize の wall-clock は image crate 依存で共有 CI ランナーの負荷変動に弱く
-    // flake するため、時間上限は敢えて置かない（STATUS_CALLS 同様、決定的な不変量で回帰を捕まえる）。
+    // Confirm the crop → resize_exact → compress path runs. The guard is restricted to
+    // **deterministic** items (display cell size, o=z, compression ratio). Image resize's
+    // wall-clock time depends on the image crate and is prone to flaking under shared-CI-runner
+    // load variance, so we deliberately don't set a time bound here (like STATUS_CALLS, we catch
+    // regressions via deterministic invariants instead).
     let ki =
         crate::preview::kitty::build_from_source(&src, (0, 0, 1600, 1000), 120, 40, font, false)
             .expect("kitty 画像を構築");
     assert_eq!(ki.cell_size(), (120, 40), "表示セルサイズで構築");
 
-    // build_transmit: 表示サイズ(120*8 x 40*16)の RGBA を o=z 圧縮転送に。圧縮が効いていること。
+    // build_transmit: send the display-size (120*8 x 40*16) RGBA as an o=z compressed transfer. Confirm compression is actually working.
     let (pw, ph) = (120u32 * 8, 40u32 * 16);
     let mut disp = RgbaImage::new(pw, ph);
     for (x, y, px) in disp.enumerate_pixels_mut() {
@@ -440,7 +443,7 @@ fn kitty_transmit_large_image_is_bounded() {
     }
     let esc = crate::preview::kitty::build_transmit(&disp, 1, false);
     assert!(esc.contains("o=z"), "o=z 圧縮チャンクを含む");
-    let raw = (pw * ph * 4) as usize; // 生 RGBA バイト数
+    let raw = (pw * ph * 4) as usize; // raw RGBA byte count
     assert!(
         esc.len() < raw / 2,
         "圧縮が効いていない(esc {} vs raw {})",
@@ -454,7 +457,7 @@ fn kitty_transmit_large_image_is_bounded() {
 // preview/gitdiff.rs + ui/git.rs + the diff render in ui/preview.rs.
 #[cfg(feature = "git")]
 #[test]
-#[ignore] // git リポジトリ(履歴 + 大きな変更)を作るので重い。cargo test -- --ignored で実行。
+#[ignore] // heavy (builds a git repo with history + a large change). Run with cargo test -- --ignored.
 fn git_views_and_large_diff_render_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -472,13 +475,13 @@ fn git_views_and_large_diff_render_is_bounded() {
     git(&["config", "user.email", "t@t"]);
     git(&["config", "user.name", "t"]);
     git(&["config", "commit.gpgsign", "false"]);
-    // 履歴(log / graph 用の複数コミット)。
+    // History (several commits for log / graph).
     for c in 0..8 {
         std::fs::write(dir.join(format!("f{c}.txt")), format!("v{c}\n")).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", &format!("commit {c}")]);
     }
-    // 大きなファイルをコミット → 全行書換で大きな未コミット diff を作る。
+    // Commit a large file → rewrite every line to create a large uncommitted diff.
     let mut big = String::new();
     for i in 0..3000 {
         big.push_str(&format!("line {i}\n"));
@@ -495,7 +498,7 @@ fn git_views_and_large_diff_render_is_bounded() {
     let root = dir.canonicalize().unwrap();
     let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
 
-    // 大きな file_diff が緩い上限内(diff 取得は per-keystroke に近いホットパス)。
+    // A large file_diff stays within a loose bound (fetching a diff is a near-per-keystroke hot path).
     let t = Instant::now();
     let dl = crate::git::file_diff(&root, &root.join("big.txt"));
     let diff_dt = t.elapsed();
@@ -505,7 +508,7 @@ fn git_views_and_large_diff_render_is_bounded() {
         "3000 行の file_diff が遅すぎる: {diff_dt:?}"
     );
 
-    // preview/gitdiff.rs: 差分行 → 着色 Line 生成(縦/横並び + 横スクロール上限)を直接叩く。
+    // preview/gitdiff.rs: hit the diff-lines → colored Line generation (stacked/side-by-side + horizontal-scroll cap) directly.
     let t = Instant::now();
     let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
     assert!(!lines.is_empty(), "縦 diff 行を生成");
@@ -518,7 +521,7 @@ fn git_views_and_large_diff_render_is_bounded() {
         "3000 行の diff 着色生成が遅すぎる: {gen_dt:?}"
     );
 
-    // 各 git ビューを開いて描画(ハブ / log / graph / branches / 大きな diff)。
+    // Open and render each git view (hub / log / graph / branches / the large diff).
     let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
     let t = Instant::now();
     app.open_git_view();
@@ -544,7 +547,7 @@ fn git_views_and_large_diff_render_is_bounded() {
 // the whole PerTab on every switch would blow this up. Diverse preview kinds so each switch rebuilds
 // a different cache (markdown decoration / table / windowed code).
 #[test]
-#[ignore] // 複数タブ + プレビュー再構築で重め。cargo test -- --ignored で実行。
+#[ignore] // on the heavier side (multiple tabs + preview rebuilds). Run with cargo test -- --ignored.
 fn tab_switch_reloads_are_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -566,7 +569,7 @@ fn tab_switch_reloads_are_bounded() {
 
     let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
-    // 各ファイルを別タブで開く(切替で別々のプレビューキャッシュを再構築させる)。
+    // Open each file in a separate tab (switching between them rebuilds a different preview cache each time).
     for name in ["a.md", "b.csv", "c.txt", "d.rs"] {
         app.tab.selected = app
             .tab
@@ -579,7 +582,7 @@ fn tab_switch_reloads_are_bounded() {
     }
     assert!(app.tab_count() >= 4, "4 つ以上のタブ");
 
-    // 40 回タブを巡回: 各切替 = save_active + load_active(mem::take) + プレビュー再構築 + 描画。
+    // Cycle through tabs 40 times: each switch = save_active + load_active (mem::take) + preview rebuild + render.
     let t = Instant::now();
     for _ in 0..40 {
         app.tab_cycle(1);
@@ -611,15 +614,16 @@ fn burst_paths_handles_large_distinct_burst_without_quadratic_blowup() {
         burst.push(&p);
     }
     let dt = t.elapsed();
-    // 50,000 は MAX_BURST_PATHS(1024) を大きく超える = 「不明」に丸められる(安全側フォールバック)。
+    // 50,000 is far past MAX_BURST_PATHS (1024) = it gets rounded down to "unknown" (a safe-side fallback).
     assert_eq!(
         burst.finish(),
         None,
         "上限を超える distinct バーストは「パス不明」として扱われる"
     );
-    // 2 秒は広い安全マージン(通常は数ミリ秒)。旧実装(Vec::contains・上限なし)なら 50,000 件の
-    // 重複除去は O(n^2) ≈ 12.5 億回の PathBuf 比較になり、実測の 72,000 件(3 分超・CPU 99%)と
-    // 同オーダーで数十秒〜数分かかっていた。
+    // 2 seconds is a wide safety margin (normally a few milliseconds). With the old implementation
+    // (Vec::contains, no cap), de-duplicating 50,000 entries would be O(n^2) ≈ 1.25 billion PathBuf
+    // comparisons, taking tens of seconds to minutes — the same order as the measured 72,000-entry
+    // case (over 3 minutes, 99% CPU).
     assert!(
         dt < Duration::from_secs(2),
         "distinct な大量パスの重複除去が遅すぎる(線形走査への回帰?): {dt:?}"

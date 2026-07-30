@@ -33,14 +33,14 @@ fn path_styles_format_as_expected() {
     app.path_style = PathStyle::Full;
     assert_eq!(app.format_path(&file), file.display().to_string());
 
-    // 相対: 起動ディレクトリ名を先頭に出す。
+    // Relative: prefixes the launch directory name.
     app.path_style = PathStyle::Relative;
     assert_eq!(
         app.format_path(&file),
         "konoma_app_test_open/src/main.rs".to_string()
     );
 
-    // HOME 相対: HOME 配下のパスは ~/... になる。
+    // Home-relative: a path under HOME becomes ~/....
     if let Some(home) = std::env::var_os("HOME") {
         let p = PathBuf::from(home).join("work").join("konoma");
         app.path_style = PathStyle::Home;
@@ -52,7 +52,8 @@ fn path_styles_format_as_expected() {
 
 #[test]
 fn format_path_relative_uses_dotdot_outside_open_dir() {
-    // open_dir = .../work/A。配下は起動dir名を先頭に(A/x.rs)、外(兄弟/上位)は `..` 込みで表示。
+    // open_dir = .../work/A. Paths under it get the launch dir name prefixed (A/x.rs);
+    // paths outside it (siblings/ancestors) are shown with a leading `..`.
     let work = std::env::temp_dir().join("konoma_relpath_test_work");
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
@@ -84,10 +85,10 @@ fn dialog_create_rename_and_delete_is_gated() {
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    // カーソルは a.txt(ファイル)。作成先はその親=dir。
+    // Cursor is on a.txt (a file). The creation target is its parent = dir.
     assert_eq!(app.tab.entries[app.tab.selected].path, dir.join("a.txt"));
 
-    // --- 作成(ファイル): 入力ダイアログ → 確定でファイルが出来て選択される。
+    // --- Create (file): input dialog → confirming creates the file and selects it.
     app.start_create();
     assert!(
         app.is_dialog() && !app.dialog_is_confirm(),
@@ -105,7 +106,7 @@ fn dialog_create_rename_and_delete_is_gated() {
         "作成物が選択される"
     );
 
-    // --- 作成(フォルダ): 末尾 / でディレクトリ。
+    // --- Create (folder): a trailing / makes it a directory.
     app.start_create();
     for c in "sub/".chars() {
         app.dialog_input_push(c);
@@ -113,7 +114,7 @@ fn dialog_create_rename_and_delete_is_gated() {
     app.dialog_submit().unwrap();
     assert!(dir.join("sub").is_dir(), "末尾 / でフォルダ作成");
 
-    // --- リネーム: 現在名プリフィル → 変更して反映。
+    // --- Rename: current name is prefilled → change it and it takes effect.
     let ai = app
         .tab
         .entries
@@ -139,7 +140,7 @@ fn dialog_create_rename_and_delete_is_gated() {
         "リネームが反映される"
     );
 
-    // --- 削除は確認ゲート: n でキャンセル → ファイルは残る(ゴミ箱を汚さない)。
+    // --- Delete is gated by confirmation: n cancels → the file remains (trash stays clean).
     let ri = app
         .tab
         .entries
@@ -152,14 +153,14 @@ fn dialog_create_rename_and_delete_is_gated() {
         app.is_dialog() && app.dialog_is_confirm(),
         "削除は y/n 確認"
     );
-    app.dialog_confirm(false).unwrap(); // n=取消
+    app.dialog_confirm(false).unwrap(); // n=cancel
     assert!(!app.is_dialog(), "確認後ダイアログは閉じる");
     assert!(
         dir.join("renamed.txt").is_file(),
         "キャンセルでファイルは残る"
     );
 
-    // --- 既存名への作成は失敗(上書きしない)。ダイアログは閉じ、失敗を通知。
+    // --- Creating with an existing name fails (no overwrite). Dialog closes, failure is notified.
     app.start_create();
     for c in "renamed.txt".chars() {
         app.dialog_input_push(c);
@@ -181,23 +182,23 @@ fn dialog_input_cursor_moves_and_edits_midstring() {
     app.rebuild_tree().unwrap();
     let buf = |app: &App| app.dialog_view().map(|v| v.2.to_string()).unwrap();
 
-    // "ac" → ← で中間へ → 'b' 挿入 → "abc"。
+    // "ac" → ← to the middle → insert 'b' → "abc".
     app.start_create();
     app.dialog_input_push('a');
     app.dialog_input_push('c');
     app.dialog_cursor_left();
     app.dialog_input_push('b');
     assert_eq!(buf(&app), "abc", "カーソル位置に中間挿入");
-    // Backspace は直前('b')を削除 → "ac"。
+    // Backspace deletes the char right before ('b') → "ac".
     app.dialog_input_backspace();
     assert_eq!(buf(&app), "ac");
-    // Home → Delete はカーソル位置('a')を削除 → "c"。
+    // Home → Delete deletes the char at the cursor ('a') → "c".
     app.dialog_cursor_home();
     app.dialog_input_delete();
     assert_eq!(buf(&app), "c");
     app.dialog_cancel();
 
-    // マルチバイト(日本語): "あ" の前に "x" を挿入してもバイト境界を壊さない。
+    // Multibyte (Japanese): inserting "x" before "あ" must not break byte boundaries.
     app.start_create();
     app.dialog_input_push('あ');
     app.dialog_cursor_left();
@@ -219,18 +220,18 @@ fn single_toggle_picks_scattered_items() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
-    // V: カーソル(a)を1件トグルして下へ。a 選択・cursor=b。
+    // V: toggle one item (a) and move down. a is selected, cursor=b.
     assert!(!app.has_selection());
     app.tab.selected = 0;
     app.toggle_select();
     assert!(app.is_selected(&dir.join("a.txt")));
     assert_eq!(app.tab.selected, 1, "V は下へ進む");
-    // 歯抜け: b を飛ばして c を選択(jk 相当でカーソルを c へ)。
+    // Gap: skip b and select c (move the cursor to c, as if via j/k).
     app.tab.selected = 2;
     app.toggle_select();
     assert_eq!(app.marked_count(), 2);
     assert!(app.is_selected(&dir.join("c.txt")) && !app.is_selected(&dir.join("b.txt")));
-    // 同じ項目をもう一度トグルで解除。
+    // Toggling the same item again deselects it.
     app.tab.selected = 0;
     app.toggle_select();
     assert!(!app.is_selected(&dir.join("a.txt")));
@@ -251,7 +252,7 @@ fn visual_range_selects_and_batch_deletes() {
     app.rebuild_tree().unwrap();
     assert_eq!(app.tab.entries.len(), 4);
 
-    // ビジュアル: a で開始 → c まで下げると a..c が範囲(ライブ)。
+    // Visual: start at a → moving down to c makes a..c the range (live).
     app.tab.selected = 0;
     app.enter_visual();
     assert!(app.is_visual());
@@ -260,13 +261,13 @@ fn visual_range_selects_and_batch_deletes() {
     assert!(app.is_in_visual_range(0) && app.is_in_visual_range(2));
     assert!(!app.is_in_visual_range(3), "d は範囲外");
     assert_eq!(app.marked_count(), 3, "範囲(a..c)で3件");
-    // 確定(v) → 選択集合へ取り込みビジュアルを抜ける。
+    // Commit (v) → folds the range into the selection set and exits visual.
     app.exit_visual_commit();
     assert!(!app.is_visual());
     assert_eq!(app.marked_count(), 3);
     assert!(app.is_selected(&dir.join("a.txt")) && app.is_selected(&dir.join("c.txt")));
 
-    // 選択3件を一括完全削除 → d だけ残る・選択クリア。
+    // Permanently delete all 3 selected items in one batch → only d remains, selection clears.
     app.start_delete();
     assert!(app.dialog_is_confirm());
     app.dialog_delete_permanent().unwrap();
@@ -286,7 +287,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
     std::fs::write(dir.join("sub").join("inner.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    // sub を展開して inner を表示(同階層判定の検証)。
+    // Expand sub to reveal inner (to verify same-level detection).
     let sub_idx = app
         .tab
         .entries
@@ -294,10 +295,11 @@ fn visual_scope_a_selects_same_dir_level_only() {
         .position(|e| e.path == dir.join("sub"))
         .unwrap();
     app.tab.selected = sub_idx;
-    app.tree_activate().unwrap(); // 展開
+    app.tree_activate().unwrap(); // expand
     app.rebuild_tree().unwrap();
 
-    // トップ階層(a.txt)で a=同階層全選択 → a.txt/b.txt/sub は入るが inner は入らない。
+    // At the top level (a.txt), a=select-all-at-same-level → a.txt/b.txt/sub are included but
+    // inner is not.
     let a_idx = app
         .tab
         .entries
@@ -306,7 +308,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
         .unwrap();
     app.tab.selected = a_idx;
     app.enter_visual();
-    app.visual_select_scope(false); // a=同階層
+    app.visual_select_scope(false); // a=same level
     assert!(app.is_selected(&dir.join("a.txt")));
     assert!(app.is_selected(&dir.join("b.txt")));
     assert!(app.is_selected(&dir.join("sub")));
@@ -316,7 +318,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
     );
     assert!(!app.is_visual(), "スコープ選択後はビジュアルを抜ける");
 
-    // A=表示全部なら inner も入る。
+    // A=everything visible, so inner is included too.
     app.clear_selection();
     app.tab.selected = a_idx;
     app.enter_visual();
@@ -334,7 +336,7 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
     let dir = std::env::temp_dir().join("konoma_batchrename_app_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // name 昇順ソートで apple.md, mango.rs, zebra.txt の順になる。
+    // Sorting by name ascending gives the order apple.md, mango.rs, zebra.txt.
     std::fs::write(dir.join("zebra.txt"), b"z").unwrap();
     std::fs::write(dir.join("apple.md"), b"a").unwrap();
     std::fs::write(dir.join("mango.rs"), b"m").unwrap();
@@ -343,7 +345,7 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
     app.visual_select_scope(true);
     assert_eq!(app.marked_count(), 3);
 
-    // 一括リネーム: "img_{n}" → プレビューへ。
+    // Batch rename: "img_{n}" → goes to preview.
     app.start_batch_rename();
     assert!(app.is_dialog() && !app.dialog_is_confirm() && !app.dialog_is_preview());
     for c in "img_{n}".chars() {
@@ -351,13 +353,13 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
     }
     app.dialog_submit().unwrap();
     assert!(app.dialog_is_preview(), "確定でプレビューへ遷移");
-    // 連番は**ソート順**(apple,mango,zebra)、拡張子は自動保持。
+    // The sequence numbers follow **sort order** (apple, mango, zebra); extensions are kept automatically.
     let (_, pairs, _) = app.dialog_preview_view().unwrap();
     assert_eq!(pairs[0], "apple.md  →  img_1.md");
     assert_eq!(pairs[1], "mango.rs  →  img_2.rs");
     assert_eq!(pairs[2], "zebra.txt  →  img_3.txt");
 
-    // 適用。
+    // Apply.
     app.dialog_preview_apply().unwrap();
     assert!(!app.is_dialog());
     assert!(dir.join("img_1.md").is_file());
@@ -380,13 +382,13 @@ fn batch_rename_collision_reopens_input() {
     app.rebuild_tree().unwrap();
     app.visual_select_scope(true);
 
-    // {n} 無しのテンプレ → 2件とも "dup.txt" に衝突。
+    // A template without {n} → both entries collide on "dup.txt".
     app.start_batch_rename();
     for c in "dup".chars() {
         app.dialog_input_push(c);
     }
     app.dialog_submit().unwrap();
-    // プレビューに進まず、入力ダイアログのまま(テンプレ保持)・失敗を通知。
+    // Does not advance to preview; stays on the input dialog (template kept) and reports failure.
     assert!(!app.dialog_is_preview(), "衝突時はプレビューへ行かない");
     assert!(
         app.is_dialog() && !app.dialog_is_confirm(),
@@ -398,7 +400,7 @@ fn batch_rename_collision_reopens_input() {
         "テンプレは保持される"
     );
     assert!(app.flash.is_some(), "衝突は失敗として通知");
-    // ファイルは変わっていない。
+    // The files are unchanged.
     assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -409,11 +411,12 @@ fn parse_dropped_paths_unescapes_splits_and_filters() {
     let tmp = std::env::temp_dir().join("konoma_parse_drop_test");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
-    let a = tmp.join("a b.txt"); // 空白入りの名前
+    let a = tmp.join("a b.txt"); // a name with a space
     std::fs::write(&a, b"x").unwrap();
     let c = tmp.join("c.txt");
     std::fs::write(&c, b"y").unwrap();
-    // ターミナル流儀: 空白入り名は `\ ` でエスケープ・複数は未エスケープ空白区切り。
+    // Terminal convention: names with spaces are escaped as `\ `; multiple paths are separated
+    // by unescaped spaces.
     let text = format!(
         "{} {}",
         a.to_string_lossy().replace(' ', "\\ "),
@@ -422,7 +425,7 @@ fn parse_dropped_paths_unescapes_splits_and_filters() {
     let got = parse_dropped_paths(&text);
     assert_eq!(got.len(), 2, "実在2パスを解く: {got:?}");
     assert!(got.contains(&a) && got.contains(&c));
-    // 実在しないテキストは弾く(=ただのペーストを安全に無視)。
+    // Rejects text that isn't a real path (= safely ignores a plain paste).
     assert!(parse_dropped_paths("just some pasted text, not a path").is_empty());
     std::fs::remove_dir_all(&tmp).ok();
 }
@@ -432,7 +435,7 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
     let dir = std::env::temp_dir().join("konoma_drop_flow_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
-    // ドロップ元(別ディレクトリ)に空白入り名のファイルを2つ。
+    // Two files with names containing spaces at the drop source (a different directory).
     let ext = std::env::temp_dir().join("konoma_drop_src");
     let _ = std::fs::remove_dir_all(&ext);
     std::fs::create_dir_all(&ext).unwrap();
@@ -443,13 +446,13 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    // 唯一のエントリ "sub"(dir) にカーソル → 落とし先 = sub。
+    // The only entry, "sub" (a dir), has the cursor → the drop destination = sub.
     assert!(
         app.tab.entries[app.tab.selected].is_dir,
         "カーソルが sub(dir)"
     );
 
-    // --- コピー: 1ファイルをドロップ → c で sub へコピー(元は残る) ---
+    // --- Copy: drop one file → c copies it into sub (the source remains) ---
     app.handle_paste(src1.to_string_lossy().replace(' ', "\\ "));
     assert!(
         app.is_dialog() && app.confirm_is_drop(),
@@ -463,14 +466,14 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
     );
     assert!(src1.is_file(), "コピーは元を残す");
 
-    // --- 移動: もう1ファイルをドロップ → m で sub へ移動(元は消える) ---
+    // --- Move: drop the other file → m moves it into sub (the source disappears) ---
     app.handle_paste(src2.to_string_lossy().replace(' ', "\\ "));
     assert!(app.confirm_is_drop());
     app.drop_apply(true).unwrap();
     assert!(dir.join("sub").join("drop two.txt").is_file(), "sub へ移動");
     assert!(!src2.exists(), "移動は元を消す");
 
-    // 実在しないテキストのペーストはダイアログを開かない。
+    // Pasting text that isn't a real path does not open the dialog.
     app.handle_paste("not a real path".to_string());
     assert!(!app.is_dialog(), "テキストペーストでは開かない");
 
@@ -480,7 +483,7 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
 
 #[test]
 fn paste_into_filter_inserts_text_not_drop() {
-    // 絞り込み入力中のペーストは「ドロップ」でなく**文字挿入**にする(回帰防止)。
+    // Pasting while filter input is active must be **text insertion**, not a "drop" (regression guard).
     let dir = std::env::temp_dir().join("konoma_paste_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -501,7 +504,8 @@ fn paste_into_filter_inserts_text_not_drop() {
 
 #[test]
 fn reanchor_root_sets_current_position_as_anchor() {
-    // `:` は文字入力なし。h/l で移動した現在のツリールートを表示の基準(open_dir)へ再アンカーする。
+    // `:` takes no text input. It re-anchors the display base (open_dir) to the current tree
+    // root reached via h/l.
     let base = std::env::temp_dir().join("konoma_reanchor_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("sub")).unwrap();
@@ -509,13 +513,13 @@ fn reanchor_root_sets_current_position_as_anchor() {
     let base_c = base.canonicalize().unwrap();
     let mut app = App::new(base_c.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    // 起動直後は open_dir == root == base。
+    // Right after launch, open_dir == root == base.
     assert_eq!(app.tab.open_dir, base_c);
-    // l で sub へ降りる(root だけ sub に・open_dir は base のまま)。
+    // l descends into sub (only root becomes sub; open_dir stays base).
     app.tree_descend().unwrap();
     assert_eq!(app.tab.root, base_c.join("sub"), "root が sub へ");
     assert_eq!(app.tab.open_dir, base_c, "open_dir はまだ base(launch)");
-    // sub 配下のファイルは base 基準なので "sub/..." と表示される。
+    // Files under sub are shown relative to base, so they display as "sub/...".
     let f = base_c.join("sub").join("f.txt");
     assert!(
         app.format_path(&f).contains("sub"),
@@ -523,7 +527,7 @@ fn reanchor_root_sets_current_position_as_anchor() {
         app.format_path(&f)
     );
 
-    // `:` = 現在地(sub)を固定ルートに再アンカー。文字入力なし・ダイアログも出ない。
+    // `:` = re-anchor the current location (sub) as the fixed root. No text input, no dialog.
     app.reanchor_root();
     assert!(!app.is_dialog(), "ダイアログは出ない(入力なし)");
     assert_eq!(
@@ -532,10 +536,10 @@ fn reanchor_root_sets_current_position_as_anchor() {
         "open_dir が sub へ再アンカー"
     );
     assert_eq!(app.tab.root, base_c.join("sub"), "root は変わらない");
-    // 再アンカー後は sub 基準なので f.txt は "sub/f.txt"(=sub をルートとした表示)。
+    // After re-anchoring, paths are relative to sub, so f.txt is "sub/f.txt" (= displayed with sub as root).
     assert_eq!(app.format_path(&f), "sub/f.txt");
 
-    // 既にルート上(open_dir==root)で再度 `:` → 何もしない(flash のみ)。
+    // Already at the root (open_dir==root); `:` again → does nothing (just a flash).
     app.reanchor_root();
     assert_eq!(app.tab.open_dir, base_c.join("sub"), "変化なし");
     std::fs::remove_dir_all(&base).ok();
@@ -562,7 +566,7 @@ fn gitignored_entries_detected_and_dimmed() {
     app.rebuild_tree().unwrap();
     app.refresh_git_if_needed();
 
-    // is_ignored: ignored.log / node_modules(と配下) は true、tracked / .gitignore は false。
+    // is_ignored: true for ignored.log / node_modules (and its contents), false for tracked / .gitignore.
     assert!(app.is_ignored(&canon.join("ignored.log")), "ignored.log");
     assert!(app.is_ignored(&canon.join("node_modules")), "node_modules");
     assert!(
@@ -575,7 +579,8 @@ fn gitignored_entries_detected_and_dimmed() {
         ".gitignore 自体"
     );
 
-    // 描画: ignored.log 行は DIM セルを含む / tracked.txt 行は DIM 無し(選択行=node_modules で両者は非選択)。
+    // Rendering: the ignored.log row contains a DIM cell / the tracked.txt row has no DIM
+    // (the selected row is node_modules, so neither is selected).
     let dim_in_row = |app: &mut App, needle: &str| -> Option<bool> {
         let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
         term.draw(|f| crate::ui::render(f, app)).unwrap();
@@ -605,8 +610,9 @@ fn gitignored_entries_detected_and_dimmed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// C13(軽微な繰越): fs イベントバーストが全部 gitignored なパス(ビルド churn=target/等)なら
-/// `refresh_fs_changed` をスキップしてよい。混在/空/無視ルール変更は安全側=常にリフレッシュ。
+/// C13 (minor carryover): if an fs-event burst consists entirely of gitignored paths (build churn
+/// such as target/, etc.), it is fine to skip `refresh_fs_changed`. Mixed/empty/ignore-rule-change
+/// cases err on the safe side = always refresh.
 #[cfg(feature = "git")]
 #[test]
 fn fs_burst_build_churn_skips_only_all_ignored_paths() {
@@ -669,7 +675,7 @@ fn diff_layout_parse_and_resolve() {
     assert!(DiffLayout::Split.is_split(10), "横は常に true");
     assert!(DiffLayout::Auto.is_split(90), "Auto: 広いと横");
     assert!(!DiffLayout::Auto.is_split(89), "Auto: 狭いと縦");
-    // 巡回: 縦→横→Auto→縦。
+    // Cycle: vertical→horizontal→Auto→vertical.
     assert_eq!(DiffLayout::Unified.next(), DiffLayout::Split);
     assert_eq!(DiffLayout::Split.next(), DiffLayout::Auto);
     assert_eq!(DiffLayout::Auto.next(), DiffLayout::Unified);
@@ -700,7 +706,7 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
     app.rebuild_tree().unwrap();
     app.refresh_git_if_needed();
 
-    // 機能1: ツリーで変更ファイル a.txt にカーソル → `=` で直接 diff プレビュー。
+    // Feature 1: cursor on changed file a.txt in the tree → `=` opens a diff preview directly.
     let ai = app
         .tab
         .entries
@@ -716,7 +722,7 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
     assert!(!app.git_diff_lines().is_empty(), "diff 行がある");
     app.close_git_diff();
 
-    // 機能2: git ビューで `D` = 作業ツリー全変更の diff(詳細)。複数ファイル含む。
+    // Feature 2: in the git view, `D` = diff (detail) of all working-tree changes. Includes multiple files.
     app.open_git_view();
     app.open_worktree_detail();
     assert!(app.is_git_detail(), "全変更 diff(詳細)が開く");
@@ -725,7 +731,7 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
         Some("Uncommitted changes"),
         "タイトル上書き"
     );
-    // ファイル境界ヘッダ = Context かつ 行番号が両方 None。
+    // A file-boundary header = Context, with both line numbers None.
     let headers = app
         .git_detail_lines()
         .iter()
@@ -740,7 +746,7 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
         "全変更 diff が複数ファイル: headers={headers}"
     );
 
-    // 機能3+4: `s` で 縦→横→Auto→縦 を巡回(詳細でも効く)。
+    // Features 3+4: `s` cycles vertical→horizontal→Auto→vertical (works in detail too).
     assert!(!app.diff_is_split(200), "初期は unified(既定設定)");
     app.cycle_diff_layout();
     assert!(app.diff_is_split(200), "→ split");
@@ -774,7 +780,7 @@ fn diff_horizontal_scroll_reveals_long_line() {
     std::fs::write(dir.join("a.txt"), b"short\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-m", "init"]);
-    // とても長い1行に変更(行頭 START / 行末 END)。
+    // Change it to one very long line (START at the start, END at the end).
     let long = format!("START{}END\n", "x".repeat(200));
     std::fs::write(dir.join("a.txt"), long.as_bytes()).unwrap();
 
@@ -798,15 +804,15 @@ fn diff_horizontal_scroll_reveals_long_line() {
         let buf = term.backend().buffer();
         buf.content().iter().map(|c| c.symbol()).collect()
     };
-    // 行頭(hscroll=0): START が見え、遠い END は画面外。
+    // At the line start (hscroll=0): START is visible, the far-off END is off-screen.
     let s0 = dump(&mut app);
     assert!(s0.contains("START"), "行頭に START");
     assert!(!s0.contains("END"), "行頭で END は画面外");
-    // $ 相当で行末へ: END が見える。
+    // The $ equivalent, to the line end: END is visible.
     app.preview_hscroll_end();
     let se = dump(&mut app);
     assert!(se.contains("END"), "$ で行末(END)が見える");
-    // 0 相当で行頭へ戻る。
+    // The 0 equivalent, back to the line start.
     app.preview_hscroll_home();
     let sh = dump(&mut app);
     assert!(sh.contains("START") && !sh.contains("END"), "0 で行頭へ");
@@ -825,20 +831,20 @@ fn copy_cut_paste_flow() {
     let idx =
         |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
 
-    // a.txt をコピー → クリップボードに積まれ、選択はクリア。
+    // Copy a.txt → it's loaded into the clipboard, and the selection clears.
     app.tab.selected = idx(&app, &dir.join("a.txt"));
     app.toggle_select();
     app.copy_selection();
     assert!(app.clipboard_label().is_some(), "コピーで積まれる");
     assert!(!app.has_selection(), "コピーで選択クリア");
-    // dst にカーソルを置いてペースト → dst/a.txt 出来て元も残る(複製)。
+    // Place the cursor on dst and paste → dst/a.txt is created and the original remains (duplicate).
     app.tab.selected = idx(&app, &dir.join("dst"));
     app.paste().unwrap();
     assert!(dir.join("dst").join("a.txt").is_file(), "コピー先に出来る");
     assert!(dir.join("a.txt").is_file(), "コピー元は残る");
     assert!(app.clipboard_label().is_some(), "コピーは貼っても消えない");
 
-    // b.txt をカット → dst へペースト → 移動してクリップボード消費。
+    // Cut b.txt → paste into dst → it moves and the clipboard is consumed.
     app.tab.selected = idx(&app, &dir.join("b.txt"));
     app.toggle_select();
     app.cut_selection();
@@ -887,7 +893,7 @@ fn tree_page_clamps_within_bounds() {
     let dir = std::env::temp_dir().join("konoma_tree_page_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // 既知の件数に差し替え (100件)。
+    // Replace with a known count (100 entries).
     app.tab.entries = (0..100)
         .map(|i| Entry {
             path: dir.join(format!("f{i}")),
@@ -899,18 +905,18 @@ fn tree_page_clamps_within_bounds() {
     app.tab.tree_viewport = 20;
 
     app.tab.selected = 0;
-    app.tree_page(1); // +19 (1行重ね)
+    app.tree_page(1); // +19 (overlaps by 1 line)
     assert_eq!(app.tab.selected, 19);
     app.tree_half_page(1); // +10
     assert_eq!(app.tab.selected, 29);
 
-    // 末尾でクランプ。
+    // Clamps at the end.
     app.tree_last();
     assert_eq!(app.tab.selected, 99);
     app.tree_page(1);
     assert_eq!(app.tab.selected, 99);
 
-    // 先頭でクランプ。
+    // Clamps at the start.
     app.tree_first();
     app.tree_page(-1);
     assert_eq!(app.tab.selected, 0);
@@ -918,12 +924,13 @@ fn tree_page_clamps_within_bounds() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- 整数オーバーフロー回帰 (#7/#8): カーソルが先頭以外でも `g`/`G`/Home/End が渡す
-//     i32::MIN/MAX で素の `as i32 + delta` がパニックしていた。共有 `clamp_cursor` で一掃。
+// --- Integer overflow regression (#7/#8): even when the cursor is not at the start, `g`/`G`/Home/End
+//     used to panic on a plain `as i32 + delta` with the i32::MIN/MAX they pass in. Cleaned up
+//     entirely with the shared `clamp_cursor`.
 
 #[test]
 fn clamp_cursor_no_overflow_at_extremes() {
-    // カーソルを 0 以外に置いても i64 経由でオーバーフローしないこと。
+    // Even with the cursor placed somewhere other than 0, going through i64 must not overflow.
     assert_eq!(clamp_cursor(3, i32::MAX, 10), 9, "末尾へクランプ");
     assert_eq!(clamp_cursor(3, i32::MIN, 10), 0, "先頭へクランプ");
     assert_eq!(clamp_cursor(0, i32::MAX, 1), 0, "1件は 0 のまま");
@@ -946,7 +953,8 @@ fn tree_move_extremes_no_panic() {
             expanded: false,
         })
         .collect();
-    // 先頭以外に置いてから極値: 以前はここで i32 加算がパニックした。
+    // Place it somewhere other than the start, then use an extreme value: this used to panic on
+    // the i32 addition here.
     app.tab.selected = 10;
     app.tree_move(i32::MAX);
     assert_eq!(app.tab.selected, 49, "末尾へ");
@@ -968,7 +976,7 @@ fn git_branch_move_extremes_no_panic() {
             })
             .collect(),
     );
-    app.tab.git_branch_sel = 2; // 先頭以外
+    app.tab.git_branch_sel = 2; // not the start
     app.git_branch_move(i32::MAX);
     assert_eq!(app.tab.git_branch_sel, 5, "末尾へ");
     app.git_branch_move(i32::MIN);
@@ -1001,7 +1009,7 @@ fn git_graph_move_extremes_no_panic() {
         refs: String::new(),
         worktree: false,
     };
-    // コミット行(0,2,4) とコネクタ行(1,3) が混在: カーソルはコミット行のみを対象。
+    // Commit rows (0,2,4) and connector rows (1,3) are mixed in: the cursor only targets commit rows.
     app.tab.git_graph = Some(vec![
         commit("a"),
         connector(),
@@ -1009,7 +1017,7 @@ fn git_graph_move_extremes_no_panic() {
         connector(),
         commit("c"),
     ]);
-    app.tab.git_graph_sel = 2; // 真ん中のコミット行(commits index=1)
+    app.tab.git_graph_sel = 2; // the middle commit row (commits index=1)
     app.git_graph_move(i32::MAX);
     assert_eq!(app.tab.git_graph_sel, 4, "末尾コミット行へ");
     app.git_graph_move(i32::MIN);
@@ -1033,7 +1041,7 @@ fn git_log_move_extremes_no_panic() {
             })
             .collect(),
     );
-    app.tab.git_log_sel = 1; // 先頭以外
+    app.tab.git_log_sel = 1; // not the start
     app.git_log_move(i32::MAX);
     assert_eq!(app.tab.git_log_sel, 4, "末尾へ");
     app.git_log_move(i32::MIN);
@@ -1053,8 +1061,9 @@ fn git_view_move_extremes_no_panic() {
             staged: false,
         })
         .collect();
-    app.tab.git_view_sel = 1; // 先頭以外
-                              // git_view は ±1 しか渡らないが、共通ヘルパへ寄せたので極値でも安全であること。
+    app.tab.git_view_sel = 1; // not the start
+                              // git_view only ever passes ±1, but since it now goes through the shared
+                              // helper, it must also be safe at extreme values.
     app.git_view_move(i32::MAX);
     assert_eq!(app.tab.git_view_sel, 3, "末尾へ");
     app.git_view_move(i32::MIN);
@@ -1070,19 +1079,19 @@ fn centered_fit_centers_and_downscales() {
         width: 80,
         height: 24,
     };
-    // 小さい画像: 拡大せず native(40x15) のまま中央へ (allow_upscale=false)。
+    // A small image: centered at native (40x15) without upscaling (allow_upscale=false).
     let r = centered_rect((40, 15), inner, false);
     assert_eq!((r.width, r.height), (40, 15));
     assert_eq!((r.x, r.y), (20, 4));
 
-    // 大きい画像: アスペクト比を保って縮小し中央へ (200x100 → scale 0.24)。
+    // A large image: downscaled preserving aspect ratio and centered (200x100 → scale 0.24).
     let r = centered_rect((200, 100), inner, false);
     assert_eq!((r.width, r.height), (48, 24));
     assert_eq!((r.x, r.y), (16, 0));
 
-    // ズーム時(allow_upscale=true): 小さい画像も領域いっぱいまで拡大し中央へ。
+    // When zoomed (allow_upscale=true): even a small image is upscaled to fill the area and centered.
     let r = centered_rect((40, 15), inner, true);
-    // scale = min(80/40, 24/15)=min(2.0,1.6)=1.6 → 64x24, x=(80-64)/2=8。
+    // scale = min(80/40, 24/15)=min(2.0,1.6)=1.6 → 64x24, x=(80-64)/2=8.
     assert_eq!((r.width, r.height), (64, 24));
     assert_eq!((r.x, r.y), (8, 0));
 }
@@ -1096,7 +1105,7 @@ fn app_with_image() -> App {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    // tx は drop されないようリーク(テスト終了まで生存)。
+    // Leak tx so it isn't dropped (keeps it alive until the test ends).
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     app.img_tx = Some(tx);
@@ -1118,7 +1127,8 @@ fn app_with_kitty() -> App {
     let dir = std::env::temp_dir().join("konoma_gif_kitty_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
-    // halfblocks picker(端末不要)に kitty を強制設定して、kitty 転送列の生成を検証する。
+    // Force kitty onto the halfblocks picker (no terminal needed) to verify generation of the
+    // kitty transfer sequence.
     let mut picker = ratatui_image::picker::Picker::halfblocks();
     picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
     app.picker = Some(picker);
@@ -1133,7 +1143,7 @@ fn app_with_kitty() -> App {
 fn media_load_is_async_then_applied() {
     let p = Path::new("samples/sample.svg");
     if !p.exists() {
-        return; // samples 除外環境ではスキップ
+        return; // skip in environments where samples are excluded
     }
     let mut app = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1142,11 +1152,11 @@ fn media_load_is_async_then_applied() {
     app.tab.preview_kind = Some(kind.clone());
 
     app.start_media_load(&kind, p);
-    // 開始直後: 読み込み中で、まだ画像は載っていない(UI を塞いでいない)。
+    // Right after starting: it's loading, and the image isn't in place yet (the UI isn't blocked).
     assert!(app.is_media_loading(), "開始直後は loading");
     assert!(!app.is_image_preview(), "まだ読み込めていない");
 
-    // 別スレッドの結果を待って反映 → 画像が載り loading 解除。
+    // Wait for the other thread's result and apply it → the image is in place and loading clears.
     let result = rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("worker should return");
@@ -1161,9 +1171,9 @@ fn media_loading_renders_shared_spinner() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let mut app = app_with_kitty(); // picker あり
+    let mut app = app_with_kitty(); // has a picker
     let (tx, rx) = std::sync::mpsc::channel();
-    Box::leak(Box::new(rx)); // 結果は drain しない → loading のまま
+    Box::leak(Box::new(rx)); // don't drain the result → stays loading
     app.attach_media_loader(tx);
     let path = PathBuf::from("/does-not-exist.svg");
     let kind = PreviewKind::Svg(path.clone());
@@ -1183,14 +1193,14 @@ fn media_loading_renders_shared_spinner() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    // 既定 Config は en なので文言は "loading…"(jp なら "読み込み中…")。
+    // The default Config is en, so the text is "loading…" (it would be "読み込み中…" for jp).
     assert!(s.contains("loading"), "ローディング文言が出る: {s:?}");
     let spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     assert!(
         spinners.iter().any(|g| s.contains(g)),
         "共通スピナーのコマが出る: {s:?}"
     );
-    // 生 XML へのフォールバックではないこと(loading 中は XML を出さない)。
+    // Must not fall back to raw XML (no XML is shown while loading).
     assert!(!s.contains("<svg"), "読み込み中に生 XML を出さない");
 }
 
@@ -1205,7 +1215,7 @@ fn pdf_page_navigation_clamps_and_indicates() {
     app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
     app.tab.mode = Mode::Preview;
 
-    // 総数不明: 移動不可・インジケータ無し。
+    // Unknown total: cannot navigate, no indicator.
     app.tab.pdf_pages = None;
     app.tab.pdf_page = 1;
     assert!(!app.pdf_can_navigate());
@@ -1213,13 +1223,13 @@ fn pdf_page_navigation_clamps_and_indicates() {
     assert_eq!(app.tab.pdf_page, 1, "総数不明では動かない");
     assert_eq!(app.pdf_page_indicator(), None);
 
-    // 1ページ: 移動不可。
+    // Single page: cannot navigate.
     app.tab.pdf_pages = Some(1);
     assert!(!app.pdf_can_navigate(), "単ページは移動不可");
     app.pdf_next_page();
     assert_eq!(app.tab.pdf_page, 1);
 
-    // 3ページ: 前後移動と端クランプ・インジケータ。
+    // Three pages: forward/backward navigation, edge clamping, and the indicator.
     app.tab.pdf_pages = Some(3);
     app.tab.pdf_page = 1;
     assert!(app.pdf_can_navigate());
@@ -1237,7 +1247,7 @@ fn pdf_page_navigation_clamps_and_indicates() {
     app.pdf_prev_page();
     assert_eq!(app.tab.pdf_page, 1, "先頭でクランプ");
 
-    // ページ移動でズームは fit(1.0)へ戻る。
+    // A page move resets zoom back to fit (1.0).
     app.tab.image_zoom = 4.0;
     app.pdf_next_page();
     assert_eq!(app.tab.pdf_page, 2);
@@ -1251,10 +1261,10 @@ fn pdf_page_navigation_clamps_and_indicates() {
 fn pdf_next_page_renders_off_thread() {
     let p = Path::new("samples/sample.pdf");
     if !p.exists() {
-        return; // samples 除外環境ではスキップ
+        return; // skip in environments where samples are excluded
     }
     let Some(pages) = crate::preview::pdf::page_count(p) else {
-        return; // 万一パースに失敗した場合の保険(通常は到達しない)
+        return; // safety net in case parsing fails unexpectedly (normally unreachable)
     };
     if pages < 2 {
         return;
@@ -1269,7 +1279,7 @@ fn pdf_next_page_renders_off_thread() {
     app.tab.pdf_pages = Some(pages);
     app.tab.pdf_page = 1;
 
-    // 1ページ目を読み込んで反映。
+    // Load page 1 and apply it.
     app.start_media_load(&kind, p);
     let r1 = rx
         .recv_timeout(std::time::Duration::from_secs(15))
@@ -1277,7 +1287,7 @@ fn pdf_next_page_renders_off_thread() {
     assert!(app.apply_media(r1));
     assert!(app.is_image_preview(), "page1 が image_src に載る");
 
-    // 2ページ目へ: 別スレッドで再ラスタライズ開始 → 反映。
+    // To page 2: kicks off re-rasterization on another thread → apply it.
     app.pdf_next_page();
     assert_eq!(app.tab.pdf_page, 2);
     assert!(app.is_media_loading(), "ページ送りで再読み込みが始まる");
@@ -1293,7 +1303,7 @@ fn pdf_next_page_renders_off_thread() {
 fn stale_media_result_is_ignored() {
     let mut app = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
-    // 現在の世代と一致しない結果を作る(古い世代)。
+    // Build a result that doesn't match the current generation (a stale generation).
     let img =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
     let stale = MediaResult {
@@ -1315,7 +1325,8 @@ fn gif_emits_kitty_image_data_per_frame() {
 
     let mut app = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
-    // 異なる2フレーム(赤/緑の単色)を直接セットし、decode を介さず描画経路だけを検証。
+    // Set two different frames (solid red/green) directly, verifying only the render path
+    // without going through decode.
     let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
         40,
         30,
@@ -1339,7 +1350,7 @@ fn gif_emits_kitty_image_data_per_frame() {
 
     let area = inner(40, 20);
 
-    // フレーム0を準備+描画 → kitty 転送列がセル symbol に出る。
+    // Prepare + render frame 0 → the kitty transfer sequence shows up in the cell symbol.
     let t0 = app.prepare_gif(area).expect("frame0 layout");
     let proto0 = app.gif_protocol().expect("frame0 should be encoded");
     let mut buf0 = Buffer::empty(area);
@@ -1350,7 +1361,8 @@ fn gif_emits_kitty_image_data_per_frame() {
         "frame0 は kitty graphics 転送(_G)を吐くはず(空でない描画)"
     );
 
-    // フレーム1へ進めて再準備+描画 → 別の画像データが出る(churn せず原子的に切替)。
+    // Advance to frame 1 and re-prepare + render → different image data appears (an atomic
+    // switch, no churn).
     app.gif_idx = 1;
     let t1 = app.prepare_gif(area).expect("frame1 layout");
     let proto1 = app.gif_protocol().expect("frame1 should be encoded");
@@ -1368,7 +1380,7 @@ fn gif_emits_kitty_image_data_per_frame() {
 fn zoom_clamps_between_1_and_16() {
     let mut app = app_with_image();
     assert_eq!(app.tab.image_zoom, 1.0);
-    app.image_zoom_by(0.5); // 1.0 未満には下がらない
+    app.image_zoom_by(0.5); // never goes below 1.0
     assert_eq!(app.tab.image_zoom, 1.0);
     for _ in 0..40 {
         app.image_zoom_by(1.25);
@@ -1381,15 +1393,15 @@ fn zoom_clamps_between_1_and_16() {
 
 #[test]
 fn fit_is_natural_size_and_centered_at_z1() {
-    // z=1: 小さい画像(400x300, font10x20=40x15セル)は viewport より小さいので
-    // 拡大せず natural(40x15)のまま中央表示(画面いっぱいにしない)。
+    // z=1: a small image (400x300, font10x20=40x15 cells) is smaller than the viewport,
+    // so it's shown centered at its natural size (40x15) without upscaling (doesn't fill the screen).
     let mut app = app_with_image();
     let r = app.prepare_image(inner(200, 40)).unwrap();
     assert_eq!((r.width, r.height), (40, 15), "z=1 は natural サイズ");
-    // 中央寄せ(左右・上下の余白が均等)。
+    // Centered (equal margins left/right and top/bottom).
     assert_eq!(r.x, (200 - 40) / 2);
     assert_eq!(r.y, (40 - 15) / 2);
-    // 見切れていない → パン不可。
+    // Not clipped → panning is disabled.
     assert_eq!(app.image_vis_frac, (1.0, 1.0));
 }
 
@@ -1397,19 +1409,20 @@ fn fit_is_natural_size_and_centered_at_z1() {
 fn zoom_grows_then_clips_and_enables_pan() {
     let mut app = app_with_image();
     let inner = inner(200, 40);
-    // z=2: 80x30 セル、まだ viewport(200x40)内 → 全体表示・中央・パン不可。
+    // z=2: 80x30 cells, still within the viewport (200x40) → shown in full, centered, no panning.
     app.tab.image_zoom = 2.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!((r.width, r.height), (80, 30));
     assert_eq!(app.image_vis_frac, (1.0, 1.0));
-    // z=4: 160x60 → 高さ60>40 で縦が見切れる。表示は高さが viewport に制限され、縦パン可。
+    // z=4: 160x60 → height 60>40 clips vertically. Display height is constrained to the
+    // viewport, and vertical panning is enabled.
     app.tab.image_zoom = 4.0;
     let r = app.prepare_image(inner).unwrap();
     assert_eq!(r.height, 40, "高さは viewport に制限");
     assert_eq!(r.width, 160);
     assert!(app.image_vis_frac.1 < 1.0, "縦が見切れ=パン可");
     assert_eq!(app.image_vis_frac.0, 1.0, "横はまだ収まる");
-    // 中央寄せは維持。
+    // Still centered.
     assert_eq!(r.x, (200 - 160) / 2);
 }
 
@@ -1417,20 +1430,20 @@ fn zoom_grows_then_clips_and_enables_pan() {
 fn pan_noop_when_not_clipped_and_moves_when_clipped() {
     let mut app = app_with_image();
     let inner = inner(200, 40);
-    // z=1: 見切れ無し → パンしても prepare で中心が 0.5 に戻る。
+    // z=1: no clipping → even after panning, prepare resets the center back to 0.5.
     app.image_pan(1.0, 1.0);
     app.prepare_image(inner).unwrap();
     assert_eq!(app.tab.image_center, (0.5, 0.5));
-    // 十分拡大して両軸見切れ → パンで中心が動き、端でクランプされる。
+    // Zoom in far enough to clip on both axes → panning moves the center, clamped at the edges.
     app.tab.image_zoom = 12.0;
-    app.prepare_image(inner).unwrap(); // 可視率を更新
+    app.prepare_image(inner).unwrap(); // update the visible fraction
     for _ in 0..50 {
         app.image_pan(1.0, 1.0);
         app.prepare_image(inner).unwrap();
     }
     let (fw, fh) = app.image_vis_frac;
     assert!(fw < 1.0 && fh < 1.0, "両軸見切れ");
-    // 端 = 1 - frac/2 にクランプ。
+    // Clamped at the edge = 1 - frac/2.
     assert!((app.tab.image_center.0 - (1.0 - fw / 2.0)).abs() < 1e-6);
     assert!((app.tab.image_center.1 - (1.0 - fh / 2.0)).abs() < 1e-6);
 }
@@ -1454,9 +1467,9 @@ fn tabbar_appears_with_multiple_tabs() {
             .map(|c| c.symbol())
             .collect()
     };
-    // 既定 tabbar=auto: 1枚のときはタブバーを出さない。
+    // Default tabbar=auto: no tabbar is shown with a single tab.
     assert!(!render(&mut app).contains("1:konoma_tabbar_test"));
-    // 2枚にするとタブバーに 1:/2: が出る。
+    // With two tabs, 1:/2: appear on the tabbar.
     app.tab_new().unwrap();
     let s = render(&mut app);
     assert!(s.contains("1:konoma_tabbar_test"), "タブ1が無い: {s:?}");
@@ -1466,7 +1479,7 @@ fn tabbar_appears_with_multiple_tabs() {
 
 #[test]
 fn markdown_links_collected_and_local_link_opens_in_konoma() {
-    // md プレビューでリンク(URL)を収集し、フォーカス→ローカルリンクは konoma 内で開く。
+    // Collect links (URLs) in the md preview, focus one, and open a local link inside konoma.
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let dir = std::env::temp_dir().join("konoma_links_open_test");
@@ -1486,13 +1499,13 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
     app.tree_activate().unwrap();
-    // 描画でリンクを収集 (decorate_links が走る)。
+    // Rendering collects the links (decorate_links runs).
     let mut term = Terminal::new(TestBackend::new(72, 8)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     assert_eq!(app.md_items.len(), 2, "リンク数");
     assert!(item_target(&app.md_items[0]).ends_with("target.md"));
     assert_eq!(item_target(&app.md_items[1]), "https://example.com/x");
-    // 先頭リンク(ローカル)にフォーカスして開く → konoma が target.md をプレビュー。
+    // Focus the first link (local) and open it → konoma previews target.md.
     app.md_focus_move(1);
     assert_eq!(app.tab.focused_item, Some(0));
     app.md_activate_focused().unwrap();
@@ -1511,14 +1524,16 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
 fn md_focus_follows_offscreen_items_when_wrapped() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // 折返し(wrap=true 既定)で長い段落が画面高さを超えるとき、Tab のフォーカス移動が
-    // **表示行**基準でスクロール追従する。論理行基準だと「まだ画面内」と誤判定して
-    // 一切スクロールしない(2026-07-08 ユーザー報告の回帰)。
+    // With wrapping (wrap=true, the default), when a long paragraph exceeds the screen height,
+    // Tab's focus movement follows scroll based on **display rows**. Using logical rows instead
+    // misjudges it as "still on screen" and never scrolls at all (regression reported by the
+    // user on 2026-07-08).
     let dir = std::env::temp_dir().join("konoma_md_focus_wrap_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // 論理行は数行だが、先頭段落が幅40で大きく折り返して 20 行超の表示になる文書。
-    let long = "word ".repeat(200); // 1000桁 ≒ 幅40で25表示行
+    // A document with only a few logical lines, but whose first paragraph wraps heavily at
+    // width 40 into more than 20 display rows.
+    let long = "word ".repeat(200); // 1000 columns ≈ 25 display rows at width 40
     std::fs::write(
         dir.join("doc.md"),
         format!(
@@ -1537,15 +1552,16 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     assert_eq!(app.md_items.len(), 1);
     assert_eq!(app.tab.preview_scroll, 0);
-    // Tab でリンクへ: リンクの論理行(2)は viewport(10) 未満だが、表示行では 25 行目付近
-    // → スクロールが表示行基準で進む(旧実装は 0 のまま=このアサーションで落ちる)。
+    // Tab to the link: the link's logical row (2) is under the viewport (10), but in display
+    // rows it's around row 25 → scrolling advances on a display-row basis (the old
+    // implementation stayed at 0, which fails this assertion).
     app.md_focus_move(1);
     assert!(
         app.tab.preview_scroll > 5,
         "折返し文書でフォーカスに追従してスクロールする: scroll={}",
         app.tab.preview_scroll
     );
-    // 追従後の描画でフォーカス行が画面内にある(表示行の窓に収まる)。
+    // After following, the render has the focused row on screen (it fits within the display-row window).
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     let buf = term.backend().buffer().clone();
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
@@ -1553,8 +1569,9 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
         screen.contains("link"),
         "フォーカスしたリンクが画面内に描画される"
     );
-    // 逆方向(Shift-Tab 相当)で戻ると巡回して同じアイテム=スクロール維持、
-    // 先頭側のアイテムが無いので上方向追従は別文書で担保(上方向分岐は同式の対称)。
+    // Going back the other way (equivalent to Shift-Tab) cycles to the same item = scroll is
+    // kept; since there's no earlier item here, upward-follow is covered by a separate document
+    // (the upward branch is symmetric with the same formula).
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1562,8 +1579,9 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
 fn md_task_toggle_cycles_and_writes_file() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // Tab でチェックボックスへフォーカス → トグルで状態文字1文字だけがファイルに書き戻る。
-    // 既定サイクル ' '⇄'x'・大文字 X は x と同値・他行は不変(CJK 本文でもバイト破壊なし)。
+    // Tab focuses a checkbox → toggling writes back only the single state character to the file.
+    // Default cycle ' '⇄'x'; uppercase X is equivalent to x; other lines are unchanged (no byte
+    // corruption even in CJK body text).
     let dir = std::env::temp_dir().join("konoma_md_task_toggle_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1587,12 +1605,12 @@ fn md_task_toggle_cycles_and_writes_file() {
     let s = std::fs::read_to_string(&f).unwrap();
     assert!(s.contains("- [x] 未着手のタスク"), "{s}");
     assert!(s.contains("- [X] 済み"), "他行は不変: {s}");
-    // 再描画で状態を取り直してから逆方向: 'x'→' '。
+    // Re-render to pick up the new state, then toggle the other way: 'x'→' '.
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_toggle_focused_task();
     let s = std::fs::read_to_string(&f).unwrap();
     assert!(s.contains("- [ ] 未着手のタスク"), "{s}");
-    // 2つ目(大文字 X)へ: X=x と同値 → 次は ' '。
+    // To the second one (uppercase X): X is equivalent to x → next is ' '.
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
     app.md_toggle_focused_task();
@@ -1601,8 +1619,9 @@ fn md_task_toggle_cycles_and_writes_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `*` と `+` の箇条書きのチェックボックスもトグルできる(source scanner が `-` しか認識せず、
-/// 個数照合が外れて「file changed on disk」で全キャンセルされていた・ユーザー報告 2026-07-22)。
+/// Checkboxes in `*` and `+` bullet lists can be toggled too (the source scanner used to only
+/// recognize `-`, so the count check drifted and everything got cancelled with "file changed on
+/// disk" — user report 2026-07-22).
 #[test]
 fn md_task_toggle_star_and_plus_bullets() {
     use ratatui::backend::TestBackend;
@@ -1611,7 +1630,7 @@ fn md_task_toggle_star_and_plus_bullets() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
-    // `*`/`+` 箇条書き(GFM 準拠)。tui-markdown は3種ともチェックボックス描画する。
+    // `*`/`+` bullet lists (GFM-compliant). tui-markdown renders checkboxes for all three kinds.
     std::fs::write(&f, "* [ ] star task\n+ [ ] plus task\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.tab.selected = app
@@ -1625,7 +1644,7 @@ fn md_task_toggle_star_and_plus_bullets() {
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert_eq!(app.md_items.len(), 2, "star/plus 両方がタスクとして認識");
 
-    // 1つ目(star)をトグル → キャンセルされず書き戻る。flash に「changed on disk」は出ない。
+    // Toggle the first one (star) → it isn't cancelled and writes back. No "changed on disk" flash.
     app.md_focus_move(1);
     app.md_toggle_focused_task();
     let s = std::fs::read_to_string(&f).unwrap();
@@ -1643,7 +1662,7 @@ fn md_task_toggle_star_and_plus_bullets() {
         app.flash
     );
 
-    // 2つ目(plus)も。
+    // Same for the second one (plus).
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
     app.md_toggle_focused_task();
@@ -1659,8 +1678,8 @@ fn md_task_toggle_star_and_plus_bullets() {
 fn md_task_toggle_custom_states_cycle() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // ui.md_task_states = [" ", "/", "x"]: Space が配列順に巡回し、カスタム状態 [/] も
-    // 再描画後にトグル対象として認識される。
+    // ui.md_task_states = [" ", "/", "x"]: Space cycles through the array in order, and the
+    // custom state [/] is also recognized as toggleable after re-rendering.
     let dir = std::env::temp_dir().join("konoma_md_task_custom_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1690,7 +1709,8 @@ fn md_task_toggle_custom_states_cycle() {
 fn md_task_toggle_aborts_when_file_changed_externally() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // 表示とディスクの状態が食い違ったら書かない(flash+再読込)。外部エージェントの編集と競合しない。
+    // Don't write if the displayed state and disk state disagree (flash + reload). Avoids
+    // conflicting with an external agent's edits.
     let dir = std::env::temp_dir().join("konoma_md_task_abort_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1702,7 +1722,7 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
-    // ①状態の食い違い: 画面は ' ' のままディスクは 'x' に。
+    // (1) State mismatch: the screen stays at ' ' while the disk becomes 'x'.
     std::fs::write(&f, "- [x] a\n").unwrap();
     app.md_toggle_focused_task();
     assert_eq!(
@@ -1711,9 +1731,9 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
         "書かない"
     );
     assert!(app.flash.is_some(), "flash で通知");
-    // ②個数の食い違い: タスクが増えた(描画側は1個のまま)。
-    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 画面を x に追従させ…
-    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // …ディスクだけ2個に
+    // (2) Count mismatch: the number of tasks grew (the render side still sees 1).
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // let the screen catch up to x…
+    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // …then make the disk have 2, only on disk
     app.flash = None;
     app.md_toggle_focused_task();
     assert_eq!(
@@ -1740,7 +1760,8 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
-    // raw ソース表示(R)中はトグルもフォーカス判定も無効(2D キャレット面)。
+    // While showing the raw source (R), both toggling and focus detection are disabled
+    // (the 2D-caret surface).
     app.toggle_md_raw();
     assert!(!app.md_focused_task());
     app.md_toggle_focused_task();
@@ -1749,7 +1770,8 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
         "- [ ] a\r\n\r\ntail\r\n",
         "raw 中は書かない"
     );
-    // 装飾表示に戻せばトグルでき、CRLF・末尾バイトは保たれる(1文字だけの置換)。
+    // Switching back to the decorated view allows toggling, and CRLF / trailing bytes are
+    // preserved (only a single character is replaced).
     app.toggle_md_raw();
     app.md_toggle_focused_task();
     assert_eq!(
@@ -1759,8 +1781,9 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// トグルの安全ガード: ①どのチェックボックスにもフォーカスしていなければ無操作(書かない)
-/// ②表示中ファイルが読めなくなっていたら flash で通知して安全に戻る(クラッシュしない・原則#3)。
+/// Safety guards for toggling: (1) if no checkbox is focused, it's a no-op (nothing is written);
+/// (2) if the displayed file can no longer be read, notify via flash and back off safely
+/// (no crash, principle #3).
 #[test]
 fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     use ratatui::backend::TestBackend;
@@ -1776,7 +1799,7 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(app.md_has_tasks());
-    // ①未フォーカス(Tab を押していない)ではトグルしても書かない。
+    // (1) Without focus (Tab hasn't been pressed), toggling doesn't write anything.
     assert!(app.tab.focused_item.is_none());
     app.md_toggle_focused_task();
     assert_eq!(
@@ -1784,7 +1807,7 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
         "- [ ] a\n",
         "未フォーカスでは書かない"
     );
-    // ②フォーカスした状態でファイルが消えたら flash + 無操作(パニックしない)。
+    // (2) If the file disappears while focused, flash + no-op (no panic).
     app.md_focus_move(1);
     assert!(app.md_focused_task());
     std::fs::remove_file(&f).unwrap();
@@ -1794,9 +1817,10 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 0o444 のファイルへの書込みがこのプロセスで実際に拒否されるか probe する。
-/// root(または権限ビットをバイパスできる任意のプロセス)ではパーミッションが効かず
-/// 書込みが成功してしまう(libc 非依存=uid を直接は読まない・fs 挙動そのものを確認する)。
+/// Probes whether this process is actually denied write access to a 0o444 file.
+/// Under root (or any process able to bypass permission bits), permissions have no
+/// effect and the write succeeds anyway (libc-independent: does not read uid directly,
+/// just checks the fs behavior itself).
 #[cfg(unix)]
 fn write_denied_by_permissions() -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -1819,17 +1843,19 @@ fn write_denied_by_permissions() -> bool {
     denied
 }
 
-/// 書込みが拒否されても(読取専用ファイル)クラッシュせず flash で通知し、内容を壊さない(原則#3)。
+/// Even when a write is denied (a read-only file), it doesn't crash: notifies via flash and
+/// leaves the content intact (principle #3).
 #[cfg(unix)]
 #[test]
 fn md_task_toggle_flashes_on_write_error() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::os::unix::fs::PermissionsExt;
-    // このテストは「パーミッションビットが書込みを拒否する」ことに依存する。
-    // root(や権限ビットをバイパスできるプロセス)で実行すると 0o444 でも書込みが
-    // 成功してしまい、製品は正しく動いているのにテストだけ環境要因で赤くなる。
-    // (Linux コンテナで root として動作確認する際に踏んだ・製品コードは変更しない)
+    // This test depends on "permission bits denying the write". Run as root (or any process
+    // able to bypass permission bits), the write succeeds even at 0o444, and the test alone
+    // goes red for environmental reasons even though the product behaves correctly.
+    // (Hit this while verifying behavior as root in a Linux container; the product code is
+    // left unchanged.)
     if !write_denied_by_permissions() {
         eprintln!(
             "md_task_toggle_flashes_on_write_error: このプロセスはパーミッションで書込みを拒否されない(root 等)ためスキップ"
@@ -1847,11 +1873,11 @@ fn md_task_toggle_flashes_on_write_error() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
-    // 読取専用にする: 読み(照合)は通るが書込みが EACCES で失敗する。
+    // Make it read-only: the read (verification) passes, but the write fails with EACCES.
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
     app.md_toggle_focused_task();
     assert!(app.flash.is_some(), "書込みエラーは flash で通知");
-    // 書込みが拒否されたので内容は元のまま。
+    // The write was denied, so the content stays as it was.
     std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
@@ -1861,8 +1887,9 @@ fn md_task_toggle_flashes_on_write_error() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// ファイル情報ポップアップ(`i`)の描画: 通常ファイル/ディレクトリ(項目数)/読めない対象(エラー行)/
-/// 対象なし(早期 return・クラッシュしない)の各分岐を実描画バッファで確認する。
+/// Rendering the file-info popup (`i`): checks, against a real render buffer, the branches for a
+/// regular file / a directory (item count) / an unreadable target (error line) / no target
+/// (early return, no crash).
 #[test]
 fn ui_info_popup_renders_variants() {
     use crate::i18n::{tr, Lang, Msg};
@@ -1893,7 +1920,7 @@ fn ui_info_popup_renders_variants() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.lang = Lang::En;
 
-    // 通常ファイル: Type=file。
+    // A regular file: Type=file.
     app.tab.selected = app
         .tab
         .entries
@@ -1903,7 +1930,7 @@ fn ui_info_popup_renders_variants() {
     let s = info_screen(&app);
     assert!(s.contains(tr(Lang::En, Msg::InfoFile)), "file 種別: {s}");
 
-    // ディレクトリ: Type=directory ＋ 項目数。
+    // A directory: Type=directory + item count.
     app.tab.selected = app
         .tab
         .entries
@@ -1917,13 +1944,13 @@ fn ui_info_popup_renders_variants() {
     );
     assert!(s.contains(tr(Lang::En, Msg::InfoItems)), "項目数を表示");
 
-    // 読めない対象(不在): エラー行(クラッシュしない)。
+    // An unreadable target (missing): an error line (no crash).
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(dir.join("gone.txt"));
     let s = info_screen(&app);
     assert!(s.contains(tr(Lang::En, Msg::Failed)), "エラー表示: {s}");
 
-    // 対象なし: 早期 return(何も描かない)。
+    // No target: early return (nothing is drawn).
     app.tab.preview_path = None;
     let s = info_screen(&app);
     assert!(
@@ -1934,7 +1961,7 @@ fn ui_info_popup_renders_variants() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// シンボリックリンクのファイル情報: Type=symlink ＋ リンク先(Target)行を描く。
+/// File info for a symlink: draws Type=symlink plus a Target line pointing to the link target.
 #[cfg(unix)]
 #[test]
 fn ui_info_popup_renders_symlink_target() {
@@ -1970,9 +1997,10 @@ fn ui_info_popup_renders_symlink_target() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// paste-jump のナビゲーション分岐: ①絶対パス解決 ②GitHub URL の末尾が実在せず not found flash
-/// ③装飾 Markdown に `#L` を渡すと raw ソースへ切替(行アドレス可能に) ④テーブル(非 windowed)は
-/// 行ジャンプが no-op(クラッシュしない)。
+/// paste-jump's navigation branches: (1) absolute path resolution; (2) a GitHub URL whose tail
+/// doesn't actually exist → a not-found flash; (3) passing `#L` to decorated Markdown switches to
+/// the raw source (making line addressing possible); (4) for a table (non-windowed), a line jump
+/// is a no-op (no crash).
 #[test]
 fn paste_jump_navigation_branches() {
     let dir = unique_tmp("konoma_paste_nav_test");
@@ -1983,7 +2011,7 @@ fn paste_jump_navigation_branches() {
     let dir = dir.canonicalize().unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
-    // ①絶対パス(resolve_local_path の absolute 枝) → プレビュー。
+    // (1) An absolute path (resolve_local_path's absolute branch) → preview.
     let abs = dir.join("abs_target.txt");
     app.paste_jump_from(abs.to_str().unwrap());
     assert_eq!(app.tab.mode, Mode::Preview);
@@ -1994,7 +2022,8 @@ fn paste_jump_navigation_branches() {
         .map(|p| p.ends_with("abs_target.txt"))
         .unwrap_or(false));
 
-    // ②GitHub URL だが末尾が実在しない → not found flash(resolve_url_components が None)。
+    // (2) A GitHub URL whose tail doesn't actually exist → a not-found flash
+    // (resolve_url_components returns None).
     app.flash = None;
     app.paste_jump_from("https://github.com/o/r/blob/main/nope/missing.rs");
     assert!(
@@ -2006,7 +2035,7 @@ fn paste_jump_navigation_branches() {
         app.flash
     );
 
-    // ③装飾 Markdown + `#L` → raw ソースへ切替(preview_goto_line の decorated 枝)。
+    // (3) Decorated Markdown + `#L` → switches to the raw source (preview_goto_line's decorated branch).
     app.paste_jump_from("doc.md#L5");
     assert!(app
         .tab
@@ -2016,7 +2045,7 @@ fn paste_jump_navigation_branches() {
         .unwrap_or(false));
     assert!(app.is_md_raw(), "装飾 md + 行 → raw ソースへ切替");
 
-    // ④テーブル(非 windowed)に `#L` → 行ジャンプは no-op(テーブル面のまま)。
+    // (4) `#L` against a table (non-windowed) → the line jump is a no-op (stays on the table surface).
     app.paste_jump_from("data.csv#L2");
     assert!(
         app.is_table_preview(),
@@ -2026,8 +2055,9 @@ fn paste_jump_navigation_branches() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// repo のサブディレクトリで開いた状態では、root 直下に無い相対パスも repo(workdir)基準で解決する
-/// (resolve_local_path の workdir フォールバック枝)。
+/// When opened at a subdirectory of a repo, a relative path that doesn't exist directly under
+/// root is still resolved relative to the repo (workdir) (resolve_local_path's workdir
+/// fallback branch).
 #[cfg(feature = "git")]
 #[test]
 fn paste_jump_relative_resolves_against_repo_workdir() {
@@ -2053,7 +2083,8 @@ fn paste_jump_relative_resolves_against_repo_workdir() {
     let subdir = repo.join("src");
     let mut app = App::new(subdir.clone(), Config::default()).unwrap();
     assert_eq!(app.tab.root, subdir, "起動 root は src サブディレクトリ");
-    // root(src)直下に docs/guide.md は無いが、repo workdir 基準で解決できる。
+    // docs/guide.md doesn't exist directly under root (src), but it resolves relative to the
+    // repo workdir.
     app.paste_jump_from("docs/guide.md");
     assert_eq!(app.tab.mode, Mode::Preview);
     assert!(
@@ -2072,7 +2103,7 @@ fn paste_jump_relative_resolves_against_repo_workdir() {
 fn md_items_mix_links_and_tasks_in_document_order() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // リンクとチェックボックスが文書順で1本の Tab 巡回に載る。
+    // Links and checkboxes are loaded into a single Tab cycle in document order.
     let dir = std::env::temp_dir().join("konoma_md_items_mix_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2107,8 +2138,8 @@ fn md_items_mix_links_and_tasks_in_document_order() {
 fn md_code_block_is_tab_focusable_and_copies_source() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // リンク・コードブロック・タスクが文書順で1本の Tab 巡回に載り、コードブロックに
-    // フォーカスすると Enter でその生ソースをコピーできる(focused_code_text で値照合)。
+    // Links, code blocks, and tasks are loaded into a single Tab cycle in document order, and
+    // focusing a code block lets Enter copy its raw source (verified against focused_code_text).
     let dir = std::env::temp_dir().join("konoma_md_code_focus_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2136,11 +2167,11 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
         .collect();
     assert_eq!(kinds, vec!["link", "code", "task"], "Link→Code→Task の順");
 
-    // フォーカス無し/リンク上ではコードコピー不可。
+    // Code copy isn't available without focus / while focused on a link.
     assert!(app.focused_code_text().is_none());
-    app.md_focus_move(1); // リンク
+    app.md_focus_move(1); // the link
     assert!(!app.md_focused_code());
-    app.md_focus_move(1); // コードブロック
+    app.md_focus_move(1); // the code block
     assert!(app.md_focused_code(), "2番目=コードブロック");
     assert_eq!(
         app.focused_code_text().as_deref(),
@@ -2148,8 +2179,9 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
         "生ソース(装飾/ハイライトを含まない)をコピー"
     );
 
-    // フォーカス手がかり: 再描画するとコードブロックのヘッダ行(言語名 rust を含む)が
-    // 全幅反転(REVERSED)される。描画バッファのセル修飾で確認(tmux に依らず決定的)。
+    // Focus cue: after re-rendering, the code block's header row (containing the language name
+    // rust) is reversed (REVERSED) across its full width. Verified via the render buffer's cell
+    // modifiers (deterministic, independent of tmux).
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     {
         use ratatui::style::Modifier;
@@ -2162,7 +2194,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
                 .contains("rust")
         });
         let y = header_row.expect("rust ヘッダ行が描画されている");
-        // ヘッダ行の可視セル(▎ を含む)が REVERSED を持つ。
+        // The header row's visible cells (including ▎) carry REVERSED.
         let reversed = (0..w)
             .filter(|&x| buf[(x, y)].symbol().trim() != "" || buf[(x, y)].symbol() == "▎")
             .any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED));
@@ -2172,11 +2204,12 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
         );
     }
 
-    // コピー動作(`y` 経由で呼ばれる。クリップボードは環境依存なのでパニックしないことだけ確認)。
+    // Copy action (invoked via `y`; since the clipboard is environment-dependent, we only check
+    // that it doesn't panic).
     app.md_copy_focused_code();
-    // Enter はコードブロックでは何もしない(開く/トグル対象が無い)。
+    // Enter does nothing on a code block (there's nothing to open/toggle).
     app.md_activate_focused().unwrap();
-    app.md_focus_move(1); // タスク
+    app.md_focus_move(1); // the task
     assert!(!app.md_focused_code());
     assert!(app.focused_code_text().is_none());
     std::fs::remove_dir_all(&dir).ok();
@@ -2188,7 +2221,7 @@ fn links_collapse_to_label_only_with_optional_icon() {
     let blue = Style::new()
         .fg(Color::Blue)
         .add_modifier(Modifier::UNDERLINED);
-    // tui-markdown の「ラベル (URL)」相当の span 列。末尾に "." が続く。
+    // The span sequence corresponding to tui-markdown's "label (URL)". Followed by a trailing ".".
     let lines = vec![Line::from(vec![
         Span::raw("See "),
         Span::raw("the docs"),
@@ -2196,7 +2229,7 @@ fn links_collapse_to_label_only_with_optional_icon() {
         Span::styled("https://x/y", blue),
         Span::raw(")."),
     ])];
-    // icons OFF: ラベルのみ表示・URL は targets へ・末尾 "." は保持。
+    // icons OFF: only the label is shown, the URL goes into targets, the trailing "." is kept.
     let (off, targets) = collapse_links(lines.clone(), false);
     assert_eq!(targets, vec!["https://x/y".to_string()]);
     let joined: String = off[0].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -2206,7 +2239,7 @@ fn links_collapse_to_label_only_with_optional_icon() {
         1,
         "リンク span は1つ"
     );
-    // icons ON: ラベル先頭にリンクアイコン。
+    // icons ON: a link icon is prefixed to the label.
     let (on, _) = collapse_links(lines, true);
     let link = on[0].spans.iter().find(|s| is_link_span(s)).unwrap();
     assert!(
@@ -2494,7 +2527,7 @@ fn decorate_links_highlights_focused() {
     app.tab.focused_item = Some(1);
     let out = app.decorate_md_items(lines);
     assert_eq!(app.md_items.len(), 2);
-    // フォーカス中(1番目)のリンク span だけ REVERSED が付く。
+    // Only the focused (1st) link span carries REVERSED.
     let rev = |line: &Line<'static>| -> bool {
         line.spans
             .iter()
@@ -2507,7 +2540,8 @@ fn decorate_links_highlights_focused() {
 
 #[test]
 fn code_file_decorates_with_colored_syntax() {
-    // .rs を開くと Code 種別へ解決され、decorated_lines が色付き(Rgb 前景)の行を返す。
+    // Opening a .rs file resolves to the Code kind, and decorated_lines returns colored
+    // (Rgb foreground) lines.
     use ratatui::style::Color;
     let dir = std::env::temp_dir().join("konoma_code_decorate_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2533,7 +2567,8 @@ fn code_file_decorates_with_colored_syntax() {
 
 #[test]
 fn tree_filter_finds_recursively_then_clears() {
-    // `/` 絞り込み: root 配下を再帰収集し、部分一致(大小無視)で entries を絞る。Esc で通常へ。
+    // `/` filter: recursively collects everything under root and narrows entries by a
+    // case-insensitive substring match. Esc returns to normal.
     let dir = std::env::temp_dir().join("konoma_tree_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src/ui")).unwrap();
@@ -2545,30 +2580,30 @@ fn tree_filter_finds_recursively_then_clears() {
 
     app.start_filter();
     assert!(app.is_filtering());
-    // `/` 直後(クエリ空)は全件展開せず何も出さない。
+    // Right after `/` (empty query), it does not expand everything and shows nothing.
     assert!(
         app.tab.entries.is_empty(),
         "クエリ空のとき結果は0件であるべき(全展開しない)"
     );
     for c in "TREE".chars() {
-        app.filter_input_push(c); // 大文字でも一致(大小無視)
+        app.filter_input_push(c); // matches even in uppercase (case-insensitive)
     }
     assert_eq!(app.filter_query(), Some("TREE"));
-    // 2 階層下の tree.rs を再帰的に発見。
+    // Recursively finds tree.rs, 2 levels down.
     assert_eq!(app.tab.entries.len(), 1, "tree 一致は1件");
     assert!(app.tab.entries[0].path.ends_with("tree.rs"));
 
-    // 1文字削るとライブで広がる("TRE")。tree.rs は残る。
+    // Deleting one character widens the results live ("TRE"). tree.rs still remains.
     app.filter_input_backspace();
     assert_eq!(app.filter_query(), Some("TRE"));
     assert!(app.tab.entries.iter().any(|e| e.path.ends_with("tree.rs")));
 
-    // 確定(Enter): 入力は抜けるが絞り込みは維持。
+    // Commit (Enter): exits input mode but keeps the filter applied.
     app.filter_commit();
     assert!(!app.is_filtering());
     assert!(app.filter_query().is_some());
 
-    // 解除(Esc): 通常ツリーへ戻る。
+    // Clear (Esc): returns to the normal tree.
     app.filter_clear();
     assert!(app.filter_query().is_none());
     assert_eq!(app.tab.entries.len(), normal_count, "通常ツリーに復帰");
@@ -2588,8 +2623,9 @@ fn named_entry(name: &str) -> Entry {
 
 #[test]
 fn filter_fuzzy_finds_non_contiguous_subsequence() {
-    // `[ui] filter_mode` 既定("fuzzy") の核: 飛び石一致(連続部分文字列でなくても、文字が
-    // 順番に現れれば一致)。"aprs" は "app_resolver.rs" の a-p-r-s を順に含む。
+    // The core of `[ui] filter_mode`'s default ("fuzzy"): a scattered match (matches even without
+    // a contiguous substring, as long as the characters appear in order). "aprs" matches because
+    // "app_resolver.rs" contains a-p-r-s in order.
     let pool = vec![
         named_entry("app_resolver.rs"),
         named_entry("main.rs"),
@@ -2602,11 +2638,12 @@ fn filter_fuzzy_finds_non_contiguous_subsequence() {
 
 #[test]
 fn filter_fuzzy_ranks_better_match_first() {
-    // 同じクエリでも、より引き締まった(連続/先頭に近い)一致がスコア上位に来る。
+    // Even for the same query, a tighter match (contiguous / closer to the start) ranks higher.
     let pool = vec![
-        // "app" の a-p-p が離れた位置に散らばる(弱い一致): a(pretty)...p(rogram)...p(rogram の2つ目)。
+        // "app"'s a-p-p is scattered far apart (a weak match): a(pretty)...p(rogram)...p(the
+        // second one in rogram).
         named_entry("a_pretty_neat_program.rs"),
-        // "app" がそのまま先頭に連続して現れる(強い一致)。
+        // "app" appears contiguously right at the start (a strong match).
         named_entry("app.rs"),
     ];
     let hits = fuzzy_filter_pool(&pool, "app");
@@ -2619,7 +2656,8 @@ fn filter_fuzzy_ranks_better_match_first() {
 
 #[test]
 fn filter_fuzzy_multi_word_query_is_and() {
-    // 空白区切りの複数語は AND(fzf 流)。"app rs" は両方が(隣接でなくても)存在すれば一致。
+    // Space-separated multiple words are AND'd (fzf-style). "app rs" matches as long as both
+    // are present (even if not adjacent).
     let pool = vec![named_entry("app_resolver.rs"), named_entry("readme.md")];
     let hits = fuzzy_filter_pool(&pool, "app rs");
     assert_eq!(hits.len(), 1, "{hits:?}");
@@ -2639,13 +2677,13 @@ fn filter_fuzzy_handles_cjk_filenames_without_panic() {
         named_entry("readme.md"),
         named_entry("メモ.md"),
     ];
-    // CJK クエリが CJK ファイル名に一致する。
+    // A CJK query matches a CJK filename.
     let hits = fuzzy_filter_pool(&pool, "日本語");
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert!(hits[0].path.ends_with("日本語.txt"));
-    // 一致しない ASCII クエリでもパニックしない(空)。
+    // Even a non-matching ASCII query does not panic (empty result).
     assert!(fuzzy_filter_pool(&pool, "zzzz").is_empty());
-    // 部分一致の CJK クエリも安全に扱える。
+    // A partially-matching CJK query is also handled safely.
     let hits2 = fuzzy_filter_pool(&pool, "モ");
     assert_eq!(hits2.len(), 1, "{hits2:?}");
     assert!(hits2[0].path.ends_with("メモ.md"));
@@ -2653,8 +2691,9 @@ fn filter_fuzzy_handles_cjk_filenames_without_panic() {
 
 #[test]
 fn filter_fuzzy_is_case_insensitive_both_directions() {
-    // 常に大小無視(CaseMatching::Ignore): 旧 substring モードの「常に大小無視」挙動を
-    // fuzzy モードでも保つ(fzf/ripgrep 流の smart-case=全大文字クエリは大小区別、は不採用)。
+    // Always case-insensitive (CaseMatching::Ignore): keeps the old substring mode's
+    // "always case-insensitive" behavior in fuzzy mode too (fzf/ripgrep-style smart-case,
+    // where an all-uppercase query becomes case-sensitive, is not adopted).
     let pool = vec![named_entry("TREE.txt"), named_entry("tree.rs")];
     assert_eq!(
         fuzzy_filter_pool(&pool, "tree").len(),
@@ -2689,7 +2728,8 @@ fn filter_fuzzy_large_pool_is_bounded() {
 
 #[test]
 fn filter_substring_mode_excludes_scattered_query_but_keeps_legacy_behavior() {
-    // `[ui] filter_mode = "substring"`: 飛び石一致は無効(連続部分文字列のみ)、かつ大小無視は維持。
+    // `[ui] filter_mode = "substring"`: scattered matching is disabled (contiguous substring
+    // only), while case-insensitivity is kept.
     let dir = unique_tmp("konoma_filter_substring_mode_test");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("app_resolver.rs"), b"x").unwrap();
@@ -2710,7 +2750,7 @@ fn filter_substring_mode_excludes_scattered_query_but_keeps_legacy_behavior() {
         app.tab.entries
     );
 
-    // 一方、通常の(大小無視の)連続部分文字列一致は引き続き機能する。
+    // Meanwhile, the normal (case-insensitive) contiguous substring match still works.
     app.filter_clear();
     app.start_filter();
     for c in "README".chars() {
@@ -2723,9 +2763,10 @@ fn filter_substring_mode_excludes_scattered_query_but_keeps_legacy_behavior() {
 
 #[test]
 fn text_filter_survives_fs_refresh() {
-    // 回帰: `/` 絞り込み中に refresh_fs_inner(タブ切替が通る経路そのもの)が走ると、
-    // rebuild_tree が作る全件 entries が絞り込み結果を上書きしてしまい、
-    // query("txt")は残ったままなのに一覧は .rs も含む全件に戻ってしまう不具合があった。
+    // Regression: when refresh_fs_inner (the very path a tab switch goes through) ran while a
+    // `/` filter was active, the full entries list built by rebuild_tree would overwrite the
+    // filtered result — the query ("txt") stayed set, but the list reverted to all entries
+    // including .rs.
     let dir = unique_tmp("konoma_text_filter_refresh_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2750,7 +2791,8 @@ fn text_filter_survives_fs_refresh() {
         ".rs が混入している"
     );
 
-    // タブ切替が実際に通る経路(refresh_fs_after_tab_switch)を直接叩く=最も引き締まった再現方法。
+    // Directly hit the path a tab switch actually goes through (refresh_fs_after_tab_switch) =
+    // the tightest way to reproduce it.
     app.refresh_fs_after_tab_switch().unwrap();
 
     assert_eq!(
@@ -2775,7 +2817,8 @@ fn text_filter_survives_fs_refresh() {
 
 #[test]
 fn small_code_file_is_also_windowed() {
-    // #1: サイズに関わらず Code は windowed(全行ハイライトしない)＝小ファイルでも即時。
+    // #1: Code is windowed regardless of size (doesn't highlight every line) = instant even for
+    // small files.
     let dir = std::env::temp_dir().join("konoma_small_windowed_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2793,7 +2836,8 @@ fn small_code_file_is_also_windowed() {
 
 #[test]
 fn line_numbers_gutter_tracks_position() {
-    // #3: ui.line_numbers=true で行番号ガターが出る。先頭=1、G で末尾の正しい行番号。
+    // #3: ui.line_numbers=true shows the line-number gutter. Start=1, and G gives the correct
+    // line number at the end.
     use std::io::Write;
     let dir = std::env::temp_dir().join("konoma_linenum_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2818,14 +2862,14 @@ fn line_numbers_gutter_tracks_position() {
     app.tree_activate().unwrap();
     app.tab.preview_viewport = 5;
 
-    // 行頭ガター span(最初の span)の数字部分。
+    // The numeric part of the leading gutter span (the first span).
     let gutter_num = |lines: &[Line<'static>], row: usize| -> String {
         lines[row].spans[0].content.trim().to_string()
     };
     let top = app.windowed_lines(5, 80);
     assert_eq!(gutter_num(&top, 0), "1", "先頭行番号が 1 でない");
     assert_eq!(gutter_num(&top, 1), "2");
-    // G で末尾へ → 末尾 5 行は 26..30。先頭行番号 = 26。
+    // G to the end → the last 5 lines are 26..30. The first line number = 26.
     app.preview_to_bottom();
     let bot = app.windowed_lines(5, 80);
     assert_eq!(
@@ -2835,7 +2879,7 @@ fn line_numbers_gutter_tracks_position() {
     );
     assert_eq!(gutter_num(&bot, 4), "30", "末尾行番号が 30 でない");
 
-    // OFF(既定)ではガターが付かない(先頭 span が行番号でない)。
+    // With OFF (the default), no gutter is shown (the first span is not a line number).
     let mut app2 = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app2.tab.selected = app2
         .tab
@@ -2856,7 +2900,8 @@ fn line_numbers_gutter_tracks_position() {
 
 #[test]
 fn large_code_file_uses_windowed_reading() {
-    // 閾値超の Code は less 風ウィンドウ読み。全文走査せず先頭/末尾の窓だけ読み・着色する。
+    // Code above the threshold uses a less-style windowed read: it reads and colors only the
+    // start/end windows without scanning the whole file.
     use ratatui::style::Color;
     use std::io::Write;
     let dir = std::env::temp_dir().join("konoma_windowed_test");
@@ -2865,7 +2910,7 @@ fn large_code_file_uses_windowed_reading() {
     let path = dir.join("big.rs");
     {
         let mut f = std::fs::File::create(&path).unwrap();
-        // ~9000 行 × ~40B ≈ 350KB > WINDOW_THRESHOLD(256KB)。
+        // ~9000 lines × ~40B ≈ 350KB > WINDOW_THRESHOLD (256KB).
         for i in 1..=9000 {
             writeln!(f, "fn func_{i:05}() -> i32 {{ {i} }} // line {i}").unwrap();
         }
@@ -2889,16 +2934,17 @@ fn large_code_file_uses_windowed_reading() {
             .map(|s| s.content.as_ref())
             .collect()
     };
-    // 先頭ウィンドウは line 1 を含む。
+    // The start window includes line 1.
     let top = app.windowed_lines(5, 80);
     assert!(joined(&top).contains("func_00001"), "先頭が出ない");
-    // G で末尾へ → 末尾ウィンドウは line 9000 を含み、先頭は見えない(全文走査せず)。
+    // G to the end → the end window includes line 9000, and the start is not visible (no
+    // full-file scan).
     app.preview_to_bottom();
     let bot = app.windowed_lines(5, 80);
     let bot_text = joined(&bot);
     assert!(bot_text.contains("func_09000"), "末尾が出ない: {bot_text}");
     assert!(!bot_text.contains("func_00001"), "末尾なのに先頭が見える");
-    // ウィンドウも syntect で着色される。
+    // The window is colored with syntect too.
     let colored = bot
         .iter()
         .flat_map(|l| l.spans.iter())
@@ -2909,21 +2955,22 @@ fn large_code_file_uses_windowed_reading() {
 
 #[test]
 fn tab_label_reflects_tree_root_or_preview_file() {
-    // タブ名: Tree 表示中はルートのディレクトリ名、Preview/画像中はファイル名。
+    // Tab name: the root's directory name while showing Tree, the file name while in Preview/an image.
     let dir = std::env::temp_dir().join("konoma_tab_label_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# hi\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    // Tree 表示中はルートのディレクトリ名。
+    // While showing Tree, it's the root's directory name.
     assert_eq!(app.tab_label(0), "konoma_tab_label_test");
-    // doc.md をプレビュー → タブ名がファイル名になる。
+    // Preview doc.md → the tab name becomes the file name.
     let idx = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tab.selected = idx;
     app.tree_activate().unwrap();
     assert_eq!(app.tab.mode, Mode::Preview);
     assert_eq!(app.tab_label(0), "doc.md", "Preview 中はファイル名");
-    // 新規タブ(Tree)はルート名。非アクティブの元タブはスナップショットのファイル名のまま。
+    // A new tab (Tree) uses the root name. The now-inactive original tab keeps the snapshotted
+    // file name.
     app.tab_new().unwrap();
     assert_eq!(
         app.tab_label(1),
@@ -2940,15 +2987,15 @@ fn tab_label_reflects_tree_root_or_preview_file() {
 
 #[test]
 fn tab_switch_preserves_and_restores_preview() {
-    // 各タブはプレビュー状態を保持する。Preview→新規タブ(Tree)→戻ると Preview が復元される
-    // (Tree に落とさない)。
+    // Each tab keeps its own preview state. Preview→new tab (Tree)→going back restores Preview
+    // (it doesn't fall back to Tree).
     let dir = std::env::temp_dir().join("konoma_tab_preview_restore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# Hello\n\nbody\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
-    // doc.md を選んでプレビューへ。
+    // Select doc.md and go to preview.
     let idx = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tab.selected = idx;
     app.tree_activate().unwrap();
@@ -2956,12 +3003,12 @@ fn tab_switch_preserves_and_restores_preview() {
     let previewed = app.tab.preview_path.clone();
     assert!(previewed.is_some());
 
-    // 新規タブは Tree から (プレビューを持ち込まない)。
+    // A new tab starts from Tree (it doesn't carry the preview over).
     app.tab_new().unwrap();
     assert_eq!(app.tab.mode, Mode::Tree, "新規タブは Tree");
     assert!(app.tab.preview_path.is_none(), "新規タブはプレビュー無し");
 
-    // 元のタブへ戻ると Preview と対象が復元される。
+    // Going back to the original tab restores Preview and its target.
     app.tab_cycle(-1);
     assert_eq!(app.tab.mode, Mode::Preview, "戻ると Preview が復元される");
     assert_eq!(
@@ -2973,7 +3020,7 @@ fn tab_switch_preserves_and_restores_preview() {
 
 #[test]
 fn tabs_create_switch_close_preserve_state() {
-    // 2つの子ディレクトリを持つツリーで、タブごとに選択位置が保たれることを確認。
+    // Verify that, in a tree with two child directories, each tab keeps its own selection position.
     let dir = std::env::temp_dir().join("konoma_tabs_test");
     std::fs::create_dir_all(dir.join("a")).unwrap();
     std::fs::create_dir_all(dir.join("b")).unwrap();
@@ -2981,12 +3028,12 @@ fn tabs_create_switch_close_preserve_state() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     assert_eq!(app.tab_count(), 1);
 
-    // タブ1で選択を1つ下へ。
+    // In tab 1, move the selection down by one.
     app.tree_next();
     let sel1 = app.tab.selected;
     assert!(sel1 > 0);
 
-    // 新規タブ → 2枚、アクティブは2枚目、選択は先頭。
+    // New tab → 2 tabs, tab 2 is active, and the selection starts at the top.
     app.tab_new().unwrap();
     assert_eq!(app.tab_count(), 2);
     assert_eq!(app.active_tab_index(), 1);
@@ -2994,21 +3041,21 @@ fn tabs_create_switch_close_preserve_state() {
     app.tree_last();
     let sel2 = app.tab.selected;
 
-    // 前のタブへ戻ると選択位置が復元される。
+    // Going back to the previous tab restores its selection position.
     app.tab_cycle(-1);
     assert_eq!(app.active_tab_index(), 0);
     assert_eq!(app.tab.selected, sel1, "タブ1の選択が保たれる");
 
-    // 番号ジャンプでタブ2へ。
+    // Jump to tab 2 by number.
     app.tab_goto(1);
     assert_eq!(app.active_tab_index(), 1);
     assert_eq!(app.tab.selected, sel2, "タブ2の選択が保たれる");
 
-    // タブを閉じると1枚に戻り、残ったタブがアクティブ。
+    // Closing a tab returns to 1 tab, and the remaining tab becomes active.
     app.tab_close();
     assert_eq!(app.tab_count(), 1);
     assert_eq!(app.active_tab_index(), 0);
-    // 最後の1枚は閉じられない。
+    // The last remaining tab cannot be closed.
     app.tab_close();
     assert_eq!(app.tab_count(), 1);
     std::fs::remove_dir_all(&dir).ok();
@@ -3016,8 +3063,8 @@ fn tabs_create_switch_close_preserve_state() {
 
 #[test]
 fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
-    // #2/#6 の核: 選択(BTreeSet<PathBuf>)はタブ毎に保たれ・リークせず、
-    // root 変更でクリアされ、クリップボード(Y/X/P)は app 全体共有のまま保持される。
+    // Core of #2/#6: the selection (BTreeSet<PathBuf>) is kept per tab without leaking, is
+    // cleared on a root change, and the clipboard (Y/X/P) stays shared across the whole app.
     let dir = std::env::temp_dir().join("konoma_tab_selection_perq_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -3031,7 +3078,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
         app.tab.entries.iter().position(|e| e.path == p).unwrap()
     };
 
-    // --- (a) タブAで複数選択 ---
+    // --- (a) select multiple items in tab A ---
     app.tab.selected = idx(&app, dir.join("a.txt"));
     app.toggle_select(); // a.txt
     app.tab.selected = idx(&app, dir.join("b.txt"));
@@ -3039,7 +3086,8 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     assert!(app.is_selected(&dir.join("a.txt")) && app.is_selected(&dir.join("b.txt")));
     assert_eq!(app.op_targets().len(), 2, "A の op_targets は選択2件");
 
-    // --- (a) タブBへ → 選択は空(リークしない)・op_targets は現 root のカーソル1件のみ ---
+    // --- (a) to tab B → selection is empty (no leak); op_targets is only the current
+    //     root's single cursor item ---
     app.tab_new().unwrap();
     assert!(
         !app.has_selection(),
@@ -3052,7 +3100,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
         "B の op_targets は旧Aの選択(a.txt)を返さない"
     );
 
-    // --- (a) タブAへ戻ると選択復元 ---
+    // --- (a) going back to tab A restores the selection ---
     app.tab_cycle(-1);
     assert_eq!(app.active_tab_index(), 0);
     assert!(
@@ -3061,7 +3109,8 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     );
     assert_eq!(app.op_targets().len(), 2);
 
-    // --- (b) root 変更(l=descend)で選択クリア・op_targets が別 root のパスを返さない ---
+    // --- (b) a root change (l=descend) clears the selection; op_targets doesn't return
+    //     paths from a different root ---
     app.tab.selected = idx(&app, dir.join("sub"));
     app.tree_descend().unwrap();
     assert_eq!(app.tab.root, dir.join("sub"), "sub が新 root");
@@ -3073,7 +3122,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
         );
     }
 
-    // --- (b) root 変更(h=leave)でも選択クリア ---
+    // --- (b) a root change (h=leave) also clears the selection ---
     app.tab.selected = idx(&app, dir.join("sub").join("x.txt"));
     app.toggle_select();
     assert!(app.has_selection(), "sub 内で選択を積む");
@@ -3081,10 +3130,10 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     assert_eq!(app.tab.root, dir, "親へ戻る");
     assert!(!app.has_selection(), "root 変更(h)で選択クリア");
 
-    // --- (c) clipboard はタブ跨ぎで保持(global) ---
+    // --- (c) the clipboard is kept across tabs (global) ---
     app.tab.selected = idx(&app, dir.join("a.txt"));
     app.toggle_select();
-    app.copy_selection(); // Y: clipboard へ積む(選択はクリアされる)
+    app.copy_selection(); // Y: loads it into the clipboard (the selection is cleared)
     assert!(
         app.clipboard_label().is_some(),
         "コピーで clipboard に積まれる"
@@ -3102,14 +3151,14 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
 
 #[test]
 fn refresh_rereads_directory_listing() {
-    // 自動更新の核: refresh() でディレクトリを読み直し、外部で増えたファイルが現れる。
+    // Core of auto-refresh: refresh() re-reads the directory, and files added externally show up.
     let dir = std::env::temp_dir().join("konoma_refresh_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let before = app.tab.entries.len();
-    std::fs::write(dir.join("b.txt"), b"y").unwrap(); // 外部でファイル追加
+    std::fs::write(dir.join("b.txt"), b"y").unwrap(); // add a file externally
     app.refresh().unwrap();
     assert!(
         app.tab.entries.len() > before,
@@ -3121,8 +3170,9 @@ fn refresh_rereads_directory_listing() {
 
 #[test]
 fn refresh_prunes_deleted_paths_from_selection() {
-    // #12: 外部で消えたパスを refresh() が selection から剪定する
-    // (1件でも消えると一括ゴミ箱送りが全失敗していた回帰を防ぐ)。
+    // #12: refresh() prunes externally-deleted paths from the selection
+    // (guards against a regression where a batch trash operation failed entirely if even one
+    // item was gone).
     let dir = std::env::temp_dir().join("konoma_refresh_prune_sel");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -3130,12 +3180,12 @@ fn refresh_prunes_deleted_paths_from_selection() {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // 3件すべて選択。
+    // Select all 3 items.
     for n in ["a.txt", "b.txt", "c.txt"] {
         app.tab.selection.insert(dir.join(n));
     }
     assert_eq!(app.op_targets().len(), 3, "選択3件が一括対象");
-    // 外部で b.txt を削除 → refresh で selection から b.txt だけ剪定される。
+    // Delete b.txt externally → refresh prunes only b.txt from the selection.
     std::fs::remove_file(dir.join("b.txt")).unwrap();
     app.refresh().unwrap();
     assert!(app.is_selected(&dir.join("a.txt")), "残存 a は選択維持");
@@ -3150,8 +3200,9 @@ fn refresh_prunes_deleted_paths_from_selection() {
 
 #[test]
 fn refresh_reloads_active_preview() {
-    // 既知バグ: Preview モード中の refresh() で現プレビューを再読込(外部編集を反映)する。
-    // 観測点: decorated_lines が張る装飾キャッシュ(md_cache)が refresh で無効化されること。
+    // Known bug: refresh() during Preview mode reloads the current preview (reflecting external
+    // edits). What we observe: the decoration cache (md_cache) that decorated_lines builds gets
+    // invalidated by refresh.
     let dir = std::env::temp_dir().join("konoma_refresh_reload_preview");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -3164,11 +3215,11 @@ fn refresh_reloads_active_preview() {
         .position(|e| e.path.ends_with("doc.md"))
         .unwrap();
     app.tab.selected = idx;
-    app.tree_activate().unwrap(); // doc.md をプレビューで開く
+    app.tree_activate().unwrap(); // opens doc.md in preview
     assert!(matches!(app.tab.mode, Mode::Preview), "Preview モードへ");
-    let _ = app.decorated_lines(80); // 装飾キャッシュを張る
+    let _ = app.decorated_lines(80); // builds the decoration cache
     assert!(app.md_cache.is_some(), "プレビューでキャッシュが張られる");
-    std::fs::write(dir.join("doc.md"), b"# v2 changed\n").unwrap(); // 外部編集
+    std::fs::write(dir.join("doc.md"), b"# v2 changed\n").unwrap(); // an external edit
     app.refresh().unwrap();
     assert!(
         app.md_cache.is_none(),
@@ -3179,9 +3230,11 @@ fn refresh_reloads_active_preview() {
 
 #[test]
 fn out_of_root_watch_dir_targets_files_outside_the_root() {
-    // 真因の回帰: FSEvents 監視は app.tab.root だけを再帰監視する。root 外に表示中のファイル
-    // (グローバルブックマーク先 / repo 全体の git ビュー)は変更イベントが来ず、AI 編集を検知できない。
-    // out_of_root_watch_dir が「root 外プレビューはその親ディレクトリを返す / root 内・ツリーは None」を検証。
+    // Root-cause regression: FSEvents watching recursively covers only app.tab.root. A file
+    // displayed outside root (a global bookmark target / the git view for the whole repo)
+    // never gets change events, so AI edits can't be detected. This verifies
+    // out_of_root_watch_dir's contract: "an out-of-root preview returns its parent directory;
+    // inside root / on the tree it's None".
     let base = std::env::temp_dir().join("konoma_out_of_root_watch");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("root")).unwrap();
@@ -3192,19 +3245,20 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
     std::fs::write(outside.join("note.md"), b"# outside\n").unwrap();
     let mut app = App::new(root.clone(), Config::default()).unwrap();
 
-    // ツリー表示中は常に追加監視しない。
+    // Never add extra watching while showing the tree.
     assert_eq!(
         app.out_of_root_watch_dir(),
         None,
         "ツリー表示中は追加監視しない"
     );
 
-    // root 内ファイルのプレビュー → 再帰監視でカバー済 → None。
+    // Previewing a file inside root → already covered by recursive watching → None.
     app.enter_preview(&root.join("inside.md"));
     assert_eq!(app.tab.mode, Mode::Preview);
     assert_eq!(app.out_of_root_watch_dir(), None, "root 内は追加監視不要");
 
-    // root 外ファイルのプレビュー(ブックマーク先を模擬) → その親ディレクトリを追加監視対象に返す。
+    // Previewing a file outside root (simulating a bookmark target) → returns its parent
+    // directory as the extra watch target.
     app.enter_preview(&outside.join("note.md"));
     assert_eq!(
         app.out_of_root_watch_dir().as_deref(),
@@ -3212,7 +3266,7 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
         "root 外プレビューはその親ディレクトリを監視対象に返す"
     );
 
-    // ツリーへ戻ると None(監視は外れる)。
+    // Going back to the tree gives None (watching is dropped).
     app.tab.mode = Mode::Tree;
     assert_eq!(app.out_of_root_watch_dir(), None);
 
@@ -3221,9 +3275,10 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
 
 #[test]
 fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
-    // 副次修正: refresh_fs で rebuild_tree が失敗しても、プレビュー再読込はスキップしない。
-    // (エージェントの一括操作中に展開中ディレクトリが一瞬読めなくなっても、プレビューは追従する)。
-    // 観測点: rebuild_tree が Err を返す状況でも、reload_preview が走って md_cache が無効化されること。
+    // Side fix: even if rebuild_tree fails inside refresh_fs, the preview reload is not skipped.
+    // (Even if an expanded directory briefly becomes unreadable during an agent's batch
+    // operation, the preview keeps following along.) What we observe: even when rebuild_tree
+    // returns Err, reload_preview still runs and md_cache still gets invalidated.
     let base = std::env::temp_dir().join("konoma_refresh_tree_fail");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("root")).unwrap();
@@ -3242,9 +3297,10 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
     let _ = app.decorated_lines(80);
     assert!(app.md_cache.is_some(), "プレビューでキャッシュが張られる");
 
-    // root を存在しないパスへ差し替え → rebuild_tree(read_dir) が失敗する状況を作る。
+    // Swap root for a path that doesn't exist → creates a situation where rebuild_tree
+    // (read_dir) fails.
     app.tab.root = base.join("does-not-exist");
-    std::fs::write(root.join("doc.md"), b"# v2 changed\n").unwrap(); // 外部編集
+    std::fs::write(root.join("doc.md"), b"# v2 changed\n").unwrap(); // an external edit
 
     let result = app.refresh_fs(false);
     assert!(
@@ -3260,15 +3316,17 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
 
 #[test]
 fn media_preview_reloads_only_when_file_changes() {
-    // 画像/メディアのプレビューは、対象ファイルが変わった時だけ再ロードする(mtime ガード)。
-    // 観測点: clear_image が進める media_gen と、基準時刻 preview_media_mtime。
-    // (実デコードは picker 必須=テストでは no-op。再ロード経路が走ったかを media_gen で判定する。)
+    // An image/media preview only reloads when the target file actually changes (an mtime
+    // guard). What we observe: media_gen, which clear_image advances, and the reference
+    // timestamp preview_media_mtime.
+    // (Actual decoding requires a picker = a no-op in tests. We judge whether the reload path
+    // ran by media_gen.)
     use image::RgbImage;
     let dir = std::env::temp_dir().join("konoma_media_reload_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let pic = dir.join("pic.png");
-    RgbImage::new(2, 2).save(&pic).unwrap(); // 有効な PNG (拡張子/mime どちらでも Image に解決)
+    RgbImage::new(2, 2).save(&pic).unwrap(); // a valid PNG (resolves to Image by either extension or mime)
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let idx = app
         .tab
@@ -3277,7 +3335,7 @@ fn media_preview_reloads_only_when_file_changes() {
         .position(|e| e.path.ends_with("pic.png"))
         .unwrap();
     app.tab.selected = idx;
-    app.tree_activate().unwrap(); // 画像プレビューで開く
+    app.tree_activate().unwrap(); // opens in image preview
     assert!(
         matches!(
             app.tab.preview_kind,
@@ -3291,14 +3349,14 @@ fn media_preview_reloads_only_when_file_changes() {
     );
 
     let gen0 = app.media_gen;
-    // 未変更 → mtime 一致 → 再ロードしない(無駄な再デコード/外部ツール実行を避ける)。
+    // Unchanged → mtime matches → doesn't reload (avoids a wasted re-decode/external tool run).
     app.refresh().unwrap();
     assert_eq!(
         app.media_gen, gen0,
         "未変更なら再ロードしない(mtime ガード)"
     );
 
-    // ファイル変更を模擬(基準 mtime をずらす) → 変更検知で再ロードされる。
+    // Simulate a file change (shift the reference mtime) → change detection triggers a reload.
     app.preview_media_mtime = None;
     app.refresh().unwrap();
     assert_ne!(
@@ -3318,10 +3376,10 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     let dir = std::env::temp_dir().join("konoma_sort_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::create_dir_all(dir.join("zdir")).unwrap(); // ディレクトリ
+    std::fs::create_dir_all(dir.join("zdir")).unwrap(); // a directory
     std::fs::write(dir.join("a.md"), vec![0u8; 30]).unwrap(); // 30B
-    std::fs::write(dir.join("b.txt"), vec![0u8; 10]).unwrap(); // 10B (最小)
-    std::fs::write(dir.join("c.log"), vec![0u8; 50]).unwrap(); // 50B (最大)
+    std::fs::write(dir.join("b.txt"), vec![0u8; 10]).unwrap(); // 10B (smallest)
+    std::fs::write(dir.join("c.log"), vec![0u8; 50]).unwrap(); // 50B (largest)
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
     let names = |a: &App| {
@@ -3332,28 +3390,28 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
             .collect::<Vec<_>>()
     };
 
-    // 既定: 名前昇順・ディレクトリ先頭。
+    // Default: name ascending, directories first.
     assert_eq!(names(&app), vec!["zdir", "a.md", "b.txt", "c.log"]);
 
-    // サイズ昇順(ディレクトリ先頭固定): ファイルは 10<30<50 = b,a,c。
+    // Size ascending (directories still pinned first): files are 10<30<50 = b,a,c.
     app.open_sort_menu();
     app.sort_menu_key('s').unwrap();
     assert_eq!(names(&app), vec!["zdir", "b.txt", "a.md", "c.log"]);
     assert!(!app.is_sort_menu(), "基準選択(n/s/m/e)でメニューは閉じる");
 
-    // 反転(サイズ降順): 大→小 = c,a,b。トグルはメニューを開いたまま。
+    // Reversed (size descending): large→small = c,a,b. Toggling keeps the menu open.
     app.open_sort_menu();
     app.sort_menu_key('r').unwrap();
     assert!(app.is_sort_menu(), "トグル(r/.)はメニューを開いたまま");
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
 
-    // ディレクトリ先頭を解除し、名前昇順へ戻す → dir も名前順に混ざる。
+    // Turn off directories-first and go back to name ascending → dirs get mixed in by name too.
     app.sort_menu_key('.').unwrap(); // dirs_first off
-    app.sort_menu_key('r').unwrap(); // reverse off (元に戻す)
-    app.sort_menu_key('n').unwrap(); // name (選択で閉じる)
+    app.sort_menu_key('r').unwrap(); // reverse off (back to normal)
+    app.sort_menu_key('n').unwrap(); // name (closes the menu on selection)
     assert_eq!(names(&app), vec!["a.md", "b.txt", "c.log", "zdir"]);
 
-    // 拡張子昇順(dirs_first off): "" < log < md < txt = zdir, c.log, a.md, b.txt。
+    // Extension ascending (dirs_first off): "" < log < md < txt = zdir, c.log, a.md, b.txt.
     app.open_sort_menu();
     app.sort_menu_key('e').unwrap();
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
@@ -3363,7 +3421,7 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
 
 #[test]
 fn sort_config_sets_initial_order() {
-    // [ui.sort] が起動時の並びに反映される (key=size, dirs_first=false)。
+    // [ui.sort] is reflected in the order at startup (key=size, dirs_first=false).
     let dir = std::env::temp_dir().join("konoma_sort_config_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -3377,11 +3435,12 @@ fn sort_config_sets_initial_order() {
     cfg.ui.sort.dirs_first = false;
     let app = App::new(dir.clone(), cfg).unwrap();
 
-    // 設定が App.sort に反映されている。
+    // The config is reflected in App.sort.
     assert_eq!(app.sort.key, SortKey::Size);
     assert!(!app.sort.dirs_first);
 
-    // size 昇順: ファイルは 10<30<50 = b,a,c の相対順 (dir のサイズは環境依存なので位置は問わない)。
+    // Size ascending: files follow the relative order 10<30<50 = b,a,c (a dir's size is
+    // environment-dependent, so its position isn't checked).
     let names: Vec<String> = app
         .tab
         .entries
@@ -3404,7 +3463,7 @@ fn bookmark_set_and_jump_via_marks() {
     std::fs::create_dir_all(proj.join("sub")).unwrap();
     std::fs::write(proj.join("f.txt"), b"hello").unwrap();
     let mut app = App::new(proj.clone(), Config::default()).unwrap();
-    // 実 ~/.config を汚さないようテスト用ベースへ差し替え。
+    // Swap in a test base so the real ~/.config isn't polluted.
     app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.tab.open_dir);
 
     let sub_idx = app
@@ -3420,7 +3479,7 @@ fn bookmark_set_and_jump_via_marks() {
         .position(|e| e.path.ends_with("f.txt"))
         .unwrap();
 
-    // カーソルを sub(ディレクトリ)に置いて a に登録 → カーソルの dir が入る。
+    // Put the cursor on sub (a directory) and register at a → the cursor's dir is stored.
     app.tab.selected = sub_idx;
     app.start_mark_set();
     assert!(app.is_marking());
@@ -3428,13 +3487,13 @@ fn bookmark_set_and_jump_via_marks() {
     assert!(!app.is_marking(), "登録後はマーク待ちが解除される");
     assert_eq!(app.bookmarks.get('a'), Some(proj.join("sub")));
 
-    // カーソルを f.txt(ファイル)に置いて b に登録 → カーソルの file が入る。
+    // Put the cursor on f.txt (a file) and register at b → the cursor's file is stored.
     app.tab.selected = file_idx;
     app.start_mark_set();
     app.mark_input('b');
     assert_eq!(app.bookmarks.get('b'), Some(proj.join("f.txt")));
 
-    // ' → 一覧が開き、英字 a: ディレクトリ → そこへ移動 (Tree)。
+    // ' → the list opens, and the letter a: a directory → jumps there (Tree).
     app.open_bookmark_list();
     app.bookmark_jump_letter('a');
     assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
@@ -3445,7 +3504,7 @@ fn bookmark_set_and_jump_via_marks() {
     );
     assert_eq!(app.tab.mode, Mode::Tree);
 
-    // root を proj に戻し、' b: ファイル → プレビューで開く (tree は変えない)。
+    // Set root back to proj, then ' b: a file → opens in preview (tree stays unchanged).
     app.tab.root = proj.clone();
     let _ = app.rebuild_tree();
     let root_before = app.tab.root.clone();
@@ -3463,7 +3522,7 @@ fn bookmark_set_and_jump_via_marks() {
         "ファイルを開いても tree(root) は変わらない"
     );
 
-    // プレビュー中に e を押すと、そのブックマークのファイルが外部エディタの対象になる。
+    // Pressing e while previewing makes that bookmarked file the target for the external editor.
     app.request_edit();
     assert_eq!(
         app.take_pending_edit().map(|(p, _)| p).as_deref(),
@@ -3471,12 +3530,12 @@ fn bookmark_set_and_jump_via_marks() {
         "ブックマークのファイルが編集対象になる"
     );
 
-    // プレビューを終了すると元の tree に戻る。
+    // Exiting preview returns to the original tree.
     app.back_to_tree();
     assert_eq!(app.tab.mode, Mode::Tree);
     assert_eq!(app.tab.root, root_before);
 
-    // 未登録マークはジャンプせず flash(一覧は開いたまま)。
+    // An unregistered mark doesn't jump and just flashes (the list stays open).
     app.open_bookmark_list();
     app.bookmark_jump_letter('z');
     assert_eq!(app.tab.root, root_before, "未登録マークではジャンプしない");
@@ -3484,9 +3543,10 @@ fn bookmark_set_and_jump_via_marks() {
     assert!(app.is_bookmark_list(), "未登録では一覧を閉じない");
     app.close_bookmark_list();
 
-    // 一覧で e: 選択中がファイルなら直接エディタ対象に(プレビューを挟まない)。
+    // In the list, e: if the current selection is a file, it becomes the editor target directly
+    // (without going through preview).
     app.open_bookmark_list();
-    app.bookmark_list_move(1); // a(dir) → b(file) へ
+    app.bookmark_list_move(1); // to a(dir) → b(file)
     app.bookmark_list_edit();
     assert!(!app.is_bookmark_list(), "編集で一覧を閉じる");
     assert_eq!(
@@ -3505,7 +3565,7 @@ fn tree_descend_sets_root_to_selected_dir() {
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub").join("f.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // "sub" ディレクトリのエントリを選択。
+    // Select the "sub" directory's entry.
     let i = app
         .tab
         .entries
@@ -3513,7 +3573,7 @@ fn tree_descend_sets_root_to_selected_dir() {
         .position(|e| e.is_dir && e.path.ends_with("sub"))
         .expect("sub が無い");
     app.tab.selected = i;
-    // l 相当: 選択ディレクトリを新しいルートにする。
+    // Equivalent to l: makes the selected directory the new root.
     app.tree_descend().unwrap();
     assert_eq!(
         app.tab.root,
@@ -3530,14 +3590,15 @@ fn tree_descend_sets_root_to_selected_dir() {
 
 #[test]
 fn jump_to_dir_clears_selection_on_root_change() {
-    // bug #2: root を変えると旧 root の選択がパスで残り、マーカー不可視のまま誤操作対象になる。
-    // jump_to_dir(ブックマークジャンプ)でも clear_for_root_change を呼んで持ち越さないこと。
+    // bug #2: changing root used to leave the old root's selection lingering by path, invisibly
+    // targetable for a mis-operation since the marker isn't visible. jump_to_dir (a bookmark
+    // jump) must also call clear_for_root_change so it isn't carried over.
     let base = std::env::temp_dir().join("konoma_jump_clear_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("subB")).unwrap();
     std::fs::write(base.join("a.txt"), b"x").unwrap();
     let mut app = App::new(base.clone(), Config::default()).unwrap();
-    // base で a.txt を選択する。
+    // Select a.txt in base.
     let i = app
         .tab
         .entries
@@ -3548,7 +3609,7 @@ fn jump_to_dir_clears_selection_on_root_change() {
     app.toggle_select();
     assert!(app.has_selection(), "前提: 選択がある");
 
-    // subB へジャンプ(root 変更)。
+    // Jump to subB (a root change).
     app.jump_to_dir(base.join("subB"));
     assert_eq!(app.tab.root, base.join("subB"), "root が subB になる");
     assert!(!app.has_selection(), "旧 root の選択は持ち越さない");
@@ -3568,7 +3629,7 @@ fn copy_text_builds_each_kind() {
         copy_text(&file, &open, CopyKind::Full),
         "/Users/me/work/konoma/src/main.rs"
     );
-    // 相対は起動ディレクトリ名を先頭に (基準 = open_dir の親)。
+    // Relative prefixes the launch directory name (base = open_dir's parent).
     assert_eq!(
         copy_text(&file, &open, CopyKind::Relative),
         "konoma/src/main.rs"
@@ -3577,7 +3638,8 @@ fn copy_text_builds_each_kind() {
         copy_text(&file, &open, CopyKind::Parent),
         "/Users/me/work/konoma/src"
     );
-    // 起動ディレクトリの外(兄弟/上位)は format_path の表示と同じく `..` 込みで相対化する。
+    // Outside the launch directory (siblings/ancestors), it relativizes with a leading `..`,
+    // just like format_path's display.
     let sibling = PathBuf::from("/Users/me/work/other/x.md");
     assert_eq!(
         copy_text(&sibling, &open, CopyKind::Relative),
@@ -3590,7 +3652,7 @@ fn copy_text_builds_each_kind() {
         "..",
         "上位は .."
     );
-    // 遠い絶対パスも (表示と同様) open_dir 基準の `..` 連結で相対化する。
+    // A far-off absolute path also relativizes (as with the display) by chaining `..` from open_dir.
     let outside = PathBuf::from("/etc/hosts");
     assert_eq!(
         copy_text(&outside, &open, CopyKind::Relative),
@@ -3600,7 +3662,8 @@ fn copy_text_builds_each_kind() {
 
 #[test]
 fn copy_relative_matches_title_display() {
-    // `yr`/`cr` のコピー文字列は左上のタイトル表示 (format_path の Relative) と完全一致する。
+    // The copy string for `yr`/`cr` matches exactly the top-left title display
+    // (format_path's Relative).
     let work = std::env::temp_dir().join("konoma_copy_match_title");
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
@@ -3609,9 +3672,9 @@ fn copy_relative_matches_title_display() {
     let mut app = App::new(a.clone(), Config::default()).unwrap();
     app.path_style = PathStyle::Relative;
     for p in [
-        a.join("x.rs"),                // 配下
-        work.join("B").join("aaa.md"), // 兄弟
-        work.clone(),                  // 上位
+        a.join("x.rs"),                // under it
+        work.join("B").join("aaa.md"), // a sibling
+        work.clone(),                  // an ancestor
     ] {
         assert_eq!(
             copy_text(&p, &app.tab.open_dir, CopyKind::Relative),
@@ -3634,7 +3697,8 @@ fn is_image_preview_requires_src_and_kind() {
 
 #[test]
 fn help_in_image_mode_shows_only_image_section() {
-    // 画像プレビュー中の ? は画像節のみ。Tree/Git/テキスト専用節は出さない (モード最適化)。
+    // ? during an image preview shows only the image section. Tree/Git/text-only sections
+    // are not shown (per-mode optimization).
     let mut app = app_with_image();
     app.tab.mode = Mode::Preview;
     let s: String = crate::ui::help::help_lines(&app)
@@ -3711,7 +3775,7 @@ fn syntax_highlight_off_is_plain_and_not_pending() {
     let mut cfg = Config::default();
     cfg.ui.syntax_highlight = false;
     let mut app = open_code_file(&dir, "a.rs", cfg);
-    // 無効なら重い待ち状態にせず、本文は素テキスト(Rgb 着色なし)。
+    // When disabled, it never enters a heavy pending state, and the body is plain text (no Rgb coloring).
     assert!(
         !app.is_highlight_pending(),
         "off はローディング待ちにしない"
@@ -3723,7 +3787,7 @@ fn syntax_highlight_off_is_plain_and_not_pending() {
 
 #[test]
 fn warm_grammar_opens_without_pending_and_colored() {
-    // 先に rs 文法を温めておけば、Code プレビューは pending 無しで即着色。
+    // Warming the rs grammar beforehand means the Code preview colors immediately with no pending.
     let _ =
         crate::preview::code::highlight("fn x(){}\n", std::path::Path::new("warm.rs"), "TwoDark");
     let dir = std::env::temp_dir().join("konoma_hl_warm_test");
@@ -3757,7 +3821,7 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
     std::fs::write(dir.join("a.rs"), b"x\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
-    // ファイル選択 → そのパスが編集要求になる。
+    // Select a file → its path becomes the edit request.
     app.tab.selected = app
         .tab
         .entries
@@ -3777,7 +3841,7 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
         "取り出したらクリアされる"
     );
 
-    // ディレクトリ選択 → 要求は立たず flash で拒否。
+    // Select a directory → no request is raised, and it's rejected via flash.
     app.tab.selected = app.tab.entries.iter().position(|e| e.is_dir).unwrap();
     app.flash = None;
     app.request_edit();
@@ -3802,7 +3866,7 @@ fn request_edit_targets_preview_file() {
         .iter()
         .position(|e| e.path.ends_with("b.rs"))
         .unwrap();
-    app.tree_activate().unwrap(); // Preview へ
+    app.tree_activate().unwrap(); // to Preview
     assert!(matches!(app.tab.mode, Mode::Preview));
     app.request_edit();
     let got = app.take_pending_edit();
@@ -3820,15 +3884,15 @@ fn spinner_cycles_and_has_no_emoji() {
     let dir = std::env::temp_dir().join("konoma_spinner_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // コマを進めると別グリフになり、10 コマで一巡する(=回る)。
+    // Advancing the frame gives a different glyph, and it cycles back after 10 frames (= spins).
     let g0 = app.spinner_glyph(); // frame 0
     app.tick_spinner();
     assert_ne!(g0, app.spinner_glyph(), "ティックでコマが進む(回る)");
     for _ in 0..9 {
-        app.tick_spinner(); // 合計 10 ティック → frame 10 ≡ 0
+        app.tick_spinner(); // 10 ticks total → frame 10 ≡ 0
     }
     assert_eq!(app.spinner_glyph(), g0, "10 コマで一巡して先頭へ");
-    // 絵文字でなく点字パターン(U+2800〜U+28FF)＝端末で単一幅・色なし。
+    // Braille patterns (U+2800-U+28FF), not emoji = single-width and colorless in the terminal.
     for _ in 0..10 {
         let ch = app.spinner_glyph().chars().next().unwrap();
         assert!(
@@ -3847,7 +3911,7 @@ fn progressive_pending_renders_plain_text() {
     let mut cfg = Config::default();
     cfg.ui.preview_loading = "progressive".into();
     let mut app = open_code_file(&dir, "c.rs", cfg);
-    app.hl_pending = true; // progressive のウォーム待ち中を強制
+    app.hl_pending = true; // force the progressive warm-up-pending state
     let lines = app.windowed_lines(5, 80);
     assert!(
         !has_rgb_fg(&lines),
@@ -3865,7 +3929,7 @@ fn preview_search_finds_highlights_and_navigates() {
     let p = dir.join("a.rs");
     {
         let mut f = std::fs::File::create(&p).unwrap();
-        // 7 行ごと(0,7,14,21,28,35)に "needle"。計 40 行。
+        // "needle" every 7 lines (0,7,14,21,28,35). 40 lines total.
         for i in 0..40 {
             let tail = if i % 7 == 0 { "needle here" } else { "x" };
             writeln!(f, "line {i} {tail}").unwrap();
@@ -3876,7 +3940,7 @@ fn preview_search_finds_highlights_and_navigates() {
     app.tree_activate().unwrap();
     assert!(app.is_windowed(), "コードはウィンドウ読み対象");
 
-    // `/` → 入力モード。文字を積んで確定。
+    // `/` → input mode. Push characters and commit.
     app.start_search();
     assert!(app.is_searching(), "/ で検索入力モード");
     for c in "needle".chars() {
@@ -3886,28 +3950,28 @@ fn preview_search_finds_highlights_and_navigates() {
     app.search_commit();
     assert!(!app.is_searching(), "確定で入力モード解除");
 
-    // 6 件・1件目(line0)へジャンプ・ステータス 1/6。
+    // 6 hits; jumps to the first one (line0); status 1/6.
     assert_eq!(app.tab.search_matches.len(), 6, "7行ごとに6件");
     assert_eq!(app.search_status(), Some((1, 6)));
     assert_eq!(app.tab.preview_top_line, 0, "最初の一致(行0)を先頭に");
     assert_eq!(app.preview_search_query(), Some("needle"));
 
-    // n で次(line7), もう一度で line14。
+    // n to the next (line7), again to line14.
     app.search_next(1);
     assert_eq!(app.search_status(), Some((2, 6)));
     assert_eq!(app.tab.preview_top_line, 7);
     app.search_next(1);
     assert_eq!(app.tab.preview_top_line, 14);
-    // N で戻る(line7)。
+    // N to go back (line7).
     app.search_next(-1);
     assert_eq!(app.tab.preview_top_line, 7);
-    // 末尾(idx0)から N で巡回 → 最終一致(line35)。
+    // Cycling with N from the end (idx0) → the last match (line35).
     app.tab.search_idx = 0;
     app.search_next(-1);
     assert_eq!(app.search_status(), Some((6, 6)));
     assert_eq!(app.tab.preview_top_line, 35);
 
-    // Esc 相当: 解除でクエリ・一致が消える。
+    // Equivalent to Esc: clearing removes the query and matches.
     app.search_clear();
     assert!(app.preview_search_query().is_none());
     assert_eq!(app.search_status(), None);
@@ -3921,7 +3985,8 @@ fn highlight_query_in_line_marks_only_matches_yellow() {
     use ratatui::style::Color;
     let line = Line::from(vec![Span::from("foo "), Span::from("Needle bar needle")]);
     let out = highlight_query_in_line(line, "needle", None);
-    // 黄色背景が付いた断片の連結 = 一致テキスト(大文字小文字無視で2箇所)。
+    // Concatenating the fragments with a yellow background = the matched text (case-insensitive,
+    // 2 occurrences).
     let hit: String = out
         .spans
         .iter()
@@ -3932,7 +3997,7 @@ fn highlight_query_in_line_marks_only_matches_yellow() {
         hit, "Needleneedle",
         "一致部分だけ黄色強調(原文の大小は保持)"
     );
-    // 全文は不変。
+    // The full text is unchanged.
     let full: String = out.spans.iter().map(|s| s.content.as_ref()).collect();
     assert_eq!(full, "foo Needle bar needle");
 }
@@ -3940,8 +4005,9 @@ fn highlight_query_in_line_marks_only_matches_yellow() {
 #[test]
 fn highlight_query_in_line_handles_multibyte_lines() {
     use ratatui::style::Color;
-    // 日本語の小文字化はバイト長を変えないので、ASCII クエリは正しく強調される
-    // (バイト境界も保たれパニックしない)。全文は不変。
+    // Lowercasing Japanese text doesn't change its byte length, so an ASCII query still
+    // highlights correctly (byte boundaries stay intact and it doesn't panic). The full text
+    // is unchanged.
     let line = Line::from("日本語 needle テスト");
     let out = highlight_query_in_line(line, "needle", None);
     let hit: String = out
@@ -3959,8 +4025,8 @@ fn highlight_query_in_line_handles_multibyte_lines() {
 fn highlight_query_in_line_current_match_is_orange() {
     use ratatui::style::Color;
     let orange = Color::Rgb(0xff, 0x8c, 0x00);
-    let line = Line::from("let needle = 1;"); // "needle" は行内 0 番目の出現
-                                              // 出現順位 Some(0) はオレンジ、None は黄色(色で現在の出現を区別)。
+    let line = Line::from("let needle = 1;"); // "needle" is the 0th occurrence in the line
+                                              // Occurrence index Some(0) is orange, None is yellow (color distinguishes the current occurrence).
     let cur = highlight_query_in_line(line.clone(), "needle", Some(0));
     let other = highlight_query_in_line(line, "needle", None);
     assert!(
@@ -3985,7 +4051,8 @@ fn highlight_query_in_line_current_match_is_orange() {
 fn highlight_query_only_current_occurrence_on_same_line_is_orange() {
     use ratatui::style::Color;
     let orange = Color::Rgb(0xff, 0x8c, 0x00);
-    // 同一行に2つの "todo"(todos の todo と Todo)。出現順位 Some(1)=2つ目だけオレンジ。
+    // Two "todo"s on the same line (the todo in todos, and Todo). Occurrence index Some(1) =
+    // only the second one is orange.
     let line = Line::from("const todos: Todo[] = [");
     let out = highlight_query_in_line(line, "todo", Some(1));
     let orange_txt: String = out
@@ -4008,14 +4075,16 @@ fn highlight_query_only_current_occurrence_on_same_line_is_orange() {
 fn highlight_query_current_match_survives_tab_expansion() {
     use ratatui::style::Color;
     let orange = Color::Rgb(0xff, 0x8c, 0x00);
-    // #14: タブ展開後の行(先頭の "→" + 空白でバイト列が原文とずれる)でも、
-    // 列(バイト位置)ではなく出現順位で現在一致を同定するので橙が正しい出現に乗る。
-    // 行頭タブが "ab" の2つの "needle" の前にあり、原文の col とは異なるバイト位置になる。
+    // #14: even for a line after tab expansion (where the leading "→" plus spaces shift the
+    // byte sequence away from the original text), the current match is identified by
+    // occurrence index rather than column (byte position), so the orange lands on the correct
+    // occurrence. A leading tab sits before "ab"'s two "needle"s, putting them at a different
+    // byte position than the original col.
     let expanded = crate::preview::code::expand_tabs(vec![Line::from("\tneedle ab needle")], 4);
     let line = expanded.into_iter().next().unwrap();
-    // 出現順位 Some(1) = 2つ目の needle だけオレンジ、1つ目は黄色。
+    // Occurrence index Some(1) = only the second "needle" is orange, the first is yellow.
     let out = highlight_query_in_line(line, "needle", Some(1));
-    // 橙断片が「ちょうど1つの needle 分」=現在一致だけに乗っていること。
+    // The orange fragment is "exactly one needle's worth" = it lands only on the current match.
     let orange_txt: String = out
         .spans
         .iter()
@@ -4032,7 +4101,7 @@ fn highlight_query_current_match_survives_tab_expansion() {
     assert_eq!(yellow_txt, "needle", "他の出現(1つ目)は黄色");
 }
 
-// --- Git ビュー(変更ハブ) -------------------------------------------------
+// --- Git view (the changes hub) -------------------------------------------------
 #[cfg(feature = "git")]
 fn init_git_repo(dir: &Path) {
     let repo = git2::Repository::init(dir).unwrap();
@@ -4042,7 +4111,7 @@ fn init_git_repo(dir: &Path) {
     cfg.set_str("commit.gpgsign", "false").ok();
 }
 
-// --- Follow ベースライン差分 (F 押下時点を起点に、それ以降の変更だけを表示) ------------------
+// --- Follow baseline diff (anchored at the moment F is pressed; shows only changes since) ------------------
 #[cfg(feature = "git")]
 fn added_texts(lines: &[crate::git::DiffLine]) -> Vec<String> {
     lines
@@ -4052,8 +4121,9 @@ fn added_texts(lines: &[crate::git::DiffLine]) -> Vec<String> {
         .collect()
 }
 
-/// 核心の回帰: F 前から未コミット変更があっても、フォロー diff は「F 以降の変更だけ」を出す。
-/// F 前の変更はベースラインに畳まれて見えず、`f` トグルでフル diff にすると再び現れる。
+/// Core regression: even when there are uncommitted changes from before F, the follow diff shows
+/// only "changes since F". Pre-F changes are folded into the baseline and stay invisible, but
+/// reappear once toggled to full diff via `f`.
 #[cfg(feature = "git")]
 #[test]
 fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
@@ -4073,14 +4143,14 @@ fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
     std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
-    // F 前から存在する未コミット変更(line2 を書き換え)。
+    // An uncommitted change that existed before F (rewrites line2).
     std::fs::write(&file, "line1\nPRE-FOLLOW\nline3\n").unwrap();
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.toggle_follow(); // F on → この瞬間の内容(PRE-FOLLOW 込み)をベースラインに固定
+    app.toggle_follow(); // F on → pins the content at this instant (including PRE-FOLLOW) as the baseline
     assert!(app.follow_enabled(), "F で追尾 ON");
 
-    // F 後の編集(line3 を書き換え)。
+    // An edit after F (rewrites line3).
     let fc = file.canonicalize().unwrap();
     std::fs::write(&fc, "line1\nPRE-FOLLOW\nPOST-FOLLOW\n").unwrap();
     app.follow_jump(&fc);
@@ -4102,7 +4172,7 @@ fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
         "既定はフォロー開始以降"
     );
 
-    // `f` トグル → フル diff(HEAD 比)。F 前の変更も出る・ラベルが切替わる。
+    // `f` toggle → full diff (against HEAD). Pre-F changes appear too, and the label switches.
     app.toggle_follow_diff_scope();
     assert_eq!(
         app.follow_diff_scope_msg(),
@@ -4116,7 +4186,7 @@ fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
     );
 }
 
-/// F 時に clean だったファイルの後続編集は、HEAD blob をベースラインにして「F 以降」を出す。
+/// For a file that was clean at F time, a later edit shows "since F" using the HEAD blob as the baseline.
 #[cfg(feature = "git")]
 #[test]
 fn follow_baseline_clean_file_diffs_against_head() {
@@ -4138,7 +4208,7 @@ fn follow_baseline_clean_file_diffs_against_head() {
     git(&["commit", "-q", "-m", "init"]);
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.toggle_follow(); // clean.txt は clean → dirty マップに載らない(HEAD blob を使う)
+    app.toggle_follow(); // clean.txt is clean → doesn't get into the dirty map (uses the HEAD blob)
     let fc = file.canonicalize().unwrap();
     std::fs::write(&fc, "one\nTWO-EDITED\nthree\n").unwrap();
     app.follow_jump(&fc);
@@ -4149,8 +4219,8 @@ fn follow_baseline_clean_file_diffs_against_head() {
     );
 }
 
-/// サイズ上限を超える dirty ファイルはスナップショットせず(None)、follow ベースライン差分は
-/// None を返す = 呼び出し側がフル diff に降格する(原則#3・メモリ暴発の回避)。
+/// A dirty file over the size cap isn't snapshotted (None), and the follow baseline diff
+/// returns None = the caller falls back to a full diff (principle #3, avoiding a memory blowup).
 #[cfg(feature = "git")]
 #[test]
 fn follow_baseline_oversized_dirty_file_falls_back_to_full() {
@@ -4170,34 +4240,35 @@ fn follow_baseline_oversized_dirty_file_falls_back_to_full() {
     std::fs::write(&file, "seed\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
-    // F 前に >5MB へ肥大化(= dirty かつ上限超)。
+    // Bloated to >5MB before F (= dirty and over the cap).
     let big = "x".repeat(6 * 1024 * 1024);
     std::fs::write(&file, format!("seed\n{big}\n")).unwrap();
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.toggle_follow(); // big.txt は上限超 → dirty マップに None で記録
+    app.toggle_follow(); // big.txt is over the cap → recorded as None in the dirty map
     let fc = file.canonicalize().unwrap();
-    // フォローベースライン差分は None(=フル diff 降格)。
+    // The follow baseline diff is None (= falls back to full diff).
     assert!(
         app.follow_baseline_diff(&fc).is_none(),
         "上限超の dirty ファイルはベースライン差分を持たない(フル diff へ降格)"
     );
 }
 
-/// 非 git ディレクトリで follow → 編集ファイルは全画面 diff でなくファイルプレビューへ降格する
-/// (ベースラインに HEAD が無い＝ all-added の壁を出さない・follow_jump の契約どおり)。
-/// 旧実装は空ベースライン→全行 Added で誤って diff を開いていた(回帰防止)。
+/// Following in a non-git directory → an edited file falls back to a file preview instead of
+/// a full-screen diff (there's no HEAD for the baseline = don't show an all-added wall, per
+/// follow_jump's contract). The old implementation used an empty baseline → all lines Added,
+/// mistakenly opening a diff (regression guard).
 #[cfg(feature = "git")]
 #[test]
 fn follow_in_non_repo_falls_back_to_file_preview() {
     let dir = std::env::temp_dir().join("konoma_follow_non_repo");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap(); // .git を作らない = 非 repo
+    std::fs::create_dir_all(&dir).unwrap(); // don't create .git = a non-repo
     let file = dir.join("note.txt");
     std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-    app.toggle_follow(); // head=None・dirty 空のベースライン
+    app.toggle_follow(); // head=None, an empty-dirty baseline
     let fc = file.canonicalize().unwrap();
     std::fs::write(&fc, "alpha\nBETA-EDIT\ngamma\n").unwrap();
     app.follow_jump(&fc);
@@ -4208,8 +4279,9 @@ fn follow_in_non_repo_falls_back_to_file_preview() {
     assert!(matches!(app.tab.mode, Mode::Preview));
 }
 
-/// `F` を貼り直す(OFF→ON)とベースラインを取り直し、表示中の follow diff の古いキャッシュを落とす
-/// (path 一致で残る旧 diff を drop・`toggle_follow_diff_scope` と対称)。
+/// Re-pressing `F` (OFF→ON) recaptures the baseline and drops the stale cache of the follow diff
+/// being shown (drops the old diff that would otherwise linger by path match — symmetric with
+/// `toggle_follow_diff_scope`).
 #[cfg(feature = "git")]
 #[test]
 fn re_following_recaptures_baseline_and_drops_stale_diff() {
@@ -4234,7 +4306,7 @@ fn re_following_recaptures_baseline_and_drops_stale_diff() {
     app.toggle_follow(); // F1
     let fc = file.canonicalize().unwrap();
     std::fs::write(&fc, "a\nEDIT1\nc\n").unwrap();
-    app.refresh().unwrap(); // FS イベント相当: 編集後に git_status を最新化(x.txt を dirty として見せる)
+    app.refresh().unwrap(); // equivalent to an FS event: refreshes git_status after the edit (shows x.txt as dirty)
     app.follow_jump(&fc);
     assert!(app.is_git_diff_preview());
     assert!(
@@ -4244,9 +4316,10 @@ fn re_following_recaptures_baseline_and_drops_stale_diff() {
         "F1 以降の EDIT1 が出る"
     );
 
-    // F を貼り直す(OFF→ON)。現内容(EDIT1 込み)が新ベースライン → EDIT1 は「以降の変更」でなくなる。
+    // Re-press F (OFF→ON). The current content (including EDIT1) becomes the new baseline →
+    // EDIT1 is no longer a "change since".
     app.toggle_follow(); // OFF
-    app.toggle_follow(); // ON (再ベースライン・diff_cache を落とす)
+    app.toggle_follow(); // ON (re-baselines, drops diff_cache)
     let lines = app.git_diff_lines();
     assert!(
         lines.is_empty(),
@@ -4288,13 +4361,13 @@ fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
     let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
     app.open_git_graph();
 
-    // ② 基準 = 配列で左から最初に存在する develop。
+    // (2) Base = develop, the first one in the array (left to right) that exists.
     assert_eq!(
         app.git_graph_base_label(),
         Some("develop"),
         "config 配列の最初の存在ブランチが基準"
     );
-    // ④ 並び順: 配列順(develop→main)→HEAD(trunk)→最近順。
+    // (4) Ordering: array order (develop→main) → HEAD (trunk) → most-recent order.
     let names: Vec<String> = app
         .git_graph_legend()
         .iter()
@@ -4308,11 +4381,11 @@ fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
     );
     assert!(pos("main") < pos("trunk"), "配列が HEAD より先: {names:?}");
 
-    // ⑤ パネルで並び替え → 基準が新しい先頭へ再導出。
+    // (5) Reordering in the panel → the base is re-derived from the new first entry.
     app.git_graph_open_picker();
-    // パネル順 = [develop, main, trunk, feat]。main(index1)を1つ上へ。
+    // Panel order = [develop, main, trunk, feat]. Move main (index 1) up by one.
     app.git_graph_picker_sel = 1;
-    app.git_graph_picker_reorder(-1); // main を先頭へ
+    app.git_graph_picker_reorder(-1); // main to the front
     app.git_graph_picker_apply();
     assert_eq!(
         app.git_graph_base_label(),
@@ -4323,9 +4396,10 @@ fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// Phase G: 重い ignored(無視セット)は repo(workdir)単位でキャッシュし、同一 repo 内の
-// サブディレクトリへ `l` で潜っても再計算しない(別 repo へ移ると再計算する)。
-// 番兵を仕込んで「再計算されたか(=番兵が消えるか)」を観測する。
+// Phase G: the heavy ignored (ignore set) is cached per repo (workdir), and descending with `l`
+// into a subdirectory of the same repo doesn't recompute it (moving to a different repo does
+// recompute). We plant a sentinel and observe whether it was recomputed (= whether the
+// sentinel disappears).
 #[cfg(feature = "git")]
 #[test]
 fn descend_into_same_repo_subdir_reuses_ignored_set() {
@@ -4344,11 +4418,11 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
         "ignored は repo workdir をキーに計算済みのはず"
     );
 
-    // 番兵: 同一 repo 内へ潜って再計算されなければ生き残る。
+    // Sentinel: survives if descending within the same repo doesn't trigger a recompute.
     let sentinel = dir.join("__sentinel_marker__");
     app.git_ignored.insert(sentinel.clone());
 
-    // sub を選択して潜行(root 変更・同一 repo)。
+    // Select sub and descend (root change, same repo).
     let i = app
         .tab
         .entries
@@ -4376,9 +4450,10 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// Fix A(2026-07-13): プレビュー中に外部エージェントが git コミットし、その fs イベントを取りこぼしても
-// (FSEvents は本質的に取りこぼす)、ツリーへ戻れば git status を再検証して変更マーカーが陳腐化しない。
-// back_to_tree() が git_status_for を無効化 → 次の描画相当 refresh_git_if_needed が statuses を取り直す。
+// Fix A (2026-07-13): even if an external agent commits via git during a preview and its fs
+// event is missed (FSEvents inherently misses events), going back to the tree re-verifies git
+// status so the change marker doesn't go stale. back_to_tree() invalidates git_status_for →
+// the next render-equivalent refresh_git_if_needed re-fetches the statuses.
 #[cfg(feature = "git")]
 #[test]
 fn returning_to_tree_re_syncs_stale_git_status() {
@@ -4397,7 +4472,7 @@ fn returning_to_tree_re_syncs_stale_git_status() {
     std::fs::write(dir.join("note.md"), b"v1\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
-    // 変更 → ツリーで M。
+    // Change it → shows M in the tree.
     std::fs::write(dir.join("note.md"), b"v2\n").unwrap();
 
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -4408,24 +4483,24 @@ fn returning_to_tree_re_syncs_stale_git_status() {
         "変更ファイルは M として見える"
     );
 
-    // プレビューへ入る。
+    // Enter preview.
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(note.clone());
 
-    // 外部でコミット(clean になる)。konoma には refresh を通さない = fs イベント取りこぼしの再現。
+    // Commit externally (becomes clean). We don't run konoma's refresh = reproducing a missed fs event.
     git(&["commit", "-qam", "external commit"]);
     assert!(
         app.git_status_of(&note).is_some(),
         "取りこぼし再現: refresh 前は git_status がまだ古い(M のまま)"
     );
 
-    // ツリーへ戻る → git_status_for 無効化。
+    // Go back to the tree → git_status_for is invalidated.
     app.back_to_tree();
     assert!(
         app.git_status_for.is_none(),
         "back_to_tree が git status を無効化(次の描画で再取得)"
     );
-    // 次の描画相当。
+    // The render-equivalent step.
     app.refresh_git_if_needed();
     assert!(
         app.git_status_of(&note).is_none(),
@@ -4439,7 +4514,7 @@ fn returning_to_tree_re_syncs_stale_git_status() {
 fn descend_into_nested_different_repo_recomputes_ignored_set() {
     let dir = std::env::temp_dir().join("konoma_ignored_reuse_diff");
     let _ = std::fs::remove_dir_all(&dir);
-    // 外側 repoA の中に、独立した repoB(inner)を入れ子にする。
+    // Nest an independent repoB (inner) inside outer repoA.
     std::fs::create_dir_all(dir.join("inner")).unwrap();
     init_git_repo(&dir);
     init_git_repo(&dir.join("inner"));
@@ -4453,7 +4528,7 @@ fn descend_into_nested_different_repo_recomputes_ignored_set() {
     let sentinel = dir.join("__sentinel_marker__");
     app.git_ignored.insert(sentinel.clone());
 
-    // inner(別 repo)へ潜行。
+    // Descend into inner (a different repo).
     let i = app
         .tab
         .entries
@@ -4475,12 +4550,15 @@ fn descend_into_nested_different_repo_recomputes_ignored_set() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// fix③: 重い ignored は別スレッド計算→`apply_ignored` で反映する。世代(gen)で陳腐化判定し、
-// 計算中に別 repo へ移った(=世代が進んだ)結果は捨てる。git 不要の純状態ロジックなので両 feature で走る。
+// fix③: the heavy ignored computation runs on another thread → applied via `apply_ignored`.
+// Staleness is judged by generation (gen), and a result whose generation has advanced (moved to
+// a different repo mid-computation) is discarded. Pure state logic that needs no git, so it
+// runs under both features.
 #[test]
 fn busy_indicator_reflects_background_jobs() {
-    // busy_jobs は既存の各ジョブ状態から**導出**する(begin/end の対応漏れでスピナーが
-    // 固まる事故を構造的に防ぐ)。アイドル=空・config off=非表示・複数ジョブ=+n 表記。
+    // busy_jobs is **derived** from each job's existing state (structurally prevents the
+    // accident of a spinner getting stuck from a missed begin/end pairing). Idle = empty,
+    // config off = hidden, multiple jobs = "+n" notation.
     let dir = std::env::temp_dir().join("konoma_busy_indicator_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -4488,7 +4566,7 @@ fn busy_indicator_reflects_background_jobs() {
     assert!(app.busy_jobs().is_empty(), "アイドルではジョブ無し");
     assert!(!app.busy_indicator_active());
 
-    // メディア読込中 → 右上コンテキストにスピナー+ラベル。
+    // Media loading in progress → a spinner + label in the top-right context.
     app.media_loading = true;
     assert!(app.busy_jobs().contains(&crate::i18n::Msg::BusyMedia));
     assert!(app.busy_indicator_active());
@@ -4498,7 +4576,7 @@ fn busy_indicator_reflects_background_jobs() {
         .collect();
     assert!(joined.contains("loading media"), "{joined}");
 
-    // 複数ジョブは先頭ラベル + n 表記。
+    // Multiple jobs show the first label plus an "+n" notation.
     app.md_remote_inflight
         .insert("https://example.com/a.png".into());
     let joined: String = crate::ui::status::context_spans(&app)
@@ -4507,7 +4585,8 @@ fn busy_indicator_reflects_background_jobs() {
         .collect();
     assert!(joined.contains("+1"), "複数ジョブは +n: {joined}");
 
-    // config off なら表示・ティックとも無効(個別の中央表示は別系統のまま)。
+    // With config off, both the display and the tick are disabled (individual center-screen
+    // displays remain a separate system).
     app.cfg.ui.busy_indicator = false;
     assert!(!app.busy_indicator_active());
     let joined: String = crate::ui::status::context_spans(&app)
@@ -4516,7 +4595,7 @@ fn busy_indicator_reflects_background_jobs() {
         .collect();
     assert!(!joined.contains("loading media"), "{joined}");
 
-    // 全ジョブ終了で空へ(=ティックが止まりアイドル負荷ゼロに戻る)。
+    // Once every job ends, it goes back to empty (= the tick stops and idle load returns to zero).
     app.cfg.ui.busy_indicator = true;
     app.media_loading = false;
     app.md_remote_inflight.clear();
@@ -4527,7 +4606,8 @@ fn busy_indicator_reflects_background_jobs() {
 
 #[test]
 fn busy_indicator_tracks_ignored_scan() {
-    // git ignored スキャン: pending が立っている間 GitScan・現世代の適用で消える。
+    // git ignored scan: shows GitScan while pending is set, and clears once the current
+    // generation is applied.
     let dir = std::env::temp_dir().join("konoma_busy_gitscan_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -4556,7 +4636,7 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
     app.git_ignored_gen = 5;
     app.git_ignored_pending = Some(dir.clone());
 
-    // 古い世代(4)の結果: 反映せず、pending も消さない。
+    // A result from an old generation (4): not applied, and pending is not cleared either.
     let stale = IgnoredResult {
         gen: 4,
         workdir: dir.clone(),
@@ -4569,7 +4649,7 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
         "stale では pending を残す(現行計算待ちのまま)"
     );
 
-    // 現世代(5)の結果: 反映し、git_ignored_for を設定し、pending を消す。
+    // A result from the current generation (5): applies it, sets git_ignored_for, and clears pending.
     let cur = IgnoredResult {
         gen: 5,
         workdir: dir.clone(),
@@ -4607,8 +4687,8 @@ fn graph_legend_caps_branches_head_first_and_picker_toggles() {
     std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "-M", "trunk"]); // 既知の現在ブランチ名にする。
-                                     // 5本の feature ブランチ(各々が自分のコミット=自レーン)。
+    git(&["branch", "-M", "trunk"]); // give it a known current branch name.
+                                     // 5 feature branches (each with its own commit = its own lane).
     for n in ["f1", "f2", "f3", "f4", "f5"] {
         git(&["checkout", "-q", "trunk"]);
         git(&["checkout", "-q", "-b", n]);
@@ -4616,15 +4696,15 @@ fn graph_legend_caps_branches_head_first_and_picker_toggles() {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", &format!("{n} c")]);
     }
-    git(&["checkout", "-q", "trunk"]); // HEAD=trunk。計6ブランチ。
+    git(&["checkout", "-q", "trunk"]); // HEAD=trunk. 6 branches total.
 
     let mut cfg = Config::default();
-    cfg.ui.graph_max_branches = 3; // 小さい上限。
+    cfg.ui.graph_max_branches = 3; // a small cap.
     let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
     app.open_git_graph();
     assert!(app.is_git_graph(), "グラフが開く");
 
-    // 凡例: HEAD(trunk)が先頭・上限3まで・残りは hidden。
+    // Legend: HEAD (trunk) comes first, up to the cap of 3, and the rest are hidden.
     let legend = app.git_graph_legend();
     assert!(!legend.is_empty(), "凡例が空でない");
     assert!(
@@ -4642,19 +4722,19 @@ fn graph_legend_caps_branches_head_first_and_picker_toggles() {
     );
     assert!(app.git_graph_hidden_count() >= 1, "一部は非表示");
 
-    // パネル: HEAD は先頭かつ常時 ON(外せない)。
+    // Panel: HEAD is always first and always ON (can't be turned off).
     app.git_graph_open_picker();
     assert!(app.is_git_graph_picker(), "パネルが開く");
     let items = app.git_graph_picker_items();
     assert!(items[0].1, "パネル先頭は HEAD(is_current)");
     app.git_graph_picker_sel = 0;
-    app.git_graph_picker_toggle(); // HEAD を外そうとしても無効。
+    app.git_graph_picker_toggle(); // trying to toggle off HEAD has no effect.
     assert!(
         app.git_graph_picker_items()[0].2,
         "HEAD はトグルしても表示のまま"
     );
 
-    // a=全部 → 適用 → 非表示0・凡例6本。
+    // a=everything → apply → 0 hidden, 6 in the legend.
     app.git_graph_picker_all();
     app.git_graph_picker_apply();
     assert!(!app.is_git_graph_picker(), "適用でパネルが閉じる");
@@ -4671,7 +4751,7 @@ fn open_git_view_lists_changes_and_stage_reloads() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
-    // 追跡済みファイルを1つ作りコミット → その後変更(=Modified)。
+    // Create and commit one tracked file → then change it (=Modified).
     std::fs::write(dir.join("tracked.txt"), b"v1\n").unwrap();
     let out = std::process::Command::new("git")
         .current_dir(&dir)
@@ -4691,15 +4771,15 @@ fn open_git_view_lists_changes_and_stage_reloads() {
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.open_git_view();
     assert!(app.is_git_view(), "Git ビューが開く");
-    // 変更2件(modified + untracked)が一覧に出る。
+    // The 2 changes (modified + untracked) show up in the list.
     assert_eq!(app.git_view_entries().len(), 2, "変更2件");
-    // 既定はどちらも未ステージ。
+    // Both are unstaged by default.
     assert!(
         app.git_view_entries().iter().all(|e| !e.staged),
         "初期は全て未ステージ"
     );
 
-    // 先頭(tracked.txt がパス順で先)をステージ → reload で staged=true になる。
+    // Stage the first entry (tracked.txt comes first in path order) → reload sets staged=true.
     app.tab.git_view_sel = 0;
     let target = app.git_view_selected().unwrap();
     app.git_view_stage();
@@ -4719,8 +4799,8 @@ fn open_git_view_lists_changes_and_stage_reloads() {
 #[cfg(feature = "git")]
 #[test]
 fn refresh_in_git_view_refetches_entries() {
-    // #4: Git ビュー表示中の refresh() で変更一覧(git_view_entries)を取り直す
-    // (外部 git ツール復帰や FSEvents で増減した変更を反映)。
+    // #4: refresh() while showing the Git view re-fetches the change list (git_view_entries)
+    // (reflects changes that grew/shrank via returning from an external git tool or via FSEvents).
     let dir = std::env::temp_dir().join("konoma_refresh_git_view_refetch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -4743,7 +4823,7 @@ fn refresh_in_git_view_refetches_entries() {
     app.open_git_view();
     assert!(app.is_git_view());
     assert_eq!(app.git_view_entries().len(), 1, "変更1件(modified)");
-    // 外部で新規ファイル追加 → refresh で変更一覧が再取得され2件に増える。
+    // Add a new file externally → refresh re-fetches the change list and it grows to 2 entries.
     std::fs::write(dir.join("untracked.txt"), b"new\n").unwrap();
     app.refresh().unwrap();
     assert_eq!(
@@ -4782,14 +4862,14 @@ fn git_view_stage_all_then_unstage_all() {
         "初期は全未ステージ"
     );
 
-    // S=全ステージ → 全て staged(新規も含む add -A)。
+    // S=stage all → everything becomes staged (add -A, including new files).
     app.git_view_stage_all();
     assert!(
         app.git_view_entries().iter().all(|e| e.staged),
         "全ステージ後は全 staged"
     );
 
-    // U=全アンステージ → 全て未ステージ。
+    // U=unstage all → everything becomes unstaged.
     app.git_view_unstage_all();
     assert!(
         app.git_view_entries().iter().all(|e| !e.staged),
@@ -4824,23 +4904,23 @@ fn git_diff_opens_from_view_and_esc_returns_to_view() {
     app.open_git_view();
     assert!(app.is_git_view());
     let target = app.git_view_selected().unwrap();
-    // Git ビューから diff を開く: Preview モード・GitDiff・Git ビューは閉じる。
+    // Open a diff from the Git view: enters Preview mode, GitDiff, and the Git view closes.
     app.open_git_diff(&target);
     assert!(app.is_git_diff_preview(), "GitDiff プレビューになる");
     assert_eq!(app.tab.mode, Mode::Preview);
     assert!(!app.is_git_view(), "Git ビューは閉じる");
-    // diff 行が取得できる(変更ありなので非空)。
+    // diff lines can be fetched (non-empty since there's a change).
     assert!(!app.git_diff_lines().is_empty(), "diff 行が空");
-    // C2: 一度引いた diff はパス単位でキャッシュされる(毎フレーム git を叩かない)。
+    // C2: a diff, once fetched, is cached per path (doesn't hit git on every frame).
     assert!(app.diff_cache.is_some(), "diff キャッシュが張られる");
-    // 作業ツリーが変わりうる refresh(FS イベント/手動更新)でキャッシュを落とす
-    // (外部編集に追従し stale な diff を見せない)。
+    // A refresh that could change the working tree (an FS event / a manual refresh) drops the
+    // cache (follows external edits and never shows a stale diff).
     app.refresh().unwrap();
     assert!(
         app.diff_cache.is_none(),
         "refresh で diff キャッシュが無効化される"
     );
-    // Esc 相当: Git ビューへ復帰する。
+    // Equivalent to Esc: returns to the Git view.
     app.close_git_diff();
     assert!(app.is_git_view(), "Esc で Git ビューへ戻る");
     assert!(!app.is_git_diff_preview());
@@ -4873,10 +4953,10 @@ fn git_diff_discard_confirm_reverts_and_returns_to_view() {
     app.open_git_view();
     let target = app.git_view_selected().unwrap();
     app.open_git_diff(&target);
-    // x: 破棄確認ダイアログ。
+    // x: the discard-confirmation dialog.
     app.git_diff_start_discard();
     assert!(app.is_dialog() && app.dialog_is_confirm(), "破棄確認が出る");
-    // y で確定: ファイルが v1 に戻り、Git ビューへ復帰してクリーンになる。
+    // Confirm with y: the file reverts to v1, and it returns to the Git view now clean.
     app.dialog_confirm(true).unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1\n", "破棄で復元");
     assert!(app.is_git_view(), "破棄後は Git ビューへ戻る");
@@ -4891,7 +4971,7 @@ fn git_diff_discard_confirm_reverts_and_returns_to_view() {
 #[cfg(feature = "git")]
 #[test]
 fn open_git_view_noop_when_not_a_repo() {
-    // git リポジトリでないディレクトリでは開かない(no-op + flash)。
+    // Doesn't open in a directory that's not a git repository (no-op + flash).
     let dir = std::env::temp_dir().join("konoma_app_git_view_norepo");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -4922,10 +5002,10 @@ fn git_branches_list_checkout_and_create() {
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "init"]);
-    git(&["branch", "feature"]); // 2本目のブランチ
+    git(&["branch", "feature"]); // a second branch
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
-    // 一覧: feature を含み、カーソルは現在ブランチに乗る。
+    // The list: includes feature, and the cursor sits on the current branch.
     app.open_git_branches();
     assert!(app.is_git_branches());
     let view = app.git_branch_view();
@@ -4939,7 +5019,7 @@ fn git_branches_list_checkout_and_create() {
         "カーソルは現在ブランチ"
     );
 
-    // 絞り込み: "feat" で feature に絞れる。
+    // Filter: "feat" narrows it down to feature.
     app.git_branch_start_filter();
     for c in "feat".chars() {
         app.git_branch_filter_push(c);
@@ -4950,7 +5030,7 @@ fn git_branches_list_checkout_and_create() {
     app.git_branch_filter_clear();
     assert_eq!(app.git_branch_view().len(), names.len(), "解除で全件へ戻る");
 
-    // feature を選んで checkout → 現在ブランチが変わり、一覧は閉じる。
+    // Select feature and check it out → the current branch changes and the list closes.
     let fi = app
         .git_branch_view()
         .iter()
@@ -4961,7 +5041,7 @@ fn git_branches_list_checkout_and_create() {
     assert!(!app.is_git_branches(), "checkout で一覧は閉じる");
     assert_eq!(app.git_branch(), Some("feature"), "現在ブランチ=feature");
 
-    // 新規ブランチ作成フロー: 入力→submit で作成＆切替(now on "newbr")。
+    // New branch creation flow: enter a name → submit creates it and switches (now on "newbr").
     app.open_git_branches();
     app.start_create_branch();
     for c in "newbr".chars() {
@@ -4970,12 +5050,12 @@ fn git_branches_list_checkout_and_create() {
     app.dialog_submit().unwrap();
     assert_eq!(app.git_branch(), Some("newbr"), "作成して切替");
 
-    // 削除: 現在ブランチ(newbr)は削除不可・他ブランチ(feature)は削除できる。
+    // Delete: the current branch (newbr) cannot be deleted; another branch (feature) can be.
     app.open_git_branches();
-    // カーソルを現在ブランチ(newbr)に置いて d → ガードで開かない。
+    // Put the cursor on the current branch (newbr) and press d → the guard prevents it opening.
     app.start_delete_branch();
     assert!(!app.is_dialog(), "現在ブランチは削除確認を開かない");
-    // feature へカーソル移動して削除確認 → y(安全)。
+    // Move the cursor to feature and confirm deletion → y (a safe delete).
     let fi = app
         .git_branch_view()
         .iter()
@@ -4984,7 +5064,7 @@ fn git_branches_list_checkout_and_create() {
     app.git_branch_move(fi as i32 - app.git_branch_sel() as i32);
     app.start_delete_branch();
     assert!(app.is_dialog() && app.dialog_is_confirm(), "削除確認が開く");
-    app.dialog_confirm(true).unwrap(); // y=安全削除(-d)
+    app.dialog_confirm(true).unwrap(); // y=safe delete (-d)
     assert!(
         !app.git_branch_view().iter().any(|b| b.name == "feature"),
         "feature が削除された"
@@ -5002,7 +5082,7 @@ fn git_commit_flow_creates_commit_with_message() {
     init_git_repo(&dir);
     let f = dir.join("a.txt");
     std::fs::write(&f, b"hello\n").unwrap();
-    // 公開 API でステージ(commit はステージ済み index を使う)。
+    // Stage via the public API (commit uses the staged index).
     crate::git::stage(&dir, &f).unwrap();
 
     let canon = dir.canonicalize().unwrap();
@@ -5010,21 +5090,21 @@ fn git_commit_flow_creates_commit_with_message() {
     app.open_git_view();
     assert!(app.is_git_view());
 
-    // c 相当: コミットメッセージ入力ダイアログを開く。
+    // Equivalent to c: opens the commit message input dialog.
     app.start_git_commit();
     assert!(app.is_dialog(), "コミット入力ダイアログが出る");
-    // internal_mode は Commit を報告する(他の Input と区別できる)。
+    // internal_mode reports Commit (distinguishable from other Input states).
     assert_eq!(app.internal_mode(), Some(InternalMode::Commit));
 
-    // メッセージを1文字ずつ入力。
+    // Type the message one character at a time.
     for c in "feat: add a".chars() {
         app.dialog_input_push(c);
     }
-    // Enter 相当: 確定 → コミット成功。
+    // Equivalent to Enter: commit → commit succeeds.
     app.dialog_submit().unwrap();
     assert!(!app.is_dialog(), "成功するとダイアログは閉じる");
 
-    // HEAD に そのサマリのコミットが出来ている。
+    // HEAD now has a commit with that summary.
     let entries = crate::git::log(&canon, 10);
     assert_eq!(entries.len(), 1, "コミット1件のはず");
     assert_eq!(entries[0].summary, "feat: add a");
@@ -5045,7 +5125,7 @@ fn git_commit_empty_message_is_rejected() {
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
     app.start_git_commit();
-    // 空白だけ入力 → 確定しても拒否され、コミットは作られない。
+    // Enter only whitespace → committing it is rejected, and no commit is created.
     app.dialog_input_push(' ');
     app.dialog_submit().unwrap();
     assert!(
@@ -5062,7 +5142,7 @@ fn git_commit_empty_message_is_rejected() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- git log + コミット詳細 ---------------------------------------------
+// --- git log + commit detail ---------------------------------------------
 #[cfg(feature = "git")]
 #[test]
 fn git_log_lists_commits_and_detail_has_diff_lines() {
@@ -5078,7 +5158,7 @@ fn git_log_lists_commits_and_detail_has_diff_lines() {
             .unwrap();
         assert!(out.status.success(), "git {args:?} 失敗");
     };
-    // 2 コミット作る。
+    // Create 2 commits.
     std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
     sh(&["add", "-A"]);
     sh(&["commit", "-m", "first commit"]);
@@ -5088,17 +5168,18 @@ fn git_log_lists_commits_and_detail_has_diff_lines() {
 
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    // Git ビューを経由して log を開く(実フローと同じ)。
+    // Open log via the Git view (matches the real flow).
     app.open_git_view();
     app.open_git_log();
     assert!(app.is_git_log(), "git log が開く");
     assert!(!app.is_git_view(), "log を開くと Git ビューは閉じる");
     assert_eq!(app.git_log_entries().len(), 2, "コミット2件");
-    // 新しい順: 先頭が second commit。
+    // Newest first: second commit is at the front.
     assert_eq!(app.git_log_entries()[0].summary, "second commit");
     assert_eq!(app.internal_mode(), Some(InternalMode::GitLog));
 
-    // 2件目(古い=first commit・root)を選んで詳細を開く → diff 行が非空。
+    // Select the 2nd entry (the older one = first commit, the root) and open its detail →
+    // the diff lines are non-empty.
     app.git_log_move(1);
     assert_eq!(app.git_log_sel(), 1);
     app.open_git_commit_detail();
@@ -5113,11 +5194,11 @@ fn git_log_lists_commits_and_detail_has_diff_lines() {
         "Added 行が無い: {lines:?}"
     );
 
-    // q 相当: 詳細を閉じると log へ戻る。
+    // Equivalent to q: closing the detail returns to log.
     app.close_git_detail();
     assert!(!app.is_git_detail());
     assert!(app.is_git_log(), "詳細を閉じると log へ戻る");
-    // log を閉じると Git ビューへ戻る。
+    // Closing log returns to the Git view.
     app.close_git_log();
     assert!(!app.is_git_log());
     assert!(app.is_git_view(), "log を閉じると Git ビューへ戻る");
@@ -5130,7 +5211,7 @@ fn open_git_log_noop_when_no_commits() {
     let dir = std::env::temp_dir().join("konoma_app_git_log_unborn");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    init_git_repo(&dir); // コミット無し(unborn)
+    init_git_repo(&dir); // no commits (unborn)
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon, Config::default()).unwrap();
     app.open_git_log();
@@ -5139,11 +5220,12 @@ fn open_git_log_noop_when_no_commits() {
 }
 
 // ============================================================================
-// 追加カバレッジ: App の純状態・プレビュースクロール・画像/GIF・リンク・タブ など。
-// 既存規約に合わせる(temp_dir + ユニーク名・最後に remove_dir_all で後始末)。
+// Additional coverage: App's pure state, preview scrolling, images/GIF, links, tabs, etc.
+// Follows the existing convention (temp_dir + a unique name, cleaned up at the end with
+// remove_dir_all).
 // ============================================================================
 
-/// 小さな PNG をテスト用に生成して書き出す(decode 経路の確認用)。
+/// Generates and writes out a small PNG for testing (to check the decode path).
 fn write_png(path: &Path, w: u32, h: u32) {
     let img = image::RgbImage::from_pixel(w, h, image::Rgb([10, 20, 30]));
     image::DynamicImage::ImageRgb8(img).save(path).unwrap();
@@ -5151,7 +5233,7 @@ fn write_png(path: &Path, w: u32, h: u32) {
 
 #[test]
 fn path_style_next_cycles_and_cycle_path_style_advances() {
-    // 純関数の巡回: rel→home→full→rel。
+    // The pure function's cycle: rel→home→full→rel.
     assert_eq!(PathStyle::Relative.next(), PathStyle::Home);
     assert_eq!(PathStyle::Home.next(), PathStyle::Full);
     assert_eq!(PathStyle::Full.next(), PathStyle::Relative);
@@ -5213,7 +5295,7 @@ fn looks_like_gif_uses_magic_not_extension() {
     std::fs::write(dir.join("old.gif"), b"GIF87a\x00\x00").unwrap();
     std::fs::write(dir.join("fake.gif"), b"not a gif at all").unwrap();
     std::fs::write(dir.join("real.bin"), b"GIF89a binary").unwrap();
-    // マジック GIF8x で判定(拡張子は無関係)。
+    // Judged by the GIF8x magic bytes (the extension is irrelevant).
     assert!(App::looks_like_gif(&dir.join("a.gif")));
     assert!(App::looks_like_gif(&dir.join("old.gif")));
     assert!(
@@ -5238,10 +5320,10 @@ fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // 既定キーマップは衝突なし → None。
+    // The default keymap has no conflicts → None.
     assert!(app.keymap_report().is_none(), "既定では報告なし");
 
-    // 衝突1件 + 無効設定1件を仕込むと、件数入りの1行を返す(英語)。
+    // Planting 1 conflict + 1 invalid setting yields a single line with the counts (English).
     app.keymaps.conflicts.push(KeyConflict {
         surface: Surface::Tree,
         key: KeyPress::ch('x'),
@@ -5258,7 +5340,7 @@ fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
         "英語の無効設定件数: {en}"
     );
 
-    // 日本語でも件数入りで出る。
+    // Also shown with counts in Japanese.
     app.lang = crate::i18n::Lang::Jp;
     let jp = app.keymap_report().expect("Some");
     assert!(jp.contains("キー衝突1件"), "日本語の衝突件数: {jp}");
@@ -5272,14 +5354,14 @@ fn take_warm_job_returns_once_then_none() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // ハイライト待ち + プレビュー対象がある状態を作る。
+    // Build a state that's highlight-pending with a preview target.
     app.tab.preview_path = Some(dir.join("main.rs"));
     app.hl_pending = true;
     app.hl_warming = false;
     let job = app.take_warm_job().expect("起動対象を1度だけ返す");
     assert_eq!(job.0, "rs", "拡張子");
     assert_eq!(job.1, dir.join("main.rs"));
-    // 2度目は warming 中なので None(二重起動を防ぐ)。
+    // The second time it's warming, so None (prevents a double launch).
     assert!(app.take_warm_job().is_none(), "二重起動しない");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -5291,7 +5373,7 @@ fn launch_git_tool_sets_pending_flag_and_take_clears_it() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     assert!(!app.take_launch_git_tool(), "初期は要求なし");
-    app.launch_git_tool(); // プロセスは起動せず、フラグを立てるだけ
+    app.launch_git_tool(); // doesn't launch a process, just sets the flag
     assert!(app.take_launch_git_tool(), "要求が立つ");
     assert!(!app.take_launch_git_tool(), "take で消費される");
     std::fs::remove_dir_all(&dir).ok();
@@ -5304,12 +5386,12 @@ fn preview_scroll_paging_and_to_top_non_windowed() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.preview_viewport = 20;
-    // 非 windowed: preview_scroll を直接操作。
+    // Non-windowed: operates preview_scroll directly.
     app.preview_scroll(5);
     assert_eq!(app.tab.preview_scroll, 5);
     app.preview_scroll(-100);
     assert_eq!(app.tab.preview_scroll, 0, "下限 0 でクランプ");
-    app.preview_page(1); // +19 (1行重ね)
+    app.preview_page(1); // +19 (overlaps by 1 line)
     assert_eq!(app.tab.preview_scroll, 19);
     app.preview_half_page(1); // +10
     assert_eq!(app.tab.preview_scroll, 29);
@@ -5360,7 +5442,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
         .position(|e| e.path.ends_with("big.txt"))
         .unwrap();
     app.tab.selected = i;
-    app.tree_activate().unwrap(); // ファイル → プレビュー(Text=窓読み)
+    app.tree_activate().unwrap(); // file → preview (Text = windowed read)
     assert!(app.is_windowed(), "テキストは窓読みモード");
     app.tab.preview_viewport = 10;
 
@@ -5373,9 +5455,10 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
     };
     assert!(first_line(&mut app).contains("line 0"), "先頭は line 0");
 
-    // 常時カーソルモデル: 窓内(vh=10)で行カーソルを動かしても、末端に達するまで窓は動かない。
+    // The always-a-cursor model: moving the line cursor within the window (vh=10) doesn't move
+    // the window until it reaches the edge.
     assert_eq!(app.tab.preview_byte_top, 0);
-    app.preview_scroll(5); // カーソル 0→5(まだ可視範囲内)
+    app.preview_scroll(5); // cursor 0→5 (still within the visible range)
     assert_eq!(app.tab.preview_cursor_line, 5, "カーソルは 5 行目");
     assert_eq!(app.tab.preview_byte_top, 0, "窓内移動では窓は動かない");
     assert!(
@@ -5383,8 +5466,8 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
         "先頭は line 0 のまま"
     );
 
-    // カーソルが下端を超えると窓が追従する(byte_top が前進)。
-    app.preview_scroll(5); // カーソル 5→10(下端 vh=10 を超える)
+    // Once the cursor passes the bottom edge, the window follows (byte_top advances).
+    app.preview_scroll(5); // cursor 5→10 (passes the bottom edge vh=10)
     assert_eq!(app.tab.preview_cursor_line, 10, "カーソルは 10 行目");
     assert!(
         app.tab.preview_byte_top > 0,
@@ -5395,7 +5478,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
         "line 10 が見えるよう先頭は line 1"
     );
 
-    // windowed の preview_to_top はカーソルと窓を先頭へ。
+    // windowed's preview_to_top sends the cursor and the window to the top.
     app.preview_to_top();
     assert_eq!(app.tab.preview_cursor_line, 0);
     assert_eq!(app.tab.preview_byte_top, 0);
@@ -5405,7 +5488,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
         "to_top で先頭へ戻る"
     );
 
-    // 末尾へ: カーソルは最終行(199)、窓は最終ページ。
+    // To the end: the cursor goes to the last line (199), and the window shows the last page.
     app.preview_to_bottom();
     assert_eq!(app.tab.preview_cursor_line, 199, "to_bottom で最終行へ");
     std::fs::remove_dir_all(&dir).ok();
@@ -5413,8 +5496,8 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 
 #[test]
 fn request_edit_opens_at_windowed_caret_line() {
-    // `e` は windowed プレビュー(text/code)のキャレット行でエディタを開く(1始まり)。
-    // ツリー編集・非 windowed(装飾 Markdown)は行なし(先頭で開く)。
+    // `e` opens the editor at the caret line for a windowed preview (text/code) (1-indexed).
+    // Tree edits and non-windowed (decorated Markdown) get no line (opens at the top).
     let dir = std::env::temp_dir().join("konoma_edit_line_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -5427,7 +5510,7 @@ fn request_edit_opens_at_windowed_caret_line() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
-    // ① ツリーからの編集: 行なし。
+    // (1) Editing from the tree: no line.
     let i = app
         .tab
         .entries
@@ -5440,11 +5523,11 @@ fn request_edit_opens_at_windowed_caret_line() {
     assert!(p.ends_with("big.txt"));
     assert_eq!(line, None, "ツリー編集は行を渡さない");
 
-    // ② windowed プレビュー: キャレット行 + 1。
+    // (2) A windowed preview: caret line + 1.
     app.tree_activate().unwrap();
     assert!(app.is_windowed());
     app.tab.preview_viewport = 10;
-    app.preview_scroll(12); // キャレット 0→12
+    app.preview_scroll(12); // caret 0→12
     assert_eq!(app.tab.preview_cursor_line, 12);
     app.request_edit();
     let (p, line) = app.take_pending_edit().expect("edit requested");
@@ -5455,7 +5538,8 @@ fn request_edit_opens_at_windowed_caret_line() {
         "キャレット 12 行目 → エディタは 13 行目(1始まり)"
     );
 
-    // ③ 装飾 Markdown(非 windowed): 描画前(md_cache 未構築)は行なし=先頭で開く。
+    // (3) Decorated Markdown (non-windowed): before rendering (md_cache not yet built), no
+    // line = opens at the top.
     app.back_to_tree();
     let j = app
         .tab
@@ -5497,13 +5581,13 @@ fn preview_visual_selection_copies_logical_lines() {
     assert!(app.is_windowed(), "テキストは窓読み(行カーソル有効)");
     app.tab.preview_viewport = 10;
 
-    // カーソルを 2 行目へ。まだ非選択。
+    // Move the cursor to line 2. Not selected yet.
     app.preview_scroll(2);
     assert_eq!(app.tab.preview_cursor_line, 2);
     assert!(!app.is_preview_visual(), "まだ選択していない");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
 
-    // V で行選択開始 → 2 行下へ伸ばす(2..=4)。
+    // V starts line selection → extend it 2 lines down (2..=4).
     app.preview_enter_visual(true);
     assert!(app.is_preview_visual(), "選択モードに入る");
     assert!(app.preview_visual_linewise(), "V は行選択");
@@ -5512,24 +5596,25 @@ fn preview_visual_selection_copies_logical_lines() {
         app.internal_mode(),
         Some(crate::app::InternalMode::PreviewVisual)
     );
-    app.preview_scroll(2); // カーソル 2→4(anchor=2 固定)
+    app.preview_scroll(2); // cursor 2→4 (anchor=2 fixed)
     assert_eq!(
         app.preview_selection(),
         crate::app::PreviewSelection::Line { lo: 2, hi: 4 }
     );
 
-    // 選択テキスト = 論理行 2..=4。
+    // Selected text = logical lines 2..=4.
     assert_eq!(app.preview_selection_text(), "line 2\nline 3\nline 4");
 
-    // コピー実行で選択解除(クリップボード可否に依存せず状態遷移を検証)。
+    // Executing copy clears the selection (verifies the state transition, independent of
+    // clipboard availability).
     app.preview_copy_selection();
     assert!(!app.is_preview_visual(), "コピー後は選択解除");
 
-    // 逆方向(上へ)選択でも範囲は昇順に正規化される。
-    app.preview_to_top(); // カーソル 0
-    app.preview_scroll(5); // カーソル 5
+    // Selecting the other direction (upward) also normalizes the range in ascending order.
+    app.preview_to_top(); // cursor 0
+    app.preview_scroll(5); // cursor 5
     app.preview_enter_visual(true);
-    app.preview_scroll(-3); // カーソル 2、anchor=5 → 範囲 2..=5
+    app.preview_scroll(-3); // cursor 2, anchor=5 → range 2..=5
     assert_eq!(
         app.preview_selection(),
         crate::app::PreviewSelection::Line { lo: 2, hi: 5 }
@@ -5539,7 +5624,7 @@ fn preview_visual_selection_copies_logical_lines() {
         "line 2\nline 3\nline 4\nline 5"
     );
 
-    // Esc 相当(exit)で解除。
+    // Equivalent to Esc (exit) clears it.
     app.preview_exit_visual();
     assert!(!app.is_preview_visual());
     std::fs::remove_dir_all(&dir).ok();
@@ -5550,7 +5635,7 @@ fn preview_charwise_selection_copies_character_range() {
     let dir = std::env::temp_dir().join("konoma_preview_charwise_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // 各行 "abcdefghij" の 6 行。
+    // 6 lines, each "abcdefghij".
     let content = (0..6)
         .map(|_| "abcdefghij".to_string())
         .collect::<Vec<_>>()
@@ -5569,7 +5654,7 @@ fn preview_charwise_selection_copies_character_range() {
     assert!(app.is_windowed());
     app.tab.preview_viewport = 10;
 
-    // 1 行目(line 0)の 2 列目(c)から開始 → l を 3 回で col 2→5(f)。単一行 charwise。
+    // Start at column 2 (c) on line 1 (line 0) → 3 presses of l move col 2→5 (f). Single-line charwise.
     app.preview_col_move(1); // col 1
     app.preview_col_move(1); // col 2
     app.preview_enter_visual(false); // charwise, anchor=(0,2)
@@ -5585,11 +5670,11 @@ fn preview_charwise_selection_copies_character_range() {
             end: (0, 5)
         }
     );
-    // 文字範囲 [2..=5] = "cdef"(end-inclusive)。
+    // Character range [2..=5] = "cdef" (end-inclusive).
     assert_eq!(app.preview_selection_text(), "cdef");
 
-    // 複数行 charwise: (0,2) から 2 行下・col 3 へ → "cdefghij\nabcdefghij\nabcd"。
-    app.preview_scroll(2); // カーソル行 0→2
+    // Multi-line charwise: from (0,2), 2 lines down and col 3 → "cdefghij\nabcdefghij\nabcd".
+    app.preview_scroll(2); // cursor line 0→2
     app.preview_col_home(); // col 0
     app.preview_col_move(1); // 1
     app.preview_col_move(1); // 2
@@ -5603,14 +5688,14 @@ fn preview_charwise_selection_copies_character_range() {
     );
     assert_eq!(app.preview_selection_text(), "cdefghij\nabcdefghij\nabcd");
 
-    // 逆方向でも (line,col) 昇順に正規化される。
+    // The other direction also normalizes to (line,col) ascending order.
     app.preview_exit_visual();
     app.preview_to_top();
-    app.preview_scroll(3); // 行 3
+    app.preview_scroll(3); // line 3
     app.preview_col_home();
     app.preview_col_move(1); // col 1
     app.preview_enter_visual(false); // anchor=(3,1)
-    app.preview_scroll(-1); // 行 2
+    app.preview_scroll(-1); // line 2
     app.preview_col_move(1); // col 2
     assert_eq!(
         app.preview_selection(),
@@ -5643,26 +5728,28 @@ fn markdown_raw_toggle_enables_windowed_selection() {
     app.tab.selected = i;
     app.tree_activate().unwrap();
 
-    // 既定は装飾表示: windowed でない＝2D 選択は効かない。R トグル対象ではある。
+    // Default is the decorated view: not windowed = 2D selection has no effect. It is, however,
+    // a target for the R toggle.
     assert!(app.is_decorated_kind(), "Markdown は装飾種別");
     assert!(!app.is_windowed(), "装飾表示は windowed でない");
     assert!(!app.is_raw_source());
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewText);
 
-    // R で raw ソース表示へ: windowed 化し、選択が乗る。
+    // R switches to the raw source view: becomes windowed and selection can be applied.
     app.toggle_md_raw();
     assert!(app.is_raw_source(), "raw ソース表示に切替");
     assert!(app.is_windowed(), "raw は windowed(選択可)");
     app.tab.preview_viewport = 10;
 
-    // 先頭行 "# Title" を charwise で全選択してコピー内容を確認(生ソースの行/桁一致)。
+    // Select the whole first line "# Title" charwise and verify the copied content (matches the
+    // raw source's line/column).
     app.preview_enter_visual(false); // anchor=(0,0)
     for _ in 0..6 {
-        app.preview_col_move(1); // (0,0)→(0,6) = "# Title"(7文字, end-inclusive)
+        app.preview_col_move(1); // (0,0)→(0,6) = "# Title" (7 chars, end-inclusive)
     }
     assert_eq!(app.preview_selection_text(), "# Title");
 
-    // R で装飾表示へ戻す: windowed 解除・選択解除。
+    // R switches back to the decorated view: unwindowed and selection cleared.
     app.preview_exit_visual();
     app.toggle_md_raw();
     assert!(!app.is_raw_source(), "装飾表示へ戻る");
@@ -5682,7 +5769,8 @@ fn dialog_cursor_right_and_end_clamp() {
     for c in "abc".chars() {
         app.dialog_input_push(c);
     }
-    // 末尾 → home → right(1つ右) → end(末尾) を確認。中間挿入で位置を観測する。
+    // Verify end → home → right (one to the right) → end (end). Observe the position via a
+    // mid-string insert.
     app.dialog_cursor_home();
     app.dialog_cursor_right(); // 1
     app.dialog_input_push('X'); // "aXbc"
@@ -5690,16 +5778,16 @@ fn dialog_cursor_right_and_end_clamp() {
         app.dialog_view().map(|v| v.2.to_string()),
         Some("aXbc".into())
     );
-    app.dialog_cursor_right(); // 末尾を超えない範囲で右へ(クランプ確認のため複数回)
+    app.dialog_cursor_right(); // right, staying within the end (repeated to check clamping)
     for _ in 0..10 {
         app.dialog_cursor_right();
     }
-    app.dialog_input_push('Z'); // 末尾に付く → "aXbcZ"
+    app.dialog_input_push('Z'); // appends at the end → "aXbcZ"
     assert_eq!(
         app.dialog_view().map(|v| v.2.to_string()),
         Some("aXbcZ".into())
     );
-    // end は末尾へ。home→end→挿入も末尾。
+    // end goes to the tail. home→end→insert also lands at the end.
     app.dialog_cursor_home();
     app.dialog_cursor_end();
     app.dialog_input_push('!'); // "aXbcZ!"
@@ -5717,7 +5805,7 @@ fn set_gif_frames_and_advance_when_due() {
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb(c)))
     };
-    // 1フレームだけ: アニメ扱いにならず advance は false。
+    // Only 1 frame: not treated as an animation, and advance is false.
     app.set_gif_frames(vec![(
         frame([1, 2, 3]),
         std::time::Duration::from_millis(50),
@@ -5725,7 +5813,7 @@ fn set_gif_frames_and_advance_when_due() {
     assert!(!app.is_gif_active());
     assert!(!app.advance_gif_if_due(), "単一フレームは進めない");
 
-    // 2フレーム: 初回 tick は計時開始のみ(進めない)。
+    // 2 frames: the first tick only starts the timer (doesn't advance).
     app.set_gif_frames(vec![
         (frame([255, 0, 0]), std::time::Duration::from_millis(50)),
         (frame([0, 255, 0]), std::time::Duration::from_millis(50)),
@@ -5733,7 +5821,7 @@ fn set_gif_frames_and_advance_when_due() {
     assert!(app.is_gif_active());
     assert!(!app.advance_gif_if_due(), "最初の tick は計時開始だけ");
     assert_eq!(app.gif_idx, 0);
-    // 表示時間を過ぎたことにして次フレームへ進む。
+    // Pretend the display duration has elapsed and advance to the next frame.
     app.gif_shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     assert!(app.advance_gif_if_due(), "期限超過で次フレームへ");
     assert_eq!(app.gif_idx, 1);
@@ -5757,9 +5845,9 @@ fn gif_poll_timeout_none_without_anim_some_when_playing() {
     );
 }
 
-// ---- インライン Markdown GIF アニメーション --------------------------------------------
+// ---- Inline Markdown GIF animation --------------------------------------------
 
-/// フレーム 1 個のエントリ(静止画/単フレーム GIF)は進めない・状態も変わらない。
+/// An entry with 1 frame (a still image / single-frame GIF) doesn't advance and its state doesn't change either.
 #[test]
 fn advance_md_gifs_single_frame_entry_does_not_advance() {
     let dir = unique_tmp("konoma_md_gif_single_test");
@@ -5788,9 +5876,11 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 複数フレームのエントリ: 期限前は進めない(最初の tick は計時開始のみ)。期限超過で次フレーム
-/// へ進み、decoded が差し替わり、proto_size/clip_key/zoom_key は無効化されるが **protocol 本体は
-/// 消さない**(次のエンコードが届くまでの表示用に残す=消すと一瞬空白になる)。一周すると idx は0へ。
+/// A multi-frame entry: doesn't advance before the deadline (the first tick only starts the
+/// timer). Past the deadline it advances to the next frame, decoded is swapped in, and
+/// proto_size/clip_key/zoom_key are invalidated, but **the protocol itself is not cleared**
+/// (kept for display until the next encode arrives — clearing it would flash a moment of blank
+/// space). Once it cycles all the way around, idx returns to 0.
 #[test]
 fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_keys() {
     let dir = unique_tmp("konoma_md_gif_advance_test");
@@ -5801,7 +5891,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
     let f0 = Arc::new(image::DynamicImage::new_rgba8(4, 4));
     let f1 = Arc::new(image::DynamicImage::new_rgba8(4, 4));
 
-    // 実物の Protocol(halfblocks=端末不要)を1つ作り、「advance 後も残る」ことを確かめる。
+    // Build a real Protocol (halfblocks = no terminal needed) and verify it "survives an advance".
     let picker = test_picker();
     let proto = picker
         .new_protocol(
@@ -5827,7 +5917,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         },
     );
 
-    // 期限前(初回 tick): 計時を開始するだけで進めない。
+    // Before the deadline (the first tick): only starts the timer, doesn't advance.
     assert!(!app.advance_md_gifs_if_due(), "最初の tick は計時開始だけ");
     {
         let e = &app.md_image_cache[&key];
@@ -5839,7 +5929,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         );
     }
 
-    // 期限を過去にずらして次フレームへ進める。
+    // Shift the deadline into the past to advance to the next frame.
     {
         let e = app.md_image_cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -5861,7 +5951,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         );
     }
 
-    // 一周: もう一度期限を過去にずらすと idx が 0 へ戻る。
+    // Full cycle: shifting the deadline into the past once more returns idx to 0.
     {
         let e = app.md_image_cache.get_mut(&key).unwrap();
         e.shown_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -5875,7 +5965,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// アニメ対象が無ければ None、あれば Some で frames の delay 以下(10〜100ms クランプ)。
+/// None with no animation target; Some, bounded by the frames' delay (clamped to 10-100ms), otherwise.
 #[test]
 fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
     use std::time::Duration;
@@ -5912,7 +6002,7 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
 
 #[test]
 fn apply_image_resize_err_is_ignored() {
-    // エンコード失敗(Err)はクラッシュさせず false を返す(状態も変えない)。
+    // An encode failure (Err) doesn't crash and returns false (state is unchanged too).
     let mut app = app_with_image();
     let r = app.apply_image_resize(Err(ratatui_image::errors::Errors::NoCap));
     assert!(!r, "Err は反映しない");
@@ -5948,18 +6038,18 @@ fn load_image_decodes_with_backend_and_noops_without() {
     let png = dir.join("tiny.png");
     write_png(&png, 20, 10);
 
-    // バックエンド無し: 何も載らない(描画側がテキストへフォールバック)。
+    // No backend: nothing is loaded (the render side falls back to text).
     let mut bare = App::new(dir.clone(), Config::default()).unwrap();
     bare.load_image(&png);
     assert!(bare.image_src.is_none(), "picker/tx 無しでは load しない");
 
-    // バックエンドあり: decode_static → image_src に載る(サイズ一致)。
+    // With a backend: decode_static → loaded into image_src (size matches).
     let mut app = app_with_image();
-    app.image_src = None; // app_with_image のダミーを消してから
+    app.image_src = None; // first clear app_with_image's dummy
     app.load_image(&png);
     let img = app.image_src.as_ref().expect("PNG をデコードして載せる");
     assert_eq!((img.width(), img.height()), (20, 10));
-    // 画像でないファイルは load しない(image_src は None のまま)。
+    // A non-image file isn't loaded (image_src stays None).
     app.image_src = None;
     std::fs::write(dir.join("notimg.png"), b"this is not a png").unwrap();
     app.load_image(&dir.join("notimg.png"));
@@ -5978,13 +6068,14 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
     let mut app = App::new(base.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
-    // md を開いている体にして、相対リンクの基準を a.md にする。
+    // Pretend an md is open, with a.md as the relative link base.
     app.tab.preview_path = Some(base.join("a.md"));
     app.tab.preview_kind = Some(PreviewKind::Markdown(base.join("a.md")));
     app.tab.mode = Mode::Preview;
 
-    // アンカー(#) は、該当見出しが無ければ「見つからない」旨を flash(未対応ではない)。
-    // ここでは md_cache 未構築(描画していない)ので anchors は空 → NotFound 扱い。
+    // For an anchor (#), if there's no matching heading, flash a "not found" notice (this isn't
+    // "unsupported"). Here md_cache hasn't been built (nothing has rendered), so anchors is
+    // empty → treated as NotFound.
     app.open_link_target("#section").unwrap();
     assert!(
         app.flash
@@ -5995,7 +6086,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
         app.flash
     );
 
-    // 実在しないローカルパスは NotFound 通知。
+    // A local path that doesn't exist gets a NotFound notice.
     app.tab.preview_path = Some(base.join("a.md"));
     app.open_link_target("does_not_exist.zz").unwrap();
     assert!(
@@ -6007,7 +6098,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
         app.flash
     );
 
-    // 既存ファイルへのリンク → プレビュー対象が b.txt に切り替わる。
+    // A link to an existing file → the preview target switches to b.txt.
     app.tab.preview_path = Some(base.join("a.md"));
     app.open_link_target("b.txt").unwrap();
     assert_eq!(
@@ -6019,7 +6110,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
         "ファイルリンクで b.txt をプレビュー"
     );
 
-    // ディレクトリへのリンク → root が sub になり Tree へ。
+    // A link to a directory → root becomes sub and it goes to Tree.
     app.tab.preview_path = Some(base.join("a.md"));
     app.tab.mode = Mode::Preview;
     app.open_link_target("sub").unwrap();
@@ -6047,9 +6138,9 @@ fn copy_target_follows_mode() {
         .position(|e| e.path.ends_with("a.txt"))
         .unwrap();
     app.tab.selected = i;
-    // Tree: カーソルのエントリ。
+    // Tree: the cursor's entry.
     assert_eq!(app.copy_target(), Some(dir.join("a.txt")));
-    // Preview: プレビュー対象。
+    // Preview: the preview target.
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(dir.join("p.txt"));
     assert_eq!(app.copy_target(), Some(dir.join("p.txt")));
@@ -6065,18 +6156,18 @@ fn tab_label_shows_root_dir_or_preview_file_name() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let active = app.active_tab_index();
-    // Tree 表示中はルートのディレクトリ名。
+    // While showing Tree, it's the root's directory name.
     assert_eq!(app.tab_label(active), "proj");
-    // 範囲外は空文字。
+    // Out of range is an empty string.
     assert_eq!(app.tab_label(999), "");
-    // Preview 表示中はプレビュー対象のファイル名。
+    // While in Preview, it's the file name of the preview target.
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(dir.join("file.md"));
     assert_eq!(app.tab_label(active), "file.md");
     std::fs::remove_dir_all(dir.parent().unwrap()).ok();
 }
 
-// --- git 限定: コミットメタ取得 / コピー / グラフ・詳細スクロール・ピッカー --------
+// --- git-only: fetching commit meta / copy / graph and detail scroll / the picker --------
 
 #[cfg(feature = "git")]
 fn git_repo_with_commits(dir: &Path) {
@@ -6107,13 +6198,13 @@ fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
 
-    // Tree 面ではコミット無し → None。
+    // No commit on the Tree surface → None.
     assert!(
         app.current_commit_meta().is_none(),
         "Tree ではコミットメタ無し"
     );
 
-    // log 面: 選択コミット(先頭=second)のメタを返す。
+    // The log surface: returns the meta of the selected commit (the first one = second).
     app.open_git_view();
     app.open_git_log();
     let meta = app.current_commit_meta().expect("log の選択コミットメタ");
@@ -6131,7 +6222,7 @@ fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
         "完全ハッシュは短縮から始まる"
     );
 
-    // detail 面: ロード済みの git_detail_meta を使う(古い=first commit を開く)。
+    // The detail surface: uses the already-loaded git_detail_meta (open the older one = first commit).
     app.git_log_move(1);
     app.open_git_commit_detail();
     let dmeta = app.current_commit_meta().expect("detail のメタ");
@@ -6160,7 +6251,8 @@ fn git_copy_message_and_branch_name_set_flash() {
     let failed = tr(app.lang, crate::i18n::Msg::CopyFailed);
     let no_target = tr(app.lang, crate::i18n::Msg::NoCopyTarget);
 
-    // log の選択コミットを Message でコピー: クリップボードの可否に依らず copied/failed のいずれかを flash。
+    // Copy the log's selected commit via Message: flashes either copied/failed regardless of
+    // clipboard availability.
     app.open_git_view();
     app.open_git_log();
     app.git_copy(GitCopyKind::Message);
@@ -6171,7 +6263,7 @@ fn git_copy_message_and_branch_name_set_flash() {
     );
     assert_ne!(f, no_target, "コミットがあるので no-target ではない");
 
-    // branches 未ロードで git_copy_branch_name → no-target ガードを通る。
+    // git_copy_branch_name with branches unloaded → hits the no-target guard.
     app.close_git_log();
     app.close_git_view();
     app.tab.git_branches = None;
@@ -6198,7 +6290,8 @@ fn git_copy_branch_name_copies_current_branch() {
     let no_target = tr(app.lang, crate::i18n::Msg::NoCopyTarget);
     app.git_copy_branch_name();
     let f = app.flash.clone().expect("flash");
-    // クリップボード成功なら "copied: <branch>"、失敗でも "copy failed: ..."。いずれもガードは越えている。
+    // If the clipboard succeeds, "copied: <branch>"; even on failure, "copy failed: ...". Either
+    // way it's already past the guard.
     assert_ne!(
         f, no_target,
         "選択ブランチがあるので no-target ではない: {f:?}"
@@ -6238,7 +6331,7 @@ fn git_view_unstage_single_file_reloads() {
             .unwrap()
             .staged
     );
-    // u = 単一ファイル unstage。
+    // u = unstage a single file.
     app.git_view_unstage();
     assert!(
         !app.git_view_entries()
@@ -6273,7 +6366,7 @@ fn git_view_start_discard_opens_confirm_without_destroying() {
     let mut app = App::new(canon, Config::default()).unwrap();
     app.open_git_view();
     app.git_view_start_discard();
-    // 確認ダイアログだけ開く(まだ破棄しない=ファイルは v2 のまま)。
+    // Only the confirmation dialog opens (nothing is discarded yet = the file stays at v2).
     assert!(
         app.is_dialog() && app.dialog_is_confirm(),
         "破棄は確認ダイアログ"
@@ -6312,15 +6405,16 @@ fn git_branch_filter_commit_and_backspace() {
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.open_git_branches();
     app.git_branch_start_filter();
-    // "f" は feature/fixup の2件、"fi" は fixup の1件に絞り込む(部分一致)。
+    // "f" narrows it to the 2 entries feature/fixup, "fi" narrows it to the 1 entry fixup
+    // (substring match).
     app.git_branch_filter_push('f');
     assert_eq!(app.git_branch_view().len(), 2, "f で feature/fixup の2件");
     app.git_branch_filter_push('i');
     assert_eq!(app.git_branch_view().len(), 1, "fi で fixup の1件に絞る");
-    // backspace で "f" に戻ると再び2件へ広がる(backspace の効果)。
+    // Backspacing back to "f" widens it to 2 entries again (backspace's effect).
     app.git_branch_filter_backspace();
     assert_eq!(app.git_branch_view().len(), 2, "backspace で2件へ広がる");
-    // commit(Enter): 入力を抜けるがクエリは残る(j/k 移動できる)。
+    // commit (Enter): exits input mode but the query remains (j/k can navigate).
     assert!(app.git_branch_filtering());
     app.git_branch_filter_commit();
     assert!(!app.git_branch_filtering(), "Enter で入力モードを抜ける");
@@ -6340,18 +6434,18 @@ fn graph_base_set_clear_and_detail_scroll_hscroll() {
     app.open_git_graph();
     assert!(app.is_git_graph());
 
-    // 基準セット: 選択コミット行を基準化 → ラベルが付く。
+    // Set the base: pins the selected commit row as the base → gets a label.
     assert!(app.git_graph_base_label().is_none(), "初期は基準なし");
     app.git_graph_set_base();
     assert!(
         app.git_graph_base_label().is_some(),
         "set_base で基準ラベルが付く"
     );
-    // 解除で消える。
+    // Clearing removes it.
     app.git_graph_clear_base();
     assert!(app.git_graph_base_label().is_none(), "clear_base で消える");
 
-    // コミット詳細を開いてスクロール系を確認。
+    // Open the commit detail and verify the scroll behavior.
     app.open_git_graph_detail();
     assert!(app.is_git_detail());
     app.set_git_detail_viewport(5);
@@ -6361,11 +6455,11 @@ fn graph_base_set_clear_and_detail_scroll_hscroll() {
     assert_eq!(app.git_detail_scroll(), 10, "下へ10");
     app.git_detail_scroll_by(-3);
     assert_eq!(app.git_detail_scroll(), 7, "上へ3");
-    app.git_detail_scroll_to(true); // G: 末尾(total-viewport=95)
+    app.git_detail_scroll_to(true); // G: to the end (total-viewport=95)
     assert_eq!(app.git_detail_scroll(), 95, "G で末尾(クランプ)");
-    app.git_detail_scroll_to(false); // g: 先頭
+    app.git_detail_scroll_to(false); // g: to the top
     assert_eq!(app.git_detail_scroll(), 0);
-    // 横スクロール。
+    // Horizontal scroll.
     app.git_detail_hscroll_by(4);
     assert_eq!(app.git_detail_hscroll(), 4);
     app.git_detail_hscroll_home();
@@ -6413,7 +6507,7 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
     let n = app.git_graph_picker_items().len();
     assert!(n >= 4, "4ブランチ以上");
 
-    // 移動 + ジャンプ。
+    // Move + jump.
     app.git_graph_picker_move(2);
     assert_eq!(app.git_graph_picker_sel(), 2);
     app.git_graph_picker_jump(false);
@@ -6421,7 +6515,7 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
     app.git_graph_picker_jump(true);
     assert_eq!(app.git_graph_picker_sel(), 0, "先頭へジャンプ");
 
-    // current_only → HEAD(trunk)のみ ON。
+    // current_only → only HEAD (trunk) is ON.
     app.git_graph_picker_current_only();
     let on: Vec<String> = app
         .git_graph_picker_items()
@@ -6435,7 +6529,7 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
         "current only は HEAD だけ: {on:?}"
     );
 
-    // 非 HEAD 行をトグル ON。
+    // Toggle a non-HEAD row ON.
     let non_head = app
         .git_graph_picker_items()
         .iter()
@@ -6448,7 +6542,7 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
         "非 HEAD はトグルで ON"
     );
 
-    // cancel は表示集合を変えずに閉じる。
+    // cancel closes it without changing the visible set.
     app.git_graph_picker_cancel();
     assert!(!app.is_git_graph_picker(), "cancel でパネルが閉じる");
     std::fs::remove_dir_all(&dir).ok();
@@ -6471,11 +6565,12 @@ fn close_git_graph_returns_to_git_view() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- bookmark_actions / file_actions のカバレッジ ---------------------------
+// --- bookmark_actions / file_actions coverage ---------------------------
 
 #[test]
 fn mark_set_state_and_cancel() {
-    // `m` の登録待ちのみが Mark 面(`'` は即一覧なので待ち状態を持たない)。
+    // Only `m`'s registration-pending state is the Mark surface (`'` opens the list immediately
+    // and has no pending state).
     let dir = std::env::temp_dir().join("konoma_mark_state_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -6485,7 +6580,7 @@ fn mark_set_state_and_cancel() {
     assert!(app.is_marking(), "m=登録待ち");
     app.cancel_mark();
     assert!(!app.is_marking(), "cancel_mark で待機解除");
-    // 待機していない時の mark_input は無視(flash も出ない)。
+    // mark_input while not waiting is ignored (no flash either).
     app.flash = None;
     app.mark_input('a');
     assert!(app.flash.is_none());
@@ -6494,7 +6589,7 @@ fn mark_set_state_and_cancel() {
 
 #[test]
 fn bookmark_from_preview_registers_previewed_file() {
-    // プレビュー中の m は「表示中のファイル」を登録する(ツリーカーソルではなく)。
+    // m while previewing registers "the file being displayed" (not the tree cursor).
     let root = std::env::temp_dir().join("konoma_bm_preview_test");
     let _ = std::fs::remove_dir_all(&root);
     let proj = root.join("proj");
@@ -6504,7 +6599,8 @@ fn bookmark_from_preview_registers_previewed_file() {
     let proj = proj.canonicalize().unwrap();
     let mut app = App::new(proj.clone(), Config::default()).unwrap();
     app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase"), &proj);
-    // b.txt をプレビューで開くが、ツリーカーソルは a.txt に置いたまま(フォロー/ジャンプ等で乖離する状況)。
+    // Open b.txt in preview, but leave the tree cursor on a.txt (a situation where they diverge,
+    // e.g. via follow/jump).
     app.enter_preview(&proj.join("b.txt"));
     app.tab.selected = app
         .tab
@@ -6521,7 +6617,7 @@ fn bookmark_from_preview_registers_previewed_file() {
         "カーソルの a.txt でなく表示中の b.txt が登録される"
     );
     assert_eq!(app.tab.mode, Mode::Preview, "登録後もプレビューのまま");
-    // ツリーに戻れば従来どおりカーソル位置を登録。
+    // Back in the tree, it registers the cursor position as before.
     app.back_to_tree();
     app.start_mark_set();
     app.mark_input('q');
@@ -6531,7 +6627,7 @@ fn bookmark_from_preview_registers_previewed_file() {
 
 #[test]
 fn global_bookmark_display_is_absolute() {
-    // グローバルは絶対(~短縮)表示・ローカルは従来の文脈相対表示。
+    // Global is displayed absolute (~ shortened), local uses the existing context-relative display.
     let dir = std::env::temp_dir().join("konoma_bm_display_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -6559,8 +6655,9 @@ fn global_bookmark_display_is_absolute() {
 
 #[test]
 fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
-    // 既定(confirm_bookmark_overwrite=true): 別パスへの上書きは確認ダイアログを出し、
-    // 即座には書き換えない。y(dialog_confirm(true))で上書き・n(false)で元のまま。
+    // Default (confirm_bookmark_overwrite=true): overwriting with a different path opens a
+    // confirmation dialog and doesn't rewrite it immediately. y (dialog_confirm(true)) overwrites,
+    // n (false) leaves it as-is.
     let root = std::env::temp_dir().join("konoma_bm_overwrite_confirm");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -6572,14 +6669,14 @@ fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
     let a = root.join("a.txt");
     let b = root.join("b.txt");
 
-    // まず a.txt を 'x' に登録(確認は出ない=未使用キー)。
+    // First register a.txt at 'x' (no confirmation = an unused key).
     app.enter_preview(&a);
     app.start_mark_set();
     app.mark_input('x');
     assert_eq!(app.bookmarks.get('x'), Some(a.clone()));
     assert!(app.dialog.is_none(), "未使用キーは確認ダイアログ無し");
 
-    // b.txt を同じ 'x' に登録しようとすると確認ダイアログが開き、まだ上書きしない。
+    // Trying to register b.txt at the same 'x' opens a confirmation dialog and doesn't overwrite yet.
     app.enter_preview(&b);
     app.start_mark_set();
     app.mark_input('x');
@@ -6593,12 +6690,12 @@ fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
     );
     assert_eq!(app.bookmarks.get('x'), Some(a.clone()), "確認前は元のまま");
 
-    // n=取消: 元のまま。
+    // n=cancel: unchanged.
     app.dialog_confirm(false).unwrap();
     assert!(app.dialog.is_none());
     assert_eq!(app.bookmarks.get('x'), Some(a.clone()), "取消で元のまま");
 
-    // 再度出して y=上書き: b.txt に切り替わる。
+    // Trigger it again and y=overwrite: switches to b.txt.
     app.start_mark_set();
     app.mark_input('x');
     assert!(app.dialog.is_some());
@@ -6611,7 +6708,8 @@ fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
 
 #[test]
 fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
-    // 確認を出さない2ケース: ①同じパスの再登録(上書きにならない) ②confirm_bookmark_overwrite=false。
+    // Two cases where no confirmation appears: (1) re-registering the same path (not an
+    // overwrite); (2) confirm_bookmark_overwrite=false.
     let root = std::env::temp_dir().join("konoma_bm_overwrite_skip");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -6621,18 +6719,18 @@ fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
     let a = root.join("a.txt");
     let b = root.join("b.txt");
 
-    // ① 確認 ON でも「同じパスの再登録」は確認を出さず即登録。
+    // (1) Even with confirmation ON, "re-registering the same path" registers immediately without confirmation.
     let mut app = App::new(root.clone(), Config::default()).unwrap();
     app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfgbase1"), &root);
     app.enter_preview(&a);
     app.start_mark_set();
     app.mark_input('x');
     app.start_mark_set();
-    app.mark_input('x'); // 同じ a.txt を再登録
+    app.mark_input('x'); // re-registers the same a.txt
     assert!(app.dialog.is_none(), "同一パス再登録は確認不要");
     assert_eq!(app.bookmarks.get('x'), Some(a.clone()));
 
-    // ② confirm_bookmark_overwrite=false なら別パスでも即上書き。
+    // (2) With confirm_bookmark_overwrite=false, even a different path overwrites immediately.
     let mut cfg = Config::default();
     cfg.ui.confirm_bookmark_overwrite = false;
     let mut app = App::new(root.clone(), cfg).unwrap();
@@ -6642,7 +6740,7 @@ fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
     app.mark_input('x');
     app.enter_preview(&b);
     app.start_mark_set();
-    app.mark_input('x'); // 別パスだが確認オフ
+    app.mark_input('x'); // a different path, but confirmation is off
     assert!(
         app.dialog.is_none(),
         "confirm オフは確認ダイアログを出さない"
@@ -6654,13 +6752,14 @@ fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
 
 #[test]
 fn tab_list_switch_close_and_guards() {
-    // タブ一覧: T で開くと選択=アクティブ・j/k 巡回・Enter で切替(一覧は閉じる)・
-    // w は**選択タブ**を閉じ(アクティブ index を正しく調整)・最後の1枚は拒否 flash。
+    // Tab list: opening with T sets the selection=active, j/k cycle, Enter switches (the list
+    // closes); w closes the **selected tab** (correctly adjusting the active index); the last
+    // remaining tab is rejected with a flash.
     let dir = std::env::temp_dir().join("konoma_tab_list_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.tab_new().unwrap();
-    app.tab_new().unwrap(); // 3枚・アクティブ=2(末尾)
+    app.tab_new().unwrap(); // 3 tabs, active=2 (the last one)
     assert_eq!(app.tab_count(), 3);
     assert_eq!(app.active_tab_index(), 2);
 
@@ -6672,13 +6771,13 @@ fn tab_list_switch_close_and_guards() {
     app.tab_list_move(-1);
     assert_eq!(app.tab_list_sel(), 2);
 
-    // Enter: 選択タブへ切替+一覧が閉じる。
+    // Enter: switches to the selected tab + the list closes.
     app.tab_list_move(1); // → 0
     app.tab_list_activate();
     assert!(!app.is_tab_list(), "切替で一覧が閉じる");
     assert_eq!(app.active_tab_index(), 0);
 
-    // w(選択=非アクティブの末尾タブ)を閉じてもアクティブは維持。
+    // Closing with w (selection = the trailing, inactive tab) keeps the active tab unchanged.
     app.toggle_tab_list();
     app.tab_list_move(-1); // sel=2
     app.tab_list_close_selected();
@@ -6691,15 +6790,15 @@ fn tab_list_switch_close_and_guards() {
     );
     assert!(app.tab_list_sel() < app.tab_count(), "選択はクランプ");
 
-    // アクティブより前のタブを閉じたら active index は詰まる。
+    // Closing a tab before the active one shifts the active index down.
     app.tab_goto(1);
     app.toggle_tab_list();
-    app.tab_list_move(-1); // sel=0 (アクティブ=1)
+    app.tab_list_move(-1); // sel=0 (active=1)
     app.tab_list_close_selected();
     assert_eq!(app.tab_count(), 1);
     assert_eq!(app.active_tab_index(), 0, "前方を閉じたら index が詰まる");
 
-    // 最後の1枚は閉じられない(flash)。
+    // The last remaining tab cannot be closed (flash).
     app.flash = None;
     app.tab_list_close_selected();
     assert_eq!(app.tab_count(), 1);
@@ -6709,7 +6808,7 @@ fn tab_list_switch_close_and_guards() {
 
 #[test]
 fn bookmark_list_jump_delete_and_close() {
-    // ブックマークの base をテスト専用にして実 ~/.config を汚さない。
+    // Use a test-only base for bookmarks so the real ~/.config isn't polluted.
     let root = std::env::temp_dir().join("konoma_bm_list_ops_test");
     let _ = std::fs::remove_dir_all(&root);
     let proj = root.join("proj");
@@ -6720,14 +6819,14 @@ fn bookmark_list_jump_delete_and_close() {
 
     let mut app = App::new(proj.clone(), Config::default()).unwrap();
     app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &proj);
-    // ローカル 'a'=ディレクトリ sub / 'b'=ファイル f.txt を登録。
+    // Register local 'a'=directory sub / 'b'=file f.txt.
     app.bookmarks.set('a', proj.join("sub")).unwrap();
     app.bookmarks.set('b', proj.join("f.txt")).unwrap();
     app.open_bookmark_list();
     assert!(app.is_bookmark_list());
     assert_eq!(app.bookmark_list_items().len(), 2);
 
-    // 先頭(a=sub ディレクトリ)へジャンプ → root が sub になり一覧は閉じる。
+    // Jump to the first one (a=the sub directory) → root becomes sub and the list closes.
     app.bookmark_list_sel = 0;
     app.bookmark_list_jump();
     assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
@@ -6737,7 +6836,7 @@ fn bookmark_list_jump_delete_and_close() {
         "ディレクトリへジャンプで root 変更"
     );
 
-    // 再度開いて削除 → 件数が減り一覧は開いたまま(選択クランプ)。
+    // Open it again and delete → the count decreases and the list stays open (selection clamped).
     app.open_bookmark_list();
     let before = app.bookmark_list_items().len();
     app.bookmark_list_sel = before - 1;
@@ -6786,9 +6885,9 @@ fn refresh_git_status_only_updates_statuses_without_recompute() {
     sh(&["commit", "-m", "init"]);
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // git_status_for をセット
+    app.refresh_git_if_needed(); // sets git_status_for
     assert!(!app.git_has_changes(), "コミット直後はクリーン");
-    // 外部で変更してから安い更新のみ(refresh_fs(false) が refresh_git_status_only を呼ぶ)。
+    // Change it externally, then only the cheap refresh (refresh_fs(false) calls refresh_git_status_only).
     std::fs::write(dir.join("a.txt"), b"v2\n").unwrap();
     app.refresh_fs(false).unwrap();
     assert!(app.git_has_changes(), "statuses のみ更新で変更を検知");
@@ -6807,7 +6906,7 @@ fn op_base_dir_for_file_dir_and_empty() {
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    // ディレクトリ選択 → その中。
+    // Select a directory → inside it.
     let si = app
         .tab
         .entries
@@ -6816,7 +6915,7 @@ fn op_base_dir_for_file_dir_and_empty() {
         .unwrap();
     app.tab.selected = si;
     assert_eq!(app.op_base_dir(), dir.join("sub"), "dir 選択はその中");
-    // ファイル選択 → その親。
+    // Select a file → its parent.
     let ai = app
         .tab
         .entries
@@ -6825,7 +6924,7 @@ fn op_base_dir_for_file_dir_and_empty() {
         .unwrap();
     app.tab.selected = ai;
     assert_eq!(app.op_base_dir(), dir, "file 選択は親ディレクトリ");
-    // エントリ無し(選択範囲外) → root。
+    // No entry (out of selection range) → root.
     app.tab.entries.clear();
     assert_eq!(app.op_base_dir(), app.tab.root, "エントリ無しは root");
     std::fs::remove_dir_all(&dir).ok();
@@ -6841,7 +6940,7 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
     std::fs::write(root.join("sub").join("inner.txt"), b"x").unwrap();
     let mut app = App::new(root.clone(), Config::default()).unwrap();
 
-    // ファイル note.md にカーソル → その場に note copy.md ができ、内容は同一。
+    // Cursor on file note.md → note copy.md is created in place, with identical content.
     let idx = app
         .tab
         .entries
@@ -6860,7 +6959,7 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
         "複製の内容が元と同一"
     );
 
-    // 2回目 → note copy 2.md(既存 unique_name 準拠の連番)。
+    // Second time → note copy 2.md (a sequence number, per the existing unique_name convention).
     let idx = app
         .tab
         .entries
@@ -6874,7 +6973,7 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
         "2回目は note copy 2.md"
     );
 
-    // ディレクトリ sub にカーソル → 兄弟 sub copy/ が再帰複製される(中身ごと)。
+    // Cursor on directory sub → sibling sub copy/ is duplicated recursively (with its contents).
     let idx = app
         .tab
         .entries
@@ -6901,8 +7000,8 @@ fn file_op_runs_in_background_when_runner_attached() {
     let base = unique_tmp("konoma_fileop_bg_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    // 先に canonicalize してから中身を作る(temp_dir はシンボリックリンク越しのことがあり、
-    // 後から canonicalize すると entries の path と食い違って position() が None になる)。
+    // Canonicalize first, then create the contents (temp_dir can be reached through a symlink,
+    // so canonicalizing afterward would mismatch entries' paths and make position() return None).
     let dir = base.canonicalize().unwrap();
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -6924,9 +7023,9 @@ fn file_op_runs_in_background_when_runner_attached() {
     app.tab.selected = idx(&app, &dir.join("dst"));
 
     app.paste().unwrap();
-    // paste() から戻った時点で pending が立っている = 結果は**チャネル経由で**届く(その場で
-    // 適用されていない)。ワーカーが既に走り終えている可能性はあるが、`fileop_pending` を解くのは
-    // メインスレッドの `apply_file_op` だけなので、ここでは必ず立っている。
+    // The moment paste() returns, pending is set = the result arrives **via a channel** (it
+    // hasn't been applied on the spot). The worker may already have finished running, but since
+    // only the main thread's `apply_file_op` clears `fileop_pending`, it is always set here.
     assert!(
         app.fileop_pending.is_some(),
         "バックグラウンド実行中は fileop_pending が立つ"
@@ -6935,7 +7034,8 @@ fn file_op_runs_in_background_when_runner_attached() {
         app.busy_jobs().contains(&crate::i18n::Msg::BusyFileOp),
         "busy インジケーターにファイル操作が出る"
     );
-    // 進捗カウンタは apply で捨てられるので、先に Arc を握っておく(コピー経路の items/files 検証用)。
+    // The progress counter is dropped by apply, so grab the Arc beforehand (to verify
+    // items/files along the copy path).
     let progress = app.fileop_progress.clone().expect("進捗カウンタが在る");
 
     let res = rx
@@ -6977,13 +7077,14 @@ fn second_file_op_is_rejected_while_one_is_in_flight() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
-    // 実際のワーカーを起こさず、in-flight 状態そのものを直接作る(同一モジュール内は private field に触れる)。
+    // Without launching the actual worker, build the in-flight state directly (within the same
+    // module, private fields can be touched).
     let gen_before = app.fileop_gen;
     app.fileop_gen = app.fileop_gen.wrapping_add(1);
     app.fileop_pending = Some(FileOpKind::Trash);
     app.fileop_total = 1;
 
-    app.cut_selection(); // op_targets() を満たすためにクリップボードへ積む
+    app.cut_selection(); // loads the clipboard so op_targets() has something to satisfy
     app.paste().unwrap();
     assert_eq!(
         app.flash.as_deref(),
@@ -7031,8 +7132,9 @@ fn stale_file_op_result_is_dropped() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// `copy_into_with_progress` の末端ファイルカウンタ回帰は `src/fileops.rs` 側の
-// `file_op_progress_counts_leaf_files` で検証済み(fileops はここから `App` を経由せず直接叩ける)。
+// The regression in `copy_into_with_progress`'s leaf-file counter is verified on the
+// `src/fileops.rs` side by `file_op_progress_counts_leaf_files` (fileops can be hit directly
+// from there without going through `App`).
 
 /// A finished operation must not disturb whatever tab happens to be active when the result arrives.
 /// The user can switch tabs during a long copy; `reveal_and_select` rebuilds the tree
@@ -7045,7 +7147,7 @@ fn file_op_result_does_not_disturb_another_tab() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let base = base.canonicalize().unwrap();
-    // タブ1の root(コピー元/先) と、タブ2の別 root。
+    // Tab 1's root (copy source/destination), and tab 2's different root.
     let a = base.join("a");
     let b = base.join("b");
     let src = a.join("src");
@@ -7071,7 +7173,7 @@ fn file_op_result_does_not_disturb_another_tab() {
     app.paste().unwrap();
     assert!(app.fileop_pending.is_some(), "実行中");
 
-    // コピー中に別 root のタブへ切り替え、そこで `/` 絞り込み中にしておく。
+    // Switch to a tab with a different root during the copy, and put it into a `/` filter there.
     app.tab_new().unwrap();
     app.tab.root = b.clone();
     app.tab.entries.clear();
@@ -7087,7 +7189,8 @@ fn file_op_result_does_not_disturb_another_tab() {
     let before_path = app.tab.entries.get(before_sel).map(|e| e.path.clone());
     assert_eq!(before_len, 1, "絞り込みで beta.txt だけが残っている");
 
-    // 結果は「タブ1で投げたもの」。今アクティブなのはタブ2なので、カーソル/一覧に触れてはいけない。
+    // The result is "the one launched from tab 1". Since tab 2 is active now, it must not touch
+    // the cursor/list.
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("ワーカーが結果を返す");
@@ -7114,9 +7217,10 @@ fn file_op_result_does_not_disturb_another_tab() {
     std::fs::remove_dir_all(&base).ok();
 }
 
-/// このプロセスで 0o000 ディレクトリの読み取りが実際に拒否されるか probe する。
-/// root(や権限ビットをバイパスできるプロセス)では効かず read_dir が成功してしまうので、
-/// パーミッション依存のテストはその場合スキップする(`write_denied_by_permissions` と同じ趣旨)。
+/// Probes whether this process is actually denied reading a 0o000 directory.
+/// Under root (or a process able to bypass permission bits), this has no effect and read_dir
+/// succeeds anyway, so permission-dependent tests skip in that case (same spirit as
+/// `write_denied_by_permissions`).
 #[cfg(unix)]
 fn read_dir_denied_by_permissions() -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -7151,7 +7255,8 @@ fn file_op_refresh_failure_is_reported_not_masked() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
-    // 実際のワーカーを起こさず in-flight 状態を直接作り、成功した結果を手で組む。
+    // Without launching the actual worker, build the in-flight state directly and construct a
+    // successful result by hand.
     app.fileop_gen = 7;
     app.fileop_pending = Some(FileOpKind::PasteCopy);
     let ok_result = FileOpResult {
@@ -7162,10 +7267,10 @@ fn file_op_refresh_failure_is_reported_not_masked() {
         last: None,
         err: None,
     };
-    // root を読めなくする → apply 内の refresh() が失敗する。
+    // Make root unreadable → the refresh() inside apply fails.
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
     let applied = app.apply_file_op(ok_result);
-    // 後片付け(assert より先に戻す=失敗しても消せるように)。
+    // Clean up (restore it before the assert, so it can be removed even on failure).
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     assert!(applied, "現世代の結果は適用される");
@@ -7200,7 +7305,7 @@ fn failed_delete_keeps_the_selection() {
     app.toggle_select();
     assert_eq!(app.marked_count(), 2, "2件選択した状態から始める");
 
-    // 失敗した削除: 選択は残る。
+    // A failed delete: the selection remains.
     app.fileop_gen = 3;
     app.fileop_pending = Some(FileOpKind::Trash);
     assert!(app.apply_file_op(FileOpResult {
@@ -7216,7 +7321,7 @@ fn failed_delete_keeps_the_selection() {
         "途中で失敗した削除は選択を保つ(選び直させない)"
     );
 
-    // 成功した削除: 選択を解除する。
+    // A successful delete: clears the selection.
     app.fileop_pending = Some(FileOpKind::Trash);
     assert!(app.apply_file_op(FileOpResult {
         gen: 3,
@@ -7228,9 +7333,11 @@ fn failed_delete_keeps_the_selection() {
     }));
     assert!(!app.has_selection(), "成功した削除は選択を解除する");
 
-    // 実際のディスパッチ経路(`Space→d` → `!`)でも同じこと。ランナー未 attach = 同期実行なので
-    // start_file_op がその場で apply まで通す。1件目を外部で消しておくと完全削除が途中で失敗し、
-    // 残りの選択(b.txt)は保たれる=旧実装のディスパッチ時解除ならここで空になる。
+    // Same thing via the real dispatch path (`Space→d` → `!`). With no runner attached =
+    // synchronous execution, so start_file_op carries it through to apply on the spot. Deleting
+    // the first item externally beforehand makes the permanent delete fail partway, and the
+    // remaining selection (b.txt) is kept = with the old implementation's clear-on-dispatch, it
+    // would end up empty here.
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     app.refresh().unwrap();
     app.tab.selected = 0;
@@ -7239,7 +7346,7 @@ fn failed_delete_keeps_the_selection() {
     assert_eq!(app.marked_count(), 2, "a.txt と b.txt を選択");
     app.start_delete();
     assert!(app.dialog_is_confirm() && app.dialog_allow_permanent());
-    std::fs::remove_file(dir.join("a.txt")).unwrap(); // 1件目を外部で消す → 完全削除が失敗する
+    std::fs::remove_file(dir.join("a.txt")).unwrap(); // delete the first item externally → the permanent delete fails
     app.dialog_delete_permanent().unwrap();
     assert!(
         app.flash
@@ -7271,11 +7378,11 @@ fn quit_while_file_op_always_confirms() {
     cfg.ui.confirm_quit = false;
     let mut app = App::new(dir.clone(), cfg).unwrap();
 
-    // 操作なし = 従来どおり即終了(確認しない)。
+    // No operation = quits immediately as before (no confirmation).
     assert!(!app.request_quit(), "confirm_quit=false + 操作なしは即終了");
     assert!(!app.is_dialog(), "ダイアログは開かない");
 
-    // 操作中 = 設定に関わらず確認する。
+    // Mid-operation = confirms regardless of the setting.
     app.fileop_pending = Some(FileOpKind::PasteCopy);
     assert!(app.request_quit(), "実行中は確認ダイアログを出す");
     assert!(app.dialog_is_confirm() && app.confirm_is_quit(), "終了確認");
@@ -7332,10 +7439,10 @@ fn rejected_file_op_keeps_clipboard_and_selection() {
 
     app.tab.selected = 0;
     app.toggle_select();
-    app.cut_selection(); // クリップボードへ(cut_selection 自体が選択を解除する)
+    app.cut_selection(); // into the clipboard (cut_selection itself clears the selection)
     assert!(app.clipboard_label().is_some());
 
-    // 実行中の状態を直接作る(ワーカーは起こさない)。
+    // Build the in-progress state directly (without launching the worker).
     app.fileop_pending = Some(FileOpKind::Trash);
 
     app.paste().unwrap();
@@ -7344,7 +7451,7 @@ fn rejected_file_op_keeps_clipboard_and_selection() {
         "拒否されたカット貼付はクリップボードを消費しない(やり直せる)"
     );
 
-    // 複製も同様: 拒否されたら選択を残す。
+    // Same for duplicate: if rejected, keeps the selection.
     app.tab.selected = 0;
     app.toggle_select();
     assert!(app.has_selection());
@@ -7390,7 +7497,7 @@ fn paste_cut_consumes_the_clipboard_at_kick() {
         "カットのクリップボードは投げた瞬間に消費される(結果適用を待たない)"
     );
 
-    // ワーカーの結果を受け取って後始末(リソースリーク検出用に recv しておく)。
+    // Receive the worker's result and clean up (recv it here to catch resource leaks).
     if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
         app.apply_file_op(res);
     }
@@ -7498,8 +7605,8 @@ fn dialog_preview_scroll_clamps_within_lines() {
     }
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
-    app.visual_select_scope(true); // 全選択
-                                   // 一括リネームのプレビューに入る(複数行のプレビュー)。
+    app.visual_select_scope(true); // select all
+                                   // Enter the batch-rename preview (a multi-line preview).
     app.start_batch_rename();
     for c in "img_{n}".chars() {
         app.dialog_input_push(c);
@@ -7508,28 +7615,29 @@ fn dialog_preview_scroll_clamps_within_lines() {
     assert!(app.dialog_is_preview(), "プレビューに遷移");
     let n_lines = app.dialog_preview_view().unwrap().1.len();
     assert!(n_lines >= 3);
-    // 上限(行数-1)でクランプ。
+    // Clamped at the upper bound (line count - 1).
     app.dialog_preview_scroll(1000);
     assert_eq!(
         app.dialog_preview_view().unwrap().2,
         n_lines - 1,
         "末尾でクランプ"
     );
-    // 下限 0 でクランプ。
+    // Clamped at the lower bound 0.
     app.dialog_preview_scroll(-1000);
     assert_eq!(app.dialog_preview_view().unwrap().2, 0, "先頭でクランプ");
     app.dialog_cancel();
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- ui::preview::render のディスパッチ分岐(TestBackend ゴールデン) -------------
+// --- ui::preview::render's dispatch branches (TestBackend golden) -------------
 
 #[test]
 fn ui_preview_renders_image_via_kitty_path() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // GIF(2フレーム)は同期エンコードなので、ワーカー無しの TestBackend でも render_image の
-    // 画像経路が実ピクセル(kitty 転送列 _G)を吐く。静止画は非同期(app.image が後から届く)。
+    // A GIF (2 frames) encodes synchronously, so render_image's image path emits real pixels
+    // (the kitty transfer sequence _G) even with a workerless TestBackend. A still image is
+    // asynchronous (app.image arrives later).
     let mut app = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
@@ -7552,7 +7660,7 @@ fn ui_preview_renders_image_via_kitty_path() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    // kitty graphics 転送列(_G)= 実ピクセルが描かれた証拠。
+    // The kitty graphics transfer sequence (_G) = proof that real pixels were drawn.
     assert!(s.contains("_G"), "render_image が kitty 転送列を吐かない");
 }
 
@@ -7560,8 +7668,8 @@ fn ui_preview_renders_image_via_kitty_path() {
 fn ui_preview_image_falls_back_when_not_yet_encoded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // 静止画 Image だが app.image(エンコード済み protocol)が未着 → ImageUnsupported に降格。
-    // render_image の静止画フォールバック分岐を通す。
+    // A still image, but app.image (the already-encoded protocol) hasn't arrived → falls back
+    // to ImageUnsupported. Exercises render_image's still-image fallback branch.
     let mut app = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
@@ -7602,14 +7710,14 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
             .collect()
     };
 
-    // 未対応 → [can not preview: <ext>]。
+    // Unsupported → [can not preview: <ext>].
     app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "bin".into() });
     assert!(
         dump(&mut app).contains("can not preview"),
         "未対応フォールバックが出ない"
     );
 
-    // 動画でサムネ無し(image_src 無し)→ ヒント文言にフォールバック。
+    // A video with no thumbnail (no image_src) → falls back to the hint text.
     app.tab.preview_kind = Some(PreviewKind::Video(dir.join("v.mp4")));
     let video = dump(&mut app);
     assert!(
@@ -7617,7 +7725,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
         "動画フォールバックが出ない: {video}"
     );
 
-    // 外部コマンド委譲: テンプレ表示。
+    // External command delegation: template display.
     app.tab.preview_kind = Some(PreviewKind::Command {
         path: dir.join("c.xyz"),
         template: "mpv {path}".into(),
@@ -7676,26 +7784,26 @@ fn fetch_remote_image_malformed_url_fails_without_touching_the_network() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// リモート画像ディスクキャッシュは上限を超えたら古いものから削除される(無上限成長の防止)。
-/// `.part`(取得中の一時ファイル)は対象外。
+/// Once the remote-image disk cache exceeds its cap, the oldest entries are deleted first
+/// (prevents unbounded growth). `.part` (an in-progress temp file) is excluded.
 #[test]
 fn prune_remote_cache_keeps_newest_and_skips_part() {
     let dir = std::env::temp_dir().join("konoma_prune_remote_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // 5 個のキャッシュファイルを古い順の mtime で作る。
+    // Create 5 cache files with mtimes in ascending (oldest-first) order.
     for i in 0..5 {
         let p = dir.join(format!("img{i}"));
         std::fs::write(&p, [i as u8]).unwrap();
         let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64);
         filetime_set(&p, t);
     }
-    // 取得中の一時ファイルは残す。
+    // Leave the in-progress temp file alone.
     std::fs::write(dir.join("busy.part"), b"x").unwrap();
 
     prune_remote_cache(&dir, 2);
 
-    // 新しい 2 個(img3/img4)が残り、古い 3 個は消える。.part は温存。
+    // The 2 newest (img3/img4) remain, and the 3 oldest are removed. .part is kept.
     assert!(
         !dir.join("img0").exists() && !dir.join("img2").exists(),
         "古いものは削除"
@@ -7785,7 +7893,7 @@ fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
 fn preview_survives_target_file_overwrite_and_delete() {
     // A previewed file can be overwritten or deleted out from under konoma (a script re-plots or
     // removes it). This must never panic — the preview reloads / degrades gracefully. Covers both an
-    // image preview and a text/Markdown preview ("画像だけではない").
+    // image preview and a text/Markdown preview (not just images).
     use image::RgbImage;
     let dir = std::env::temp_dir().join("konoma_preview_file_vanish_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -8025,13 +8133,13 @@ fn corrupt_zip_degrades_to_no_table_data() {
 fn table_cursor_moves_and_clamps() {
     let (mut app, _) = app_with_table();
     assert_eq!(app.table_cursor(), (0, 0));
-    // 範囲外へ大きく動かしても末尾(row 1, col 2)にクランプ。
+    // Moving far out of range still clamps at the end (row 1, col 2).
     app.table_cursor_move(9, 9);
     assert_eq!(app.table_cursor(), (1, 2));
-    // 負方向も先頭(0,0)でクランプ。
+    // The negative direction also clamps at the start (0,0).
     app.table_cursor_move(-9, -9);
     assert_eq!(app.table_cursor(), (0, 0));
-    // 行/列ジャンプ。
+    // Row/column jump.
     app.table_row_to(true);
     app.table_col_to(true);
     assert_eq!(app.table_cursor(), (1, 2));
@@ -8043,27 +8151,27 @@ fn table_cursor_moves_and_clamps() {
 #[test]
 fn table_copy_text_cell_row_column() {
     let (mut app, _) = app_with_table();
-    // カーソルを (row 1, col 1) = "e" に。
+    // Put the cursor at (row 1, col 1) = "e".
     app.table_cursor_move(1, 1);
     assert_eq!(
         app.table_copy_text(TableCopyKind::Cell).as_deref(),
         Some("e")
     );
-    // 行コピー = その行をカンマ結合。
+    // Row copy = that row joined by commas.
     assert_eq!(
         app.table_copy_text(TableCopyKind::Row).as_deref(),
         Some("d,e,f")
     );
-    // 列コピー = ヘッダ + 各行の該当列を改行結合。
+    // Column copy = the header + each row's corresponding column joined by newlines.
     assert_eq!(
         app.table_copy_text(TableCopyKind::Column).as_deref(),
         Some("h2\nb\ne")
     );
 }
 
-/// テーブルのページ送り: `table_page`=ビューポート1画面ぶん・`table_half_page`=半画面ぶん
-/// カーソルを縦移動し、末尾/先頭でクランプする(ページ幅の導出が `table_cursor_move` 委譲の
-/// 手前で未テストだった)。
+/// Table paging: `table_page`=moves the cursor vertically by a full viewport, `table_half_page`=by
+/// half a viewport, clamping at the end/start (the page-width derivation, right before it
+/// delegates to `table_cursor_move`, was previously untested).
 #[test]
 fn table_page_and_half_page_move_by_viewport() {
     let dir = unique_tmp("konoma_table_page_test");
@@ -8079,17 +8187,17 @@ fn table_page_and_half_page_move_by_viewport() {
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
     app.load_table();
-    // 通常は描画時に決まるビューポート行数をテスト用に固定。
+    // Pin the viewport row count for the test (normally decided at render time).
     app.table_viewport_rows = 6;
 
     assert_eq!(app.table_cursor(), (0, 0));
-    app.table_page(1); // 1画面(6行)下へ。
+    app.table_page(1); // down by 1 viewport (6 rows).
     assert_eq!(app.table_cursor().0, 6, "1ページ = viewport 行ぶん下");
-    app.table_half_page(1); // 半画面(3行)下へ。
+    app.table_half_page(1); // down by half a viewport (3 rows).
     assert_eq!(app.table_cursor().0, 9, "半ページ = viewport/2 行ぶん下");
-    app.table_page(-1); // 1画面上へ。
+    app.table_page(-1); // up by 1 viewport.
     assert_eq!(app.table_cursor().0, 3);
-    // 末尾/先頭でクランプ(20 データ行 → 最終 index 19)。
+    // Clamped at the end/start (20 data rows → last index 19).
     app.table_page(1);
     app.table_page(1);
     app.table_page(1);
@@ -8103,11 +8211,11 @@ fn table_page_and_half_page_move_by_viewport() {
 
 #[test]
 fn table_cursor_survives_tab_roundtrip() {
-    // タブ保存/復元でセルカーソルが保たれ、テーブルが再パースされる。
+    // The cell cursor is kept and the table is re-parsed across tab save/restore.
     let (mut app, _) = app_with_table();
     app.table_cursor_move(1, 2);
-    app.tab_new().unwrap(); // 現タブを保存し、新タブへ
-    app.tab_cycle(-1); // 元タブへ戻る(load_active でテーブル再パース+カーソル復元)
+    app.tab_new().unwrap(); // saves the current tab and moves to a new one
+    app.tab_cycle(-1); // back to the original tab (load_active re-parses the table + restores the cursor)
     assert!(
         app.is_table_preview(),
         "復元後もテーブルとして再パースされる"
@@ -8119,16 +8227,18 @@ fn table_cursor_survives_tab_roundtrip() {
     );
 }
 
-// --- テーブルセル全文ポップアップ(`Enter`): 切り詰められたグリッドの穴を埋める読取専用ビュー ---
+// --- Table cell full-text popup (`Enter`): a read-only view filling the gap left by the
+//     truncated grid ---
 
-/// グリッドは列幅(`MAX_COL_W`=40)を超えるセルを `…` で切り詰めるが、`table_cell_view()` は
-/// (`y→c` コピー同様)常に生のセル値を返す=画面上でも全文が取れる。CJK 混在でも壊れない。
+/// The grid truncates cells exceeding the column width (`MAX_COL_W`=40) with `…`, but
+/// `table_cell_view()` (like `y→c` copy) always returns the raw cell value = the full text can
+/// be obtained even on screen. Doesn't break with CJK mixed in either.
 #[test]
 fn table_cell_view_returns_untruncated_long_and_cjk_text() {
     let dir = unique_tmp("konoma_cellview_long_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let long = "x".repeat(200); // グリッドの MAX_COL_W(40) を大きく超える長さ。
-    let cjk = "あいうえおかきくけこ".repeat(5); // 全角50文字=幅100(こちらも40超)。
+    let long = "x".repeat(200); // a length far beyond the grid's MAX_COL_W (40).
+    let cjk = "あいうえおかきくけこ".repeat(5); // 50 full-width chars = width 100 (also over 40).
     let csv = dir.join("t.csv");
     std::fs::write(&csv, format!("h1,h2\n{long},{cjk}\n")).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -8153,8 +8263,9 @@ fn table_cell_view_returns_untruncated_long_and_cjk_text() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// CSV は引用符内に実改行を持てる(複数行の住所欄など)。ポップアップの本文は生のセル値
-/// (`\n` を保持したまま)を返し、グリッド用の `flatten`(スペースに均す)を経由しない。
+/// CSV can hold real newlines inside quotes (e.g. a multi-line address field). The popup's body
+/// returns the raw cell value (keeping the `\n`s) and does not go through the grid's `flatten`
+/// (which smooths them out to spaces).
 #[test]
 fn table_cell_view_preserves_embedded_newlines() {
     let dir = unique_tmp("konoma_cellview_newline_test");
@@ -8178,15 +8289,15 @@ fn table_cell_view_preserves_embedded_newlines() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 非UTF-8由来のバイト列は csv クレートの lossy デコードで既に U+FFFD に置換済み(preview/table.rs)。
-/// ポップアップ側はそれをそのまま表示するだけで、クラッシュしないことを確認する。
+/// Non-UTF-8 byte sequences are already replaced with U+FFFD by the csv crate's lossy decoding
+/// (preview/table.rs). The popup side just displays that as-is; verify it doesn't crash.
 #[test]
 fn table_cell_view_handles_replacement_chars_without_panic() {
     let dir = unique_tmp("konoma_cellview_badbytes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("t.csv");
     let mut bytes = b"h1,h2\n".to_vec();
-    bytes.extend_from_slice(b"a\xff\xfeb,c\n"); // 不正バイトを含む1行。
+    bytes.extend_from_slice(b"a\xff\xfeb,c\n"); // one row containing invalid bytes.
     std::fs::write(&csv, bytes).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
@@ -8203,14 +8314,15 @@ fn table_cell_view_handles_replacement_chars_without_panic() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `Enter`(トグル): 開くとスクロールが先頭へ、`is_table_cell_open` が反映、もう一度で閉じる。
+/// `Enter` (toggle): opening resets the scroll to the top, `is_table_cell_open` reflects it,
+/// and pressing it again closes it.
 #[test]
 fn toggle_table_cell_view_opens_resets_scroll_and_closes() {
     let (mut app, _) = app_with_table();
     assert!(!app.is_table_cell_open());
     assert_eq!(app.internal_mode(), None);
 
-    app.table_cell_scroll_by(5); // 前回の残骸を模す(閉じている間は無意味だが値は残る)。
+    app.table_cell_scroll_by(5); // simulates leftovers from before (meaningless while closed, but the value sticks around).
     app.toggle_table_cell_view();
     assert!(app.is_table_cell_open());
     assert_eq!(app.table_cell_scroll(), 0, "開いた時点でスクロールは先頭へ");
@@ -8223,7 +8335,7 @@ fn toggle_table_cell_view_opens_resets_scroll_and_closes() {
     assert_eq!(app.internal_mode(), None);
 }
 
-/// 列の無い(空)ファイルには表示できるセルが無い: flash して開かない。
+/// A file with no columns (empty) has no cell to display: flash and don't open.
 #[test]
 fn toggle_table_cell_view_flashes_on_empty_table() {
     let dir = unique_tmp("konoma_cellview_empty_test");
@@ -8243,8 +8355,9 @@ fn toggle_table_cell_view_flashes_on_empty_table() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// スクロールの純粋な移動/クランプ: 上端は0でクランプ、`scroll_to` は先頭/末尾(u16::MAX、描画時に
-/// クランプされる規約)、`table_cell_page` は最後にレンダラが書き戻したビューポート幅を1ページとする。
+/// Pure scroll movement/clamping: clamps to 0 at the top, `scroll_to` goes to the start/end
+/// (u16::MAX, per the convention that it's clamped at render time), and `table_cell_page` treats
+/// the viewport width last written back by the renderer as one page.
 #[test]
 fn table_cell_scroll_by_to_and_page_move_and_clamp_floor() {
     let (mut app, _) = app_with_table();
@@ -8270,15 +8383,15 @@ fn table_cell_scroll_by_to_and_page_move_and_clamp_floor() {
     app.table_cell_scroll_to(false);
     assert_eq!(app.table_cell_scroll(), 0);
 
-    // レンダラが書き戻したビューポート幅(=1ページの高さ)を使ってページ送りする。
-    app.set_table_cell_view(0, 11); // viewport=11 行 → 1ページ=10行(preview_page と同じ -1 オーバーラップ)。
+    // Page using the viewport width (= 1 page's height) that the renderer wrote back.
+    app.set_table_cell_view(0, 11); // viewport=11 rows → 1 page=10 rows (same -1 overlap as preview_page).
     app.table_cell_page(1);
     assert_eq!(app.table_cell_scroll(), 10);
     app.table_cell_page(-1);
     assert_eq!(app.table_cell_scroll(), 0);
 }
 
-/// アーカイブ一覧も同じ `TableData` を経由するので、セルポップアップは自動的に効く(確認)。
+/// The archive listing goes through the same `TableData`, so the cell popup works automatically (verify).
 #[test]
 fn table_cell_view_works_for_archive_listing() {
     let (mut app, _) = app_with_archive_zip();
@@ -8296,32 +8409,32 @@ fn table_cell_view_works_for_archive_listing() {
     );
 }
 
-/// タブ切替/新規タブでポップアップは持ち越さない(Outline と同じ App-global オーバーレイの規約)。
+/// The popup doesn't carry over across a tab switch/new tab (same App-global overlay convention as Outline).
 #[test]
 fn table_cell_popup_does_not_survive_tab_switch_or_new_tab() {
     let (mut app, _) = app_with_table();
     app.toggle_table_cell_view();
     assert!(app.is_table_cell_open());
 
-    app.tab_new().unwrap(); // 新タブは常にポップアップ無しから始まる(tab_new の明示リセット)。
+    app.tab_new().unwrap(); // a new tab always starts with no popup (tab_new explicitly resets it).
     assert!(
         !app.is_table_cell_open(),
         "新規タブは常にポップアップ無しから始まる"
     );
 
-    // 別セッション: 開いたまま切替→復帰でも開いたままにしない。
+    // A separate session: leaving it open, switching away, and coming back must not leave it open.
     let (mut app2, _) = app_with_table();
     app2.toggle_table_cell_view();
     assert!(app2.is_table_cell_open());
     app2.tab_new().unwrap();
-    app2.tab_cycle(-1); // 元タブへ戻る(load_active)
+    app2.tab_cycle(-1); // back to the original tab (load_active)
     assert!(
         !app2.is_table_cell_open(),
         "タブ切替(load_active)でもポップアップは閉じる"
     );
 }
 
-// --- Agent Watch: @参照コピー(③) / 変更フィルタ+ジャンプ(①) / フォローモード(②) ---
+// --- Agent Watch: @ref copy (3) / changed filter + jump (1) / follow mode (2) ---
 
 #[test]
 fn at_ref_is_strictly_relative_to_open_dir() {
@@ -8329,12 +8442,12 @@ fn at_ref_is_strictly_relative_to_open_dir() {
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
     std::fs::create_dir_all(&a).unwrap();
-    // 配下: 起動 dir 名を先頭に付けない(Claude Code の cwd 相対 @参照と一致させる)。
+    // Under it: doesn't prefix the launch dir name (matches Claude Code's cwd-relative @ref).
     assert_eq!(
         at_ref_text(&a, &a.join("src").join("main.rs")),
         "@src/main.rs"
     );
-    // 外(兄弟): `..` 相対。
+    // Outside it (a sibling): relative with `..`.
     assert_eq!(at_ref_text(&a, &work.join("B").join("x.md")), "@../B/x.md");
     std::fs::remove_dir_all(&work).ok();
 }
@@ -8350,13 +8463,13 @@ fn preview_selection_ref_formats_caret_and_ranges() {
     app.enter_preview(&file);
     assert!(app.is_windowed(), "テキストは windowed");
 
-    // 非選択: キャレット行(1-based)。
+    // No selection: the caret line (1-based).
     app.tab.preview_cursor_line = 2;
     assert_eq!(
         app.preview_selection_ref_text().as_deref(),
         Some("@notes.txt#L3")
     );
-    // linewise 選択 3..=5 行目。
+    // A linewise selection, lines 3..=5.
     app.preview_enter_visual(true);
     app.tab.preview_cursor_line = 4;
     assert_eq!(
@@ -8364,7 +8477,7 @@ fn preview_selection_ref_formats_caret_and_ranges() {
         Some("@notes.txt#L3-5")
     );
     app.preview_exit_visual();
-    // charwise 選択は行スパンへ丸める(2..=4 行目)。
+    // A charwise selection rounds to a line span (lines 2..=4).
     app.tab.preview_cursor_line = 1;
     app.tab.preview_cursor_col = 1;
     app.preview_enter_visual(false);
@@ -8383,9 +8496,9 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
     let dir = std::env::temp_dir().join("konoma_changed_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir); // a.txt をコミット済み
+    git_repo_with_commits(&dir); // a.txt is already committed
     let canon = dir.canonicalize().unwrap();
-    // 変更を作る: a.txt を編集(M) + collapsed になる sub/ 配下に未追跡ファイル(U)。
+    // Create changes: edit a.txt (M) + an untracked file (U) under sub/, which will be collapsed.
     std::fs::write(canon.join("a.txt"), b"changed\n").unwrap();
     std::fs::create_dir_all(canon.join("sub")).unwrap();
     std::fs::write(canon.join("sub").join("b.txt"), b"new\n").unwrap();
@@ -8402,7 +8515,7 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
     );
     assert!(app.tab.entries.iter().all(|e| !e.is_dir), "ファイルのみ");
 
-    // 一覧から Enter でプレビュー(絞り込みと同じ動き)。
+    // Enter from the list opens preview (the same behavior as the filter).
     app.tab.selected = 0;
     app.tree_activate().unwrap();
     assert!(matches!(app.tab.mode, Mode::Preview));
@@ -8412,7 +8525,7 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
     );
     app.back_to_tree();
 
-    // h で通常ツリーへ戻る(root は上げない)。
+    // h returns to the normal tree (doesn't move root up).
     app.tree_leave().unwrap();
     assert!(!app.changed_filter());
     assert_eq!(
@@ -8439,7 +8552,7 @@ fn jump_changed_reveals_collapsed_targets_and_wraps() {
     std::fs::write(canon.join("sub").join("b.txt"), b"new\n").unwrap();
 
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.tab.selected = 0; // 既定ソート(dirs_first)では sub が先頭 = 変更ファイル上ではない
+    app.tab.selected = 0; // with the default sort (dirs_first), sub is first = not on a changed file
     app.jump_changed(1);
     assert_eq!(
         app.tab.entries[app.tab.selected].path,
@@ -8474,13 +8587,13 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
     std::fs::write(&outside, b"x\n").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // OFF の間は何もしない。
+    // Does nothing while OFF.
     app.follow_jump(&dir.join("a.txt"));
     assert!(matches!(app.tab.mode, Mode::Tree));
 
     app.toggle_follow();
     assert!(app.follow_enabled());
-    // root 外・隠しディレクトリ配下・ディレクトリはスキップ(状態不変)。
+    // Skipped: outside root, under a hidden directory, or a directory (state unchanged).
     app.follow_jump(&outside);
     app.follow_jump(&dir.join(".hidden").join("c.txt"));
     app.follow_jump(&dir.join("sub"));
@@ -8489,21 +8602,21 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
         "無効ターゲットでは動かない"
     );
 
-    // collapsed な sub/ 配下でも deep reveal してプレビューへ。
+    // Even under a collapsed sub/, deep-reveal it into preview.
     app.follow_jump(&dir.join("sub").join("b.txt"));
     assert!(matches!(app.tab.mode, Mode::Preview));
     assert_eq!(
         app.tab.preview_path.as_deref(),
         Some(dir.join("sub").join("b.txt").as_path())
     );
-    // Preview 面のまま別ファイルの変更が来ても追従する。
+    // Stays on the Preview surface and follows even when another file's change arrives.
     app.follow_jump(&dir.join("a.txt"));
     assert_eq!(
         app.tab.preview_path.as_deref(),
         Some(dir.join("a.txt").as_path())
     );
 
-    // ユーザーがキーボードを取ったら解除(flash 付き)。
+    // Turned off once the user takes the keyboard back (with a flash).
     app.follow_break();
     assert!(!app.follow_enabled());
     assert!(app.flash.is_some(), "解除は flash で見せる");
@@ -8515,8 +8628,10 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
 #[cfg(feature = "git")]
 #[test]
 fn follow_jump_scrolls_to_first_changed_hunk() {
-    // 大きいファイルの深部(100行目)だけ変更 → follow で開くと**変更行が窓に入る**(先頭表示だと
-    // 変更が画面外で見えない=P1 の回帰防止)。上に3行の文脈・キャレットは変更行。
+    // Only deep inside a large file (line 100) is changed → opening it via follow makes **the
+    // changed line land within the window** (showing from the top would leave the change
+    // off-screen = a regression guard for P1). 3 lines of context above; the caret is the
+    // changed line.
     let dir = std::env::temp_dir().join("konoma_follow_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -8534,12 +8649,12 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     };
     sh(&["add", "-A"]);
     sh(&["commit", "-m", "big"]);
-    lines[99] = "line 100 CHANGED".into(); // 1-based 100 行目を変更
+    lines[99] = "line 100 CHANGED".into(); // change the 1-based 100th line
     std::fs::write(&big, lines.join("\n")).unwrap();
 
     let canon = dir.canonicalize().unwrap();
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.cfg.ui.follow_view = "file".into(); // 本テストはファイル表示モードの挙動(既定は diff)
+    app.cfg.ui.follow_view = "file".into(); // this test targets the file-view mode's behavior (the default is diff)
     app.toggle_follow();
     app.follow_jump(&canon.join("big.txt"));
     assert!(matches!(app.tab.mode, Mode::Preview));
@@ -8550,8 +8665,9 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     assert_eq!(app.tab.preview_cursor_line, 99, "キャレットは変更行");
     assert!(app.tab.preview_byte_top > 0, "窓はファイル先頭ではない");
 
-    // 未変更ファイル(変更ハンク無し)は従来どおり先頭から。
-    // (実運用では follow_jump の前に必ず refresh_fs が走り新規ファイルがツリーに載る=同じ順で呼ぶ)
+    // An unchanged file (no change hunks) still starts from the top, as before.
+    // (In real usage, refresh_fs always runs before follow_jump so the new file lands in the
+    // tree = we call it in the same order here.)
     let plain = canon.join("plain.txt");
     std::fs::write(&plain, b"p1\np2\n").unwrap();
     app.refresh().unwrap();
@@ -8564,14 +8680,14 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
 #[cfg(feature = "git")]
 #[test]
 fn follow_jump_opens_diff_view_by_default_and_falls_back() {
-    // 既定(ui.follow_view="diff")では追跡済み変更ファイルを**全画面 diff** で開く。
-    // 未追跡(diff が出せない=全行新規)はファイルプレビューへフォールバック。
-    // ベースライン差分は「F 以降」の変更を出す(旧: dirty vs HEAD)。よって diff を出すには
-    // F の後にファイルが変わる必要がある(= 実運用: F を押してから AI が編集する)。
+    // By default (ui.follow_view="diff"), a tracked changed file opens in **full-screen diff**.
+    // Untracked (can't produce a diff = all lines are new) falls back to a file preview.
+    // The baseline diff shows changes "since F" (previously: dirty vs HEAD). So to get a diff,
+    // the file must change after F (= real usage: press F, then the AI edits it).
     let dir = std::env::temp_dir().join("konoma_follow_diff_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir); // a.txt をコミット済み
+    git_repo_with_commits(&dir); // a.txt is already committed
     let canon = dir.canonicalize().unwrap();
     let sh = |args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -8581,16 +8697,16 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
             .unwrap();
         assert!(out.status.success(), "git {args:?} 失敗");
     };
-    // F 前にコミット済みで以後触らないファイル(フォールバック検証用)。
+    // A file already committed before F and never touched afterward (for verifying the fallback).
     std::fs::write(canon.join("keep.txt"), b"committed\n").unwrap();
     sh(&["add", "keep.txt"]);
     sh(&["commit", "-m", "keep"]);
 
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
     assert_eq!(app.cfg.ui.follow_view, "diff", "既定は diff 表示");
-    app.toggle_follow(); // F: この瞬間をベースラインに固定(a.txt/keep.txt は clean)
+    app.toggle_follow(); // F: pins this instant as the baseline (a.txt/keep.txt are clean)
 
-    // F 以降に a.txt を編集 → 追跡済み+F 以降の変更あり → GitDiff プレビュー。
+    // Edit a.txt after F → tracked + has changes since F → a GitDiff preview.
     std::fs::write(canon.join("a.txt"), b"one\nCHANGED\n").unwrap();
     app.follow_jump(&canon.join("a.txt"));
     assert!(
@@ -8602,8 +8718,9 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         Some(canon.join("a.txt").as_path())
     );
 
-    // F 以降に新規作成された未追跡ファイルも all-added の diff で開く(diff ビューから追従継続)。
-    // 実運用では FS イベントが refresh(ツリー再構築)してからジャンプする→ここでも refresh を挟む。
+    // A newly-created untracked file after F also opens with an all-added diff (following
+    // continues from the diff view). In real usage, an FS event refreshes (rebuilds the tree)
+    // before jumping → interleave a refresh here too.
     std::fs::write(canon.join("fresh.txt"), b"new file\n").unwrap();
     app.refresh().unwrap();
     app.follow_jump(&canon.join("fresh.txt"));
@@ -8616,11 +8733,11 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         Some(canon.join("fresh.txt").as_path()),
         "diff ビューから次の変更ファイルへ切替わる"
     );
-    // q はツリーへ戻る(git ハブ由来ではない)。
+    // q returns to the tree (it did not come from the git hub).
     app.close_git_diff();
     assert!(matches!(app.tab.mode, Mode::Tree));
 
-    // F 以降に変わっていないファイル(baseline 差分が空)はファイルプレビューへフォールバック。
+    // A file unchanged since F (an empty baseline diff) falls back to a file preview.
     app.follow_jump(&canon.join("keep.txt"));
     assert!(
         !app.is_git_diff_preview(),
@@ -8638,19 +8755,20 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
 #[cfg(feature = "git")]
 #[test]
 fn diff_view_n_switches_changed_files_and_keeps_return_target() {
-    // diff ビュー内の n/N: ビューを出ずに次/前の変更ファイルの diff へ(wrap・位置表示・
-    // ツリーカーソル同期・q の戻り先も保存)。
+    // n/N inside the diff view: switches to the next/previous changed file's diff without
+    // leaving the view (wraps, shows position, syncs the tree cursor, and also saves q's
+    // return target).
     let dir = std::env::temp_dir().join("konoma_diff_nav_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir); // a.txt をコミット済み
+    git_repo_with_commits(&dir); // a.txt is already committed
     let canon = dir.canonicalize().unwrap();
     std::fs::write(canon.join("a.txt"), b"CHANGED\n").unwrap();
     std::fs::write(canon.join("b.txt"), b"new b\n").unwrap();
     std::fs::write(canon.join("e.txt"), b"new e\n").unwrap();
 
     let mut app = App::new(canon.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // 実運用では初回描画が取得済み(位置表示は statuses 由来)
+    app.refresh_git_if_needed(); // in real usage the first render already fetched this (the position display comes from statuses)
     app.open_git_diff(&canon.join("a.txt"));
     assert_eq!(app.diff_change_position(), Some((1, 3)));
 
@@ -8673,13 +8791,14 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
         app.tab.preview_path.as_deref(),
         Some(canon.join("a.txt").as_path())
     );
-    app.jump_changed(-1); // a → e (逆順 wrap)
+    app.jump_changed(-1); // a → e (reverse-direction wrap)
     assert_eq!(
         app.tab.preview_path.as_deref(),
         Some(canon.join("e.txt").as_path())
     );
 
-    // ハブ経由で開いた印(came_from_git_view)は回遊しても保たれ、q でハブへ戻れる。
+    // The marker for having opened via the hub (came_from_git_view) survives cycling around,
+    // and q returns to the hub.
     app.tab.came_from_git_view = true;
     app.jump_changed(1); // e → a
     assert!(app.tab.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
@@ -8691,14 +8810,16 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
 #[cfg(feature = "git")]
 #[test]
 fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
-    // フォロー由来の diff の n/N は「追尾セッション中に変わったファイル」だけを回遊する
-    // (作業ツリー全体の未コミット変更ではない)。位置表示もセッション基準。
+    // n/N on a follow-originated diff cycles only through "files that changed during the
+    // follow session" (not all uncommitted changes in the working tree). The position display
+    // is also session-relative.
     let dir = std::env::temp_dir().join("konoma_follow_session_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git_repo_with_commits(&dir); // a.txt をコミット済み
+    git_repo_with_commits(&dir); // a.txt is already committed
     let canon = dir.canonicalize().unwrap();
-    // 未コミット変更を5つ用意(既存の作業に相当) — うちセッションで変わるのは b と d だけ。
+    // Set up 5 uncommitted changes (representing pre-existing work) — only b and d change
+    // during the session.
     std::fs::write(canon.join("a.txt"), b"CHANGED\n").unwrap();
     for name in ["b.txt", "c.txt", "d.txt", "e.txt"] {
         std::fs::write(canon.join(name), format!("new {name}\n")).unwrap();
@@ -8709,11 +8830,11 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     app.toggle_follow();
     assert!(app.follow_session.is_empty(), "F ON でセッションは空から");
 
-    // F 以降に b と d が変わる(ベースライン差分が非空 → diff で開ける)。
+    // b and d change after F (the baseline diff is non-empty → can be opened as a diff).
     std::fs::write(canon.join("b.txt"), b"new b.txt\nAFTER-FOLLOW\n").unwrap();
     std::fs::write(canon.join("d.txt"), b"new d.txt\nAFTER-FOLLOW\n").unwrap();
 
-    // ドレイン相当: セッションへ記録(有効ターゲットのみ true)。
+    // Equivalent to draining: records into the session (only true for valid targets).
     let outside = std::env::temp_dir().join("konoma_follow_session_outside.txt");
     std::fs::write(&outside, b"x\n").unwrap();
     assert!(!app.follow_note_change(&outside), "root 外は記録しない");
@@ -8725,7 +8846,7 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     );
     assert_eq!(app.follow_session.len(), 2, "重複は積まない");
 
-    // ジャンプで古い flash(follow: on 等)が消える=フッターが diff ヒントに切り替わる。
+    // Jumping clears the old flash (e.g. "follow: on") = the footer switches to the diff hint.
     app.flash = Some("stale flash".into());
     app.follow_jump(&canon.join("d.txt"));
     assert!(app.is_git_diff_preview());
@@ -8736,7 +8857,7 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
         "位置表示はセッション(2件)基準=全 git 変更(5件)ではない"
     );
 
-    // n はセッション内だけを回遊(wrap)。c/e.txt(セッション外の変更)へは行かない。
+    // n cycles only within the session (wrap). It never goes to c/e.txt (changes outside the session).
     app.jump_changed(1);
     assert_eq!(
         app.tab.preview_path.as_deref(),
@@ -8749,7 +8870,7 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
         Some(canon.join("d.txt").as_path())
     );
 
-    // F を入れ直すとセッションはリセットされる。
+    // Re-pressing F resets the session.
     app.toggle_follow();
     app.toggle_follow();
     assert!(app.follow_session.is_empty(), "次の ON で新セッション");
@@ -8760,9 +8881,11 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
 
 #[test]
 fn collapse_links_folds_table_hidden_targets_in_document_order() {
-    // 表セルの「ラベル＋隠しターゲット」ペアが、通常リンク(label (URL) 形式)と**出現順で混ざって**
-    // targets に回収されること(decorate_links の zip 整合=順序ズレは全リンクの誤爆になる)。
-    // 表リンクはアイコンを付けない(幅を変えない=桁揃え維持)・隠しスパンは表示行から消えること。
+    // A table cell's "label + hidden target" pair gets collected into targets **interleaved by
+    // appearance order** with normal links (the label (URL) form) (this is decorate_links's zip
+    // alignment = a misalignment would misfire every link). A table link doesn't get an icon
+    // (doesn't change width = keeps column alignment), and the hidden span disappears from the
+    // display row.
     let md =
         "See [first](a.md) here.\n\n| doc |\n|---|\n| [table](b.md) |\n\nAlso [last](c.md) end.\n";
     let style = crate::preview::markdown::CodeStyle {
@@ -8773,13 +8896,13 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
         wrap: true,
     };
     let lines = crate::preview::markdown::render_markdown(md, 60, style, "TwoDark", false);
-    let (collapsed, targets) = collapse_links(lines, true); // icons=true(既定)でも表は幅不変
+    let (collapsed, targets) = collapse_links(lines, true); // even with icons=true (the default), the table's width is unchanged
     assert_eq!(
         targets,
         vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()],
         "targets は出現順(段落→表→段落)"
     );
-    // 表リンクのラベルは "table" のまま(アイコン無し)でリンク様式。
+    // The table link's label stays "table" (no icon), styled as a link.
     assert!(
         collapsed.iter().any(|l| l
             .spans
@@ -8787,7 +8910,7 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
             .any(|sp| sp.content.as_ref() == "table" && is_link_span(sp))),
         "表リンクのラベルがリンク様式で残る"
     );
-    // 隠しターゲット span は表示行に残らない。
+    // The hidden target span doesn't remain in the display row.
     assert!(
         collapsed.iter().all(|l| l
             .spans
@@ -8795,7 +8918,7 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
             .all(|sp| !crate::preview::markdown::is_hidden_link_target(sp))),
         "隠しスパンは除去される"
     );
-    // リンク span 総数 == targets 数(decorate_links が順に対応付ける前提)。
+    // Total link-span count == targets count (the assumption decorate_links pairs them in order).
     let n_links: usize = collapsed
         .iter()
         .map(|l| l.spans.iter().filter(|sp| is_link_span(sp)).count())
@@ -8805,9 +8928,10 @@ fn collapse_links_folds_table_hidden_targets_in_document_order() {
 
 #[test]
 fn md_row_prefix_matches_full_document_reflow() {
-    // 可視範囲スライス描画(md_layout/md_slice)の前提=「行ごとの line_count の総和 = 全文書の
-    // line_count」(ratatui の Wrap は行を跨いで状態を持たない)。これが崩れるとスクロール
-    // クランプとスライス開始位置が全文書描画とズレるので、多様な内容で固定する。
+    // The premise of visible-range slice rendering (md_layout/md_slice) is: "the per-line sum of
+    // line_count = the full document's line_count" (ratatui's Wrap carries no state across
+    // lines). If that breaks, scroll clamping and the slice start position drift from what a
+    // full-document render would produce, so we pin it down with varied content.
     use ratatui::text::Text;
     use ratatui::widgets::{Paragraph, Wrap};
     let dir = std::env::temp_dir().join("konoma_md_prefix_test");
@@ -8845,9 +8969,11 @@ fn md_row_prefix_matches_full_document_reflow() {
 
 #[test]
 fn md_slice_render_matches_full_document_render() {
-    // 描画等価性: 「可視スライス + 残余スクロール」(md_slice=新実装)の Paragraph 描画が、
-    // 「全文書 + グローバルスクロール」(旧実装相当)と(グリフ・スタイルとも)セル単位で一致する。
-    // フォーカス反転込み。ui::render への配線は既存 e2e(画面文字列)と REVERSED バッファテストが担保。
+    // Rendering equivalence: a Paragraph rendered from "the visible slice + the remaining
+    // scroll" (md_slice = the new implementation) matches, cell-for-cell (both glyphs and
+    // styles), one rendered from "the full document + global scroll" (equivalent to the old
+    // implementation). Including focus inversion. Wiring into ui::render is covered by the
+    // existing e2e (screen strings) and the REVERSED buffer test.
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::text::Text;
@@ -8874,17 +9000,18 @@ fn md_slice_render_matches_full_document_render() {
     app.tab.selected = idx;
     app.tree_activate().unwrap();
 
-    let (iw, ih) = (58u16, 18u16); // 枠の内側相当
+    let (iw, ih) = (58u16, 18u16); // equivalent to the frame's interior
     let area = Rect {
         x: 0,
         y: 0,
         width: iw,
         height: ih,
     };
-    // キャッシュ確立 → Tab フォーカスを1つ進めて反転の等価性も比較対象に含める。
+    // Establish the cache → advance Tab focus by one so inversion equivalence is covered too.
     let (total, _) = app.md_layout(iw);
     app.md_focus_move(1);
-    // 参照: 旧実装相当=フル文書を decorate してそのままグローバルスクロールで描く。
+    // Reference: equivalent to the old implementation = decorate the full document and draw it
+    // with a plain global scroll.
     let full = app.decorated_lines(iw);
     let full = app.decorate_md_items(full);
     let max_v = total.saturating_sub(ih as usize) as u16;
@@ -8927,7 +9054,7 @@ fn md_slice_render_matches_full_document_render() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- mermaid 画像レンダリング (v0.15 feature) --------------------------------
+// ---- mermaid image rendering (v0.15 feature) --------------------------------
 
 /// Test picker: no terminal query (protocol Halfblocks, fixed 10x20 font — enough for layout).
 fn test_picker() -> ratatui_image::picker::Picker {
@@ -8945,7 +9072,7 @@ fn standalone_mermaid_renders_as_image_with_vector_source() {
     app.picker = Some(test_picker());
     let _ = app.reveal_path_deep(&dir.join("d.mmd"));
     app.enter_preview(&dir.join("d.mmd"));
-    // media_tx 無し=同期フォールバックで即ラスタ到着。
+    // No media_tx = synchronous fallback, so the raster arrives immediately.
     assert!(
         app.image_src.is_some(),
         "画像モードで .mmd がラスタ化される"
@@ -8993,8 +9120,9 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
     let logical = app.image_logical.unwrap();
     assert_eq!(before, logical, "初回はラスタ寸法=論理寸法");
 
-    // ズームイン → 同期経路で即シャープ再ラスタ。ラスタは育つが論理サイズは不変
-    // (image_layout が論理で計る=画面上の大きさ・切り出しは動かない)。
+    // Zoom in → immediate sharp re-raster via the synchronous path. The raster grows but the
+    // logical size stays fixed (image_layout measures in logical units = the on-screen size and
+    // crop don't move).
     app.image_zoom_by(2.0);
     let after = app.image_src.as_ref().unwrap().dimensions();
     assert!(
@@ -9022,21 +9150,21 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
-    // 装飾キャッシュ構築(同期フォールバック=フェンスも即レンダリング)。初回は Loading で
-    // 構築→到着で md_cache 無効化→再構築、の2パスを回す。
+    // Build the decoration cache (synchronous fallback = the fence renders immediately too).
+    // The first pass builds it while Loading → it arrives, invalidating md_cache → run 2 passes to rebuild.
     app.ensure_md_cache(80);
     app.ensure_md_cache(80);
     let imgs = app.md_images();
     assert_eq!(imgs.len(), 1, "フェンスがインライン図 placement になる");
     assert!(crate::preview::markdown::is_mermaid_fence_url(&imgs[0].url));
-    // Tab アイテムに図が載る。
+    // The diagram lands as a Tab item.
     let has_fence_item = app
         .md_items
         .iter()
         .any(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }));
     assert!(has_fence_item, "図が Tab 巡回に載る");
 
-    // フェンスへフォーカス → Enter → 全画面図(ズーム面)。
+    // Focus the fence → Enter → the full-screen diagram (a zoom surface).
     let idx = app
         .md_items
         .iter()
@@ -9052,7 +9180,7 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     assert!(app.image_src.is_some(), "図がラスタ化されている");
     assert!(app.is_image_preview());
 
-    // q(back_to_tree)= md へ戻り、スクロール/フォーカスが復元される。
+    // q (back_to_tree) = returns to the md, restoring scroll/focus.
     app.back_to_tree();
     assert!(
         matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
@@ -9082,7 +9210,8 @@ fn broken_fence_degrades_to_text_diagram() {
         app.md_images().is_empty(),
         "壊れた図は placement にならない"
     );
-    // テキスト経路(生ソースの安全表示)に本文が残る=内容が欠落しない(原則#3)。
+    // The body remains via the text path (a safe display of the raw source) = content isn't
+    // lost (principle #3).
     let joined: String = app
         .md_cache
         .as_ref()
@@ -9099,8 +9228,9 @@ fn broken_fence_degrades_to_text_diagram() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// フェンス図のフォーカスは「キャプション span だけ反転」: 中央寄せインデントの空白まで
-/// 反転すると巨大な白バーになる(Ghostty 実機で捕まった回帰)。描画バッファで決定的に確認。
+/// A fence diagram's focus "inverts only the caption span": inverting even the centering
+/// indentation's whitespace produces a giant white bar (a regression caught on a real Ghostty
+/// terminal). Verified deterministically against the render buffer.
 #[test]
 fn fence_focus_inverts_caption_span_only() {
     use ratatui::backend::TestBackend;
@@ -9117,7 +9247,8 @@ fn fence_focus_inverts_caption_span_only() {
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
-    // 2回描画: 1回目で同期レンダ→キャッシュ再構築、2回目で配置込みの描画。
+    // Render twice: the 1st pass does the synchronous render → rebuilds the cache, and the 2nd
+    // pass renders with the placement included.
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     let idx = app
@@ -9143,8 +9274,9 @@ fn fence_focus_inverts_caption_span_only() {
         Some(i) => row[..i].chars().count() as u16,
         None => panic!("キャプション開始が無い; matched row {y}: {row:?}"),
     };
-    // キャプション(チップ)は REVERSED、行の右側(枠線のみの領域)は REVERSED でない
-    // =行全体が反転する「白バー」の回帰を防ぐ(チップにはパディング空白を含む)。
+    // The caption (the chip) is REVERSED, while the right side of the row (the border-only
+    // area) is not REVERSED = guards against the "white bar" regression where the whole row
+    // inverts (the chip includes padding whitespace).
     assert!(
         buf[(cap_start + 2, y)]
             .modifier
@@ -9159,8 +9291,9 @@ fn fence_focus_inverts_caption_span_only() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// フェンス図へフォーカスすると**図ブロック全体**が可視域へスクロールし、フォーカス枠
-/// (キャプションをタイトルにした囲み)が画像の外側に描かれる(ユーザー要望 2026-07-17)。
+/// Focusing a fence diagram scrolls **the entire diagram block** into the visible area, and a
+/// focus border (a box with the caption as its title) is drawn around the outside of the image
+/// (user request 2026-07-17).
 #[test]
 fn fence_focus_scrolls_block_and_draws_border() {
     use ratatui::backend::TestBackend;
@@ -9188,7 +9321,7 @@ fn fence_focus_scrolls_block_and_draws_border() {
         "前提: 先頭表示・フェンスは画面外"
     );
 
-    // Tab (唯一のアイテム=フェンス) → ブロック全体を見せる位置へスクロール。
+    // Tab (the only item = the fence) → scrolls to a position that shows the entire block.
     app.md_focus_move(1);
     let caption_line = app.md_items[app.tab.focused_item.unwrap()].line;
     assert!(
@@ -9197,7 +9330,7 @@ fn fence_focus_scrolls_block_and_draws_border() {
         app.tab.preview_scroll
     );
 
-    // 再描画でフォーカス枠(┌ 角とタイトル)が画像の外側に出る。
+    // Re-rendering shows the focus border (the ┌ corner and title) outside the image.
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     let buf = term.backend().buffer();
     let w = buf.area.width;
@@ -9213,17 +9346,19 @@ fn fence_focus_scrolls_block_and_draws_border() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// フェンス図のエンコードは Resize::Scale=予約グリッドまで**拡大も**する(ラスタが小さくても
-/// 左上詰めの余白バンドを作らない)。写真は従来どおり Fit=自然サイズ超に拡大しない。
-/// 回帰 2026-07-17: Fit(縮小専用)だったため mermaid_rows/幅由来のグリッドがベースラスタより
-/// 大きいと図が左上に寄り右・下に空きバンドが出ていた(ユーザー報告「中央に表示されない」)。
+/// A fence diagram's encoding uses Resize::Scale = it **upscales too**, up to the reserved grid
+/// (even a small raster doesn't leave a top-left-packed empty band). A photo still uses Fit as
+/// before = it doesn't upscale past its natural size.
+/// Regression 2026-07-17: since it used Fit (downscale-only), when the mermaid_rows/width-derived
+/// grid was larger than the base raster, the diagram would sit top-left with empty bands on the
+/// right/bottom (user report: "not displayed centered").
 #[test]
 fn encode_worker_scales_fence_diagrams_up_to_grid() {
     let picker = test_picker(); // font 10x20 / Halfblocks
     let (req_tx, req_rx) = std::sync::mpsc::channel();
     let (res_tx, res_rx) = std::sync::mpsc::channel();
     let h = std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
-    let img = std::sync::Arc::new(image::DynamicImage::new_rgba8(200, 100)); // 20x5 セル相当
+    let img = std::sync::Arc::new(image::DynamicImage::new_rgba8(200, 100)); // equivalent to 20x5 cells
     let send = |path: &str| {
         req_tx
             .send(MdEncodeRequest {
@@ -9236,8 +9371,8 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
             })
             .unwrap();
     };
-    send("mermaid-fence://cafe"); // フェンス図 → グリッド(40x10)へ拡大
-    send("/tmp/photo.png"); // 写真 → 自然サイズ(20x5)のまま
+    send("mermaid-fence://cafe"); // a fence diagram → upscaled to the grid (40x10)
+    send("/tmp/photo.png"); // a photo → stays at its natural size (20x5)
     drop(req_tx);
     let fence = res_rx.recv().unwrap();
     let photo = res_rx.recv().unwrap();
@@ -9255,9 +9390,9 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
     assert_eq!((ps.width, ps.height), (20, 5), "写真は拡大しない");
 }
 
-/// インライン図の初期サイズは**表示領域にフィット**: 目標行数= min(mermaid_rows,
-/// ビューポート-2)。ビューポートが変わると図を含む文書だけ再レイアウトされ、
-/// 図の無い文書はリビルドされない(ユーザー要望 2026-07-17「最初は表示領域にフィット」)。
+/// An inline diagram's initial size **fits the display area**: target rows = min(mermaid_rows,
+/// viewport-2). Only documents containing a diagram get re-laid-out when the viewport changes;
+/// documents without one are not rebuilt (user request 2026-07-17: "fit the display area at first").
 #[test]
 fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     let dir = std::env::temp_dir().join("konoma_mermaid_fit_test");
@@ -9273,18 +9408,18 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     app.enter_preview(&md);
     app.ensure_md_cache(80);
     app.ensure_md_cache(80);
-    // ビューポート未計測(0)=cap どおり。
+    // Viewport not measured yet (0) = follows the cap.
     assert_eq!(app.md_images()[0].rows, 24, "既定 cap=24");
-    // 低いビューポート → キャプション+マージン込みで収まる高さへ縮む。
+    // A short viewport → shrinks to a height that fits including the caption + margin.
     app.tab.preview_viewport = 10;
     app.ensure_md_cache(80);
     assert_eq!(app.md_images()[0].rows, 8, "vp10 → 8 行にフィット");
-    // 広いビューポート → cap へ戻る。
+    // A wide viewport → back to the cap.
     app.tab.preview_viewport = 60;
     app.ensure_md_cache(80);
     assert_eq!(app.md_images()[0].rows, 24, "vp60 → cap 24");
 
-    // 図の無い文書はビューポート変化でリビルドされない(lines のポインタ不変)。
+    // A document with no diagram isn't rebuilt on a viewport change (lines' pointer is unchanged).
     app.enter_preview(&plain);
     app.ensure_md_cache(80);
     let ptr0 = app.md_cache.as_ref().unwrap().lines.as_ptr();
@@ -9299,10 +9434,11 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// wrap 有効時、フェンスより上に折返し行があってもオーバーレイ(画像/フォーカス枠)が
-/// テキスト層とズレない。回帰 2026-07-17: 配置が論理行・スクロールが visual 行の混同で
-/// 画像が折返し分だけ上に描かれ、反転キャプション行に placeholder 行が重なって
-/// 「ID 色の一行バー」(Ghostty 実機・色は run 毎に変わる)として露出していた。
+/// With wrap enabled, the overlay (image/focus border) doesn't drift from the text layer even
+/// when there are wrapped rows above the fence. Regression 2026-07-17: confusing logical rows
+/// for placement with visual rows for scroll caused the image to be drawn too high by the
+/// wrapped amount, overlapping the placeholder row with the inverted caption row and surfacing
+/// as "a one-row bar in an ID color" (on a real Ghostty terminal; the color varied per run).
 #[test]
 fn fence_overlay_aligns_with_wrapped_text_layer() {
     use ratatui::backend::TestBackend;
@@ -9312,7 +9448,8 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
-    // 先頭に 1 論理行で端末幅を大きく超える段落 → wrap で visual 行が論理行より数行増える。
+    // A single logical-line paragraph at the top that far exceeds the terminal width → wrap adds
+    // several visual rows beyond the logical row count.
     let long = "wrap ".repeat(60);
     std::fs::write(
         &md,
@@ -9338,8 +9475,9 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
             })
             .collect()
     };
-    // 非フォーカス: テキスト層のキャプション行が見える=視覚座標の ground truth。
-    // (旧コードは画像バンドが折返し分上へズレてこの行を覆い、ここで既に落ちる)
+    // Unfocused: the text layer's caption row is visible = the ground truth for visual coordinates.
+    // (The old code shifted the image band up by the wrapped amount, covering this row — this
+    // already fails right here.)
     let unfocused = caption_rows(&term);
     assert_eq!(
         unfocused.len(),
@@ -9348,7 +9486,7 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
     );
     let caption_row = unfocused[0];
 
-    // フェンスへフォーカス → フォーカス枠タイトルが同じ行に乗る(キャプションを覆う)。
+    // Focus the fence → the focus border's title lands on the same row (covering the caption).
     let idx = app
         .md_items
         .iter()
@@ -9366,8 +9504,9 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// インライン mermaid 図のその場ズーム: +/-(image_zoom_by の二役)がフォーカス中の図に効き、
-/// レイアウト(予約セル)は不変・ズーム中は hjkl がパンに化け・フォーカス移動でリセットされる。
+/// In-place zoom for an inline mermaid diagram: +/- (image_zoom_by's dual role) affects the
+/// focused diagram; the layout (reserved cells) stays fixed; while zoomed, hjkl turns into
+/// panning; and it resets when focus moves.
 #[test]
 fn fence_inplace_zoom_pans_and_keeps_layout() {
     use crate::keymap::Motion;
@@ -9391,7 +9530,7 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     assert_eq!(imgs.len(), 1);
     let (cols0, rows0) = (imgs[0].cols, imgs[0].rows);
 
-    // フェンスへフォーカス → +(zoom in)。全画面画像が無いので image_zoom_by は図に作用する。
+    // Focus the fence → + (zoom in). With no full-screen image, image_zoom_by acts on the diagram.
     let idx = app
         .md_items
         .iter()
@@ -9404,13 +9543,13 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
         "図がズームされる"
     );
 
-    // ズーム中は hjkl がパン(消費=true)・等倍では消費しない。
+    // While zoomed, hjkl pans (consumed=true); at 1x it is not consumed.
     assert!(
         app.fence_pan_motion(Motion::Right),
         "ズーム中はパンに化ける"
     );
     assert!(app.tab.fence_center.0 > 0.5, "中心が右へ動く");
-    // レイアウトは不変(予約セル数が変わらない=md 上の表示サイズ固定)。
+    // The layout is unchanged (the reserved cell count doesn't change = the display size on the md stays fixed).
     app.ensure_md_cache(80);
     let imgs = app.md_images();
     assert_eq!(
@@ -9419,7 +9558,7 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
         "表示エリア不変"
     );
 
-    // = でフィットへ・フォーカス移動でもリセット。
+    // = fits it, and it also resets when focus moves.
     app.image_zoom_reset();
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
     assert!(
@@ -9427,74 +9566,78 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
         "等倍では通常スクロールへ"
     );
     app.image_zoom_by(3.0);
-    app.md_focus_move(1); // リンクへ移動
+    app.md_focus_move(1); // move to the link
     assert!(
         (app.fence_zoom_level() - 1.0).abs() < 1e-9,
         "フォーカス移動でズームはリセット"
     );
 
-    // リンクにフォーカス中の + は no-op(図が非フォーカス)。
+    // + while focused on the link is a no-op (the diagram isn't focused).
     app.image_zoom_by(2.0);
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
 
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// fence_crop: 可視率とクランプの純関数検証(比率ベース=再ラスタ後も同じ窓に写像される)。
+/// fence_crop: pure-function verification of the visible fraction and clamping (ratio-based =
+/// maps to the same window even after re-rasterizing).
 #[test]
 fn fence_crop_clamps_and_scales() {
-    // 2倍ズーム(f=0.5)・中央: 中央の半分窓。
+    // 2x zoom (f=0.5), centered: a half-size window at the center.
     let ((x, y, w, h), c) = fence_crop((800, 400), 0.5, (0.5, 0.5));
     assert_eq!((w, h), (400, 200));
     assert_eq!((x, y), (200, 100));
     assert_eq!(c, (0.5, 0.5));
-    // 端へパン: 中心がクランプされ窓は画像内に収まる。
+    // Pan to the edge: the center is clamped and the window stays within the image.
     let ((x, _y, w, _h), c) = fence_crop((800, 400), 0.5, (1.0, 0.5));
     assert_eq!(x + w, 800, "右端で止まる");
     assert!((c.0 - 0.75).abs() < 1e-9, "中心は f/2 でクランプ");
-    // 4倍(f=0.25)で密度2倍のラスタ: 同じ比率窓が2倍の px に写る。
+    // A raster at 4x density (f=0.25): the same ratio window maps to 2x the pixels.
     let ((x1, _, w1, _), _) = fence_crop((800, 400), 0.25, (0.5, 0.5));
     let ((x2, _, w2, _), _) = fence_crop((1600, 800), 0.25, (0.5, 0.5));
     assert_eq!((x2, w2), (x1 * 2, w1 * 2));
 }
 
-/// 数式のセル寸法(純関数): SVG の em 単位(40/em)→行, アスペクト→桁。display は inline より
-/// 背が高い・幅超過はアスペクト維持でクランプ・極端に高い式は 24 行で上限。兄弟の
-/// `mermaid_cells`/`fence_crop` はテスト済みだったがこの2関数は未カバーだった。
+/// A math expression's cell dimensions (pure function): the SVG's em unit (40/em) → rows,
+/// aspect ratio → columns. display is taller than inline; exceeding the width clamps while
+/// preserving aspect ratio; an extremely tall expression is capped at 24 rows. The sibling
+/// functions `mermaid_cells`/`fence_crop` were already tested, but these two were uncovered.
 #[test]
 fn math_cells_size_from_em_units() {
-    // inline: 1em(uh=40)・アスペクト5:1 → 1行×10桁。
+    // inline: 1em (uh=40), aspect ratio 5:1 → 1 row × 10 columns.
     assert_eq!(math_cells(200, 40, 8, 16, 100, false), (10, 1));
-    // display は rows_per_em が大きい(1.5>1.3) → 同じ式でも背が高くなる(inline は上で1行)。
+    // display has a larger rows_per_em (1.5>1.3) → even the same expression comes out taller
+    // (inline above was 1 row).
     let (dc, dr) = math_cells(200, 40, 8, 16, 100, true);
     assert!(dr > 1, "display は inline(1行)より背が高い: {dr}");
     assert_eq!((dc, dr), (20, 2));
-    // 幅超過: avail=30 でアスペクト維持クランプ(桁が avail に張り付く)。
+    // Width exceeded: clamped preserving aspect ratio at avail=30 (columns stick to avail).
     let (cc, _cr) = math_cells(1600, 40, 8, 16, 30, false);
     assert_eq!(cc, 30, "幅は avail に張り付く");
-    // 極端に高い式(行列など)は 24 行上限で頭打ち。
+    // An extremely tall expression (like a matrix) tops out at 24 rows.
     let (_bc, br) = math_cells(1200, 1200, 8, 16, 1000, false);
     assert_eq!(br, 24, "行数は 24 で上限");
 }
 
-/// インライン画像のセル寸法(純関数): 自然サイズを基準に、幅が余白を超えたら縮小、行が上限を
-/// 超えたら更に縮小。**mermaid と違い自然サイズを超えて拡大はしない**(写真をぼかさない)。
+/// An inline image's cell dimensions (pure function): based on its natural size, shrinks if the
+/// width exceeds the available space, and shrinks further if the rows exceed the cap.
+/// **Unlike mermaid, it never upscales past its natural size** (doesn't blur a photo).
 #[test]
 fn md_image_cells_downscale_but_never_upscale() {
-    // 収まる: 自然サイズそのまま(80x160px, 8x16 セル → 10x10)。
+    // Fits: stays at its natural size (80x160px, 8x16 cells → 10x10).
     assert_eq!(md_image_cells(80, 160, 8, 16, 100, 100), (10, 10));
-    // 横長で幅超過: avail=50 に縮小(高さも比例)。
+    // A wide image exceeding the width: shrunk to avail=50 (height scales proportionally too).
     let (wc, wr) = md_image_cells(1600, 160, 8, 16, 50, 100);
     assert_eq!(wc, 50, "幅は avail に縮小");
     assert!(wr < 10, "高さも比例縮小: {wr}");
-    // 縦長で行超過: max_rows=20 で頭打ち(桁も比例)。
+    // A tall image exceeding rows: capped at max_rows=20 (columns scale proportionally too).
     assert_eq!(md_image_cells(80, 1600, 8, 16, 100, 20), (2, 20));
-    // 余白が広くても自然サイズより拡大しない(40x40px は 5x3 のまま)。
+    // Even with plenty of available space, it doesn't upscale past its natural size (40x40px stays 5x3).
     assert_eq!(md_image_cells(40, 40, 8, 16, 1000, 1000), (5, 3));
 }
 
-/// `0`=フィット(ズーム中のみ消費・等倍では従来の行頭のまま)＋ `[ui] mermaid_rows` で
-/// インライン図の表示高さが変わる(0/不正は既定 24)。
+/// `0`=fit (consumed only while zoomed; at 1x it stays at the line start, as before) + `[ui]
+/// mermaid_rows` changes an inline diagram's display height (0/invalid defaults to 24).
 #[test]
 fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     use crate::keymap::Motion;
@@ -9505,7 +9648,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n  B --> C\n```\n").unwrap();
 
-    // rows=10 の設定でロード。
+    // Load with rows=10 configured.
     let mut cfg = Config::default();
     cfg.ui.mermaid_rows = 10;
     let mut app = App::new(dir.clone(), cfg).unwrap();
@@ -9516,7 +9659,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     let small = app.md_images()[0].rows;
     assert!(small <= 10, "mermaid_rows=10 で高さが縮む: {small}");
 
-    // 既定(24)では大きくなる(縦長の図なので rows 上限が効く)。
+    // With the default (24) it's bigger (the diagram is tall, so the rows cap takes effect).
     let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
     app2.picker = Some(test_picker());
     app2.enter_preview(&md);
@@ -9528,7 +9671,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
         "既定 24 の方が大きい: {default_rows} > {small}"
     );
 
-    // 0(不正)は既定へフォールバック。
+    // 0 (invalid) falls back to the default.
     let mut cfg0 = Config::default();
     cfg0.ui.mermaid_rows = 0;
     let mut app3 = App::new(dir.clone(), cfg0).unwrap();
@@ -9538,7 +9681,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     app3.ensure_md_cache(80);
     assert_eq!(app3.md_images()[0].rows, default_rows, "0 は既定 24 扱い");
 
-    // 0=フィット: ズーム中の LineHome は図のリセットとして消費・等倍では消費しない。
+    // 0=fit: LineHome while zoomed is consumed as a diagram reset; at 1x it's not consumed.
     let idx = app2
         .md_items
         .iter()
@@ -9559,11 +9702,13 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// mermaid_rows は**実表示サイズの目標**: ベースラスタの自然サイズを超えて拡大でき(ベクタ由来
-/// なので密度は再ラスタで追従=layout 不変のままシャープ)、テーマは dark 既定+背景透過。
+/// mermaid_rows is **a target for the actual display size**: it can upscale past the base
+/// raster's natural size (being vector-derived, density follows via re-rasterizing = it stays
+/// sharp while the layout is unchanged), and the theme is dark by default with a transparent
+/// background.
 #[test]
 fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
-    // 純関数: 目標行数へ拡大する(自然サイズ非依存)・幅でクランプ。
+    // Pure function: upscales to the target row count (independent of natural size), clamped by width.
     let (c, r) = mermaid_cells(400, 800, 8, 16, 200, 40);
     assert_eq!(r, 40, "目標行数まで拡大");
     assert_eq!(
@@ -9574,7 +9719,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
     assert_eq!(c2, 60, "幅上限でクランプ");
     assert!(r2 < 40, "幅クランプに合わせ行数も縮む: {r2}");
 
-    // テーマ: dark 既定は背景 fill="none"(透過)・白背景を持たない。
+    // Theme: the dark default has a background fill="none" (transparent) and no white background.
     let svg = crate::preview::markdown::mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
     assert!(svg.contains("fill=\"none\""), "背景透過");
     assert!(
@@ -9582,8 +9727,9 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
         "dark テーマに白背景が無い"
     );
 
-    // 密度追従: mermaid_rows を大きくした表示サイズに合わせ、ensure_md_fence_density が
-    // 保持 SVG から高密度に再ラスタする(同期フォールバック)。layout(予約セル)は不変。
+    // Density follow-up: to match a display size enlarged by increasing mermaid_rows,
+    // ensure_md_fence_density re-rasterizes at higher density from the retained SVG
+    // (synchronous fallback). The layout (reserved cells) is unchanged.
     use image::GenericImageView;
     let dir = std::env::temp_dir().join("konoma_mermaid_density_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -9592,7 +9738,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
     std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n```\n").unwrap();
     let mut cfg = Config::default();
     cfg.ui.mermaid_rows = 60;
-    cfg.ui.svg_max_px = 300; // ベースラスタを小さく=密度不足を作る
+    cfg.ui.svg_max_px = 300; // shrinks the base raster = creates a density shortfall
     let mut app = App::new(dir.clone(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
@@ -9617,7 +9763,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
         Some(before),
         "layout_px は初回のまま(予約セル不変)"
     );
-    // 再装飾してもセル数が変わらない(レイアウト固定)。
+    // The cell count doesn't change even after re-decorating (the layout is fixed).
     app.md_cache = None;
     app.ensure_md_cache(120);
     let p2 = &app.md_images()[0];
@@ -9625,7 +9771,8 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
-/// mermaid_rows=100 のような大きい目標でも placement がその行数まで拡大する(幅が許す限り)。
+/// Even with a large target like mermaid_rows=100, the placement upscales to that row count (as
+/// far as the width allows).
 #[test]
 fn mermaid_rows_large_target_reaches_placement() {
     let dir = std::env::temp_dir().join("konoma_probe_rows100");
@@ -9649,10 +9796,12 @@ fn mermaid_rows_large_target_reaches_placement() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// kitty placeholder 残骸掃除: **実際に描いた**インライン図が動いたフレームだけ「フル再描画
-/// 要求」が立つ(静止中は立たない・図が現れた/消えたフレームで一度立つ)。Ghostty の色付きバー
-/// (旧 ID 行の取り残し)対策。回帰 2026-07-17: 署名が生スクロール値+全 placement を含んで
-/// いたため、図が**画面外**でも画像入り md はスクロール毎キーでフル clear+二重描画だった。
+/// Cleaning up kitty placeholder leftovers: a "full redraw requested" flag is raised only on
+/// frames where an inline diagram **actually drawn** moved (it isn't raised while static; it's
+/// raised once on the frame where a diagram appears/disappears). A countermeasure for Ghostty's
+/// colored bar (a leftover old ID row). Regression 2026-07-17: because the signature included
+/// the raw scroll value + all placements, an md with images did a full clear + double-render on
+/// every scroll key even when the diagram was **off-screen**.
 #[test]
 fn md_overlay_move_detection_requests_full_redraw() {
     use ratatui::backend::TestBackend;
@@ -9674,14 +9823,15 @@ fn md_overlay_move_detection_requests_full_redraw() {
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
 
-    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 初回(Loading→同期レンダ)
-    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 配置確定(図は下方=画面外)
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // first pass (Loading → synchronous render)
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // placement is settled (the diagram is below = off-screen)
     let _ = app.take_md_overlay_moved();
-    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // 静止フレーム
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // a static frame
     assert!(!app.take_md_overlay_moved(), "静止中は要求しない");
 
-    // 図が**画面外**にしか無い間のスクロールは要求しない(placeholder がグリッドに無い=
-    // 掃除する残骸が無い。ここが毎キー clear になっていたのが回帰)。
+    // Scrolling while the diagram exists only **off-screen** doesn't request a redraw (there's
+    // no placeholder in the grid = nothing to clean up. This is exactly where it became a
+    // clear-on-every-key regression).
     app.tab.preview_scroll = app.tab.preview_scroll.saturating_add(3);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
@@ -9689,15 +9839,16 @@ fn md_overlay_move_detection_requests_full_redraw() {
         "画面外の図しか無い間のスクロールでは要求しない"
     );
 
-    // 末尾まで送って図を画面内へ。出現フレームは要求しない(直前まで何も描いていない=
-    // グリッドに掃除すべき旧 placeholder が無い。掃除は「描いていた状態からの変化」のみ)。
-    app.tab.preview_scroll = 500; // 描画側が末尾へクランプ
+    // Scroll to the end to bring the diagram on-screen. The appearance frame doesn't request a
+    // redraw either (nothing was drawn just before = there's no old placeholder in the grid to
+    // clean up. Cleanup only happens on "a change from a previously-drawn state").
+    app.tab.preview_scroll = 500; // the render side clamps it to the end
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "出現フレームは掃除不要");
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
 
-    // 図が見えている間のスクロール → 動いたフレームで立つ。
+    // Scrolling while the diagram is visible → is raised on the frame it moved.
     app.tab.preview_scroll = app.tab.preview_scroll.saturating_sub(1);
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
@@ -9707,7 +9858,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "その後の静止では立たない");
 
-    // フォーカスの変化(スクロール無しでも) → 一度立つ(Ghostty の合成乱れをその場で修復)。
+    // A focus change (even without scrolling) → raised once (fixes Ghostty's compositing glitch on the spot).
     let idx = app
         .md_items
         .iter()
@@ -9722,7 +9873,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(!app.take_md_overlay_moved(), "フォーカス静止では立たない");
 
-    // プレビューを離れる(図が消える) → 一度立つ。
+    // Leaving preview (the diagram disappears) → raised once.
     app.back_to_tree();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(app.take_md_overlay_moved(), "図が画面から消えたら掃除");
@@ -9730,13 +9881,15 @@ fn md_overlay_move_detection_requests_full_redraw() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// タブ切替で .mmd(画像モード)が画像のまま復元される。回帰 2026-07-18: load_active の媒体
-/// 復元分岐に Mermaid 系が無く、さらに clear_image が preview_media_mtime を残すため
-/// reload_media_if_changed も「未変更」と誤判定して塞がれ、タブ復帰でテキスト罫線図に
-/// git グラフの装飾状態(基準ピン・表示ブランチ・優先順・凡例)はタブ毎に保存/復元される。
-/// 回帰 2026-07-18: git_graph(GraphRow)は保存されるのにこれら派生状態は非保存で、別タブで
-/// 基準/表示を変えて戻ると凡例や `base:` タイトルが他タブのまま残っていた(load_active は
-/// グラフを再構築しない)。新規タブへは持ち越さず、戻れば復元される。
+/// When switching tabs, a .mmd (image mode) is restored still as an image. Regression 2026-07-18:
+/// load_active's media-restoration branch had no case for the Mermaid family, and clear_image
+/// also left preview_media_mtime in place, so reload_media_if_changed also misjudged it as
+/// "unchanged" and was blocked, so returning to the tab fell back to the text ruled-line diagram —
+/// A git graph's decoration state (the pinned base, visible branches, priority order, legend) is
+/// saved/restored per tab. Regression 2026-07-18: git_graph (GraphRow) is saved, but these
+/// derived states were not, so changing the base/visibility in another tab and coming back left
+/// the legend or the `base:` title showing the other tab's values (load_active doesn't rebuild
+/// the graph). It is not carried over to a new tab, and is restored on returning.
 #[test]
 fn git_graph_decoration_state_is_per_tab() {
     let dir = std::env::temp_dir().join("konoma_graph_pertab_test");
@@ -9745,7 +9898,8 @@ fn git_graph_decoration_state_is_per_tab() {
     std::fs::write(dir.join("a.txt"), "x").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // タブ0のグラフ装飾状態を模擬(実グラフ構築なしで派生フィールドを直接セット)。
+    // Simulate tab 0's graph decoration state (set the derived fields directly, without building
+    // a real graph).
     app.tab.git_graph_base = Some("release/1.0".into());
     app.tab.git_graph_base_label = Some("release/1.0".into());
     app.tab.git_graph_visible = ["main".to_string(), "dev".to_string()]
@@ -9754,7 +9908,7 @@ fn git_graph_decoration_state_is_per_tab() {
     app.tab.git_graph_order = vec!["release/1.0".into(), "main".into(), "dev".into()];
     app.tab.git_graph_hidden = 3;
 
-    app.tab_new().unwrap(); // タブ1(素の Tree)
+    app.tab_new().unwrap(); // tab 1 (a plain Tree)
     assert!(
         app.tab.git_graph_base.is_none(),
         "新規タブへ基準ピンは漏れない"
@@ -9769,7 +9923,7 @@ fn git_graph_decoration_state_is_per_tab() {
     );
     assert_eq!(app.tab.git_graph_hidden, 0, "新規タブの hidden は 0");
 
-    // タブ1で別の装飾状態にしてから戻る。
+    // Put tab 1 into a different decoration state, then go back.
     app.tab.git_graph_base = Some("hotfix".into());
     app.tab_goto(0);
     assert_eq!(
@@ -9786,7 +9940,8 @@ fn git_graph_decoration_state_is_per_tab() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 無通知劣化していた(裏で別メディアを開いた時だけ偶然復活する非決定挙動)。
+/// It had been silently degrading (a non-deterministic behavior that happened to recover only
+/// when a different media was opened in the background).
 #[test]
 fn tab_switch_restores_mermaid_image_preview() {
     let dir = std::env::temp_dir().join("konoma_mermaid_tab_restore_test");
@@ -9799,9 +9954,9 @@ fn tab_switch_restores_mermaid_image_preview() {
     app.enter_preview(&dir.join("d.mmd"));
     assert!(app.image_src.is_some(), "前提: 画像モードでラスタ化される");
 
-    app.tab_new().unwrap(); // タブ2(素のツリー)へ
+    app.tab_new().unwrap(); // to tab 2 (a plain tree)
     assert!(app.image_src.is_none(), "新規タブに画像は無い");
-    app.tab_cycle(1); // タブ1へ復帰
+    app.tab_cycle(1); // back to tab 1
     assert!(
         app.image_src.is_some(),
         "タブ復帰で .mmd が画像として再ロードされる"
@@ -9811,8 +9966,8 @@ fn tab_switch_restores_mermaid_image_preview() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 全画面フェンス表示のままタブを離れて戻っても、図が画像のまま復元される
-/// (旧コードは偽の「cannot render」案内に落ちていた)。
+/// Even leaving and returning to a tab while a full-screen fence view is showing, the diagram is
+/// restored still as an image (the old code fell back to a false "cannot render" notice).
 #[test]
 fn tab_switch_restores_fullscreen_fence_view() {
     let dir = std::env::temp_dir().join("konoma_fence_tab_restore_test");
@@ -9849,10 +10004,11 @@ fn tab_switch_restores_fullscreen_fence_view() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 上流に画像化できないフェンス(テキスト降格)があっても、Tab フォーカスの Enter は
-/// **その図のソース**を開く。回帰 2026-07-18: 序数を「描画済み番兵の計数」で導出していた
-/// ため、番兵を出さないフェンス(失敗/loading)の分だけソース再抽出とずれ、別の図
-/// (たいてい失敗した方=偽エラー表示)が全画面に開いていた。
+/// Even if there's an earlier fence that can't be turned into an image (degraded to text),
+/// pressing Enter on a Tab-focused fence opens **that diagram's source**. Regression 2026-07-18:
+/// the ordinal was derived by "counting rendered sentinels", so it drifted from source
+/// re-extraction by however many fences (failed/loading) didn't emit a sentinel, and a different
+/// diagram (usually the one that failed = a false error display) would open full-screen.
 #[test]
 fn fence_ordinal_survives_failed_upstream_fence() {
     let dir = std::env::temp_dir().join("konoma_fence_ordinal_test");
@@ -9870,7 +10026,7 @@ fn fence_ordinal_survives_failed_upstream_fence() {
     app.enter_preview(&md);
     app.ensure_md_cache(100);
 
-    // 描画されたフェンスは 1 つ(壊れた方はテキスト降格)で、その序数は**ソース順の 1**。
+    // Only 1 fence gets rendered (the broken one degrades to text), and its ordinal is **1, in source order**.
     let fences: Vec<usize> = app
         .md_items
         .iter()
@@ -9903,9 +10059,10 @@ fn fence_ordinal_survives_failed_upstream_fence() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 編集で内容が変わったフェンスの旧キャッシュエントリは、次の再装飾で回収される。
-/// 回帰 2026-07-18: キーは内容ハッシュで evict は enter_preview(ファイル切替)のみだった
-/// ため、agent-watch の反復編集で旧ラスタ/protocol がファイル切替まで単調成長していた。
+/// The old cache entry for a fence whose content changed via an edit is reclaimed on the next
+/// re-decoration. Regression 2026-07-18: the key is a content hash, and eviction only happened on
+/// enter_preview (a file switch), so under agent-watch's repeated edits, old rasters/protocols kept
+/// growing monotonically until the file was switched.
 #[test]
 fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let dir = std::env::temp_dir().join("konoma_fence_prune_test");
@@ -9926,7 +10083,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
         "前提: v1 がキャッシュ済み"
     );
 
-    // 外部編集(内容変更)→ 再読込・再装飾。
+    // External edit (content change) -> reload, re-decorate.
     let v2 = "```mermaid\ngraph TD\n  X --> Y\n```\n";
     std::fs::write(&md, v2).unwrap();
     app.reload_preview();
@@ -9945,8 +10102,8 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Tab フォーカスとインライン図のズーム/パンはタブ毎に複製される: 別タブへ漏れず、
-/// 戻れば復元される(image_zoom が PerTab 保存されるのと同格)。
+/// Tab focus and the inline diagram's zoom/pan are duplicated per tab: they don't leak into other
+/// tabs, and are restored on return (on par with image_zoom being saved in PerTab).
 #[test]
 fn fence_focus_and_zoom_are_per_tab() {
     let dir = std::env::temp_dir().join("konoma_fence_per_tab_test");
@@ -9967,10 +10124,10 @@ fn fence_focus_and_zoom_are_per_tab() {
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
     app.tab.focused_item = Some(idx);
-    app.image_zoom_by(2.0); // 全画面画像なし+フェンスフォーカス中 → fence_zoom に作用
+    app.image_zoom_by(2.0); // no full-screen image + fence focused -> acts on fence_zoom
     assert!(app.tab.fence_zoom > 1.9, "前提: タブ1でその場ズーム中");
 
-    app.tab_new().unwrap(); // タブ2
+    app.tab_new().unwrap(); // tab 2
     assert_eq!(app.tab.focused_item, None, "新規タブへフォーカスは漏れない");
     assert!(app.tab.fence_zoom < 1.001, "新規タブへズームは漏れない");
     app.enter_preview(&b);
@@ -9980,7 +10137,7 @@ fn fence_focus_and_zoom_are_per_tab() {
         "タブ2の文書は未フォーカスのまま"
     );
 
-    app.tab_cycle(1); // タブ1へ復帰
+    app.tab_cycle(1); // back to tab 1
     assert_eq!(
         app.tab.focused_item,
         Some(idx),
@@ -9991,9 +10148,10 @@ fn fence_focus_and_zoom_are_per_tab() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 全画面フェンスからの `q` 復帰はインライン画像キャッシュを温存する(同一ファイル再入)。
-/// 回帰 2026-07-18: enter_preview が無条件で md_image_cache を捨てるため、復帰のたび全フェンス
-/// を再レンダし、Loading の縮退レイアウト 1 描画で復元スクロール/フォーカスがクランプされ得た。
+/// Returning with `q` from a full-screen fence keeps the inline image cache (re-entering the same
+/// file). Regression 2026-07-18: enter_preview unconditionally dropped md_image_cache, so every
+/// return re-rendered all fences, and a single render of the Loading degraded layout could clamp
+/// the restored scroll/focus.
 #[test]
 fn fence_fullscreen_return_keeps_diagram_cache() {
     let dir = std::env::temp_dir().join("konoma_fence_return_cache_test");
@@ -10021,8 +10179,8 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
         .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
         .unwrap();
     app.tab.focused_item = Some(idx);
-    app.md_activate_focused().unwrap(); // Enter → 全画面
-    app.back_to_tree(); // q → md へ復帰
+    app.md_activate_focused().unwrap(); // Enter -> full screen
+    app.back_to_tree(); // q -> return to md
     assert!(
         matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))),
         "md ビューへ戻る"
@@ -10041,10 +10199,11 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// エンコード失敗(protocol=None)の結果でも enc_inflight が解除され、キーが記録されて同じ
-/// 要求を毎フレーム再試行しない。一度も成功していない Full の失敗のみテキスト降格。
-/// 回帰 2026-07-18: ワーカーが Err の結果を握り潰し、enc_inflight が永久 true=その画像の
-/// 再エンコード停止+md_images_loading() 恒久 true(busy スピナー+16ms ポーリング常駐)だった。
+/// Even for an encode failure result (protocol=None), enc_inflight is cleared and the key is
+/// recorded so the same request is not retried every frame. Only a Full failure that has never
+/// succeeded even once degrades to text. Regression 2026-07-18: the worker swallowed Err results,
+/// leaving enc_inflight permanently true = that image's re-encoding stopped + md_images_loading()
+/// permanently true (busy spinner + 16ms polling stuck on).
 #[test]
 fn failed_encode_clears_inflight_and_degrades_safely() {
     let dir = std::env::temp_dir().join("konoma_encode_fail_test");
@@ -10052,7 +10211,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
-    // Full 失敗・protocol 未保持 → failed へ降格し busy は解ける。
+    // Full failure, no protocol held -> degrades to failed and busy clears.
     let key = std::path::PathBuf::from("mermaid-fence://feedfeedfeedfeed");
     app.md_image_cache.insert(
         key.clone(),
@@ -10076,7 +10235,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     }
     assert!(!app.md_images_loading(), "busy が恒久化しない");
 
-    // Zoom 失敗は旧表示のまま(failed にしない)・キーだけ記録。
+    // A Zoom failure keeps the old display (does not mark failed) -- only the key is recorded.
     let key2 = std::path::PathBuf::from("mermaid-fence://cafecafecafecafe");
     app.md_image_cache.insert(
         key2.clone(),
@@ -10104,16 +10263,18 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 数式インライン画像 `math://…` が予約行だけで**空白**になっていた(ユーザー報告 2026-07-20)。
-/// 真因: ensure_md_image / md_image_proto が mermaid フェンスの合成キーしか特別扱いせず、`math://`
-/// を実ファイルパスとして resolve_md_image_path に渡していた=常に None を返し、**エンコードを一度も
-/// 要求せず** protocol も返らない=予約セルが空白のまま。is_synthetic_md_url でフェンスと数式の両方を
-/// 合成キーとして扱い、URL をそのままキャッシュキーにする。ここでは「デコード済みの数式に対して
-/// ensure_md_image がエンコード要求を積むこと」を検証する(旧実装は早期 return で何も積まない=空白)。
+/// The math inline image `math://...` used to render as **blank**, only the reserved row (user
+/// report 2026-07-20). Root cause: ensure_md_image / md_image_proto only special-cased the mermaid
+/// fence's synthetic key, and passed `math://` to resolve_md_image_path as a real file path = it
+/// always returned None, so **encoding was never requested** and no protocol came back either =
+/// the reserved cell stayed blank. is_synthetic_md_url now treats both fences and math as synthetic
+/// keys, using the URL itself as the cache key. This verifies that "for an already-decoded math
+/// expression, ensure_md_image queues an encode request" (the old implementation queued nothing via
+/// an early return = blank).
 #[test]
 fn math_inline_image_requests_encode_via_synthetic_key() {
     use crate::preview::markdown::{is_synthetic_md_url, math_url};
-    // 合成キーの分類: フェンスと数式は合成、実ファイル/リモートは実ファイル。
+    // Classification of synthetic keys: fences and math are synthetic; real files/remote are real files.
     assert!(is_synthetic_md_url(&math_url("E=mc^2", false)));
     assert!(is_synthetic_md_url("mermaid-fence://feedfeed"));
     assert!(!is_synthetic_md_url("figure.png"));
@@ -10124,11 +10285,11 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
-    // エンコードワーカーの受け口を張る(ensure_md_image はここへ MdEncodeRequest を積む)。
+    // Wire up the encode worker's receiving end (ensure_md_image queues an MdEncodeRequest here).
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_md_encoder(tx);
 
-    // ensure_math_render→apply_md_image 後の状態を再現: decoded + layout_px を持つ合成キーのエントリ。
+    // Reproduce the state after ensure_math_render -> apply_md_image: a synthetic-key entry with decoded + layout_px.
     let url = math_url("E=mc^2", false);
     let key = std::path::PathBuf::from(&url);
     app.md_image_cache.insert(
@@ -10140,7 +10301,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
         },
     );
 
-    // 予約行(cols=12, rows=2)全表示。数式はエンコードを要求しなければならない(旧実装は空白)。
+    // Full display of the reserved row (cols=12, rows=2). Math must request an encode (blank in the old implementation).
     app.ensure_md_image(&url, 12, 2, 0, 2);
     let req = rx
         .try_recv()
@@ -10151,9 +10312,10 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 全画面ベクタのシャープ再ラスタは同時 1 本(inflight ガード)。回帰 2026-07-18: ガードが
-/// 無く、`+` のキーリピートでジョブ完了前に同じ再ラスタを十数本 spawn し得た
-/// (1 本 ~数百 ms・過渡 ~128MiB。インライン側 reraster_inflight との非対称)。
+/// Sharp re-rasterization of a full-screen vector is limited to 1 at a time (inflight guard).
+/// Regression 2026-07-18: without the guard, key-repeating `+` could spawn a dozen-odd identical
+/// re-rasters before a job finished (each ~a few hundred ms, ~128MiB transient; an asymmetry with
+/// the inline side's reraster_inflight).
 #[test]
 fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     use image::GenericImageView;
@@ -10167,13 +10329,13 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     app.enter_preview(&dir.join("d.mmd"));
     let before = app.image_src.as_ref().unwrap().dimensions();
 
-    // inflight 中はズームしても再ラスタを出さない(ラスタ寸法が変わらない)。
+    // While inflight, zooming does not trigger a re-raster (the raster dimensions don't change).
     app.vector_reraster_inflight = true;
     app.image_zoom_by(2.0);
     let held = app.image_src.as_ref().unwrap().dimensions();
     assert_eq!(held, before, "inflight 中は再ラスタしない");
 
-    // 解除後の次のズーム操作で追いつく(同期経路=即適用)。
+    // Catches up on the next zoom operation after being cleared (synchronous path = applied immediately).
     app.vector_reraster_inflight = false;
     app.image_zoom_by(1.1);
     let after = app.image_src.as_ref().unwrap().dimensions();
@@ -10185,9 +10347,10 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 空の ```mermaid フェンス(書きかけ)は「loading」行に固まらずテキスト経路へ落ち、
-/// 有効なフェンスのソース序数もずれない。回帰 2026-07-18: slot の空文字が「抽出 ON か」の
-/// probe と区別できず、probe 応答の Loading を拾って永久に loading 表示だった。
+/// An empty ```mermaid fence (mid-typing) falls back to the text path instead of sticking on a
+/// "loading" line, and the source ordinal of a valid fence doesn't shift either. Regression
+/// 2026-07-18: an empty string in the slot was indistinguishable from the "is extraction on?"
+/// probe, so it picked up the probe response's Loading and showed "loading" forever.
 #[test]
 fn empty_mermaid_fence_does_not_stick_on_loading() {
     let dir = std::env::temp_dir().join("konoma_empty_fence_test");
@@ -10223,7 +10386,7 @@ fn empty_mermaid_fence_does_not_stick_on_loading() {
         !joined.contains("loading"),
         "空フェンスが loading 行に固まらない: {joined}"
     );
-    // 有効なフェンスは描画され、序数はソース順の 1(空フェンスが 0 を占有)。
+    // The valid fence is drawn, and its ordinal is 1 in source order (the empty fence occupies 0).
     let placements = app.md_images();
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].fence_ord, Some(1), "序数はソース順");
@@ -10231,9 +10394,10 @@ fn empty_mermaid_fence_does_not_stick_on_loading() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// ズーム中でも図が**画面外**ならパンはキーを奪わない。回帰 2026-07-18: 消費条件が
-/// 「ズーム中+フォーカス有り」だけだったため、Ctrl-f/G で図を画面外へ送ると hjkl/j/k が
-/// 見えない図のパンに食われ、キーが死んだように見えた。
+/// Even while zoomed, pan must not steal keys if the diagram is **offscreen**. Regression
+/// 2026-07-18: the consumption condition was only "zoomed + has focus", so sending the diagram
+/// offscreen with Ctrl-f/G caused hjkl/j/k to get eaten by panning an invisible diagram, making the
+/// keys appear dead.
 #[test]
 fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     use crate::keymap::Motion as M;
@@ -10266,7 +10430,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     app.image_zoom_by(2.0);
     assert!(app.fence_pan_motion(M::Down), "可視+ズーム中はパンを消費");
 
-    // 図を画面外へ(末尾へスクロール) → もう消費しない=文書スクロールに戻る。
+    // Send the diagram offscreen (scroll to the end) -> no longer consumed = falls back to document scroll.
     app.tab.preview_scroll = 500;
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(
@@ -10282,8 +10446,9 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// キャッシュに無いキーの decode 結果(ファイル切替/prune 後に遅れて届いた陳腐化結果)は
-/// 捨てられる: エントリを復活させず、現文書の md_cache も無効化しない。
+/// A decode result for a key not in the cache (a stale result arriving late after a file switch /
+/// prune) is dropped: it doesn't resurrect the entry and doesn't invalidate the current document's
+/// md_cache either.
 #[test]
 fn stale_md_image_result_is_dropped() {
     let dir = std::env::temp_dir().join("konoma_stale_md_result_test");
@@ -10319,10 +10484,10 @@ fn stale_md_image_result_is_dropped() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 外部でファイルが**縮小**されたとき、窓読みプレビューのスクロール位置が新しい EOF を越えたまま
-/// 残らないこと。エージェントがログを truncate する / ファイルを書き直す、という Agent Watch の
-/// 日常操作で起きる。`preview_byte_top` は旧ファイルの末尾ページを指したままになり得るので、
-/// 再読込→描画の経路でクランプされる必要がある。
+/// When a file is externally **shrunk**, the windowed preview's scroll position must not stay past
+/// the new EOF. This happens during everyday Agent Watch operations, e.g. an agent truncating a
+/// log / rewriting a file. `preview_byte_top` can be left pointing at the old file's last page, so
+/// it must be clamped on the reload -> render path.
 #[test]
 fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
     let dir = unique_tmp("konoma_shrink_clamp");
@@ -10340,18 +10505,18 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
         .unwrap();
     app.tree_activate().unwrap();
     app.tab.preview_viewport = 5;
-    // 末尾へ = byte_top は 200 行ファイルの最終ページ(短縮後のファイル長より大きい)。
+    // To the end = byte_top is the last page of the 200-line file (larger than the length after shrinking).
     app.preview_to_bottom();
     let _ = app.windowed_lines(5, 80);
     let deep_top = app.tab.preview_byte_top;
     assert!(deep_top > 0, "末尾へスクロールできている");
 
-    // 外部で 3 行に切り詰め(エージェントの truncate 相当)。
+    // Externally truncated to 3 lines (equivalent to an agent's truncate).
     std::fs::write(&f, "a\nb\nc\n").unwrap();
     let new_len = std::fs::metadata(&f).unwrap().len();
     assert!(deep_top > new_len, "旧 top は新しい EOF を越えている(前提)");
 
-    // FS イベント相当の再読込 → 描画。
+    // Reload equivalent to a FS event -> render.
     app.reload_preview();
     let lines = app.windowed_lines(5, 80);
 
@@ -10371,11 +10536,12 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// FS イベントでのプレビュー再読込が、**変更パスに応じて**行われること。
+/// A preview reload on a FS event must happen **according to the changed paths**.
 ///
-/// 目的: エージェントが `src/` を書き換え続けている間、無関係な `docs/foo.md` の装飾を毎イベント
-/// 作り直さない(Markdown 全文の再レンダは重い)。一方で、表示中ファイル自身の変更・`.git` のみの
-/// 変更(= 空リストで届く)・変更パス不明は必ず追従する。
+/// Purpose: while an agent keeps rewriting `src/`, don't rebuild the decoration of an unrelated
+/// `docs/foo.md` on every event (re-rendering a whole Markdown document is expensive). On the
+/// other hand, always follow a change to the file currently shown, a `.git`-only change (= arrives
+/// as an empty list), or unknown changed paths.
 #[test]
 fn preview_reloads_only_for_relevant_fs_changes() {
     let dir = unique_tmp("konoma_refresh_scope");
@@ -10394,11 +10560,11 @@ fn preview_reloads_only_for_relevant_fs_changes() {
     app.tab.mode = Mode::Preview;
     app.tab.preview_viewport = 20;
 
-    // 装飾キャッシュを作る。
+    // Build the decoration cache.
     let _ = app.decorated_lines(80);
     assert!(app.md_cache.is_some(), "装飾キャッシュができている");
 
-    // (1) 無関係なファイルの変更 → キャッシュは保持される(再レンダしない)。
+    // (1) A change to an unrelated file -> the cache is kept (no re-render).
     app.refresh_fs_changed(false, std::slice::from_ref(&other))
         .unwrap();
     assert!(
@@ -10406,7 +10572,7 @@ fn preview_reloads_only_for_relevant_fs_changes() {
         "無関係な src/lib.rs の変更で装飾キャッシュを捨てている"
     );
 
-    // (2) 表示中ファイル自身の変更 → 再読込する(外部エディタ/エージェントの編集に追従)。
+    // (2) A change to the file currently shown -> reload it (follow edits by an external editor/agent).
     std::fs::write(&md, "# Title\n\nbody two\n").unwrap();
     app.refresh_fs_changed(false, std::slice::from_ref(&md))
         .unwrap();
@@ -10424,7 +10590,7 @@ fn preview_reloads_only_for_relevant_fs_changes() {
         "新しい内容が反映されない: {text:?}"
     );
 
-    // (3) 空リスト(= `.git` のみの変更 / 不明) → 安全側で必ず再読込する。
+    // (3) An empty list (= a `.git`-only change / unknown) -> always reload, erring safe.
     let _ = app.decorated_lines(80);
     assert!(app.md_cache.is_some());
     app.refresh_fs_changed(false, &[]).unwrap();
@@ -10436,14 +10602,15 @@ fn preview_reloads_only_for_relevant_fs_changes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 表内検索: `/` で一致セルへカーソルが飛び、`n`/`N` が読み順で巡回(端は wrap)すること。
-/// 大文字小文字は無視し、一致セルは描画側が引ける集合にも載る。
+/// In-table search: `/` jumps the cursor to a matching cell, and `n`/`N` cycle in reading order
+/// (wrapping at the ends). Case-insensitive, and matching cells are also added to the set the
+/// renderer can look up.
 #[test]
 fn table_search_moves_cursor_through_matching_cells() {
     let dir = unique_tmp("konoma_table_search");
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("t.csv");
-    // 3 列 × 4 行。"apple" は (0,0) / (1,2) / (3,1) の 3 セルに出る(大小混在)。
+    // 3 columns x 4 rows. "apple" appears in 3 cells: (0,0) / (1,2) / (3,1) (mixed case).
     std::fs::write(
         &csv,
         "h1,h2,h3\napple,x,y\nq,r,APPLE\nz,z,z\nw,Apple pie,v\n",
@@ -10483,7 +10650,7 @@ fn table_search_moves_cursor_through_matching_cells() {
     app.search_next(-1);
     assert_eq!(app.table_cursor(), (3, 1), "N は逆順(先頭から末尾へ wrap)");
 
-    // Esc 相当: 解除で一致集合も消える(描画に取り残さない)。
+    // Equivalent to Esc: clearing also clears the match set (nothing left behind in the render).
     app.search_clear();
     assert!(!app.table_cell_is_hit(0, 0), "解除で一致ハイライトが消える");
     assert_eq!(app.search_status(), None);
@@ -10491,7 +10658,7 @@ fn table_search_moves_cursor_through_matching_cells() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 一致が無いときは flash を出し、カーソルを動かさない(表を見失わせない)。
+/// When there's no match, show a flash and don't move the cursor (don't lose the user's place in the table).
 #[test]
 fn table_search_without_match_keeps_cursor() {
     let (mut app, _csv) = app_with_table();
@@ -10507,14 +10674,15 @@ fn table_search_without_match_keeps_cursor() {
     assert_eq!(app.search_status(), None);
 }
 
-/// 装飾 Markdown のプレビュー内検索。ソースではなく**画面に出ている装飾行**を検索し、
-/// 一致行を可視域へスクロールする(`R` の生ソースに切替えない)。`n`/`N` は文書順で巡回。
+/// In-preview search on decorated Markdown. Searches **the decorated lines shown on screen**, not
+/// the source, and scrolls the matching line into view (does not switch to `R`'s raw source).
+/// `n`/`N` cycle in document order.
 #[test]
 fn decorated_markdown_search_scrolls_to_matches() {
     let dir = unique_tmp("konoma_md_search");
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
-    // 見出し + 詰め物 + 遠く離れた 2 箇所の "needle"。
+    // A heading + filler + 2 widely separated occurrences of "needle".
     let mut src = String::from("# Title\n\n");
     for i in 0..40 {
         src.push_str(&format!("filler line {i}\n\n"));
@@ -10532,9 +10700,9 @@ fn decorated_markdown_search_scrolls_to_matches() {
     app.tab.preview_path = Some(md);
     app.tab.mode = Mode::Preview;
     app.tab.preview_viewport = 10;
-    let _ = app.md_layout(80); // 装飾キャッシュを張る(実描画と同じ経路)
+    let _ = app.md_layout(80); // populate the decoration cache (same path as the real render)
 
-    // 装飾 md でも検索を開始できる(以前は「コード/テキストのみ」と拒否していた)。
+    // Search can start even on decorated md (it used to be refused with "code/text only").
     app.start_search();
     assert!(app.search_input().is_some(), "装飾 md で検索入力に入れる");
     for c in "needle".chars() {
@@ -10563,7 +10731,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
         "wrap して 1 件目へ戻る"
     );
 
-    // 一致が可視域に入り、かつ強調されている(現在の一致=オレンジ背景)。
+    // The match is inside the viewport, and it's highlighted (current match = orange background).
     let (lines, _) = app.md_slice(app.tab.preview_scroll, 10);
     let hit = lines.iter().any(|l| {
         l.spans
@@ -10572,7 +10740,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
     });
     assert!(hit, "一致箇所が背景色で強調されている");
 
-    // 一致なしはカーソル位置を動かさず flash で知らせる。
+    // No match: don't move the cursor position, notify with a flash.
     let before = app.tab.preview_scroll;
     app.start_search();
     for c in "zzz-absent".chars() {
@@ -10585,15 +10753,17 @@ fn decorated_markdown_search_scrolls_to_matches() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// kitty 端末では prepare_image が **端末リサイズ(fit ズームで crop 不変・領域だけ変化)**でも
-/// KittyImage を作り直すこと。作り直さないと、リサイズ後も画像が旧サイズのまま残る(回帰)。
+/// On a kitty terminal, prepare_image must rebuild the KittyImage even for **a terminal resize
+/// (at fit zoom crop is unchanged, only the area changes)**. Without rebuilding, the image stays
+/// at the old size even after the resize (regression).
 #[test]
 fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     let dir = std::env::temp_dir().join("konoma_kitty_resize_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
-    // viewport より**大きい**ソース(4000x3000px=400x150セル @ font10x20)。fit で viewport に
-    // 縮小されるので、端末リサイズ=表示サイズ変化=穴が顕在化する(小画像は自然サイズで不変)。
+    // A source **larger** than the viewport (4000x3000px = 400x150 cells @ font 10x20). It gets
+    // scaled down to fit the viewport, so a terminal resize = a display-size change = the hole
+    // surfaces (a small image is unchanged at its natural size).
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
@@ -10605,15 +10775,16 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     app.attach_image_backend(picker, tx);
     assert!(app.uses_kitty_image(), "kitty 経路が有効");
 
-    // 最初の描画準備: fit で viewport(200x40)に収まる KittyImage。
+    // Prepare the first render: a KittyImage that fits the viewport (200x40) via fit.
     let r1 = app.prepare_image(inner(200, 40)).unwrap();
     let size1 = app.kitty_image_ref().map(|k| k.cell_size());
     assert_eq!(size1, Some((r1.width, r1.height)), "表示セルサイズで構築");
 
-    // 同じ領域で再度 prepare しても作り直さないこと(静止画=毎フレーム構築しない)を、
-    // **観測可能な不変量**で判定する: render は transmitted を立て、以後 o=z を再送しない。
-    // 作り直せば transmitted が false に戻り o=z が再送される。ポインタ比較はフィールドの
-    // アドレスが不変なので作り直しを検出できない(レビュー指摘)。
+    // Judge, via an **observable invariant**, that re-`prepare`ing over the same area does not
+    // rebuild (a still image = not built every frame): render sets transmitted, and o=z is not
+    // resent after that. If it were rebuilt, transmitted would revert to false and o=z would be
+    // resent. A pointer comparison can't detect a rebuild because the field's address doesn't
+    // change (review finding).
     let area1 = ratatui::layout::Rect::new(0, 0, r1.width.min(50), r1.height);
     let render_syms = |app: &App, area| {
         let mut b = ratatui::buffer::Buffer::empty(area);
@@ -10624,13 +10795,13 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
         render_syms(&app, area1).contains("o=z"),
         "初回 render で転送"
     );
-    app.prepare_image(inner(200, 40)).unwrap(); // 領域不変
+    app.prepare_image(inner(200, 40)).unwrap(); // area unchanged
     assert!(
         !render_syms(&app, area1).contains("o=z"),
         "領域不変なら作り直さない=転送を再送しない"
     );
 
-    // 端末が大きくなった(crop は fit のまま (0,0,sw,sh) 不変・領域だけ拡大)→ 作り直す。
+    // The terminal grew (crop stays as fit's (0,0,sw,sh), unchanged; only the area grows) -> rebuild.
     let r2 = app.prepare_image(inner(300, 60)).unwrap();
     let size2 = app.kitty_image_ref().map(|k| k.cell_size());
     assert_ne!(size1, size2, "リサイズで表示サイズが変わる");
@@ -10639,7 +10810,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
         Some((r2.width, r2.height)),
         "新しい表示サイズで再構築"
     );
-    // 作り直した=新しい KittyImage は未転送 → o=z を再送する。
+    // Rebuilt = the new KittyImage is untransmitted -> o=z is resent.
     let area2 = ratatui::layout::Rect::new(0, 0, r2.width.min(50), r2.height);
     assert!(
         render_syms(&app, area2).contains("o=z"),
@@ -10647,7 +10818,8 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     );
 }
 
-/// 非 kitty 端末(halfblocks/sixel/iterm2)では kitty 経路を使わず、従来の image(ThreadProtocol)を使う。
+/// On a non-kitty terminal (halfblocks/sixel/iterm2), the kitty path isn't used; the conventional
+/// image (ThreadProtocol) path is used instead.
 #[test]
 fn non_kitty_terminal_keeps_ratatui_image_path() {
     let mut app = app_with_image(); // halfblocks
@@ -10664,9 +10836,11 @@ fn non_kitty_terminal_keeps_ratatui_image_path() {
     assert!(app.image.is_some(), "従来の ThreadProtocol 経路を使う");
 }
 
-/// タブ切替で表内検索の一致ハイライトが別タブに漏れないこと。`table_search_hits` は `search_matches`
-/// から導出される描画用集合だが PerTab に無く、load_active が復元しないと前タブの座標が居残り、
-/// 表 renderer(`table_cell_is_hit` を無条件参照)が別タブのセルを誤って強調する(レビュー指摘の複製漏れ)。
+/// A tab switch must not leak table search match highlighting into another tab. `table_search_hits`
+/// is a rendering-side set derived from `search_matches`, but it's not in PerTab, so unless
+/// load_active restores it, the previous tab's coordinates linger and the table renderer (which
+/// references `table_cell_is_hit` unconditionally) wrongly highlights another tab's cells (a
+/// missing-duplication finding from review).
 #[test]
 fn table_search_hits_do_not_leak_across_tabs() {
     let dir = unique_tmp("konoma_tab_table_search");
@@ -10675,7 +10849,7 @@ fn table_search_hits_do_not_leak_across_tabs() {
     std::fs::write(dir.join("b.csv"), "h1,h2\nq,w\ne,r\n").unwrap();
     let root = dir.canonicalize().unwrap();
 
-    // タブ0: a.csv を開いて "foo" を検索(一致セルができる)。
+    // Tab 0: open a.csv and search for "foo" (produces a matching cell).
     let mut app = App::new(root.clone(), Config::default()).unwrap();
     let a = root.join("a.csv");
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&a));
@@ -10689,7 +10863,7 @@ fn table_search_hits_do_not_leak_across_tabs() {
     app.search_commit();
     assert!(app.table_cell_is_hit(0, 0), "タブ0 で foo が一致");
 
-    // タブ1を新規作成(空タブ)し、そこで b.csv を検索なしで開く。
+    // Create a new tab 1 (empty tab), and open b.csv there without searching.
     app.tab_new().unwrap();
     let b = root.join("b.csv");
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&b));
@@ -10701,7 +10875,7 @@ fn table_search_hits_do_not_leak_across_tabs() {
         "新タブ(検索なし)に前タブの一致が漏れていない"
     );
 
-    // タブ0へ戻る → 一致が復元され、タブ1へ再度切替 → 漏れない。
+    // Switch back to tab 0 -> the match is restored, switch to tab 1 again -> no leak.
     app.tab_cycle(-1);
     assert!(
         app.table_cell_is_hit(0, 0),
@@ -10716,8 +10890,9 @@ fn table_search_hits_do_not_leak_across_tabs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// kitty ビルドの非同期経路: 初回(開いた瞬間)は同期で即表示、以降のズームは worker へ逃がし、
-/// 旧画像を見せたまま結果到着で差し替える。stale(古い世代)は破棄する。
+/// The async path for a kitty build: the first time (the moment it's opened) it's synchronous and
+/// shows immediately, subsequent zooms are offloaded to a worker, showing the old image until the
+/// result arrives and swaps it in. Stale (an older generation) is discarded.
 #[test]
 fn kitty_zoom_builds_async_and_latest_wins() {
     let dir = std::env::temp_dir().join("konoma_kitty_async_test");
@@ -10732,11 +10907,12 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     let mut picker = ratatui_image::picker::Picker::halfblocks();
     picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
     app.attach_image_backend(picker, itx);
-    // 実チャネルを付ける(worker が結果を送る)。
+    // Attach a real channel (the worker sends results on it).
     let (ktx, krx) = std::sync::mpsc::channel();
     app.attach_kitty_loader(ktx);
 
-    // 初回は同期: prepare 直後に kitty_image ができ、pending でない。worker には何も送られない。
+    // The first time is synchronous: kitty_image is ready right after prepare, and it's not
+    // pending. Nothing is sent to the worker.
     let r1 = app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_image_ref().is_some(), "初回は同期で即表示");
     assert!(!app.kitty_build_pending(), "初回同期後は in-flight でない");
@@ -10744,7 +10920,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     assert_eq!(size1, (r1.width, r1.height));
     assert!(krx.try_recv().is_err(), "初回は worker を使わない(同期)");
 
-    // ズーム: 以降は非同期。kitty_image は旧サイズのまま、pending=true。
+    // Zoom: async from here on. kitty_image stays at the old size, pending=true.
     app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は build in-flight");
@@ -10754,15 +10930,17 @@ fn kitty_zoom_builds_async_and_latest_wins() {
         "結果到着まで旧画像を見せ続ける(ちらつかせない)"
     );
 
-    // worker の結果を受けて適用 → 新サイズへ差し替え、pending 解消。
+    // Receive the worker's result and apply it -> swap to the new size, pending clears.
     let res = krx.recv().expect("worker sends a result");
     assert!(app.apply_kitty(res), "最新世代の結果を適用");
     assert!(!app.kitty_build_pending(), "適用後は in-flight でない");
     let size2 = app.kitty_image_ref().unwrap().cell_size();
     assert_ne!(size1, size2, "ズームで表示サイズが変わった");
 
-    // 連続ズーム(2 spawn)→ 最新世代のみ適用、古い世代は破棄(スレッドは並行=到着順は非決定的
-    // なので「先着=古い」とは限らない。gen で判定するので順序に依らず最新の1つだけが適用される)。
+    // Consecutive zooms (2 spawns) -> only the latest generation is applied, the older one is
+    // discarded (threads run concurrently = arrival order is non-deterministic, so "arrives
+    // first" doesn't necessarily mean "older". Judged by gen, so regardless of order exactly one,
+    // the latest, gets applied).
     app.tab.image_zoom = 6.0;
     app.prepare_image(inner(200, 40)).unwrap();
     app.tab.image_zoom = 8.0;
@@ -10776,9 +10954,10 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// PDF ページ送り/動画再サムネ回帰: `set_static_image` は同じ表示サイズのラスタをその場で差し替える。
-/// kitty 経路は geometry(kitty_want)で再ビルドを判定するので、同寸法だと want が変わらず**前ページの
-/// ピクセルが居残る**。差し替え時に kitty geometry を無効化して必ず再ビルドさせる必要がある。
+/// PDF page navigation / video re-thumbnail regression: `set_static_image` swaps in a raster of the
+/// same display size in place. The kitty path decides whether to rebuild based on geometry
+/// (kitty_want), so with the same size want doesn't change and **the previous page's pixels
+/// linger**. The kitty geometry must be invalidated on swap so a rebuild always happens.
 #[test]
 fn kitty_rebuilds_on_same_size_image_swap() {
     let dir = std::env::temp_dir().join("konoma_kitty_swap_test");
@@ -10790,7 +10969,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     Box::leak(Box::new(irx));
     let mut picker = ratatui_image::picker::Picker::halfblocks();
     picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
-    app.attach_image_backend(picker, itx); // kitty_tx なし=同期ビルド
+    app.attach_image_backend(picker, itx); // no kitty_tx = synchronous build
 
     let r = app.prepare_image(inner(200, 40)).unwrap();
     let area = ratatui::layout::Rect::new(0, 0, r.width.min(40), r.height);
@@ -10805,7 +10984,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
         "同一画像の再 render は転送しない"
     );
 
-    // ページ2を同寸法(800x600)でその場差し替え(pdf_goto→apply_media→set_static_image と同じ)。
+    // Swap in page 2 at the same size (800x600) in place (same as pdf_goto -> apply_media -> set_static_image).
     app.set_static_image(image::DynamicImage::new_rgb8(800, 600));
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(
@@ -10816,8 +10995,9 @@ fn kitty_rebuilds_on_same_size_image_swap() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 非同期 kitty ビルドが失敗(worker panic → None)しても `kitty_build_pending` が永続 true にならない
-/// こと。永続すると run ループが 16ms ポーリングを続けアイドル CPU 0% が崩れる(レビュー LOW 指摘)。
+/// Even when an async kitty build fails (worker panic -> None), `kitty_build_pending` must not stay
+/// permanently true. If it did, the run loop would keep 16ms polling and the idle 0% CPU target
+/// would break (review LOW finding).
 #[test]
 fn kitty_failed_build_clears_pending() {
     let dir = std::env::temp_dir().join("konoma_kitty_fail_test");
@@ -10834,15 +11014,15 @@ fn kitty_failed_build_clears_pending() {
     app.attach_image_backend(picker, itx);
     let (ktx, krx) = std::sync::mpsc::channel();
     app.attach_kitty_loader(ktx);
-    Box::leak(Box::new(krx)); // 実 worker の結果は使わない(失敗を注入する)
+    Box::leak(Box::new(krx)); // don't use the real worker's result (a failure is injected instead)
 
-    // 初回同期 → ズームで非同期ビルド in-flight(pending=true)。
+    // Initial sync -> async build in-flight via zoom (pending=true).
     app.prepare_image(inner(200, 40)).unwrap();
     app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
     assert!(app.kitty_build_pending(), "ズーム後は in-flight");
 
-    // 現世代のビルド失敗(None)を注入 → 適用は false だが pending は解消する。
+    // Inject a build failure (None) for the current generation -> apply returns false but pending clears.
     let gen = app.kitty_gen;
     assert!(
         !app.apply_kitty(KittyResult { gen, image: None }),
@@ -10856,9 +11036,10 @@ fn kitty_failed_build_clears_pending() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 大 repo での `h`/`l` の重さの主因: `git status`(全 worktree スキャン)が同一リポジトリ内の
-/// root 変更のたびに同期実行されていた。`git status` は workdir から回すので結果は同一 → workdir が
-/// 同じで dirty でなければ再計算せず流用する(ignored の Phase G と同型)。dirty / 別 repo なら取り直す。
+/// The main cause of `h`/`l` being heavy in a large repo: `git status` (a whole-worktree scan) was
+/// run synchronously on every root change within the same repository. `git status` runs from the
+/// workdir so the result is identical -> if the workdir is the same and not dirty, reuse it without
+/// recomputing (same pattern as ignored's Phase G). Re-fetch if dirty / a different repo.
 #[cfg(feature = "git")]
 #[test]
 fn same_repo_navigation_reuses_status_without_recompute() {
@@ -10877,23 +11058,25 @@ fn same_repo_navigation_reuses_status_without_recompute() {
     std::fs::write(dir.join("a.txt"), b"v1\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
-    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // 変更 = status 非空
+    std::fs::write(dir.join("a.txt"), b"v2\n").unwrap(); // change = status non-empty
 
     let root = dir.canonicalize().unwrap();
     let mut app = App::new(root.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // 初回: statuses 計算 + workdir キャッシュ確立
+    app.refresh_git_if_needed(); // 1st time: compute statuses + establish the workdir cache
     assert!(
         app.git_status_of(&root.join("a.txt")).is_some(),
         "変更が見える"
     );
 
-    // status を再計算したか観測するためのセンチネル(実在しない偽エントリ)を差し込む。
-    // 再計算が走れば git_status が丸ごと置き換わりセンチネルは消える(白箱: 直接フィールド操作)。
+    // Plant a sentinel (a fake entry that doesn't exist) to observe whether status was
+    // recomputed. If a recompute runs, git_status is replaced wholesale and the sentinel
+    // disappears (white-box: direct field manipulation).
     let sentinel = root.join("__sentinel_not_a_real_file__");
     app.git_status
         .insert(sentinel.clone(), crate::git::FileStatus::Modified);
 
-    // 同一 repo のサブディレクトリへ潜る(root 変更・workdir 不変・dirty でない)→ 再計算しない。
+    // Descend into a subdirectory of the same repo (root changes, workdir unchanged, not dirty)
+    // -> must not recompute.
     app.tab.root = root.join("sub");
     app.refresh_git_if_needed();
     assert!(
@@ -10901,14 +11084,14 @@ fn same_repo_navigation_reuses_status_without_recompute() {
         "同一 workdir の潜行は status を再計算しない(センチネル残存=キャッシュ流用)"
     );
 
-    // dirty(外部コミット等の再検証)→ 取り直す(センチネル消失)。
+    // dirty (re-validation for e.g. an external commit) -> re-fetch (sentinel disappears).
     app.git_status_dirty = true;
     app.refresh_git_if_needed();
     assert!(
         app.git_status_of(&sentinel).is_none(),
         "dirty 指定で status を再計算(センチネル消失)"
     );
-    // 実データは正しく取得できている(サブディレクトリからでも workdir 全体の変更が見える)。
+    // The real data is correctly fetched (changes across the whole workdir are visible even from a subdirectory).
     assert!(
         app.git_status_of(&root.join("a.txt")).is_some(),
         "再計算後も a.txt の変更は見える"
@@ -10917,17 +11100,17 @@ fn same_repo_navigation_reuses_status_without_recompute() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// workdir 単位の status キャッシュが **別 repo へ移ったら取り直す**こと(親 repo の status を
-/// 入れ子 repo に流用しない)。`descend_into_nested_different_repo_recomputes_ignored_set` の
-/// statuses 版=キャッシュの正しさの核心。
+/// The per-workdir status cache must **re-fetch when moving to a different repo** (must not reuse
+/// the parent repo's status for a nested repo). The statuses counterpart of
+/// `descend_into_nested_different_repo_recomputes_ignored_set` = the core of the cache's correctness.
 #[cfg(feature = "git")]
 #[test]
 fn descend_into_nested_different_repo_recomputes_status() {
     let dir = std::env::temp_dir().join("konoma_status_reuse_diff_repo");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("inner")).unwrap();
-    init_git_repo(&dir); // 外側 repoA
-    init_git_repo(&dir.join("inner")); // 入れ子の別 repoB
+    init_git_repo(&dir); // outer repoA
+    init_git_repo(&dir.join("inner")); // nested, different repoB
 
     let root = dir.canonicalize().unwrap();
     let mut app = App::new(root.clone(), Config::default()).unwrap();
@@ -10935,12 +11118,12 @@ fn descend_into_nested_different_repo_recomputes_status() {
     let wd_a = app.git_status_workdir.clone();
     assert!(wd_a.is_some(), "外側 repo の status workdir が確立");
 
-    // 再計算を観測するためのセンチネル(実在しない偽エントリ)。取り直せば消える。
+    // Sentinel (a fake entry that doesn't exist) to observe recomputation. Disappears on refetch.
     let sentinel = root.join("__status_sentinel__");
     app.git_status
         .insert(sentinel.clone(), crate::git::FileStatus::Modified);
 
-    // inner(別 repo)へ潜行。
+    // Descend into inner (a different repo).
     let i = app
         .tab
         .entries
@@ -10962,8 +11145,9 @@ fn descend_into_nested_different_repo_recomputes_status() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 画像Aのズームで非同期ビルド(gen=N)が飛んだ後に**別ファイルへ切替**えると、遅れて届いた gen=N の
-/// 結果は破棄されること(clear_image が gen を bump)。破棄しないと A の画像が B に紛れ込む。
+/// If an async build (gen=N) is kicked off by zooming image A, and it is then **switched to a
+/// different file**, the gen=N result that arrives late must be discarded (clear_image bumps
+/// gen). Without discarding it, A's image would leak into B.
 #[test]
 fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     let dir = std::env::temp_dir().join("konoma_kitty_switch_race");
@@ -10981,16 +11165,16 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     let (ktx, krx) = std::sync::mpsc::channel();
     app.attach_kitty_loader(ktx);
 
-    // Aを開き(初回同期)、ズームで非同期ビルド gen=N を飛ばす。
+    // Open A (initial synchronous), then kick off async build gen=N via zoom.
     app.prepare_image(inner(200, 40)).unwrap();
     app.tab.image_zoom = 4.0;
     app.prepare_image(inner(200, 40)).unwrap();
-    let stale = krx.recv().expect("Aのズームの worker 結果"); // gen=N の結果
+    let stale = krx.recv().expect("Aのズームの worker 結果"); // the gen=N result
 
-    // 別ファイルBへ切替(clear_image が gen を bump=陳腐化)。
+    // Switch to a different file B (clear_image bumps gen = staleness).
     app.clear_image();
 
-    // 遅れて届いた A の gen=N 結果は破棄され、B(まだ画像なし)に紛れ込まない。
+    // The late-arriving gen=N result for A is discarded and does not leak into B (which has no image yet).
     assert!(
         !app.apply_kitty(stale),
         "切替後に届いた旧ファイルのビルド結果は破棄される"
@@ -11003,8 +11187,9 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `git_dir_watch`: root が repo のサブディレクトリのとき親 `.git` を監視対象に返し、repo root や
-/// 非 repo では None(再帰監視に含まれる/監視不要)。サブディレクトリ root で外部 git 操作を拾う穴埋め。
+/// `git_dir_watch`: when root is a subdirectory of a repo, returns the parent `.git` as the watch
+/// target; for a repo root or a non-repo it returns None (already covered by recursive watching /
+/// no watch needed). Plugs the gap so external git operations are picked up at a subdirectory root.
 #[cfg(feature = "git")]
 #[test]
 fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
@@ -11014,11 +11199,11 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
     init_git_repo(&dir);
     let root = dir.canonicalize().unwrap();
 
-    // repo root: `.git` は再帰監視下 → None。
+    // repo root: `.git` is already under recursive watching -> None.
     let app_root = App::new(root.clone(), Config::default()).unwrap();
     assert_eq!(app_root.git_dir_watch(), None, "repo root は追加監視不要");
 
-    // サブディレクトリ root: 親 `.git` は非監視 → その `.git` を返す。
+    // Subdirectory root: the parent `.git` is not watched -> return that `.git`.
     let app_sub = App::new(root.join("src"), Config::default()).unwrap();
     assert_eq!(
         app_sub.git_dir_watch(),
@@ -11026,7 +11211,7 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
         "subdir root は親 .git を監視対象に返す"
     );
 
-    // 非 repo: None。
+    // Non-repo: None.
     let plain = std::env::temp_dir().join("konoma_git_dir_watch_norepo");
     let _ = std::fs::remove_dir_all(&plain);
     std::fs::create_dir_all(&plain).unwrap();
@@ -11037,10 +11222,12 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
     std::fs::remove_dir_all(&plain).ok();
 }
 
-/// タブ切替(load_active)は git status の再検証の節目: 背面タブが監視外で取りこぼした外部変更に
-/// 追従するため dirty を立て、切替後の描画で status を取り直す(同一 repo の**別サブディレクトリ**
-/// タブでも陳腐化しない)。両タブが別 subdir=切替先 root が git_status_for と異なるので、dirty が
-/// 無いと workdir キャッシュを流用して陳腐化が居残る(この構成で dirty を分離検証する)。
+/// A tab switch (load_active) is a checkpoint for re-validating git status: it sets dirty so that
+/// external changes missed by a background tab's watch are picked up, and status is re-fetched on
+/// the render after the switch (does not go stale even across **different subdirectory** tabs of
+/// the same repo). With both tabs on different subdirs, the destination root differs from
+/// git_status_for, so without dirty the workdir cache would be reused and the staleness would
+/// linger (this setup isolates and verifies dirty).
 #[cfg(feature = "git")]
 #[test]
 fn tab_switch_re_verifies_git_status() {
@@ -11062,26 +11249,27 @@ fn tab_switch_re_verifies_git_status() {
         app.tree_descend().unwrap();
     };
 
-    // タブ0を subx に。status を確立(git_status_for=subx)。
+    // Put tab 0 at subx. Establish status (git_status_for=subx).
     let mut app = App::new(root.clone(), Config::default()).unwrap();
     descend(&mut app, "subx");
     app.refresh_git_if_needed();
 
-    // タブ1を作り、suby へ移動して refresh(git_status_for=suby へ更新・workdir 同一で流用)。
+    // Create tab 1, move to suby, and refresh (git_status_for updates to suby; same workdir so reused).
     app.tab_new().unwrap();
-    app.tree_leave().unwrap(); // repo root へ
+    app.tree_leave().unwrap(); // back to the repo root
     descend(&mut app, "suby");
     app.refresh_git_if_needed();
 
-    // 再計算を観測するセンチネルを今の git_status に仕込む。
+    // Plant a sentinel in the current git_status to observe whether it gets recomputed.
     let sentinel = root.join("__tab_status_sentinel__");
     app.git_status
         .insert(sentinel.clone(), crate::git::FileStatus::Modified);
 
-    // タブ0(subx)へ戻る。切替先 root(subx) != git_status_for(suby) なので、dirty が無いと
-    // workdir キャッシュを流用してセンチネルが残る。dirty があれば取り直して消える。
+    // Switch back to tab 0 (subx). The destination root (subx) != git_status_for (suby), so
+    // without dirty the workdir cache would be reused and the sentinel would remain. With dirty
+    // it re-fetches and the sentinel disappears.
     app.tab_cycle(-1);
-    app.refresh_git_if_needed(); // 切替後の描画相当
+    app.refresh_git_if_needed(); // equivalent to the render after the switch
 
     assert!(
         app.git_status_of(&sentinel).is_none(),
@@ -11110,7 +11298,8 @@ fn git_status_scan_is_offloaded_to_a_worker_thread() {
 
     app.refresh_git_if_needed();
 
-    // 旧実装はこの時点で statuses を同期計算し workdir まで埋めていた(=UI が止まっていた)。
+    // The old implementation synchronously computed statuses at this point and even filled in
+    // workdir (= the UI would stall).
     assert!(
         app.git_status_pending.is_some(),
         "別スレッドへ計算を投げているはず"
@@ -11120,7 +11309,7 @@ fn git_status_scan_is_offloaded_to_a_worker_thread() {
         "UI スレッドでは status を計算しない(旧実装ならここで Some になり落ちる)"
     );
 
-    // ワーカーの結果を受け取って適用すると、初めて反映される。
+    // It's only reflected once the worker's result is received and applied.
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("ワーカーが結果を返す");
@@ -11153,7 +11342,7 @@ fn tab_switch_requests_git_status_without_blocking() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
-    // 初期状態を確定させる(first.txt だけが見えている)。
+    // Settle the initial state (only first.txt is visible).
     app.refresh_git_if_needed();
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
@@ -11161,10 +11350,10 @@ fn tab_switch_requests_git_status_without_blocking() {
     assert!(app.apply_statuses(res));
     assert!(app.git_status_of(&dir.join("first.txt")).is_some());
 
-    // 裏で別のファイルが増える(= 切替時に取り直すべき変化)。
+    // Another file appears in the background (= a change that should be re-fetched on switch).
     std::fs::write(dir.join("second.txt"), b"y").unwrap();
 
-    // 同一 root の2枚目のタブを作って切り替える。
+    // Create and switch to a second tab on the same root.
     app.tab_new().unwrap();
     app.tab_cycle(1);
 
@@ -11177,7 +11366,7 @@ fn tab_switch_requests_git_status_without_blocking() {
         "切替の時点ではまだ同期計算していない(旧実装なら既に second.txt が見えて落ちる)"
     );
 
-    // ワーカーの結果が届いて初めて新しいファイルが見える。
+    // The new file only becomes visible once the worker's result arrives.
     let mut applied = false;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
@@ -11213,7 +11402,7 @@ fn stale_git_status_result_is_discarded() {
     app.refresh_git_if_needed();
     let stale_gen = app.git_status_gen;
 
-    // 別 root へ移って新しい世代のスキャンを投げる。
+    // Move to a different root and kick a scan of the new generation.
     app.git_status_dirty = true;
     app.tab.root = dir.join("sub");
     app.refresh_git_if_needed();
@@ -11253,14 +11442,16 @@ fn repeated_renders_dispatch_at_most_one_git_status_scan() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
 
-    // 結果を**まだ適用せず**に描画相当を 20 回繰り返す(=スキャン走行中の描画)。
+    // Repeat the render-equivalent 20 times **without applying** the result yet (= rendering while
+    // a scan is in flight).
     for _ in 0..20 {
         app.refresh_git_if_needed();
     }
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("1本目の結果");
-    // 投げた本数はチャネルに届く結果数で数える(STATUS_CALLS はプロセス共有で並列テストを拾う)。
+    // Count the number launched by the number of results that arrive on the channel (STATUS_CALLS
+    // is process-shared and picks up parallel tests).
     assert_eq!(
         rx.try_iter().count(),
         0,
@@ -11268,7 +11459,7 @@ fn repeated_renders_dispatch_at_most_one_git_status_scan() {
     );
     assert!(app.apply_statuses(res));
 
-    // 適用後にさらに描画しても再スキャンしない(workdir 単位キャッシュ=Phase G)。
+    // Further rendering after applying still must not rescan (per-workdir cache = Phase G).
     for _ in 0..20 {
         app.refresh_git_if_needed();
     }
@@ -11298,15 +11489,16 @@ fn concurrent_refresh_requests_are_coalesced_into_one_rescan() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
-    app.refresh_git_if_needed(); // 1本目を走らせる(未適用のまま=走行中)
+    app.refresh_git_if_needed(); // start the 1st (left unapplied = in flight)
 
-    // 走行中に fs イベントが 10 連続で来る(エージェントの書き込みバースト相当)。
+    // 10 consecutive fs events arrive while it's in flight (equivalent to an agent's write burst).
     for i in 0..10 {
         std::fs::write(dir.join(format!("burst_{i}.txt")), b"y").unwrap();
         app.refresh_fs(false).unwrap();
     }
-    // 投げたスキャン本数は「チャネルに届く結果の数」で数える(プロセス共有の STATUS_CALLS は
-    // 並列実行される他テストの git 呼び出しを拾ってしまうため使わない)。
+    // Count the number of scans launched by "the number of results that arrive on the channel"
+    // (don't use the process-shared STATUS_CALLS, since it also picks up git calls from other
+    // tests running in parallel).
     let first = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("1本目");
@@ -11316,7 +11508,7 @@ fn concurrent_refresh_requests_are_coalesced_into_one_rescan() {
         "走行中の再検証要求はスレッドを増やさない(合体させる)"
     );
 
-    // 1本目の結果を適用 → 溜まっていた要求を**1回だけ**引き継いで再スキャンする。
+    // Apply the 1st result -> the queued-up requests are carried over into **exactly one** rescan.
     app.apply_statuses(first);
     let second = rx
         .recv_timeout(std::time::Duration::from_secs(30))
@@ -11349,7 +11541,7 @@ fn changed_filter_list_follows_async_status_results() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
-    app.toggle_changed_filter(); // `C`: 同期契約なのでその場で一覧が立つ
+    app.toggle_changed_filter(); // `C`: synchronous contract, so the list is up right there
     assert!(app.tab.changed_filter, "変更ファイルのみ表示になる");
     assert!(app
         .tab
@@ -11357,10 +11549,10 @@ fn changed_filter_list_follows_async_status_results() {
         .iter()
         .any(|e| e.path.ends_with("first.txt")));
 
-    // エージェントが新規ファイルを作る → fs イベント(非同期スキャンを投げるだけ)。
+    // An agent creates a new file -> fs event (only kicks the async scan).
     std::fs::write(dir.join("agent_new.txt"), b"y").unwrap();
     app.refresh_fs(false).unwrap();
-    // 結果が届いて初めて一覧に載る。
+    // It only lands in the list once the result arrives.
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("スキャン結果");
@@ -11400,7 +11592,7 @@ fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, _rx) = std::sync::mpsc::channel();
-    app.attach_status_loader(tx); // 以後 status は非同期(=押した瞬間はまだ届いていない)
+    app.attach_status_loader(tx); // status is async from here on (= not yet arrived at the moment of the keypress)
     app.tab.selected = app
         .tab
         .entries
@@ -11436,16 +11628,18 @@ fn landing_status_result_keeps_tracking_the_current_root() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
-    // 1度適用して workdir キャッシュを確立(以後 `l` は流用パス=世代が進まない)。
+    // Apply once to establish the workdir cache (from here on `l` takes the reuse path = the
+    // generation does not advance).
     app.refresh_git_if_needed();
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("初回");
     assert!(app.apply_statuses(res));
 
-    // 再検証を要求してスキャンを走らせ(未適用のまま)、その最中に `l` で sub へ潜る。
+    // Request re-validation to start a scan (left unapplied), and while it's in flight, descend
+    // into sub with `l`.
     app.git_status_dirty = true;
-    app.refresh_git_if_needed(); // kick(この時点の root = repo root)
+    app.refresh_git_if_needed(); // kick (root at this point = repo root)
     let i = app
         .tab
         .entries
@@ -11454,16 +11648,17 @@ fn landing_status_result_keeps_tracking_the_current_root() {
         .expect("sub");
     app.tab.selected = i;
     app.tree_descend().unwrap();
-    app.refresh_git_if_needed(); // 同一 repo=流用パス(世代は進まない)
+    app.refresh_git_if_needed(); // same repo = reuse path (generation does not advance)
     assert!(app.tab.root.ends_with("sub"));
 
-    // 走行中だった結果が今ここで届く。
+    // The result that was in flight arrives right here.
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("走行中だった結果");
     app.apply_statuses(res);
 
-    // 直後の fs イベントが再検証を投げられること(旧実装は early return で丸ごと落としていた)。
+    // A fs event right after this must still be able to kick a re-validation (the old
+    // implementation dropped it entirely via an early return).
     crate::git::STATUS_CALLS.store(0, Ordering::SeqCst);
     std::fs::write(dir.join("sub").join("burst.txt"), b"y").unwrap();
     app.refresh_fs(false).unwrap();
@@ -11490,7 +11685,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
     std::fs::write(dir.join("other.txt"), b"plain\n").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // タブ1 = data.csv のプレビュー、タブ2 = ツリー。
+    // Tab 1 = preview of data.csv, tab 2 = tree.
     app.tab.selected = app
         .tab
         .entries
@@ -11504,7 +11699,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
     ));
     app.tab_new().unwrap();
 
-    // タブ1(表)へ戻る = load_active が走る。
+    // Switch back to tab 1 (the table) = load_active runs.
     crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
     app.tab_cycle(1);
     assert!(
@@ -11529,11 +11724,11 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("pic.png");
-    std::fs::write(&img, b"not-a-real-png").unwrap(); // 中身は使わない(デコード結果は下で直接入れる)
+    std::fs::write(&img, b"not-a-real-png").unwrap(); // content is unused (the decoded result is set directly below)
     std::fs::write(dir.join("note.txt"), b"x").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // 画像プレビュー相当の状態を作る(picker 無しでもデコード済み状態を再現できる)。
+    // Build a state equivalent to an image preview (a decoded state can be reproduced even without a picker).
     app.tab.selected = app
         .tab
         .entries
@@ -11547,7 +11742,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
     app.image_src = Some(decoded.clone());
     app.preview_media_mtime = crate::app::file_mtime(&img);
 
-    // 別タブへ移り、戻る。
+    // Switch to another tab, then come back.
     app.tab_new().unwrap();
     app.tab_cycle(1);
 
@@ -11560,11 +11755,11 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
         "同一のデコード済み画像を再利用している(作り直していない)"
     );
 
-    // 外部でファイルが変わったら再利用しない(古い絵を出さない)。
-    app.tab_cycle(1); // 退避
+    // Don't reuse it if the file changed externally (don't show a stale picture).
+    app.tab_cycle(1); // stash
     std::thread::sleep(std::time::Duration::from_millis(10));
     std::fs::write(&img, b"changed-bytes").unwrap();
-    app.tab_cycle(1); // 画像タブへ戻る
+    app.tab_cycle(1); // back to the image tab
     assert!(
         app.image_src.is_none()
             || !std::sync::Arc::ptr_eq(app.image_src.as_ref().unwrap(), &decoded),
@@ -11590,8 +11785,9 @@ fn oversized_media_is_not_cached() {
     app.tab.preview_path = Some(img.clone());
     app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
     app.preview_media_mtime = crate::app::file_mtime(&img);
-    // 17M 画素 = 画素数だけ見れば「32MP 上限」を通ってしまうが、16bit(8B/px)なので 136MB。
-    // バッファは 1 行に寄せてメモリを実寸のまま扱う(幅だけ極端に大きい画像)。
+    // 17M pixels = looking only at the pixel count it would slip under a "32MP cap", but at
+    // 16-bit (8B/px) that's 136MB. Squeeze the buffer into 1 row to keep the memory at its true
+    // size (an image that's only extremely wide).
     let huge = image::DynamicImage::ImageRgba16(image::ImageBuffer::new(17_000_000, 1));
     assert!(
         huge.as_bytes().len() > 128 * 1024 * 1024,
@@ -11599,7 +11795,7 @@ fn oversized_media_is_not_cached() {
     );
     app.image_src = Some(std::sync::Arc::new(huge));
 
-    app.tab_new().unwrap(); // save_active 経由で退避が走る
+    app.tab_new().unwrap(); // stashing runs via save_active
     assert!(
         app.media_cache.is_none(),
         "バイト上限超えの画像は退避しない(画素数だけの判定では素通りしていた)"
@@ -11626,13 +11822,13 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(doc.clone());
     app.preview_media_mtime = crate::app::file_mtime(&doc);
-    // フェンス#1 を全画面表示している状態で、その図を退避させる。
+    // With fence #1 shown full-screen, stash that diagram.
     app.tab.preview_kind = Some(PreviewKind::MermaidFence(1));
     let fence1 = std::sync::Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::new(4, 4)));
     app.image_src = Some(fence1.clone());
     app.tab_new().unwrap(); // save_active → stash(fence_ord=1)
 
-    // 別タブが**同じ文書のフェンス#0**を開いている状態に戻る。
+    // Return to a state where another tab has **fence #0 of the same document** open.
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(doc.clone());
     app.tab.preview_kind = Some(PreviewKind::MermaidFence(0));
@@ -11642,7 +11838,7 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
         !restored && app.image_src.is_none(),
         "別のフェンスの図を使い回さない(序数までキーに含める)"
     );
-    // 同じフェンスなら再利用する。
+    // Reuse it when it's the same fence.
     app.tab.preview_kind = Some(PreviewKind::MermaidFence(1));
     assert!(app.restore_media_cache(&doc, 1), "同一フェンスは再利用");
     assert!(std::sync::Arc::ptr_eq(
@@ -11671,10 +11867,10 @@ fn closing_a_media_tab_releases_its_cached_image() {
         image::RgbaImage::new(4, 4),
     )));
 
-    app.tab_new().unwrap(); // 退避される
+    app.tab_new().unwrap(); // gets stashed
     assert!(app.media_cache.is_some(), "前提: 退避されている");
-    app.tab_cycle(1); // 画像タブへ戻る
-    app.tab_close(); // そのタブを閉じる
+    app.tab_cycle(1); // back to the image tab
+    app.tab_close(); // close that tab
     assert!(
         app.media_cache.is_none(),
         "閉じたタブの画像は手放す(誰も再利用できない常駐を残さない)"
@@ -11700,9 +11896,9 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::ImageRgba8(
         image::RgbaImage::new(4, 4),
     )));
-    app.tab_new().unwrap(); // 退避
+    app.tab_new().unwrap(); // evacuate
 
-    // 中身とサイズを変え、mtime だけ元に戻す(cp -p 相当)。
+    // Change the content and size, but restore only the mtime (like `cp -p`).
     let stamp = std::fs::metadata(&img).unwrap().modified().unwrap();
     std::fs::write(&img, b"replaced-with-different-size").unwrap();
     let f = std::fs::OpenOptions::new().write(true).open(&img).unwrap();
@@ -11743,10 +11939,10 @@ fn changed_filter_survives_returning_from_another_repo() {
     let mut app = App::new(a.clone(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
-    app.toggle_changed_filter(); // `C` は同期契約なので即座に一覧が立つ
+    app.toggle_changed_filter(); // `C` has a synchronous contract, so the list is up immediately
     assert!(app.tab.changed_filter, "前提: 変更ファイルのみ表示");
 
-    // 別 repo のタブへ移り、そこで status を確定させる。
+    // Switch to a tab in another repo and let its status settle there.
     app.tab_new().unwrap();
     app.tab.root = b.clone();
     app.tab.open_dir = b.clone();
@@ -11756,7 +11952,7 @@ fn changed_filter_survives_returning_from_another_repo() {
         app.apply_statuses(res);
     }
 
-    // repo A のタブへ戻る(この時点で A の status は走行中)。
+    // Switch back to repo A's tab (A's status scan is still running at this point).
     app.tab_cycle(1);
     assert!(
         app.tab.changed_filter,
@@ -11768,7 +11964,7 @@ fn changed_filter_survives_returning_from_another_repo() {
         "嘘の「変更なし」を出さない"
     );
 
-    // 結果が届けば一覧が作り直される。
+    // Once the result arrives, the list is rebuilt.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while app.git_status_pending.is_some() && std::time::Instant::now() < deadline {
         if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
@@ -11803,7 +11999,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     let f = root.join("doc.md");
 
     for (name, src) in crate::preview::markdown::task_corpus::cases() {
-        // 何個のチェックボックスが画面に出るかは、その文書を一度開いて数える。
+        // Count how many checkboxes appear on screen by opening the document once.
         std::fs::write(&f, src).unwrap();
         let mut app = App::new(root.clone(), Config::default()).unwrap();
         app.tab.selected = app
@@ -11824,7 +12020,8 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             .collect();
 
         for (nth, &item_idx) in task_items.iter().enumerate() {
-            // 毎回、元の内容から開き直す(前のトグルの影響を持ち込まない)。
+            // Reopen from the original content each time (don't carry over the effect of a
+            // previous toggle).
             std::fs::write(&f, src).unwrap();
             let mut app = App::new(root.clone(), Config::default()).unwrap();
             app.tab.selected = app
@@ -11846,7 +12043,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
                 "{name} #{nth}: トグルが拒否された(flash={:?})\n--- src ---\n{src}",
                 app.flash
             );
-            // 変わったのは1文字だけで、その位置は「nth 番目のタスクの状態文字」であること。
+            // Only one character changed, and its position is "the state character of the nth task".
             let diff: Vec<usize> = src
                 .char_indices()
                 .zip(after.char_indices())
@@ -11865,16 +12062,17 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             );
             let locs = crate::preview::markdown::task_source_locs(src, &[' ', 'x'], &[]);
             let loc = &locs[nth];
-            // 期待位置は**製品と同じ行分割**(`split('\n')`)で求める。`str::lines()` は CRLF の
-            // `\r` を落とすので、それで数えると CRLF 文書で1バイトずれる(テスト側の落とし穴)。
+            // Derive the expected position using **the same line-splitting as the product**
+            // (`split('\n')`). `str::lines()` drops the CRLF `\r`, so counting with it is off
+            // by one byte on CRLF documents (a pitfall on the test side).
             let line_start: usize = src.split('\n').take(loc.line).map(|l| l.len() + 1).sum();
             assert_eq!(
                 diff[0],
                 line_start + loc.state_off,
                 "{name} #{nth}: 別の位置を書き換えた\n--- after ---\n{after}"
             );
-            // オフセット計算に依存しない照合: 書き戻し後に読み直すと、**その1個だけ**状態が変わり
-            // 他のチェックボックスは元のまま。
+            // A check that doesn't depend on the offset calculation: after writing back and
+            // re-reading, **only that one** checkbox's state has changed and the rest are unchanged.
             let after_locs = crate::preview::markdown::task_source_locs(&after, &[' ', 'x'], &[]);
             assert_eq!(
                 after_locs.len(),
@@ -11894,7 +12092,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
                     );
                 }
             }
-            // 行構造(改行の種類・行数)は不変。
+            // Line structure (newline kind, line count) is unchanged.
             assert_eq!(
                 src.matches("\r\n").count(),
                 after.matches("\r\n").count(),
@@ -11910,7 +12108,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 真因(b) の front-matter ケース: the renderer (`build_decorated`) strips the leading YAML front
+/// Root cause (b), the front-matter case: the renderer (`build_decorated`) strips the leading YAML front
 /// matter before it ever reaches task detection, so a line inside it that merely *looks* like a task
 /// (`  - [ ] draft`) is never drawn as a checkbox. The write-back scanner must agree — scan the same
 /// (front-matter-stripped) body — or it counts one more "task" than is on screen and the safety check
@@ -11970,7 +12168,7 @@ fn md_task_toggle_skips_pseudo_tasks_inside_front_matter() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 真因(b) の line-count-cap ケース: `preview::text::load` shows only the first `MAX_LINES` (5000)
+/// Root cause (b), the line-count-cap case: `preview::text::load` shows only the first `MAX_LINES` (5000)
 /// lines of a Markdown file, so a document with real checkboxes both inside and beyond that cutoff
 /// disagrees between the (unbounded) raw scanner and the (capped) render — and the safety check then
 /// cancels **every** toggle in the document, including the very first checkbox, which is fully on
@@ -12127,7 +12325,7 @@ fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
         "前提: repo の無視セットが効いている"
     );
 
-    // repo の外(git 管理下でないディレクトリ)へ移る。
+    // Move out of the repo (to a directory not under git control).
     app.tab.root = plain.clone();
     app.git_status_dirty = true;
     app.refresh_git_if_needed();
@@ -12162,7 +12360,7 @@ fn wrapped_md_preview(dir: &Path, name: &str, body: &str, w: u16, h: u16) -> App
     app.tree_activate().unwrap();
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
-    // 保持: 呼び出し側が続けて描画・アクセスできるよう term は落とすが app は返す。
+    // Note: `term` is dropped but `app` is returned so the caller can keep drawing/accessing it.
     app
 }
 
@@ -12177,7 +12375,8 @@ fn assert_focused_block_fully_visible(app: &App, msg: &str) {
     let bottom = (bt + bh).max(top + hh);
     let vh = app.preview_viewport_for_test().max(1) as usize;
     let scroll = app.tab.preview_scroll as usize;
-    // 画面より大きいブロックは先頭合わせ(末尾は不可避に見切れる)。それ以外は完全可視であること。
+    // A block larger than the viewport is aligned to its top (the tail is unavoidably cut off);
+    // otherwise it must be fully visible.
     if bottom - top >= vh {
         assert_eq!(scroll, top, "{msg}: 画面より大きいブロックは先頭合わせ");
     } else {
@@ -12205,12 +12404,12 @@ fn md_focus_reveals_a_wrapping_checkbox_in_full() {
     for i in 0..16 {
         body.push_str(&format!("filler {i}\n\n"));
     }
-    // 幅40で数行に折り返す長いタスクを末尾に。
+    // A long task that wraps across several lines at width 40, at the end.
     let long: String = (0..30).map(|i| format!("word{i} ")).collect();
     body.push_str(&format!("- [ ] {long}\n"));
 
     let mut app = wrapped_md_preview(&dir, "t.md", &body, 40, 18);
-    // 末尾のチェックボックスへ。
+    // Move to the trailing checkbox.
     app.md_focus_move(-1);
     assert!(app.md_focused_task(), "チェックボックスにフォーカス");
     let f = app.tab.focused_item.unwrap();
@@ -12233,20 +12432,22 @@ fn md_focus_reveals_a_wrapping_code_block_in_full() {
         body.push_str(&format!("filler {i}\n\n"));
     }
     body.push_str("```text\n");
-    // 最終行だけ極端に長くして折り返させる(block_end 行の wrap を勘定に入れているかを突く)。
+    // Make only the last line extremely long so it wraps (probes whether the block_end line's
+    // wrap is accounted for).
     body.push_str("short first line\n");
     let long: String = (0..30).map(|i| format!("tok{i} ")).collect();
     body.push_str(&format!("{long}\n"));
     body.push_str("```\n");
 
     let mut app = wrapped_md_preview(&dir, "c.md", &body, 40, 20);
-    app.md_focus_move(1); // 唯一の対象 = コードブロック
+    app.md_focus_move(1); // only target = the code block
     let f = app.tab.focused_item.unwrap();
     let start = app.md_item_line_for_test(f);
     let end = app.md_item_block_end_for_test(f);
-    // 長い1ソース行はレンダラが**事前に**複数の `▎` 論理行へ分割する(ソフト折返しでなく行分割・
-    // 2026-07-07 のガター断絶修正)。よってソース本文2行がそれ以上の論理行に膨らんでいるはず。
-    // その全部を含めて可視化されることが要点。
+    // One long source line gets **pre-split** by the renderer into several `▎` logical lines
+    // (line-splitting, not soft-wrapping — the 2026-07-07 gutter-break fix). So the 2 source body
+    // lines should have expanded into more logical lines than that; the point is that all of them
+    // get made visible.
     assert!(
         end - start + 1 > 3,
         "長い行が複数の視覚行に分割されている (start={start} end={end})"

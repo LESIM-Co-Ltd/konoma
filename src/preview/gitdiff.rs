@@ -1,15 +1,18 @@
-// Git 差分プレビュー (unified・Zed 風着色) の行生成。
+// Line generation for the git diff preview (unified, Zed-style coloring).
 //
-// 仕様 (DIFF VISUAL SPEC):
-//   - 各行は種別を持つ: Context(背景なし) / Added(緑背景) / Removed(赤背景)。
-//   - ガター: **先頭に 1 桁の変更バー "▌"**(行番号の左) + 旧行番号(右寄せ・dim) + 新行番号(dim)。
-//     バー色: Added=緑 / Removed=赤 / Context=空白。リテラルの +/- は出さない。
-//   - 本文: 拡張子から syntect で構文着色し、その上に diff の背景色を重ねる
-//     (前景=syntect、背景=diff・行全体)。背景は暗めで可視 (明るい前景が読める)。
+// Spec (DIFF VISUAL SPEC):
+//   - Each line has a kind: Context (no background) / Added (green background) / Removed (red background).
+//   - Gutter: **a 1-column change bar "▌" at the front** (left of the line numbers) + the old line
+//     number (right-aligned, dim) + the new line number (dim).
+//     Bar color: Added=green / Removed=red / Context=blank. No literal +/- is shown.
+//   - Body: syntax-colored by syntect from the extension, with the diff's background color
+//     overlaid on top (foreground=syntect, background=diff, across the whole line). The background
+//     is dark enough to stay visible (the bright foreground remains readable).
 //
-// side-by-side(横並び)は `diff_lines_side_by_side` で実装(`s` で縦⇄横を切替)。
-// 行内の変更文字は intra_ranges で求め、その文字だけ少し明るい背景にする(語レベル強調)。
-// hunk 単位ステージは DEFERRED。
+// side-by-side is implemented in `diff_lines_side_by_side` (`s` toggles stacked ⇄ side-by-side).
+// The changed characters within a line are found via intra_ranges, and only those characters get a
+// slightly brighter background (word-level emphasis).
+// Hunk-level staging is DEFERRED.
 
 use std::path::Path;
 
@@ -119,7 +122,7 @@ fn pair_ranges(
         let (ro, rn) = word_change_range(&diff[oi].text, &diff[ni].text);
         let o_len = diff[oi].text.chars().count();
         let n_len = diff[ni].text.chars().count();
-        // 共通部分が皆無(=全置換/別物)なら強調しない(行全体は基本色のまま)。
+        // If there's no common part at all (= a total replacement/entirely different), don't emphasize (the whole line stays the base color).
         let has_common = ro.0 > 0 || ro.1 < o_len || rn.0 > 0 || rn.1 < n_len;
         if has_common {
             ranges[oi] = Some(ro);
@@ -141,7 +144,7 @@ fn overlay_intra_bg(
     let (start, end) = match range {
         Some(r) => r,
         None => {
-            // 一様に base を敷く。
+            // Lay `base` uniformly across it.
             return spans
                 .into_iter()
                 .map(|mut sp| {
@@ -197,7 +200,7 @@ pub fn diff_line_to_line(
         DiffLineKind::Context => (None, None, None, " "),
     };
 
-    // ガター: 旧行番号(右寄せ) + 新行番号(右寄せ)。無い側は空白。
+    // Gutter: old line number (right-aligned) + new line number (right-aligned). The absent side is blank.
     let old = dl
         .old_no
         .map(|n| format!("{n:>GUTTER_W$}"))
@@ -212,7 +215,7 @@ pub fn diff_line_to_line(
         dim = dim.bg(bg);
     }
 
-    // 変更バー (1 桁) を**先頭=行番号の左**に置く(色=行種別・背景=行種別)。
+    // Place the change bar (1 column) **at the front = left of the line numbers** (color = line kind, background = line kind).
     let mut bar_style = Style::new();
     if let Some(c) = bar_color {
         bar_style = bar_style.fg(c);
@@ -228,7 +231,7 @@ pub fn diff_line_to_line(
         Span::styled(" ", dim),
     ];
 
-    // 本文: 構文着色 (前景) の上に diff 背景を重ねる。変更文字だけ少し明るい背景にする(intra)。
+    // Body: overlay the diff background on top of the syntax-colored (foreground). Only the changed characters get a slightly brighter background (intra).
     let content = if dl.text.is_empty() {
         vec![Span::raw(String::new())]
     } else {
@@ -236,7 +239,7 @@ pub fn diff_line_to_line(
     };
     match (row_bg, strong_bg) {
         (Some(base), Some(strong)) => spans.extend(overlay_intra_bg(content, base, strong, intra)),
-        _ => spans.extend(content), // Context: 背景なし
+        _ => spans.extend(content), // Context: no background
     }
 
     Line::from(spans)
@@ -258,7 +261,7 @@ pub fn diff_lines(
         .enumerate()
         .map(|(i, dl)| {
             if is_file_header(dl) {
-                cur_ext = ext_from_path(&dl.text); // 以降の行はこのファイルの拡張子で着色
+                cur_ext = ext_from_path(&dl.text); // subsequent lines are colored with this file's extension
                 file_header_line(&dl.text, width)
             } else {
                 diff_line_to_line(dl, ranges[i], &cur_ext, theme)
@@ -267,7 +270,7 @@ pub fn diff_lines(
         .collect()
 }
 
-// ---- side-by-side (横並び) -------------------------------------------------
+// ---- side-by-side -------------------------------------------------
 
 /// One side cell of a side-by-side diff. `no` = line number, `bg`/`bar` = kind color (None = Context), `hl` = changed-char range,
 /// `ext` = extension of the file this line belongs to (for syntax highlighting).
@@ -310,7 +313,7 @@ pub fn diff_lines_side_by_side(
 /// Maximum columns the body can be horizontally scrolled in side-by-side view (= longest body display width − one column's body budget). For clamping on the render side.
 pub fn side_by_side_max_hscroll(diff: &[DiffLine], width: usize) -> usize {
     let left_w = width.saturating_sub(1) / 2;
-    let budget = left_w.saturating_sub(GUTTER_W + 2); // 狭い方(左列)の本文予算で見積もる
+    let budget = left_w.saturating_sub(GUTTER_W + 2); // estimate using the narrower (left column) body budget
     let max_content = diff
         .iter()
         .filter(|dl| !is_file_header(dl))
@@ -331,7 +334,7 @@ fn build_side_rows(diff: &[DiffLine], default_ext: &str) -> Vec<SideRow> {
     for (i, dl) in diff.iter().enumerate() {
         match dl.kind {
             DiffLineKind::Removed => {
-                // 追加の後にまた削除が来たら別ブロック→先に確定。
+                // If another deletion arrives after an addition, it's a separate block → finalize the previous one first.
                 if !add.is_empty() {
                     flush_block(&mut rows, &mut rem, &mut add);
                 }
@@ -355,7 +358,7 @@ fn build_side_rows(diff: &[DiffLine], default_ext: &str) -> Vec<SideRow> {
             DiffLineKind::Context => {
                 flush_block(&mut rows, &mut rem, &mut add);
                 if is_file_header(dl) {
-                    cur_ext = ext_from_path(&dl.text); // 以降このファイルの拡張子で着色
+                    cur_ext = ext_from_path(&dl.text); // subsequently colored with this file's extension
                     rows.push(SideRow::Header(dl.text.clone()));
                 } else {
                     let mk = |no| Half {
@@ -393,7 +396,7 @@ fn render_side_row(
     hscroll: usize,
 ) -> Line<'static> {
     match row {
-        // ファイル境界は全幅(左+区切り+右)の枠付きヘッダ(横スクロールしない)。
+        // A file boundary is a full-width (left + separator + right) framed header (does not scroll horizontally).
         SideRow::Header(text) => file_header_line(&text, left_w + 1 + right_w),
         SideRow::Pair(left, right) => {
             let mut spans = render_half(left, theme, left_w, hscroll);
@@ -428,7 +431,7 @@ fn render_half(
             s
         }
     };
-    // 変更バー(1桁)を**先頭=行番号の左**に置く(ここまでは固定=横スクロールしない)。
+    // Place the change bar (1 column) **at the front = left of the line numbers** (fixed up to here = does not scroll horizontally).
     let bar_style = {
         let mut s = Style::new();
         if let Some(c) = h.bar {
@@ -446,8 +449,9 @@ fn render_half(
     ));
     spans.push(Span::styled(no, dim));
     spans.push(Span::styled(" ", dim));
-    // 本文: 構文着色 → 行内強調(背景)を**全文に**重ねる → hscroll の窓 [hscroll, hscroll+budget) を
-    //       切り出す → 残りを背景色でパディング。これでガター/区切り固定のまま本文だけ横へ動く。
+    // Body: syntax-color → overlay the in-line emphasis (background) across **the whole text** →
+    //       carve out the hscroll window [hscroll, hscroll+budget) → pad the remainder with the
+    //       background color. This lets only the body move horizontally while the gutter/separator stay fixed.
     let budget = col_w.saturating_sub(GUTTER_W + 2); // gutter + bar + space
     let content = if h.text.is_empty() {
         Vec::new()
@@ -462,7 +466,7 @@ fn render_half(
         };
         overlay_intra_bg(content, base, strong, h.hl)
     } else {
-        content // Context: 背景なし
+        content // Context: no background
     };
     let (clipped, used) = clip_spans_window(content, hscroll, budget);
     spans.extend(clipped);
@@ -484,8 +488,8 @@ fn clip_spans_window(
 ) -> (Vec<Span<'static>>, usize) {
     let end = skip.saturating_add(take);
     let mut out = Vec::new();
-    let mut col = 0usize; // 元コンテンツ上の表示桁
-    let mut used = 0usize; // 窓内に採った表示桁
+    let mut col = 0usize; // display column within the original content
+    let mut used = 0usize; // display columns taken within the window
     for sp in spans {
         if col >= end {
             break;
@@ -496,7 +500,7 @@ fn clip_spans_window(
                 break;
             }
             let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-            // 窓 [skip, end) に**完全に**収まる文字だけ採る。
+            // Only take characters that fit **entirely** within the window [skip, end).
             if col >= skip && col + cw <= end {
                 buf.push(ch);
                 used += cw;
@@ -528,12 +532,12 @@ mod tests {
             text: "let x = 1;".into(),
         };
         let line = diff_line_to_line(&dl, None, "rs", "TwoDark");
-        // どこかの span に Added 背景が乗る。
+        // The Added background shows up on some span.
         assert!(
             bg_colors(&line).contains(&Some(BG_ADDED)),
             "Added 背景が無い"
         );
-        // 変更バー "▌" が緑 fg で含まれる。
+        // The change bar "▌" is present with green fg.
         assert!(
             line.spans
                 .iter()
@@ -584,10 +588,10 @@ mod tests {
         for l in &lines {
             let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
             assert!(s.contains('│'), "区切り │ が無い: {s}");
-            // 各列固定幅なので行全体は width=60 に収まる。
+            // Each column has a fixed width, so the whole line fits within width=60.
             assert!(UnicodeWidthStr::width(s.as_str()) <= 60, "幅超過: {s}");
         }
-        // 変更行: old line(削除)は │ より左、new line(追加)は │ より右(=横並び)。
+        // Changed line: old line (Removed) is left of │, new line (Added) is right of │ (= side by side).
         let change: String = lines
             .iter()
             .map(|l| {
@@ -601,7 +605,7 @@ mod tests {
         let bar = change.find('│').unwrap();
         assert!(change.find("old line").unwrap() < bar, "old は左: {change}");
         assert!(change.find("new line").unwrap() > bar, "new は右: {change}");
-        // 左に赤背景(BG_REMOVED)・右に緑背景(BG_ADDED)が乗る(行内強調で span が割れても可)。
+        // A red background (BG_REMOVED) sits on the left, and a green background (BG_ADDED) on the right (fine if in-line emphasis splits the span).
         let row = lines
             .iter()
             .find(|l| {
@@ -629,7 +633,7 @@ mod tests {
     #[test]
     fn side_by_side_hscroll_moves_content_not_gutter() {
         use DiffLineKind::*;
-        let long = format!("START{}END", "x".repeat(40)); // 48 桁
+        let long = format!("START{}END", "x".repeat(40)); // 48 columns
         let diff = vec![DiffLine {
             kind: Context,
             old_no: Some(7),
@@ -643,14 +647,14 @@ mod tests {
                 .map(|s| s.content.as_ref())
                 .collect()
         };
-        // hscroll=0: START 見え END 不可視。行番号 7・区切り │ は出る。
+        // hscroll=0: START visible, END invisible. Line number 7 and separator │ appear.
         let s0 = row(0);
         assert!(s0.contains("START") && !s0.contains("END"), "0: {s0}");
         assert!(
             s0.contains('7') && s0.contains('│'),
             "行番号/区切りが出る: {s0}"
         );
-        // 最大まで横スクロール: END 見え START 不可視。**行番号 7・区切り │ は固定で残る**。
+        // Scrolled horizontally to the max: END visible, START invisible. **Line number 7 and separator │ stay fixed**.
         let max = side_by_side_max_hscroll(&diff, 40);
         assert!(max > 0, "横スクロール可能幅がある");
         let se = row(max);
@@ -678,7 +682,7 @@ mod tests {
                 text: "    let x = 2;".into(),
             },
         ];
-        // unified: 削除行は '1' が strong 背景・他本文は base。追加行は '2' が strong。
+        // unified: on the deletion line, '1' has the strong background while the rest of the body is base. On the addition line, '2' is strong.
         let lines = diff_lines(&diff, "rs", "TwoDark", 80);
         assert!(
             lines[0]
@@ -702,7 +706,7 @@ mod tests {
             "追加行: 変更文字 '2' が明るい背景でない"
         );
 
-        // side-by-side: 同じ行に左 '1'(strong red) と右 '2'(strong green)。
+        // side-by-side: the same row has left '1' (strong red) and right '2' (strong green).
         let sbs = diff_lines_side_by_side(&diff, "rs", "TwoDark", 60, 0);
         let has_red_strong = sbs.iter().any(|l| {
             l.spans
@@ -724,7 +728,7 @@ mod tests {
     fn file_header_is_framed_and_per_file_syntax_applies() {
         use DiffLineKind::*;
         let diff = vec![
-            // ファイル境界ヘッダ(行番号 None・素のパス)。
+            // A file boundary header (line numbers None, a plain path).
             DiffLine {
                 kind: Context,
                 old_no: None,
@@ -739,7 +743,7 @@ mod tests {
             },
         ];
         let lines = diff_lines(&diff, "", "TwoDark", 60);
-        // 先頭は枠付きヘッダ: ╭ … path … ╮ で青、`──` 装飾は出さない。
+        // The first is a framed header: ╭ … path … ╮ in blue, with no `──` decoration.
         let hdr: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             hdr.starts_with('┌') && hdr.ends_with('┐'),
@@ -751,7 +755,7 @@ mod tests {
             "枠が青(HEADER_FG)でない"
         );
         assert!(!hdr.contains("── "), "旧 `── ` 装飾が残っている");
-        // ヘッダ以降はそのファイル(.rs)の構文で着色 → 本文に複数の Rgb 前景色。
+        // After the header, colored with that file's (.rs) syntax → the body has multiple Rgb foreground colors.
         let colors: std::collections::HashSet<(u8, u8, u8)> = lines[1]
             .spans
             .iter()
@@ -776,21 +780,21 @@ mod tests {
             text: "fn main() {".into(),
         };
         let line = diff_line_to_line(&dl, None, "rs", "TwoDark");
-        // Context は diff 背景を敷かない (全 span の bg は None)。
+        // Context lays no diff background (every span's bg is None).
         assert!(
             bg_colors(&line).iter().all(|b| b.is_none()),
             "Context に背景が乗っている"
         );
-        // リテラルの +/- は出さない。
+        // No literal +/- is shown.
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!joined.trim_start().starts_with('+'));
-        assert!(!joined.contains("─")); // ヘッダ罫線でもない
+        assert!(!joined.contains("─")); // not a header rule line either
     }
 
     #[test]
     fn side_by_side_empty_cell_and_hscroll_paths() {
         use DiffLineKind::*;
-        // 削除2行・追加1行 → 2行目は右(add)が空セル(None=render_half の空セル経路)。
+        // 2 deletion lines, 1 addition line → on the 2nd line the right side (add) is an empty cell (None = render_half's empty-cell path).
         let diff = vec![
             DiffLine {
                 kind: Removed,
@@ -811,7 +815,7 @@ mod tests {
                 text: "added only line".into(),
             },
         ];
-        // hscroll=0: 空セル経路。各行は区切り │ を持ち幅 60 に収まる。
+        // hscroll=0: the empty-cell path. Each row has the separator │ and fits within width 60.
         let lines = diff_lines_side_by_side(&diff, "rs", "TwoDark", 60, 0);
         assert!(!lines.is_empty());
         for l in &lines {
@@ -819,7 +823,7 @@ mod tests {
             assert!(s.contains('│'), "区切りが無い: {s}");
             assert!(UnicodeWidthStr::width(s.as_str()) <= 60, "幅超過: {s}");
         }
-        // "removed second line" の行: 右側(new)は空セル → │ 以降は空白のみ。
+        // The "removed second line" row: the right side (new) is an empty cell → only blanks after │.
         let row: String = lines
             .iter()
             .map(|l| {
@@ -834,7 +838,7 @@ mod tests {
         let right = &row[bar + '│'.len_utf8()..];
         assert!(right.trim().is_empty(), "右側は空セル(空白): {right:?}");
 
-        // hscroll>0: 本文だけ横シフトする render_half の経路も通す(幅は保つ)。
+        // hscroll>0: also exercise render_half's path where only the body shifts horizontally (width is preserved).
         let shifted = diff_lines_side_by_side(&diff, "rs", "TwoDark", 60, 6);
         assert!(!shifted.is_empty());
         for l in &shifted {

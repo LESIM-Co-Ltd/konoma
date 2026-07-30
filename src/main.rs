@@ -48,13 +48,15 @@ use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 type ResizeResult = Result<ResizeResponse, Errors>;
 
 fn main() -> Result<()> {
-    // 引数: konoma [DIR]。無ければカレント。cwd 取得失敗は panic させず ? で穏当に返す。
+    // Argument: konoma [DIR]. Falls back to the current directory. On cwd-lookup failure, don't
+    // panic — return gracefully via ?.
     let dir = match std::env::args().nth(1) {
         Some(arg) => PathBuf::from(arg),
         None => std::env::current_dir().context("カレントディレクトリを取得できません")?,
     };
-    // 相対指定(例: `konoma samples`)でもパスコピーが正しい絶対パスになるよう正規化する。
-    // canonicalize 失敗時は cwd と連結してフォールバック。
+    // Normalize so path-copy still produces a correct absolute path even for a relative argument
+    // (e.g. `konoma samples`).
+    // On canonicalize failure, fall back by joining it with cwd.
     let dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| {
         std::env::current_dir()
             .map(|cwd| cwd.join(&dir))
@@ -63,27 +65,35 @@ fn main() -> Result<()> {
 
     let (cfg, cfg_err) = config::Config::load_reporting();
 
-    // syntect 資産ロード＋文法の正規表現コンパイル(言語あたり1回・debug で数秒)は重い。起動と同時に
-    // 別スレッドで、現在 root の拡張子を**ファイル数の多い順**に温めておき、最初のコードプレビューの
-    // フリーズを無くす(間に合わなければ初回だけ通常どおり待つ)。単一スレッド＋yield で他処理を妨げない。
-    // ハイライト無効(ui.syntax_highlight=false)なら syntect を一切使わないのでウォーム不要。
+    // Loading syntect's assets + compiling a grammar's regexes (once per language, a few seconds
+    // in debug) is heavy. On startup, warm it up on a separate thread — going through the current
+    // root's extensions **in order of most files first** — to eliminate the freeze on the first
+    // code preview (if it doesn't finish in time, just wait normally for the first one only). A
+    // single thread + yield so it doesn't get in the way of other work.
+    // With highlighting off (ui.syntax_highlight=false), syntect is never used at all, so no
+    // warm-up is needed.
     if cfg.ui.syntax_highlight {
         let root = dir.clone();
         std::thread::spawn(move || preview::code::warm_dir(root));
     }
 
     let mut terminal = ratatui::init();
-    // ブラケットペーストを有効化: ファイルのドラッグ&ドロップ(端末がパスをペーストとして渡す)を
-    // `Event::Paste` として受け、コピー/移動ダイアログに繋ぐため。非対応端末では無視され無害。
+    // Enable bracketed paste: so a file drag & drop (the terminal delivers the path as a paste) is
+    // received as `Event::Paste` and wired into the copy/move dialog. Ignored harmlessly on
+    // unsupported terminals.
     let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
 
-    // 画像バックエンド: 端末問い合わせ(kitty 等の検出)。alt screen 入室後・イベント読取前に1回。
-    // 失敗(非対応端末等)してもプレビュー以外は動くよう Option で握る。
+    // Image backend: query the terminal (detects kitty, etc.). Once, after entering the alt
+    // screen and before reading events.
+    // Held as an Option so that on failure (unsupported terminal, etc.) everything but the
+    // preview still works.
     let picker = Picker::from_query_stdio().ok();
 
-    // 画像が出せる端末なら、SVG のシステムフォント列挙(初回 ~数十ms)を起動の裏で先に温める
-    // (初回 SVG 表示時の UI フリーズを隠す。構文ハイライトの warm_dir と同じ方針)。
-    // mermaid 画像モードならレンダラ側の遅延フォント計測も同様に温める(初回図表示の数十ms を隠す)。
+    // On a terminal that can show images, warm up SVG's system-font enumeration (~tens of ms the
+    // first time) in the background at startup ahead of time
+    // (hides the UI freeze on the first SVG display — the same policy as syntax highlighting's warm_dir).
+    // In mermaid image mode, likewise warm up the renderer's lazy font measurement (hides the
+    // tens-of-ms freeze on the first diagram display).
     if picker.is_some() {
         std::thread::spawn(preview::svg::warm_fontdb);
         if cfg.ui.mermaid != "text" {
@@ -91,29 +101,34 @@ fn main() -> Result<()> {
         }
     }
 
-    // リサイズ/エンコードのオフロード用チャネルとワーカースレッド。
+    // Channel and worker thread for offloading resize/encode.
     let (req_tx, req_rx) = unbounded_channel::<ResizeRequest>();
     let (resp_tx, resp_rx) = unbounded_channel::<ResizeResult>();
     let worker = std::thread::spawn(move || resize_worker(req_rx, resp_tx));
 
-    // 重いメディア(SVG ラスタライズ / GIF 全フレームデコード)を別スレッドで読み、結果を run ループへ。
+    // Read heavy media (SVG rasterization / full-frame GIF decode) on a separate thread, and send
+    // the result to the run loop.
     let (media_tx, media_rx) = std::sync::mpsc::channel::<MediaResult>();
-    // kitty 画像の resize+圧縮(ズーム/パン)を別スレッドで行い、結果を run ループへ(初回は同期)。
+    // Do a kitty image's resize+compress (zoom/pan) on a separate thread, and send the result to
+    // the run loop (the first one is synchronous).
     let (kitty_tx, kitty_rx) = std::sync::mpsc::channel::<KittyResult>();
-    // インライン Markdown 画像のデコードを別スレッドで行い、結果を run ループへ。
+    // Decode inline Markdown images on a separate thread, and send the result to the run loop.
     let (md_img_tx, md_img_rx) = std::sync::mpsc::channel::<MdImageResult>();
-    // リモート(http(s)) Markdown 画像の curl ダウンロード完了を run ループへ通知する。
+    // Notify the run loop when a remote (http(s)) Markdown image's curl download completes.
     let (md_remote_tx, md_remote_rx) = std::sync::mpsc::channel::<RemoteFetch>();
-    // インライン Markdown 画像のエンコード(リサイズ+プロトコル)を専用ワーカーへ逃がす(UI を塞がない)。
+    // Offload inline Markdown image encoding (resize + protocol) to a dedicated worker (doesn't
+    // block the UI).
     let (md_enc_tx, md_enc_worker_rx) = std::sync::mpsc::channel::<MdEncodeRequest>();
     let (md_enc_res_tx, md_enc_res_rx) = std::sync::mpsc::channel::<MdEncodeResult>();
-    // 重い git ignored(無視セット・大規模 repo で ~800ms)を別スレッドで計算し、結果を run ループへ。
+    // Compute the heavy git ignored (the ignore set — ~800ms on a large repo) on a separate
+    // thread, and send the result to the run loop.
     let (ignored_tx, ignored_rx) = std::sync::mpsc::channel::<IgnoredResult>();
-    // フル `git status`(全 worktree 走査)も別スレッドへ。小さい repo でも ~5ms、大きい repo では
-    // 数百 ms かかり、タブ切替/ディレクトリ移動のたびに UI を止めていた。
+    // A full `git status` (a whole-worktree scan) also goes to a separate thread. Even on a small
+    // repo it's ~5ms, and on a large repo it can take hundreds of ms, stalling the UI on every tab
+    // switch/directory move.
     let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
-    // 長時間かかるファイル操作(コピー/移動/複製/削除)も別スレッドへ。大きなディレクトリの貼り付け/
-    // 削除で入力/描画が固まっていた(設計原則#4)。
+    // Long-running file operations (copy/move/duplicate/delete) also go to a separate thread.
+    // Pasting/deleting a large directory used to freeze input/rendering (design principle #4).
     let (fileop_tx, fileop_rx) = std::sync::mpsc::channel::<FileOpResult>();
 
     let start_dir = dir.clone();
@@ -125,29 +140,32 @@ fn main() -> Result<()> {
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
     app.attach_fileop_runner(fileop_tx);
-    // 設定の読み込みエラー + キーマップ衝突/無視した設定を起動時メッセージで知らせる
-    // (黙って既定に戻ると気づけないため)。両方あれば結合して 1 行に出す。
+    // Report a config load error + keymap conflicts/ignored settings via a startup message
+    // (silently falling back to the default would go unnoticed). If both are present, combine
+    // them into one line.
     let km_report = app.keymap_report();
     app.flash = match (cfg_err, km_report) {
         (Some(a), Some(b)) => Some(format!("{a} / {b}")),
         (Some(a), None) => Some(a),
         (None, b) => b,
     };
-    // インライン画像のエンコードワーカー: バックエンドがある時だけ起動する(Picker を clone して渡す)。
-    // App を drop すれば md_enc_tx が消え、ワーカーの recv が Err を返して綺麗に終了する。
+    // Inline image encode worker: launched only when there is a backend (clones the Picker to pass in).
+    // Dropping App makes md_enc_tx disappear, and the worker's recv returns Err, terminating it cleanly.
     if let Some(pk) = picker.clone() {
         std::thread::spawn(move || app::md_encode_worker(pk, md_enc_worker_rx, md_enc_res_tx));
         app.attach_md_encoder(md_enc_tx);
     }
     if let Some(picker) = picker {
-        // tx を App に渡す(画像ごとの ThreadProtocol が clone して使う)。
+        // Pass tx to App (each image's ThreadProtocol clones and uses it).
         app.attach_image_backend(picker, req_tx);
     }
-    // 注意: main 側に req_tx の clone を残さない。App を drop すれば全 Sender が消え、
-    // ワーカーの recv が None を返して綺麗に終了できる。
+    // Note: don't keep a clone of req_tx on the main side. Dropping App makes every Sender
+    // disappear, so the worker's recv returns None and can terminate cleanly.
 
-    // タブセッション([ui] restore_tabs): 前回この起動ディレクトリで開いていたタブ構成を復元する。
-    // 各ローダ/画像バックエンドを繋いだ後に行う(復元でプレビューを開き直すとメディアジョブが飛ぶため)。
+    // Tab session ([ui] restore_tabs): restore the tab layout that was open in this start
+    // directory last time.
+    // Done after wiring up each loader/image backend (restoring re-opens previews, which fires
+    // media jobs).
     app.attach_session_store(session::SessionStore::load(&start_dir));
     app.restore_session();
 
@@ -167,13 +185,13 @@ fn main() -> Result<()> {
         },
     );
 
-    // 終了時にタブセッションを保存する(終了時点の最新状態が確定形。restore_tabs=false なら no-op)。
+    // Save the tab session on exit (the state at exit time is the final form. no-op when restore_tabs=false).
     app.save_session();
 
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
 
-    // App を畳んで Sender を全て落とし、ワーカーを終了させる。
+    // Fold up App, dropping every Sender, so the workers terminate.
     app.detach_image_backend();
     drop(app);
     let _ = worker.join();
@@ -189,9 +207,9 @@ fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<R
     };
     rt.block_on(async move {
         while let Some(req) = rx.recv().await {
-            // 1要求 = 1エンコード。完了を UI へ返す(UI が try_recv で反映)。
+            // 1 request = 1 encode. Return completion to the UI (the UI applies it via try_recv).
             if tx.send(req.resize_encode()).is_err() {
-                break; // UI 側が終了
+                break; // the UI side has terminated
             }
         }
     });
@@ -210,10 +228,10 @@ fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<R
 ///   ignore set must be rebuilt). For other changes, `ignored` is left alone and only the cheap `statuses` is updated.
 fn classify_fs_paths(paths: &[PathBuf]) -> (bool, bool) {
     if paths.is_empty() {
-        return (true, false); // パス不明のイベントは安全側(再読込する・ignored は触らない)
+        return (true, false); // An event with an unknown path errs safe (reload, don't touch ignored)
     }
-    // どのパス変更も再読込に値する(バーストは run ループが1回にまとめる)。無視ルールが
-    // 変わったイベントが含まれる時だけ、重い ignored セットの作り直しも要求する。
+    // Any path change is worth reloading (the run loop coalesces a burst into one). Only request
+    // rebuilding the heavy ignored set when an event that changed the ignore rules is included.
     let ignore_rules = paths.iter().any(|p| is_ignore_rule_file(p));
     (true, ignore_rules)
 }
@@ -311,7 +329,7 @@ fn is_ignore_rule_file(p: &Path) -> bool {
     match name {
         ".gitignore" => !p.components().any(|c| c.as_os_str() == "node_modules"),
         "exclude" => {
-            // .git/info/exclude（親=info, 祖父=.git）
+            // .git/info/exclude (parent=info, grandparent=.git)
             p.parent()
                 .and_then(|pp| pp.file_name())
                 .and_then(|n| n.to_str())
@@ -344,18 +362,20 @@ fn run(
     mut resp_rx: UnboundedReceiver<ResizeResult>,
     rx: WorkerRx,
 ) -> Result<()> {
-    // ファイル監視: 現在の root 配下の変更でツリー/git status を自動更新する。
-    // notify のコールバックは別スレッドから呼ばれるので、変更を std チャネルで run ループへ送る。
-    // チャネルの bool = 「無視ルール(.gitignore / .git/info/exclude)が変わったか」。
-    // 外部 git 操作の `.git/*.lock` churn も再読込対象(classify_fs_paths。konoma はロックフリー
-    // なので自己フィードバックループは起きない)。
-    // チャネルの Vec<PathBuf> = フォローモード用の変更パス候補(.git 配下を除く)。
+    // File watching: auto-update the tree/git status on a change under the current root.
+    // notify's callback is called from a separate thread, so send changes to the run loop over a
+    // std channel.
+    // The channel's bool = "whether an ignore rule (.gitignore / .git/info/exclude) changed."
+    // `.git/*.lock` churn from an external git operation is also a reload target
+    // (classify_fs_paths — konoma is lock-free, so no self-feedback loop occurs).
+    // The channel's Vec<PathBuf> = candidate changed paths for follow mode (excluding under .git).
     let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(bool, Vec<PathBuf>)>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
-            // 中身の変化でないイベント(Linux inotify の open/read 通知)はここで弾く
-            // (is_content_event)。両方の watch(root 再帰＋extra/`.git` 非再帰)がこのコールバック
-            // 1つを共有しているので、ここで弾けば経路すべてに効く。
+            // Events that aren't a content change (Linux inotify's open/read notifications) are
+            // filtered out right here (is_content_event). Both watches (recursive root + the
+            // non-recursive extra/`.git` watch) share this one callback, so filtering here covers
+            // every path.
             if !is_content_event(&ev.kind) {
                 return;
             }
@@ -372,24 +392,30 @@ fn run(
     // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
     // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
     let mut watched_extra: Option<PathBuf> = None;
-    // root が repo のサブディレクトリのときは親の `.git` が再帰監視の外に出る。外部 git 操作
-    // (作業ファイルを触らない commit / 外部 checkout)を拾えるよう `.git` を非再帰監視する
-    // (`App::git_dir_watch`)。root が repo root のときは再帰監視に含まれるので None。
+    // When root is a subdirectory of a repo, the parent's `.git` falls outside the recursive
+    // watch. Watch `.git` non-recursively so external git operations (a commit that doesn't touch
+    // working files / an external checkout) are picked up (`App::git_dir_watch`). When root is the
+    // repo root, this is already covered by the recursive watch, so it's None.
     let mut watched_git: Option<PathBuf> = None;
 
-    // ローディング: 裏でコード文法をウォームし、完了をこのチャネルで run ループへ通知。
-    // indicator/progressive とも UI を止めず(スピナーが回り続ける)、完了で着色版に差し替える。
+    // Loading: warm the code grammar in the background and notify the run loop of completion over
+    // this channel.
+    // Both indicator/progressive keep the UI unblocked (the spinner keeps spinning), and swap in
+    // the colored version on completion.
     let (hl_tx, hl_rx) = std::sync::mpsc::channel::<()>();
 
-    // フォローモードの切替 debounce: エージェントが複数ファイルを高速に書き替えても、
-    // ビューの切替(ファイル跨ぎのジャンプ)は最短この間隔＝画面が跳ね回らず一瞥できる。
-    // 保留中の最新ターゲット(latest-wins)は dwell 明けに拾う。同一ファイルの再読込は無制限(別経路)。
+    // Follow mode's switch debounce: even when an agent rewrites several files fast, view
+    // switching (jumping across files) is at least this interval apart = the screen doesn't
+    // bounce around and stays glanceable.
+    // The most recent pending target (latest-wins) is picked up once the dwell period ends.
+    // Reloading the same file is unlimited (a separate path).
     const FOLLOW_MIN_DWELL: Duration = Duration::from_millis(1000);
     let mut pending_follow: Option<PathBuf> = None;
     let mut last_follow_jump: Option<std::time::Instant> = None;
 
-    // 実行中のファイル操作(自分が起こした大量の書き込み)が生む fs イベントは、その場では
-    // 処理せず溜めておき、操作の完了後に 1 回だけ反映する(下の should_defer_fs_events)。
+    // fs events produced by an in-progress file operation (a bulk write we caused ourselves)
+    // aren't processed on the spot — they're accumulated and applied only once after the
+    // operation finishes (should_defer_fs_events below).
     let mut deferred_fs = false;
     let mut deferred_ignore_rules = false;
 
@@ -398,19 +424,23 @@ fn run(
         if needs_redraw {
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
-            // インライン画像(kitty unicode placeholder)の表示位置が動いたフレームは、端末を
-            // フル再描画して旧位置の残骸を掃除する。placeholder 行は「画像 ID を前景色に符号化
-            // した文字列」を端末グリッドへ直接印字するが、ratatui の差分描画は空白→空白を
-            // 再送しないため、スクロール等で画像が動くと旧 ID 行が色付きバーとして取り残される
-            // (Ghostty 実機で青/ピンクのバーとして報告・ID が変わる毎に色も変わる)。
+            // On a frame where an inline image's (kitty unicode placeholder) display position
+            // moved, do a full redraw of the terminal to clean up the leftover debris at the old
+            // position. A placeholder row is a "string that encodes the image ID into the
+            // foreground color" printed directly onto the terminal grid, but since ratatui's
+            // diff-based rendering doesn't resend blank→blank, when the image moves (via scroll,
+            // etc.) the old ID row is left behind as a colored bar (reported on real Ghostty as a
+            // blue/pink bar — the color changes each time the ID changes).
             if app.take_md_overlay_moved() {
                 terminal.clear()?;
                 terminal.draw(|frame| ui::render(frame, app))?;
             }
         }
 
-        // 重いコードハイライト待ち(cold な言語の初回): 文法コンパイルを別スレッドへ逃がし UI を止めない。
-        // indicator は中央スピナーを回し、progressive は素テキストを表示したまま、完了で着色に差し替え。
+        // Waiting on heavy code highlighting (the first time for a cold language): offload the
+        // grammar compile to a separate thread so the UI isn't blocked.
+        // indicator spins a centered spinner, progressive keeps showing plain text, and either
+        // swaps in the coloring on completion.
         if let Some((ext, path)) = app.take_warm_job() {
             let tx = hl_tx.clone();
             std::thread::spawn(move || {
@@ -419,15 +449,20 @@ fn run(
             });
         }
 
-        // 入力待ち(タイムアウト付き)。タイムアウト中もワーカー結果やファイル変更を拾えるようにする。
-        // キー長押し対策: 1イベント=1描画だと、描画が重いとき入力が溜まり「離した後もスクロール
-        // し続ける」。保留中のイベントを**一括で処理してから 1 回だけ描画**する(最終状態へ収束)。
-        // GIF 再生中は次フレーム期限まで(≤100ms)で起き、滑らかにコマ送りする(全画面/Markdown
-        // インライン、両方の次フレーム期限のうち近い方)。
-        // 別スレッドのメディア読み込み待ちの間も、結果を即反映できるようこまめに起きる。
+        // Wait for input (with a timeout). Even during the timeout, keep picking up worker results
+        // and file changes.
+        // A guard against holding a key down: with 1 event = 1 draw, if drawing is heavy, input
+        // piles up and "it keeps scrolling even after you release the key." **Process all pending
+        // events in a batch, then draw exactly once** (converge to the final state).
+        // While a GIF is playing, wake up by the next frame's deadline (≤100ms) and advance the
+        // frame smoothly (whichever is sooner between the full-screen and Markdown-inline next
+        // frame deadlines).
+        // While waiting on a separate thread's media load too, wake up frequently so the result
+        // can be applied right away.
         let poll_timeout =
             if app.is_media_loading() || app.md_images_loading() || app.kitty_build_pending() {
-                // 別スレッド待ち(メディア/kitty ビルド)の間はこまめに起きて結果を即反映する。
+                // While waiting on a separate thread (media/kitty build), wake up frequently and
+                // apply the result right away.
                 Duration::from_millis(16)
             } else {
                 app.gif_poll_timeout()
@@ -442,11 +477,14 @@ fn run(
                 let ev = event::read()?;
                 match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        // キー処理中の回復可能な失敗(fs/git 操作: refresh/rebuild_tree/paste/
-                        // delete/rename 等)で TUI を落とさない(設計原則#3「クラッシュさせない」)。
-                        // handle_key は端末制御も描画も初期化もせず app 状態を変えるだけなので、
-                        // ここで返る Err はすべて回復可能。`?` で run() ごと終了させず、握り潰さず
-                        // flash でユーザに見せて継続する(真に致命的な描画/端末制御の `?` は run 本体に残す)。
+                        // Don't bring down the TUI on a recoverable failure during key handling
+                        // (fs/git operations: refresh/rebuild_tree/paste/delete/rename etc.) —
+                        // design principle #3, "never crash."
+                        // handle_key touches neither terminal control nor drawing nor
+                        // initialization, only App state, so every Err returned here is
+                        // recoverable. Don't end run() outright with `?`, and don't swallow it
+                        // either — show it to the user via flash and keep going (the truly fatal
+                        // `?`s for drawing/terminal control stay in the body of run()).
                         let res = handle_key(app, key);
                         if resolve_key_result(app, res) {
                             quit = true;
@@ -455,15 +493,16 @@ fn run(
                         needs_redraw = true;
                     }
                     Event::Resize(_, _) => needs_redraw = true,
-                    // ファイルの D&D はターミナルがパスをペーストとして渡す → 受けてコピー/移動へ。
-                    // ただしダイアログ/モーダル/オーバーレイ表示中は横入りさせず無視する (#13)。
+                    // A file drag & drop: the terminal delivers the path as a paste → receive it
+                    // and route it into copy/move.
+                    // But ignore it (don't let it interrupt) while a dialog/modal/overlay is shown (#13).
                     Event::Paste(s) if paste_accepted(app.surface()) => {
                         app.handle_paste(s);
                         needs_redraw = true;
                     }
                     _ => {}
                 }
-                // まだ即時に取れるイベントがあれば続けて処理(無ければ抜けて描画へ)。
+                // Keep processing if another event can be taken immediately (otherwise break out to draw).
                 if !event::poll(Duration::from_millis(0))? {
                     break;
                 }
@@ -473,30 +512,36 @@ fn run(
             }
         }
 
-        // 外部エディタ要求(`e`): TUI を退避して同期起動し、終了後に復帰＋プレビュー再読込。
-        // プレビューから開いた時は表示中の行(line)でエディタを開く。
+        // External editor request (`e`): suspend the TUI and launch synchronously, then restore +
+        // reload the preview when it exits.
+        // When opened from the preview, open the editor at the currently displayed line (line).
         if let Some((path, line)) = app.take_pending_edit() {
             run_editor(terminal, app, &path, line)?;
             needs_redraw = true;
         }
 
-        // 外部 git ツール要求(`O`): 設定 git.tool(既定 lazygit)を repo workdir で同期起動。
+        // External git tool request (`O`): launch the configured git.tool (default lazygit)
+        // synchronously in the repo workdir.
         if app.take_launch_git_tool() {
             run_git_tool(terminal, app)?;
-            // 外部ツールが作業ツリー/git 状態を変えた可能性 → 一覧・git status・派生ビューを取り直す
-            // (run_editor 復帰が reload_preview するのと対称。Git ビューの git_view_entries 陳腐化 #4 を防ぐ)。
+            // The external tool may have changed the working tree/git state → re-fetch the listing,
+            // git status, and derived views
+            // (symmetric with run_editor's restore calling reload_preview. Prevents the Git view's
+            // git_view_entries from going stale — #4).
             let _ = app.refresh();
             needs_redraw = true;
         }
 
-        // ウォーム完了: 着色版に差し替えるため再描画(grammar は warm 済で即時)。
+        // Warm-up complete: re-render to swap in the colored version (the grammar is already warm,
+        // so it's instant).
         while hl_rx.try_recv().is_ok() {
             app.clear_highlight_pending();
             needs_redraw = true;
         }
 
-        // 中央スピナー表示中(コードハイライト待ち / SVG・GIF の別スレッド読み込み中)は、
-        // 待機ティックごとにコマを進めて回す。読み込み中は poll が 16ms なので滑らかに回る。
+        // While the centered spinner is shown (waiting on code highlighting / a separate thread
+        // loading SVG or GIF), advance it a frame on every waiting tick. While loading, poll is
+        // 16ms, so it spins smoothly.
         if (app.is_highlight_pending() && app.loading_is_indicator())
             || app.is_media_loading()
             || app.busy_indicator_active()
@@ -505,97 +550,109 @@ fn run(
             needs_redraw = true;
         }
 
-        // ワーカーからの再エンコード結果を反映(複数あれば全部)。
+        // Apply the re-encode result(s) from the worker (all of them, if there are several).
         while let Ok(resp) = resp_rx.try_recv() {
             if app.apply_image_resize(resp) {
                 needs_redraw = true;
             }
         }
 
-        // 別スレッドのメディア読み込み(SVG/GIF)完了を反映(複数あれば全部・古い世代は破棄)。
+        // Apply the separate thread's media load (SVG/GIF) completion(s) (all of them, if there
+        // are several; discard stale generations).
         while let Ok(result) = rx.media.try_recv() {
             if app.apply_media(result) {
                 needs_redraw = true;
             }
         }
 
-        // 別スレッドの kitty 画像ビルド(ズーム/パンの resize+圧縮)完了を反映(最新世代のみ適用)。
+        // Apply the separate thread's kitty image build (zoom/pan resize+compress) completion
+        // (only the latest generation is applied).
         while let Ok(result) = rx.kitty.try_recv() {
             if app.apply_kitty(result) {
                 needs_redraw = true;
             }
         }
 
-        // インライン Markdown 画像のデコード完了を反映(複数あれば全部)。
+        // Apply the inline Markdown image decode completion(s) (all of them, if there are several).
         while let Ok(result) = rx.md_img.try_recv() {
             if app.apply_md_image(result) {
                 needs_redraw = true;
             }
         }
 
-        // リモート Markdown 画像のダウンロード完了を反映(md_cache を無効化して再レイアウト)。
+        // Apply a remote Markdown image's download completion (invalidate md_cache and re-layout).
         while let Ok(result) = rx.md_remote.try_recv() {
             if app.apply_remote_fetch(result) {
                 needs_redraw = true;
             }
         }
 
-        // インライン Markdown 画像のエンコード完了(別ワーカー)を反映(複数あれば全部)。
+        // Apply the inline Markdown image encode completion(s) (a separate worker; all of them, if
+        // there are several).
         while let Ok(result) = rx.md_enc.try_recv() {
             if app.apply_md_encode(result) {
                 needs_redraw = true;
             }
         }
 
-        // 別スレッドの git ignored(無視セット)計算完了を反映(複数あれば全部・古い世代は破棄)。
-        // 反映で暗転表示(gitignore 除外の dim)が現れるため再描画する。
+        // Apply the separate thread's git ignored (ignore set) computation completion(s) (all of
+        // them, if there are several; discard stale generations).
+        // Re-render since applying it makes the dimmed display (dim for gitignore-excluded
+        // entries) appear.
         while let Ok(result) = rx.ignored.try_recv() {
             if app.apply_ignored(result) {
                 needs_redraw = true;
             }
         }
 
-        // 別スレッドの `git status` 完了を反映(複数あれば全部・古い世代は破棄)。
-        // 反映でツリーの変更マーカー/ブランチ名が更新されるため再描画する。
+        // Apply the separate thread's `git status` completion(s) (all of them, if there are
+        // several; discard stale generations).
+        // Re-render since applying it updates the tree's change marker/branch name.
         while let Ok(result) = rx.status.try_recv() {
             if app.apply_statuses(result) {
                 needs_redraw = true;
             }
         }
 
-        // 別スレッドのファイル操作(コピー/移動/複製/削除)完了を反映。
+        // Apply the separate thread's file operation (copy/move/duplicate/delete) completion.
         while let Ok(result) = rx.fileop.try_recv() {
             if app.apply_file_op(result) {
                 needs_redraw = true;
             }
         }
 
-        // GIF アニメ: 現フレームの表示時間が過ぎていれば次フレームへ進める(image_src 差し替え→
-        // 次の描画で prepare_image が再構築→ワーカー再エンコード→上の分岐で反映)。
+        // GIF animation: once the current frame's display time has elapsed, advance to the next
+        // frame (swap image_src → the next render's prepare_image rebuilds → worker re-encodes →
+        // applied by the branch above).
         if app.advance_gif_if_due() {
             needs_redraw = true;
         }
-        // Markdown インライン GIF: 同様に各エントリを独立して進める(decoded 差し替え→次の描画で
-        // ensure_md_image がキー不一致を見て再エンコードを要求→md_enc の分岐で反映)。
+        // Inline Markdown GIF: likewise advance each entry independently (swap decoded → the next
+        // render's ensure_md_image sees the key mismatch and requests a re-encode → applied by the
+        // md_enc branch).
         if app.advance_md_gifs_if_due() {
             needs_redraw = true;
         }
 
-        // ファイル変更を拾って自動更新(バースト時は1回にまとめる)。
-        // 無視ルール(.gitignore / .git/info/exclude)が変わったイベントが1つでもあれば、
-        // 重い ignored セットも作り直す。それ以外は安い statuses+branch だけ更新する。
+        // Pick up file changes and auto-update (a burst is coalesced into one).
+        // If even one event changed an ignore rule (.gitignore / .git/info/exclude), also rebuild
+        // the heavy ignored set. Otherwise just update the cheap statuses+branch.
         let mut fs_changed = false;
         let mut ignore_rules_changed = false;
-        // このバーストで変わったパス(監視側が `.git` 配下を除いて送ってくる)。空 = `.git` のみ
-        // または不明(上限超過含む)で、その場合 `refresh_fs_changed` は安全側=プレビューも再読込する。
-        // 重複除去はハッシュ照合(O(1))＋上限付き(BurstPaths)＝Vec::contains の線形走査(O(N²))で
-        // エージェントの大量ファイル生成時に UI が数分固まった不具合の修正(MAX_BURST_PATHS 参照)。
+        // The paths that changed in this burst (the watcher side sends them excluding under
+        // `.git`). Empty = either `.git` only or unknown (including exceeding the cap), in which
+        // case `refresh_fs_changed` errs safe = also reloads the preview.
+        // De-duplication is a hash lookup (O(1)) + capped (BurstPaths) = the fix for a bug where
+        // Vec::contains's linear scan (O(N²)) froze the UI for minutes when an agent generated a
+        // huge number of files (see MAX_BURST_PATHS).
         let mut burst = BurstPaths::default();
-        // konoma 自身のバックグラウンドファイル操作(コピー/移動/複製/削除)が進行中は、その
-        // 操作が生む大量の watcher イベントに反応しない(1万件規模のコピーで毎バースト
-        // refresh_fs_changed を走らせると run ループがそれに占有され、キー入力が処理されず
-        // ユーザーには固まって見える)。溜めておき、操作完了後に 1 回だけ反映する
-        // (App::should_defer_fs_events・apply_file_op が完了時に refresh() 済みなので取りこぼしはない)。
+        // While one of konoma's own background file operations (copy/move/duplicate/delete) is in
+        // progress, don't react to the huge number of watcher events that operation produces
+        // (running refresh_fs_changed on every burst for a copy of ~10,000 entries would occupy
+        // the run loop, so key input never gets processed and the app looks frozen to the user).
+        // Accumulate them and apply only once after the operation finishes
+        // (App::should_defer_fs_events — apply_file_op already calls refresh() on completion, so
+        // nothing is missed).
         let defer_fs = app.should_defer_fs_events();
         while let Ok((b, paths)) = fs_rx.try_recv() {
             if defer_fs {
@@ -605,10 +662,11 @@ fn run(
             }
             fs_changed = true;
             ignore_rules_changed |= b;
-            // フォローモード: 有効ターゲットをセッション一覧(n/N レビューの母集合)へ記録しつつ、
-            // 最後の1つを保留ターゲットに(latest-wins)。無効パスは dwell 枠を消費しない。
-            // 上限を超えたバースト(overflowed)では push が常に false を返し、以降は per-path の
-            // 仕事(フォロー記帳)をせずチャネルを空にするだけになる。
+            // Follow mode: record a valid target into the session list (the population n/N reviews)
+            // while also setting the last one as the pending target (latest-wins). An invalid path
+            // doesn't consume a dwell slot.
+            // On a burst that exceeds the cap (overflowed), push always returns false, so from
+            // then on this just drains the channel without doing any per-path work (follow bookkeeping).
             for p in paths {
                 if burst.push(&p) && app.follow_enabled() && app.follow_note_change(&p) {
                     pending_follow = Some(p);
@@ -616,27 +674,32 @@ fn run(
             }
         }
         let changed_paths = burst.finish().unwrap_or_default();
-        // 溜めていたバーストを、操作が完了した(defer が外れた)最初のループで 1 回だけ反映する。
-        // changed_paths は空のまま = 「どのパスが変わったか不明」= 安全側(プレビューも再読込)。
+        // Apply the accumulated burst exactly once, on the first loop after the operation finishes
+        // (defer is lifted).
+        // changed_paths stays empty = "which paths changed is unknown" = err safe (also reload the preview).
         if !defer_fs && deferred_fs {
             deferred_fs = false;
             fs_changed = true;
             ignore_rules_changed |= deferred_ignore_rules;
             deferred_ignore_rules = false;
         }
-        // ビルド churn ガード: バースト内の全パスが gitignored(かつ無視ルール自体は変わっていない)なら、
-        // target/ や node_modules/ への書き込みだけで走るツリー再構築を丸ごとスキップする(無駄な作業)。
+        // Build-churn guard: when every path in the burst is gitignored (and the ignore rules
+        // themselves haven't changed), skip the whole tree rebuild that a write to target/ or
+        // node_modules/ alone would otherwise trigger (wasted work).
         if fs_changed && !app.fs_burst_is_build_churn(&changed_paths, ignore_rules_changed) {
-            // 一覧 + git status に加え、refresh_fs() がアクティブな派生ビューも一元的に取り直す
-            // (Preview モードなら現プレビューを再読込 → 外部エディタでの編集でプレビューが古いまま
-            //  残る既知バグを解消。Git ビューなら変更一覧を更新)。
+            // In addition to the listing + git status, refresh_fs() also uniformly re-fetches the
+            // active derived view
+            // (in Preview mode, reload the current preview → fixes the known bug where the preview
+            //  stayed stale after an external-editor edit. In the Git view, update the change listing).
             let _ = app.refresh_fs_changed(ignore_rules_changed, &changed_paths);
             needs_redraw = true;
         }
-        // フォローの切替判定(ドレイン外=毎ループ)。dwell 中に来たターゲットは保留され、明けた時点の
-        // 最新へ 1 回だけ跳ぶ。表示中ファイルへの変更は切替不要(上の refresh_fs の再読込が追従)。
+        // Follow's switch judgment (outside the drain = every loop). A target arriving during
+        // dwell is held pending, and it jumps once, to the latest at the moment dwell ends. A
+        // change to the file already shown doesn't need a switch (the refresh_fs reload above
+        // already keeps up).
         if pending_follow.is_some() && !app.follow_enabled() {
-            pending_follow = None; // 解除されたら保留も破棄
+            pending_follow = None; // once disabled, discard the pending target too
         }
         if let Some(p) = pending_follow.clone() {
             if app.tab.preview_path.as_deref() == Some(p.as_path()) {
@@ -649,17 +712,20 @@ fn run(
             }
         }
 
-        // root が変わったら監視先を張り替える(h/l/タブ切替など)。
+        // Re-point the watch target when root changes (h/l, tab switching, etc.).
         if watched_root.as_deref() != Some(app.tab.root.as_path()) {
             rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root);
         }
-        // root 外に表示中のファイル(ブックマーク先/repo 全体の git ビュー)はその親ディレクトリも監視する。
-        // 表示ファイルが変わる/root 内へ戻る/ツリーへ戻ると None になり監視は外れる。
+        // For a file shown outside root (a bookmark target / the repo-wide git view), also watch
+        // its parent directory.
+        // Becomes None — and the watch is dropped — once the displayed file changes / it returns
+        // inside root / it returns to the tree.
         let want_extra = app.out_of_root_watch_dir();
         if watched_extra.as_deref() != want_extra.as_deref() {
             set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref());
         }
-        // サブディレクトリ root のとき、親 repo の `.git` を非再帰監視して外部 git 操作を拾う。
+        // When root is a subdirectory, watch the parent repo's `.git` non-recursively to catch
+        // external git operations.
         let want_git = app.git_dir_watch();
         if watched_git.as_deref() != want_git.as_deref() {
             set_extra_watch(watcher.as_mut(), &mut watched_git, want_git.as_deref());
@@ -731,7 +797,7 @@ fn run_editor(
     let cwd = path.parent().unwrap_or(path).to_path_buf();
     let status = run_external(terminal, app, prog, args, &cwd)?;
     match status {
-        Ok(_) => app.reload_preview(), // 書き換え結果を反映(キャッシュ破棄＋ウィンドウ開き直し)
+        Ok(_) => app.reload_preview(), // apply the rewritten result (drop the cache + re-open the window)
         Err(e) => {
             app.flash = Some(format!(
                 "{}{e}",
@@ -795,41 +861,48 @@ fn run_external(
         EnterAlternateScreen,
     };
 
-    // --- TUI を退避 ---
-    // 代替画面は**抜けない**(raw モード解除のみ)。vim 等は自分で代替画面に入る(smcup)が、
-    // 端末は既に alt なので画面切替が起きず、起動時に素のターミナル画面が一瞬見える現象を防ぐ
-    // (Ratatui フォーラムの定石)。vim は終了時に必ず rmcup でプライマリへ戻すため、復帰側で
-    // EnterAlternateScreen して入り直す。
+    // --- Suspend the TUI ---
+    // **Don't leave** the alternate screen (only disable raw mode). vim etc. enter the alternate
+    // screen themselves (smcup), but since the terminal is already alt, no screen switch occurs,
+    // preventing the plain terminal screen from flashing briefly at launch
+    // (a common Ratatui-forum idiom). Since vim always returns to the primary screen with rmcup on
+    // exit, re-enter via EnterAlternateScreen on the restore side.
     disable_raw_mode()?;
 
-    // --- 外部コマンドを同期実行(stdio を継承してブロック) ---
+    // --- Run the external command synchronously (inherit stdio and block) ---
     let status = std::process::Command::new(prog)
         .args(args)
         .current_dir(cwd)
         .status();
 
-    // --- TUI を復帰 ---
-    // 代替画面へ戻った直後に即再描画し、さらに「切替＋再描画」を同期出力(DEC 2026)で原子的に反映する。
-    // これで外部ツール終了→konoma 復帰の間に素のターミナル画面/空画面が一瞬見える現象を無くす(対応端末のみ。
-    // 非対応端末では ?2026 が無視され、即再描画だけが効く＝無害)。clear/draw は装飾的なので best-effort
-    // にして、エラー時でも EndSynchronizedUpdate を必ず送る(端末が同期待ちで固まらないように)。
+    // --- Restore the TUI ---
+    // Redraw immediately right after returning to the alternate screen, and further make the
+    // "switch + redraw" appear atomically via synchronized output (DEC 2026).
+    // This eliminates the plain-terminal/blank-screen flash between the external tool exiting and
+    // konoma restoring (supported terminals only.
+    // On unsupported terminals, ?2026 is ignored and only the immediate redraw takes effect =
+    // harmless). Treat clear/draw as best-effort since they're cosmetic,
+    // and always send EndSynchronizedUpdate even on error (so the terminal doesn't get stuck
+    // waiting for the sync to end).
     enable_raw_mode()?;
     let _ = execute!(std::io::stdout(), BeginSynchronizedUpdate);
     execute!(std::io::stdout(), EnterAlternateScreen)?;
-    let _ = terminal.clear(); // ratatui の前バッファを捨てて全描画させる(外部ツールの残骸を消す)
-    let _ = terminal.draw(|frame| ui::render(frame, app)); // 復帰直後に即描画(次ループまで遅延させない)
+    let _ = terminal.clear(); // discard ratatui's previous buffer to force a full redraw (clears the external tool's leftovers)
+    let _ = terminal.draw(|frame| ui::render(frame, app)); // draw immediately right after restoring (don't delay it until the next loop)
     let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
 
-    // 入力モードのレガシー化＋残バイトのドレインは画面復帰後でよい(不可視)。
-    // kitty キーボードプロトコルを pop し、(外部ツールが残した)マウス報告を無効化する。
-    // ブラケットペーストは konoma 本体が使う(D&D 受信)ので、掃除後に**有効化し直す**。
+    // Legacy-izing the input mode + draining leftover bytes can happen after the screen is
+    // restored (invisible).
+    // Pop the kitty keyboard protocol and disable mouse reporting (left by the external tool).
+    // konoma itself uses bracketed paste (to receive D&D), so **re-enable it** after cleaning up.
     let _ = execute!(
         std::io::stdout(),
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         crossterm::event::EnableBracketedPaste,
     );
-    // 残った入力(端末問い合わせ応答・余分なキー)を短時間ドレインして読み捨て、デコーダの同期を回復。
+    // Drain and discard leftover input (terminal-query responses, extra keys) for a short time to
+    // recover the decoder's sync.
     while event::poll(Duration::from_millis(10)).unwrap_or(false) {
         let _ = event::read();
     }
@@ -881,10 +954,12 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::HalfDown => app.tree_half_page(1),
             Motion::Left | Motion::Right | Motion::LineHome | Motion::LineEnd => {}
         },
-        // 通常のテキスト/コードプレビュー、およびその行選択(visual)サブモード。
-        // windowed のときは preview_scroll/to_top 等が行カーソルを動かす(視覚選択中は範囲が伸びる)。
-        // フォーカス中のインライン mermaid 図を**ズーム中**は hjkl/矢印を図のパンに割り当てる
-        // (等倍に戻せば通常スクロールに復帰。埋め込み地図の操作感)。
+        // The normal text/code preview, and its line-selection (visual) submode.
+        // When windowed, preview_scroll/to_top etc. move the line cursor (the range grows while
+        // visually selecting).
+        // While the focused inline mermaid diagram is **zoomed**, assign hjkl/arrows to panning
+        // the diagram instead
+        // (returning to 1x restores normal scrolling — the feel of an embedded map).
         Surface::PreviewText | Surface::PreviewTextVisual if app.fence_pan_motion(m) => {}
         Surface::PreviewText | Surface::PreviewTextVisual => match m {
             Motion::Up => app.preview_scroll(-1),
@@ -907,7 +982,8 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Right => app.image_pan(1.0, 0.0),
             _ => {}
         },
-        // テーブル(csv/tsv): hjkl=セルカーソル移動 / g・G=先頭末尾行 / 0・$=先頭末尾列 / ページ送り。
+        // Table (csv/tsv): hjkl = move the cell cursor / g·G = first/last row / 0·$ = first/last
+        // column / paging.
         Surface::PreviewTable => match m {
             Motion::Up => app.table_cursor_move(-1, 0),
             Motion::Down => app.table_cursor_move(1, 0),
@@ -993,7 +1069,7 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             _ => {}
         },
         Surface::Bookmarks => match m {
-            // 旧挙動同様 j/k のみ (g/G/Home/End は割当無し)。
+            // j/k only, matching legacy behavior (g/G/Home/End are unassigned).
             Motion::Up => app.bookmark_list_move(-1),
             Motion::Down => app.bookmark_list_move(1),
             _ => {}
@@ -1016,7 +1092,7 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             }
             _ => {}
         },
-        // テーブルセル全文ポップアップ: 折返し後の可能性が高い長文なので上下スクロール+ページ送り。
+        // Table-cell full-text popup: it's likely wrapped long text, so up/down scroll + paging.
         Surface::TableCell => match m {
             Motion::Up => app.table_cell_scroll_by(-1),
             Motion::Down => app.table_cell_scroll_by(1),
@@ -1033,7 +1109,8 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Bottom => app.help_scroll = u16::MAX,
             _ => {}
         },
-        // Sort / Info / 固定テキスト入力面など: Navigate は来ない (j/k が別意味 or 非 keymap)。
+        // Sort / Info / fixed text-input surfaces, etc.: Navigate never arrives here (j/k mean
+        // something else, or aren't keymap-driven).
         _ => {}
     }
 }
@@ -1053,23 +1130,27 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::CopyPath(kind) => app.copy_path(kind),
         Action::CopyCodeBlock => app.md_copy_focused_code(),
         Action::PasteJump => {
-            // `P` は global(全面継承)なので Visual からも届く。他の7つの Visual 由来アクション
-            // (main.rs の commit_visual_if_needed 呼び出し箇所)と同じく、進行中の範囲選択を
-            // 先に確定してから動く。これを怠ると is_visual() は tab.mode を見ないため、
-            // paste_jump が全画面プレビューへ遷移した後も surface() が Visual のままになり、
-            // プレビューを見ながらキーがツリーの Visual マップへ流れ続ける事故になる。
+            // `P` is global (inherited on every surface), so it also arrives from Visual. Like the
+            // other seven Visual-originated actions
+            // (the commit_visual_if_needed call sites in main.rs), commit the in-progress range
+            // selection first before acting. Skipping this means is_visual() doesn't look at
+            // tab.mode, so even after paste_jump transitions to the full-screen preview, surface()
+            // stays Visual, and while looking at the preview, keys keep flowing into the tree's
+            // Visual map — an accident.
             commit_visual_if_needed(app, sfc);
             app.paste_jump();
         }
         Action::Quit => {
-            // confirm_quit が ON なら確認ダイアログを開いてまだ終了しない。OFF なら即終了。
+            // When confirm_quit is ON, open the confirmation dialog and don't quit yet. When OFF,
+            // quit immediately.
             if app.request_quit() {
                 return Ok(false);
             }
             return Ok(true);
         }
         Action::CloseTabOrQuit => {
-            // タブが複数あれば現在タブを閉じる。最後の1つなら通常の終了フロー(Q と同じ)。
+            // If there are multiple tabs, close the current one. If it's the last one, the normal
+            // quit flow (same as Q).
             if app.tab_count() > 1 {
                 app.tab_close();
             } else if app.request_quit() {
@@ -1090,7 +1171,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::CyclePathStyle => app.cycle_path_style(),
         Action::OpenSortMenu => app.open_sort_menu(),
         Action::MarkSet => app.start_mark_set(),
-        // `'`: 従来の不可視の「ジャンプ待ち」でなく、即ブックマーク一覧を開く(which-key 流)。
+        // `'`: instead of the old invisible "waiting to jump" state, open the bookmark list
+        // immediately (which-key style).
         Action::MarkJump => app.open_bookmark_list(),
         Action::SetAnchor => app.reanchor_root(),
         Action::ResetAnchor => app.reset_anchor(),
@@ -1106,7 +1188,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
             app.start_create();
         }
         Action::FileRename => {
-            // ビジュアル経由は範囲を確定してから。選択ありは一括(連番テンプレ)・無しは単体。
+            // Via Visual, commit the range first. With a selection, batch (numbered template);
+            // without one, a single item.
             commit_visual_if_needed(app, sfc);
             if app.has_selection() {
                 app.start_batch_rename();
@@ -1138,7 +1221,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
         Action::PreviewBack => {
-            // git diff プレビューは Git ビューへ戻す。それ以外はツリーへ。
+            // A git diff preview returns to the Git view. Everything else returns to the tree.
             if app.is_git_diff_preview() {
                 app.close_git_diff();
             } else {
@@ -1333,12 +1416,13 @@ fn handle_modal_confirm(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bo
         },
         Surface::DialogConfirmDelete => match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => app.dialog_confirm(true)?,
-            // `!`=完全削除(復元不可)。削除確認(allow_permanent)のときだけ受け付ける。
+            // `!` = permanent delete (not recoverable). Accepted only during a delete confirmation
+            // (allow_permanent).
             KeyCode::Char('!') if app.dialog_allow_permanent() => app.dialog_delete_permanent()?,
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dialog_confirm(false)?,
             _ => {}
         },
-        // アプリ終了確認: y/q/Enter=終了(qq で素早く抜けられる) / n/Esc=取消。
+        // App quit confirmation: y/q/Enter = quit (qq lets you exit quickly) / n/Esc = cancel.
         Surface::DialogConfirmQuit => match key.code {
             KeyCode::Char('y')
             | KeyCode::Char('Y')
@@ -1348,7 +1432,7 @@ fn handle_modal_confirm(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bo
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dialog_cancel(),
             _ => {}
         },
-        // ブックマーク上書き確認: y/Enter=上書き / n/Esc=取消。
+        // Bookmark overwrite confirmation: y/Enter = overwrite / n/Esc = cancel.
         Surface::DialogConfirmBookmark => match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => app.dialog_confirm(true)?,
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.dialog_confirm(false)?,
@@ -1371,24 +1455,25 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::Tabs => app.toggle_tab_list(),
         Surface::Outline => app.toggle_outline(),
         Surface::Tree => {
-            // クエリありの Esc は絞り込み解除、無ければ選択クリア (旧 tree 挙動)。
+            // Esc with a query clears the filter; without one, clears the selection (legacy tree behavior).
             if app.filter_query().is_some() {
                 app.filter_clear();
             } else if app.has_selection() {
                 app.clear_selection();
             }
         }
-        // 表も検索を持つので text/image と同じ流儀にする(以前は Esc が無反応だった＝検索の
-        // 強調が消せず、ツリーにも戻れなかった)。
+        // Tables also have search, so use the same convention as text/image (previously Esc did
+        // nothing here = the search highlight couldn't be cleared, and you couldn't return to the
+        // tree either).
         Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable => {
-            // 検索が効いていれば解除、無ければツリーへ戻る。
+            // If a search is active, clear it; otherwise return to the tree.
             if app.preview_search_query().is_some() {
                 app.search_clear();
             } else {
                 app.back_to_tree();
             }
         }
-        // 行選択中の Esc は選択解除(ツリーへは戻らない)。
+        // Esc while a line is selected clears the selection (doesn't return to the tree).
         Surface::PreviewTextVisual => app.preview_exit_visual(),
         #[cfg(feature = "git")]
         Surface::GitDetail => app.close_git_detail(),
@@ -1400,7 +1485,8 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::GitGraphPicker => app.git_graph_picker_cancel(),
         #[cfg(feature = "git")]
         Surface::GitBranches => {
-            // クエリありの Esc は絞り込み解除、無ければ閉じる (ツリー絞り込みと同じ流儀)。
+            // Esc with a query clears the filter; without one, closes it (the same convention as
+            // the tree filter).
             if app.git_branch_query().is_empty() {
                 app.close_git_branches();
             } else {
@@ -1476,8 +1562,9 @@ fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option
         }
         KeyCode::Esc => handle_esc(app, sfc),
         KeyCode::Enter => handle_enter(app, sfc)?,
-        // Markdown リンク/チェックボックス: Tab=次 / ⇧Tab=前 (装飾テキストプレビューのみ・
-        // raw ソース表示(R)中は装飾表示のアイテムが stale なので動かさない・他面では無処理で飲む)。
+        // Markdown link/checkbox: Tab = next / ⇧Tab = previous (decorated text preview only —
+        // while showing the raw source (R), the decorated view's items are stale, so don't move;
+        // on other surfaces, swallowed with no effect).
         KeyCode::Tab => {
             if sfc == Surface::PreviewText && !app.is_raw_source() {
                 app.md_focus_move(1);
@@ -1490,13 +1577,13 @@ fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option
             }
             false
         }
-        // Markdown チェックボックス: フォーカス中だけ Space=トグル。フォーカスが無ければ
-        // keymap へフォールスルー(less 流儀の Space=PageDown を奪わない)。
+        // Markdown checkbox: Space toggles only while focused. With no focus, fall through to
+        // the keymap (doesn't steal less's convention of Space = PageDown).
         KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_task() => {
             app.md_toggle_focused_task();
             false
         }
-        // <details> の summary にフォーカス中は Space で折りたたみをトグル(Enter と同じ)。
+        // While focused on a <details> summary, Space toggles the collapse (same as Enter).
         KeyCode::Char(' ') if sfc == Surface::PreviewText && app.md_focused_details().is_some() => {
             if let Some(ord) = app.md_focused_details() {
                 app.toggle_details(ord);
@@ -1512,15 +1599,16 @@ fn handle_fixed_key(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<Option
 /// fixed text input → confirm modal → which-key leader resolution → per-surface fixed keys → keymap resolution.
 /// Mode-specific keys are owned by the keymap (`App::keymaps`) and `dispatch_action`.
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
-    // 直前の一時メッセージ(flash)は次のキー入力で消す。
+    // The previous transient message (flash) is cleared on the next key input.
     app.flash = None;
     let sfc = app.surface();
 
     if app.follow_enabled() {
-        // ユーザー選択(2026-07-23): フォローは最大粘着=フォロー diff 内では q(diff を出る)以外の
-        // 全キー(スクロール/移動/n/N/f/レイアウト)でフォローを維持する。解除するのは「テキスト入力/
-        // 確認モーダルに入る」「q でフォロービューを出る」のみ。F(ToggleFollow)は dispatch の
-        // toggle_follow が明示オフするので follow_break は不要(=ここでは維持扱い)。
+        // User's choice (2026-07-23): follow is maximally sticky = within the follow diff, every
+        // key except q (which leaves the diff) — scroll/move/n/N/f/layout — keeps follow active.
+        // It's released only by "entering a text-input surface / a confirm modal" or "q leaving
+        // the follow view." F (ToggleFollow) already turns it off explicitly via dispatch's
+        // toggle_follow, so follow_break isn't needed there (= treated as kept here).
         let leaves_follow_view = app.pending_leader.is_none()
             && matches!(
                 app.keymaps.resolve(sfc, None, KeyPress::norm(&key)),
@@ -1531,7 +1619,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
     }
 
-    // 1) 固定面 (テキスト入力 / 確認モーダル) は専用ハンドラへ (keymap 非適用・要件4)。
+    // 1) Fixed surfaces (text input / confirm modal) go to their dedicated handler (no keymap applied — requirement 4).
     if sfc.is_text_input() {
         return handle_text_input(app, sfc, key);
     }
@@ -1541,7 +1629,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
 
     let kp = KeyPress::norm(&key);
 
-    // 2) which-key リーダー待ち: leaders から解決 (未知 suffix は取消してフォールスルーしない・§5)。
+    // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
+    // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
         return match app.keymaps.resolve(sfc, Some(lead), kp) {
             Resolution::Action(a) => dispatch_action(app, a, sfc),
@@ -1549,24 +1638,27 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         };
     }
 
-    // 3) 面に依らない固定キー (矢印=Navigate / Esc / Enter / Tab・BackTab) を先取り (要件3/4)。
+    // 3) Pre-empt surface-independent fixed keys (arrows = Navigate / Esc / Enter / Tab·BackTab) (requirements 3/4).
     if let Some(done) = handle_fixed_key(app, sfc, key)? {
         return Ok(done);
     }
 
-    // 4) keymap 解決 (1 入力 = HashMap 1〜2 参照・要件5)。
+    // 4) Keymap resolution (1 input = 1-2 HashMap lookups — requirement 5).
     match app.keymaps.resolve(sfc, None, kp) {
         Resolution::EnterLeader(id) => {
-            // コピーリーダー(既定 `y`)は常に which-key メニューを開く。装飾 Markdown で
-            // コードブロックにフォーカス中は、そのメニューに `c:code block` が現れて選べる
-            // (whichkey_spans が面/フォーカスで出し分け)。従来のパスコピー n/r/f/p/@ と両立。
+            // The copy leader (default `y`) always opens the which-key menu. While focused on a
+            // code block in decorated Markdown, `c:code block` appears in that menu and is
+            // selectable
+            // (whichkey_spans switches it in based on surface/focus). Coexists with the existing
+            // path-copy n/r/f/p/@.
             app.pending_leader = Some(id);
             Ok(false)
         }
         Resolution::Action(a) => dispatch_action(app, a, sfc),
         Resolution::Unbound => {
-            // ブックマーク一覧: keymap 未割当の素の英字はブックマーク名として直接ジャンプ
-            // (a-z=ローカル / A-Z=グローバル)。q/j/k や global の t/T/F/Q 等は上で解決済み=対象外。
+            // Bookmark list: a plain letter unbound in the keymap jumps directly as a bookmark name
+            // (a-z = local / A-Z = global). q/j/k and global's t/T/F/Q etc. are already resolved
+            // above = excluded here.
             if sfc == Surface::Bookmarks && !kp.ctrl {
                 if let KeyCode::Char(c) = kp.code {
                     if c.is_ascii_alphabetic() {
@@ -1595,7 +1687,7 @@ fn resolve_key_result(app: &mut App, result: Result<bool>) -> bool {
                 "{}{e:#}",
                 i18n::tr(app.lang, crate::i18n::Msg::OperationFailed)
             ));
-            false // 回復可能 → ループ継続
+            false // recoverable → keep the loop going
         }
     }
 }
@@ -1613,33 +1705,35 @@ mod tests {
     #[test]
     fn fs_event_classification_reacts_to_git_locks_and_detects_ignore_rules() {
         let pb = |s: &str| vec![PathBuf::from(s)];
-        // `.git/*.lock` にも反応する(meaningful=true)。konoma はロックフリー(--no-optional-locks)
-        // なので、これは外部 git 操作(コミット等)の合図であり、握り潰すと変更マーカーが陳腐化する。
+        // Also reacts to `.git/*.lock` (meaningful=true). Since konoma is lock-free
+        // (--no-optional-locks), this is a signal of an external git operation (a commit, etc.),
+        // and swallowing it would let the change marker go stale.
         assert_eq!(
             classify_fs_paths(&pb("/repo/.git/index.lock")),
             (true, false)
         );
         assert_eq!(classify_fs_paths(&pb("/r/.git/HEAD.lock")), (true, false));
-        // .git 本体(HEAD/refs/index)は反応する(外部 git 操作の追従)が ignored は触らない。
+        // The `.git` internals themselves (HEAD/refs/index) do react (following an external git
+        // operation), but ignored is left alone.
         assert_eq!(classify_fs_paths(&pb("/repo/.git/HEAD")), (true, false));
         assert_eq!(classify_fs_paths(&pb("/repo/.git/index")), (true, false));
-        // 通常のファイル変更: 反応する・ignored は触らない。
+        // A normal file change: reacts, and ignored is left alone.
         assert_eq!(classify_fs_paths(&pb("/repo/src/main.rs")), (true, false));
-        // ユーザの *.lock(.git 外)は対象(meaningful)。
+        // A user's own *.lock (outside .git) is a target (meaningful).
         assert_eq!(classify_fs_paths(&pb("/repo/Cargo.lock")), (true, false));
-        // .gitignore / .git/info/exclude は ignored 再計算が必要(true, true)。
+        // .gitignore / .git/info/exclude needs an ignored recompute (true, true).
         assert_eq!(classify_fs_paths(&pb("/repo/.gitignore")), (true, true));
         assert_eq!(classify_fs_paths(&pb("/repo/sub/.gitignore")), (true, true));
         assert_eq!(
             classify_fs_paths(&pb("/repo/.git/info/exclude")),
             (true, true)
         );
-        // node_modules 内の .gitignore は対象外(丸ごと無視されるので再計算不要)。
+        // A .gitignore inside node_modules is excluded (it's wholly ignored anyway, so no recompute is needed).
         assert_eq!(
             classify_fs_paths(&pb("/repo/node_modules/x/.gitignore")),
             (true, false)
         );
-        // バーストに1つでも ignore ルール変更があれば true。
+        // True if even one ignore-rule change is in the burst.
         assert_eq!(
             classify_fs_paths(&[
                 PathBuf::from("/repo/.git/index.lock"),
@@ -1647,13 +1741,13 @@ mod tests {
             ]),
             (true, true)
         );
-        // パス不明イベントは安全側(再読込する・ignored は触らない)。
+        // An event with an unknown path errs safe (reload, don't touch ignored).
         assert_eq!(classify_fs_paths(&[]), (true, false));
     }
 
     #[test]
     fn follow_candidates_exclude_git_internals() {
-        // フォロー対象は .git 配下以外(index/refs/lock の churn はレビュー対象でない)。
+        // Follow targets are anything outside `.git` (index/refs/lock churn isn't a review target).
         let got = follow_candidates(&[
             PathBuf::from("/repo/.git/index"),
             PathBuf::from("/repo/.git/refs/heads/main"),
@@ -1688,7 +1782,7 @@ mod tests {
         for i in 0..MAX_BURST_PATHS {
             assert!(burst.push(&PathBuf::from(format!("/repo/f{i}"))));
         }
-        // 上限ちょうどまでは全部 distinct として通る。次の1件で上限超過=false。
+        // Everything up to exactly the cap passes as distinct. The next one exceeds the cap = false.
         assert!(
             !burst.push(&PathBuf::from("/repo/overflow")),
             "上限を超えたら push は false"
@@ -1707,7 +1801,8 @@ mod tests {
         };
         use notify::EventKind;
 
-        // 読み取り系(open/read/close-without-write)は反応しない(inotify の IN_OPEN/IN_ACCESS 対策)。
+        // Read-family events (open/read/close-without-write) don't react (a countermeasure for
+        // inotify's IN_OPEN/IN_ACCESS).
         assert!(!is_content_event(&EventKind::Access(AccessKind::Open(
             AccessMode::Any
         ))));
@@ -1720,7 +1815,7 @@ mod tests {
         ))));
         assert!(!is_content_event(&EventKind::Access(AccessKind::Any)));
 
-        // 書込み確定(IN_CLOSE_WRITE)は反応する。Access 以外の種別はすべて反応する(安全側)。
+        // A confirmed write (IN_CLOSE_WRITE) reacts. Every kind other than Access reacts (err safe).
         assert!(is_content_event(&EventKind::Access(AccessKind::Close(
             AccessMode::Write
         ))));
@@ -1748,16 +1843,17 @@ mod tests {
 
     #[test]
     fn watcher_ignores_reads_but_reports_writes() {
-        // 実際の notify watcher で is_content_event を run() のコールバックと同じ順序
-        // (is_content_event → classify_fs_paths)で通す統合テスト。
+        // An integration test that runs is_content_event through a real notify watcher in the same
+        // order as run()'s callback (is_content_event → classify_fs_paths).
         //
-        // read 側のアサーションは **Linux では is_content_event フィルタ無しだと落ちる**
-        // (inotify は WatchMask::OPEN も購読しており、ただの open/read でも
-        // EventKind::Access(..) が飛んでくる=フィルタが無ければ「変更あり」と誤検知する)。
-        // macOS の FSEvents は read を一切報告しないため、read 側は**フィルタの有無に関わらず
-        // 元々イベントが来ない=vacuous(空虚に緑になるだけで検出力が無い)だが無害。
-        // write 側のアサーションは両 OS で効き、「read を弾く」修正が中身の変更まで
-        // 握り潰す over-filtering になっていないことの歯止めになる。
+        // The read-side assertion **fails on Linux without the is_content_event filter**
+        // (inotify also subscribes to WatchMask::OPEN, so even a plain open/read fires
+        // EventKind::Access(..) — without the filter this is misdetected as "there was a change").
+        // macOS's FSEvents never reports reads at all, so on the read side **regardless of whether
+        // the filter is present**, no event ever arrives = vacuous (it merely goes green without
+        // any actual detection power), but it's harmless.
+        // The write-side assertion holds on both OSes, and acts as a guardrail that the "filter
+        // out reads" fix hasn't become an over-filter that swallows real content changes too.
         use notify::{RecursiveMode, Watcher};
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
@@ -1770,7 +1866,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<()>();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res {
-                // run() の watcher コールバックと同じ順序のフィルタ。
+                // The same-order filter as run()'s watcher callback.
                 if !is_content_event(&ev.kind) {
                     return;
                 }
@@ -1785,13 +1881,13 @@ mod tests {
             .watch(&dir, RecursiveMode::Recursive)
             .expect("watch");
 
-        // settle: ディレクトリ/ファイル作成自体のイベントを ~500ms かけて捨てる。
+        // settle: discard the directory/file creation's own events over ~500ms.
         let settle_until = Instant::now() + Duration::from_millis(500);
         while Instant::now() < settle_until {
             let _ = rx.recv_timeout(Duration::from_millis(50));
         }
 
-        // read だけでは(フィルタが効いていれば)イベントが来ない。
+        // A read alone (with the filter working) produces no event.
         for _ in 0..5 {
             let _ = std::fs::read(&file);
         }
@@ -1801,7 +1897,7 @@ mod tests {
              (fails on Linux without the is_content_event filter; vacuous on macOS)"
         );
 
-        // write では引き続きイベントが来る(over-filtering していないことの確認)。
+        // A write still produces an event (confirms we haven't over-filtered).
         std::fs::write(&file, b"changed").unwrap();
         assert!(
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
@@ -1814,10 +1910,11 @@ mod tests {
 
     #[test]
     fn follow_is_sticky_and_breaks_only_on_toggle_or_text_input() {
-        // ユーザー選択(2026-07-23・最大粘着): フォロー中は通常キー(移動等)ではフォローを解除
-        // しない。解除するのは F(トグル自体・toggle_follow 経由)/テキスト入力面に入っている間の
-        // キー/確認モーダル/q(PreviewBack でフォロービューを出る)のみ(q/PreviewBack の検証は
-        // e2e_follow_survives_scroll_and_cycle_breaks_only_on_q を参照)。
+        // User's choice (2026-07-23, maximally sticky): while following, a normal key (movement,
+        // etc.) does not disable follow. It's released only by F (the toggle itself, via
+        // toggle_follow) / a key while inside a text-input surface / a confirm modal / q
+        // (PreviewBack leaves the follow view) (q/PreviewBack are verified in
+        // e2e_follow_survives_scroll_and_cycle_breaks_only_on_q).
         let dir = std::env::temp_dir().join("konoma_follow_break_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -1827,14 +1924,16 @@ mod tests {
         )
         .unwrap();
         assert!(app.follow_enabled(), "F で ON");
-        // F をもう一度: follow_break でなくトグル経由の OFF(=見分けは付かないが OFF になる)。
+        // F once more: OFF via the toggle, not follow_break (indistinguishable from outside, but
+        // it does turn OFF).
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
         )
         .unwrap();
         assert!(!app.follow_enabled(), "F 再押下で OFF");
-        // ON に戻して j(移動キー・ツリー面では PreviewBack に解決されない)→ 最大粘着で維持。
+        // Turn ON again and press j (a movement key — doesn't resolve to PreviewBack on the tree
+        // surface) → kept via maximal stickiness.
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
@@ -1846,8 +1945,9 @@ mod tests {
             app.follow_enabled(),
             "j のような通常キーでは最大粘着によりフォロー維持"
         );
-        // '/' でテキスト入力面(Filter)に入る。入る瞬間のキー自体はまだ Tree 面での判定なので
-        // 維持されるが、いったんテキスト入力面に居る間は次のキーで解除される(手動操作扱い)。
+        // '/' enters the text-input surface (Filter). The very keypress that enters it is still
+        // judged on the Tree surface, so it's kept, but once inside the text-input surface, the
+        // next key releases it (treated as manual operation).
         handle_key(&mut app, key('/')).unwrap();
         assert!(app.is_filtering());
         assert!(
@@ -1864,8 +1964,9 @@ mod tests {
 
     #[test]
     fn quote_opens_bookmark_list_and_letters_jump() {
-        // `'` 一発で一覧が開き(不可視の待ち受けは廃止)、一覧内の素の英字はブックマーク名として
-        // 直接ジャンプ。旧 e/d(編集/削除)は Ctrl 修飾へ移設され、素の e もジャンプに使える。
+        // `'` alone opens the list (the invisible waiting state is gone), and a plain letter in the
+        // list jumps directly as a bookmark name. The old e/d (edit/delete) moved to Ctrl
+        // modifiers, so a plain e can also be used to jump.
         let root = std::env::temp_dir().join("konoma_quote_list_test");
         let _ = std::fs::remove_dir_all(&root);
         let proj = root.join("proj");
@@ -1880,11 +1981,11 @@ mod tests {
         handle_key(&mut app, key('\'')).unwrap();
         assert!(app.is_bookmark_list(), "' 一発で一覧が開く");
         assert!(!app.is_marking(), "ジャンプの待ち受け状態は無い");
-        // 未登録の英字: flash して一覧は開いたまま。
+        // An unregistered letter: flash, and the list stays open.
         handle_key(&mut app, key('z')).unwrap();
         assert!(app.is_bookmark_list());
         assert!(app.flash.is_some(), "未登録は flash");
-        // e はブックマーク名としてジャンプ(ファイル → プレビュー)。
+        // e jumps as a bookmark name (a file → preview).
         handle_key(&mut app, key('e')).unwrap();
         assert!(!app.is_bookmark_list(), "ジャンプで一覧が閉じる");
         assert_eq!(app.tab.mode, Mode::Preview);
@@ -1893,13 +1994,14 @@ mod tests {
             .preview_path
             .as_deref()
             .is_some_and(|p| p.ends_with("f.txt")));
-        // 戻って `'` 2度目=閉じる(トグル感)。
+        // Go back and press `'` a second time = closes it (feels like a toggle).
         handle_key(&mut app, key('q')).unwrap(); // preview → tree
         handle_key(&mut app, key('\'')).unwrap();
         assert!(app.is_bookmark_list());
         handle_key(&mut app, key('\'')).unwrap();
         assert!(!app.is_bookmark_list(), "' 再押下で閉じる");
-        // Ctrl+D=選択行を削除(素の d はジャンプ用に予約)。j で e の行へ降りてから消す。
+        // Ctrl+D = delete the selected row (a plain d is reserved for jumping). Move down to e's
+        // row with j, then delete it.
         handle_key(&mut app, key('\'')).unwrap();
         let before = app.bookmark_list_items().len();
         handle_key(&mut app, key('j')).unwrap();
@@ -1910,7 +2012,7 @@ mod tests {
         .unwrap();
         assert_eq!(app.bookmark_list_items().len(), before - 1, "Ctrl+D で削除");
         assert!(app.bookmarks.get('e').is_none(), "消えたのは選択行の e");
-        // ディレクトリのブックマークは root 移動。
+        // A directory bookmark moves root.
         handle_key(&mut app, key('a')).unwrap();
         assert_eq!(app.tab.root, proj.join("sub"));
         assert!(!app.is_bookmark_list());
@@ -1919,19 +2021,20 @@ mod tests {
 
     #[test]
     fn filter_input_captures_literal_keys() {
-        // 絞り込み入力中は `?`/`c`/数字も「文字」として拾い、ヘルプ/コピー/タブにしない。
+        // While filter input is active, `?`/`c`/digits are also captured as plain "characters,"
+        // not help/copy/tab.
         let dir = std::env::temp_dir().join("konoma_filter_input_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        handle_key(&mut app, key('/')).unwrap(); // 絞り込み開始
+        handle_key(&mut app, key('/')).unwrap(); // start filtering
         assert!(app.is_filtering());
-        // `c`(通常はコピーコード)・`?`(通常はヘルプ) を文字として取り込む。
+        // `c` (normally copy-code) and `?` (normally help) are captured as characters.
         handle_key(&mut app, key('c')).unwrap();
         handle_key(&mut app, key('?')).unwrap();
         assert_eq!(app.filter_query(), Some("c?"));
         assert_eq!(app.pending_leader, None, "コピーリーダーは始まらない");
         assert!(!app.show_help, "ヘルプは開かない");
-        // Esc で解除。
+        // Cleared by Esc.
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         assert!(!app.is_filtering() && app.filter_query().is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -1949,11 +2052,12 @@ mod tests {
         app.open_git_view();
         assert!(app.is_git_view());
 
-        // git ビューで `?` → ヘルプが開く(従来は git intercept に飲まれて開かなかった)。
+        // `?` in the git view → help opens (previously it got swallowed by the git intercept and
+        // never opened).
         handle_key(&mut app, key('?')).unwrap();
         assert!(app.show_help, "git モードで ? がヘルプを開く");
 
-        // ヘルプ内容が git 用(変更ハブの節・ステージ系キー)になっている。
+        // The help content is the git-specific one (the changes-hub section, stage-family keys).
         let lines = ui::help::help_lines(&app);
         let text: String = lines
             .iter()
@@ -1968,7 +2072,7 @@ mod tests {
             "ステージ系キーが出る"
         );
 
-        // ヘルプ表示中の `?` で閉じる。
+        // `?` while help is shown closes it.
         handle_key(&mut app, key('?')).unwrap();
         assert!(!app.show_help, "? で閉じる");
         std::fs::remove_dir_all(&dir).ok();
@@ -1984,7 +2088,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
-        // 絞り込み入力中は t は「文字」として拾い、新タブにしない。
+        // While filter input is active, t is captured as a plain "character," not a new tab.
         handle_key(&mut app, key('/')).unwrap();
         let tc = app.tab_count();
         handle_key(&mut app, key('t')).unwrap();
@@ -1992,14 +2096,16 @@ mod tests {
         assert_eq!(app.filter_query(), Some("t"));
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
 
-        // git ビュー中でも t で新タブが開ける。新タブは素の Tree(git モードはタブごと)。
+        // Even while in the git view, t can open a new tab. The new tab is a plain Tree (git mode
+        // is per-tab).
         app.open_git_view();
         assert!(app.is_git_view());
         handle_key(&mut app, key('t')).unwrap();
         assert_eq!(app.tab_count(), tc + 1, "git ビュー中でも t で新タブ");
         assert!(!app.is_git_view(), "新タブは git ビュー無しで始まる");
-        // 元のタブへ戻ると **git モードが復元される**(別タブでドキュメントを見て戻れる)。
-        handle_key(&mut app, key('1')).unwrap(); // タブ0へ
+        // Returning to the original tab **restores git mode** (you can view a document in another
+        // tab and come back).
+        handle_key(&mut app, key('1')).unwrap(); // to tab 0
         assert!(app.is_git_view(), "タブを戻ると git モードのまま");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2011,10 +2117,10 @@ mod tests {
         let dir = std::env::temp_dir().join("konoma_chord_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
-        // `y` でコピーリーダー開始 → pending_leader。
+        // `y` starts the copy leader → pending_leader.
         handle_key(&mut app, key('y')).unwrap();
         assert_eq!(app.pending_leader, Some(LeaderId::Copy));
-        // リーダーに無いキーは破棄され pending クリア(クリップボードには触れない)。
+        // A key not in the leader is discarded and pending is cleared (the clipboard is untouched).
         handle_key(&mut app, key('x')).unwrap();
         assert_eq!(app.pending_leader, None);
     }
@@ -2025,17 +2131,17 @@ mod tests {
         let dir = std::env::temp_dir().join("konoma_fileleader_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
-        // 既定の `c` はもうリーダーにならない (旧 copy prefix は廃止)。
+        // The default `c` is no longer a leader (the old copy prefix is gone).
         handle_key(&mut app, key('c')).unwrap();
         assert_eq!(app.pending_leader, None);
-        // `Space` でファイル管理リーダー開始。
+        // `Space` starts the file-management leader.
         handle_key(&mut app, key(' ')).unwrap();
         assert_eq!(app.pending_leader, Some(LeaderId::File));
     }
 
     #[test]
     fn space_leader_n_opens_create_dialog() {
-        // Space→n = ファイル作成 (旧 Tree `a` の移管先)。
+        // Space→n = create a file (the destination the old Tree `a` moved to).
         let dir = std::env::temp_dir().join("konoma_space_create_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2049,7 +2155,7 @@ mod tests {
 
     #[test]
     fn anchor_keys_a_and_shift_a_dispatch() {
-        // `a`=SetAnchor (旧 `:`), `A`=ResetAnchor (新規)。起動直後はどちらも「既に基準」flash。
+        // `a` = SetAnchor (the old `:`), `A` = ResetAnchor (new). Right after startup, both flash "already the anchor."
         let dir = std::env::temp_dir().join("konoma_anchor_dispatch_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2075,7 +2181,8 @@ mod tests {
 
     #[test]
     fn shift_q_opens_quit_confirm_then_qq_quits() {
-        // 既定(confirm_quit=ON): Q で確認ダイアログ→まだ終了しない。もう一度 q(qq)で確定終了。
+        // Default (confirm_quit=ON): Q opens the confirmation dialog → doesn't quit yet. Confirmed
+        // by q once more (qq).
         let dir = std::env::temp_dir().join("konoma_quit_confirm_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2102,7 +2209,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        handle_key(&mut app, key('q')).unwrap(); // Tree の q=Quit→確認ダイアログ
+        handle_key(&mut app, key('q')).unwrap(); // Tree's q = Quit → the confirmation dialog
         assert!(app.is_dialog() && app.confirm_is_quit());
         let exit = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         assert!(!exit, "Esc では終了しない");
@@ -2112,7 +2219,7 @@ mod tests {
 
     #[test]
     fn quit_without_confirm_quits_immediately() {
-        // confirm_quit=false: Q は即終了(ダイアログ無し)。
+        // confirm_quit=false: Q quits immediately (no dialog).
         let dir = std::env::temp_dir().join("konoma_quit_immediate_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2131,7 +2238,8 @@ mod tests {
 
     #[test]
     fn shift_q_is_literal_while_filtering() {
-        // 入力中(絞り込み)は Q を「文字」として取り込む。終了しない/確認も出さない。
+        // While input (filtering) is active, Q is captured as a plain "character." Doesn't quit,
+        // doesn't show the confirmation either.
         let dir = std::env::temp_dir().join("konoma_quit_filter_literal_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2150,7 +2258,8 @@ mod tests {
 
     #[test]
     fn visual_space_d_commits_range_and_confirms_delete() {
-        // 旧・直 `D` 廃止 → ビジュアルでは Space→d。範囲を確定してから削除確認へ。
+        // The old direct `D` is gone → in Visual it's Space→d. Commit the range first, then go to
+        // the delete confirmation.
         let dir = std::env::temp_dir().join("konoma_visual_spaced_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2170,16 +2279,16 @@ mod tests {
 
     #[test]
     fn dnd_paste_ignored_while_dialog_or_overlay_open() {
-        // #13: ダイアログ/モーダル/オーバーレイ表示中の D&D ペーストは横入りさせない。
-        // 基本全画面 (Tree/Preview) とテキスト入力面のみ受け付ける。
+        // #13: don't let a D&D paste interrupt while a dialog/modal/overlay is shown.
+        // Only the basic full-screen surfaces (Tree/Preview) and text-input surfaces accept it.
         let dir = std::env::temp_dir().join("konoma_dnd_guard_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-        // 通常の Tree 面は受け付ける。
+        // The normal Tree surface accepts it.
         assert_eq!(app.surface(), Surface::Tree);
         assert!(paste_accepted(app.surface()), "Tree ではドロップを受ける");
-        // ファイル作成ダイアログ (入力) を開く → テキスト入力面なので文字として受ける。
+        // Open the file-creation dialog (input) → it's a text-input surface, so it's received as characters.
         handle_key(&mut app, key(' ')).unwrap();
         handle_key(&mut app, key('n')).unwrap();
         assert!(app.is_dialog());
@@ -2187,7 +2296,7 @@ mod tests {
             paste_accepted(app.surface()),
             "入力ダイアログは文字として取り込むため通す"
         );
-        // ヘルプ (オーバーレイ) 表示中は横入りさせない。
+        // Don't let it interrupt while help (an overlay) is shown.
         let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
         handle_key(&mut app2, key('?')).unwrap();
         assert!(app2.show_help);
@@ -2204,32 +2313,32 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         assert!(!app.show_help);
-        // ? で開く。
+        // Opens with ?.
         handle_key(&mut app, key('?')).unwrap();
         assert!(app.show_help);
-        // 開いている間は j がスクロール(モード操作には流れない)。
+        // While it's open, j scrolls (doesn't flow into mode operations).
         handle_key(&mut app, key('j')).unwrap();
         assert_eq!(app.help_scroll, 1);
-        // q で閉じる(アプリは終了しない)。
+        // Closes with q (the app doesn't quit).
         assert!(!handle_key(&mut app, key('q')).unwrap());
         assert!(!app.show_help);
     }
 
     #[test]
     fn tab_keys_work_in_preview_and_preserve_mode() {
-        // バグ修正: Preview 中でもタブ操作 (t/w/[/]/1-9) が効き、かつ各タブのモード
-        // (Tree/Preview) を保持する。切替で Tree へ落とさず、戻れば Preview が復元される。
+        // Bug fix: tab operations (t/w/[/]/1-9) also work while previewing, and each tab's mode
+        // (Tree/Preview) is preserved. Switching doesn't drop it to Tree, and returning restores Preview.
         let dir = std::env::temp_dir().join("konoma_tab_in_preview_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
-        // タブ0をプレビュー中にする。
+        // Put tab 0 into previewing.
         app.tab.mode = Mode::Preview;
-        // t で新規タブ (Preview 中でも効く)。新タブは Tree から始まる。
+        // t opens a new tab (works even while previewing). The new tab starts from Tree.
         handle_key(&mut app, key('t')).unwrap();
         assert_eq!(app.tab_count(), 2, "Preview 中でも新規タブが作れる");
         assert_eq!(app.tab.mode, Mode::Tree, "新規タブは Tree から");
         let new_tab = app.active_tab_index();
-        // [ で元のタブ0へ戻る → Tree に落とさず Preview が復元される。
+        // [ returns to the original tab 0 → Preview is restored without dropping to Tree.
         handle_key(&mut app, key('[')).unwrap();
         assert_ne!(app.active_tab_index(), new_tab, "タブが切り替わる");
         assert_eq!(
@@ -2251,9 +2360,9 @@ mod tests {
 
     #[test]
     fn recoverable_key_error_flashes_and_does_not_quit() {
-        // 設計原則#3: キー処理中の回復可能な fs/git 失敗で TUI を落とさない。
-        // handle_key が Err を返しても run ループは終了せず(quit=false)、エラーは
-        // 握り潰さず flash でユーザに見せる。
+        // Design principle #3: don't bring down the TUI on a recoverable fs/git failure during key handling.
+        // Even if handle_key returns Err, the run loop doesn't terminate (quit=false), and the
+        // error is shown to the user via flash rather than swallowed.
         let dir = std::env::temp_dir().join("konoma_recoverable_err_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -2272,21 +2381,21 @@ mod tests {
 
     #[test]
     fn close_tab_or_quit_closes_tab_when_multiple_else_quits() {
-        // ツリー q: 複数タブなら現在タブを閉じる(終了しない)、最後の1枚なら終了要求。
+        // Tree's q: with multiple tabs, closes the current one (doesn't quit); with the last one, requests quitting.
         let dir = std::env::temp_dir().join("konoma_close_tab_or_quit_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
-        cfg.ui.confirm_quit = false; // 最後の1枚は即終了で判定(ダイアログを挟まない)
+        cfg.ui.confirm_quit = false; // judge the last tab by quitting immediately (no dialog in between)
         let mut app = App::new(dir.clone(), cfg).unwrap();
 
-        // 2枚 → q はタブを閉じるだけ(quit=false)。
+        // 2 tabs → q just closes the tab (quit=false).
         app.tab_new().unwrap();
         assert_eq!(app.tab_count(), 2);
         let quit = dispatch_action(&mut app, Action::CloseTabOrQuit, Surface::Tree).unwrap();
         assert!(!quit, "複数タブでは終了しない");
         assert_eq!(app.tab_count(), 1, "現在タブが閉じて1枚に戻る");
 
-        // 最後の1枚 → q は終了要求(confirm_quit=false なので即 Ok(true))。
+        // The last tab → q requests quitting (confirm_quit=false, so immediately Ok(true)).
         let quit = dispatch_action(&mut app, Action::CloseTabOrQuit, Surface::Tree).unwrap();
         assert!(quit, "最後の1枚では終了する");
         std::fs::remove_dir_all(&dir).ok();
@@ -2294,7 +2403,8 @@ mod tests {
 
     #[test]
     fn resolve_key_result_passes_through_quit_and_continue() {
-        // Ok(true)=終了要求はそのまま伝える / Ok(false)=継続はそのまま、flash も汚さない。
+        // Ok(true) = a quit request passes straight through / Ok(false) = continuing passes
+        // straight through, and doesn't touch flash either.
         let dir = std::env::temp_dir().join("konoma_resolve_passthrough_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();

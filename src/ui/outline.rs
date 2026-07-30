@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(tr(app.lang, crate::i18n::Msg::OutlineActions)).dim());
 
-    // 幅=最長行(枠込み)、上限70。高さ=内容+枠。画面に収める。
+    // Width = the longest line (border included), capped at 70. Height = content + border. Fits within the screen.
     let content_w = lines.iter().map(Line::width).max().unwrap_or(20) as u16;
     let w = (content_w + 2)
         .clamp(24, 70)
@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
 
-    // 選択行が見えるよう縦スクロール。
+    // Scroll vertically so the selected row is visible.
     let inner_h = h.saturating_sub(2);
     let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
     let scroll = sel_line

@@ -22,7 +22,7 @@ impl App {
     /// Still images (PNG/JPG) decode fast, so this stays synchronous. On decode failure / no backend, image_src=None.
     pub(super) fn load_image(&mut self, path: &Path) {
         if self.picker.is_none() || self.img_tx.is_none() {
-            return; // バックエンド無し: 描画側がテキストにフォールバック
+            return; // no backend: the render side falls back to text
         }
         let Some(dyn_img) = crate::preview::image::decode_static(path) else {
             return;
@@ -35,11 +35,14 @@ impl App {
     /// overwritten them with the restored values; so that a late asynchronous result does not break the restored zoom/center).
     pub(super) fn set_static_image(&mut self, img: image::DynamicImage) {
         self.image_src = Some(std::sync::Arc::new(img));
-        self.image_crop = None; // 次の描画(prepare_image)でプロトコルを構築させる
-                                // kitty 経路の「再ビルドせよ」合図。ズームでなく**ピクセルだけ差し替わる**(PDF ページ送り /
-                                // 動画の再サムネ)経路は crop も表示セルも不変=`kitty_want` が変わらず、前ラスタが居残る。
-                                // ここで want/shown を無効化し在り得る in-flight を陳腐化(gen bump)＝差し替えは必ず再ビルドされる。
-                                // (SVG reraster は crop_rect 変化で別途再ビルドされ、fresh/reload は clear_image 経由で二重でも無害。)
+        self.image_crop = None; // let the next render (prepare_image) build the protocol
+                                // The "rebuild" signal for the kitty path. A path that swaps **only the pixels** rather than
+                                // zooming (PDF page navigation / a video re-thumbnail) leaves both the crop and the display
+                                // cell size unchanged, so `kitty_want` doesn't change and the old raster would linger.
+                                // Invalidate want/shown here and stale-out any in-flight build (gen bump) = the swap always
+                                // gets rebuilt.
+                                // (An SVG reraster gets separately rebuilt on crop_rect change; fresh/reload is harmless even
+                                // if this fires twice, via clear_image.)
         self.kitty_gen = self.kitty_gen.wrapping_add(1);
         self.kitty_want = None;
         self.kitty_shown = None;
@@ -53,7 +56,7 @@ impl App {
     ) {
         self.gif_frames = frames;
         self.gif_idx = 0;
-        self.gif_shown_at = None; // 最初の tick で計時開始
+        self.gif_shown_at = None; // start timing on the first tick
         self.gif_protocol = None;
         self.gif_proto_key = None;
         self.image_crop = None;
@@ -63,13 +66,15 @@ impl App {
     /// Still images are synchronous, while **heavy SVG rasterization / GIF full-frame decode are offloaded to a separate thread**
     /// (to start display fast without blocking the UI thread). With no media_tx (tests, etc.), a synchronous fallback is used.
     pub(super) fn start_media_load(&mut self, kind: &PreviewKind, path: &Path) {
-        // メディア自動再読込の基準時刻を記録(reload_media_if_changed が mtime 比較に使う)。
+        // Record the baseline time for auto-reloading media (`reload_media_if_changed` uses it for
+        // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
         match kind {
             PreviewKind::Image(_) if Self::looks_like_gif(path) => {
                 self.spawn_or_sync_media(MediaJob::Gif(path.to_path_buf()))
             }
-            // 静止画(PNG/JPG 等)はデコードが速いので同期のまま(エンコードは描画時に worker が非同期化)。
+            // Still images (PNG/JPG etc.) decode fast, so this stays synchronous (the encode is
+            // made async by a worker at render time).
             PreviewKind::Image(_) => self.load_image(path),
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
@@ -90,8 +95,9 @@ impl App {
                 self.tab.pdf_page,
                 self.cfg.external.pdf,
             )),
-            // 単体 .mmd/.mermaid: 画像モードなら純 Rust で SVG 化→ラスタライズ(別スレッド)。
-            // テキストモード/バックエンド無しは何もしない=装飾テキスト経路が描く(原則#3)。
+            // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
+            // (on a separate thread). In text mode / with no backend, do nothing — the decorated
+            // text path draws it instead (principle #3).
             PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {
                 self.spawn_or_sync_media(MediaJob::Mermaid(
                     path.to_path_buf(),
@@ -99,7 +105,8 @@ impl App {
                     self.cfg.ui.mermaid_theme.clone(),
                 ))
             }
-            // 全画面フェンス表示: md からフェンス本文を序数で取り直す(count-guard=コードコピーと同型)。
+            // Full-screen fence display: re-fetch the fence body from the md by ordinal (count-guard,
+            // the same shape as code copy).
             PreviewKind::MermaidFence(ord) => {
                 if let Some(code) = self.mermaid_fence_code(path, *ord) {
                     self.spawn_or_sync_media(MediaJob::MermaidSrc(
@@ -169,10 +176,10 @@ impl App {
     /// If there is no backend (picker), do nothing (the render side falls back).
     fn spawn_or_sync_media(&mut self, job: MediaJob) {
         if self.picker.is_none() {
-            return; // 端末非対応: 描画側がテキスト/メッセージへフォールバック
+            return; // terminal doesn't support it: the render side falls back to text/a message
         }
         let Some(tx) = self.media_tx.clone() else {
-            // 同期フォールバック(テスト/チャネル未装着)。
+            // Synchronous fallback (tests / no channel attached).
             if let Some(payload) = job.run() {
                 self.apply_payload(payload);
             }
@@ -182,9 +189,10 @@ impl App {
         self.media_loading = true;
         let gen = self.media_gen;
         std::thread::spawn(move || {
-            // job.run() が panic(resvg ラスタ/画像デコードの病的入力)してもスレッドを殺さず
-            // 必ず結果を返す: 返さないと media_loading が次のプレビュー遷移まで true 固着し、
-            // 「Loading…」表示のまま run ループが 16ms ポーリングを続ける(アイドル 0% が崩れる)。
+            // Even if job.run() panics (a pathological input to the resvg raster / image decode),
+            // don't kill the thread — always return a result: without one, `media_loading` would
+            // stay stuck at true until the next preview transition, keeping the "Loading…" display
+            // and the run loop's 16ms polling going forever (breaking the idle-0% guarantee).
             let payload = crate::preview::markdown::catch_silent(move || job.run()).flatten();
             let _ = tx.send(MediaResult { gen, payload });
         });
@@ -194,17 +202,18 @@ impl App {
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
         if result.gen != self.media_gen {
-            return false; // 陳腐化: 既に別ファイルへ移っている
+            return false; // stale: we've already moved on to another file
         }
         self.media_loading = false;
-        // 現世代の結果が届いた=再ラスタの inflight は解消(失敗 None でも解除して詰まらせない)。
+        // The current generation's result arrived = the reraster in-flight flag is resolved (clear
+        // it even on a None failure so it doesn't get stuck).
         self.vector_reraster_inflight = false;
         match result.payload {
             Some(payload) => {
                 self.apply_payload(payload);
                 true
             }
-            None => true, // 失敗: loading を解除し描画側のフォールバック(生XML/メッセージ)へ
+            None => true, // failure: clear loading and let the render side fall back (raw XML/message)
         }
     }
 
@@ -214,15 +223,17 @@ impl App {
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
             MediaPayload::Vector { img, svg } => {
                 use image::GenericImageView;
-                // 初回ラスタ到着=このサイズが論理(レイアウト)サイズ。以降のシャープ再ラスタは
-                // ピクセル密度だけを差し替える(clear_image が logical を消す=別ファイルでリセット)。
+                // The first raster's arrival = this size becomes the logical (layout) size. Later
+                // sharp rerasters swap only the pixel density (clear_image clears `logical` = reset
+                // on switching to another file).
                 if self.image_logical.is_none() {
                     self.image_logical = Some(img.dimensions());
                 }
                 self.vector_svg = Some(svg);
                 self.set_static_image(img);
-                // ジョブ実行中にズームがさらに進んでいたら次の 1 本を出して収束させる
-                // (足りていれば/上限 4096 なら NotNeeded 側で即 return)。
+                // If the zoom advanced further while the job was running, fire off one more to
+                // converge (returns immediately on the not-needed side if it's already sufficient /
+                // at the 4096 cap).
                 self.maybe_sharpen_vector();
             }
         }
@@ -255,7 +266,7 @@ impl App {
         }
         let now = std::time::Instant::now();
         let Some(shown_at) = self.gif_shown_at else {
-            // 最初の tick: 計時を開始するだけ(先頭フレームは表示済み)。
+            // First tick: just start timing (the first frame is already shown).
             self.gif_shown_at = Some(now);
             return false;
         };
@@ -298,17 +309,19 @@ impl App {
             self.tab.image_center,
             inner,
             scale,
-            None, // GIF はラスタ実寸のまま(ベクタ由来でない)
+            None, // GIF stays at its raw raster size (it isn't vector-derived)
         )?;
         let key = (self.gif_idx, crop_rect);
-        // フレーム or crop(ズーム/パン/リサイズ)が変わったときだけ再エンコード。
+        // Re-encode only when the frame or the crop (zoom/pan/resize) changes.
         let built = if self.gif_proto_key != Some(key) {
             let (x0, y0, cw, ch) = crop_rect;
             let crop = src.crop_imm(x0, y0, cw, ch);
             let size = ratatui::layout::Size::new(target.width.max(1), target.height.max(1));
-            // src/picker の借用はこの式で完結(結果は所有値)→以降 self を変更可。
-            // GIF は UI スレッドで毎フレーム同期エンコードするため、軽量で滑らかな Triangle(bilinear) を使う
-            // (最近傍 None だとアニメ各フレームがジャギる。最高品質の Lanczos3 は静止画側で使用)。
+            // The src/picker borrows are fully consumed by this expression (the result is owned) →
+            // self can be mutated afterward.
+            // Since a GIF is synchronously encoded on the UI thread every frame, use the light and
+            // smooth Triangle (bilinear) filter (nearest-neighbor `None` would make each animated
+            // frame jagged; the highest-quality Lanczos3 is used for still images).
             Some(picker.new_protocol(crop, size, Resize::Scale(Some(FilterType::Triangle))))
         } else {
             None
@@ -320,7 +333,7 @@ impl App {
                     self.gif_proto_key = Some(key);
                 }
                 Err(_) => {
-                    // エンコード失敗: 描画側はメッセージにフォールバック。次フレームで再試行。
+                    // Encode failure: the render side falls back to a message. Retry on the next frame.
                     self.gif_protocol = None;
                     self.gif_proto_key = None;
                 }
@@ -340,7 +353,7 @@ impl App {
             return None;
         }
         let remaining = match self.gif_shown_at {
-            None => Duration::ZERO, // まだ計時前: すぐ次の tick を回して計時開始
+            None => Duration::ZERO, // not timing yet: run the next tick right away to start timing
             Some(t) => self.gif_frames[self.gif_idx]
                 .1
                 .checked_sub(t.elapsed())
@@ -414,12 +427,14 @@ impl App {
             return;
         }
         self.tab.pdf_page = page;
-        // 新ページは全体が見えるよう fit に戻す(set_static_image は zoom/center を触らないので明示リセット)。
+        // Reset to fit so the whole new page is visible (set_static_image doesn't touch zoom/center,
+        // so reset it explicitly).
         self.tab.image_zoom = 1.0;
         self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
         if let Some(PreviewKind::Pdf(p)) = self.tab.preview_kind.clone() {
-            // 旧ページの画像は到着まで表示したまま(media_gen で陳腐化判定・スピナーが重畳)。
+            // Keep showing the old page's image until the new one arrives (staleness judged by
+            // media_gen; the spinner overlays on top).
             self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page, self.cfg.external.pdf));
         }
     }
@@ -446,9 +461,10 @@ impl App {
     /// Memory stays bounded by the rasterizer's HARD_MAX (4096px side ≈ 64 MiB RGBA).
     pub(super) fn maybe_sharpen_vector(&mut self) {
         use image::GenericImageView;
-        // 1 本だけ: キーリピートの `+` 連打(ジョブ完了前に必要密度が伸び続ける)で同じ再ラスタを
-        // 多重 spawn しない(1 本 ~数百 ms・過渡 ~128MiB)。到着時(apply_media→apply_payload)に
-        // もう一度この関数が走り、その時点の最新ズームへ収束する。
+        // Only one at a time: don't spawn multiple copies of the same reraster on repeated `+` key
+        // presses (the needed density keeps growing before the job finishes) — one job costs ~a few
+        // hundred ms and ~128MiB transiently. On arrival (apply_media → apply_payload) this function
+        // runs again and converges to the zoom level current at that point.
         if self.vector_reraster_inflight {
             return;
         }
@@ -459,12 +475,13 @@ impl App {
         };
         let cur_side = src.dimensions().0.max(src.dimensions().1);
         let want = ((lw.max(lh) as f64) * self.tab.image_zoom).ceil() as u32;
-        // 現ラスタで足りている(+12% マージン)か、既に上限(4096)なら何もしない。
+        // Do nothing if the current raster is already sufficient (+12% margin) or already at the cap (4096).
         if want <= cur_side + cur_side / 8 || cur_side >= 4096 {
             return;
         }
         let base = self.tab.preview_path.clone().unwrap_or_default();
-        // 同期フォールバック(media_tx 無し=テスト)は spawn しない=多重の余地が無いので立てない。
+        // Don't spawn for the synchronous fallback (no media_tx = tests) — there's no room for
+        // duplication there, so don't set the flag either.
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
         }
@@ -519,7 +536,8 @@ impl App {
         if self.tab.fence_zoom <= 1.001 || !self.focused_fence_fully_visible() {
             return false;
         }
-        // 0 = フィット(全画面画像と同じキー)。ズーム中のみ奪う(等倍では従来の行頭のまま)。
+        // 0 = fit (the same key as the full-screen image view). Consumed only while zoomed (at 1x it
+        // stays "go to line home" as before).
         if matches!(m, M::LineHome) {
             self.tab.fence_zoom = 1.0;
             self.tab.fence_center = (0.5, 0.5);
@@ -532,7 +550,8 @@ impl App {
             M::Down => (0.0, 1.0),
             _ => return false,
         };
-        // 1ステップ=可視窓の 1/4(全画面画像のパンと同じ感覚)。端のクランプは描画側の crop 計算。
+        // One step = 1/4 of the visible window (the same feel as full-screen image pan). Edge
+        // clamping is done in the render side's crop calculation.
         let f = 1.0 / self.tab.fence_zoom;
         self.tab.fence_center.0 = (self.tab.fence_center.0 + dx * f * 0.25).clamp(0.0, 1.0);
         self.tab.fence_center.1 = (self.tab.fence_center.1 + dy * f * 0.25).clamp(0.0, 1.0);
@@ -546,7 +565,8 @@ impl App {
             return;
         }
         let (fw, fh) = self.image_vis_frac;
-        // 1回で可視窓の約25%。見切れていない軸(frac>=1)は動かしても描画時にクランプされる。
+        // About 25% of the visible window per call. Moving an axis that isn't clipped (frac>=1) is
+        // clamped at render time anyway.
         self.tab.image_center.0 += dx * 0.25 * fw;
         self.tab.image_center.1 += dy * 0.25 * fh;
     }

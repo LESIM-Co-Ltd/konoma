@@ -13,7 +13,7 @@ use std::path::Path;
 
 /// Icon for Markdown links (placed before the link label). Used only when `ui.icons=true`.
 pub fn link_icon() -> char {
-    '\u{f0c1}' // nf-fa-link (鎖リンク)
+    '\u{f0c1}' // nf-fa-link (chain link)
 }
 
 /// Icons for Markdown task-list checkboxes. Used only when `ui.icons=true`.
@@ -65,8 +65,8 @@ pub fn file_icon(path: &Path) -> char {
         "sh" | "bash" | "zsh" | "fish" => '\u{f489}',                   // shell
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" => '\u{f1c5}', // image
         "mp4" | "mov" | "mkv" | "webm" | "avi" => '\u{f03d}',           // video
-        "lock" => '\u{f023}',                                           // lock (Cargo.lock 等)
+        "lock" => '\u{f023}',                                           // lock (Cargo.lock etc.)
         "txt" | "log" => '\u{f15c}',                                    // text
-        _ => '\u{f016}',                                                // 既定: 汎用ファイル
+        _ => '\u{f016}',                                                // default: generic file
     }
 }

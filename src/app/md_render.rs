@@ -9,8 +9,8 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
-        // fence 図の目標行数(fit-to-view)が変わったら、図を含む文書だけ作り直す(ビューポートの
-        // 高さ変化で全 md を毎回リビルドしない)。
+        // If the fence diagram's target row count (fit-to-view) changed, only rebuild documents
+        // that contain a diagram (a viewport height change does not rebuild every md every time).
         let fence_rows = self.mermaid_fit_rows();
         if matches!(&self.md_cache, Some(c) if c.path == path && c.width == width
             && (c.fence_rows == fence_rows
@@ -36,20 +36,22 @@ impl App {
         // so the just-built decoration is already stale — rebuild once with the results in.
         for code in &decorated.mermaid_fences {
             if code.trim().is_empty() {
-                continue; // 空フェンス(書きかけ)は図にならない=レンダを起動しない
+                continue; // an empty fence (mid-typing) never becomes a diagram = don't kick off rendering
             }
             resync |= self.ensure_mermaid_fence_render(code.clone());
         }
-        // 数式も同型: latex+display キーで未着のものをレンダ起動(mermaid フェンスと同じ経路)。
+        // Math expressions follow the same pattern: kick off rendering for any not-yet-arrived
+        // latex+display key (the same path as mermaid fences).
         for (latex, display) in &decorated.math_exprs {
             if latex.trim().is_empty() {
                 continue;
             }
             resync |= self.ensure_math_render(latex.clone(), *display);
         }
-        // 現在の文書に**もう存在しない**フェンス/数式キーを回収する。キーは内容ハッシュなので、外部
-        // 編集(agent-watch の反復編集)で内容が変わるたび新キーが生まれ、旧キーの decoded
-        // ラスタ/protocol/SVG は誰も参照しないままファイル切替まで単調成長していた。
+        // Reclaim fence/math keys that **no longer exist** in the current document. Since the key
+        // is a content hash, an external edit (agent-watch's repeated edits) generates a new key
+        // every time the content changes, and the old key's decoded raster/protocol/SVG grow
+        // monotonically until the file is switched, unreferenced by anything.
         {
             let mut live: std::collections::HashSet<PathBuf> = decorated
                 .mermaid_fences
@@ -75,7 +77,7 @@ impl App {
             decorated
         };
         let (lines, targets) = self.postprocess_md(decorated.lines);
-        // 描画済み mermaid placement のソース序数(文書順)を番兵の照合用に渡す。
+        // Pass the drawn mermaid placements' source ordinal (document order) for sentinel matching.
         let fence_ords: Vec<usize> = decorated
             .images
             .iter()
@@ -144,7 +146,7 @@ impl App {
             .and_then(|c| c.details_states.get(ordinal).copied())
             .unwrap_or(true);
         self.details_open.insert(ordinal, !cur);
-        self.md_cache = None; // 再構築で開閉を反映
+        self.md_cache = None; // reflect the open/closed change on the next rebuild
     }
 
     /// Scroll the current Markdown preview so the heading matching `slug` (a GitHub-style in-page
@@ -194,7 +196,8 @@ impl App {
         let s = scroll as usize;
         let h = height.max(1) as usize;
         let (lo, hi, local) = if self.cfg.ui.wrap && c.row_prefix.len() == c.lines.len() + 1 {
-            // 可視表示行 [s, s+h) にかかる論理行区間。prefix は各行の開始表示行(単調増加)。
+            // The logical-line range spanning the visible display rows [s, s+h). `prefix` is each
+            // line's starting display row (monotonically increasing).
             let lo = c.row_prefix.partition_point(|&p| p <= s).saturating_sub(1);
             let hi = c
                 .row_prefix
@@ -207,17 +210,18 @@ impl App {
             (lo, hi, 0)
         };
         let mut out: Vec<Line<'static>> = c.lines[lo..hi].to_vec();
-        // 検索中は可視行の一致箇所を強調(現在の一致=オレンジ / 他=黄色)。窓読みと同じ見た目・
-        // 同じ関数を使う。可視範囲だけに掛けるので文書サイズに依らず O(viewport)。
+        // While searching, emphasize matches on visible lines (the current match = orange / others
+        // = yellow), using the same look and the same function as windowed reads. Since it only
+        // touches the visible range, this is O(viewport) regardless of document size.
         if let Some(q) = self.tab.preview_search.as_deref() {
             let cur = self.tab.search_matches.get(self.tab.search_idx).copied();
             for (i, line) in out.iter_mut().enumerate() {
                 let li = lo + i;
-                // この行に一致が無ければ触らない(clone/再構築を避ける)。
+                // Skip this line if it has no match (avoids a clone/rebuild).
                 if !self.tab.search_matches.iter().any(|(_, l, _)| *l == li) {
                     continue;
                 }
-                // 現在の一致がこの行なら、行内での出現順位を渡してその 1 つだけオレンジに。
+                // If the current match is on this line, pass its within-line occurrence rank so only that one is orange.
                 let rank = cur.and_then(|(_, cl, _)| {
                     (cl == li).then(|| {
                         self.tab.search_matches[..self.tab.search_idx]
@@ -229,15 +233,16 @@ impl App {
                 *line = highlight_query_in_line(std::mem::take(line), q, rank);
             }
         }
-        // フォーカス中アイテムの行だけ反転する(画面外なら何もしない=見た目は全文反転と同一)。
+        // Invert only the focused item's line (does nothing if it's off-screen = looks identical to inverting the whole document).
         if let Some(f) = self.tab.focused_item {
             if let Some(it) = c.items.get(f) {
                 if it.line >= lo && it.line < hi {
-                    // コードブロックのみ行全体反転(ヘッダ帯が既に全幅)。フェンス図は
-                    // キャプション span だけ反転(行全体だと中央寄せのインデント空白まで
-                    // 反転して巨大な白バーになる=Ghostty 実機で捕まった)。
+                    // Only a code block inverts the whole line (its header band is already full-width).
+                    // A fence diagram inverts only the caption span (inverting the whole line would
+                    // also invert the centered indentation whitespace into a huge white bar — caught
+                    // on a real Ghostty).
                     let whole = matches!(it.kind, MdItemKind::CodeBlock);
-                    // 同一行内でのマーカー序数 = 自分より前で同じ行に載っている item の数。
+                    // The marker's within-line ordinal = the count of items on the same line that come before it.
                     let first_on_line = c.items.partition_point(|x| x.line < it.line);
                     let ordinal = f - first_on_line;
                     out[it.line - lo] = invert_focused_line(&c.lines[it.line], ordinal, whole);
@@ -332,8 +337,9 @@ impl App {
                 } else {
                     src
                 };
-                // <details> の各ブロックの実効開閉状態を計算し、renderer(thread-local)へ渡す＋
-                // ensure_md_cache が MdCache に載せられるよう stash する(トグルの基準値)。
+                // Compute each `<details>` block's effective open/closed state and pass it to the
+                // renderer (thread-local) + stash it so ensure_md_cache can load it onto MdCache
+                // (the toggle's baseline value).
                 let details_states: Vec<bool> =
                     crate::preview::markdown::collect_details_open(&src)
                         .iter()
@@ -381,9 +387,10 @@ impl App {
                         ImageSlot::Unavailable
                     }
                 };
-                // ```mermaid フェンス: 画像モードならレンダ済みキャッシュ(内容ハッシュキー)を参照。
-                // 未着はローディング行、失敗/モードOFFはテキスト図(原則#3)。probe(空文字)は
-                // 「抽出するか」の代表判定なので、モードだけで答える。
+                // ```mermaid fence: in image mode, look up the rendered cache (content-hash key).
+                // Not-yet-arrived becomes a loading line; failed/mode-off becomes the text diagram
+                // (principle #3). The probe (empty string) is the representative "should this be
+                // extracted?" check, so it's answered by the mode alone.
                 let mermaid_on = self.mermaid_image_mode();
                 let fence_target_rows = self.mermaid_fit_rows();
                 let mermaid_slot = |code: &str| -> crate::preview::markdown::MermaidSlot {
@@ -392,7 +399,7 @@ impl App {
                         return MermaidSlot::Text;
                     }
                     if code.is_empty() {
-                        return MermaidSlot::Loading; // probe: 抽出ON
+                        return MermaidSlot::Loading; // probe: extraction is ON
                     }
                     let Some(font) = font else {
                         return MermaidSlot::Text;
@@ -403,8 +410,9 @@ impl App {
                         Some(e) => match e.decoded.as_ref() {
                             Some(img) => {
                                 use image::GenericImageView;
-                                // レイアウトは**初回ラスタの寸法**(layout_px)で固定: ズーム時の
-                                // シャープ再ラスタで密度が上がっても予約セル数=表示サイズ不変。
+                                // The layout is fixed at **the first raster's dimensions** (layout_px):
+                                // even when a sharp re-raster raises the density on zoom, the
+                                // reserved cell count = display size stays unchanged.
                                 let (pw, ph) = e.layout_px.unwrap_or_else(|| img.dimensions());
                                 let (cols, rows) = mermaid_cells(
                                     pw,
@@ -421,9 +429,10 @@ impl App {
                         None => MermaidSlot::Loading,
                     }
                 };
-                // 数式($…$ / $$…$$): 画像モードならレンダ済みキャッシュ(latex+display ハッシュキー)を
-                // 参照。未着はローディング、失敗/未対応/フォント無しは生 LaTeX テキストへ降格(原則#3)。
-                // インライン式は自前の行に持ち上がる(mermaid フェンスと同型の合成キー画像)。
+                // Math ($…$ / $$…$$): in image mode, look up the rendered cache (a latex+display
+                // hash key). Not-yet-arrived becomes loading; failed/unsupported/no font degrades
+                // to raw LaTeX text (principle #3). An inline expression is lifted onto its own
+                // line (a synthetic-key image, the same shape as a mermaid fence).
                 let math_on = font.is_some() && self.math_image_mode();
                 let math_slot =
                     |latex: &str, display: bool| -> crate::preview::markdown::MathSlot {
@@ -435,8 +444,9 @@ impl App {
                         match self.md_image_cache.get(&key) {
                             Some(e) if e.failed => MathSlot::Raw,
                             Some(e) => match (e.decoded.as_ref(), e.layout_px) {
-                                // layout_px は数式では SVG の**内在サイズ(単位)**を持つ(ラスタ px でなく)。
-                                // em 高さ→行数、内在アスペクト→桁数を導き、テキストと釣り合うサイズに。
+                                // For math, layout_px holds the SVG's **intrinsic size (in em
+                                // units)**, not raster px. Derive rows from the em height and columns
+                                // from the intrinsic aspect ratio, for a size balanced against the text.
                                 (Some(_), Some((uw, uh))) => {
                                     let (cols, rows) =
                                         math_cells(uw, uh, font.width, font.height, avail, display);
@@ -502,7 +512,7 @@ impl App {
                 math_exprs: Vec::new(),
                 src_lines,
             },
-            // 単体コードファイルは syntect でシンタックスハイライト。
+            // A standalone code file is syntax-highlighted via syntect.
             Some(PreviewKind::Code(_)) => DecoratedMarkdown {
                 lines: crate::preview::code::highlight(&src, path, &self.cfg.ui.theme.code_theme),
                 images: Vec::new(),

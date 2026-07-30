@@ -1,8 +1,9 @@
-// git status の取得 (FR-7)。ツリー各行に M/A/U/削除 等を色付きで出すためのデータ源。
-// `git` feature(既定 on)が無い環境でも `statuses()` は空マップを返し、機能以外は動く。
+// Fetching git status (FR-7). The data source for coloring each tree row's M/A/U/deleted, etc.
+// Even without the `git` feature (on by default), `statuses()` returns an empty map, so everything
+// besides the feature itself keeps working.
 //
-// 仕様: リポジトリ全体の status を一度に取得し、(絶対パス → 種別) のマップにする。
-// ディレクトリには配下の最も重要な変更を畳み込んで(rollup)反映する。
+// Spec: fetch the whole repository's status at once, into a (absolute path → kind) map.
+// A directory reflects the most important change among its descendants, folded in (rollup).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -82,7 +83,8 @@ pub fn git_binary_available() -> bool {
         return v;
     }
     *GIT_BINARY_AVAILABLE.get_or_init(|| {
-        // stdin/stdout/stderr は全て捨てる: TUI の raw mode 画面をバージョン文字列で汚さない。
+        // Discard stdin/stdout/stderr entirely: don't let the version string dirty the TUI's raw
+        // mode screen.
         std::process::Command::new("git")
             .arg("--version")
             .stdin(std::process::Stdio::null())
@@ -90,7 +92,7 @@ pub fn git_binary_available() -> bool {
             .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
-            .unwrap_or(false) // 実行ファイルが無い / 実行権限が無い
+            .unwrap_or(false) // the executable is missing / no execute permission
     })
 }
 
@@ -126,8 +128,8 @@ impl FileStatus {
     pub fn color(self) -> Color {
         match self {
             FileStatus::Modified => Color::Yellow,
-            FileStatus::Added => Color::Green, // 追加(ステージ済)= 緑
-            FileStatus::Untracked => Color::LightGreen, // 未追跡 = 明るい緑(Added と区別)
+            FileStatus::Added => Color::Green, // added (staged) = green
+            FileStatus::Untracked => Color::LightGreen, // untracked = a lighter green (distinct from Added)
             FileStatus::Deleted => Color::Red,
             FileStatus::Renamed => Color::Cyan,
             FileStatus::TypeChange => Color::Yellow,
@@ -171,19 +173,20 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
         .ok()
         .and_then(|r| r.workdir().map(Path::to_path_buf))
     else {
-        return map; // repo でない / bare repo
+        return map; // not a repo / a bare repo
     };
     let workdir = workdir.canonicalize().unwrap_or(workdir);
 
-    // porcelain v1 -z: NUL 区切りで各レコード `XY <path>`。改名/コピー(X か Y が R/C)のときは
-    // 直後の NUL フィールドが旧パス。-uall=未追跡 dir も再帰列挙(git2 の recurse_untracked_dirs 相当)、
-    // --ignored=no=無視は除外、-c status.renames=true で改名検出を強制(ユーザ設定に依らず R を出す)。
+    // porcelain v1 -z: each record is `XY <path>`, NUL-separated. When it's a rename/copy (X or Y
+    // is R/C), the NUL field right after is the old path. -uall = recurse into untracked dirs too
+    // (equivalent to git2's recurse_untracked_dirs), --ignored=no = exclude ignored, and
+    // -c status.renames=true forces rename detection (emits R regardless of the user's config).
     let out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
-            "--no-optional-locks", // 背景ツールの掟: 任意ロック(index.lock の stat キャッシュ
-            // 書き戻し)を取らない。konoma が status を回している最中の `git pull` を
-            // 「index.lock: File exists」で失敗させない(git 2.15+)。
+            "--no-optional-locks", // The etiquette for background tools: don't take an optional
+            // lock (which writes back the index.lock stat cache). Keeps konoma's own status scans
+            // from making a `git pull` fail with "index.lock: File exists" (git 2.15+).
             "-c",
             "status.renames=true",
             "status",
@@ -202,14 +205,16 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
 
     let mut fields = out.stdout.split(|&b| b == 0);
     while let Some(rec) = fields.next() {
-        // 各レコードは `XY` + 区切り空白 + パス。端数(末尾の空フィールド等)は捨てる。
+        // Each record is `XY` + a separating space + the path. Discard fractions (a trailing
+        // empty field, etc.).
         if rec.len() < 4 {
             continue;
         }
         let (x, y) = (rec[0], rec[1]);
         let is_rename = x == b'R' || x == b'C' || y == b'R' || y == b'C';
         if is_rename {
-            // 旧パスのフィールドを1つ消費して捨てる(状態は新パス=今のレコードに付ける)。
+            // Consume and discard the old-path field (the status attaches to the new path =
+            // the current record).
             let _ = fields.next();
         }
         let rel = PathBuf::from(std::ffi::OsStr::from_bytes(&rec[3..]));
@@ -223,7 +228,7 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
 #[cfg(feature = "git")]
 fn classify_porcelain(x: u8, y: u8) -> FileStatus {
     if x == b'U' || y == b'U' || (x == b'A' && y == b'A') || (x == b'D' && y == b'D') {
-        FileStatus::Conflicted // 未マージ(衝突)
+        FileStatus::Conflicted // unmerged (conflict)
     } else if x == b'?' {
         FileStatus::Untracked // "??"
     } else if x == b'D' || y == b'D' {
@@ -267,18 +272,20 @@ pub fn ignored(root: &Path) -> HashSet<PathBuf> {
         .ok()
         .and_then(|r| r.workdir().map(Path::to_path_buf))
     else {
-        return set; // repo でない / bare repo
+        return set; // not a repo / a bare repo
     };
     let workdir = workdir.canonicalize().unwrap_or(workdir);
 
-    // `--ignored=traditional`: 無視エントリを `!!` で列挙し、**完全に無視されたディレクトリは
-    //   collapse**(node_modules/ は中身を再帰せず1件)= git2 の recurse_ignored_dirs(false) と同じ。
-    // `-unormal`: 未追跡 dir も collapse させるための既定モードを明示(ユーザの status.showUntrackedFiles
-    //   が all だと無視 dir まで再帰展開され collapse が壊れるため、ここで固定する)。`??` 行は下で捨てる。
+    // `--ignored=traditional`: enumerate ignored entries with `!!`, and **collapse a fully-ignored
+    //   directory** (node_modules/ becomes one entry, not recursed into) = the same as git2's
+    //   recurse_ignored_dirs(false).
+    // `-unormal`: pin down the default mode so untracked dirs also collapse (if the user's
+    //   status.showUntrackedFiles is `all`, ignored dirs get recursively expanded and collapse
+    //   breaks, so this is fixed here). `??` lines are discarded below.
     let out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
-            "--no-optional-locks", // 任意ロック禁止(statuses() と同じ理由)
+            "--no-optional-locks", // no optional locks (same reason as statuses())
             "status",
             "--porcelain=v1",
             "-z",
@@ -294,11 +301,11 @@ pub fn ignored(root: &Path) -> HashSet<PathBuf> {
     }
 
     for rec in out.stdout.split(|&b| b == 0) {
-        // 無視エントリは `!! <path>`。変更/未追跡(`??`)等の他レコードは捨てる。
+        // An ignored entry is `!! <path>`. Other records like a change/untracked (`??`) are discarded.
         if rec.len() < 4 || rec[0] != b'!' || rec[1] != b'!' {
             continue;
         }
-        // ignored ディレクトリは末尾 `/` 付きで来る→剥がしてツリーの絶対パスと一致させる。
+        // An ignored directory comes with a trailing `/` → strip it so it matches the tree's absolute path.
         let mut raw = &rec[3..];
         while raw.last() == Some(&b'/') {
             raw = &raw[..raw.len() - 1];
@@ -341,11 +348,12 @@ pub fn branch(root: &Path) -> Option<String> {
     }
     let repo = git2::Repository::discover(root).ok()?;
     if let Ok(head) = repo.head() {
-        // git2 0.21: shorthand() は Result<&str, Error>(UTF-8 検証)。None 同等は .ok() で吸収。
+        // git2 0.21: shorthand() is Result<&str, Error> (UTF-8 validated). The None-equivalent is
+        // absorbed with .ok().
         return head.shorthand().ok().map(|s| s.to_string());
     }
-    // まだコミットが無い(unborn)場合は HEAD のシンボリック参照から取り出す。
-    // git2 0.21: symbolic_target() は Result<Option<&str>, Error>。
+    // If there is no commit yet (unborn), pull it from HEAD's symbolic reference instead.
+    // git2 0.21: symbolic_target() is Result<Option<&str>, Error>.
     repo.find_reference("HEAD")
         .ok()
         .and_then(|r| r.symbolic_target().ok().flatten().map(|t| t.to_string()))
@@ -357,11 +365,12 @@ pub fn branch(_root: &Path) -> Option<String> {
     None
 }
 
-// ── diff / changed-files / log の読み取り＋書き込み API (Git view 用) ──────────
+// ── Read+write API for diff / changed-files / log (for the Git view) ──────────
 //
-// 読み取りは git2、書き込み(stage/unstage/discard/commit)は `git` CLI に委譲する
-// (フック・GPG 署名・ユーザー設定を尊重するため。書き込みに git2 は使わない)。
-// `git` feature 無効時は全て空/None/Err を返し、機能以外は通常どおり動く。
+// Reads go through git2; writes (stage/unstage/discard/commit) are delegated to the `git` CLI
+// (to respect hooks, GPG signing, and user config — git2 is never used for writing).
+// When the `git` feature is disabled everything returns empty/None/Err, and everything besides
+// the feature itself keeps working as normal.
 
 /// Kind of a single diff line. Context = unchanged / Added = addition (green) / Removed = deletion (red).
 // The variants are only constructed on the git-feature diff path; the type is still referenced by the
@@ -457,7 +466,7 @@ pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
             let Ok(Some(name)) = branch.name() else {
                 continue;
             };
-            // tip コミット時刻(取得失敗は 0=最古扱い)。
+            // The tip commit's time (0 = treated as oldest if it can't be fetched).
             let t = branch
                 .get()
                 .peel_to_commit()
@@ -466,7 +475,7 @@ pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
             out.push((name.to_string(), is_current, t));
         }
     }
-    // 新しい順(降順)。同時刻は名前で安定化。
+    // Newest first (descending). Same-time entries are stabilized by name.
     out.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     out
 }
@@ -559,7 +568,7 @@ pub fn legend_from_rows(
             }
         })
         .collect();
-    // 安定ソート: HEAD(先頭) → 基準 → 残りは出現順を保つ。
+    // Stable sort: HEAD (first) → base → the rest keep their appearance order.
     out.sort_by_key(|e| (!e.is_head, !e.is_base));
     out
 }
@@ -591,7 +600,8 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     let workdir = workdir
         .canonicalize()
         .unwrap_or_else(|_| workdir.to_path_buf());
-    // pathspec は workdir 相対で渡す。絶対パスでも strip_prefix で相対化を試みる。
+    // The pathspec is passed as workdir-relative. Even for an absolute path, try to make it
+    // relative via strip_prefix.
     let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
     let rel = file_abs
         .strip_prefix(&workdir)
@@ -599,13 +609,14 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
         .to_path_buf();
     let rel_str = rel.to_string_lossy().to_string();
 
-    // HEAD ツリー(unborn なら None=空ツリー扱い)。
+    // The HEAD tree (None = treated as an empty tree if unborn).
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
 
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
-        // 未追跡ファイルも行内容を出す(既定だと「未追跡」事実だけで行 diff が出ない)。
+        // Also emit line content for untracked files (by default only the "untracked" fact
+        // shows, with no line diff).
         .show_untracked_content(true)
         .pathspec(&rel_str);
 
@@ -634,7 +645,8 @@ pub fn diff_contents(old: &str, new: &str) -> Vec<DiffLine> {
         for op in &group {
             for change in diff.iter_changes(op) {
                 let raw = change.value();
-                // 行末の改行を落とす(DiffLine.text は改行を含まない契約・file_diff と同じ)。
+                // Drop the trailing newline (DiffLine.text's contract is that it never includes
+                // one, same as file_diff).
                 let text = raw
                     .strip_suffix('\n')
                     .unwrap_or(raw)
@@ -713,8 +725,9 @@ fn collect_diff_lines(diff: &git2::Diff, with_headers: bool) -> Vec<DiffLine> {
                     .unwrap_or_default();
                 let mut lf = last_file.borrow_mut();
                 if lf.as_deref() != Some(path.as_str()) {
-                    // ファイル境界ヘッダ: text=**素のパス**、行番号は両方 None(=ヘッダの目印)。
-                    // 描画側(gitdiff)が枠付きヘッダにし、拡張子からファイル別ハイライトを切替える。
+                    // A file-boundary header: text = **the bare path**, both line numbers None
+                    // (= the marker that it's a header). The render side (gitdiff) turns it into a
+                    // boxed header and switches per-file highlighting by extension.
                     lines.borrow_mut().push(DiffLine {
                         kind: DiffLineKind::Context,
                         old_no: None,
@@ -766,17 +779,18 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
         .ok()
         .and_then(|r| r.workdir().map(Path::to_path_buf))
     else {
-        return out; // repo でない / bare repo
+        return out; // not a repo / a bare repo
     };
     let workdir = workdir.canonicalize().unwrap_or(workdir);
 
-    // porcelain v1 -z: NUL 区切りで各レコード `XY <path>`。改名/コピー(X か Y が R/C)のときは
-    // 直後の NUL フィールドが旧パス(新パスが先=実測確認済)。-uall=未追跡 dir も再帰列挙、
-    // --ignored=no=無視は除外、-c status.renames=true で改名検出を強制(ユーザ設定に依らず R を出す)。
+    // porcelain v1 -z: each record is `XY <path>`, NUL-separated. When it's a rename/copy (X or Y
+    // is R/C), the NUL field right after is the old path (the new path comes first — confirmed by
+    // measurement). -uall = recurse into untracked dirs too, --ignored=no = exclude ignored, and
+    // -c status.renames=true forces rename detection (emits R regardless of the user's config).
     let cmd_out = std::process::Command::new("git")
         .current_dir(&workdir)
         .args([
-            "--no-optional-locks", // 任意ロック禁止(statuses() と同じ理由)
+            "--no-optional-locks", // no optional locks (same reason as statuses())
             "-c",
             "status.renames=true",
             "status",
@@ -795,18 +809,21 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
 
     let mut fields = cmd_out.stdout.split(|&b| b == 0);
     while let Some(rec) = fields.next() {
-        // 各レコードは `XY` + 区切り空白 + パス。端数(末尾の空フィールド等)は捨てる。
+        // Each record is `XY` + a separating space + the path. Discard fractions (a trailing
+        // empty field, etc.).
         if rec.len() < 4 {
             continue;
         }
         let (x, y) = (rec[0], rec[1]);
         let is_rename = x == b'R' || x == b'C' || y == b'R' || y == b'C';
         if is_rename {
-            // 旧パスのフィールドを1つ消費して捨てる(状態は新パス=今のレコードに付ける)。
+            // Consume and discard the old-path field (the status attaches to the new path =
+            // the current record).
             let _ = fields.next();
         }
-        // staged = INDEX 側(X 列)に変更があるか。' '=index 変更なし / '?'=未追跡 / 'U'=未マージ は
-        // staged 扱いしない(git2 版の INDEX_NEW/MODIFIED/DELETED/RENAMED/TYPECHANGE と同義)。
+        // staged = whether the INDEX side (X column) has a change. ' ' = no index change / '?' =
+        // untracked / 'U' = unmerged are not treated as staged (equivalent to the git2 version's
+        // INDEX_NEW/MODIFIED/DELETED/RENAMED/TYPECHANGE).
         let staged = matches!(x, b'M' | b'A' | b'D' | b'R' | b'C' | b'T');
         let rel = PathBuf::from(std::ffi::OsStr::from_bytes(&rec[3..]));
         out.push(ChangeEntry {
@@ -838,7 +855,7 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
         return out;
     };
     if walk.push_head().is_err() {
-        return out; // unborn 等
+        return out; // unborn, etc.
     }
     let _ = walk.set_sorting(git2::Sort::TIME);
     for oid in walk.flatten().take(max) {
@@ -847,7 +864,7 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
         };
         let id = oid.to_string();
         let short = id.chars().take(7).collect();
-        // git2 0.21: summary() は Result<Option<&str>, Error>。None/非 UTF-8 は空文字に。
+        // git2 0.21: summary() is Result<Option<&str>, Error>. None / non-UTF-8 becomes an empty string.
         let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
         let author = commit.author().name().unwrap_or("").to_string();
         let time_epoch = commit.time().seconds();
@@ -1091,7 +1108,8 @@ struct DagCommit {
 #[cfg(feature = "git")]
 fn dag_commits(root: &Path, max: usize, refs: Option<&[String]>) -> Vec<DagCommit> {
     let cwd = workdir_of(root);
-    // %P=親ID(空白区切り)。topo-order=親を子より先に出さない＋枝が混ざらない(レーンが安定)。
+    // %P = the parent IDs (space-separated). topo-order = never emits a parent before its child +
+    // branches don't get mixed (the lanes stay stable).
     let fmt = "--format=%x1f%H%x1f%P%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D";
     let mut args: Vec<String> = vec![
         "log".into(),
@@ -1102,7 +1120,7 @@ fn dag_commits(root: &Path, max: usize, refs: Option<&[String]>) -> Vec<DagCommi
         fmt.into(),
     ];
     match refs {
-        // 指定ブランチのみ。HEAD は呼び出し側で必ず含める(空グラフ回避)。
+        // Only the given branches. The caller must always include HEAD (to avoid an empty graph).
         Some(r) if !r.is_empty() => args.extend(r.iter().cloned()),
         _ => args.push("--all".into()),
     }
@@ -1119,7 +1137,7 @@ fn dag_commits(root: &Path, max: usize, refs: Option<&[String]>) -> Vec<DagCommi
     let text = String::from_utf8_lossy(&out.stdout);
     let mut commits = Vec::new();
     for line in text.lines() {
-        // 先頭に %x1f があるので split で ["", H, P, h, s, an, ad, D]。
+        // There is a leading %x1f, so split gives ["", H, P, h, s, an, ad, D].
         let mut it = line.split('\u{1f}');
         let _lead = it.next();
         let id = it.next().unwrap_or("").to_string();
@@ -1167,10 +1185,11 @@ fn lay_out_lanes(
 ) -> Vec<GraphRow> {
     use ratatui::style::Color;
 
-    // 未コミットの作業ツリー変更 (擬似 "Uncommitted changes" 行)。
-    // **HEAD のコミットを親に持つ仮想コミットとして DAG に差し込む**ことで、レーン割当が
-    // 自動で HEAD のレーン先頭に `●` を置き、HEAD まで `│` で繋ぐ(diff 先=HEAD と一致)。
-    // HEAD が範囲内に無い/unborn の時は親無し=単独ノード(最左)へ degrade する。
+    // Uncommitted working-tree changes (a pseudo "Uncommitted changes" row).
+    // **Splice it into the DAG as a virtual commit whose parent is HEAD's commit**, so lane
+    // assignment automatically places `●` at the head of HEAD's lane and connects it to HEAD with
+    // `│` (the diff target matches HEAD).
+    // When HEAD is out of range / unborn, it degrades to a parentless, standalone node (leftmost).
     const WT_ID: &str = "\u{1}WORKTREE\u{1}";
     let work: Vec<DagCommit> = if let Some((subject, date)) = wt.as_ref() {
         let head = head_id_of(commits);
@@ -1191,7 +1210,7 @@ fn lay_out_lanes(
     };
     let commits = &work[..];
 
-    // 非基準レーンの循環パレット。基準(lane0)は固定色(下記 BASE)。
+    // A cyclic palette for non-base lanes. The base (lane0) has a fixed color (BASE, below).
     const PALETTE: [Color; 6] = [
         Color::Cyan,
         Color::Green,
@@ -1200,14 +1219,15 @@ fn lay_out_lanes(
         Color::LightRed,
         Color::LightYellow,
     ];
-    const BASE: Color = Color::White; // lane0=基準(左の幹)。テーマ前景寄りの固定色。
+    const BASE: Color = Color::White; // lane0 = base (the left trunk). A fixed color close to the theme's foreground.
 
     let mut lanes: Vec<Option<Lane>> = Vec::new();
     let mut next_color = 0usize;
     let mut rows: Vec<GraphRow> = Vec::new();
 
-    // Phase 2: 基準指定時は lane0 を基準ブランチ先端で予約する。lane0 は以後、基準の first-parent を
-    // 継ぎ続ける(=左の一直線)。他のコミット/新 tip/分岐は lane1 以降(右)へ追いやる(`base_floor`)。
+    // Phase 2: when a base is given, reserve lane0 for the base branch's tip. From then on, lane0
+    // keeps following the base's first-parent (= a straight line on the left). Every other
+    // commit/new tip/branch gets pushed out to lane1 and beyond (right) (`base_floor`).
     let base_floor = if let Some(tip) = base {
         lanes.push(Some(Lane {
             target: tip.to_string(),
@@ -1218,7 +1238,7 @@ fn lay_out_lanes(
         0
     };
 
-    // 新レーンの色: lane0 は固定 BASE、それ以外はパレットを循環。
+    // Color for a new lane: lane0 is the fixed BASE, everything else cycles through the palette.
     let pick_color = |idx: usize, next: &mut usize| -> Color {
         if idx == 0 {
             BASE
@@ -1228,7 +1248,8 @@ fn lay_out_lanes(
             c
         }
     };
-    // `start` 以降で最初の空きレーン番号(無ければ末尾に追加)。分岐は my_lane+1 以降=必ず右に出す。
+    // The first free lane number at or after `start` (append at the end if there is none). A
+    // branch always comes out at my_lane+1 or beyond = to the right.
     let free_from = |lanes: &mut Vec<Option<Lane>>, start: usize| -> usize {
         if let Some(i) = (start..lanes.len()).find(|&i| lanes[i].is_none()) {
             i
@@ -1237,7 +1258,8 @@ fn lay_out_lanes(
             lanes.len() - 1
         }
     };
-    // コミット行(2桁/レーン)を組む。my_lane=ノード、他の活レーン=│、隙間=空白。
+    // Assemble the commit row (2 columns per lane). my_lane = the node, other active lanes = │,
+    // gaps = blank.
     let commit_cells = |lanes: &[Option<Lane>], my_lane: usize, node: char, my_color: Color| {
         let n = lanes.len();
         let mut glyph = vec![' '; n.saturating_mul(2).saturating_sub(1).max(1)];
@@ -1255,7 +1277,7 @@ fn lay_out_lanes(
     };
 
     for c in commits {
-        // 1) このコミットが乗るレーン(最左の該当)。無ければ新 tip。
+        // 1) The lane this commit rides on (the leftmost match). A new tip if there is none.
         let hits: Vec<usize> = lanes
             .iter()
             .enumerate()
@@ -1267,7 +1289,8 @@ fn lay_out_lanes(
         let my_lane = if let Some(&first) = hits.first() {
             first
         } else {
-            // 新 tip。基準指定時は lane0 を避けて lane1 以降へ(基準の一直線を侵さない)。
+            // A new tip. When a base is given, avoid lane0 and go to lane1 or beyond (so it
+            // doesn't intrude on the base's straight line).
             let idx = free_from(&mut lanes, base_floor);
             let col = pick_color(idx, &mut next_color);
             lanes[idx] = Some(Lane {
@@ -1278,7 +1301,8 @@ fn lay_out_lanes(
         };
         let my_color = lanes[my_lane].as_ref().map(|l| l.color).unwrap_or(BASE);
 
-        // 2) 合流(該当レーンが複数)はコミット行の**上**に連結行を挿み、余分なレーンを畳む。
+        // 2) A merge (multiple matching lanes) inserts a connector row **above** the commit row
+        // and folds away the extra lanes.
         let merged: Vec<(usize, Color)> = hits
             .iter()
             .skip(1)
@@ -1292,7 +1316,7 @@ fn lay_out_lanes(
             }
         }
 
-        // 3) コミット行。
+        // 3) The commit row.
         let node = if c.parents.len() >= 2 { '◆' } else { '●' };
         rows.push(GraphRow {
             graph: commit_cells(&lanes, my_lane, node, my_color),
@@ -1305,10 +1329,11 @@ fn lay_out_lanes(
             worktree: false,
         });
 
-        // 4) 親を割り当てる。第1親=自レーン継続、第2親以降=右へ新レーン(=分岐)。
+        // 4) Assign parents. 1st parent = continues in its own lane, 2nd parent onward = a new
+        // lane to the right (= a branch).
         let mut forked: Vec<(usize, Color)> = Vec::new();
         if c.parents.is_empty() {
-            lanes[my_lane] = None; // ルート: レーン終端。
+            lanes[my_lane] = None; // root: the lane ends here.
         } else {
             if let Some(l) = lanes[my_lane].as_mut() {
                 l.target = c.parents[0].clone();
@@ -1324,20 +1349,20 @@ fn lay_out_lanes(
             }
         }
 
-        // 5) 分岐はコミット行の**下**に連結行を挿む。
+        // 5) A branch inserts a connector row **below** the commit row.
         if !forked.is_empty() {
             let conn = build_connector(&lanes, my_lane, my_color, &forked, true);
             rows.push(connector_row(conn));
         }
 
-        // 6) 末尾の空レーンを詰める。
+        // 6) Trim trailing empty lanes.
         while matches!(lanes.last(), Some(None)) {
             lanes.pop();
         }
     }
 
-    // 差し込んだ仮想 WT 行を本来の "Uncommitted changes" 擬似行へ戻す:
-    // commit を外し worktree=true、ノード(●)を黄色ボールドに塗り直す(レーン位置は維持)。
+    // Turn the spliced-in virtual WT row back into the original "Uncommitted changes" pseudo-row:
+    // clear commit, set worktree=true, and repaint the node (●) yellow-bold (keeping the lane position).
     if wt.is_some() {
         use ratatui::style::{Modifier, Style};
         if let Some(r) = rows.iter_mut().find(|r| r.commit.as_deref() == Some(WT_ID)) {
@@ -1355,7 +1380,7 @@ fn lay_out_lanes(
         }
     }
 
-    // 全行のグラフ幅を最大に揃え、subject の左端を一致させる。
+    // Line up every row's graph width to the max, so subject's left edge lines up.
     let maxw = rows.iter().map(|r| r.graph.len()).max().unwrap_or(0);
     for r in &mut rows {
         while r.graph.len() < maxw {
@@ -1414,7 +1439,8 @@ fn connector_row(graph: Vec<(String, ratatui::style::Style)>) -> GraphRow {
     }
 }
 
-// 連結文字を「接続方向ビット(上下左右)」から決めるための定数と表。
+// Constants and table for deciding the connector character from "connection-direction bits
+// (up/down/left/right)".
 #[cfg(feature = "git")]
 const DIR_U: u8 = 1;
 #[cfg(feature = "git")]
@@ -1466,7 +1492,8 @@ fn build_connector(
     let mut color = vec![Color::Reset; width];
     let endcols: std::collections::HashSet<usize> = endpoints.iter().map(|&(i, _)| i).collect();
 
-    // 1) 通過する縦レーン(my_lane でも endpoint でもない活レーン)= 上+下。
+    // 1) A vertical lane just passing through (an active lane that is neither my_lane nor an
+    // endpoint) = up+down.
     for (i, l) in active.iter().enumerate() {
         if i == my_lane || endcols.contains(&i) {
             continue;
@@ -1476,14 +1503,16 @@ fn build_connector(
             color[i * 2] = l.color;
         }
     }
-    // 2) my_lane は上+下(継続)+右。
+    // 2) my_lane is up+down (continuing) + right.
     conn[my_lane * 2] |= DIR_U | DIR_D | DIR_R;
     color[my_lane * 2] = my_color;
-    // 3) 水平を my_lane の右隣から一番遠い endpoint まで一気に敷く(途中レーンを貫く)。
+    // 3) Lay the horizontal all at once from my_lane's right neighbor to the farthest endpoint
+    // (piercing through the lanes in between).
     for slot in conn[(my_lane * 2 + 1)..(max_e * 2)].iter_mut() {
         *slot |= DIR_L | DIR_R;
     }
-    // 4) endpoint の角ビット。分岐=下+左 / 合流=上+左。手前の endpoint は水平が貫くので T(┬/┴)になる。
+    // 4) The endpoint's corner bits. Fork = down+left / merge = up+left. A nearer endpoint gets
+    // pierced by the horizontal, so it becomes a T (┬/┴).
     let base = if is_fork {
         DIR_D | DIR_L
     } else {
@@ -1491,7 +1520,7 @@ fn build_connector(
     };
     let mut sorted: Vec<(usize, Color)> = endpoints.to_vec();
     sorted.sort_by_key(|&(i, _)| i);
-    let mut cursor = my_lane * 2; // 水平セルの色は、その右にある最も近い endpoint の色で塗る。
+    let mut cursor = my_lane * 2; // Paint each horizontal cell with the color of the nearest endpoint to its right.
     for (e, c) in sorted {
         for slot in color[(cursor + 1)..(e * 2)].iter_mut() {
             if *slot == Color::Reset {
@@ -1680,8 +1709,9 @@ fn classify(s: git2::Status) -> FileStatus {
 mod tests {
     use super::*;
 
-    /// `diff_contents`(follow ベースライン差分の diff エンジン)は、変更ハンクだけを
-    /// 正しい行番号つきで出す(全文でなく)・text は改行を含まない・同一内容なら空。
+    /// `diff_contents` (the diff engine for the follow baseline diff) emits only the changed hunks
+    /// with correct line numbers (not the whole file); text never contains a newline; identical
+    /// content produces an empty result.
     #[test]
     fn diff_contents_emits_changed_hunks_with_line_numbers() {
         let old = "a\nb\nc\nd\ne\n";
@@ -1701,19 +1731,19 @@ mod tests {
         assert_eq!(removed[0].old_no, Some(3), "旧側の行番号");
         assert_eq!(added[0].text, "CHANGED");
         assert_eq!(added[0].new_no, Some(3), "新側の行番号");
-        // 文脈行は Context・text に改行を含まない。
+        // A context line is Context, and text never contains a newline.
         assert!(lines
             .iter()
             .any(|l| l.kind == DiffLineKind::Context && l.text == "a" && l.old_no == Some(1)));
         assert!(lines.iter().all(|l| !l.text.contains('\n')));
-        // 同一内容なら空(変更なし)。
+        // Identical content produces an empty result (no changes).
         assert!(diff_contents(new, new).is_empty());
     }
 
-    /// 背景の読み取り(statuses/ignored)は index を**書き戻さない**(--no-optional-locks)。
-    /// stat キャッシュが陳腐化した状態(内容同一で mtime だけ更新)で status を読んでも
-    /// .git/index が変化しないこと。これが破れると、konoma が status を回している最中の
-    /// `git pull` が「index.lock: File exists」で失敗する(ユーザー報告 2026-07-07)。
+    /// Background reads (statuses/ignored) **never write back** the index (--no-optional-locks).
+    /// Confirm that reading status while the stat cache is stale (content identical, only mtime
+    /// updated) does not change .git/index. If this breaks, a `git pull` running while konoma is
+    /// scanning status fails with "index.lock: File exists" (user report 2026-07-07).
     #[test]
     fn background_reads_never_write_the_index() {
         let dir = std::env::temp_dir().join("konoma_no_optional_locks_test");
@@ -1734,8 +1764,8 @@ mod tests {
         run(&["add", "-A"]);
         run(&["commit", "-qm", "init"]);
 
-        // 内容同一のまま mtime を更新 → index の stat キャッシュが陳腐化。
-        // フラグ無しの `git status` はここで index を書き戻す(=index.lock を取る)。
+        // Update mtime while keeping the content identical → the index's stat cache goes stale.
+        // A plain, flag-less `git status` would write back the index here (= take index.lock).
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join("a.txt"), b"same content").unwrap();
 
@@ -1743,9 +1773,10 @@ mod tests {
         let before = std::fs::metadata(&index).unwrap().modified().unwrap();
         let st = statuses(&dir);
         let ig = ignored(&dir);
-        // git2 の gutter diff(diff_tree_to_workdir_with_index)も update_index を立てないので
-        // index を書き戻さない。これが背景 git 読み取りをロックフリーに保つ前提であり、
-        // それゆえ `.git/*.lock` イベントを握り潰さずに済む(fs 監視の自己ループが起きない)。
+        // git2's gutter diff (diff_tree_to_workdir_with_index) doesn't set update_index either, so
+        // it doesn't write back the index. This is the assumption that keeps background git reads
+        // lock-free, which in turn is why we can afford to not swallow `.git/*.lock` events (so the
+        // fs-watch self-loop never happens).
         let _diff = file_diff(&dir, &dir.join("a.txt"));
         let after = std::fs::metadata(&index).unwrap().modified().unwrap();
         assert_eq!(before, after, "読み取りで index を書き戻さない");
@@ -1829,7 +1860,8 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn lay_out_lanes_draws_angular_fork_and_merge() {
-        // M(merge B,F) → B(→R) / F(→R) → R(root)。分岐=コミット下に ├─┐、合流=コミット上に ├─┘。
+        // M (merge B,F) → B (→R) / F (→R) → R (root). A branch = ├─┐ below the commit, a merge =
+        // ├─┘ above the commit.
         let dc = |id: &str, parents: &[&str]| DagCommit {
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
@@ -1862,7 +1894,7 @@ mod tests {
             vec!["◆", "├─┐", "● │", "│ ●", "├─┘", "●"],
             "角ばったグラフが期待と不一致: {joined:?}"
         );
-        // 斜め線が一切無いこと(角ばったTUIと整合)。
+        // No diagonal lines at all (consistent with an angular TUI).
         let all: String = rows
             .iter()
             .flat_map(|r| r.graph.iter().map(|(s, _)| s.clone()))
@@ -1871,7 +1903,7 @@ mod tests {
             !all.contains('/') && !all.contains('\\'),
             "斜め線が残っている: {all}"
         );
-        // ノード: マージ=◆(1個)・通常=●(3個)。コミット行は 4。
+        // Nodes: merge = ◆ (1) · normal = ● (3). There are 4 commit rows.
         assert_eq!(all.matches('◆').count(), 1, "マージノード ◆ は1個");
         assert_eq!(all.matches('●').count(), 3, "通常ノード ● は3個");
         assert_eq!(
@@ -1884,7 +1916,8 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn lay_out_lanes_multi_converge_uses_tee() {
-        // 3つの tip が同じ root R に合流 → 中間レーンは ┴(上+左+右)、最遠は ┘。`├───┘` にならないこと。
+        // Three tips merge into the same root R → the middle lane is ┴ (up+left+right), the
+        // farthest is ┘. Must not become `├───┘`.
         let dc = |id: &str, parents: &[&str]| DagCommit {
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
@@ -1925,7 +1958,8 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn lay_out_lanes_base_pins_branch_to_lane0() {
-        // 2本の枝(A: A1→A2→R / B: B1→B2→R)。base 指定でその枝の node が必ず lane0(col0)に来る。
+        // Two branches (A: A1→A2→R / B: B1→B2→R). With base specified, that branch's node always
+        // lands on lane0 (col0).
         let dc = |id: &str, parents: &[&str]| DagCommit {
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
@@ -1942,7 +1976,7 @@ mod tests {
             dc("B2", &["R"]),
             dc("R", &[]),
         ];
-        // コミット id の node が col0(lane0)に乗っているか。
+        // Whether the commit id's node sits at col0 (lane0).
         let node_at_col0 = |rows: &[GraphRow], id: &str| -> bool {
             rows.iter().any(|r| {
                 r.commit.as_deref() == Some(id)
@@ -1950,7 +1984,7 @@ mod tests {
             })
         };
 
-        // base なし: 先に現れる A が lane0、B は右。
+        // No base: A, which appears first, gets lane0; B goes to the right.
         let none = lay_out_lanes(&commits, None, None);
         assert!(node_at_col0(&none, "A1"), "base なしでは A1 が lane0");
         assert!(
@@ -1958,7 +1992,7 @@ mod tests {
             "base なしでは B1 は lane0 でない"
         );
 
-        // base=B1(feature 先端): B 系が lane0 へ、A は右に追いやられる。
+        // base=B1 (feature's tip): the B lineage goes to lane0, A gets pushed to the right.
         let based = lay_out_lanes(&commits, Some("B1"), None);
         assert!(
             node_at_col0(&based, "B1"),
@@ -1972,7 +2006,7 @@ mod tests {
             !node_at_col0(&based, "A1"),
             "base=B1 で A1 は右レーン(lane0 でない)"
         );
-        // 全コミット行は維持(消えない)。
+        // Every commit row is kept (none disappear).
         assert_eq!(
             based.iter().filter(|r| r.commit.is_some()).count(),
             5,
@@ -1983,8 +2017,9 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn worktree_row_sits_on_head_lane_not_always_col0() {
-        // HEAD=A1(枝A の先端)。base=B1 で lane0 は B 系。未コミット行は **A のレーン(col0 でない)** に乗り、
-        // HEAD の直上に縦で繋がること(diff 先=HEAD と一致)。
+        // HEAD=A1 (branch A's tip). With base=B1, lane0 is the B lineage. The uncommitted row must
+        // sit **on A's lane (not col0)** and connect vertically directly above HEAD (the diff
+        // target matches HEAD).
         let dc = |id: &str, parents: &[&str], refs: &str| DagCommit {
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
@@ -2003,7 +2038,8 @@ mod tests {
         ];
         let wt = Some(("Uncommitted changes".to_string(), "1 staged".to_string()));
 
-        // base=B1: lane0=B 系。WT 行は worktree=true・col0 が `●` ではない(HEAD=A は右レーン)。
+        // base=B1: lane0 = the B lineage. The WT row is worktree=true, and col0 is not `●` (HEAD=A
+        // is in the right lane).
         let rows = lay_out_lanes(&commits, Some("B1"), wt.clone());
         let wt_row = rows.iter().find(|r| r.worktree).expect("WT 行がある");
         assert!(wt_row.commit.is_none(), "WT 行は commit=None");
@@ -2015,7 +2051,7 @@ mod tests {
             wt_row.graph.iter().any(|(s, _)| s == "●"),
             "WT 行に ● ノードがある"
         );
-        // WT のノード列が HEAD(A1)のノード列と一致(縦に繋がる)。
+        // WT's node column matches HEAD's (A1) node column (they connect vertically).
         let col_of_node = |r: &GraphRow| r.graph.iter().position(|(s, _)| s == "●" || s == "◆");
         let wt_idx = rows.iter().position(|r| r.worktree).unwrap();
         let head_idx = rows
@@ -2028,7 +2064,7 @@ mod tests {
             "WT のノード列が HEAD(A1)のノード列と一致"
         );
 
-        // base なし: HEAD=A は最左 lane0 なので WT も col0(従来表示と一致)。
+        // No base: HEAD=A is the leftmost lane0, so WT is also col0 (matches the previous display).
         let rows0 = lay_out_lanes(&commits, None, wt);
         let wt0 = rows0.iter().find(|r| r.worktree).unwrap();
         assert!(
@@ -2039,7 +2075,7 @@ mod tests {
 
     #[test]
     fn marker_and_rank_are_distinct() {
-        // マーカーは種別ごとに一意。
+        // The marker is unique per kind.
         let all = [
             FileStatus::Modified,
             FileStatus::Added,
@@ -2054,7 +2090,7 @@ mod tests {
         uniq.sort_unstable();
         uniq.dedup();
         assert_eq!(markers.len(), uniq.len(), "マーカーが重複");
-        // 畳み込み優先度: conflicted が最強、untracked が最弱。
+        // Rollup priority: conflicted is the strongest, untracked is the weakest.
         assert!(FileStatus::Conflicted.rank() > FileStatus::Modified.rank());
         assert!(FileStatus::Modified.rank() > FileStatus::Untracked.rank());
     }
@@ -2083,17 +2119,18 @@ mod tests {
 
         let map = statuses(&dir);
         let canon = dir.canonicalize().unwrap();
-        // 未追跡ファイルが Untracked。
+        // The untracked file is Untracked.
         assert_eq!(
             map.get(&canon.join("sub").join("foo.txt")),
             Some(&FileStatus::Untracked)
         );
-        // 親ディレクトリにも畳み込まれる。
+        // It also rolls up into the parent directory.
         assert_eq!(map.get(&canon.join("sub")), Some(&FileStatus::Untracked));
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // CLI 委譲後も改名が「新パスに Renamed」で出ること(porcelain -z は new→old 順)を固定。
+    // Pin down that a rename still shows as "Renamed on the new path" after CLI delegation
+    // (porcelain -z is in new→old order).
     #[cfg(feature = "git")]
     #[test]
     fn rename_is_detected_on_new_path() {
@@ -2104,7 +2141,7 @@ mod tests {
         std::fs::write(dir.join("old.txt"), b"content here\n").unwrap();
         stage(&dir, &dir.join("old.txt")).unwrap();
         commit(&dir, "init").unwrap();
-        // git mv で改名してステージ。
+        // Rename and stage via git mv.
         std::process::Command::new("git")
             .current_dir(&dir)
             .args(["mv", "old.txt", "new.txt"])
@@ -2113,7 +2150,7 @@ mod tests {
 
         let map = statuses(&dir);
         let canon = dir.canonicalize().unwrap();
-        // 新パスに Renamed、旧パスは出ない。
+        // Renamed shows on the new path; the old path does not appear.
         assert_eq!(
             map.get(&canon.join("new.txt")),
             Some(&FileStatus::Renamed),
@@ -2157,7 +2194,8 @@ mod tests {
 
         let set = ignored(&dir);
         let canon = dir.canonicalize().unwrap();
-        // 無視 dir は collapse(中身を再帰せず dir 1件)。recurse_ignored_dirs(false) 相当。
+        // An ignored dir collapses (one dir entry, not recursed into). Equivalent to
+        // recurse_ignored_dirs(false).
         assert!(
             set.contains(&canon.join("target")),
             "target/ が collapse で1件: {set:?}"
@@ -2170,12 +2208,12 @@ mod tests {
             set.contains(&canon.join("app.log")),
             "*.log の無視ファイル: {set:?}"
         );
-        // collapse なので中身の個別ファイルは入らない。
+        // Since it's collapsed, individual files inside it are not included.
         assert!(
             !set.contains(&canon.join("target/a.o")),
             "collapse 中の個別ファイルは入らない: {set:?}"
         );
-        // 追跡ファイル/.gitignore 自身は無視ではない。
+        // A tracked file / .gitignore itself is not ignored.
         assert!(
             !set.contains(&canon.join("src/main.rs")),
             "追跡ファイルは無視でない"
@@ -2214,7 +2252,7 @@ mod tests {
         init_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"alpha\nbeta\n").unwrap();
-        // 初期コミット。
+        // The initial commit.
         let out = std::process::Command::new("git")
             .current_dir(&dir)
             .args(["add", "-A"])
@@ -2227,7 +2265,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "commit 失敗");
-        // 変更。
+        // The change.
         std::fs::write(&f, b"alpha\ngamma\n").unwrap();
         let diff = file_diff(&dir, &f);
         assert!(
@@ -2249,11 +2287,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-        // ステージ前は untracked・staged=false。
+        // Before staging: untracked, staged=false.
         let before = changed_files(&dir);
         assert_eq!(before.len(), 1);
         assert!(!before[0].staged);
-        // git add でステージ → staged=true。
+        // Stage via git add → staged=true.
         let out = std::process::Command::new("git")
             .current_dir(&dir)
             .args(["add", "a.txt"])
@@ -2276,14 +2314,14 @@ mod tests {
         init_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"hello\n").unwrap();
-        // 公開 API でステージ → コミット。
+        // Stage via the public API → commit.
         stage(&dir, &f).unwrap();
         commit(&dir, "first commit").unwrap();
         let entries = log(&dir, 10);
         assert_eq!(entries.len(), 1, "log は1件のはず");
         assert_eq!(entries[0].summary, "first commit");
         assert_eq!(entries[0].short.len(), 7);
-        // commit_diff は空でない(新規ファイル追加)。
+        // commit_diff is not empty (a new file was added).
         let cd = commit_diff(&dir, &entries[0].id);
         assert!(!cd.is_empty(), "commit_diff が空");
         assert!(
@@ -2304,7 +2342,7 @@ mod tests {
         std::fs::write(&f, b"v1\n").unwrap();
         stage(&dir, &f).unwrap();
         commit(&dir, "init").unwrap();
-        // 変更してステージ → unstage で index から外れる。
+        // Modify and stage → unstage removes it from the index.
         std::fs::write(&f, b"v2\n").unwrap();
         stage(&dir, &f).unwrap();
         assert!(changed_files(&dir).iter().any(|e| e.staged));
@@ -2313,16 +2351,17 @@ mod tests {
             !changed_files(&dir).iter().any(|e| e.staged),
             "unstage 後は staged が無いはず"
         );
-        // discard で作業ツリーの変更を破棄 → クリーンに。
+        // discard throws away the working-tree change → clean.
         discard(&dir, &f).unwrap();
         assert!(changed_files(&dir).is_empty(), "discard 後はクリーンのはず");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1\n");
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // SPEED GUARD: lay_out_lanes は DAG(親IDリスト)からレーンを割り当てる純関数。1000 件の
-    // 線形チェーンでも O(n) 程度で収まること(レーン割当が二乗化していないかの回帰ガード)。
-    // 実 repo 不要なので合成 DAG を直接渡す。生成は安いので非 ignore。
+    // SPEED GUARD: lay_out_lanes is a pure function that assigns lanes from a DAG (a parent-ID
+    // list). Confirm it stays around O(n) even for a 1000-entry linear chain (a regression guard
+    // against lane assignment turning quadratic). No real repo is needed, so a synthetic DAG is
+    // passed directly. Generation is cheap, so this is not `#[ignore]`.
     #[cfg(feature = "git")]
     #[test]
     fn lay_out_lanes_linear_dag_is_bounded() {

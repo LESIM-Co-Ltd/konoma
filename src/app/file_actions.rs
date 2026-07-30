@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    // --- ファイル操作: 作成/リネーム/削除 (M7 Phase B・確認＋ゴミ箱) -------------
+    // --- File operations: create/rename/delete (M7 Phase B, confirm + trash) -------------
     /// Whether a confirm/input dialog is showing (while true, main intercepts keys).
     pub fn is_dialog(&self) -> bool {
         self.dialog.is_some()
@@ -97,20 +97,21 @@ impl App {
     /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
     /// open a **copy/move dialog** (drop target = the cursor's base directory). Control characters are stripped.
     pub fn handle_paste(&mut self, text: String) {
-        // 1) テキスト入力中: そのまま入力欄へ流す(制御文字は捨てる)。
+        // 1) While text input is active: feed it straight into the input field (control
+        // characters are dropped).
         if self.is_text_input_active() {
             for ch in text.chars().filter(|c| !c.is_control()) {
                 self.input_push_char(ch);
             }
             return;
         }
-        // 2) Tree モードのみ「ドロップ」として扱う(プレビュー等では無視)。
+        // 2) Only Tree mode treats this as a "drop" (ignored in Preview, etc.).
         if !matches!(self.tab.mode, Mode::Tree) {
             return;
         }
         let sources = parse_dropped_paths(&text);
         if sources.is_empty() {
-            return; // ドロップ対象(実在パス)が無ければ何もしない
+            return; // do nothing if there's no drop target (an existing path)
         }
         let dir = self.op_base_dir();
         let message = format!(
@@ -173,8 +174,8 @@ impl App {
             },
             targets: sources,
             dest: Some(dir),
-            root: PathBuf::new(), // start_file_op が dispatch 時の tab.root で埋める
-            err_self_paste: String::new(), // Drop 側は自己貼付の専用メッセージを使わない(copy_dir_all の一般エラーに任せる=既存挙動)
+            root: PathBuf::new(), // filled in by start_file_op with tab.root at dispatch time
+            err_self_paste: String::new(), // Drop doesn't use a dedicated self-paste message (relies on copy_dir_all's generic error = existing behavior)
             err_failed: crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string(),
         };
         self.start_file_op(job);
@@ -207,8 +208,9 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::FileOpBusy).into());
             return false;
         }
-        // 「どのタブから投げたか」を dispatch 時にここで焼き付ける(呼び出し側は空で渡す)。
-        // 完了時にアクティブなタブが同じとは限らないため、apply_file_op がこれで判定する。
+        // Bake in "which tab this was dispatched from" here at dispatch time (the caller passes
+        // it empty). The active tab when it completes may not be the same one, so apply_file_op
+        // uses this to decide.
         job.root = self.tab.root.clone();
         self.fileop_gen = self.fileop_gen.wrapping_add(1);
         let gen = self.fileop_gen;
@@ -224,12 +226,13 @@ impl App {
         };
         let kind = job.kind;
         let root = job.root.clone();
-        // panic 時の代替エラーは self.lang をここ(UI スレッド)で先に翻訳しておく(ワーカースレッドには
-        // &self が無く tr() を呼べない)。
+        // Translate the fallback panic error using self.lang here (on the UI thread) ahead of
+        // time (the worker thread has no &self, so it cannot call tr()).
         let panic_err = crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string();
         std::thread::spawn(move || {
-            // ワーカーが panic すると結果が返らず `fileop_pending` が永久に残り、スピナーが回り続ける。
-            // 他のワーカーと同じ安全網で必ず結果を返す(原則#3)。
+            // If the worker panics, no result comes back and `fileop_pending` stays set forever,
+            // leaving the spinner spinning. Use the same safety net as the other workers to
+            // always return a result (design principle #3).
             let res =
                 crate::preview::markdown::catch_silent(|| Self::run_file_op(gen, job, &progress))
                     .unwrap_or(FileOpResult {
@@ -271,7 +274,8 @@ impl App {
                     };
                 };
                 for src in &targets {
-                    // 自分自身(やその中)への貼り付けは無限コピーになるので弾く。
+                    // Reject pasting into itself (or inside itself), since that would become an
+                    // infinite copy.
                     if dest.starts_with(src) {
                         err = Some(err_self_paste.clone());
                         p.bump_item();
@@ -317,14 +321,15 @@ impl App {
                         }
                         Err(e) => {
                             err = Some(e.to_string());
-                            break; // ドロップは最初の失敗で打ち切る(既存 drop_apply と同じ)
+                            break; // a drop stops at the first failure (same as the existing drop_apply)
                         }
                     }
                 }
             }
             FileOpKind::Duplicate => {
                 for src in &targets {
-                    // 親ディレクトリ = 複製先(その場に複製)。ルート等で親が無ければ失敗扱い(クラッシュしない)。
+                    // Parent directory = the duplication target (duplicate in place). If there's
+                    // no parent (e.g. root), treat it as a failure (no crash).
                     let Some(parent) = src.parent() else {
                         err = Some(err_failed.clone());
                         p.bump_item();
@@ -340,8 +345,9 @@ impl App {
                     p.bump_item();
                 }
             }
-            // ゴミ箱送りは `trash::delete_all` の**1回の呼び出し**なので途中経過が取れない。
-            // 完了して初めて全件ぶん進む(進捗は 0/M のまま最後に M/M になる)。
+            // Sending to trash is **a single call** to `trash::delete_all`, so no progress can be
+            // read mid-flight. It only advances by the full count once done (progress stays at
+            // 0/M until it jumps to M/M at the end).
             FileOpKind::Trash => match crate::fileops::move_to_trash(&targets) {
                 Ok(()) => {
                     ok = targets.len();
@@ -351,7 +357,8 @@ impl App {
                 }
                 Err(e) => err = Some(e.to_string()),
             },
-            // 完全削除はパスごとに回るので、1件ずつ進捗を進められる(`_with_progress`)。
+            // Permanent deletion loops per path, so progress can advance one item at a time
+            // (`_with_progress`).
             FileOpKind::DeletePermanent => {
                 match crate::fileops::delete_permanently_with_progress(&targets, p) {
                     Ok(()) => ok = targets.len(),
@@ -385,28 +392,33 @@ impl App {
         self.fileop_pending = None;
         self.fileop_progress = None;
         self.fileop_total = 0;
-        // 再読込は無条件(どのタブを見ていてもディスクは実際に変わっている)。
+        // Reload unconditionally (the disk has actually changed regardless of which tab is being
+        // viewed).
         let mut post = self.refresh();
-        // リビール(=カーソル移動)は**投げたタブに戻っている時だけ**。`reveal_and_select` は
-        // 無条件に rebuild_tree するので、別タブでやると絞り込み(`/`)や変更ビュー(`C`)を畳み、
-        // そのタブのカーソルまで動かしてしまう。比較はタブ番号でなく root で行う
-        // (タブは操作中に閉じたり並べ替えたりできる=番号は同一性の根拠にならない)。
+        // Reveal (= move the cursor) only **when we're back on the tab that dispatched it**.
+        // `reveal_and_select` unconditionally calls rebuild_tree, so doing it on another tab
+        // would collapse its filter (`/`) or changed view (`C`) and even move that tab's cursor.
+        // Compare by root, not tab number (tabs can be closed or reordered mid-operation, so a
+        // number is not grounds for identity).
         if post.is_ok() && res.root == self.tab.root {
             if let Some(p) = &res.last {
                 post = self.reveal_and_select(p);
             }
         }
-        // 削除系の選択解除は**成功した時だけ**(旧同期版と同じ)。12件中3件目で権限エラー、
-        // のような部分失敗で選択ごと失うと、ユーザーは選び直しからやり直しになる。
+        // Clear the selection for delete-type operations **only on success** (same as the old
+        // synchronous version). If a partial failure — such as a permission error on the 3rd of
+        // 12 items — also wiped the selection, the user would have to start over from scratch.
         if res.err.is_none() && matches!(res.kind, FileOpKind::Trash | FileOpKind::DeletePermanent)
         {
             self.clear_selection();
         }
         let lang = self.lang;
-        // 操作自体は成功したのに後段(再読込/リビール)が失敗したら、その失敗を出す。
-        // 旧同期版は `refresh()?` / `reveal_and_select(p)?` で handle_key へ伝播し
-        // `resolve_key_result` が flash していた=成功 flash で塗り潰さない(原則: 未確認を成功と言わない)。
-        // 操作自体が失敗している場合は、そちらのエラーの方が本題なので下の分岐に任せる。
+        // If the operation itself succeeded but a later step (reload/reveal) fails, surface that
+        // failure. The old synchronous version propagated `refresh()?` / `reveal_and_select(p)?`
+        // up to handle_key, where `resolve_key_result` flashed it — so don't paper over it with a
+        // success flash (principle: don't call something a success unverified).
+        // If the operation itself failed, that error is the real story, so leave it to the branch
+        // below.
         if res.err.is_none() {
             if let Err(e) = post {
                 self.flash = Some(format!(
@@ -506,7 +518,8 @@ impl App {
     /// subtrees — used by the changed-file jump (`n`/`N`) and follow mode. Returns whether the target
     /// became visible and selected (false = e.g. hidden by the dotfile filter).
     pub(super) fn reveal_path_deep(&mut self, target: &Path) -> Result<bool> {
-        // root 直下から target の親まで浅い順に。expanded を立てて rebuild すると次の階層が現れる。
+        // Shallow-to-deep, from directly under root to target's parent. Setting expanded and
+        // rebuilding reveals the next level.
         let mut ancestors: Vec<PathBuf> = Vec::new();
         let mut p = target.parent();
         while let Some(a) = p {
@@ -548,7 +561,7 @@ impl App {
         Ok(())
     }
 
-    // --- 複数選択 + ビジュアル(範囲)選択 (M7 Phase B) ------------------------
+    // --- Multi-select + visual (range) selection (M7 Phase B) ------------------------
     /// Whether there are any selected items (the committed set).
     pub fn has_selection(&self) -> bool {
         !self.tab.selection.is_empty()
@@ -612,7 +625,7 @@ impl App {
     /// `a`/`A` during visual mode = scope bulk selection. `all_displayed`=everything displayed / otherwise=the same parent level as the cursor.
     /// Also takes in the in-progress range, adds it to the selection, and leaves visual mode.
     pub fn visual_select_scope(&mut self, all_displayed: bool) {
-        // 進行中の範囲を確定。
+        // Commit the in-progress range.
         let mut paths: Vec<PathBuf> = self
             .visual_bounds()
             .map(|(lo, hi)| {
@@ -621,7 +634,7 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        // スコープ(全表示 or カーソルと同じ親)を追加。
+        // Add the scope (everything displayed, or the same parent as the cursor).
         let parent = self
             .tab
             .entries

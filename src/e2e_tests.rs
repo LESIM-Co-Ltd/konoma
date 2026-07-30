@@ -81,7 +81,7 @@ impl Sim {
 
     fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         let res = handle_key(&mut self.app, KeyEvent::new(code, mods));
-        // run ループ同様、回復可能な Err は flash 化される(resolve_key_result 相当は簡略化)。
+        // Same as the run loop, a recoverable Err becomes a flash (a simplified equivalent of resolve_key_result).
         match res {
             Ok(true) => self.quit = true,
             Ok(false) => {}
@@ -215,7 +215,7 @@ fn md_preview(cfg: Config, name: &str, body: &str) -> (Sim, std::path::PathBuf) 
 }
 
 // =============================================================================
-// ツリー: 移動・絞り込み・隠しファイル・ソート
+// Tree: movement, filtering, hidden files, sort
 // =============================================================================
 
 #[test]
@@ -247,9 +247,9 @@ fn e2e_tree_filter_narrows_and_esc_clears() {
     s.see("data.csv");
     s.dont_see("readme.md");
     assert!(s.app.tab.entries.len() < all, "絞り込みで件数が減る");
-    s.enter(); // 確定
+    s.enter(); // confirm
     s.see("data.csv");
-    s.esc(); // 解除
+    s.esc(); // clear
     assert_eq!(s.app.tab.entries.len(), all, "Esc で全件に戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -291,15 +291,15 @@ fn e2e_sort_menu_switches_order() {
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('s');
-    s.see("sort"); // ソートメニューのフッター/表示
-    s.key('s'); // サイズ順
-                // メニューが閉じ、並びが変わっている(ディレクトリ先頭は維持)。
+    s.see("sort"); // the sort menu's footer/display
+    s.key('s'); // by size
+                // The menu closes and the order has changed (directories still stay first).
     assert!(!s.app.is_sort_menu());
     std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
-// ファイル操作: 作成・リネーム・削除(取消と完全削除)
+// File operations: create, rename, delete (cancel and permanent delete)
 // =============================================================================
 
 #[test]
@@ -307,11 +307,11 @@ fn e2e_file_create_via_dialog() {
     let dir = sandbox("file_create");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    // 作成先は「カーソル位置のディレクトリ」(op_base_dir)。ルート直下に作るには
-    // ルート直下のファイル上にカーソルを置く(その親=ルートが作成先になる)。
+    // The creation target is "the directory at the cursor position" (op_base_dir). To create directly
+    // under root, put the cursor on a file directly under root (its parent = root becomes the creation target).
     s.select("notes.txt");
     s.key(' ');
-    s.key('n'); // Space→n 作成
+    s.key('n'); // Space→n create
     s.keys("fresh.txt");
     s.enter();
     assert!(
@@ -320,7 +320,7 @@ fn e2e_file_create_via_dialog() {
     );
     s.see("fresh.txt");
 
-    // ディレクトリにカーソルを置くと、その中に作られる(op_base_dir の設計どおり)。
+    // Putting the cursor on a directory creates it inside that directory (as op_base_dir is designed to).
     s.select("src");
     s.key(' ');
     s.key('n');
@@ -338,7 +338,7 @@ fn e2e_file_duplicate_in_place() {
     let dir = sandbox("file_duplicate");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    // notes.txt にカーソル → Space→D で複製 → notes copy.txt がその場にできる。
+    // Cursor on notes.txt → Space→D to duplicate → notes copy.txt is created in place.
     s.select("notes.txt");
     s.key(' ');
     s.key('D');
@@ -351,7 +351,7 @@ fn e2e_file_duplicate_in_place() {
         std::fs::read(dir.join("notes.txt")).unwrap(),
         "複製の内容が元と同一"
     );
-    s.see("notes copy.txt"); // ツリーに現れ(refresh+reveal)、選択される
+    s.see("notes copy.txt"); // it appears in the tree (refresh+reveal), selected
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -363,7 +363,7 @@ fn e2e_file_rename_via_dialog() {
     s.select("notes.txt");
     s.key(' ');
     s.key('r');
-    // 既存名がプリフィルされる想定 → 全消しして新名を入力。
+    // Expects the existing name to be prefilled → clear it all and type the new name.
     for _ in 0..30 {
         s.press(KeyCode::Backspace, KeyModifiers::NONE);
     }
@@ -382,10 +382,10 @@ fn e2e_file_delete_cancel_and_permanent() {
     s.select("notes.txt");
     s.key(' ');
     s.key('d');
-    // 確認ダイアログが出る → n で取消(ファイルは残る)。
+    // A confirmation dialog appears → n to cancel (the file remains).
     s.key('n');
     assert!(dir.join("notes.txt").exists(), "取消で残る");
-    // もう一度 → `!` で完全削除(ゴミ箱を汚さない)。
+    // Once more → `!` to permanently delete (doesn't touch the trash).
     s.key(' ');
     s.key('d');
     s.key('!');
@@ -394,7 +394,7 @@ fn e2e_file_delete_cancel_and_permanent() {
 }
 
 // =============================================================================
-// プレビュー: テキスト/Markdown/リンク/チェックボックス/CSV/検索
+// Preview: text/Markdown/links/checkboxes/CSV/search
 // =============================================================================
 
 #[test]
@@ -420,8 +420,8 @@ fn e2e_markdown_link_follow_and_back() {
     s.select("readme.md");
     s.enter();
     s.see("Title");
-    s.tab(); // link "go" へフォーカス
-    s.enter(); // ./notes.txt を開く
+    s.tab(); // focus the link "go"
+    s.enter(); // open ./notes.txt
     s.see("alpha");
     assert!(
         s.app
@@ -497,8 +497,8 @@ fn e2e_zip_archive_opens_as_table() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `Enter` の全文ポップアップ: グリッドは列幅(40)で切り詰めるが、ポップアップは生の全文を見せる。
-/// 切り詰め上限(39連続+`…`)を大きく超える連続 run が画面に見えることで「切り詰め無し」を実証する。
+/// `Enter`'s full-text popup: the grid truncates at column width (40), but the popup shows the raw
+/// full text. A continuous run far past the truncation cap (39 consecutive + `…`) being visible on screen proves there is no truncation.
 #[test]
 fn e2e_table_cell_popup_shows_full_text_not_truncated() {
     let dir = sandbox("cellpopup_long");
@@ -508,11 +508,11 @@ fn e2e_table_cell_popup_shows_full_text_not_truncated() {
     s.select("wide.csv");
     s.enter();
     s.see("TABLE");
-    s.dont_see(&"x".repeat(40)); // グリッドの切り詰め上限は39連続+"…"。
-    s.key('l'); // 長いセル(h2 列)へ。
-    s.enter(); // ポップアップを開く。
+    s.dont_see(&"x".repeat(40)); // the grid's truncation cap is 39 consecutive + "…".
+    s.key('l'); // move to the long cell (h2 column).
+    s.enter(); // open the popup.
     s.see("CELL");
-    s.see(&"x".repeat(45)); // 切り詰め上限を大きく超える連続runが見える。
+    s.see(&"x".repeat(45)); // a continuous run far past the truncation cap is visible.
     assert_eq!(
         s.app.table_cell_view().unwrap().text,
         long,
@@ -529,8 +529,8 @@ fn e2e_table_cell_popup_shows_full_text_not_truncated() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// CSV の引用符内改行(複数行の住所欄等)がポップアップの中身にそのまま(実改行のまま)残る。
-/// Esc でも閉じられること(`q` だけでない)も確認する。
+/// A newline inside CSV quotes (e.g. a multi-line address field) stays intact (as a real newline) in
+/// the popup's content. Also confirms it can be closed with Esc too (not just `q`).
 #[test]
 fn e2e_table_cell_popup_shows_multiline_cell_and_esc_closes() {
     let dir = sandbox("cellpopup_multiline");
@@ -543,7 +543,7 @@ fn e2e_table_cell_popup_shows_multiline_cell_and_esc_closes() {
     s.select("addr.csv");
     s.enter();
     s.see("TABLE");
-    s.key('l'); // address 列(改行入り)へ。
+    s.key('l'); // move to the address column (contains a newline).
     s.enter();
     s.see("CELL");
     assert_eq!(
@@ -557,7 +557,7 @@ fn e2e_table_cell_popup_shows_multiline_cell_and_esc_closes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// アーカイブ一覧も同じ `TableData` を経由するので、セルポップアップが実キー操作でも効く。
+/// The archive listing also goes through the same `TableData`, so the cell popup works via real keystrokes too.
 #[test]
 fn e2e_zip_archive_cell_popup_shows_full_name_via_enter() {
     let dir = sandbox("cellpopup_zip");
@@ -576,7 +576,7 @@ fn e2e_zip_archive_cell_popup_shows_full_name_via_enter() {
     s.select("bundle.zip");
     s.enter();
     s.see("TABLE");
-    s.enter(); // カーソルは先頭セル(Name 列)→ ポップアップを開く。
+    s.enter(); // cursor is on the first cell (Name column) → open the popup.
     s.see("CELL");
     let view = s.app.table_cell_view().unwrap();
     assert_eq!(view.header, "Name");
@@ -586,8 +586,8 @@ fn e2e_zip_archive_cell_popup_shows_full_name_via_enter() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 装飾 Markdown の検索を **キー入力経由**で通す。装飾表示のまま(raw に切替えず)一致行へ
-/// スクロールし、n で次の一致へ動くこと。CJK 本文でも壊れないこと。
+/// Route decorated Markdown search **through key input**. While staying in decorated display (not
+/// switching to raw), scroll to the matching line, and move to the next match with n. Must not break on CJK body text either.
 #[test]
 fn e2e_decorated_markdown_search() {
     let dir = sandbox("md_search");
@@ -618,15 +618,15 @@ fn e2e_decorated_markdown_search() {
 
     s.key('n');
     assert_eq!(s.app.search_status(), Some((2, 2)), "n で 2 件目へ");
-    s.see("needle"); // CJK 行の一致も画面に出る
+    s.see("needle"); // a match on the CJK line also shows up on screen
 
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 表内検索を **キー入力経由**で通す(`/` → クエリ → Enter → n/N)。単体テストは App の
-/// メソッドを直接叩くので、keymap の bind 漏れ・入力面の横取りはここでしか捕まらない。
+/// Route table search **through key input** too (`/` → query → Enter → n/N). Unit tests hit App's
+/// methods directly, so a missing keymap binding or an input surface hijacking the key can only be caught here.
 #[test]
 fn e2e_table_search_jumps_to_matching_cell() {
     let dir = sandbox("table_search");
@@ -652,8 +652,8 @@ fn e2e_table_search_jumps_to_matching_cell() {
     s.key('n');
     assert_eq!(s.app.table_cursor(), (0, 1), "wrap して先頭へ");
 
-    // Esc は「検索解除 → もう一度でツリーへ」(text プレビューと同じ流儀)。
-    // 実機で Esc が無反応=強調が消せない不具合を見つけたのでここで固定する。
+    // Esc is "clear search → once more to the tree" (the same convention as the text preview).
+    // A real-terminal bug where Esc did nothing = the highlight couldn't be cleared was found, so pin it down here.
     s.esc();
     assert_eq!(s.app.preview_search_query(), None, "Esc で検索が解除される");
     assert!(!s.app.table_cell_is_hit(0, 1), "一致の強調も消える");
@@ -682,16 +682,16 @@ fn e2e_preview_search_moves_between_matches() {
     s.key('/');
     s.keys("needle");
     s.enter();
-    s.see("needle line 0"); // 最初の一致位置へ
-    s.key('n'); // 次の一致へ → 画面が 100 行目の一致へ移る
+    s.see("needle line 0"); // to the first match position
+    s.key('n'); // to the next match → the screen moves to the match at line 100
     s.see("needle line 100");
-    s.key('N'); // 前へ戻る
+    s.key('N'); // back to the previous
     s.see("needle line 0");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
-// タブ・タブ一覧
+// Tabs, tab list
 // =============================================================================
 
 #[test]
@@ -699,7 +699,7 @@ fn e2e_tabs_full_lifecycle() {
     let dir = sandbox("tabs_life");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.keys("tt"); // 3枚
+    s.keys("tt"); // 3 tabs
     assert_eq!(s.app.tab_count(), 3);
     s.see("3:");
     s.key('1');
@@ -716,12 +716,12 @@ fn e2e_tabs_full_lifecycle() {
     s.key('T');
     s.key('d');
     assert_eq!(s.app.tab_count(), 2, "一覧の d で選択タブを閉じる");
-    s.key('q'); // 一覧を閉じる
+    s.key('q'); // close the list
     assert!(!s.app.is_tab_list());
-    // w は既定で何もしない。
+    // w does nothing by default.
     s.key('w');
     assert_eq!(s.app.tab_count(), 2, "w は未割当");
-    // ツリーの q はタブを閉じる。
+    // The tree's q closes the tab.
     s.key('q');
     assert_eq!(s.app.tab_count(), 1, "tree の q でタブが閉じる");
     std::fs::remove_dir_all(&dir).ok();
@@ -729,38 +729,38 @@ fn e2e_tabs_full_lifecycle() {
 
 #[test]
 fn e2e_ctrl_t_opens_selected_in_new_tab() {
-    // ツリーで Ctrl-t=カーソル下を別タブで開く。ファイル→プレビュー / ディレクトリ→新タブの root。
-    // 元タブは維持される。
+    // In the tree, Ctrl-t = open what's under the cursor in a separate tab. File → preview / directory → new tab's root.
+    // The original tab is preserved.
     let dir = sandbox("newtab_open");
     std::fs::write(dir.join("note.txt"), "HELLO_NEWTAB body\n").unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub/inside.txt"), "INSIDE_MARK\n").unwrap();
     let mut s = Sim::new(&canon(&dir));
 
-    // ファイル: Ctrl-t で新規タブにプレビュー。
+    // File: Ctrl-t previews it in a new tab.
     s.select("note.txt");
     assert_eq!(s.app.tab_count(), 1);
     s.ctrl('t');
     assert_eq!(s.app.tab_count(), 2, "Ctrl-t で新規タブができる");
     assert_eq!(s.app.active_tab_index(), 1, "新規タブがアクティブ");
-    s.see("HELLO_NEWTAB"); // 新タブでファイルがプレビューされている
+    s.see("HELLO_NEWTAB"); // the file is previewed in the new tab
 
-    // 元タブは維持: [ で戻るとツリーに note.txt が居る(プレビュー内容は見えない)。
+    // The original tab is preserved: going back with [ shows note.txt in the tree (the preview content isn't visible).
     s.key('[');
     assert_eq!(s.app.active_tab_index(), 0);
     s.see("note.txt");
     s.dont_see("HELLO_NEWTAB");
 
-    // ディレクトリ: Ctrl-t で新規タブがそのフォルダを root に。
+    // Directory: Ctrl-t makes the new tab's root that folder.
     s.select("sub");
     s.ctrl('t');
     assert_eq!(s.app.tab_count(), 3);
-    s.see("inside.txt"); // 新タブは sub の中身を表示
+    s.see("inside.txt"); // the new tab shows sub's contents
     std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
-// ブックマーク
+// Bookmarks
 // =============================================================================
 
 #[test]
@@ -773,11 +773,11 @@ fn e2e_bookmarks_set_list_jump() {
     let mut s = Sim::new(&proj);
     s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
     s.select("notes.txt");
-    s.keys("mb"); // b に登録
+    s.keys("mb"); // register to b
     s.see("bookmarked");
     s.key('\'');
     s.see("Bookmarks");
-    s.key('b'); // 英字で直ジャンプ → ファイルはプレビュー
+    s.key('b'); // a letter jumps directly → the file is previewed
     assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(s
         .app
@@ -785,7 +785,7 @@ fn e2e_bookmarks_set_list_jump() {
         .preview_path
         .as_deref()
         .is_some_and(|p| p.ends_with("notes.txt")));
-    // プレビュー中の m は表示中ファイルを登録。
+    // m while previewing registers the file currently on display.
     s.keys("mz");
     assert!(
         s.app
@@ -794,7 +794,7 @@ fn e2e_bookmarks_set_list_jump() {
             .is_some_and(|p| p.ends_with("notes.txt")),
         "プレビュー中の登録対象は表示中ファイル"
     );
-    // 一覧を開いて Ctrl-d で選択中の1件を削除(順序に依存せず1件減ることを確認)。
+    // Open the list and delete the selected one with Ctrl-d (confirms the count drops by one, regardless of order).
     s.key('\'');
     s.see("Bookmarks");
     let before =
@@ -808,8 +808,8 @@ fn e2e_bookmarks_set_list_jump() {
 
 #[test]
 fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
-    // 既定(confirm_bookmark_overwrite=true): 使用済みキーへ別パスを登録すると確認ダイアログ。
-    // n=取消で元のまま・y=上書きで新パスへ。
+    // Default (confirm_bookmark_overwrite=true): registering a different path to an already-used key shows a confirmation dialog.
+    // n = cancel, stays as-is / y = overwrite, moves to the new path.
     let root = sandbox("bm_overwrite");
     let proj = root.join("proj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -818,13 +818,13 @@ fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
     let mut s = Sim::new(&proj);
     s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
 
-    // notes.txt を 'b' に登録(未使用キー=確認無し)。
+    // Register notes.txt to 'b' (an unused key = no confirmation).
     s.select("notes.txt");
     s.keys("mb");
     s.see("bookmarked");
     let notes = s.app.bookmarks.get('b').expect("b set");
 
-    // data.csv を同じ 'b' に登録 → 確認ダイアログ。まだ上書きしない。
+    // Register data.csv to the same 'b' → a confirmation dialog. Don't overwrite yet.
     s.select("data.csv");
     s.keys("mb");
     s.see("OVERWRITE?");
@@ -835,7 +835,7 @@ fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
         "確認前は元のまま"
     );
 
-    // n=取消。
+    // n = cancel.
     s.key('n');
     s.see("canceled");
     assert_eq!(
@@ -844,7 +844,7 @@ fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
         "取消で notes.txt のまま"
     );
 
-    // 再度出して y=上書き。
+    // Show it again and y = overwrite.
     s.select("data.csv");
     s.keys("mb");
     s.see("OVERWRITE?");
@@ -861,7 +861,7 @@ fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
 
 #[test]
 fn e2e_bookmark_overwrite_off_applies_silently() {
-    // confirm_bookmark_overwrite=false: 別パスでも確認せず即上書き。
+    // confirm_bookmark_overwrite=false: even a different path overwrites immediately with no confirmation.
     let root = sandbox("bm_overwrite_off");
     let proj = root.join("proj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -888,7 +888,7 @@ fn e2e_bookmark_overwrite_off_applies_silently() {
 }
 
 // =============================================================================
-// git: ハブ・stage/unstage・diff・変更フィルタ・フォロー
+// git: hub, stage/unstage, diff, changed filter, follow
 // =============================================================================
 
 #[cfg(feature = "git")]
@@ -907,8 +907,8 @@ fn seed_repo(dir: &std::path::Path) {
     std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
     std::fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
     run(&["add", "-A"]);
-    // 件名 "init" は据え置き(既存テスト不変)＋本文2段落。複数 -m は空行区切りの段落になる。
-    // コミット詳細が本文の改行を保持することを E2E で確認できる。
+    // Keep the subject "init" as-is (existing tests stay unchanged) + a 2-paragraph body. Multiple -m
+    // flags become blank-line-separated paragraphs. Lets the E2E confirm commit details preserve the body's newlines.
     run(&[
         "commit",
         "-q",
@@ -919,9 +919,9 @@ fn seed_repo(dir: &std::path::Path) {
         "-m",
         "Second body paragraph.",
     ]);
-    // 非現在ブランチを1本(branches 一覧/グラフのパネル検証用)。同一コミットを指す。
+    // One non-current branch (for validating the branches list/graph panel). Points at the same commit.
     run(&["branch", "feature-x"]);
-    // 未コミット変更を仕込む。
+    // Set up uncommitted changes.
     std::fs::write(dir.join("a.rs"), "fn a() { let _x = 1; }\n").unwrap();
     std::fs::write(dir.join("new.txt"), "untracked\n").unwrap();
 }
@@ -935,10 +935,10 @@ fn e2e_git_hub_stage_and_diff() {
     s.key('o');
     s.see("a.rs");
     s.see("new.txt");
-    // stage → 表示が変わる(ステージ済みマーク)。unstage で戻る。
+    // stage → the display changes (a staged mark). unstage reverts it.
     s.key('s');
     s.key('u');
-    // Enter で diff・q でハブへ戻る。
+    // Enter opens the diff; q returns to the hub.
     s.enter();
     s.see("diff");
     s.key('q');
@@ -958,7 +958,7 @@ fn e2e_git_diff_from_tree_and_cycle_files() {
     s.key('d');
     s.see("diff");
     s.see("(");
-    // n で次の変更ファイルへ(wrap)。
+    // n moves to the next changed file (wraps).
     let before = s.screen();
     s.key('n');
     assert_ne!(before, s.screen(), "n で別ファイルの diff へ");
@@ -976,7 +976,7 @@ fn e2e_changed_filter_and_jumps() {
     s.key('C');
     s.see("CHANGED");
     assert!(s.app.changed_filter());
-    // 変更2件(a.rs, new.txt)が一覧に。
+    // The 2 changes (a.rs, new.txt) are in the list.
     s.see("a.rs");
     s.see("new.txt");
     s.key('C');
@@ -993,11 +993,11 @@ fn e2e_follow_mode_chip_toggles() {
     s.key('F');
     assert!(s.app.follow_enabled());
     s.see("FOLLOW");
-    // 最大粘着(2026-07-23): 通常キーではフォローは解除されない。
+    // Maximally sticky (2026-07-23): a normal key does not break follow.
     s.key('j');
     assert!(s.app.follow_enabled(), "j のような通常キーではフォロー維持");
     s.see("FOLLOW");
-    // F の再押下(toggle_follow 経由)でのみ解除される。
+    // Only broken by pressing F again (via toggle_follow).
     s.key('F');
     assert!(!s.app.follow_enabled(), "F の再押下で解除");
     s.dont_see("FOLLOW");
@@ -1005,7 +1005,7 @@ fn e2e_follow_mode_chip_toggles() {
 }
 
 // =============================================================================
-// ヘルプ・情報・終了
+// Help, info, quit
 // =============================================================================
 
 #[test]
@@ -1050,15 +1050,15 @@ fn e2e_info_popup() {
 }
 
 // =============================================================================
-// 最近変更した複雑な経路を集中的にシミュレート
-// (カスタムタスク状態・フォーカス往復・最後のタブ終了・グローバル BM 絶対表示・
-//  ビジュアル選択・コピーメニュー・ソート反転・アンカー)
+// Focused simulation of recently-changed complex paths
+// (custom task states, focus round-trip, closing the last tab, global BM absolute display,
+//  visual selection, copy menu, reversed sort, anchor)
 // =============================================================================
 
 #[test]
 fn e2e_markdown_task_cycles_custom_states() {
-    // ui.md_task_states を [" ", "!", "x"] にすると Space は3状態を巡回し、
-    // 各段階で 1 文字だけファイルへ書き戻る(v0.6.0 の可変チェックボックス)。
+    // Setting ui.md_task_states to [" ", "!", "x"] makes Space cycle through 3 states,
+    // writing just 1 character back to the file at each step (v0.6.0's variable checkbox).
     let dir = sandbox("md_task_cycle");
     seed_files(&dir);
     let mut cfg = Config::default();
@@ -1092,7 +1092,7 @@ fn e2e_markdown_task_cycles_custom_states() {
 
 #[test]
 fn e2e_markdown_focus_forward_then_back() {
-    // Tab で次アイテム、Shift-Tab で前アイテムへフォーカスが往復する。
+    // Tab moves focus to the next item, Shift-Tab to the previous, round-tripping.
     let dir = sandbox("md_focus_back");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1116,7 +1116,7 @@ fn e2e_markdown_focus_forward_then_back() {
 
 #[test]
 fn e2e_last_tab_q_quits_when_confirm_off() {
-    // confirm_quit=false で単一タブのとき、ツリーの q はアプリを終了する(CloseTabOrQuit)。
+    // With confirm_quit=false and a single tab, the tree's q quits the app (CloseTabOrQuit).
     let dir = sandbox("last_tab_quit");
     seed_files(&dir);
     let mut cfg = Config::default();
@@ -1130,28 +1130,28 @@ fn e2e_last_tab_q_quits_when_confirm_off() {
 
 #[test]
 fn e2e_last_tab_q_confirms_when_confirm_on() {
-    // confirm_quit=ON(既定)なら、最後のタブの q は確認ダイアログを出しまだ終了しない。
+    // With confirm_quit=ON (default), the last tab's q shows a confirmation dialog and doesn't quit yet.
     let dir = sandbox("last_tab_confirm");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('q');
     assert!(!s.quit, "確認ダイアログでまだ終了しない");
     assert!(s.app.is_dialog(), "終了確認ダイアログが開く");
-    s.key('q'); // qq で確定終了
+    s.key('q'); // qq confirms quitting
     assert!(s.quit, "qq で終了");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_global_bookmark_shows_absolute_path() {
-    // 大文字マーク=グローバル。一覧表示は絶対パス(~ 短縮)で出る(v0.7.0)。
+    // An uppercase mark = global. The list display shows an absolute path (~ shortened) (v0.7.0).
     let root = sandbox("bm_global");
     let proj = canon(&root);
     seed_files(&proj);
     let mut s = Sim::new(&proj);
     s.app.bookmarks = crate::bookmarks::Bookmarks::with_base(root.join("cfg"), &proj);
     s.select("notes.txt");
-    s.keys("mB"); // 大文字=グローバル登録
+    s.keys("mB"); // uppercase = global registration
     s.key('\'');
     let items = s.app.bookmark_list_items();
     let entry = items
@@ -1169,7 +1169,7 @@ fn e2e_global_bookmark_shows_absolute_path() {
 
 #[test]
 fn e2e_preview_visual_selection_and_cancel() {
-    // windowed プレビューで v=charwise / V=linewise の選択が入り、Esc で解除される。
+    // In a windowed preview, v = charwise / V = linewise selection begins, and Esc cancels it.
     let dir = sandbox("visual_sel");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1179,7 +1179,7 @@ fn e2e_preview_visual_selection_and_cancel() {
     s.key('v');
     assert!(s.app.is_preview_visual(), "v で選択開始");
     assert!(!s.app.preview_visual_linewise(), "v は charwise");
-    s.key('l'); // キャレットを右へ → 選択が広がる
+    s.key('l'); // move the caret right → the selection grows
     assert!(matches!(
         s.app.preview_selection(),
         crate::app::PreviewSelection::Char { .. }
@@ -1197,7 +1197,7 @@ fn e2e_preview_visual_selection_and_cancel() {
 
 #[test]
 fn e2e_copy_leader_opens_and_cancels() {
-    // y はコピーの which-key リーダーを開く。Esc で閉じる(何もコピーしない)。
+    // y opens the copy which-key leader. Esc closes it (copies nothing).
     let dir = sandbox("copy_leader");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1215,40 +1215,40 @@ fn e2e_copy_leader_opens_and_cancels() {
 
 #[test]
 fn e2e_sort_reverse_flips_order() {
-    // s→r で並び順が反転する(ディレクトリ先頭は維持されるが、ファイル群の順が逆になる)。
+    // s→r reverses the order (directories still stay first, but the files' order reverses).
     let dir = sandbox("sort_rev");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     let before: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     s.key('s');
-    s.key('r'); // reverse トグル(トグル系は複数切替できるようメニューは開いたまま=設計どおり)
+    s.key('r'); // reverse toggle (toggle-type items keep the menu open so several can be switched — as designed)
     assert!(
         s.app.is_sort_menu(),
         "r/. はトグルなのでメニューは開いたまま"
     );
     let after: Vec<_> = s.app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_ne!(before, after, "反転で並びが変わる");
-    s.esc(); // メニューを閉じる
+    s.esc(); // close the menu
     assert!(!s.app.is_sort_menu(), "Esc でメニューが閉じる");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_anchor_reanchor_and_reset() {
-    // サブディレクトリへ潜って root を変えた後、a=現在地を基準に再アンカー、A=起動位置へ戻す。
-    // どちらも flash を出しクラッシュしない(相対パス表示の基準を切替)。
+    // After descending into a subdirectory and changing root, a = re-anchor to the current location, A = return to the launch position.
+    // Both flash and don't crash (switching the basis for relative-path display).
     let dir = sandbox("anchor");
     seed_files(&dir);
     let root = canon(&dir);
     let mut s = Sim::new(&root);
     s.select("src");
-    s.key('l'); // src へ潜行(root 変更)
+    s.key('l'); // descend into src (root changes)
     assert!(s.app.tab.root.ends_with("src"));
-    s.key('a'); // 再アンカー
+    s.key('a'); // re-anchor
     assert!(s.app.flash.is_some(), "a で通知");
-    s.key('A'); // 起動位置へ
+    s.key('A'); // to the launch position
     assert!(s.app.flash.is_some(), "A で通知");
-    // アンカー操作でツリー構造/root は不変(表示基準だけが変わる)。
+    // Anchoring leaves the tree structure/root unchanged (only the display basis changes).
     assert!(
         s.app.tab.root.ends_with("src"),
         "アンカーは root を動かさない"
@@ -1257,23 +1257,23 @@ fn e2e_anchor_reanchor_and_reset() {
 }
 
 // =============================================================================
-// git: log / グラフ / branches / コミット詳細 / 基準固定
+// git: log / graph / branches / commit detail / base pin
 // =============================================================================
 
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_hub_to_log_shows_commit_subject() {
-    // 変更ハブ(o) → log(l)。seed_repo の件名 "init" が一覧に出る。
+    // Changes hub (o) → log (l). seed_repo's subject "init" shows up in the list.
     let dir = sandbox("git_log_view");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
     assert!(s.app.is_git_view(), "o で変更ハブが開く");
-    s.key('l'); // ハブ内 l = log
+    s.key('l'); // in the hub, l = log
     assert!(s.app.is_git_log(), "l で log ビューへ");
-    s.see("Git log"); // render_log のリテラルタイトル
-    s.see("init"); // コミット件名(summary)
-    s.key('q'); // log の q はハブへ戻る
+    s.see("Git log"); // render_log's literal title
+    s.see("init"); // the commit subject (summary)
+    s.key('q'); // log's q returns to the hub
     assert!(s.app.is_git_view(), "log の q でハブへ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1281,15 +1281,15 @@ fn e2e_git_hub_to_log_shows_commit_subject() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_graph_shows_commit_nodes() {
-    // 変更ハブ(o) → グラフ(g)。角ばった罫線レンダラのノード ● が出る。
+    // Changes hub (o) → graph (g). The angular-line renderer's node ● shows up.
     let dir = sandbox("git_graph_view");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
-    s.key('g'); // ハブ内 g = graph
+    s.key('g'); // in the hub, g = graph
     assert!(s.app.is_git_graph(), "g でグラフへ");
-    s.see("Git graph"); // render_graph のリテラルタイトル
-    s.see("●"); // コミット/作業ツリーのノードグリフ
+    s.see("Git graph"); // render_graph's literal title
+    s.see("●"); // the commit/working-tree node glyph
     s.key('q');
     assert!(s.app.is_git_view(), "グラフの q でハブへ戻る");
     std::fs::remove_dir_all(&dir).ok();
@@ -1298,17 +1298,17 @@ fn e2e_git_graph_shows_commit_nodes() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_graph_set_and_clear_base() {
-    // グラフで s=基準固定 / x=解除。タイトルに `⌖ base:` が出る/消える。
+    // In the graph, s = pin the base / x = clear it. `⌖ base:` appears/disappears in the title.
     let dir = sandbox("git_graph_base");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
     s.key('g');
-    s.dont_see("⌖ base:"); // 既定 config は graph_base_branches=[] → 初期は基準なし
-    s.key('G'); // 最下段=最古コミット行へ(作業ツリー行は先頭なので s 不可を回避)
-    s.key('s'); // 選択コミットを基準に固定
-    s.see("⌖ base:"); // タイトルに base 併記
-    s.key('x'); // 基準解除
+    s.dont_see("⌖ base:"); // default config has graph_base_branches=[] → no base initially
+    s.key('G'); // to the bottom row = the oldest commit line (avoids s being unusable on the working-tree row at the top)
+    s.key('s'); // pin the selected commit as base
+    s.see("⌖ base:"); // base appended in the title
+    s.key('x'); // clear the base
     s.dont_see("⌖ base:");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1316,16 +1316,16 @@ fn e2e_git_graph_set_and_clear_base() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_branches_view_lists_branches() {
-    // 変更ハブ(o) → branches(b)。ブランチ名と現在マーカー * が出る。
+    // Changes hub (o) → branches (b). Branch names and the current-branch marker * show up.
     let dir = sandbox("git_branches_view");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
-    s.key('b'); // ハブ内 b = branches
+    s.key('b'); // in the hub, b = branches
     assert!(s.app.is_git_branches(), "b でブランチ一覧へ");
-    s.see("Git branches"); // render_branches のリテラルタイトル
-    s.see("feature-x"); // seed_repo が作る非現在ブランチ
-    s.see("*"); // 現在ブランチのマーカー
+    s.see("Git branches"); // render_branches's literal title
+    s.see("feature-x"); // the non-current branch that seed_repo creates
+    s.see("*"); // the current-branch marker
     s.key('q');
     assert!(s.app.is_git_view(), "branches の q でハブへ戻る");
     std::fs::remove_dir_all(&dir).ok();
@@ -1334,17 +1334,17 @@ fn e2e_git_branches_view_lists_branches() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_commit_detail_shows_full_message() {
-    // log → Enter でコミット詳細。完全メッセージ(本文の改行を保持)がヘッダに出る。
+    // log → Enter opens commit detail. The full message (body newlines preserved) shows up in the header.
     let dir = sandbox("git_commit_detail");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
     s.key('l');
-    s.enter(); // 選択コミット(init)の詳細
+    s.enter(); // detail of the selected commit (init)
     assert!(s.app.is_git_detail(), "Enter で詳細へ");
-    s.see("First body paragraph."); // 本文段落1(改行保持)
-    s.see("Second body paragraph."); // 本文段落2
-    s.key('q'); // 詳細の q は背後の log へ戻る(log は閉じられていない)
+    s.see("First body paragraph."); // body paragraph 1 (newlines preserved)
+    s.see("Second body paragraph."); // body paragraph 2
+    s.key('q'); // detail's q returns to the log behind it (the log isn't closed)
     assert!(s.app.is_git_log(), "詳細の q で log へ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1352,31 +1352,31 @@ fn e2e_git_commit_detail_shows_full_message() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_graph_branch_picker_toggles() {
-    // グラフ内 b でブランチ表示パネルが開き、ブランチ名が並ぶ。q で取消して閉じる。
+    // b in the graph opens the branch-display panel, listing branch names. q cancels and closes it.
     let dir = sandbox("git_graph_picker");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.key('o');
     s.key('g');
-    s.key('b'); // グラフ内 b = ブランチ表示パネル
+    s.key('b'); // in the graph, b = the branch-display panel
     assert!(s.app.is_git_graph_picker(), "b でパネルが開く");
-    s.see("feature-x"); // パネル行にブランチ名
-    s.key('q'); // 取消(git_graph_picker_cancel)
+    s.see("feature-x"); // the branch name in a panel row
+    s.key('q'); // cancel (git_graph_picker_cancel)
     assert!(!s.app.is_git_graph_picker(), "q でパネルを閉じる");
     assert!(s.app.is_git_graph(), "パネルを閉じるとグラフへ戻る");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
-// コピーの「実値」照合(クリップボード非依存=計算関数/getter で照合)
+// Verifying "actual values" for copy (clipboard-independent — verified via computation functions/getters)
 // =============================================================================
 
 #[test]
 fn e2e_copy_path_strings_from_tree() {
-    // y→ のコピー各種(n/r/f/p/@)が「開いた場所(open_dir)」基準の期待文字列になることを、
-    // クリップボードに依存せず copy_string_for(=copy_text)で照合する。
-    // - @ (AtRef) は open_dir に **厳密相対**(起動dir名を付けない)= Claude Code の @ 構文。
-    // - r (Relative) は起動dir名を先頭に付ける(タイトル表示=format_path と同一基準)。
+    // Verify, without relying on the clipboard, that y→'s various copy kinds (n/r/f/p/@) produce the
+    // expected strings relative to "where it was opened" (open_dir), via copy_string_for (= copy_text).
+    // - @ (AtRef) is **strictly relative** to open_dir (doesn't prefix the launch dir name) = Claude Code's @ syntax.
+    // - r (Relative) prefixes the launch dir name (the same basis as the title display = format_path).
     let dir = sandbox("copy_strings");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1395,14 +1395,14 @@ fn e2e_copy_path_strings_from_tree() {
         s.app.copy_string_for(crate::app::CopyKind::Parent),
         Some(path.parent().unwrap().display().to_string())
     );
-    // @ 参照は起動dir名を付けない厳密相対。
+    // @ reference is strictly relative, without prefixing the launch dir name.
     assert_eq!(
         s.app
             .copy_string_for(crate::app::CopyKind::AtRef)
             .as_deref(),
         Some("@notes.txt")
     );
-    // 相対はタイトル表示(format_path)と同一で、起動dir名を先頭に付ける(@ とは別物)。
+    // Relative is the same as the title display (format_path), prefixing the launch dir name (distinct from @).
     let rel = s
         .app
         .copy_string_for(crate::app::CopyKind::Relative)
@@ -1417,7 +1417,7 @@ fn e2e_copy_path_strings_from_tree() {
         "相対は起動dir名を先頭に付ける(@ の厳密相対とは異なる): {rel}"
     );
 
-    // y→@ のキー配線: コピーリーダーが開いて @ で消費される(pending_leader が戻る)。
+    // y→@ key wiring: the copy leader opens and is consumed by @ (pending_leader returns to None).
     s.key('y');
     assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
     s.key('@');
@@ -1427,14 +1427,14 @@ fn e2e_copy_path_strings_from_tree() {
 
 #[test]
 fn e2e_copy_atref_is_open_dir_relative_when_descended() {
-    // @ 参照は「起動(open)ディレクトリ」基準。サブディレクトリへ潜って root が変わっても、
-    // open_dir は起動位置のままなので @src/lib.rs のように起動位置からの厳密相対になる。
+    // The @ reference is relative to the "launch (open) directory". Even after descending into a
+    // subdirectory changes root, open_dir stays at the launch position, so it's strictly relative from there, e.g. @src/lib.rs.
     let dir = sandbox("atref_descend");
     seed_files(&dir);
     let root = canon(&dir);
     let mut s = Sim::new(&root);
     s.select("src");
-    s.key('l'); // src へ潜行(root=src・open_dir は起動位置のまま)
+    s.key('l'); // descend into src (root=src; open_dir stays at the launch position)
     assert!(s.app.tab.root.ends_with("src"));
     s.select("lib.rs");
     assert_eq!(
@@ -1449,27 +1449,27 @@ fn e2e_copy_atref_is_open_dir_relative_when_descended() {
 
 #[test]
 fn e2e_preview_at_ref_line_reference() {
-    // プレビューの Y=@path#L 参照。キャレット行=単一 #L、v/V 選択=範囲 #L..-.. 。
-    // 値はクリップボード非依存の getter (selection_ref_string=preview_selection_ref_text) で照合。
+    // Preview's Y = @path#L reference. Caret line = single #L, v/V selection = range #L..-... The value
+    // is verified via the clipboard-independent getter (selection_ref_string=preview_selection_ref_text).
     let dir = sandbox("preview_atref");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
     s.select("notes.txt");
     s.enter();
     assert!(s.app.is_windowed(), "テキストは windowed(2D キャレット)");
-    // キャレットは先頭行 → #L1。
+    // The caret is on the first line → #L1.
     assert_eq!(
         s.app.selection_ref_string().as_deref(),
         Some("@notes.txt#L1")
     );
-    s.key('j'); // 2行目へ(windowed=行キャレット移動)
+    s.key('j'); // to line 2 (windowed = line-caret movement)
     assert_eq!(
         s.app.selection_ref_string().as_deref(),
         Some("@notes.txt#L2")
     );
-    // charwise 選択で 2〜3行目を跨ぐ → 範囲参照。
+    // A charwise selection spanning lines 2-3 → a range reference.
     s.key('v');
-    s.key('j'); // キャレットを 3 行目へ(アンカーは 2 行目)
+    s.key('j'); // move the caret to line 3 (the anchor is line 2)
     assert!(matches!(
         s.app.preview_selection(),
         crate::app::PreviewSelection::Char { .. }
@@ -1478,7 +1478,7 @@ fn e2e_preview_at_ref_line_reference() {
         s.app.selection_ref_string().as_deref(),
         Some("@notes.txt#L2-3")
     );
-    // Y は参照をコピーして選択を抜ける(値はクリップボード=環境依存なので抜けたことだけ確認)。
+    // Y copies the reference and exits the selection (the value goes through the clipboard = environment-dependent, so only confirm that it exited).
     s.key('Y');
     assert!(!s.app.is_preview_visual(), "Y で参照コピー後に選択解除");
     std::fs::remove_dir_all(&dir).ok();
@@ -1487,15 +1487,15 @@ fn e2e_preview_at_ref_line_reference() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_commit_copy_values() {
-    // git log で y→ のコミット情報コピー(短/完全ハッシュ・件名・全文・著者・日付)。
-    // git_copy(kind) は current_commit_meta を各フィールドへ写すだけ。GitLog では
-    // current_commit_meta = commit_meta(root, git_log_selected_id()) なので、同じ meta を
-    // pub 経路で再現して照合する(getter 不要)。
+    // In git log, y→'s commit-info copy (short/full hash, subject, full text, author, date).
+    // git_copy(kind) just copies current_commit_meta into each field. In GitLog,
+    // current_commit_meta = commit_meta(root, git_log_selected_id()), so verify by reproducing the
+    // same meta via a pub path (no getter needed).
     let dir = sandbox("git_commit_copy");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
-    s.key('o'); // 変更ハブ
-    s.key('l'); // → ログ(同期ロード)
+    s.key('o'); // changes hub
+    s.key('l'); // → log (synchronous load)
     s.see("init");
     assert_eq!(s.app.surface(), crate::keymap::Surface::GitLog);
 
@@ -1511,7 +1511,7 @@ fn e2e_git_commit_copy_values() {
     );
     assert!(!meta.date.is_empty(), "Date は非空");
 
-    // y→ の配線: GitCopy リーダーが開いて t(件名)で消費される。
+    // y→ wiring: the GitCopy leader opens and is consumed by t (subject).
     s.key('y');
     assert_eq!(
         s.app.pending_leader,
@@ -1524,27 +1524,27 @@ fn e2e_git_commit_copy_values() {
 }
 
 // =============================================================================
-// フォローモードの diff 表示と n/N 回遊
-// 【注記】Sim は run ループ/notify を回さないので、run ループが FS イベントで行う
-//   follow_note_change(&p) → follow_jump(&p) を **直接 pub 呼び出し**で代替する。
-//   FS 監視→pending_follow→dwell(1s)→jump のパイプライン(debounce/latest-wins)は
-//   ここでは検証しない=フォローの「ロジック」を検証(配線/dwell は別レイヤ)。
+// Follow mode's diff display and n/N cycling
+// [Note] Since Sim doesn't run the run loop/notify, what the run loop does on an FS event —
+//   follow_note_change(&p) → follow_jump(&p) — is replaced with a **direct pub call**.
+//   The pipeline FS watch → pending_follow → dwell (1s) → jump (debounce/latest-wins) is
+//   not verified here — this verifies follow's "logic" (wiring/dwell is a separate layer).
 // =============================================================================
 
 #[cfg(feature = "git")]
 #[test]
 fn e2e_follow_opens_full_screen_diff() {
-    // フォロー ON 中に外部変更が来たら、その差分を全画面 git diff で開く(ui.follow_view 既定 "diff")。
+    // With follow ON, an external change opens its diff as a full-screen git diff (ui.follow_view default "diff").
     let dir = sandbox("follow_diff");
-    seed_repo(&dir); // a.rs=変更・new.txt=未追跡(いずれも file_diff あり)
+    seed_repo(&dir); // a.rs = modified, new.txt = untracked (both have a file_diff)
     let mut s = Sim::new(&canon(&dir));
     s.key('F');
     assert!(s.app.follow_enabled(), "F でフォロー ON");
 
     let a = s.app.tab.root.join("a.rs");
-    // ベースライン差分は「F 以降」の変更を出す → F の後に a.rs を編集する(実運用: AI の編集)。
+    // The baseline diff shows changes "since F" → edit a.rs after F (real-world: an AI's edit).
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
-    // run ループ相当: 変更イベントを記録してからジャンプ(どちらも pub)。
+    // Equivalent to the run loop: record the change event, then jump (both are pub).
     assert!(s.app.follow_note_change(&a), "変更ファイルは有効な追尾対象");
     s.app.follow_jump(&a);
     s.draw();
@@ -1555,7 +1555,7 @@ fn e2e_follow_opens_full_screen_diff() {
     );
     assert_eq!(s.app.tab.mode, Mode::Preview);
     s.see("diff");
-    // フォロー由来 diff の回遊対象=「セッション中に変わったファイル」。今は 1 件。
+    // The follow-originated diff's cycling target = "files changed during this session". Currently 1.
     assert_eq!(
         s.app.diff_change_position(),
         Some((1, 1)),
@@ -1567,8 +1567,8 @@ fn e2e_follow_opens_full_screen_diff() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_follow_diff_cycles_session_files() {
-    // フォロー由来の diff 内 n/N が「追尾セッション中に変わったファイルのみ」を wrap 回遊し、
-    // タイトルの位置表示(diff_change_position)が変わる。
+    // n/N inside a follow-originated diff wrap-cycle through only "files changed during the follow
+    // session", and the title's position indicator (diff_change_position) changes.
     let dir = sandbox("follow_cycle");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1576,13 +1576,13 @@ fn e2e_follow_diff_cycles_session_files() {
 
     let a = s.app.tab.root.join("a.rs");
     let nt = s.app.tab.root.join("new.txt");
-    // ベースライン差分は「F 以降」の変更を出す → F の後に両ファイルを編集する。
+    // The baseline diff shows changes "since F" → edit both files after F.
     std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
     std::fs::write(&nt, "untracked\nAFTER\n").unwrap();
-    // 2 つの変更イベントがセッションに溜まる(記録順 = 回遊順)。
+    // 2 change events accumulate in the session (record order = cycle order).
     assert!(s.app.follow_note_change(&a));
     assert!(s.app.follow_note_change(&nt));
-    s.app.follow_jump(&a); // まず a.rs の diff を開く
+    s.app.follow_jump(&a); // open a.rs's diff first
     s.draw();
     assert!(s.app.is_git_diff_preview());
     assert_eq!(
@@ -1591,8 +1591,8 @@ fn e2e_follow_diff_cycles_session_files() {
         "a.rs = 2 件中 1 番目"
     );
 
-    // n=次の変更ファイルの diff へ(セッション内のみ)。最大粘着(2026-07-23)=n は PreviewBack に
-    // 解決されないので follow は維持されたまま回遊する(diff_follow_scope + follow_session)。
+    // n = to the next changed file's diff (session-scoped only). Maximally sticky (2026-07-23) = n
+    // doesn't resolve to PreviewBack, so it cycles while follow stays on (diff_follow_scope + follow_session).
     s.key('n');
     assert!(
         s.app.follow_enabled(),
@@ -1603,7 +1603,7 @@ fn e2e_follow_diff_cycles_session_files() {
         Some((2, 2)),
         "n で 2 番目(new.txt)へ"
     );
-    s.key('N'); // 前へ(wrap)
+    s.key('N'); // to the previous (wraps)
     assert_eq!(
         s.app.diff_change_position(),
         Some((1, 2)),
@@ -1615,9 +1615,9 @@ fn e2e_follow_diff_cycles_session_files() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
-    // 回帰: f(ToggleFollowDiffScope)はフォロー由来 diff の範囲(開始以降⇄フル)を切り替える
-    // 表示オプションであり、手動操作の乗っ取りではない → フォローを解除してはいけない。
-    // 修正前は「F 以外は follow_break」の判定に f が含まれておらず、押すと FOLLOW が OFF になった。
+    // Regression: f (ToggleFollowDiffScope) is a display option that switches the follow-originated
+    // diff's scope (since-start ⇄ full), not a takeover of manual operation → it must not break follow.
+    // Before the fix, the "anything but F is follow_break" check didn't include f, so pressing it turned FOLLOW OFF.
     let dir = sandbox("follow_f_scope");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1658,9 +1658,9 @@ fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_follow_survives_scroll_and_cycle_breaks_only_on_q() {
-    // 回帰(2026-07-23・ユーザー選択=最大粘着): フォロー由来 diff の中では q(PreviewBack で
-    // diff を出る)以外の全キー(スクロール/横スクロール/n の変更ファイル回遊)がフォローを
-    // 維持する。修正前は F/f 以外の任意キーで解除していた(hands-off/Zed 流)。
+    // Regression (2026-07-23, user's choice = maximally sticky): inside a follow-originated diff,
+    // every key except q (which exits the diff via PreviewBack) — scroll/horizontal scroll/n's
+    // changed-file cycling — keeps follow on. Before the fix, any key other than F/f broke it (hands-off/Zed-style).
     let dir = sandbox("follow_sticky");
     seed_repo(&dir);
     let mut s = Sim::new(&canon(&dir));
@@ -1690,8 +1690,8 @@ fn e2e_follow_survives_scroll_and_cycle_breaks_only_on_q() {
 }
 
 // =============================================================================
-// Markdown 記法の描画照合 + 折返しフォーカス追従
-// (グリフのみ照合可能を厳守=色/反転は screen() から取れない)
+// Markdown syntax render verification + wrapped-focus following
+// (strictly glyph-only verification — color/reversal can't be read from screen())
 // =============================================================================
 
 /// Display column (== screen char index, since screen() emits exactly one char per cell:
@@ -1708,7 +1708,7 @@ fn glyph_cols(row: &str, target: char) -> Vec<usize> {
 
 #[test]
 fn e2e_md_table_renders_box_and_aligns_cjk() {
-    // GFM 表が罫線グリフ(┌┬┐ │ ├┼┤ └┴┘)で描かれ、CJK 混在列でも桁が揃う。
+    // A GFM table is drawn with line-drawing glyphs (┌┬┐ │ ├┼┤ └┴┘), and columns align even with CJK mixed in.
     let dir = sandbox("md_table_grid");
     seed_files(&dir);
     std::fs::write(
@@ -1719,13 +1719,13 @@ fn e2e_md_table_renders_box_and_aligns_cjk() {
     let mut s = Sim::new(&canon(&dir));
     s.select("grid.md");
     s.enter();
-    // 表専用の T 字/十字グリフ(プレビュー枠は ┌┐└┘─│ のみなので、これらは表の証拠)。
+    // T-shaped/cross glyphs unique to tables (the preview frame only uses ┌┐└┘─│, so these are proof of the table).
     s.see("┬");
     s.see("┼");
     s.see("┴");
     s.see("├");
     s.see("┤");
-    // 桁揃え: ヘッダ行とデータ2行で縦罫線 │ の表示列が一致する(CJK 幅が正しく効く証拠)。
+    // Column alignment: the vertical bar │'s display column matches across the header row and both data rows (proof CJK width is handled correctly).
     let scr = s.screen();
     let rows: Vec<&str> = scr.lines().collect();
     let bars = |needle: &str| -> Vec<usize> {
@@ -1746,10 +1746,10 @@ fn e2e_md_table_renders_box_and_aligns_cjk() {
 
 #[test]
 fn e2e_md_table_cell_link_shows_label_hides_url() {
-    // 表セル内 [label](url) は label だけ表示(URL は隠しターゲットで画面から消える)。
-    // Tab でフォーカスでき、Enter でリンク先(./notes.txt)が開ける(md_items にリンクが載る)。
+    // [label](url) inside a table cell only shows the label (the URL is a hidden target, gone from the screen).
+    // Can be focused with Tab, and Enter opens the target (./notes.txt) (the link lands in md_items).
     let dir = sandbox("md_table_link");
-    seed_files(&dir); // notes.txt("alpha\n...") を含む
+    seed_files(&dir); // includes notes.txt ("alpha\n...")
     std::fs::write(
         dir.join("tbl.md"),
         "| name | doc |\n|---|---|\n| konoma | [OpenDoc](./notes.txt) |\n",
@@ -1758,16 +1758,16 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
     let mut s = Sim::new(&canon(&dir));
     s.select("tbl.md");
     s.enter();
-    s.see("OpenDoc"); // ラベルは表示される
-    s.dont_see("[OpenDoc]"); // 生の Markdown 記法は出さない
-    s.dont_see("./notes.txt"); // URL は collapse_links が除去して非表示
-    s.tab(); // 表内リンクへフォーカス
+    s.see("OpenDoc"); // the label is displayed
+    s.dont_see("[OpenDoc]"); // the raw Markdown syntax isn't shown
+    s.dont_see("./notes.txt"); // the URL is removed by collapse_links, hidden
+    s.tab(); // focus the in-table link
     assert_eq!(
         s.app.focused_item(),
         Some(0),
         "表内リンクが md_items の先頭"
     );
-    s.enter(); // リンク先を開く
+    s.enter(); // open the link target
     assert!(
         s.app
             .tab
@@ -1776,14 +1776,14 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
             .is_some_and(|p| p.ends_with("notes.txt")),
         "表内リンクの Enter で ./notes.txt を開く"
     );
-    s.see("alpha"); // notes.txt の中身
+    s.see("alpha"); // notes.txt's content
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_md_html_details_collapse_and_toggle() {
-    // <details>(open 無し)は既定で折りたたみ: summary は出るが本文は隠れる。Tab で summary に
-    // フォーカス→Space/Enter で展開すると本文が出る。タグは剥がれる。
+    // <details> (without open) is collapsed by default: summary shows but the body is hidden. Tab
+    // focuses summary → Space/Enter expands it, revealing the body. The tags are stripped.
     let dir = sandbox("md_html_details");
     seed_files(&dir);
     std::fs::write(
@@ -1794,16 +1794,16 @@ fn e2e_md_html_details_collapse_and_toggle() {
     let mut s = Sim::new(&canon(&dir));
     s.select("html.md");
     s.enter();
-    s.see("Summary text"); // <summary> は常に出る
-    s.dont_see("hidden body line"); // 既定は折りたたみ=本文は隠れる
-    s.dont_see("<summary>"); // タグは剥がれている
+    s.see("Summary text"); // <summary> always shows
+    s.dont_see("hidden body line"); // default is collapsed = the body is hidden
+    s.dont_see("<summary>"); // the tag is stripped
     s.dont_see("<details>");
-    // Tab で summary にフォーカス → Space で展開。
+    // Tab focuses summary → Space expands it.
     s.tab();
     assert_eq!(s.app.focused_item(), Some(0), "summary が Tab アイテム");
     s.key(' ');
-    s.see("hidden body line"); // 展開して本文が出る
-                               // 再度トグルで折りたたみ。
+    s.see("hidden body line"); // expanded, the body shows
+                               // Toggling again collapses it.
     s.enter();
     s.dont_see("hidden body line");
     std::fs::remove_dir_all(&dir).ok();
@@ -1811,10 +1811,10 @@ fn e2e_md_html_details_collapse_and_toggle() {
 
 #[test]
 fn e2e_md_thematic_break_becomes_rule_and_fenced_dashes_kept() {
-    // `---`(thematic break)は全幅の ─ 罫線に。コードフェンス内の --- は変換されず literal。
+    // `---` (thematic break) becomes a full-width ─ rule. --- inside a code fence stays literal, unconverted.
     let dir = sandbox("md_hr");
     seed_files(&dir);
-    // 見出しを置かない(H1/H2 の下線ルールと ─ が混ざるのを避ける)。
+    // Don't place a heading (avoids the H1/H2 underline rule mixing with ─).
     std::fs::write(
         dir.join("hr.md"),
         "above paragraph\n\n---\n\nbelow paragraph\n\n```text\nraw --- text\n```\n",
@@ -1825,20 +1825,20 @@ fn e2e_md_thematic_break_becomes_rule_and_fenced_dashes_kept() {
     s.enter();
     s.see("above paragraph");
     s.see("below paragraph");
-    // thematic break の行: プレビュー枠内(先頭 │)で残りが全て ─ の行が存在する。
-    // (枠の上下ボーダは ┌/└ 始まりなので除外される。)
+    // A thematic-break row: within the preview frame (leading │), a row exists where the rest is all ─.
+    // (The frame's top/bottom border is excluded since it starts with ┌/└.)
     let has_rule = s.screen().lines().any(|l| {
         l.starts_with('│') && l.ends_with('│') && l.chars().filter(|&c| c == '─').count() >= 60
     });
     assert!(has_rule, "--- が全幅 ─ 罫線になる:\n{}", s.screen());
-    // フェンス内の --- は literal のまま残る(コードパスの後に extras が走るので誤爆しない)。
+    // --- inside a fence stays literal (since extras run after the code path, there's no false trigger).
     s.see("raw --- text");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
-// Markdown web パリティ Phase 1: 裸URL自動リンク / GitHub Alerts / 絵文字
-// (全経路を code_bg="none" と既定の両方で通す = 合成 span でなく本物の描画)
+// Markdown web parity Phase 1: bare-URL autolinking / GitHub Alerts / emoji
+// (route every path through both code_bg="none" and the default = real rendering, not synthetic spans)
 // =============================================================================
 
 #[test]
@@ -2175,13 +2175,13 @@ fn e2e_markdown_autolink_cjk_and_trailing_punctuation() {
 
 #[test]
 fn e2e_md_task_markers_render_ascii_or_nf_by_icons() {
-    // タスク `- [ ]` / `- [x]` は、ui.icons=false なら ASCII ブラケット、true なら NF グリフ。
+    // Tasks `- [ ]` / `- [x]`: ASCII brackets when ui.icons=false, NF glyphs when true.
     let dir = sandbox("md_tasks");
     seed_files(&dir);
     std::fs::write(dir.join("tasks.md"), "- [ ] todo item\n- [x] done item\n").unwrap();
     let root = canon(&dir);
 
-    // icons=false: ASCII "[ ]" / "[x]"。
+    // icons=false: ASCII "[ ]" / "[x]".
     let mut cfg = Config::default();
     cfg.ui.icons = false;
     let mut s = Sim::with_config(&root, cfg);
@@ -2190,7 +2190,7 @@ fn e2e_md_task_markers_render_ascii_or_nf_by_icons() {
     s.see("[ ] todo item");
     s.see("[x] done item");
 
-    // icons=true(既定): Nerd Font グリフ(square_o / check_square_o)、ASCII ブラケットは出ない。
+    // icons=true (default): Nerd Font glyphs (square_o / check_square_o); ASCII brackets don't appear.
     let mut s2 = Sim::new(&root); // Config::default() = icons true
     s2.select("tasks.md");
     s2.enter();
@@ -2203,7 +2203,7 @@ fn e2e_md_task_markers_render_ascii_or_nf_by_icons() {
 
 #[test]
 fn e2e_md_raw_source_toggle() {
-    // Markdown を R で装飾表示 ⇄ 生ソース(windowed・タイトルに "· raw source")へ切替。
+    // R switches Markdown between decorated display ⇄ raw source (windowed, "· raw source" in the title).
     let dir = sandbox("md_raw");
     seed_files(&dir);
     std::fs::write(
@@ -2214,13 +2214,13 @@ fn e2e_md_raw_source_toggle() {
     let mut s = Sim::new(&canon(&dir));
     s.select("guide.md");
     s.enter();
-    // 注: フッターは装飾表示中も "R raw source" ヒントを常時出す(トグルの案内)。
-    // タイトルの raw マーカーは "· raw source"(中黒つき)なので、モード判定はこちらで。
+    // Note: the footer always shows the "R raw source" hint even while decorated (a toggle notice).
+    // The title's raw marker is "· raw source" (with a middle dot), so use it for the mode check.
     assert!(!s.app.is_raw_source(), "初期は装飾表示");
-    s.dont_see("· raw source"); // タイトルに raw マーカーは無い(ヒントの "raw source" とは別)
+    s.dont_see("· raw source"); // no raw marker in the title (distinct from the hint's "raw source")
     s.key('R');
     assert!(s.app.is_raw_source(), "R で raw ソース表示");
-    s.see("· raw source"); // タイトルの "· raw source"(相対パス表示なので短く切れない)
+    s.see("· raw source"); // the title's "· raw source" (short enough not to be cut, being a relative path)
     s.key('R');
     assert!(!s.app.is_raw_source(), "R で装飾表示へ戻る");
     s.dont_see("· raw source");
@@ -2229,9 +2229,9 @@ fn e2e_md_raw_source_toggle() {
 
 #[test]
 fn e2e_markdown_edit_opens_near_scroll_position() {
-    // 装飾 Markdown をスクロールして `e` を押すと、エディタは現在の表示位置に対応する近似
-    // ソース行で開く(reflow のため厳密でなく近似)。先頭では 1 行目・下へスクロールで前進。
-    // Sim は毎キー後に UI を描画するので md_view_rows(折返し総行数)が実使用同様に設定される。
+    // Scrolling decorated Markdown and pressing `e` opens the editor at an approximate source line
+    // corresponding to the current display position (approximate, not exact, because of reflow). At
+    // the top it's line 1; scrolling down advances it. Since Sim draws the UI after every key, md_view_rows (the total wrapped row count) is set just as in real usage.
     let dir = sandbox("md_edit_line");
     let mut content = String::from("# Top\n\n");
     for i in 1..=25 {
@@ -2248,15 +2248,15 @@ fn e2e_markdown_edit_opens_near_scroll_position() {
     std::fs::write(dir.join("doc.md"), content).unwrap();
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
-    s.enter(); // 装飾 Markdown プレビュー
+    s.enter(); // decorated Markdown preview
     assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
 
-    // 先頭では 1 行目で開く。
+    // At the top, it opens at line 1.
     s.key('e');
     let (_p, top) = s.app.take_pending_edit().expect("edit requested");
     assert_eq!(top, Some(1), "先頭スクロールは 1 行目");
 
-    // 下へ十分スクロールしてから `e`: 先頭に張り付かず、後方のソース行を指す。
+    // Scroll down far enough, then `e`: it doesn't stick to the top, and points at a later source line.
     for _ in 0..40 {
         s.key('j');
     }
@@ -2272,8 +2272,8 @@ fn e2e_markdown_edit_opens_near_scroll_position() {
 
 #[test]
 fn e2e_markdown_edit_content_anchor_hits_exact_line() {
-    // 折返す長いイントロの後に一意な見出しを置く。比例推定だけだと折返しでずれるが、content-anchor
-    // が画面先頭のテキストをソース検索して見出しの「正確な」ソース行に着地することを確認する。
+    // Place a unique heading after a long, wrapping intro. Proportional estimation alone would drift
+    // due to wrapping, but confirm that content-anchor searches the source for the screen-top text and lands on the heading's "exact" source line.
     let dir = sandbox("md_anchor");
     let mut content = String::from("# Title\n\n");
     for i in 1..=15 {
@@ -2282,11 +2282,11 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
         ));
     }
     content.push_str("\n## ANCHORZZZ Section\n\n");
-    // 見出しを画面先頭(row2)まで押し上げられるよう、後続に十分な行を積む。
+    // Stack enough following lines so the heading can be pushed up to the screen top (row 2).
     for i in 1..=60 {
         content.push_str(&format!("Trailing line {i:02} after the anchor.\n"));
     }
-    // 見出しのソース行(1始まり)。
+    // The heading's source line (1-based).
     let heading_line = content
         .lines()
         .position(|l| l.contains("ANCHORZZZ"))
@@ -2296,10 +2296,10 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
 
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
-    s.enter(); // 装飾 Markdown プレビュー
+    s.enter(); // decorated Markdown preview
     assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
 
-    // 見出しが画面先頭(枠内1行目=buffer 3行目)に来るまで 1 行ずつスクロール。
+    // Scroll one line at a time until the heading reaches the screen top (frame's row 1 = buffer's row 3).
     let mut scrolled = 0;
     while scrolled < 300 {
         let top = s.screen().lines().nth(2).unwrap_or("").to_string();
@@ -2309,7 +2309,7 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
         s.key('j');
         scrolled += 1;
     }
-    s.see("ANCHORZZZ"); // 画面に見出しが出ている
+    s.see("ANCHORZZZ"); // the heading is showing on screen
 
     s.key('e');
     let (_p, line) = s.app.take_pending_edit().expect("edit requested");
@@ -2323,8 +2323,8 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
 
 #[test]
 fn e2e_markdown_edit_lands_on_tab_focused_item() {
-    // Tab でアイテム(タスク/リンク)にフォーカスしていれば、`e` は画面先頭ではなくその
-    // フォーカス行で開く。Tab を進めるとフォーカスが移り、開く行も追従する。
+    // If Tab has focused an item (task/link), `e` opens at that focused line instead of the screen
+    // top. Advancing Tab moves the focus, and the opened line follows along.
     let dir = sandbox("md_focus_edit");
     let content = "# Title\n\nIntro paragraph one.\n\n- [ ] UNIQUETASK finish the report\n\nMiddle paragraph.\n\nSee [UNIQUELINK](./target.txt) here.\n";
     std::fs::write(dir.join("doc.md"), content).unwrap();
@@ -2342,10 +2342,10 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
 
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
-    s.enter(); // 装飾 Markdown プレビュー
+    s.enter(); // decorated Markdown preview
     assert!(!s.app.is_windowed(), "装飾 md は非 windowed");
 
-    // Tab → 最初のアイテム(タスク)にフォーカス。e → タスクのソース行で開く。
+    // Tab → focuses the first item (the task). e → opens at the task's source line.
     s.tab();
     s.key('e');
     let (_p, line) = s.app.take_pending_edit().expect("edit requested");
@@ -2355,7 +2355,7 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
         "Tab フォーカスのタスク行 {task_line}"
     );
 
-    // もう一度 Tab → リンクへ。e → リンクのソース行で開く。
+    // Tab again → to the link. e → opens at the link's source line.
     s.tab();
     s.key('e');
     let (_p, line) = s.app.take_pending_edit().expect("edit requested");
@@ -2370,9 +2370,9 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
 
 #[test]
 fn e2e_md_code_block_tab_focus_and_copy() {
-    // Tab がリンク→コードブロック→タスクを文書順で巡回し、コードブロックにフォーカス中は
-    // `y` でコピーメニューが開き、そこに現れる `c` でその生ソースをコピーできる(値は
-    // clipboard 非依存の getter で照合)。Enter はコードブロックでは何もしない。
+    // Tab cycles link → code block → task in document order, and while a code block is focused,
+    // `y` opens the copy menu where the `c` that appears there copies its raw source (the value is
+    // verified via a clipboard-independent getter). Enter does nothing on a code block.
     let dir = sandbox("md_code_copy");
     seed_files(&dir);
     std::fs::write(
@@ -2383,44 +2383,44 @@ fn e2e_md_code_block_tab_focus_and_copy() {
     let mut s = Sim::new(&canon(&dir));
     s.select("snip.md");
     s.enter();
-    s.see("rust"); // コードブロックの言語ヘッダ
-    s.tab(); // リンク
+    s.see("rust"); // the code block's language header
+    s.tab(); // the link
     assert!(!s.app.md_focused_code());
-    s.tab(); // コードブロック
+    s.tab(); // the code block
     assert!(s.app.md_focused_code(), "2番目=コードブロックにフォーカス");
     assert_eq!(
         s.app.focused_code_text().as_deref(),
         Some("fn main() {}\nlet y = 2;"),
         "生ソースをコピー対象に"
     );
-    // Enter はコードブロックでは無操作(which-key も出ず flash も出ない)。
+    // Enter is a no-op on a code block (no which-key, no flash either).
     s.enter();
     assert!(s.app.flash.is_none(), "Enter はコードブロックで何もしない");
-    // `y` は横取りせずコピーメニューを開く(which-key)。フォーカス中は `c:code block` が現れる。
+    // `y` doesn't hijack it — it opens the copy menu (which-key). While focused, `c:code block` appears.
     s.key('y');
     assert_eq!(
         s.app.pending_leader,
         Some(crate::keymap::LeaderId::Copy),
         "y はコピーリーダー(which-key)を開く"
     );
-    s.see("code block"); // メニューにコードブロックコピーが出る
-                         // `c` でコピー(clipboard は環境依存なので flash が立つことだけ確認)。
+    s.see("code block"); // the code-block copy entry shows up in the menu
+                         // `c` copies (since the clipboard is environment-dependent, only confirm the flash fires).
     s.key('c');
     assert!(s.app.pending_leader.is_none(), "c で確定=リーダー閉じる");
     assert!(s.app.flash.is_some(), "y c でコピー通知が出る");
-    s.tab(); // タスク
+    s.tab(); // the task
     assert!(!s.app.md_focused_code());
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_md_wrapped_focus_follows_offscreen_item() {
-    // 折返し時: 画面高さを超える段落の後ろのリンクへ Tab で移ると preview_scroll が追従する。
-    // 非折返し時: 段落は1行に潰れ全て画面内=スクロール不要(both で挙動差を確認)。
+    // When wrapped: moving with Tab to a link after a paragraph taller than the screen makes preview_scroll follow.
+    // When not wrapped: the paragraph collapses to 1 line and all fits on screen = no scroll needed (confirm the behavior differs both ways).
     let dir = sandbox("md_wrap_focus");
     seed_files(&dir);
-    // 幅88で ~34 表示行に折り返す長い段落(1論理行)+ その後ろに離れたリンク/タスク。
-    let para = "lorem ".repeat(500); // 3000桁 ≒ 幅88で ~34 表示行 > viewport 22
+    // A long paragraph (1 logical line) that wraps to ~34 display rows at width 88 + a link/task after it, apart.
+    let para = "lorem ".repeat(500); // 3000 chars ≈ ~34 display rows at width 88 > viewport 22
     std::fs::write(
         dir.join("torture.md"),
         format!("{para}\n\n[ZZLINK](./notes.txt)\n\n- [ ] ZZTASK\n"),
@@ -2428,28 +2428,28 @@ fn e2e_md_wrapped_focus_follows_offscreen_item() {
     .unwrap();
     let root = canon(&dir);
 
-    // --- wrap=true(既定): 追従してスクロールする ---
+    // --- wrap=true (default): scrolls to follow ---
     let mut on = Sim::new(&root);
     on.select("torture.md");
     on.enter();
     assert!(on.app.cfg.ui.wrap, "前提: 既定は折返しON");
     assert_eq!(on.app.tab.preview_scroll, 0, "初期スクロール 0");
-    on.dont_see("ZZLINK"); // 段落が画面を占有=リンクは画面外
-    on.tab(); // 段落の先(表示行 ~34)のリンクへフォーカス
+    on.dont_see("ZZLINK"); // the paragraph occupies the screen = the link is off-screen
+    on.tab(); // focus the link past the paragraph (~34 display rows in)
     assert!(
         on.app.tab.preview_scroll > 5,
         "折返しでフォーカスに追従してスクロール: scroll={}",
         on.app.tab.preview_scroll
     );
-    on.see("ZZLINK"); // 追従後は画面内
+    on.see("ZZLINK"); // after following, it's on screen
 
-    // --- wrap=false: 段落は1行=全て画面内なのでスクロールしない ---
+    // --- wrap=false: the paragraph is 1 line = everything fits on screen, so no scroll ---
     let mut cfg = Config::default();
     cfg.ui.wrap = false;
     let mut off = Sim::with_config(&root, cfg);
     off.select("torture.md");
     off.enter();
-    off.see("ZZLINK"); // 段落1行=リンクは最初から画面内
+    off.see("ZZLINK"); // paragraph is 1 line = the link is on screen from the start
     off.tab();
     assert_eq!(
         off.app.tab.preview_scroll, 0,
@@ -2460,24 +2460,24 @@ fn e2e_md_wrapped_focus_follows_offscreen_item() {
 }
 
 // =============================================================================
-// ファイル操作: コピー/カット→ペースト・一括リネーム・ビジュアル選択
-// (op_base_dir = カーソル位置のディレクトリ。ディレクトリ選択中はその中／ファイルなら親)
+// File operations: copy/cut → paste, batch rename, visual selection
+// (op_base_dir = the directory at the cursor. Inside it while a directory is selected / its parent for a file)
 // =============================================================================
 
 #[test]
 fn e2e_file_copy_then_paste_duplicates() {
-    // Space→c で cursor 上のファイルをコピー、コピー先ディレクトリへカーソルを移して
-    // Space→p で複製ができる(元は残る)。貼付先 = op_base_dir(ディレクトリ選択中はその中)。
+    // Space→c copies the file at the cursor, then moving the cursor to the destination directory and
+    // Space→p duplicates it (the original remains). The paste target = op_base_dir (inside it while a directory is selected).
     let dir = sandbox("copy_paste");
     std::fs::write(dir.join("orig.txt"), "hello copy\n").unwrap();
     std::fs::create_dir_all(dir.join("dest")).unwrap();
     let dir = canon(&dir);
     let mut s = Sim::new(&dir);
 
-    s.select("orig.txt"); // コピー対象にカーソル(op_targets = カーソルのファイル)
+    s.select("orig.txt"); // cursor on the copy target (op_targets = the file at the cursor)
     s.key(' ');
     s.key('c'); // Space→c = FileCopy
-    s.select("dest"); // 貼付先ディレクトリ(is_dir なので op_base_dir = dest 自身)
+    s.select("dest"); // the paste-destination directory (is_dir, so op_base_dir = dest itself)
     s.key(' ');
     s.key('p'); // Space→p = FilePaste
 
@@ -2491,9 +2491,9 @@ fn e2e_file_copy_then_paste_duplicates() {
 
 #[test]
 fn e2e_file_copy_then_paste_runs_in_background() {
-    // 上の同期版と同じ操作を、**実際のバックグラウンド経路**(runner を attach)で通す。
-    // Space→c でディレクトリをコピー、貼付先へカーソルを移して Space→p。paste 直後は
-    // まだ実行中(busy インジケーターに出る)で、ワーカーの結果が届いて初めて反映される。
+    // Route the same operation as the synchronous version above through **the actual background path** (attaching a runner).
+    // Space→c copies the directory, move the cursor to the paste target, then Space→p. Right after
+    // paste, it's still running (shows up in the busy indicator), and only reflects once the worker's result arrives.
     let dir = sandbox("copy_paste_async");
     std::fs::create_dir_all(dir.join("pkg/inner")).unwrap();
     std::fs::write(dir.join("pkg/one.txt"), "1\n").unwrap();
@@ -2507,7 +2507,7 @@ fn e2e_file_copy_then_paste_runs_in_background() {
     s.key('c'); // Space→c = FileCopy
     s.select("dest");
     s.key(' ');
-    s.key('p'); // Space→p = FilePaste(ワーカーへ投げる)
+    s.key('p'); // Space→p = FilePaste (dispatched to the worker)
 
     assert!(
         s.app.busy_jobs().contains(&crate::i18n::Msg::BusyFileOp),
@@ -2535,7 +2535,7 @@ fn e2e_file_copy_then_paste_runs_in_background() {
 
 #[test]
 fn e2e_file_cut_then_paste_moves() {
-    // Space→x で cut、別ディレクトリで Space→p → 元が消え先に出来る(移動)。
+    // Space→x cuts, then Space→p in another directory → the original disappears and it's created at the destination (a move).
     let dir = sandbox("cut_paste");
     std::fs::write(dir.join("orig.txt"), "hello move\n").unwrap();
     std::fs::create_dir_all(dir.join("dest")).unwrap();
@@ -2547,7 +2547,7 @@ fn e2e_file_cut_then_paste_moves() {
     s.key('x'); // Space→x = FileCut
     s.select("dest");
     s.key(' ');
-    s.key('p'); // Space→p = FilePaste(cut は move)
+    s.key('p'); // Space→p = FilePaste (cut is move)
 
     assert!(dir.join("dest/orig.txt").exists(), "移動先に出来る");
     assert!(!dir.join("orig.txt").exists(), "移動元は消える");
@@ -2556,27 +2556,27 @@ fn e2e_file_cut_then_paste_moves() {
 
 #[test]
 fn e2e_batch_rename_numbers_selection_via_preview() {
-    // 複数選択(V×2)→ Space→r で一括リネーム。テンプレ {n} で連番、プレビューダイアログを
-    // 挟んで y で適用 → 連番リネームされる(拡張子は自動保持)。
+    // Multi-select (V×2) → Space→r for batch rename. A {n} template gives sequential numbers; going
+    // through the preview dialog and applying with y → sequentially renamed (the extension is kept automatically).
     let dir = sandbox("batch_rename");
     std::fs::write(dir.join("alpha.log"), "a\n").unwrap();
     std::fs::write(dir.join("beta.log"), "b\n").unwrap();
     let dir = canon(&dir);
     let mut s = Sim::new(&dir);
 
-    // V=ToggleSelect: カーソルを選択して1つ下へ。2回で先頭2ファイルを選択。
+    // V=ToggleSelect: selects the cursor and moves down by one. Twice selects the first 2 files.
     s.key('V');
     s.key('V');
     assert!(s.app.has_selection(), "複数選択が入っている");
 
     s.key(' ');
-    s.key('r'); // Space→r。選択ありなので start_batch_rename(テンプレ入力ダイアログ)。
+    s.key('r'); // Space→r. Since there's a selection, start_batch_rename runs (a template-entry dialog).
     assert!(s.app.is_dialog(), "一括リネームの入力ダイアログが開く");
-    s.keys("renamed-{n}"); // {n}=連番トークン
-    s.enter(); // build_rename_plan → プレビュー(旧→新)へ遷移
+    s.keys("renamed-{n}"); // {n} = the sequence-number token
+    s.enter(); // build_rename_plan → transitions to the preview (old → new)
     assert!(s.app.dialog_is_preview(), "リネームプレビューが挟まる");
     s.see("renamed-1");
-    s.key('y'); // プレビューの y=適用(dialog_preview_apply)
+    s.key('y'); // the preview's y = apply (dialog_preview_apply)
 
     assert!(dir.join("renamed-1.log").exists(), "1件目が連番リネーム");
     assert!(dir.join("renamed-2.log").exists(), "2件目が連番リネーム");
@@ -2587,17 +2587,17 @@ fn e2e_batch_rename_numbers_selection_via_preview() {
 
 #[test]
 fn e2e_tree_visual_selection_grows_then_commits() {
-    // v=範囲選択開始 → j で範囲が広がり(marked_count 増)→ v=確定で selection に取り込む。
+    // v = start range selection → j grows the range (marked_count increases) → v = commit, folding it into selection.
     let dir = sandbox("tree_visual");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
 
-    s.key('v'); // EnterVisual(Surface=Visual)
+    s.key('v'); // EnterVisual (Surface=Visual)
     assert!(s.app.is_visual(), "v で範囲選択開始");
     assert_eq!(s.app.marked_count(), 1, "開始直後はアンカー1行");
-    s.key('j'); // Visual 面の Down → 範囲が [anchor, anchor+1] に広がる
+    s.key('j'); // in the Visual surface, Down → the range grows to [anchor, anchor+1]
     assert_eq!(s.app.marked_count(), 2, "j で範囲が2行に広がる");
-    s.key('v'); // Visual 面の v=VisualCommit → 範囲を selection に確定して抜ける
+    s.key('v'); // in the Visual surface, v=VisualCommit → commit the range into selection and exit
     assert!(!s.app.is_visual(), "v で範囲確定して visual を抜ける");
     assert!(s.app.has_selection(), "確定した集合が残る");
     assert_eq!(s.app.marked_count(), 2, "確定後は選択2件");
@@ -2605,13 +2605,13 @@ fn e2e_tree_visual_selection_grows_then_commits() {
 }
 
 // =============================================================================
-// 設定反映: details 列 / path style 巡回 / csv_rainbow / busy インジケーター
+// Config reflection: details columns / path style cycling / csv_rainbow / busy indicator
 // =============================================================================
 
 #[test]
 fn e2e_details_columns_show_size_and_modified() {
-    // ui.details=["size","modified"] で各行の右端にサイズ/更新列が出る。
-    // 期待値はレンダラと同じ quick_meta 経由で算出(時刻/サイズをハードコードしない)。
+    // With ui.details=["size","modified"], each row's right edge shows size/modified columns.
+    // The expected value is computed via the same quick_meta as the renderer (no hardcoded time/size).
     let dir = sandbox("details");
     seed_files(&dir);
     let dir = canon(&dir);
@@ -2620,28 +2620,28 @@ fn e2e_details_columns_show_size_and_modified() {
     let size_cell = crate::fileops::human_size(meta.size);
     let mod_cell = crate::fileops::format_epoch_short(meta.mtime.expect("mtime"));
 
-    // 対照: details 無しでは日付列は出ない(偽陽性ガード)。
+    // Control: without details, the date column doesn't appear (a false-positive guard).
     let plain = Sim::new(&dir);
     plain.dont_see(&mod_cell);
 
     let mut cfg = Config::default();
     cfg.ui.details = vec!["size".into(), "modified".into()];
     let s = Sim::with_config(&dir, cfg);
-    s.see(&size_cell); // 例: "23 B"(右寄せ列に現れる)
-    s.see(&mod_cell); // 例: "2026-07-08 14:23"(16桁の更新時刻列)
+    s.see(&size_cell); // e.g. "23 B" (appears in the right-aligned column)
+    s.see(&mod_cell); // e.g. "2026-07-08 14:23" (the 16-column modified-time column)
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_path_style_cycles() {
-    // p=CyclePathStyle で Relative→Home→Full→Relative と巡回。上部の path: 表示も追随。
+    // p=CyclePathStyle cycles Relative→Home→Full→Relative. The path: display at the top follows along too.
     use crate::app::PathStyle;
     let dir = sandbox("path_style");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
 
     assert_eq!(s.app.path_style, PathStyle::Relative, "既定は relative");
-    s.see("path:rel"); // status の path ラベル(英語ロケール前提=既存テストと同一)
+    s.see("path:rel"); // status's path label (assumes the English locale = same as existing tests)
     s.key('p');
     assert_eq!(s.app.path_style, PathStyle::Home, "p で ~ 表示へ");
     s.see("path:~");
@@ -2655,8 +2655,8 @@ fn e2e_path_style_cycles() {
 
 #[test]
 fn e2e_csv_table_renders_and_navigates_without_rainbow() {
-    // ui.csv_rainbow=false でも整列テーブルとしてセル内容は出る(色は検証不可=グリフのみ)。
-    // hjkl/0/$ でセルカーソルが動く(既存テストと別の観点=列端ジャンプまで見る)。
+    // Even with ui.csv_rainbow=false, cell content still shows as an aligned table (color can't be verified — glyphs only).
+    // hjkl/0/$ move the cell cursor (a different angle than the existing test — also checks jumping to a column edge).
     let dir = sandbox("csv_norainbow");
     std::fs::write(
         dir.join("fruit.csv"),
@@ -2670,44 +2670,44 @@ fn e2e_csv_table_renders_and_navigates_without_rainbow() {
     s.select("fruit.csv");
     s.enter();
     s.see("TABLE");
-    s.see("fruit"); // ヘッダ(モノクロでもグリフは出る)
-    s.see("apple"); // データセル
+    s.see("fruit"); // header (glyphs show even in monochrome)
+    s.see("apple"); // data cell
     assert_eq!(s.app.table_cursor(), (0, 0), "初期カーソルは先頭セル");
-    s.key('l'); // 右の列へ
+    s.key('l'); // to the right column
     assert_eq!(s.app.table_cursor(), (0, 1), "l で1列右へ");
-    s.key('l'); // 末列でクランプ(ncols=2)
+    s.key('l'); // clamps at the last column (ncols=2)
     assert_eq!(s.app.table_cursor(), (0, 1), "末列でクランプ");
-    s.key('0'); // 先頭列へ
+    s.key('0'); // to the first column
     assert_eq!(s.app.table_cursor(), (0, 0), "0 で先頭列");
-    s.key('$'); // 末列へ
+    s.key('$'); // to the last column
     assert_eq!(s.app.table_cursor(), (0, 1), "$ で末列");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_tabbar_overflow_markers_keep_active_visible() {
-    // タブを多数開いて狭い端末幅(90)で溢れさせると、あふれマーカー ‹n / n› が出て
-    // アクティブタブは可視のまま(visible_range のアクティブ中心可視窓)。
+    // Opening many tabs and overflowing at a narrow terminal width (90) shows the overflow markers
+    // ‹n / n›, while the active tab stays visible (visible_range's active-centered visible window).
     let dir = sandbox("tabbar_overflow");
     seed_files(&dir);
     let mut s = Sim::new(&canon(&dir));
 
-    s.keys("tttttttt"); // t×8 → 計9タブ(各 t で新タブへ切替)
+    s.keys("tttttttt"); // t×8 → 9 tabs total (each t switches to the new tab)
     assert_eq!(s.app.tab_count(), 9);
-    s.key('5'); // タブ5(index4=中央)へ。両側に隠れタブができる。
+    s.key('5'); // to tab 5 (index 4 = center). Hidden tabs appear on both sides.
     assert_eq!(s.app.active_tab_index(), 4);
 
-    s.see("‹"); // 左あふれマーカー(s>0)
-    s.see("›"); // 右あふれマーカー(e<n)
+    s.see("‹"); // left overflow marker (s>0)
+    s.see("›"); // right overflow marker (e<n)
     let label = s.app.tab_label(4);
-    s.see(&format!("5:{label}")); // アクティブタブのチップは可視のまま
+    s.see(&format!("5:{label}")); // the active tab's chip stays visible
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_busy_indicator_absent_when_idle() {
-    // アイドル(裏で走るジョブが無い)なら busy 表示は出ない。config で無効化すれば常に非アクティブ。
-    // 注: 同期ハーネスでは実際の非同期ジョブを起こせないため、idle 不変条件のみ検証(正直な範囲)。
+    // When idle (no job running in the background), the busy display doesn't show. Disabling via config makes it always inactive.
+    // Note: since the synchronous harness can't actually trigger an async job, only the idle invariant is verified (an honest scope).
     let dir = sandbox("busy_idle");
     seed_files(&dir);
     let dir = canon(&dir);
@@ -2733,17 +2733,17 @@ fn e2e_busy_indicator_absent_when_idle() {
 }
 
 // =============================================================================
-// Paste-jump (P): クリップボードのパス/GitHub リンク → その位置へ移動
+// Paste-jump (P): clipboard path/GitHub link → jumps to that location
 // =============================================================================
 
 #[test]
 fn e2e_paste_jump_local_path_with_line() {
-    // ローカル相対パス + `:行` を渡すと、その位置へ移動してプレビューを開き、指定行まで
-    // スクロールする(先頭マーカーは画面外へ)。不在パスは flash 通知でクラッシュしない。
+    // Passing a local relative path + `:line` jumps to that location, opens the preview, and scrolls
+    // to the given line (the top marker goes off-screen). A nonexistent path flashes a notice, no crash.
     let dir = sandbox("paste_jump_local");
     seed_files(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    // 素テキスト(windowed・ハイライト待ちが無い=同期ハーネスで決定的)。行ジャンプ経路は Code と同一。
+    // Plain text (windowed, no highlight-pending wait = deterministic in the synchronous harness). The line-jump path is the same as Code's.
     let mut body = String::new();
     for i in 1..=60 {
         if i == 1 {
@@ -2758,7 +2758,7 @@ fn e2e_paste_jump_local_path_with_line() {
     let dir = canon(&dir);
 
     let mut s = Sim::new(&dir);
-    // ツリー(プレビュー未開)から貼り付けジャンプ。paste_jump_from はクリップボード非依存の pub 入口。
+    // Paste-jump from the tree (no preview open). paste_jump_from is a clipboard-independent pub entry point.
     s.app.paste_jump_from("src/deep.txt:30");
     s.draw();
     assert_eq!(s.app.tab.mode, Mode::Preview, "ファイルはプレビューで開く");
@@ -2772,10 +2772,10 @@ fn e2e_paste_jump_local_path_with_line() {
         "deep.txt がプレビュー対象: {:?}",
         s.app.tab.preview_path
     );
-    s.see("LINE_THIRTY_MARKER"); // 30 行目までスクロールした
-    s.dont_see("LINE_ONE_MARKER"); // 先頭は画面外＝実際にスクロールしている
+    s.see("LINE_THIRTY_MARKER"); // scrolled down to line 30
+    s.dont_see("LINE_ONE_MARKER"); // the top is off-screen = it actually scrolled
 
-    // 見つからないパスは flash で通知し、クラッシュしない(原則#3)。
+    // A path that isn't found flashes a notice, without crashing (principle #3).
     s.app.paste_jump_from("does/not/exist.rs");
     s.draw();
     assert!(
@@ -2793,9 +2793,9 @@ fn e2e_paste_jump_local_path_with_line() {
 #[cfg(feature = "git")]
 #[test]
 fn e2e_paste_jump_github_url_switches_root() {
-    // repo のサブディレクトリで konoma を開いた状態で、その repo の別ディレクトリを指す GitHub blob
-    // URL を貼ると: ①URL の owner/repo/blob/ref を落として手元の repo(workdir)基準でファイルを解決し、
-    // ②対象が現在の root 外なので root を repo(workdir)へ切替えて reveal + preview する。
+    // With konoma opened at a subdirectory of the repo, pasting a GitHub blob URL pointing at a
+    // different directory within that same repo: ① drops the URL's owner/repo/blob/ref and resolves
+    // the file relative to the local repo (workdir); ② since the target is outside the current root, switches root to the repo (workdir) and reveals + previews.
     let dir = sandbox("paste_jump_url");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("docs")).unwrap();
@@ -2817,11 +2817,11 @@ fn e2e_paste_jump_github_url_switches_root() {
 
     let repo = canon(&dir);
     let subdir = repo.join("src");
-    // konoma をサブディレクトリ(src)で起動。docs/guide.md はこの root の外。
+    // Launch konoma at the subdirectory (src). docs/guide.md is outside this root.
     let mut s = Sim::new(&subdir);
     assert_eq!(s.app.tab.root, subdir, "起動 root は src サブディレクトリ");
 
-    // リポジトリ名(owner/name)が手元と違っても、末尾サフィックス docs/guide.md が実在すれば開ける。
+    // Even when the repository name (owner/name) differs from the local one, it can open as long as the trailing suffix docs/guide.md actually exists.
     s.app
         .paste_jump_from("https://github.com/some-owner/some-name/blob/main/docs/guide.md");
     s.draw();
@@ -2844,31 +2844,32 @@ fn e2e_paste_jump_github_url_switches_root() {
 
 #[test]
 fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
-    // バグ回帰: ツリーの Visual(範囲選択)中に `P`(PasteJump)を押すと、以前は選択範囲が
-    // 確定/破棄されないまま全画面プレビューへ遷移していた。`is_visual()` は `tab.mode` を見ず
-    // `tab.visual_anchor` の有無だけを見るため、プレビュー表示中も `surface()` が Visual を
-    // 返し続け、見えているのはプレビューなのにキー(`j` 等)はツリーの Visual マップへ流れる
-    // 事故になっていた。
+    // Bug regression: pressing `P` (PasteJump) while in the tree's Visual (range selection) used to
+    // transition to a full-screen preview without the selection being committed/discarded. Since
+    // `is_visual()` doesn't check `tab.mode` and only checks whether `tab.visual_anchor` exists,
+    // `surface()` kept returning Visual even while the preview was displayed, causing an accident
+    // where keys (`j` etc.) flowed into the tree's Visual map even though what's visible is the preview.
     let dir = sandbox("paste_jump_visual");
     std::fs::write(dir.join("target.txt"), "PASTE_JUMP_VISUAL_BODY\n").unwrap();
     let dir = canon(&dir);
     let mut s = Sim::new(&dir);
 
-    // 実キー経由: v でツリー Visual に入る。
+    // Via a real key: v enters the tree's Visual.
     s.select("target.txt");
     s.key('v');
     assert!(s.app.is_visual(), "v でツリー Visual に入る");
     assert_eq!(s.app.surface(), crate::keymap::Surface::Visual);
 
-    // P(PasteJump)を dispatch する。実キーではなく `crate::dispatch_action` を直接呼ぶ理由:
-    // このテストは実機のシステムクリップボードに触れたくない(中身は環境依存＝テストが不安定に
-    // なる。paste_jump() 自体の解決/クラッシュ耐性は e2e_paste_jump_local_path_with_line などが
-    // クリップボード非依存の `paste_jump_from` で別途検証済み)。dispatch_action は main.rs の
-    // 中央ディスパッチそのもので、実キー `P` が解決する Action・Surface と全く同じ引数を渡す
-    // ので、経路としては実キー経由と同一。main.rs の dispatch が(他の Space→ 系アクションと
-    // 同じく)`commit_visual_if_needed` を通していれば、クリップボードの中身/読み取り成否に
-    // かかわらず Visual は必ず終わる(commit_visual_if_needed は app.paste_jump() を呼ぶ**前**に
-    // 走る)。
+    // Dispatch P (PasteJump). Why call `crate::dispatch_action` directly instead of a real key:
+    // this test doesn't want to touch the real machine's system clipboard (its content is
+    // environment-dependent = the test becomes flaky. paste_jump()'s own resolution/crash resilience
+    // is separately verified elsewhere, e.g. e2e_paste_jump_local_path_with_line, via the
+    // clipboard-independent `paste_jump_from`). dispatch_action IS main.rs's central dispatch, and
+    // passes exactly the same Action/Surface arguments that the real key `P` resolves to, so as a
+    // path it's identical to going through a real key. As long as main.rs's dispatch routes through
+    // `commit_visual_if_needed` (as with the other Space→ actions), Visual is guaranteed to end
+    // regardless of the clipboard's content/whether reading it succeeds (commit_visual_if_needed
+    // runs **before** calling app.paste_jump()).
     let sfc = s.app.surface();
     assert_eq!(sfc, crate::keymap::Surface::Visual);
     crate::dispatch_action(&mut s.app, crate::keymap::Action::PasteJump, sfc)
@@ -2879,10 +2880,11 @@ fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
         "PasteJump を dispatch した後は(ジャンプの成否によらず)ツリーの Visual 選択が終わっている"
     );
 
-    // enter_preview 自体の防御を独立に検証する: paste_jump_from はクリップボード非依存の
-    // pub 入口(既存の paste-jump e2e と同じ流儀)。Visual を意図的に貼り直し、
-    // commit_visual_if_needed を経由しない仮想の呼び出し元を模して、enter_preview 自身が
-    // 保証すべき不変条件(全画面プレビューに入る=ツリーの範囲選択は終わっている)を確認する。
+    // Independently verify enter_preview's own defense: paste_jump_from is a clipboard-independent
+    // pub entry point (the same style as the existing paste-jump e2e). Deliberately re-enter Visual
+    // to simulate a hypothetical caller that doesn't go through commit_visual_if_needed, and confirm
+    // the invariant enter_preview itself must guarantee (entering the full-screen preview = the
+    // tree's range selection has ended).
     s.app.enter_visual();
     assert!(s.app.is_visual(), "enter_visual で Visual に入り直す");
     s.app.paste_jump_from("target.txt");
@@ -2899,8 +2901,8 @@ fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
     assert_eq!(s.app.tab.mode, Mode::Preview, "プレビューに入っている");
     s.see("PASTE_JUMP_VISUAL_BODY");
 
-    // プレビューを見ながらキーがツリーの Visual マップへ流れていない証拠: j はツリーの
-    // カーソル/Visual 範囲を動かさない(バグ当時は j がツリーの Visual 範囲伸長として効いていた)。
+    // Proof that keys aren't flowing into the tree's Visual map while viewing the preview: j doesn't
+    // move the tree's cursor/Visual range (at the time of the bug, j was extending the tree's Visual range).
     let cursor_before = s.app.tab.selected;
     s.key('j');
     assert_eq!(
@@ -2911,13 +2913,13 @@ fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
 }
 
 // =============================================================================
-// Markdown リンクを別タブで開く (Ctrl-t)
+// Open Markdown links in a new tab (Ctrl-t)
 // =============================================================================
 
 #[test]
 fn e2e_md_link_ctrl_t_opens_in_new_tab() {
-    // Markdown のローカルリンクにフォーカスして Ctrl-t を押すと、リンク先を**別タブ**で開く。
-    // 元のドキュメントのタブは残り、[ で戻れる。Enter(同タブ)は従来どおり。
+    // Focusing a local Markdown link and pressing Ctrl-t opens the target in a **separate tab**.
+    // The original document's tab remains, reachable with [. Enter (same tab) works as before.
     let dir = sandbox("md_link_newtab");
     seed_files(&dir);
     std::fs::write(dir.join("target.txt"), "TARGET_FILE_MARKER\nmore lines\n").unwrap();
@@ -2934,10 +2936,10 @@ fn e2e_md_link_ctrl_t_opens_in_new_tab() {
     s.see("DOC_HEADING");
     assert_eq!(s.app.tab_count(), 1, "最初は1タブ");
 
-    s.tab(); // リンク "go" にフォーカス
+    s.tab(); // focus the link "go"
     assert!(s.app.focused_item().is_some(), "リンクにフォーカス");
 
-    s.ctrl('t'); // 別タブで開く
+    s.ctrl('t'); // open in a new tab
     assert_eq!(s.app.tab_count(), 2, "別タブが増える");
     assert_eq!(s.app.tab.mode, Mode::Preview);
     assert!(
@@ -2952,7 +2954,7 @@ fn e2e_md_link_ctrl_t_opens_in_new_tab() {
     );
     s.see("TARGET_FILE_MARKER");
 
-    // 元のドキュメントのタブは残っている: [ (tab_prev) で戻ると doc.md のまま。
+    // The original document's tab remains: going back with [ (tab_prev) still shows doc.md.
     s.key('[');
     assert!(
         s.app
@@ -2969,13 +2971,13 @@ fn e2e_md_link_ctrl_t_opens_in_new_tab() {
 }
 
 // =============================================================================
-// タブ切替でアクティブになったタブをディスクから再読み込み
+// Reload from disk the tab that became active on a tab switch
 // =============================================================================
 
 #[test]
 fn e2e_tab_switch_reloads_tree_from_disk() {
-    // ファイル監視はアクティブ root しか見ないので、裏に居たタブの外部変更はスナップショットのまま。
-    // タブに切替えると refresh_fs で再読み込みされ、裏で作成されたファイルがツリーに現れる。
+    // File watching only sees the active root, so an external change to a backgrounded tab stays as a stale snapshot.
+    // Switching to that tab triggers a refresh_fs reload, and files created in the background appear in the tree.
     let dir = sandbox("tab_switch_reload");
     seed_files(&dir);
     let dir = canon(&dir);
@@ -2983,14 +2985,14 @@ fn e2e_tab_switch_reloads_tree_from_disk() {
     let mut s = Sim::new(&dir);
     s.dont_see("ZZ_NEW_FILE.txt");
 
-    // 新規タブ(同じ root)を作り、そちらをアクティブにする(タブ1 は裏へ)。
+    // Create a new tab (same root) and make it active (tab 1 goes to the background).
     s.key('t');
     assert_eq!(s.app.tab_count(), 2, "タブが2つ");
 
-    // タブ1 が裏に居る間に、外部でファイルを作成する。
+    // While tab 1 is in the background, create a file externally.
     std::fs::write(dir.join("ZZ_NEW_FILE.txt"), "hi\n").unwrap();
 
-    // タブ1 へ戻る([ = tab_prev)。切替時の再読み込みで新規ファイルが現れるはず。
+    // Return to tab 1 ([ = tab_prev). The switch-time reload should reveal the new file.
     s.key('[');
     assert_eq!(s.app.active_tab_index(), 0, "タブ1 に戻る");
     assert!(
@@ -3007,8 +3009,8 @@ fn e2e_tab_switch_reloads_tree_from_disk() {
 
 #[test]
 fn e2e_preview_file_paging_ctrl_n_p() {
-    // Ctrl-n/Ctrl-p=プレビュー中のファイル送り: ツリー表示順・ディレクトリはスキップ・端で wrap・
-    // 展開中サブフォルダ内のファイルも辿る・ツリーカーソルが追従する。
+    // Ctrl-n/Ctrl-p = paging through files while previewing: tree display order, directories skipped,
+    // wraps at the ends, also traverses files inside an expanded subfolder, the tree cursor follows.
     let dir = std::env::temp_dir().join("konoma_e2e_file_paging");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("mid")).unwrap();
@@ -3017,20 +3019,20 @@ fn e2e_preview_file_paging_ctrl_n_p() {
     std::fs::write(dir.join("mid/inner.txt"), b"inner content\n").unwrap();
     let mut s = Sim::new(&dir);
 
-    // mid を展開(dirs_first 既定でツリー順は [mid, mid/inner.txt, a.txt, z.txt])。
+    // Expand mid (with the dirs_first default, tree order is [mid, mid/inner.txt, a.txt, z.txt]).
     s.enter();
     s.key('j'); // inner.txt
     s.key('j'); // a.txt
-    s.enter(); // a.txt をプレビュー
+    s.enter(); // preview a.txt
     assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.see("alpha content");
 
-    // 次ファイル: a.txt → z.txt。
+    // Next file: a.txt → z.txt.
     s.ctrl('n');
     s.see("zulu content");
     assert!(s.app.tab.preview_path.as_ref().unwrap().ends_with("z.txt"));
 
-    // さらに次: 末尾から wrap し、先頭の mid(ディレクトリ)はスキップして inner.txt へ。
+    // Next again: wraps from the end, and skips mid (a directory) at the top to reach inner.txt.
     s.ctrl('n');
     s.see("inner content");
     assert!(s
@@ -3041,12 +3043,12 @@ fn e2e_preview_file_paging_ctrl_n_p() {
         .unwrap()
         .ends_with("inner.txt"));
 
-    // 前ファイル: inner.txt の前は mid(スキップ)→ wrap で z.txt。
+    // Previous file: before inner.txt is mid (skipped) → wraps to z.txt.
     s.ctrl('p');
     s.see("zulu content");
     assert!(s.app.tab.preview_path.as_ref().unwrap().ends_with("z.txt"));
 
-    // ツリーカーソルが追従している(q で戻ると z.txt の上)。
+    // The tree cursor followed along (q returns to being on z.txt).
     s.key('q');
     assert!(matches!(s.app.tab.mode, Mode::Tree));
     assert!(s.app.tab.entries[s.app.tab.selected]
@@ -3055,8 +3057,8 @@ fn e2e_preview_file_paging_ctrl_n_p() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `[ui] restore_tabs`: タブセッションが起動ディレクトリ毎に保存され、「再起動」で
-/// タブ構成(枚数・アクティブタブ・カーソル・プレビュー面)がそのまま復元される。
+/// `[ui] restore_tabs`: the tab session is saved per launch directory, and on "restart" the tab
+/// configuration (count, active tab, cursor, preview surface) is restored as-is.
 #[test]
 fn e2e_session_restore_reopens_previous_tabs() {
     let dir = sandbox("session_restore");
@@ -3065,7 +3067,7 @@ fn e2e_session_restore_reopens_previous_tabs() {
     let base = std::env::temp_dir().join("konoma_e2e_session_restore_base");
     let _ = std::fs::remove_dir_all(&base);
 
-    // セッション1: a.txt をプレビュー → t で新タブ(ツリー) → b.txt にカーソル。
+    // Session 1: preview a.txt → t for a new tab (tree) → cursor on b.txt.
     let mut s = Sim::new(&dir);
     s.app
         .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
@@ -3074,10 +3076,10 @@ fn e2e_session_restore_reopens_previous_tabs() {
     assert!(matches!(s.app.tab.mode, Mode::Preview));
     s.key('t');
     s.select("b.txt");
-    s.app.save_session(); // 終了時保存に相当(main が run 後に呼ぶ)
+    s.app.save_session(); // equivalent to the on-quit save (main calls this after run)
     drop(s);
 
-    // 「再起動」: 同じ起動 dir の新しい Sim にストアを繋いで復元する(main の起動順と同じ)。
+    // "Restart": attach the store to a fresh Sim of the same launch dir and restore (same order as main's launch).
     let mut s2 = Sim::new(&dir);
     assert_eq!(s2.app.tab_count(), 1, "復元前は素の1タブ");
     s2.app
@@ -3093,8 +3095,8 @@ fn e2e_session_restore_reopens_previous_tabs() {
             .ends_with("b.txt"),
         "ツリーカーソルを復元"
     );
-    s2.see("a.txt"); // タブバーにプレビュータブ(タブ1)のラベルが出る
-                     // タブ1へ切替 = a.txt のプレビューが開き直っている(中身が画面に出る)。
+    s2.see("a.txt"); // the tab bar shows the preview tab's (tab 1's) label
+                     // Switching to tab 1 = a.txt's preview reopens (the content shows on screen).
     s2.key('[');
     assert!(matches!(s2.app.tab.mode, Mode::Preview));
     s2.see("alpha body");
@@ -3104,8 +3106,8 @@ fn e2e_session_restore_reopens_previous_tabs() {
 }
 
 // =============================================================================
-// 追加 E2E バッチ (2026-07-18): カバレッジ薄/欠落領域を大量に補完。
-// Sim ハーネス経由で source→実描画の全経路を回し、クリップボード非依存の pub アクセサで照合。
+// Additional E2E batch (2026-07-18): fills in a large number of thin/missing coverage areas.
+// Routes the whole source→real-render path through the Sim harness, verified via clipboard-independent pub accessors.
 // =============================================================================
 
 /// Write `file` with `body` in a fresh sandbox `dir_name`, open it (tree → preview) under `cfg`,
@@ -3120,7 +3122,7 @@ fn text_preview(cfg: Config, dir_name: &str, file: &str, body: &str) -> (Sim, st
     (s, dir)
 }
 
-// ---- プレビュー内テキスト検索 (`/` 起動・n/N 移動・大小無視・一致なし・Esc・CJK) ----
+// ---- In-preview text search (`/` starts it, n/N move, case-insensitive, no match, Esc, CJK) ----
 
 #[test]
 fn e2e_search_opens_input_shows_prompt_and_query() {
@@ -3349,9 +3351,9 @@ fn e2e_search_works_in_code_preview() {
         "fn alpha() {}\nfn beta() {}\nlet x = 1;\n",
     )
     .unwrap();
-    // ハイライトを切って実行順に依存させない: 文法が cold だとプレビューは "loading…" を出し、
-    // この検索テストは「他のテストが .rs を温めていたか」で結果が変わってしまう(単独実行だと落ちた)。
-    // 検索の検証にシンタックス着色は不要なので、確定的に本文が出る設定で回す。
+    // Turn off highlighting to avoid depending on execution order: with a cold grammar, the preview
+    // shows "loading…" and this search test's result would change depending on "whether another
+    // test had warmed .rs" (it failed when run alone). Syntax coloring isn't needed to verify search, so run with a setting that deterministically shows the body.
     let mut cfg = Config::default();
     cfg.ui.syntax_highlight = false;
     let mut s = Sim::with_config(&canon(&dir), cfg);
@@ -3366,8 +3368,8 @@ fn e2e_search_works_in_code_preview() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 装飾 Markdown でも `/` が使える(以前は「コード/テキストのみ」と拒否していた)。
-/// 検索対象は装飾行なので、`R` の生ソースへ切替えずに一致を強調できる。
+/// `/` works on decorated Markdown too (it used to be rejected as "code/text only").
+/// Since the search target is the decorated lines, matches can be highlighted without switching to `R`'s raw source.
 #[test]
 fn e2e_search_works_on_decorated_markdown_preview() {
     let (mut s, dir) = md_preview(
@@ -3386,7 +3388,7 @@ fn e2e_search_works_on_decorated_markdown_preview() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// 検索モデルを持たない面(画像など)では従来どおり拒否して flash で知らせる。
+/// A surface without a search model (images, etc.) still rejects it and notifies via flash, as before.
 #[test]
 fn e2e_search_rejected_on_media_preview() {
     let dir = sandbox("search_media");
@@ -3469,7 +3471,7 @@ fn e2e_search_second_query_replaces_first() {
 }
 
 // ---- preview 2D caret + visual selection (v/V) + Y reference ----
-// caret line は selection_ref_string() (@path#L{n}) 経由、caret col は preview_selection() で照合。
+// The caret line is verified via selection_ref_string() (@path#L{n}), the caret column via preview_selection().
 
 #[test]
 fn e2e_visual_block_caret_drawn_and_moves() {
@@ -3915,8 +3917,8 @@ fn e2e_visual_cjk_charwise_no_panic() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- git: commit / stage・unstage / diff layout / log・graph・branches / copy / changed n/N ----
-// すべて #[cfg(feature = "git")]。リポジトリ生成は既存 seed_repo パターンを踏襲。
+// ---- git: commit / stage/unstage / diff layout / log/graph/branches / copy / changed n/N ----
+// All under #[cfg(feature = "git")]. Repository creation follows the existing seed_repo pattern.
 
 #[cfg(feature = "git")]
 fn seed_repo_history(dir: &std::path::Path) {
@@ -4341,7 +4343,7 @@ fn e2e_git_changed_filter_n_jumps_between_changed_files() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- ツリーソート (size/modified/ext) + 絞り込みの端 ----
+// ---- Tree sort (size/modified/ext) + filtering edge cases ----
 
 #[test]
 fn e2e_sort_by_size_orders_ascending() {
@@ -4481,7 +4483,7 @@ fn e2e_tree_filter_is_case_insensitive() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- CSV/テーブルのコピー (y→c/r/C/f) ----
+// ---- CSV/table copy (y→c/r/C/f) ----
 
 #[test]
 fn e2e_table_copy_leader_sub_keys_consume_and_flash() {
@@ -4531,7 +4533,7 @@ fn e2e_table_copy_full_path_value() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- プレビューからのブックマーク (m / ') ----
+// ---- Bookmarking from the preview (m / ') ----
 
 #[test]
 fn e2e_bookmark_set_from_preview_targets_shown_file() {
@@ -4613,7 +4615,7 @@ fn e2e_bookmark_list_enter_jumps_to_file() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-// ---- Paste-jump (P) の端 ----
+// ---- Paste-jump (P) edge cases ----
 
 #[test]
 fn e2e_pastejump_hash_line_fragment_scrolls() {
@@ -4711,7 +4713,7 @@ fn e2e_pastejump_non_github_url_unrecognized() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// ---- ファイル操作の端 ----
+// ---- File operations edge cases ----
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -4784,13 +4786,13 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
     s.enter();
     let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
 
-    // 1つ目(アラート外)。
+    // The 1st (outside the alert).
     s.tab();
     s.key(' ');
     assert!(read().contains("- [x] plain one"), "外側1: {}", read());
     s.dont_see("file changed on disk");
 
-    // 2つ目・3つ目(アラート内) — ここが以前は全く効かなかった。
+    // The 2nd and 3rd (inside the alert) — this used to not work at all.
     s.tab();
     s.key(' ');
     assert!(
@@ -4806,13 +4808,13 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
         read()
     );
 
-    // 4つ目(アラートの後ろ) — 序数がアラートを跨いでもズレない。
+    // The 4th (after the alert) — the ordinal doesn't drift crossing the alert.
     s.tab();
     s.key(' ');
     assert!(read().contains("- [x] after alert"), "外側2: {}", read());
     s.dont_see("file changed on disk");
 
-    // 他の行は壊れていない(見出し・アラートヘッダは不変)。
+    // Other lines aren't broken (the heading and alert header are unchanged).
     let out = read();
     assert!(
         out.contains("# Checklist") && out.contains("> [!NOTE]"),
@@ -4855,7 +4857,7 @@ fn e2e_task_toggle_works_with_a_collapsed_details_block() {
     s.select("todo.md");
     s.enter();
     let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
-    s.tab(); // 折りたたみ見出しか可視タスクのいずれか
+    s.tab(); // either the collapsed heading or the visible task
     s.key(' ');
     let out = read();
     assert!(
@@ -4952,7 +4954,7 @@ fn e2e_link_targets_stay_aligned_with_document_order() {
 /// had to scroll manually after every Tab. Diagrams already did this; everything multi-line now does.
 #[test]
 fn e2e_tab_scrolls_whole_block_into_view() {
-    // 画面より小さいブロックを、下端ぎりぎりに置く。
+    // Place a block smaller than the screen right at the bottom edge.
     let mut body = String::from("# Doc\n\n");
     for i in 0..20 {
         body.push_str(&format!("filler line {i}\n\n"));
@@ -4965,7 +4967,7 @@ fn e2e_tab_scrolls_whole_block_into_view() {
 
     let (mut s, dir) = md_preview(cfg_code_bg_none(), "blocks", &body);
     let vh = s.app.preview_viewport_for_test().max(1) as usize;
-    s.tab(); // 唯一の Tab 対象 = コードブロック
+    s.tab(); // the sole Tab target = the code block
     let scroll = s.app.tab.preview_scroll as usize;
     let focused = s.app.focused_item().expect("コードブロックにフォーカス");
     let start = s.app.md_item_line_for_test(focused);

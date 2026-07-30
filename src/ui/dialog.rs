@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::i18n::tr;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    // 一括リネームのプレビューは専用描画(旧 → 新 の一覧 + スクロール)。
+    // The batch-rename preview uses dedicated rendering (an old → new list + scrolling).
     if let Some((title, pairs, scroll)) = app.dialog_preview_view() {
         render_preview(frame, app, area, title, pairs, scroll);
         return;
@@ -21,8 +21,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // head は複数行(改行区切り)になり得る(例: ブックマーク上書き確認の old → new)。
-    // 1 行目=見出し(太字)、以降=詳細(通常)として1行ずつ積む。
+    // head can be multi-line (newline-separated) (e.g. old → new for a bookmark overwrite confirmation).
+    // Line 1 = heading (bold), the rest = details (normal), stacked one line at a time.
     for (i, l) in head.split('\n').enumerate() {
         if i == 0 {
             lines.push(Line::from(l.to_string()).bold());
@@ -34,13 +34,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let (title, accent) = if is_confirm {
         if app.confirm_is_drop() {
-            // D&D 転送: c=コピー(緑) / m=移動(黄) / n,Esc=取消。破壊的でないのでシアン。
+            // D&D transfer: c = copy (green) / m = move (yellow) / n, Esc = cancel. Cyan since it's not destructive.
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCopyKey)).fg(Color::Green));
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgMove)).fg(Color::Yellow));
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());
             (tr(app.lang, crate::i18n::Msg::DlgDropTitle), Color::Cyan)
         } else if app.dialog_allow_permanent() {
-            // 破壊操作=赤系。y/!/n は文脈で文言を変える(ファイル削除 or ブランチ削除)。
+            // Destructive operation = red-ish. y/!/n change wording by context (file delete or branch delete).
             let (y_label, bang_label) = if app.confirm_is_branch_delete() {
                 (
                     tr(app.lang, crate::i18n::Msg::DlgDeleteSafe),
@@ -57,14 +57,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::DlgCancel)).dim());
             (tr(app.lang, crate::i18n::Msg::DlgConfirmTitle), Color::Red)
         } else if app.confirm_is_quit() {
-            // アプリ終了確認: 非破壊なので黄(削除の赤と区別)。本文(head)に "Quit konoma?" を表示。
+            // App-quit confirmation: yellow since it's non-destructive (distinct from delete's red). The body (head) shows "Quit konoma?".
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::StQuitHint)).dim());
             (
                 tr(app.lang, crate::i18n::Msg::DlgConfirmTitle),
                 Color::Yellow,
             )
         } else if app.confirm_is_bookmark() {
-            // ブックマーク上書き確認: 非破壊なので黄。y/Enter=上書き / n/Esc=取消。
+            // Bookmark overwrite confirmation: yellow since it's non-destructive. y/Enter = overwrite / n/Esc = cancel.
             lines.push(Line::from(tr(app.lang, crate::i18n::Msg::StMarkOverwriteHint)).dim());
             (
                 tr(app.lang, crate::i18n::Msg::DlgConfirmTitle),
@@ -75,8 +75,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             (tr(app.lang, crate::i18n::Msg::DlgConfirmTitle), Color::Red)
         }
     } else {
-        // 入力=シアン。入力行はカーソル位置に**ブロックカーソル**(反転1セル)を置く。
-        // buffer を [前][カーソル位置の1文字][後] に分け、中央を反転表示する(末尾なら空白を反転)。
+        // Input = cyan. The input line places a **block cursor** (one reversed cell) at the cursor position.
+        // Split buffer into [before][the character at the cursor][after], and render the middle reversed (a space if at the end).
         let chars: Vec<char> = buffer.chars().collect();
         let cur = cursor.min(chars.len());
         let before: String = chars[..cur].iter().collect();
@@ -91,11 +91,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(at, Style::new().add_modifier(Modifier::REVERSED)),
             Span::raw(after).fg(Color::White),
         ]));
-        // 入力系のキー(↵/Esc/←→)は下部フッターが正なので箱には出さない(下部フッターを正に)。
+        // Input-related keys (↵/Esc/←→) are shown in the footer as the source of truth, so they're not drawn in the box (footer is authoritative).
         (tr(app.lang, crate::i18n::Msg::DlgInputTitle), Color::Cyan)
     };
 
-    // ポップアップ寸法 (bookmarks を踏襲)。
+    // Popup dimensions (follows the bookmarks style).
     let w = 66.min(area.width.saturating_sub(2)).max(24);
     let h = (lines.len() as u16 + 2)
         .min(area.height.saturating_sub(2))
@@ -116,7 +116,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .block(block)
         .alignment(Alignment::Left);
 
-    frame.render_widget(Clear, popup); // 下地を消してから描く
+    frame.render_widget(Clear, popup); // clear the background before drawing
     frame.render_widget(para, popup);
 }
 
@@ -129,7 +129,7 @@ fn render_preview(
     pairs: &[String],
     scroll: usize,
 ) {
-    // 見出し + 一覧 + ヒント。一覧は scroll から表示。
+    // Heading + list + hint. The list is displayed starting from scroll.
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(title.to_string()).bold());
     lines.push(Line::from(""));

@@ -1,9 +1,11 @@
-// SVG プレビュー: 純 Rust(resvg/usvg/tiny-skia)でラスタライズし、RGBA の DynamicImage を返す。
-// 返り値は app の image_src に載せ、以降は通常の画像経路(prepare_image→ワーカー再エンコード→
-// kitty graphics)へそのまま流す。chafa/onig と同じく外部 C ライブラリ不要(PRD §5)。
+// SVG preview: rasterize in pure Rust (resvg/usvg/tiny-skia) and return an RGBA DynamicImage.
+// The result is put onto the app's image_src, and from there flows through the normal image path
+// (prepare_image → worker re-encode → kitty graphics) unchanged. No external C library needed,
+// just like chafa/onig (PRD §5).
 //
-// 拡大は v1 では「ラスタを crop」(写真と同じ扱い)。ベクタの無限ズーム(ズーム毎に再ラスタ)は将来。
-// そのため自然サイズが小さい SVG でも端末で粗くならないよう、最大辺を target px まで引き上げて描く。
+// v1's zoom is "crop the raster" (treated the same as a photo). Infinite vector zoom (re-rasterize
+// on every zoom) is future work. So that a small-intrinsic-size SVG doesn't look blocky in the
+// terminal, we upscale it to draw at up to the target px on the max side.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -84,9 +86,9 @@ pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
 /// Rasterize directly from a byte slice (for tests / future embedding). `max_px` = target px for the max side.
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
     let opt = usvg::Options {
-        // 相対参照(外部画像等)の基準ディレクトリを SVG の親に。
+        // Base directory for relative references (external images etc.) is the SVG's parent.
         resources_dir: path.parent().map(Path::to_path_buf),
-        // fontdb は公開フィールド(Arc<Database>)。共有 DB を差し込んで毎回の再列挙を避ける。
+        // fontdb is a public field (Arc<Database>). Plug in the shared DB to avoid re-enumerating every time.
         fontdb: shared_fontdb(),
         ..usvg::Options::default()
     };
@@ -97,9 +99,10 @@ pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicI
     if !(w0 > 0.0 && h0 > 0.0) {
         return None;
     }
-    // 小さい SVG は端末でくっきり出るよう最大辺を max_px まで拡大する。自然サイズが HARD_MAX を
-    // 超える巨大図は**縮小して全体を収める**(等倍のまま per-axis clamp すると変換は等倍・pixmap
-    // だけ 4096px になり、右/下が無通知で切り落とされていた)。
+    // A small SVG is upscaled so its max side reaches max_px, for a crisp terminal display. A huge
+    // diagram whose intrinsic size exceeds HARD_MAX is instead **shrunk to fit the whole thing**
+    // (with a per-axis clamp at 1:1 scale, the transform stays 1:1 while only the pixmap is capped
+    // at 4096px, silently cropping off the right/bottom).
     let target = (max_px.max(1) as f32).min(HARD_MAX_PX as f32);
     let m = w0.max(h0);
     let scale = (target / m).max(1.0).min(HARD_MAX_PX as f32 / m);
@@ -110,8 +113,9 @@ pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicI
     let transform = tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // tiny-skia は premultiplied alpha。image クレートは straight alpha なので demultiply して渡す
-    // (半透明の縁が暗くならないように)。透明部分は kitty graphics 上で端末背景が透ける=テーマ追従。
+    // tiny-skia uses premultiplied alpha. The image crate uses straight alpha, so we demultiply
+    // before handing it over (so semi-transparent edges don't darken). Transparent areas let the
+    // terminal background show through on kitty graphics = follows the theme.
     let mut rgba = Vec::with_capacity((pw * ph * 4) as usize);
     for px in pixmap.pixels() {
         let c = px.demultiply();
@@ -133,11 +137,11 @@ mod tests {
 
     #[test]
     fn rasterizes_small_svg_upscaled_and_opaque() {
-        // 20x10 の最大辺 20 を max_px=800 まで拡大 → 800x400。
+        // 20x10's max side of 20 is upscaled to max_px=800 → 800x400.
         let img = rasterize_bytes(TINY_SVG, Path::new("t.svg"), 800).expect("should rasterize");
         assert_eq!(img.width(), 800);
         assert_eq!(img.height(), 400);
-        // 中央の塗りは不透明な赤。
+        // The center fill is opaque red.
         let p = img.to_rgba8();
         let px = p.get_pixel(400, 200);
         assert_eq!(px[3], 255, "fill should be opaque");
@@ -149,16 +153,17 @@ mod tests {
 
     #[test]
     fn oversize_svg_shrinks_to_fit_instead_of_cropping() {
-        // 自然サイズ 8000x100(HARD_MAX=4096 超)。回帰 2026-07-18: scale が拡大専用
-        // (max(..,1.0) のみ)だったため等倍のまま 4096px の pixmap に描かれ、x>4096 の内容
-        // (この右端の青矩形)が無通知で切り落とされていた。縮小フィットで全体が収まること。
+        // Intrinsic size 8000x100 (past HARD_MAX=4096). Regression 2026-07-18: scale was
+        // upscale-only (just max(..,1.0)), so it stayed at 1:1 and got drawn into a 4096px pixmap,
+        // silently cropping off content at x>4096 (this rightmost blue rect). Confirm shrink-to-fit
+        // makes the whole thing fit.
         let wide: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8000" height="100"><rect width="8000" height="100" fill="#f00"/><rect x="7900" width="100" height="100" fill="#00f"/></svg>"##;
         let img = rasterize_bytes(wide, Path::new("t.svg"), 800).expect("should rasterize");
         assert!(img.width() <= HARD_MAX_PX, "最大辺は HARD_MAX 以下");
-        // アスペクト維持でおおよそ 4096x51。
+        // Roughly 4096x51 while preserving aspect ratio.
         assert!(img.width() >= 4000, "縮小フィット(切り落としでなく)");
         let p = img.to_rgba8();
-        // 右端付近に青矩形が生きている=右側が欠落していない。
+        // The blue rect near the right edge survives = the right side isn't missing.
         let px = p.get_pixel(img.width() - 5, img.height() / 2);
         assert_eq!(px[3], 255, "右端まで描画されている");
         assert!(px[2] > 200 && px[0] < 60, "右端の青矩形が残る: {px:?}");
@@ -166,7 +171,7 @@ mod tests {
 
     #[test]
     fn svg_max_px_controls_raster_size() {
-        // max_px を変えると最大辺が追従する(設定で px を制御できることの確認)。
+        // The max side follows when max_px changes (confirms the setting controls px).
         let small = rasterize_bytes(TINY_SVG, Path::new("t.svg"), 400).unwrap();
         assert_eq!(small.width(), 400, "max_px=400 → 最大辺 400");
         let big = rasterize_bytes(TINY_SVG, Path::new("t.svg"), 1200).unwrap();
@@ -193,7 +198,7 @@ mod tests {
 
     #[test]
     fn warm_fontdb_primes_shared_singleton() {
-        // warm_fontdb は共有 fontdb を1度だけ初期化する。以降 shared_fontdb() は同一 Arc を返す。
+        // warm_fontdb initializes the shared fontdb exactly once; shared_fontdb() returns the same Arc afterward.
         warm_fontdb();
         let a = shared_fontdb();
         let b = shared_fontdb();
@@ -201,7 +206,7 @@ mod tests {
             std::sync::Arc::ptr_eq(&a, &b),
             "shared_fontdb はキャッシュした同一インスタンスを返す"
         );
-        // ウォーム後はテキスト入り SVG もラスタライズできる(フォント DB が利用可能)。
+        // After warming, an SVG with text can also be rasterized (the font DB is available).
         let with_text = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="2" y="14">hi</text></svg>"##;
         assert!(
             rasterize_bytes(with_text, Path::new("t.svg"), 200).is_some(),

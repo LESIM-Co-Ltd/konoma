@@ -1,30 +1,35 @@
-// PDF プレビュー: 指定ページ(1始まり)をラスタライズし、DynamicImage を返す。返り値は video/svg と
-// 同じく app の image_src に載せ、以降は通常の画像経路(prepare_image→ワーカー再エンコード→
-// kitty graphics)へそのまま流す。ページは1枚ずつ都度ラスタライズする(表示速度優先・先読みしない)。
+// PDF preview: rasterizes the given page (1-based) and returns a DynamicImage. Like video/svg, the
+// return value is put on the app's image_src, and from there flows straight through the normal image
+// path (prepare_image → worker re-encode → kitty graphics). Pages are rasterized one at a time, on
+// demand (prioritizing display speed, no read-ahead).
 //
-// **レンダラの優先順(2026-07 変更)**:
-//   1. `hayro`(純Rust・外部プロセス無し) ―― 既定かつ第一候補。実測で軽い文書は poppler の
-//      20〜30倍・写真主体でも 1.8〜12倍速く(15ページ連続描画=143ms 対 poppler 1ページ60〜70ms)、
-//      日本語(埋め込みフォント)も正しく描ける。暗号化 PDF・破損 PDF・その他の解析/描画失敗は
-//      `None` を返し、下の外部ツールへ**降格**する(原則#3「未対応は安全に」)。
-//   2. pdftocairo (poppler・最高品質・アンチエイリアス)
+// **Renderer priority order (changed 2026-07)**:
+//   1. `hayro` (pure Rust, no external process) — the default and first choice. Measured: 20-30x
+//      faster than poppler for light documents, and 1.8-12x faster even for photo-heavy ones (15
+//      consecutive pages rendered = 143ms vs poppler's 60-70ms per single page), and renders Japanese
+//      (embedded fonts) correctly too. Encrypted PDFs, corrupt PDFs, and other parse/render failures
+//      return `None` and **degrade** to the external tools below (principle #3, "unsupported degrades safely").
+//   2. pdftocairo (poppler, best quality, anti-aliased)
 //   3. pdftoppm   (poppler)
-//   4. qlmanage   (macOS Quick Look・標準搭載=導入不要)
-//   5. sips       (macOS 標準搭載)
-// 外部ツール群は `allow_external`(=`[external] pdf`)が false なら一切試さない――hayro は外部
-// プロセスを起動しないので、この設定が false でも hayro によるプレビューは動く。全て失敗したら
-// None を返し、呼び出し側は安全なフォールバック(ヒント表示)へ降格する(PRD §5 配布容易性)。
-// hayro はワンページ描画がミリ秒台なので同期的に呼んでも問題ないが、呼び出し元(app.rs)は既存の
-// メディアワーカースレッド経由で呼ぶため、外部ツールのブロッキングも含めて UI を塞がない。
+//   4. qlmanage   (macOS Quick Look, bundled = no install needed)
+//   5. sips       (bundled with macOS)
+// None of the external tools are tried at all if `allow_external` (= `[external] pdf`) is false —
+// hayro never launches an external process, so PDF preview via hayro still works even with this
+// setting false. If everything fails, returns None, and the caller degrades to a safe fallback (a
+// hint display) (PRD §5, ease of distribution).
+// hayro's per-page render takes only single-digit milliseconds, so calling it synchronously is fine,
+// but the caller (app.rs) calls it through the existing media-worker thread, so even blocking on an
+// external tool never blocks the UI.
 //
-// ページ数([`page_count`])は外部プロセスを一切起動しない: `hayro-syntax`(純Rust)でページツリーを
-// 直接読む。以前は poppler の `pdfinfo` を子プロセスで呼んでいたが、そのコマンドを消しても
-// ページ数取得そのものはできるようになった。hayro が実際のページ描画も担うようになった今は、
-// 「ページ数が分かる ⟹ 任意ページを描ける」がほぼ成立する(qlmanage/sips のような「1ページ目専用」
-// 制約が無い)ので、呼び出し側(app.rs の `enter_preview`/`reload_media_if_changed`)はもう
-// poppler(pdftocairo/pdftoppm)の有無でページナビゲーションを絞り込まない。以前ここにあった
-// 「poppler が PATH にあるか」だけを調べるユーティリティ(`arbitrary_page_renderer_available`)は、
-// 呼ぶ場所が無くなったので削除した(不要な `#[allow(dead_code)]` は付けず、使われなくなったら消す)。
+// Page count ([`page_count`]) never launches an external process at all: it reads the page tree
+// directly with `hayro-syntax` (pure Rust). It used to call poppler's `pdfinfo` as a child process,
+// but even after removing that command, getting the page count itself became possible. Now that
+// hayro also handles the actual page rendering, "knowing the page count ⟹ can render any page" holds
+// almost universally (there's no "first-page-only" constraint like qlmanage/sips have), so the caller
+// (app.rs's `enter_preview`/`reload_media_if_changed`) no longer gates page navigation on whether
+// poppler (pdftocairo/pdftoppm) is present. The utility that used to live here checking only "is
+// poppler on PATH" (`arbitrary_page_renderer_available`) has been deleted since it has no more
+// callers (rather than tagging it `#[allow(dead_code)]` needlessly — delete it once it's unused).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -48,8 +53,8 @@ const PAGE_MAX_PX: u32 = 1600;
 /// external tools — and only when `allow_external` is true (`[external] pdf`). Returns `None` if
 /// nothing could render the page (the caller degrades to a safe fallback with a hint).
 pub fn render_page(path: &Path, page: u32, allow_external: bool) -> Option<DynamicImage> {
-    // 存在しないパスでは何も起動せず即 None(hayro もファイル読み込みで自然に None になるが、
-    // 特に qlmanage の QuickLook 起動を避けるため明示的に早期リターンする)。
+    // A nonexistent path launches nothing and returns None immediately (hayro would also naturally
+    // end up None from failing to read the file, but this explicit early return specifically avoids launching qlmanage's QuickLook).
     if !path.is_file() {
         return None;
     }
@@ -58,7 +63,7 @@ pub fn render_page(path: &Path, page: u32, allow_external: bool) -> Option<Dynam
         return Some(img);
     }
     if !allow_external {
-        return None; // `[external] pdf = false`: pdftocairo/pdftoppm/qlmanage/sips を一切起動しない。
+        return None; // `[external] pdf = false`: never launch pdftocairo/pdftoppm/qlmanage/sips.
     }
     render_page_external(path, page)
 }
@@ -260,7 +265,7 @@ fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
     let out = temp_png_path();
     let ok = run_pdftocairo(path, &out, page)
         || run_pdftoppm(path, &out, page)
-        // qlmanage/sips は1ページ目しか出せないので page==1 のフォールバックに限る。
+        // qlmanage/sips can only produce the first page, so the fallback is limited to page==1.
         || (page == 1 && (run_qlmanage(path, &out) || run_sips(path, &out)));
     let img = if ok {
         image::ImageReader::open(&out)
@@ -270,7 +275,7 @@ fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
     } else {
         None
     };
-    let _ = std::fs::remove_file(&out); // 一時ファイルは即削除(成否によらず)
+    let _ = std::fs::remove_file(&out); // delete the temp file right away (regardless of success/failure)
     img
 }
 
@@ -423,7 +428,7 @@ mod tests {
     fn renders_sample_pdf_via_hayro_with_no_external_tool_allowed() {
         let p = Path::new("samples/sample.pdf");
         if !p.exists() {
-            return; // samples 除外環境ではスキップ
+            return; // skip when samples are excluded from the build environment
         }
         let img = render_page(p, 1, false).expect("hayro renders without any external process");
         assert!(
@@ -459,7 +464,7 @@ mod tests {
     fn page_count_is_pure_rust_and_always_available() {
         let p = Path::new("samples/sample.pdf");
         if !p.exists() {
-            return; // samples 除外環境ではスキップ(フィクスチャ無し)
+            return; // skip when samples are excluded from the build environment (no fixture)
         }
         assert_eq!(
             page_count(p),
@@ -475,23 +480,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("konoma-pdf-badinput-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 空ファイル。
+        // An empty file.
         let empty = dir.join("empty.pdf");
         std::fs::write(&empty, b"").unwrap();
         assert_eq!(page_count(&empty), None, "空ファイルは None");
 
-        // PDF でないファイル(拡張子だけ .pdf でも中身はテキスト)。
+        // A file that isn't a PDF (only the .pdf extension, the content is text).
         let not_pdf = dir.join("notes.pdf");
         std::fs::write(&not_pdf, b"hello, this is not a PDF file at all\n").unwrap();
         assert_eq!(page_count(&not_pdf), None, "PDF でない中身は None");
 
-        // %PDF マジックはあるが中身が壊れている(構造がでたらめ)ファイル。パースに成功してもしなくても
-        // よいが、panic だけは絶対にしない(テストが完走すること自体がその確認)。
+        // A file with the %PDF magic but corrupt (structurally garbage) content. Whether parsing
+        // succeeds or not is fine either way, but it must never panic (the test completing at all is the proof).
         let mut corrupt_bytes = b"%PDF-1.7\n".to_vec();
         corrupt_bytes.extend((0u32..2000).map(|i| (i % 256) as u8));
         let corrupt = dir.join("corrupt.pdf");
         std::fs::write(&corrupt, &corrupt_bytes).unwrap();
-        let _ = page_count(&corrupt); // どちらの結果でも良い・panic しないことのみ確認
+        let _ = page_count(&corrupt); // either result is fine — only confirming it doesn't panic
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -511,7 +516,7 @@ mod tests {
             let img = render_page(p, pg, false).expect("hayro renders every page without a tool");
             assert!(img.width() > 0 && img.height() > 0, "page {pg} 寸法が 0");
         }
-        // 範囲外ページは None(hayro 側は pages.get(idx) が None・外部ツールもファイルが生成されない)。
+        // An out-of-range page is None (on the hayro side pages.get(idx) is None; external tools also produce no file).
         assert!(
             render_page(p, pages + 1, true).is_none(),
             "範囲外ページは None"
@@ -547,7 +552,7 @@ mod tests {
         let kr = cjk_family_candidates(Some(&CidFamily::AdobeKorea1));
         assert_eq!(kr.first(), Some(&"Apple SD Gothic Neo"), "韓国語は先頭");
 
-        // ヒント無し(None・AdobeIdentity/Custom も同経路)でも全スクリプトを一通り試す。
+        // Even with no hint (None; AdobeIdentity/Custom take the same path), every script is tried in turn.
         let unknown = cjk_family_candidates(None);
         assert!(unknown.contains(&"Hiragino Sans"));
         assert!(unknown.contains(&"PingFang SC"));

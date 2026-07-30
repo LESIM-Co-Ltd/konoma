@@ -1,22 +1,22 @@
 use super::*;
 
 impl App {
-    // --- フォローモード (`F`) — Agent Watch ② -------------------------------------
+    // --- Follow mode (`F`) — Agent Watch ② -------------------------------------
     /// `F`: toggle follow mode (auto-jump to externally changed files; the "watch the AI work" view).
     /// Turning it ON starts a fresh follow session (the "what changed while following" list for `n`/`N`).
     pub fn toggle_follow(&mut self) {
         self.follow_mode = !self.follow_mode;
         if self.follow_mode {
             self.follow_session.clear();
-            // 新しい追尾セッション: 既定は「開始以降」表示・この瞬間をベースラインに固定する。
+            // A new follow session: default to "since start" display, pinning this moment as the baseline.
             self.follow_diff_full = false;
-            // 表示中の follow diff があれば新ベースラインで取り直す(path 一致で残る旧 diff を落とす)。
+            // If a follow diff is currently displayed, re-fetch it against the new baseline (drop the stale old diff a matching path would otherwise keep).
             self.diff_cache = None;
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
         }
-        // OFF ではベースラインを保持する(follow_break/F-off の後も diff_follow_scope 上で
-        // n/N 回遊と `f` トグルによる復習が効くように・次の F で作り直す・有界メモリ)。
+        // On OFF, keep the baseline (so that after follow_break/F-off, `n`/`N` cycling and revisiting
+        // via the `f` toggle still work on top of diff_follow_scope; it's rebuilt on the next F — bounded memory).
         let msg = if self.follow_mode {
             crate::i18n::Msg::FollowOn
         } else {
@@ -37,7 +37,7 @@ impl App {
         let mut total = 0usize;
         for p in self.changed_paths() {
             let key = p.canonicalize().unwrap_or_else(|_| p.clone());
-            // stat 先読み: 大きいファイルは読まずに None(=full diff 降格)。読んでから捨てない。
+            // Stat pre-check: skip reading large files, use None (→ degrade to full diff) instead. Don't read then discard.
             let size = std::fs::metadata(&p).map(|m| m.len() as usize).unwrap_or(0);
             if size > FOLLOW_BASELINE_FILE_CAP
                 || total.saturating_add(size) > FOLLOW_BASELINE_TOTAL_CAP
@@ -142,8 +142,8 @@ impl App {
         if !self.follow_mode {
             return;
         }
-        // フォロー自身が開いた diff ビュー(PreviewGitDiff)からも次のファイルへ追従を続ける。
-        // それ以外の git ビュー/ダイアログ等は乗っ取らない(通常はキー押下で follow が切れるので届かない)。
+        // Keep following into the next file even from the diff view (PreviewGitDiff) that follow itself opened.
+        // Other git views/dialogs are never hijacked (normally a keypress breaks follow before they're reached).
         let surface_ok = matches!(
             self.surface(),
             Surface::Tree | Surface::PreviewText | Surface::PreviewImage | Surface::PreviewTable
@@ -159,11 +159,11 @@ impl App {
         if !self.follow_target_ok(path) {
             return;
         }
-        // 追尾がビューを動かす瞬間に古い flash(「follow: on」等)を消す=フッターを
-        // その面の操作ヒントに明け渡す(flash は本来キー入力で消えるが、追尾はキー無しで進むため)。
+        // The moment following moves the view, clear the old flash (e.g. "follow: on") so the footer is
+        // handed over to that surface's operation hints (flash normally clears on a keypress, but following proceeds without one).
         self.flash = None;
         if self.tab.changed_filter {
-            // 変更一覧を最新化してから対象を選択(一覧に居るはず=変更イベント由来)。
+            // Refresh the changed-file list before selecting the target (it should be in the list — it came from a change event).
             self.reapply_changed_filter();
             if let Some(i) = self.tab.entries.iter().position(|e| e.path == path) {
                 self.tab.selected = i;
@@ -171,20 +171,21 @@ impl App {
         } else if !matches!(self.reveal_path_deep(path), Ok(true)) {
             return;
         }
-        // 既定(`ui.follow_view="diff"`)は**全画面 diff** で開く=何から何に変わったかがハンク単位で
-        // 見える(hunk/livediff/diffpane と同じ提示)。diff を出せない未追跡(全行新規)・リポジトリ外や、
-        // バイナリのメディア系はファイルプレビュー(+最初の変更ハンクへスクロール)へフォールバック。
+        // By default (`ui.follow_view="diff"`) this opens as a **full-screen diff** so what changed is
+        // visible hunk-by-hunk (the same presentation as hunk/livediff/diffpane). Untracked files (all
+        // lines new) that can't produce a diff, files outside the repository, and binary media fall
+        // back to the file preview (+ scroll to the first changed hunk).
         if self.cfg.ui.follow_view != "file" && !self.follow_is_media(path) {
-            // フォロー由来 → 開始以降のベースライン差分(follow_diff_full なら従来のフル diff)。
+            // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);
             if !diff.is_empty() {
                 self.open_git_diff(path);
-                // いま取った diff をキャッシュに載せ、描画での再取得(git 再実行)を省く。
+                // Put the diff we just took into the cache to avoid re-fetching (re-running git) on render.
                 self.diff_cache = Some(DiffCache {
                     path: path.to_path_buf(),
                     lines: diff,
                 });
-                // フォロー由来の diff: n/N と位置表示は「このセッションで変わったファイル」を回遊。
+                // Follow-originated diff: n/N and the position indicator cycle through "files changed during this session".
                 self.diff_follow_scope = true;
                 return;
             }
@@ -201,7 +202,7 @@ impl App {
             return false;
         }
         if !self.tab.show_hidden {
-            // 隠し(ドット)ディレクトリ/ファイル配下はツリーに出せないので追わない(show_hidden で解禁)。
+            // Hidden (dot) directories/files can't be shown in the tree, so don't follow into them (show_hidden lifts this).
             let hidden = path
                 .strip_prefix(&self.tab.root)
                 .map(|r| {
@@ -257,7 +258,7 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
-        // ガター設定 OFF でも変更行は取得する(ON なら同じ計算が gutter_cache に載り描画でも再利用)。
+        // Get the changed lines even with the gutter setting OFF (if ON, the same computation is cached in gutter_cache and reused for rendering).
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
         } else {
@@ -266,8 +267,8 @@ impl App {
         let Some(first) = marks.keys().min().copied() else {
             return;
         };
-        let line0 = (first as usize).saturating_sub(1); // marks は 1-based
-        let top = line0.saturating_sub(3); // 上に文脈を数行残す
+        let line0 = (first as usize).saturating_sub(1); // marks are 1-based
+        let top = line0.saturating_sub(3); // keep a few context lines above
         let Some(win) = self.preview_win.as_mut() else {
             return;
         };

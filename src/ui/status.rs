@@ -1,8 +1,11 @@
-// ステータス系クローム (lightline 風)。規約 (htop/lazygit/k9s/yazi で収束):
-//   - 永続コンテキスト(モード/パス/倍率/タブ) = 上 (ヘッダ)
-//   - キーヒント = 下 (フッター)。最も有用な数個を常時表示し、幅に入る分だけ優先度順に出す。
-//   - 一時メッセージ(flash)・入力途中のコード(prefix→…) はフッター位置を一時的に占有。
-// 配置は設定 `ui.statusbar` (split=既定 / bottom) で切替。ここは「中身(spans)」を組み立てる。
+// Status-line chrome (lightline-style). Convention (converged from htop/lazygit/k9s/yazi):
+//   - Persistent context (mode/path/zoom/tab) = top (header)
+//   - Key hints = bottom (footer). Always show the handful that matter most, in priority order,
+//     as many as fit the width.
+//   - A transient message (flash) or an in-progress code (prefix→…) temporarily occupies the
+//     footer's position.
+// Placement switches via the `ui.statusbar` setting (split = default / bottom). Here we just
+// assemble the "content" (spans).
 
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
@@ -38,10 +41,11 @@ fn display_chip(app: &App) -> Span<'static> {
     }
     let (msg, bg, dark) = match app.display_mode() {
         DisplayMode::Tree => (Msg::StTree, Color::White, false),
-        // 「中身を見る」青系の家族。IMAGE は明度違い(LightBlue)でズーム/パンの別操作を示す。
+        // Part of the "viewing content" blue family. IMAGE uses a different lightness (LightBlue)
+        // to signal its distinct zoom/pan operations.
         DisplayMode::Preview => (Msg::StPreview, Color::Blue, true),
         DisplayMode::Image => (Msg::StImage, Color::LightBlue, false),
-        // テーブルも「中身を見る」青系の家族(csvlens 風の閲覧モード)。
+        // Table is also part of the "viewing content" blue family (a csvlens-style browsing mode).
         DisplayMode::Table => (Msg::StTable, Color::Cyan, true),
     };
     chip(app.lang, msg, bg, dark)
@@ -51,7 +55,7 @@ fn display_chip(app: &App) -> Span<'static> {
 /// Since a Git view's main mode is GIT (above), the inner chip shows the concrete view name (CHANGES/LOG/GRAPH/BRANCH/…).
 /// Nested state is a breadcrumb `parent - child` (e.g. the graph's branch panel = `GRAPH - BRANCH`).
 fn internal_chip(app: &App) -> Option<Span<'static>> {
-    // グラフのブランチパネルは GRAPH のサブ状態なのでパンくず表記。
+    // The graph's branch panel is a sub-state of GRAPH, so it's shown as a breadcrumb.
     if matches!(app.internal_mode()?, InternalMode::GitGraphPicker) {
         let text = format!(
             "{} - {}",
@@ -61,10 +65,10 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         return Some(chip_str(text, Color::Yellow, false));
     }
     let (msg, bg, dark) = match app.internal_mode()? {
-        // ヘルプは Info と同様の「閲覧専用オーバーレイ」系(dim/DarkGray)。
+        // Help is part of the same "view-only overlay" family as Info (dim/DarkGray).
         InternalMode::Help => (Msg::StHelp, Color::DarkGray, true),
         InternalMode::Visual => (Msg::StVisual, Color::Magenta, true),
-        // プレビューの選択: 文字範囲(v)=VISUAL / 行(V)=V-LINE。
+        // Preview selection: character range (v) = VISUAL / line (V) = V-LINE.
         InternalMode::PreviewVisual => {
             if app.preview_visual_linewise() {
                 (Msg::StVisualLine, Color::Magenta, true)
@@ -73,7 +77,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
             }
         }
         InternalMode::Filter => (Msg::StFilter, Color::Yellow, false),
-        // 変更ファイルのみ表示(Agent Watch)。git 変更の一覧=Git 家族の黄系。
+        // Show changed files only (Agent Watch). A list of git changes = part of the Git family's
+        // yellow.
         InternalMode::ChangedFilter => (Msg::StChangedOnly, Color::Yellow, false),
         InternalMode::Search => (Msg::StSearch, Color::Yellow, false),
         InternalMode::Sort => (Msg::StSort, Color::Yellow, false),
@@ -82,32 +87,34 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::Tabs => (Msg::StTabs, Color::Yellow, false),
         InternalMode::Outline => (Msg::StOutline, Color::Yellow, false),
         InternalMode::Info => (Msg::StInfo, Color::DarkGray, true),
-        // 「読むだけ」の補助オーバーレイなので Info と同系統(DarkGray)。
+        // A "read-only" auxiliary overlay, so it's the same family as Info (DarkGray).
         InternalMode::TableCell => (Msg::StTableCell, Color::DarkGray, true),
         InternalMode::Create => (Msg::StCreate, Color::Green, false),
         InternalMode::Rename => (Msg::StRename, Color::Cyan, false),
         InternalMode::BatchRename => (Msg::StBatchRename, Color::Cyan, false),
         InternalMode::RenamePreview => (Msg::StRenameConfirm, Color::Cyan, false),
         InternalMode::DeleteConfirm => (Msg::StDelete, Color::Red, true),
-        // D&D 転送は非破壊なのでシアン(コピー/移動の選択)。
+        // A drag-and-drop transfer is non-destructive, so cyan (choosing copy/move).
         InternalMode::DropConfirm => (Msg::StDrop, Color::Cyan, false),
-        // アプリ終了確認は非破壊=黄。
+        // The app-quit confirmation is non-destructive = yellow.
         InternalMode::QuitConfirm => (Msg::StQuit, Color::Yellow, false),
-        // ブックマーク上書き確認も非破壊=黄。
+        // The bookmark-overwrite confirmation is also non-destructive = yellow.
         InternalMode::BookmarkConfirm => (Msg::StMarkOverwrite, Color::Yellow, false),
         InternalMode::GitChanges => (Msg::StChanges, Color::Yellow, false),
-        // diff は「中身を見る」プレビュー家族なので青系。
+        // diff is part of the "viewing content" preview family, so blue.
         InternalMode::GitDiff => (Msg::StDiff, Color::Blue, true),
-        // コミットは「作る/確定する」ので緑系(作成と同系統)。
+        // A commit is "creating/finalizing", so green (same family as create).
         InternalMode::Commit => (Msg::StCommit, Color::Green, false),
-        // log は履歴閲覧(Git 家族の黄系)。詳細は中身を見る diff 家族なので青系。
+        // log is history browsing (the Git family's yellow). Detail is part of the "viewing
+        // content" diff family, so blue.
         InternalMode::GitLog => (Msg::StLog, Color::Yellow, false),
         InternalMode::GitDetail => (Msg::StCommitDiff, Color::Blue, true),
-        // ブランチ操作も Git 家族の黄系。
+        // Branch operations are also part of the Git family's yellow.
         InternalMode::GitBranch => (Msg::StBranch, Color::Yellow, false),
         InternalMode::GitGraph => (Msg::StGraph, Color::Yellow, false),
-        // GitGraphPicker は冒頭(早期 return)でパンくず処理済み=ここには来ない。
-        // 万一ガードが外れても描画ループ内で panic させないよう、GRAPH チップに穏当にフォールバックする。
+        // GitGraphPicker is already handled as a breadcrumb up top (early return) = it never
+        // reaches here. Even if that guard ever slips, fall back gently to the GRAPH chip so
+        // nothing panics inside the render loop.
         InternalMode::GitGraphPicker => (Msg::StGraph, Color::Yellow, false),
     };
     Some(chip(app.lang, msg, bg, dark))
@@ -139,13 +146,15 @@ pub fn page_help(app: &App) -> String {
 /// delegate to that and then append the common path display style. (Tree = chip only / Preview = chip + image zoom.)
 pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    // バックグラウンド処理インジケーター(実行中のみ・`ui.busy_indicator`)。スピナー＋先頭ジョブの
-    // ラベル(複数実行中は +n)。ジョブが無ければ何も出さない=アイドルの見た目は従来どおり。
+    // Background-work indicator (only while something is running; `ui.busy_indicator`). Spinner +
+    // the first job's label (+n when several are running). Shows nothing when there are no jobs =
+    // the idle look stays as before.
     if app.busy_indicator_active() {
         let jobs = app.busy_jobs();
         if let Some(first) = jobs.first() {
             let label = tr(app.lang, *first).to_string();
-            // ファイル操作は進捗(N/M・大きなディレクトリでは末端ファイル数)も添える。
+            // A file operation also appends progress (N/M, plus the leaf-file count for large
+            // directories).
             let label = match app.fileop_progress_text() {
                 Some(d) if *first == Msg::BusyFileOp => format!("{label} {d}"),
                 _ => label,
@@ -158,18 +167,20 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
             spans.push(Span::from(txt).dim());
         }
     }
-    // 外側チップ(表示モード) ＋ 内側チップ(内部モード・あれば)。
+    // Outer chip (display mode) + inner chip (internal mode, if any).
     spans.push(display_chip(app));
     if let Some(ic) = internal_chip(app) {
         spans.push(Span::from(" "));
         spans.push(ic);
     }
-    // フォローモード(`F`)は他の状態と併存するので独立チップで常時見せる(ON が一目で分かるように)。
+    // Follow mode (`F`) coexists with other states, so it always shows as its own chip (so ON is
+    // obvious at a glance).
     if app.follow_enabled() {
         spans.push(Span::from(" "));
         spans.push(chip(app.lang, Msg::StFollow, Color::Green, false));
     }
-    // 各ビュー固有の追記(Tree=ソート/選択件数 / Preview=画像倍率)。チップはここでは出さない。
+    // Each view's own addition (Tree = sort/selection count / Preview = image zoom). No chip is
+    // shown here.
     spans.extend(match app.tab.mode {
         Mode::Tree => crate::ui::tree::context(app),
         Mode::Preview => crate::ui::preview::context(app),
@@ -190,9 +201,10 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
 fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
     let s = match app.internal_mode()? {
-        // ヘルプ自体の操作キー(j/k/g/G スクロール・q/Esc 閉じる)。裏の面(Tree/Preview)のヒントを
-        // 出し続けると、ヘルプ表示中に押せないキーを案内することになる(中央ポップアップは
-        // 上下端を覆わないのでフッターは常に見えている)。
+        // Help's own operation keys (j/k/g/G scroll, q/Esc close). If we kept showing hints from
+        // the surface underneath (Tree/Preview), it would advertise keys you can't press while
+        // help is showing (the centered popup doesn't cover the top/bottom edges, so the footer
+        // is always visible).
         InternalMode::Help => tr(lang, crate::i18n::Msg::StHelpHint),
         InternalMode::DeleteConfirm if app.confirm_is_branch_delete() => {
             tr(lang, crate::i18n::Msg::StDeleteForce)
@@ -224,7 +236,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::Commit => tr(lang, crate::i18n::Msg::StCommitHint),
         InternalMode::GitLog => tr(lang, crate::i18n::Msg::GitNavDetailHint),
         InternalMode::GitDetail => tr(lang, crate::i18n::Msg::DiffScrollHint),
-        // 絞り込み/検索/ソート/マーク/ブックマークは下の専用プロンプトが担当。
+        // Filter/search/sort/mark/bookmarks are handled by their dedicated prompt below.
         _ => return None,
     };
     Some(vec![Span::from(s).bold()])
@@ -236,11 +248,13 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     if let Some(msg) = &app.flash {
         return vec![Span::from(msg.clone()).bold()];
     }
-    // which-key: リーダー(Space=ファイル管理 / y=パスコピー)押下後、次の打鍵の候補を出す。
+    // which-key: after pressing a leader (Space = file management / y = path copy), show the
+    // candidates for the next keystroke.
     if let Some(spans) = whichkey_spans(app) {
         return spans;
     }
-    // ブランチ絞り込み入力中はクエリのプロンプトを出す(モードフッターより優先)。
+    // While branch-filter input is active, show the query prompt (takes priority over the mode
+    // footer).
     if app.git_branch_filtering() {
         let q = app.git_branch_query();
         return vec![
@@ -253,11 +267,12 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
             .dim(),
         ];
     }
-    // ダイアログ/ビジュアル中はそのモードのキーを出す(下部フッターが正)。
+    // While a dialog/visual mode is active, show that mode's keys (the bottom footer is the source
+    // of truth).
     if let Some(spans) = mode_footer(app) {
         return spans;
     }
-    // 絞り込み入力中はクエリのプロンプトをフッターに出す ("/<query>▏")。
+    // While filter input is active, show the query prompt in the footer ("/<query>▏").
     if app.is_filtering() {
         let q = app.filter_query().unwrap_or("");
         return vec![
@@ -270,7 +285,7 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
             .dim(),
         ];
     }
-    // プレビュー内検索の入力中も同様にプロンプトを出す。
+    // Same treatment while in-preview search input is active: show the prompt.
     if app.is_searching() {
         let q = app.search_input().unwrap_or("");
         return vec![
@@ -279,14 +294,16 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
             Span::from(format!("  {}", tr(lang, crate::i18n::Msg::StSearchHint))).dim(),
         ];
     }
-    // ソート選択メニュー表示中はフッターに選択肢を出す (現在値 ▸ キー一覧)。
+    // While the sort selection menu is showing, show the choices in the footer (current value ▸
+    // key list).
     if app.is_sort_menu() {
         return vec![
             Span::from(format!("{} ▸ ", app.sort_label())).bold(),
             Span::from(tr(lang, crate::i18n::Msg::StSortHint)).dim(),
         ];
     }
-    // ブックマークの登録待ちプロンプト (m=登録。'=一覧は Surface::Bookmarks 側)。
+    // The bookmark-pending-registration prompt (m = register; '= list is on the
+    // Surface::Bookmarks side).
     if app.is_marking() {
         return vec![Span::from(tr(lang, crate::i18n::Msg::MarkHint)).bold()];
     }
@@ -346,7 +363,7 @@ fn fit_tokens(tokens: &[String], max: u16) -> String {
         } else {
             SEP.width() + tok.width()
         };
-        // 残りトークンがあるなら省略記号分を予約して入るか判定。
+        // If tokens remain, reserve room for the ellipsis and check whether it still fits.
         let reserve = if shown + 1 < tokens.len() {
             ellipsis.width()
         } else {
@@ -408,8 +425,8 @@ mod tests {
 
     #[test]
     fn markdown_preview_footer_shows_link_keys() {
-        // Markdown プレビューのフッターにはリンク操作(Tab=フォーカス / ↵=開く)を出す。
-        // 普通のテキスト/コードには出さない(リンクが無いため)。
+        // The Markdown preview footer shows link operations (Tab = focus / ↵ = open).
+        // Plain text/code doesn't show them (there are no links).
         let dir = std::env::temp_dir().join("konoma_md_hints_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -417,7 +434,7 @@ mod tests {
         std::fs::write(dir.join("b.txt"), b"plain text\n").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 
-        // a.md をプレビュー → リンク操作あり。
+        // Preview a.md → link operations present.
         app.tab.selected = app
             .tab
             .entries
@@ -429,7 +446,7 @@ mod tests {
         assert!(md.contains("Tab:link"), "md にリンク操作が無い: {md}");
         assert!(md.contains("↵:open"), "md に開く操作が無い: {md}");
 
-        // b.txt をプレビュー → リンク操作なし(通常のテキストヒント)。
+        // Preview b.txt → no link operations (the normal text hints).
         app.tab.selected = app
             .tab
             .entries
@@ -452,15 +469,15 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        // 十分広い → 全部、省略記号なし。
+        // Plenty wide → everything, no ellipsis.
         let all = fit_tokens(&toks, 80);
         assert_eq!(all, "aaa  bbb  ccc  ddd");
-        // 狭い → 先頭優先で入る分だけ＋ " …"。
+        // Narrow → keep as many as fit, prioritizing the front, plus " …".
         let some = fit_tokens(&toks, 12);
         assert!(some.starts_with("aaa"), "先頭優先: {some}");
         assert!(some.ends_with('…'), "続きありの省略記号: {some}");
         assert!(!some.contains("ddd"), "末尾は落ちる: {some}");
-        // 幅0でもパニックしない。
+        // Does not panic even at width 0.
         assert_eq!(fit_tokens(&toks, 0), "");
     }
 
@@ -470,20 +487,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        // リーダー未押下: which-key は出ない(footer は通常ヒント)。
+        // No leader pressed yet: which-key does not show (the footer shows normal hints).
         assert!(whichkey_spans(&app).is_none(), "未押下では None");
 
-        // パスコピーリーダー(y)押下相当: pending_leader をセット → which-key 見出し+候補。
+        // Equivalent to pressing the path-copy leader (y): set pending_leader → which-key heading +
+        // candidates.
         app.pending_leader = Some(crate::keymap::LeaderId::Copy);
         let spans = footer_spans(&app, 120);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains('▸'), "which-key 見出しが無い: {text}");
         assert!(text.contains(':'), "key:label 形式の候補が無い: {text}");
-        // 直接 whichkey_spans も Some(見出し + 候補の2 span)。
+        // Calling whichkey_spans directly also gives Some (heading + candidates, 2 spans).
         let direct = whichkey_spans(&app).expect("リーダー中は Some");
         assert_eq!(direct.len(), 2, "見出し span + 候補 span");
 
-        // flash があれば which-key より flash が優先される(footer_spans の分岐確認)。
+        // If a flash is present, it takes priority over which-key (confirms footer_spans'
+        // branching).
         app.flash = Some("hello flash".into());
         let f: String = footer_spans(&app, 120)
             .iter()

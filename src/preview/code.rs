@@ -1,11 +1,11 @@
-// 内蔵 コードレンダラ (syntect によるシンタックスハイライト)。
+// Built-in code renderer (syntax highlighting via syntect).
 //
-// 拡張子/言語トークンからシンタックスを判定し、行ごとに syntect でハイライトして ratatui の
-// Line 列にする。重い SyntaxSet/Theme は OnceLock で 1 度だけロードする。
-// シンタックスは two-face(bat 由来)拡張セット、テーマは TwoDark(= Zed の One Dark 配色)。
-// 正規表現は純 Rust の fancy-regex(default-fancy)＝ oniguruma(C) 不要で配布容易性を保つ。
-// md 内のフェンスコードは tui-markdown 側が担当する(別経路)。色は前景のみ採用し、背景は端末/
-// アプリ配色に委ねる(アイコンと同じ「テーマ追従」方針)。
+// Determines syntax from the extension/language token, highlights it line by line with syntect,
+// and turns it into ratatui Line values. The heavy SyntaxSet/Theme is loaded only once via OnceLock.
+// Syntax comes from the two-face (bat-derived) extended set; the theme is TwoDark (= Zed's One Dark palette).
+// Regex is pure-Rust fancy-regex (default-fancy) — no oniguruma (C) needed, keeping distribution easy.
+// Fenced code inside md is handled by tui-markdown's own path (separate). Only the foreground color is
+// adopted; the background is left to the terminal/app palette (the same "follow the theme" policy as icons).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -90,7 +90,7 @@ pub fn warm_dir(root: PathBuf) {
     let _ = assets();
     for (ext, path) in warm_order(&root) {
         warm_file(&ext, &path);
-        std::thread::yield_now(); // 他処理に CPU を譲る(体感悪化を避ける)
+        std::thread::yield_now(); // yield CPU to other work (avoid a perceptible slowdown)
     }
 }
 
@@ -99,7 +99,7 @@ pub fn warm_dir(root: PathBuf) {
 fn warm_order(root: &Path) -> Vec<(String, PathBuf)> {
     let mut count: HashMap<String, usize> = HashMap::new();
     let mut sample: HashMap<String, PathBuf> = HashMap::new();
-    let mut budget = 20_000usize; // 走査ファイル数の上限(巨大ツリー対策)
+    let mut budget = 20_000usize; // cap on the number of scanned files (guards against huge trees)
     collect_exts(root, &mut count, &mut sample, &mut budget);
     let mut exts: Vec<(String, usize)> = count.into_iter().collect();
     exts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -128,14 +128,14 @@ fn collect_exts(
             return;
         }
         if entry.file_name().to_string_lossy().starts_with('.') {
-            continue; // 隠し除外
+            continue; // exclude hidden
         }
         let Ok(ft) = entry.file_type() else {
             continue;
         };
         let path = entry.path();
         if ft.is_dir() {
-            subdirs.push(path); // symlink dir は is_dir() が false なので辿らない
+            subdirs.push(path); // a symlinked dir has is_dir() == false, so it is never followed
         } else if ft.is_file() {
             *budget -= 1;
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -155,21 +155,21 @@ fn collect_exts(
 /// Public because progressive mode's background warming also calls it.
 pub fn warm_file(ext: &str, path: &Path) {
     if is_ext_warm(ext) {
-        return; // 既に温め済み(完了)
+        return; // already warmed (done)
     }
     let a = assets();
     let Some(syntax) = a.syntaxes.find_syntax_by_extension(ext) else {
-        mark_warm(ext); // 対応文法なし(プレーン扱い)＝温め不要だが「済み」にして再試行を防ぐ
+        mark_warm(ext); // no matching syntax (treated as plain) = no warming needed, but mark it "done" to prevent retries
         return;
     };
     let Ok(text) = read_head(path, 64 * 1024) else {
-        return; // 読めない(消えた等)。次回再試行を許す
+        return; // unreadable (deleted, etc). Allow retrying next time
     };
     let mut hl = HighlightLines::new(syntax, a.themes.get(EmbeddedThemeName::TwoDark));
     for line in LinesWithEndings::from(&text) {
-        let _ = hl.highlight_line(line, &a.syntaxes); // 失敗は無視(温めが目的)
+        let _ = hl.highlight_line(line, &a.syntaxes); // ignore failures (the goal is just warming)
     }
-    mark_warm(ext); // コンパイル完了をマーク
+    mark_warm(ext); // mark compilation as complete
 }
 
 /// Read at most `max_bytes` from the head of the file (keeps warming of huge files light). Non-UTF-8 is read lossily.
@@ -236,8 +236,8 @@ pub fn highlight(src: &str, path: &Path, theme: &str) -> Vec<Line<'static>> {
     let assets = assets();
     let syntax = resolve_syntax(&assets.syntaxes, path, src);
     let out = highlight_with(src, syntax, theme);
-    // この呼び出しで ext の文法はコンパイル済み(syntect の static キャッシュに載った)。
-    // is_ext_warm が「次回以降は即時」を正しく返すよう記録(同期ハイライト=indicator 経路も含む)。
+    // This call has compiled ext's syntax (it landed in syntect's static cache).
+    // Record it so is_ext_warm correctly reports "instant from now on" (including the synchronous-highlight/indicator path).
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     mark_warm(ext);
     out
@@ -255,7 +255,7 @@ pub fn highlight_line_by_ext(line: &str, ext: &str, theme: &str) -> Vec<Span<'st
     };
     let theme = assets.themes.get(parse_theme(theme));
     let mut hl = HighlightLines::new(syntax, theme);
-    // syntect は行末改行を前提に状態遷移するので 1 行＋\n を渡す。
+    // syntect assumes a trailing newline for its state transitions, so pass one line plus \n.
     let owned = format!("{}\n", trim_eol(line));
     let Ok(ranges) = hl.highlight_line(&owned, &assets.syntaxes) else {
         return vec![Span::raw(line.to_string())];
@@ -291,7 +291,7 @@ fn highlight_with(src: &str, syntax: &SyntaxReference, theme: &str) -> Vec<Line<
 
     let mut out = Vec::new();
     for line in LinesWithEndings::from(src) {
-        // 1 行のハイライト失敗はその行だけ素テキストにし、全体を巻き込まない。
+        // A highlight failure on one line only degrades that line to plain text, without dragging down the whole thing.
         let Ok(ranges) = hl.highlight_line(line, &assets.syntaxes) else {
             out.push(Line::from(trim_eol(line).to_string()));
             continue;
@@ -321,7 +321,7 @@ const TAB_MARKER: char = '→';
 /// tabs, so this ① aligns indentation columns and ② makes tabs visible. When `tab_width`=0, no conversion.
 /// Track the display column (full-width = 2) from the start of the line, extending each tab to the next multiple of `tab_width`. The marker is dimmed.
 pub fn expand_tabs(lines: Vec<Line<'static>>, tab_width: usize) -> Vec<Line<'static>> {
-    // タブが1つも無ければ無駄なクローンを避けて素通し。
+    // If there isn't a single tab, pass through unchanged to avoid a wasted clone.
     if tab_width == 0
         || !lines
             .iter()
@@ -334,7 +334,7 @@ pub fn expand_tabs(lines: Vec<Line<'static>>, tab_width: usize) -> Vec<Line<'sta
         .into_iter()
         .map(|line| {
             let line_style = line.style;
-            let mut col = 0usize; // 表示桁(全角=2)
+            let mut col = 0usize; // display column (full-width = 2)
             let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
             for span in line.spans {
                 if !span.content.contains('\t') {
@@ -350,7 +350,7 @@ pub fn expand_tabs(lines: Vec<Line<'static>>, tab_width: usize) -> Vec<Line<'sta
                             col += UnicodeWidthStr::width(buf.as_str());
                             out.push(Span::styled(std::mem::take(&mut buf), style));
                         }
-                        let stop = tab_width - (col % tab_width); // 次タブストップまで 1..=tab_width
+                        let stop = tab_width - (col % tab_width); // 1..=tab_width to the next tab stop
                         let mut marker = String::with_capacity(stop);
                         marker.push(TAB_MARKER);
                         for _ in 1..stop {
@@ -398,12 +398,12 @@ mod tests {
     fn highlights_rust_into_multiple_colored_spans() {
         let src = "fn main() {\n    let x = 42;\n}\n";
         let lines = highlight(src, &PathBuf::from("a.rs"), "TwoDark");
-        // 3 行(fn / let / })になる。
+        // Becomes 3 lines (fn / let / }).
         assert_eq!(lines.len(), 3, "行数が一致しない: {}", lines.len());
-        // キーワード等で色分けされ、1 行に複数 span ができる(=ハイライトされている)。
+        // Colored by keywords etc., so a line ends up with multiple spans (= it's highlighted).
         let multi = lines.iter().any(|l| l.spans.len() > 1);
         assert!(multi, "ハイライトされていない(全行単一 span)");
-        // 前景色 (Rgb) が付いている span がある。
+        // There is a span carrying a foreground color (Rgb).
         let colored = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -413,8 +413,8 @@ mod tests {
 
     #[test]
     fn config_dotfiles_and_named_files_resolve_a_real_syntax() {
-        // 拡張子の無い設定ファイル/名前付きファイルもファイル名から文法解決できる(素テキストと区別)。
-        // 末尾4件(.dockerignore/.npmignore/.jsonc/.json5)は two-face 非対応→エイリアスで解決。
+        // Extensionless config files/named files can also resolve a syntax from the file name (distinct from plain text).
+        // The last 4 (.dockerignore/.npmignore/.jsonc/.json5) aren't supported by two-face → resolved via an alias.
         for name in [
             ".bashrc",
             ".zshrc",
@@ -431,14 +431,14 @@ mod tests {
                 "{name} が文法解決できていない(素テキスト扱い)"
             );
         }
-        // 本当に素のプレーンテキストは has_named_syntax=false のまま(テーマ fg も付けない)。
+        // Genuinely plain text stays has_named_syntax=false (no theme fg applied either).
         for name in ["notes.txt", "README", "output.dat"] {
             assert!(
                 !has_named_syntax(&PathBuf::from(name)),
                 "{name} は素テキスト扱いのはず"
             );
         }
-        // .bashrc は実際にハイライトされ、複数色の span ができる。
+        // .bashrc is actually highlighted, producing spans in multiple colors.
         let src = "# comment\nexport PATH=\"$HOME/bin:$PATH\"\nalias ll='ls -la'\n";
         let lines = highlight(src, &PathBuf::from(".bashrc"), "TwoDark");
         let distinct: std::collections::HashSet<_> = lines
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn unknown_extension_falls_back_to_plain_text() {
-        // 未知拡張子でもクラッシュせず、内容の行が保たれる。
+        // Even an unknown extension doesn't crash, and the content lines are preserved.
         let src = "hello world\nsecond line\n";
         let lines = highlight(src, &PathBuf::from("note.unknownext"), "TwoDark");
         assert_eq!(lines.len(), 2);
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn theme_matches_zed_one_dark_palette() {
-        // テーマ = TwoDark(Atom/Zed One Dark)。代表色が One Dark パレットと一致すること。
+        // Theme = TwoDark (Atom/Zed One Dark). Representative colors must match the One Dark palette.
         let lines = highlight(
             "// c\nfn add() {\n    let s = \"hi\";\n    let n = 42;\n}\n",
             &PathBuf::from("a.rs"),
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn typescript_and_toml_highlight_via_two_face() {
-        // syntect 同梱には無い TypeScript/TOML も two-face の拡張セットで複数色に着色される。
+        // TypeScript/TOML, which syntect's bundled set doesn't have, are also colored in multiple colors via two-face's extended set.
         let ts = highlight(
             "interface T { id: number; }\nconst x: T = { id: 1 }; // c\n",
             &PathBuf::from("a.ts"),
@@ -566,18 +566,18 @@ mod tests {
             let mut f = std::fs::File::create(p).unwrap();
             f.write_all(b"x\n").unwrap();
         };
-        // rs=3(うち1つは sub/), py=2, md=1, 隠しは除外。
+        // rs=3 (one of which is under sub/), py=2, md=1, hidden excluded.
         touch(dir.join("a.rs"));
         touch(dir.join("b.rs"));
         touch(dir.join("sub").join("c.rs"));
         touch(dir.join("d.py"));
         touch(dir.join("e.py"));
         touch(dir.join("f.md"));
-        touch(dir.join(".hidden.rs")); // 隠し → 数えない
+        touch(dir.join(".hidden.rs")); // hidden → not counted
         let order = warm_order(&dir);
         let exts: Vec<&str> = order.iter().map(|(e, _)| e.as_str()).collect();
         assert_eq!(exts, vec!["rs", "py", "md"], "ファイル数の多い順: {exts:?}");
-        // 代表ファイルは実在する。
+        // The representative files actually exist.
         for (_, p) in &order {
             assert!(p.exists(), "代表ファイルが無い: {p:?}");
         }
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // 文法コンパイルで数秒かかるため通常は除外(手動: --ignored で計測)
+    #[ignore] // excluded from normal runs since syntax compilation takes a few seconds (manual: measure with --ignored)
     fn warm_dir_makes_subsequent_highlight_fast() {
         use std::time::Instant;
         let root = std::path::Path::new("samples/code");
@@ -593,7 +593,7 @@ mod tests {
             return;
         }
         warm_dir(root.to_path_buf());
-        // ウォーム後は app.ts の初回ハイライトが速い(<200ms 目安)。
+        // After warming, app.ts's first highlight is fast (<200ms as a benchmark).
         let ts = std::fs::read_to_string("samples/code/app.ts").unwrap();
         let t = Instant::now();
         let _ = highlight(&ts, &PathBuf::from("app.ts"), "TwoDark");
@@ -609,14 +609,14 @@ mod tests {
 
     #[test]
     fn expand_tabs_aligns_to_stops_and_marks() {
-        // 行頭タブ2つ + 中身。tab_width=4 → 各タブは "→   "(4桁)に展開され桁が揃う。
+        // Two leading tabs + content. tab_width=4 → each tab expands to "→   " (4 columns), aligning the columns.
         let src = "\t\tconst x = 1;\n";
         let lines = expand_tabs(highlight(src, &PathBuf::from("a.ts"), "TwoDark"), 4);
         let s = line_str(&lines[0]);
         assert!(s.starts_with("→   →   const"), "タブ展開がおかしい: {s:?}");
-        // 行頭の2タブで8桁ぶんインデントが入る(マーカー1 + 空白3)×2。
+        // The 2 leading tabs give 8 columns of indent ((1 marker + 3 spaces) × 2).
         assert_eq!(UnicodeWidthStr::width(s.as_str()), s.chars().count());
-        // マーカー → を含む span は淡色(DarkGray)。
+        // The span containing the → marker is a pale color (DarkGray).
         let marker = lines[0]
             .spans
             .iter()
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn expand_tabs_mid_line_aligns_to_next_stop() {
-        // 2文字 + タブ → 次のタブストップ(4桁目)まで=2桁("→ ")。
+        // 2 characters + a tab → up to the next tab stop (column 4) = 2 columns ("→ ").
         let line = Line::from("ab\tc".to_string());
         let out = expand_tabs(vec![line], 4);
         assert_eq!(line_str(&out[0]), "ab→ c");
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn parse_theme_resolves_names_and_aliases() {
-        // 既定/別名 → TwoDark。名前(区切り/大小無視) → 対応テーマ。不明 → TwoDark。
+        // Default/alias → TwoDark. Name (separators/case ignored) → the matching theme. Unknown → TwoDark.
         assert_eq!(parse_theme(""), EmbeddedThemeName::TwoDark);
         assert_eq!(parse_theme("one-dark"), EmbeddedThemeName::TwoDark);
         assert_eq!(parse_theme("TwoDark"), EmbeddedThemeName::TwoDark);
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn highlight_lang_tokenizes_known_and_plain() {
-        // 既知トークン(rust): 行は保持され、少なくとも1行が複数 span に着色される。
+        // Known token (rust): the lines are preserved, and at least one is colored into multiple spans.
         let lines = highlight_lang("let x = 1;\nlet y = 2;\n", "rust", "TwoDark");
         assert_eq!(lines.len(), 2, "行数は入力どおり");
         assert_eq!(line_str(&lines[0]), "let x = 1;");
@@ -666,7 +666,7 @@ mod tests {
             lines.iter().any(|l| l.spans.len() > 1),
             "rust は複数 span に着色されるはず"
         );
-        // 未知トークンはプレーン: 行は保持され内容も一致(落ちない)。
+        // An unknown token stays plain: the lines are preserved and the content still matches (no crash).
         let plain = highlight_lang("hello\nworld\n", "no-such-lang", "TwoDark");
         assert_eq!(plain.len(), 2);
         assert_eq!(line_str(&plain[0]), "hello");
@@ -680,13 +680,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("data.txt");
         std::fs::write(&f, "0123456789ABCDEF".as_bytes()).unwrap();
-        // 先頭 max_bytes のみ読む。
+        // Read only the first max_bytes.
         let head = read_head(&f, 5).unwrap();
         assert_eq!(head, "01234", "先頭5バイトだけ");
-        // ファイルより大きい上限でも全文(切り詰め)。
+        // Even with a cap larger than the file, get the full content (truncated to that cap).
         let all = read_head(&f, 1000).unwrap();
         assert_eq!(all, "0123456789ABCDEF");
-        // 存在しないファイルは Err。
+        // A nonexistent file returns Err.
         assert!(read_head(&dir.join("nope.txt"), 10).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -696,12 +696,12 @@ mod tests {
         let dir = std::env::temp_dir().join("konoma_warm_file_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // 既知文法(rust): warm 後は is_ext_warm が true。
+        // Known syntax (rust): after warming, is_ext_warm is true.
         let rs = dir.join("sample.rs");
         std::fs::write(&rs, b"fn main() { let x = 1; }\n").unwrap();
         warm_file("rs", &rs);
         assert!(is_ext_warm("rs"), "warm 後は rs が温まり済み");
-        // 対応文法の無い拡張子も「済み」にして再試行を防ぐ。
+        // Extensions with no matching syntax are also marked "done" to prevent retries.
         let weird = dir.join("x.konoma_zzqq");
         std::fs::write(&weird, b"x").unwrap();
         warm_file("konoma_zzqq", &weird);

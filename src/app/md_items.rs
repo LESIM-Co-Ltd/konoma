@@ -36,7 +36,7 @@ impl App {
     pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let (lines, targets) = self.postprocess_md(lines);
         let items = build_md_items(&lines, &targets, &[]);
-        // フォーカス添字を範囲内にクランプ。
+        // Clamp the focus index into range.
         match self.tab.focused_item {
             Some(_) if items.is_empty() => self.tab.focused_item = None,
             Some(f) if f >= items.len() => self.tab.focused_item = Some(items.len() - 1),
@@ -79,27 +79,32 @@ impl App {
             None => n - 1,
         } as usize;
         if self.tab.focused_item != Some(next) {
-            // フォーカスが移ったらインライン図のズーム/パンは初期化(前の図の状態を持ち越さない)。
+            // When focus moves, reset the inline diagram's zoom/pan (don't carry over the previous
+            // diagram's state).
             self.tab.fence_zoom = 1.0;
             self.tab.fence_center = (0.5, 0.5);
         }
         self.tab.focused_item = Some(next);
-        // フォーカス行を表示範囲に収める。preview_scroll は**表示行(折返し後)**の座標系
-        // (描画側が para.line_count でクランプしている)なので、アイテムの論理行も
-        // 表示行へ変換してから比較する(論理行のままだと折返しで乖離し、画面外の
-        // フォーカスに追従しない — 2026-07-08 ユーザー報告)。
+        // Bring the focused line into the visible range. `preview_scroll` is in the **visual line
+        // (post-wrap)** coordinate system (the render side clamps it with `para.line_count`), so
+        // the item's logical line also has to be converted to a visual line before comparing —
+        // comparing in logical-line terms drifts under wrapping and fails to follow an off-screen
+        // focus (2026-07-08 user report).
         let line = self.md_items[next].line;
         let (top, mut height) = self.md_visual_span(line);
-        // フェンス図: キャプションだけでなく**図ブロック全体**(キャプション+予約行+下マージン)を
-        // 可視域へ入れる(図が下に見切れたまま「フォーカスしたのに見えない」を防ぐ=ユーザー要望)。
+        // Fenced diagram: bring not just the caption but the **whole diagram block** (caption +
+        // reserved rows + bottom margin) into view (prevents "I focused it but can't see it" when
+        // the diagram is cut off at the bottom — per user request).
         let block_end = if let MdItemKind::MermaidFence { ordinal } = self.md_items[next].kind {
-            // 図は予約行を持ち本文行として並んでいないので、placement の行数から終端を求める。
+            // The diagram has reserved rows and isn't laid out as body lines, so derive the end
+            // from the placement's row count.
             self.mermaid_placement(ordinal)
-                .map(|(pl, pr)| pl + pr as usize) // 下マージン行(placement.line + rows)
+                .map(|(pl, pr)| pl + pr as usize) // bottom-margin row (placement.line + rows)
                 .unwrap_or(line)
         } else {
-            // コードブロック / 開いた <details> は複数行にわたる。ヘッダ行だけを可視域に入れると
-            // 下端に貼り付いて中身が見えないので、ブロック全体を入れる(ユーザー要望)。
+            // Code blocks / open <details> span multiple lines. Bringing only the header line into
+            // view leaves the block pinned to the bottom edge with its contents hidden, so bring
+            // the whole block into view instead (per user request).
             self.md_item_block_end(next)
         };
         if block_end > line {
@@ -109,7 +114,7 @@ impl App {
         let vh = self.tab.preview_viewport.max(1) as usize;
         let scroll = self.tab.preview_scroll as usize;
         if height >= vh || top < scroll {
-            // ブロックが画面より大きい(先頭を出す) or 上に見切れている。
+            // The block is bigger than the screen (show the top), or it is cut off above.
             self.tab.preview_scroll = top as u16;
         } else if top + height > scroll + vh {
             self.tab.preview_scroll = (top + height).saturating_sub(vh) as u16;
@@ -130,12 +135,14 @@ impl App {
         let Some(cache) = self.md_cache.as_ref() else {
             return start;
         };
-        // 続きの行かどうかは、レンダラが引く「左の帯」で判定する(コードは `▎`、details 本文は `▏`)。
-        // 行の見た目そのものを見るので、ソースを再解釈せずに済む。
+        // Whether a line is a continuation is judged by the "left band" the renderer draws (code is
+        // `▎`, details body is `▏`). Since it looks at the rendered line itself, there's no need to
+        // re-interpret the source.
         let belongs: fn(&ratatui::text::Line<'_>) -> bool = match item.kind {
             MdItemKind::CodeBlock => crate::preview::markdown::is_code_line,
             MdItemKind::Details { .. } => crate::preview::markdown::is_details_body_line,
-            // リンク/チェックボックスは1行。フェンス図は予約行を持つので下で placement から求める。
+            // Links/checkboxes are one line. A fenced diagram has reserved rows, so its end is
+            // derived from the placement below instead.
             _ => return start,
         };
         let mut end = start;
@@ -229,13 +236,14 @@ impl App {
                 self.md_toggle_focused_task();
                 Ok(())
             }
-            // コードブロックは「開く/トグル」対象が無いので Enter では何もしない。
-            // コピーは他のコピー操作と揃えて `y`(コピーリーダー)で行う(main.rs で先取り)。
+            // A code block has no "open/toggle" target, so Enter does nothing.
+            // Copying it aligns with the other copy operations and goes through `y` (the copy
+            // leader, pre-empted in main.rs).
             Some(MdItem {
                 kind: MdItemKind::CodeBlock,
                 ..
             }) => Ok(()),
-            // インライン mermaid 図: 全画面(ズーム/パン付き)で開く。
+            // Inline mermaid diagram: open it full screen (with zoom/pan).
             Some(MdItem {
                 kind: MdItemKind::MermaidFence { ordinal },
                 ..
@@ -244,7 +252,7 @@ impl App {
                 self.open_mermaid_fence(ord);
                 Ok(())
             }
-            // <details> の summary: 折りたたみをトグル。
+            // A <details> summary: toggle the collapse.
             Some(MdItem {
                 kind: MdItemKind::Details { ordinal },
                 ..
@@ -292,7 +300,7 @@ impl App {
         ) {
             return None;
         }
-        // 文書内で何番目のコードブロックか(リンク/タスクを除いた序数)。
+        // Which code block this is within the document (an ordinal excluding links/tasks).
         let ordinal = self.md_items[..=f]
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
@@ -304,12 +312,13 @@ impl App {
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
             .count();
         let full_src = std::fs::read_to_string(self.tab.preview_path.as_ref()?).ok()?;
-        // レンダラと同じ範囲だけを走査する: `preview::text::load` の上限(MAX_BYTES/MAX_LINES)で
-        // 切り詰め、front matter が有効なら同じ規則で剥がす。全文を見ると、切り詰め範囲より
-        // 後ろ/front matter 内にあるフェンスまで数えてしまい、画面上の個数(rendered)と食い違って
-        // **そのファイルの `y c` コピーが全部拒否される**(5,000行超のMarkdownで再現)。
-        // ここは書込みが無い(コピーのみ)ので、走査した接頭辞の内容をそのまま使ってよい
-        // (md_tasks.rs のように全文へ書き戻すための別読みは不要)。
+        // Scan only the same range the renderer does: truncate at `preview::text::load`'s caps
+        // (MAX_BYTES/MAX_LINES), and strip front matter under the same rule when it's enabled.
+        // Looking at the full text would count fences beyond the truncation cutoff / inside front
+        // matter, disagreeing with the on-screen count (rendered) and causing **`y c` copy to be
+        // refused for the whole file** (reproduced on a Markdown doc over 5,000 lines).
+        // There's no write here (copy only), so it's fine to use the scanned prefix's content
+        // as-is (no separate full-text re-read for write-back is needed, unlike md_tasks.rs).
         let (capped_lines, _) = crate::preview::text::cap_lines(full_src.as_bytes());
         let capped = capped_lines.join("\n");
         let src = if self.cfg.ui.md_frontmatter {
@@ -317,15 +326,16 @@ impl App {
         } else {
             capped
         };
-        // `<details>` の開閉は描画時の実効状態(md_cache が保持)。渡さないと閉じたブロック内の
-        // フェンスまで数えて個数ガードが外れる。
+        // Whether each `<details>` is open/closed is the effective state at render time (held in
+        // md_cache). Without passing it, fences inside a closed block would be counted too and the
+        // count guard would trip.
         let details_states: Vec<bool> = self
             .md_cache
             .as_ref()
             .map(|c| c.details_states.clone())
             .unwrap_or_default();
         let blocks = crate::preview::markdown::code_block_source_locs(&src, &details_states);
-        // 画面上のヘッダ数とソースのブロック数が一致するときだけ信頼して写す。
+        // Only trust and copy it when the on-screen header count matches the source's block count.
         (blocks.len() == total)
             .then(|| blocks.get(ordinal).cloned())
             .flatten()
@@ -421,7 +431,8 @@ impl App {
         let resolved = self.resolve_link_local(t);
         if resolved.is_dir() {
             self.back_to_tree();
-            // root を変えるので旧 root の選択/ビジュアル/絞り込み/検索を破棄する(持ち越さない)。
+            // Since the root is changing, discard the old root's selection/visual/filter/search
+            // state (don't carry it over).
             self.clear_for_root_change();
             self.tab.root = resolved;
             self.tab.open_dir = self.tab.root.clone();
@@ -477,7 +488,7 @@ impl App {
             _ => return Ok(()),
         };
         let t = target.trim();
-        // URL/mailto/tel はタブにできないので、Enter と同じく外部(ブラウザ等)で開く。
+        // URL/mailto/tel can't become a tab, so open it externally (browser, etc.) just like Enter.
         if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
             return self.open_external(t);
         }
@@ -485,7 +496,7 @@ impl App {
             // A same-document anchor makes no sense in a new tab — scroll in place instead.
             return self.open_link_target(t);
         }
-        // タブを作る前に、現在の md ファイルの位置基準でローカルパスを解決しておく。
+        // Resolve the local path relative to the current md file's location before creating the tab.
         let resolved = self.resolve_link_local(t);
         if !resolved.exists() {
             self.flash = Some(format!(
@@ -495,7 +506,8 @@ impl App {
             ));
             return Ok(());
         }
-        // 新規タブ(前面)を作り、その中でジャンプする。元のドキュメントのタブは save_active で保持済み。
+        // Create a new (foreground) tab and jump inside it. The original document's tab is already
+        // preserved via save_active.
         self.tab_new()?;
         self.paste_jump_to(&resolved, None);
         Ok(())

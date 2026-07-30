@@ -1,9 +1,9 @@
-// Git ビュー(変更ハブ)の描画。`o` で開く全画面の変更ファイル一覧。
-// 各行: ステージ済み指標(●/空) + 状態マーカー(色=意味) + repo からの相対パス。
-// 選択行は反転。選択が常に見えるようスクロールする。
+// Rendering for the Git view (changes hub). The full-screen changed-file list opened with `o`.
+// Each row: a staged indicator (●/blank) + a status marker (color = meaning) + the path relative to the repo.
+// The selected row is reversed. Scrolls so the selection is always visible.
 //
-// 一覧データは App.git_view_entries() が持つ(open/refresh/書込後に作り直し)。
-// diff 表示・log は別マイルストーン(phase 3/5)。ここは一覧と staged 表示のみ。
+// The list data is held by App.git_view_entries() (rebuilt after open/refresh/write).
+// Diff display and log are separate milestones (phase 3/5). This is just the list and staged display.
 
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Style, Stylize};
@@ -20,7 +20,7 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
     let entries = app.git_view_entries();
     let sel = app.git_view_sel();
 
-    // タイトル: " Git ⎇ <branch>  (N) "。ブランチが無ければ記号のみ。
+    // Title: " Git ⎇ <branch>  (N) ". Just the glyph when there's no branch.
     let title = match app.git_branch() {
         Some(b) => format!(" Git ⎇ {b}  ({}) ", entries.len()),
         None => format!(" Git  ({}) ", entries.len()),
@@ -36,11 +36,11 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
             .enumerate()
             .map(|(i, e)| {
                 let st = e.status;
-                // staged 指標: ●=ステージ済 / 空白=未ステージ。
+                // Staged indicator: ●=staged / blank=unstaged.
                 let staged = if e.staged { "● " } else { "  " };
-                // 状態マーカー(色=意味)。
+                // Status marker (color = meaning).
                 let marker = Span::styled(format!("{} ", st.marker()), Style::new().fg(st.color()));
-                // repo からの相対パス(format_path で表示スタイルに従う)。
+                // Path relative to the repo (follows the display style via format_path).
                 let name = app.format_path(&e.path);
                 let line = Line::from(vec![
                     Span::from(staged.to_string()),
@@ -56,7 +56,7 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
             .collect()
     };
 
-    // 選択行が常に見えるよう縦スクロール量を決める(tree と同じ素朴な追従)。
+    // Decide the vertical scroll amount so the selected row is always visible (same naive follow as tree).
     let visible = area.height.saturating_sub(2) as usize;
     let offset = if visible > 0 && sel >= visible {
         (sel - visible + 1) as u16
@@ -80,7 +80,7 @@ fn truncate_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
     if max == 0 {
         return Vec::new();
     }
-    let budget = max - 1; // 末尾 `…`(幅1)分を残す
+    let budget = max - 1; // leave room for the trailing `…` (width 1)
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     'outer: for sp in spans {
@@ -120,11 +120,11 @@ fn line_with_right_meta(
         return truncate_spans(left, width);
     }
     let meta_w = UnicodeWidthStr::width(meta.as_str());
-    // メタ＋最低 1 空白すら置けないほど狭い → メタは諦め、左側だけ出す。
+    // Too narrow to even fit meta + a minimum 1 space → give up on meta, show only the left side.
     if meta_w + 2 > width {
         return truncate_spans(left, width);
     }
-    let left_budget = width - meta_w - 1; // 最低 1 空白を確保
+    let left_budget = width - meta_w - 1; // guarantee at least 1 space
     let mut out = truncate_spans(left, left_budget);
     let lw: usize = out.iter().map(|s| s.width()).sum();
     let pad = width.saturating_sub(lw + meta_w).max(1);
@@ -146,9 +146,9 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
         None => format!(" Git log  ({}) ", entries.len()),
     };
 
-    // メタ(author・日付)の寄せ方。"inline"=subject 直後 / それ以外(既定)=右端寄せ列。
+    // How meta (author, date) is aligned. "inline"=right after the subject / anything else (default)=a right-aligned column.
     let align_right = app.cfg.ui.commit_meta_align != "inline";
-    let inner_w = area.width.saturating_sub(2) as usize; // 枠 2 桁を除いた本文幅
+    let inner_w = area.width.saturating_sub(2) as usize; // body width, excluding the 2-column border
 
     let lines: Vec<Line> = if entries.is_empty() {
         vec![Line::from(
@@ -159,10 +159,10 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                // time_epoch は i64。負(1970 以前)は 0 に丸めて u64 の整形器へ渡す。
+                // time_epoch is i64. Negative (before 1970) is clamped to 0 before passing to the u64 formatter.
                 let date = crate::fileops::format_epoch_short(c.time_epoch.max(0) as u64);
                 let line = if align_right {
-                    // 短縮ハッシュ(左の固定アンカー) + summary を左、author・日付を右端列に。
+                    // The short hash (a fixed anchor on the left) + summary on the left, author/date in a right-aligned column.
                     let left = vec![
                         Span::from(format!("{} ", c.short)).dim(),
                         Span::from(c.summary.clone()),
@@ -203,9 +203,9 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
 pub fn render_branches(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::style::Color;
     let lang = app.lang;
-    let entries = app.git_branch_view(); // 絞り込み後の表示リスト
+    let entries = app.git_branch_view(); // the display list after filtering
     let sel = app.git_branch_sel();
-    // 絞り込み中/クエリありはタイトルに "/<query>" を出す。
+    // While filtering / with a query, show "/<query>" in the title.
     let q = app.git_branch_query();
     let title = if q.is_empty() {
         format!(" Git branches  ({}) ", entries.len())
@@ -260,18 +260,18 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     let rows = app.git_graph_rows();
     let sel = app.git_graph_sel();
     let n = rows.iter().filter(|r| r.commit.is_some()).count();
-    // 基準ブランチ固定中(Phase 2)はタイトルに base: <名> を併記する。
+    // While a base branch is pinned (Phase 2), also show base: <name> in the title.
     let title = match app.git_graph_base_label() {
         Some(b) => format!(" Git graph  ({n})  ⌖ base: {b} "),
         None => format!(" Git graph  ({n}) "),
     };
 
-    // 枠を先に描き、inner を「コミット列」と「凡例(下端)」に分ける。
+    // Draw the border first, then split inner into the "commit column" and the "legend (bottom edge)".
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // 凡例(ブランチ⇄レーン色)。チップ幅から 1〜2 行を確保。区切り線は dim(枠より控えめ)。
+    // Legend (branch ⇄ lane color). Reserve 1-2 rows based on the chip width. The divider is dim (more subdued than the border).
     let legend = app.git_graph_legend();
     let hidden = app.git_graph_hidden_count();
     let est_w: usize = legend
@@ -293,8 +293,8 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
         (inner, None)
     };
 
-    // --- コミット行 ---
-    // メタ(short・author・日付)の寄せ方。"inline"=subject 直後 / それ以外(既定)=右端寄せ列。
+    // --- Commit rows ---
+    // How meta (short hash, author, date) is aligned. "inline"=right after the subject / anything else (default)=a right-aligned column.
     let align_right = app.cfg.ui.commit_meta_align != "inline";
     let cw = commit_area.width as usize;
     let lines: Vec<Line> = if rows.is_empty() {
@@ -305,14 +305,14 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
         rows.iter()
             .enumerate()
             .map(|(i, r)| {
-                // 色付きグラフ部(レーン)を左側の起点にする。
+                // The colored graph part (lanes) becomes the starting point on the left.
                 let mut left: Vec<Span> = r
                     .graph
                     .iter()
                     .map(|(t, st)| Span::styled(t.clone(), *st))
                     .collect();
                 let line = if r.worktree {
-                    // 未コミットの作業ツリー行: 黄色強調の subject + 日付(メタ)。
+                    // The uncommitted working-tree row: subject highlighted in yellow + date (meta).
                     left.push(Span::from(" "));
                     left.push(Span::styled(
                         r.subject.clone(),
@@ -330,14 +330,14 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
                 } else if r.commit.is_some() {
                     left.push(Span::from(" "));
                     if !r.refs.is_empty() {
-                        // ブランチ/タグのラベル(SourceTree のチップ相当)。
+                        // Branch/tag label (equivalent to SourceTree's chip).
                         left.push(Span::styled(
                             format!("({}) ", r.refs),
                             Style::new().fg(Color::Yellow),
                         ));
                     }
                     left.push(Span::from(r.subject.clone()));
-                    // 空フィールドを除いたメタ情報 (short · author · date)。
+                    // Meta info with empty fields dropped (short · author · date).
                     let meta = [r.short.clone(), r.author.clone(), r.date.clone()]
                         .into_iter()
                         .filter(|s| !s.is_empty())
@@ -352,7 +352,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
                         Line::from(left)
                     }
                 } else {
-                    // コミットを持たない接続専用行(レーンのみ)。
+                    // A connector-only row with no commit (lanes only).
                     Line::from(left)
                 };
                 if i == sel {
@@ -371,7 +371,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     };
     frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), commit_area);
 
-    // --- 凡例 strip(区切り線 + 色チップ) ---
+    // --- Legend strip (divider + color chips) ---
     if let Some(strip) = legend_strip {
         let div = Rect {
             x: strip.x,
@@ -397,7 +397,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             if k > 0 {
                 spans.push(Span::from("  "));
             }
-            // HEAD=⎇＋太字 / 基準=⌖ / それ以外=●。色はそのレーン色。
+            // HEAD=⎇+bold / base=⌖ / anything else=●. The color is that lane's color.
             if e.is_head {
                 spans.push(Span::styled("⎇", bold));
                 spans.push(Span::styled("●", bold.fg(e.color)));
@@ -432,7 +432,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
 pub fn render_graph_picker(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::style::Color;
     let lang = app.lang;
-    let items = app.git_graph_picker_items(); // (name, is_current, on) HEAD 先頭
+    let items = app.git_graph_picker_items(); // (name, is_current, on), HEAD first
     let sel = app.git_graph_picker_sel();
     let shown = items.iter().filter(|(_, _, on)| *on).count();
     let title = format!(
@@ -496,7 +496,7 @@ fn commit_header_lines(meta: &crate::git::CommitMeta, width: usize) -> Vec<Line<
     use ratatui::style::{Color, Modifier};
     let dim = Style::new().fg(Color::DarkGray);
     let mut out: Vec<Line<'static>> = Vec::new();
-    // 1行目: commit <short>   <author> · <date>
+    // Line 1: commit <short>   <author> · <date>
     out.push(Line::from(vec![
         Span::styled(
             format!("commit {}", meta.short),
@@ -505,7 +505,7 @@ fn commit_header_lines(meta: &crate::git::CommitMeta, width: usize) -> Vec<Line<
         Span::styled(format!("   {} · {}", meta.author, meta.date), dim),
     ]));
     out.push(Line::from(""));
-    // メッセージ全文: 先頭行=件名(太字)、以降=本文(空行も含めそのまま=改行を保持)。
+    // The full message: the first line is the subject (bold), the rest is the body (kept as-is including blank lines = line breaks preserved).
     let mut msg = meta.message.lines();
     if let Some(subject) = msg.next() {
         out.push(Line::from(Span::styled(
@@ -517,7 +517,7 @@ fn commit_header_lines(meta: &crate::git::CommitMeta, width: usize) -> Vec<Line<
         out.push(Line::from(body.to_string()));
     }
     out.push(Line::from(""));
-    // 区切り線(dim)。メッセージ本文と diff を視覚的に分ける。
+    // A divider (dim), visually separating the message body from the diff.
     out.push(Line::from(Span::styled("─".repeat(width.max(1)), dim)));
     out
 }
@@ -525,7 +525,7 @@ fn commit_header_lines(meta: &crate::git::CommitMeta, width: usize) -> Vec<Line<
 pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let split = app.diff_is_split(Block::bordered().inner(area).width);
     let mode_tag = if split { " ⇆" } else { "" };
-    // タイトル: 明示上書き(git ビューからの全変更)> グラフ選択行(worktree/commit) > log 選択。
+    // Title: an explicit override (all changes from the git view) > the graph's selected row (worktree/commit) > the log selection.
     let base_title = if let Some(t) = app.git_detail_title() {
         format!(" {t} ")
     } else {
@@ -548,7 +548,7 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     app.set_git_detail_viewport(inner.height);
 
-    // コミットメタ(完全メッセージ)を先頭に積む。先に owned で作って app の借用を解放しておく。
+    // Stack the commit meta (full message) at the top. Build it owned first to release app's borrow.
     let iw = inner.width as usize;
     let header_lines: Vec<Line<'static>> = app
         .git_detail_meta()
@@ -557,7 +557,7 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let diff = app.git_detail_lines();
     if diff.is_empty() {
-        // 差分なし(空コミット等)。メタがあればメッセージだけは出す。なければ従来通り中央表示。
+        // No diff (an empty commit etc.). If there's meta, show at least the message; otherwise the usual centered display.
         if header_lines.is_empty() {
             frame.render_widget(block, area);
             let msg = tr(app.lang, crate::i18n::Msg::GitNoChanges);
@@ -587,10 +587,10 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // コミット差分は複数ファイルにまたがる(ヘッダで区切り済み)。本文はファイル別 ext で着色する。
+    // A commit diff spans multiple files (already separated by headers). The body is colored per file's extension.
     let theme = app.cfg.ui.theme.code_theme.clone();
-    let cur_h = app.git_detail_hscroll(); // diff(=app の借用)より先に読んでおく
-                                          // 横スクロール: 縦並びは Paragraph の横 offset、横並びは各列の本文だけを内部でずらす(固定ガター)。
+    let cur_h = app.git_detail_hscroll(); // read this before diff (= app's borrow)
+                                          // Horizontal scroll: stacked uses Paragraph's horizontal offset; side-by-side shifts only each column's body internally (a fixed gutter).
     let (body_lines, para_hscroll, clamped_h) = if split {
         let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(diff, iw) as u16;
         let h = cur_h.min(max_h);
@@ -599,7 +599,7 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         (lines, 0u16, h)
     } else {
         let lines = crate::preview::gitdiff::diff_lines(diff, "", &theme, iw);
-        // 横スクロール上限はヘッダ(長文本文がありうる)と diff の両方を考慮。
+        // The horizontal-scroll cap accounts for both the header (its body can be long) and the diff.
         let max_h = header_lines
             .iter()
             .chain(lines.iter())
@@ -610,15 +610,15 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
         let h = cur_h.min(max_h);
         (lines, h, h)
     };
-    // diff の借用が終わったのでクランプ後の値を反映(次回描画でも保持)。
+    // diff's borrow has ended, so apply the clamped value (kept for the next render too).
     app.clamp_git_detail_hscroll(clamped_h);
 
-    // ヘッダ(完全メッセージ)を先頭に積んで diff を続ける。
+    // Stack the header (full message) at the top, then continue with the diff.
     let mut lines = header_lines;
     lines.extend(body_lines);
 
-    // 末尾を超えないよう縦スクロール量をクランプ(折返ししない=横は切り捨て)。
-    // スクロール上限はヘッダ込みの総行数で決まるので描画側から App へ伝える。
+    // Clamp the vertical scroll amount so it never overshoots the tail (no wrapping = the horizontal is truncated).
+    // The scroll cap is determined by the total line count including the header, so the render side reports it to App.
     app.set_git_detail_total(lines.len());
     let scroll = clamp_vscroll(app.git_detail_scroll(), lines.len(), inner.height as usize);
 
@@ -675,7 +675,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("/", l(crate::i18n::Msg::GitFilterByName))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
     } else {
-        // 変更ハブ(o)
+        // Changes hub (o)
         HelpSection::new(l(crate::i18n::Msg::GitChangesLabel))
             .row("j / k", l(crate::i18n::Msg::GitMove))
             .row("s / S", l(crate::i18n::Msg::StageHint))
@@ -779,7 +779,7 @@ mod tests {
         let text =
             |spans: &[Span]| -> String { spans.iter().map(|s| s.content.to_string()).collect() };
 
-        // ① 余裕あり: 左 + 空白詰め + メタ。総幅が width にぴったり(=右端揃え)。
+        // (1) Plenty of room: left + space padding + meta. The total width lands exactly on width (= right-aligned).
         let out = line_with_right_meta(vec![Span::from("abc".to_string())], "date".to_string(), 20);
         let t = text(&out);
         assert!(t.starts_with("abc"), "左が先頭でない: {t}");
@@ -790,7 +790,7 @@ mod tests {
             "右端まで詰まっていない: {t}"
         );
 
-        // ② 溢れ: 左(subject)を末尾省略しメタは残す。総幅は width 以内。
+        // (2) Overflow: ellipsize the left side (subject) at the tail and keep the meta. The total width stays within width.
         let long = vec![Span::from("abcdefghijklmnopqrstuvwxyz".to_string())];
         let out = line_with_right_meta(long, "date".to_string(), 12);
         let t = text(&out);
@@ -798,7 +798,7 @@ mod tests {
         assert!(t.ends_with("date"), "メタが残っていない: {t}");
         assert!(UnicodeWidthStr::width(t.as_str()) <= 12, "width 超過: {t}");
 
-        // ③ 狭すぎ(meta幅+2 > width): メタを諦め、左のみ(末尾省略)。
+        // (3) Too narrow (meta width + 2 > width): give up on meta, left side only (ellipsized at the tail).
         let out = line_with_right_meta(
             vec![Span::from("abcdef".to_string())],
             "longmeta".to_string(),
@@ -863,25 +863,25 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        // 追加されたファイル内容("alpha")が詳細 diff に出る。
+        // The added file content ("alpha") shows up in the detail diff.
         assert!(s.contains("alpha"), "diff 本文が出ていない: {s}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // 回帰: 65535 行超の巨大 diff でも上限が u16 でラップせず末尾に到達できる。
+    // Regression: even a huge diff over 65535 lines can reach the tail without the cap wrapping in u16.
     #[test]
     fn clamp_vscroll_reaches_tail_for_huge_diff() {
-        // 総行数 70000, ビューポート 50 → 真の上限は 69950。
-        // u16 早すぎキャストだと 69950 % 65536 = 4414 に化けて末尾に届かない。
+        // Total lines 70000, viewport 50 → the true cap is 69950.
+        // Casting to u16 too early would turn 69950 % 65536 into 4414, never reaching the tail.
         let total = 70_000usize;
         let viewport = 50usize;
-        // スクロール状態の上限は u16(65535)。最大まで送っても末尾近くへ進める。
+        // The scroll state's cap is u16 (65535). Even sending the max still advances near the tail.
         assert_eq!(clamp_vscroll(u16::MAX, total, viewport), u16::MAX);
-        // 小さな offset はそのまま通る。
+        // A small offset passes through unchanged.
         assert_eq!(clamp_vscroll(100, total, viewport), 100);
-        // 末尾より行数が少なければ上限でクランプされる。
+        // If there are fewer lines than the tail, it's clamped at the cap.
         assert_eq!(clamp_vscroll(500, 120, viewport), 70);
-        // 0 行・空ビューポートでもパニックしない。
+        // Doesn't panic even with 0 lines / an empty viewport.
         assert_eq!(clamp_vscroll(10, 0, 0), 0);
     }
 
@@ -904,19 +904,19 @@ mod tests {
                     .collect::<String>()
             })
             .collect();
-        // 1行目に short/author/date。
+        // Line 1 has short/author/date.
         assert!(text[0].contains("abc1234"));
         assert!(text[0].contains("Alice"));
         assert!(text[0].contains("2026-06-29"));
-        // 件名と本文(改行を保持=各行が独立)が全て含まれる。
+        // The subject and body (line breaks preserved = each line is independent) are all included.
         assert!(text.iter().any(|t| t == "subject line"));
         assert!(text.iter().any(|t| t == "body paragraph one"));
         assert!(text.iter().any(|t| t == "body paragraph two"));
-        // 件名と本文の間の空行が保持されている。
+        // The blank line between the subject and the body is preserved.
         assert!(text.iter().any(|t| t.is_empty()));
-        // 最終行は区切り線(dim)。
+        // The last line is the divider (dim).
         assert!(text.last().unwrap().starts_with('─'));
-        // 件名行は太字。
+        // The subject line is bold.
         let subj = lines
             .iter()
             .find(|l| {
@@ -960,7 +960,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        // パネルタイトル(Graph branches)とブランチ名が並ぶ。
+        // The panel title (Graph branches) and branch names appear side by side.
         assert!(
             s.contains(tr(app.lang, crate::i18n::Msg::GraphPickerTitle)),
             "パネルタイトルが無い: {s}"

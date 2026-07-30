@@ -1,12 +1,15 @@
-// 動画サムネイルプレビュー: 外部ツール(ffmpegthumbnailer 優先・無ければ ffmpeg)で代表フレームを
-// 1枚だけ抽出し、その PNG を読み込んで DynamicImage を返す。返り値は SVG と同じく app の image_src
-// に載せ、以降は通常の画像経路(prepare_image→ワーカー再エンコード→kitty graphics)へそのまま流す。
-// **端末内での動画"再生"はしない(サムネイルのみ)** — kitty graphics でのリアルタイム再生は
-// CPU 過大・Ghostty では parser 律速で破綻するため(2026-06-27 調査・docs/AUDIT 参照)。
+// Video thumbnail preview: extract a single representative frame with an external tool
+// (ffmpegthumbnailer preferred, falling back to ffmpeg), load that PNG, and return a DynamicImage.
+// The result is put onto the app's image_src just like SVG, and from there flows through the normal
+// image path (prepare_image → worker re-encode → kitty graphics) unchanged.
+// **We do not "play" video inside the terminal (thumbnail only)** — real-time playback via kitty
+// graphics would be CPU-prohibitive and is parser-bound to the point of breaking down in Ghostty
+// (investigated 2026-06-27; see docs/AUDIT).
 //
-// 外部ツールはあくまで任意依存。どちらも無い/抽出失敗なら None を返し、呼び出し側は安全な
-// フォールバック(ヒント表示)へ降格する(PRD §5 配布容易性・原則#3「未対応は安全に」)。
-// ツール実行はメディアワーカースレッドで行うため、子プロセスのブロッキングは UI を塞がない。
+// External tools are strictly an optional dependency. If neither is present or extraction fails,
+// we return None and the caller degrades to a safe fallback (a hint message) — PRD §5 ease of
+// distribution, principle #3 "unsupported must fail safely".
+// Tool execution runs on the media worker thread, so a blocking child process never blocks the UI.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,7 +24,7 @@ const THUMB_MAX_PX: u32 = 1024;
 /// (the caller degrades to a safe fallback with a hint).
 pub fn thumbnail(path: &Path) -> Option<DynamicImage> {
     let out = temp_png_path();
-    // ffmpegthumbnailer(専用・高速・代表フレーム自動選択)を優先。無ければ ffmpeg にフォールバック。
+    // Prefer ffmpegthumbnailer (dedicated, fast, auto-picks a representative frame); fall back to ffmpeg.
     let ok = run_ffmpegthumbnailer(path, &out) || run_ffmpeg(path, &out);
     let img = if ok {
         image::ImageReader::open(&out)
@@ -31,7 +34,7 @@ pub fn thumbnail(path: &Path) -> Option<DynamicImage> {
     } else {
         None
     };
-    let _ = std::fs::remove_file(&out); // 一時ファイルは即削除(成否によらず)
+    let _ = std::fs::remove_file(&out); // delete the temp file right away (regardless of success)
     img
 }
 
@@ -114,7 +117,7 @@ mod tests {
             eprintln!("skip: ffmpeg 不在");
             return;
         }
-        // lavfi で 64x64・1秒の「緑一色」動画を生成し、抽出フレーム中央が緑であることを確認する。
+        // Generate a 64x64, 1-second solid-green video with lavfi and check the extracted frame's center is green.
         let vid = std::env::temp_dir().join("konoma-vthumb-test-green.mp4");
         let _ = std::fs::remove_file(&vid);
         let made = Command::new("ffmpeg")
@@ -130,7 +133,7 @@ mod tests {
 
         let img = thumbnail(&vid).expect("ffmpeg があればサムネイルが取れるはず");
         assert!(img.width() > 0 && img.height() > 0, "サムネイル寸法が 0");
-        // 中央ピクセルが緑優勢(g > r かつ g > b)＝抽出したのが確かに元動画のフレーム。
+        // The center pixel is green-dominant (g > r and g > b) = the extracted frame really is from the source video.
         let rgba = img.to_rgba8();
         let px = rgba.get_pixel(rgba.width() / 2, rgba.height() / 2);
         let (r, g, b) = (px[0], px[1], px[2]);

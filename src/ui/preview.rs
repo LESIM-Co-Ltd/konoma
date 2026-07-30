@@ -1,10 +1,10 @@
-// プレビュー描画 (全画面)。
-// テキスト系 (Markdown / Code / Text フォールバック) は実本文を読み込んで全画面スクロール表示する。
-// 画像(M2)・外部コマンド委譲(M2+)はまだ種別要約のまま。Markdown のリッチ描画 (装飾/Mermaid) は M3。
+// Preview rendering (full screen).
+// Text kinds (Markdown / Code / Text fallback) read the real body and display it with full-screen scrolling.
+// Image (M2) and external-command delegation (M2+) are still just kind summaries. Markdown's rich rendering (decorated/Mermaid) is M3.
 //
-// スクロール:
-//   - 縦: 末尾を超えないよう描画時にクランプ (内容行数と画面高さがここで判るため)。
-//   - 横: ui.wrap=false のとき長い行を見るために使う。折返し時は横スクロール無効 (0 にクランプ)。
+// Scrolling:
+//   - Vertical: clamped at draw time so it never scrolls past the end (the content line count and screen height are known here).
+//   - Horizontal: used to see long lines when ui.wrap=false. Disabled (clamped to 0) while wrapping.
 
 use std::path::Path;
 
@@ -22,12 +22,12 @@ use crate::ui::status::{hint, page_hint};
 
 /// Context spans for the Preview view (top-left of the status bar). Chip + (when an image) zoom factor.
 pub fn context(app: &App) -> Vec<Span<'static>> {
-    // モードチップ(PREVIEW/IMAGE)は `status` が前置。ここでは画像の倍率のみ追記。
+    // The mode chip (PREVIEW/IMAGE) is prepended by `status`. Here we only append the image zoom factor.
     let mut spans = Vec::new();
     if app.is_image_preview() {
         spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
     }
-    // PDF はページ位置を併記(例: 2/5)。総ページ数が判っているときだけ。
+    // PDF also shows the page position (e.g. 2/5), only when the total page count is known.
     if let Some((cur, total)) = app.pdf_page_indicator() {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
@@ -41,7 +41,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     let lang = app.lang;
     let l = |m| tr(lang, m);
     if app.is_git_diff_preview() {
-        // Git 変更ハブ(`o`)→ Enter で開くファイル差分のプレビュー。
+        // The file-diff preview opened via Enter from the Git changes hub (`o`).
         return vec![HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff))
             .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
@@ -127,7 +127,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "0/=", crate::i18n::Msg::HintFit),
             hint(lang, "hjkl", crate::i18n::Msg::HintPan),
         ];
-        // 多ページ PDF のときだけページ送りを前寄りに出す(単ページ/ページ数不明では出さない)。
+        // Show page paging up front only for multi-page PDFs (not for single-page or unknown page count).
         if app.pdf_can_navigate() {
             v.push(hint(lang, "J/K", crate::i18n::Msg::HintPage));
         }
@@ -142,19 +142,19 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         return v;
     }
     if matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
-        // Markdown(装飾表示)固有のリンク/チェックボックス操作(Tab フォーカス / Enter で開く /
-        // Space でトグル=チェックボックスがある文書のみ表示)＋ R でソース表示へ。
+        // Markdown (decorated view)-specific link/checkbox operations (Tab to focus / Enter to open /
+        // Space to toggle — shown only for documents with a checkbox) + R to switch to source view.
         let mut v = vec![
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintLink),
             hint(lang, "↵", crate::i18n::Msg::HintOpen),
             hint(lang, "C-t", crate::i18n::Msg::HintNewTab),
         ];
-        // コードブロックにフォーカス中は y→c=そのブロックをコピー(y のコピーメニューに現れる)。
+        // While a code block is focused, y→c copies that block (shows up in y's copy menu).
         if app.md_focused_code() {
             v.push(hint(lang, "y c", crate::i18n::Msg::HintCopyCode));
         }
-        // インライン mermaid 図にフォーカス中: その場ズーム(+/-)・ズーム中は hjkl=パン。
+        // While an inline mermaid diagram is focused: zoom in place (+/-); while zoomed, hjkl=pan.
         if app.focused_mermaid_ordinal().is_some() {
             v.push(hint(lang, "+/-", crate::i18n::Msg::Zoom));
             if app.fence_zoom_level() > 1.001 {
@@ -179,7 +179,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         ]);
         return v;
     }
-    // コード / 素テキスト。検索中は n/N(一致 cur/total)を前に出す。
+    // Code / plain text. While searching, show n/N (match cur/total) up front.
     let mut v = vec![hint(lang, "jk", crate::i18n::Msg::Scroll)];
     if let Some((cur, total)) = app.search_status() {
         v.push(format!(
@@ -190,18 +190,19 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
-    // 範囲選択コピー(v=文字 / V=行)は windowed(Code/Text/raw Markdown)のみ。
+    // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only.
     if app.is_windowed() {
         v.push(hint(lang, "v/V", crate::i18n::Msg::PreviewSelectHelp));
         v.push(hint(lang, "Y", crate::i18n::Msg::WkAtRef));
     }
-    // フォロー(F)の再開導線(解除後に1キーで戻れることを見せる)。
+    // A path back into follow (F) — shows it can be resumed with one key after it stops.
     v.push(hint(lang, "F", crate::i18n::Msg::StFollow));
-    // フォロー由来 diff: f=範囲トグル(開始以降 ⇄ フル)。follow_diff_scope_msg が Some のときだけ。
+    // For a follow-opened diff: f = toggle range (since follow-start ⇄ full), only when
+    // follow_diff_scope_msg is Some.
     if app.follow_diff_scope_msg().is_some() {
         v.push(hint(lang, "f", crate::i18n::Msg::HintFollowScope));
     }
-    // Markdown/Mermaid は R で装飾表示 ⇄ raw ソース表示をトグル(ラベルは現在モードで切替)。
+    // For Markdown/Mermaid, R toggles decorated view ⇄ raw source view (the label switches with the current mode).
     if app.is_decorated_kind() {
         let msg = if app.is_md_raw() {
             crate::i18n::Msg::HintRendered
@@ -226,9 +227,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    // SVG/GIF/mermaid を別スレッドで読み込み中: 生 XML や空きを出さず「読み込み中…」を表示する。
-    // 既に表示できる画像がある間(PDF ページ送り・ズームのシャープ再ラスタ)は旧画像を出し続ける
-    // (全画面スピナーで置き換えるとズームのたびにちらつく)。
+    // While an SVG/GIF/mermaid is loading on a separate thread: show "loading…" instead of raw XML
+    // or a blank area. While an image is already displayable (PDF page paging, zoom's sharp
+    // re-rasterization), keep showing the old image (replacing it with a full-screen spinner would
+    // flicker on every zoom).
     if app.is_media_loading()
         && !app.is_image_preview()
         && matches!(
@@ -247,16 +249,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // 画像は専用パス: 枠を描いてから内側に StatefulImage を描画する。
-    // バックエンド未初期化・デコード失敗 (app.image=None) はテキストにフォールバック。
+    // Images take a dedicated path: draw the frame, then draw StatefulImage inside it.
+    // An uninitialized backend / decode failure (app.image=None) falls back to text.
     if matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))) {
         render_image(frame, app, area);
         return;
     }
 
-    // SVG / 動画サムネ: ラスタ化・抽出に成功していれば画像経路で描画。失敗(image_src=None・
-    // 端末非対応・外部ツール不在含む)時は下のテキスト経路へ流し、安全フォールバックを表示する
-    // (設計原則#3「未対応は安全に」のグレースフル降格)。
+    // SVG / video thumbnail: draw via the image path if rasterization/extraction succeeded. On
+    // failure (image_src=None, including an unsupported terminal or a missing external tool), fall
+    // through to the text path below and show a safe fallback (design principle #3 "unsupported is
+    // safe" — graceful degradation).
     if matches!(
         app.tab.preview_kind,
         Some(
@@ -272,27 +275,28 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // CSV/TSV テーブル: 整列グリッド(列レインボー＋セルカーソル)で描画する(専用パス)。
-    // パース失敗時は is_table_preview=false になり、下のテキスト経路で生 CSV へ安全降格する。
+    // CSV/TSV table: draw it as an aligned grid (column rainbow + cell cursor) (dedicated path).
+    // On a parse failure is_table_preview becomes false and it safely degrades to raw CSV via the
+    // text path below.
     if app.is_table_preview() {
         crate::ui::table::render(frame, app, area);
         return;
     }
 
-    // GitDiff プレビュー: unified 差分を Zed 風着色で描画する(専用パス)。
+    // GitDiff preview: draw the unified diff with Zed-style coloring (dedicated path).
     if app.is_git_diff_preview() {
         render_gitdiff(frame, app, area);
         return;
     }
 
-    // 大きい Code/Text ファイルは less 風ウィンドウ読み(全読みしない)で描画する。
+    // Large Code/Text files are drawn with less-style windowed reads (not read in full).
     if app.is_windowed() {
         render_windowed(frame, app, area);
         return;
     }
 
-    // Markdown/Mermaid/コードは装飾済み (tui-markdown / mermaid-text / syntect) の行列を
-    // 描画する専用パス。
+    // Dedicated path for Markdown/Mermaid/code, drawing the already-decorated
+    // (tui-markdown / mermaid-text / syntect) lines.
     if matches!(
         app.tab.preview_kind,
         Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_)) | Some(PreviewKind::Code(_))
@@ -302,23 +306,23 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let (body, is_text) = match &app.tab.preview_kind {
-        // テキスト(拡張子未登録)は実本文をそのまま描画。
+        // Text (unregistered extension) draws the real body as-is.
         Some(PreviewKind::Text(p)) => (load_body(p, app.lang), true),
         Some(PreviewKind::Markdown(p))
         | Some(PreviewKind::Mermaid(p))
         | Some(PreviewKind::Code(p)) => {
-            // ここには来ない (上で装飾パスへ分岐済み) が、網羅性のため安全側。
+            // Unreachable (already branched to the decorated path above), but kept safe for exhaustiveness.
             (load_body(p, app.lang), true)
         }
         Some(PreviewKind::Image(p)) => (format!("[image] {}", p.display()), false),
-        // ラスタ化に失敗/端末非対応の SVG。生 XML をテキストとして見せる(安全なフォールバック)。
+        // An SVG that failed to rasterize / whose terminal is unsupported. Shows the raw XML as text (a safe fallback).
         Some(PreviewKind::Svg(p)) => (load_body(p, app.lang), true),
-        // 全画面フェンス表示でレンダリング失敗(未対応図種等)。案内を出す(q で md へ戻れる)。
+        // Rendering failed in the full-screen fence view (an unsupported diagram kind, etc.). Shows guidance (q returns to the md).
         Some(PreviewKind::MermaidFence(_)) => (
             tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),
             false,
         ),
-        // サムネイル抽出不可(ffmpeg 系不在/端末非対応/失敗)の動画。対象ファイル＋導入ヒントを表示。
+        // A video whose thumbnail couldn't be extracted (no ffmpeg family/unsupported terminal/failure). Shows the target file + an install hint.
         Some(PreviewKind::Video(p)) => (
             format!(
                 "{}\n{}",
@@ -327,8 +331,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
-        // ラスタ化不可(hayro・pdftocairo/pdftoppm/qlmanage/sips いずれも不可、または端末が非対応)の PDF。
-        // 対象ファイル＋ヒントを表示。
+        // A PDF that couldn't be rasterized (none of hayro/pdftocairo/pdftoppm/qlmanage/sips
+        // worked, or the terminal is unsupported). Shows the target file + a hint.
         Some(PreviewKind::Pdf(p)) => (
             format!(
                 "{}\n{}",
@@ -350,11 +354,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
-        // テーブルは上の専用パスで描画済み。ここに来るのはパース失敗時=生 CSV/TSV をテキスト表示(安全降格)。
+        // Tables are already drawn via the dedicated path above. Reaching here means the parse
+        // failed = show the raw CSV/TSV as text (safe degradation).
         Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
-        // アーカイブも上の専用パス(is_table_preview)で描画済み。ここに来るのは一覧化失敗時
-        // (壊れたファイル/非対応形式)。zip/tar の生バイト列をテキストとしてダンプせず、対象ファイル＋
-        // ヒントを表示する(原則#3)。
+        // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
+        // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
+        // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
         Some(PreviewKind::Archive { path, .. }) => (
             format!(
                 "{}\n{}",
@@ -364,7 +369,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             false,
         ),
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
-        // GitDiff は上の専用パスで描画済み(ここには来ない)。網羅性のため安全側。
+        // GitDiff is already drawn via the dedicated path above (unreachable here). Kept safe for exhaustiveness.
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),
         None => ("(no preview)".to_string(), false),
     };
@@ -378,33 +383,33 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let wrap = is_text && app.cfg.ui.wrap;
 
-    // 縦/横クランプの基準値を本文を move する前に算出。
+    // Compute the clamp baselines for vertical/horizontal before moving `body`.
     let logical_lines = body.lines().count();
     let max_line_cols = body.lines().map(|l| l.chars().count()).max().unwrap_or(0);
 
     let block = Block::bordered().title(title);
-    let inner = block.inner(area); // 枠を除いた表示領域
+    let inner = block.inner(area); // the display area with the frame excluded
 
     let mut para = Paragraph::new(body).block(block);
     if wrap {
-        // trim:false で先頭空白を保持 (コード/テキストのインデントを崩さない)。
+        // trim:false preserves leading whitespace (does not break code/text indentation).
         para = para.wrap(Wrap { trim: false });
     }
 
-    // 総表示行数: 折返し時は ratatui に計算させ、非折返し時は論理行数。
+    // Total display row count: let ratatui compute it while wrapping, otherwise use the logical line count.
     let total_rows = if wrap {
         para.line_count(inner.width)
     } else {
         logical_lines
     };
 
-    // 末尾を超えてスクロールしないようクランプ (最低1行は残す)。
+    // Clamp so it never scrolls past the end (at least 1 line remains).
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
     app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-    // ページ送り(PageUp/Down)の1ページ量に使うため、表示領域の高さを記録。
+    // Record the display area's height for use as the 1-page amount for page paging (PageUp/Down).
     app.tab.preview_viewport = inner.height;
 
-    // 横スクロール: 折返し時は不要 → 0。非折返し時は最長行が画面に収まる範囲まで。
+    // Horizontal scroll: unneeded while wrapping → 0. Otherwise, up to where the longest line fits on screen.
     let max_h = if wrap {
         0
     } else {
@@ -428,11 +433,12 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or_else(|| " preview ".to_string());
 
     let block = Block::bordered().title(title);
-    let inner = block.inner(area); // 枠を除いた表示領域
+    let inner = block.inner(area); // the display area with the frame excluded
 
-    // 装飾キャッシュを確保し、総表示行数(折返し込み)と最長行幅を得る(mermaid は inner 幅で
-    // フィット済みなので、後段で折返しても罫線が崩れない)。行本体は下の md_slice が
-    // 可視範囲だけ返す=全文書の clone / 全 reflow を毎フレームやらない。
+    // Ensure the decoration cache, and get the total display row count (wrap-inclusive) and the
+    // longest line width (mermaid is already fitted to the inner width, so its rule lines don't
+    // break even after wrapping downstream). The line bodies themselves are returned by md_slice
+    // below, only for the visible range — no full-document clone / full reflow every frame.
     let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
 
@@ -443,7 +449,7 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     // line (preview_edit_line). Same value preview_scroll is clamped against, so the fraction lines up.
     app.md_view_rows = total_rows;
 
-    // 横スクロール: 折返し時は不要。非折返し時のみ最長行が収まる範囲まで。
+    // Horizontal scroll: unneeded while wrapping. Only while not wrapping, up to where the longest line fits.
     let max_h = if wrap {
         0
     } else {
@@ -451,8 +457,9 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
 
-    // 可視スライス(フォーカス反転済み)＋スライス先頭からの残余スクロール。折返しは行単位で
-    // 独立(ratatui の Wrap は行を跨がない)ため、スライスの描画結果は全文書と一致する。
+    // The visible slice (with focus already inverted) + the remaining scroll from the slice's
+    // start. Wrapping is independent per line (ratatui's Wrap does not span lines), so the slice's
+    // rendered result matches the whole document.
     let (lines, local_scroll) = app.md_slice(app.tab.preview_scroll, inner.height);
     let mut para = Paragraph::new(Text::from(lines)).block(block);
     if wrap {
@@ -474,12 +481,14 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     if placements.is_empty() {
         return;
     }
-    // 描画位置+フォーカス状態の署名(変化検知用)。**このフレームで実際に描いた**画像の画面上
-    // rect だけをハッシュする: 全画像が画面外の間は署名を記録しない=テキスト部分のスクロール
-    // 毎キーにフル再描画(placeholder 残骸掃除)を発火させない。掃除が要るのは placeholder が
-    // グリッドに実在した/するフレームだけ(出現・移動・退場)。位置だけでなく**フォーカス/
-    // ズームの変化でも**発火させる: Ghostty ではフォーカス枠の描画フレームで隣接 placeholder
-    // 行の合成が乱れることがあり、状態が変わるそのフレームでグリッドを作り直す(即修復)。
+    // A signature of the draw position + focus state (for change detection). Hash only the
+    // on-screen rects of images **actually drawn in this frame**: while every image is off-screen,
+    // record no signature = don't trigger a full redraw (placeholder debris cleanup) on every
+    // scroll key over the text portion. Cleanup is only needed on the frames where a placeholder
+    // did/does exist in the grid (appearing, moving, leaving). Trigger it not just on position
+    // changes but also **on focus/zoom changes**: in Ghostty, the frame that draws the focus border
+    // can disturb the compositing of an adjacent placeholder row, so the grid is rebuilt on the very
+    // frame the state changes (an immediate fix).
     use std::hash::{Hash, Hasher};
     let mut sig = std::collections::hash_map::DefaultHasher::new();
     (inner.x, inner.y, inner.width, inner.height).hash(&mut sig);
@@ -492,12 +501,14 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     let bottom_bound = (inner.y + inner.height) as i32;
     for p in placements {
         let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&p.url);
-        // フォーカス照合は placement が運ぶ**ソース序数**(fence_ord)で行う。描画順の計数だと
-        // 上流に loading/テキスト降格のフェンスがある時 focused_mermaid_ordinal とずれる。
+        // Match focus using the **source ordinal** (fence_ord) carried by the placement. Counting
+        // by draw order drifts from focused_mermaid_ordinal when a loading/text-degraded fence
+        // exists upstream.
         let this_focused = is_mermaid && p.fence_ord.is_some() && focused_mermaid == p.fence_ord;
-        // p.line は装飾行(論理)の index、preview_scroll は折返し後の visual 行。wrap 時に
-        // 上流の折返し分だけ画像が上へズレる(＝反転キャプション行に megacell が重なり
-        // placeholder 行が ID 色のバーになる)ので、必ず visual 行へ変換してから引く。
+        // p.line is the (logical) index of a decorated line, while preview_scroll is the visual row
+        // after wrapping. While wrapping, the image would shift up by exactly the upstream wrap
+        // count (= a megacell would overlap the inverted caption line and the placeholder row would
+        // become an ID-color bar), so always convert to a visual row before subtracting.
         let vis_line = app.md_visual_span(p.line).0 as i32;
         let top = top_bound + vis_line - scroll; // block's first row on screen
                                                  // Visible screen band for this image (clipped to the viewport top/bottom).
@@ -519,7 +530,7 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             width: cols,
             height: vis_rows,
         };
-        // ここまで来た=このフレームで実際に描く画像。署名に画面上 rect を刻む。
+        // Reaching here = an image actually drawn in this frame. Record its on-screen rect into the signature.
         (
             p.url.as_str(),
             target.x,
@@ -529,11 +540,13 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         )
             .hash(&mut sig);
         drawn += 1;
-        // kitty の placeholder 行は「クリーンな SGR 状態で印字される」前提(megacell は fg=ID を
-        // 埋め込むだけで reverse/dim を解除しない)。下層テキストのスタイルをセルが継承すると
-        // 反転で背景=ID 色のバーが露出するため、画像領域のセルの**属性と fg** を必ず素に戻す。
-        // 背景色は保持する: 透過図はセル背景の上に合成されるので、消すとテーマ背景でなく
-        // 端末既定色のパネルが図の背後に浮く。
+        // kitty's placeholder row assumes it's "printed in a clean SGR state" (a megacell only
+        // embeds fg=ID and does not clear reverse/dim). If a cell inherits the underlying text's
+        // style, a reversed cell exposes an ID-color bar as its background, so the image region's
+        // cells always have their **attributes and fg** reset to plain. The background color is
+        // preserved: a transparent diagram is composited over the cell background, so clearing it
+        // would float a panel in the terminal's default color — rather than the theme
+        // background — behind the diagram.
         {
             let buf = frame.buffer_mut();
             for y in target.top()..target.bottom() {
@@ -549,18 +562,21 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
                 }
             }
         }
-        // フォーカス中のフェンス図は**画像の外側**に選択枠を描く(キャプション行が上辺・下マージン
-        // 行が下辺・左右は空白列)。kitty graphics は画像をテキストの上に重ねるので、枠は画像領域の
-        // 外にある=実機でも必ず見える。ブロック全体が画面内のときだけ(部分枠は出さない。フォーカス
-        // 移動時は md_focus_move がブロック全体を可視域へスクロールする)。
+        // For a focused fence diagram, draw the selection border **outside the image** (the caption
+        // line is the top edge, the bottom margin row is the bottom edge, and the sides are blank
+        // columns). Since kitty graphics overlays the image on top of the text, the border sits
+        // outside the image region = it's always visible even on a real terminal. Only when the
+        // whole block is on-screen (no partial border; when focus moves, md_focus_move scrolls the
+        // whole block into the visible range).
         if this_focused {
-            let btop = top - 1; // キャプション行
-            let bbot = top + p.rows as i32 + 1; // 下マージン行の次(排他)
-                                                // 枠幅=画像幅とタイトル幅の広い方(+角)。テキスト層のキャプション(中央寄せ)を
-                                                // 完全に覆う=タイトルが枠からはみ出したり、下の文字が枠の右に漏れたりしない。
+            let btop = top - 1; // caption line
+            let bbot = top + p.rows as i32 + 1; // the row after the bottom margin row (exclusive)
+                                                // Border width = whichever is wider, the image width or the title width (+corners).
+                                                // Fully covers the text layer's (centered) caption = the title never overflows
+                                                // the border, and the text below never leaks past its right edge.
             let z = app.fence_zoom_level();
             let lang = app.lang;
-            // 枠タイトルはテキスト層のキャプションを覆う(はみ出し防止)。affordance も i18n。
+            // The border title covers the text layer's caption (prevents overflow). The affordance is also i18n'd.
             let title = if z > 1.001 {
                 format!(
                     " ◇ mermaid  x{z:.1} — {} ",
@@ -578,9 +594,10 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             let bx = inner.x + (inner.width.saturating_sub(bw)) / 2;
             if btop >= top_bound && bbot <= bottom_bound {
                 use ratatui::style::{Color as C, Modifier as M, Style as S};
-                // 四辺の選択枠(キャプション行=上辺タイトル・マージン行=下辺・側辺は画像の外の
-                // 空白列)。枠は「色付きバー」とは無関係(バーの真因は上の vis_line 変換と
-                // 画像領域の Style::reset を参照)。
+                // A four-sided selection border (the caption line = top edge/title, the margin row
+                // = bottom edge, the sides = blank columns outside the image). The border is
+                // unrelated to the "colored bar" issue (see the vis_line conversion above and the
+                // image region's Style::reset for that bar's root cause).
                 let brect = Rect {
                     x: bx,
                     y: btop as u16,
@@ -594,11 +611,12 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
                 frame.render_widget(border, brect);
             }
         }
-        // フォーカス中フェンスのインプレースズーム: 予約エリアはそのまま、その中へ拡大クロップを
-        // 描く(ブロック全体が画面内のときのみ。部分スクロール中は通常表示に落とす)。
+        // In-place zoom for a focused fence: keep the reserved area as-is and draw a zoomed crop
+        // inside it (only when the whole block is on-screen; falls back to normal display while
+        // partially scrolled).
         let zoomed =
             this_focused && app.fence_zoom_level() > 1.001 && row_off == 0 && vis_rows >= p.rows;
-        // 表示サイズ(mermaid_rows)がベースラスタより大きい場合は高密度へ追従(非ズーム時も)。
+        // If the display size (mermaid_rows) is larger than the base raster, follow up to a higher density (even while not zoomed).
         if is_mermaid {
             app.ensure_md_fence_density(&p.url, cols, p.rows);
         }
@@ -614,8 +632,9 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             frame.render_widget(Image::new(proto), target);
         }
     }
-    // 1 枚も描いていないフレームは記録しない(None)= 直前まで描いていた場合のみ「退場」として
-    // finish 側が 1 回だけ掃除を発火し、以後の画面外スクロールでは発火しない。
+    // A frame that drew nothing at all is not recorded (None) = only when something was drawn up
+    // until just before does the finish side fire cleanup once as a "departure", and it does not
+    // fire again for further off-screen scrolling.
     if drawn > 0 {
         app.note_md_overlay(sig.finish());
     }
@@ -624,15 +643,15 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
 /// GitDiff preview rendering. Displays the lines from `git::file_diff` Zed-style (gutter + change bar + colored body + row background)
 /// with full-screen scrolling. If the diff is empty (clean), shows "(no changes)" in the center.
 fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Auto は内側幅で解決する。先に枠の内側幅を見積もる。
+    // Auto is resolved by the inner width. Estimate the frame's inner width first.
     let split = app.diff_is_split(Block::bordered().inner(area).width);
     let mode_tag = if split { " ⇆" } else { "" };
-    // 変更ファイル集合の中での位置 `(2/5)`(n/N 回遊の現在地。集合外なら出さない)。
+    // The position `(2/5)` within the set of changed files (the current spot for n/N cycling; not shown if outside the set).
     let pos = app
         .diff_change_position()
         .map(|(i, n)| format!(" ({i}/{n})"))
         .unwrap_or_default();
-    // フォロー由来 diff は「開始以降 / フル」の範囲を明示する(境界が不可視ゆえの戸惑いを防ぐ)。
+    // For a follow-opened diff, make the "since follow-start / full" range explicit (prevents confusion since the boundary is invisible).
     let scope = app
         .follow_diff_scope_msg()
         .map(|m| format!(" · {}", tr(app.lang, m)))
@@ -662,12 +681,13 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // 拡張子で本文を構文着色。テーマは設定のコードテーマを流用。
+    // Syntax-color the body by extension. Reuse the code theme from config.
     let ext = app.current_preview_ext().to_string();
     let theme = app.cfg.ui.theme.code_theme.clone();
     let iw = inner.width as usize;
-    // 横スクロール: 縦並びは Paragraph の横 offset、横並びは**各列の本文だけ**を内部でずらす
-    // (ガター/区切りは固定)。どちらも h/l・0/$ で操作する同じ preview_hscroll を使う。
+    // Horizontal scroll: stacked layout uses Paragraph's horizontal offset; side-by-side shifts
+    // **each column's body text only** internally (the gutter/separator stay fixed). Both use the
+    // same preview_hscroll, operated with h/l·0/$.
     let (lines, para_hscroll) = if split {
         let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(&diff, iw) as u16;
         app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
@@ -692,7 +712,7 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let total_rows = lines.len();
 
-    // 縦スクロールは末尾を超えないようクランプ(diff は折返ししない=横は切り捨て表示)。
+    // Clamp vertical scroll so it never scrolls past the end (a diff never wraps = horizontal is truncated).
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
     app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
 
@@ -711,14 +731,14 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
         (Some(p), None) => format!(" {} ", app.format_path(&p)),
         _ => " preview ".to_string(),
     };
-    // Markdown/Mermaid を raw ソース表示中はタイトルで明示する(装飾表示と区別)。
+    // While showing raw source for Markdown/Mermaid, make it explicit in the title (distinguishes it from the decorated view).
     if app.is_raw_source() {
         title.push_str(&format!(
             "· {} ",
             tr(app.lang, crate::i18n::Msg::HintRawSource)
         ));
     }
-    // progressive 待ち中はタイトルに「ハイライト中」を添える(本文は素テキストで即読める)。
+    // While waiting on progressive rendering, add "highlighting" to the title (the body is immediately readable as plain text).
     if app.is_highlight_pending() && !app.loading_is_indicator() {
         title.push_str(tr(app.lang, crate::i18n::Msg::Highlighting));
     }
@@ -726,8 +746,9 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     app.tab.preview_viewport = inner.height;
 
-    // indicator 方式: cold な言語の初回は画面中央にスピナー(絵文字でなく点字の定番スピナー)を出す。
-    // コンパイルは裏スレッドで走り、run ループが待機中にコマを進めるので**回り続ける**(フリーズ無し)。
+    // Indicator style: on a cold language's first time, show a spinner (the classic braille spinner,
+    // not an emoji) centered on screen. Compilation runs on a background thread, and the run loop
+    // advances its frame while waiting, so it **keeps spinning** (no freeze).
     if app.is_highlight_pending() && app.loading_is_indicator() {
         frame.render_widget(block, area);
         render_spinner_line(
@@ -743,17 +764,18 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
 
     let wrap = app.cfg.ui.wrap;
-    // 非折返し時は 2D キャレットが画面外へ出ないよう横スクロールを追従させる(テーブルと同じ流儀)。
-    // キャレット桁はレンダ済み行の REVERSED スパン開始位置(＝ガター込みの表示桁)から求める。
+    // While not wrapping, follow horizontal scroll so the 2D caret never goes off-screen (same
+    // convention as the table). The caret column is derived from the rendered line's REVERSED span
+    // start position (= the display column, gutter included).
     if !wrap {
         if let Some((caret_disp, caret_row)) = caret_display_col(&lines) {
             let w = inner.width as usize;
             let line_w = lines[caret_row].width();
             if line_w <= w {
-                // キャレット行が画面幅に収まるなら先頭から表示(短い行で孤立文字にしない)。
+                // If the caret line fits within the screen width, display it from the start (does not isolate a character on a short line).
                 app.tab.preview_hscroll = 0;
             } else {
-                // 収まらない長い行は最小移動で追従(キャレットを端に置く)。
+                // A long line that doesn't fit follows with minimal movement (places the caret at the edge).
                 let h = app.tab.preview_hscroll as usize;
                 if caret_disp < h {
                     app.tab.preview_hscroll = caret_disp as u16;
@@ -767,14 +789,14 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
     if wrap {
         para = para.wrap(Wrap { trim: false });
     }
-    // 横スクロール: 折返し時は不要。非折返し時のみ窓内の最長行が収まる範囲まで。
+    // Horizontal scroll: unneeded while wrapping. Only while not wrapping, up to where the longest line within the window fits.
     let max_h = if wrap {
         0
     } else {
         max_line_cols.saturating_sub(inner.width as usize) as u16
     };
     app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-    // 縦は窓で切り出し済みなので 0。横のみスクロール。
+    // Vertical is already cut out by the window, so 0. Only horizontal scrolls.
     let para = para.scroll((0, app.tab.preview_hscroll));
     frame.render_widget(para, area);
 }
@@ -851,7 +873,7 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(Paragraph::new(msg), inner);
     };
 
-    // GIF: 同期エンコード済み Protocol を Image ウィジェットで原子的に描画(churn/未エンコード空き無し)。
+    // GIF: draw the synchronously pre-encoded Protocol atomically via the Image widget (no churn/unencoded blank).
     if app.is_gif_active() {
         let target = app.prepare_gif(inner);
         match (target, app.gif_protocol()) {
@@ -861,11 +883,12 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // 静止画: 描画直前に (zoom, center, inner) から crop と表示矩形を確定。
-    // z=1=フィット, 拡大で大きく, viewport を超えたら見切れ＋パン(中央寄せ)。
+    // Still images: right before drawing, fix the crop and display rect from (zoom, center, inner).
+    // z=1=fit, larger while zoomed in, cropped + pan once it exceeds the viewport (centered).
     let target = app.prepare_image(inner);
-    // kitty 端末: konoma 自前の圧縮転送(o=z)経路。crop 変化時に構築済みの KittyImage を
-    // フレームバッファへ直接描く(転送1回＋以降 placeholder のみ)。転送量が数十分の一。
+    // kitty terminal: konoma's own compressed-transfer (o=z) path. On a crop change, draw the
+    // already-built KittyImage directly into the frame buffer (one transfer, then placeholder-only
+    // afterward). The transfer volume drops to a fraction.
     if app.uses_kitty_image() {
         match (target, app.kitty_image_ref()) {
             (Some(target), Some(ki)) => ki.render(target, frame.buffer_mut()),
@@ -873,11 +896,13 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         return;
     }
-    // その他端末(sixel/iterm2/halfblocks): ratatui-image の非同期 StatefulImage。
+    // Other terminals (sixel/iterm2/halfblocks): ratatui-image's async StatefulImage.
     match (target, app.image.as_mut()) {
         (Some(target), Some(state)) => {
-            // 最近傍(None)だと縮小でエイリアス・拡大でブロックノイズになり高解像度ソースでも粗く見える。
-            // Lanczos3 で高品質リサイズ(リサイズ/エンコードは別スレッド=resize_worker なので UI を阻害しない)。
+            // Nearest-neighbor (None) aliases when shrinking and produces block noise when
+            // enlarging, looking coarse even from a high-resolution source. Use Lanczos3 for
+            // high-quality resizing (resizing/encoding runs on a separate thread = resize_worker, so
+            // the UI is not blocked).
             let widget = StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3)));
             frame.render_stateful_widget(widget, target, state);
         }
@@ -896,7 +921,7 @@ fn load_body(path: &Path, lang: crate::i18n::Lang) -> String {
             }
             s
         }
-        // `[can not preview: …]` マーカーは仕様の英語固定表記 (cf. CanNotPreview の <ext>)。
+        // The `[can not preview: …]` marker is a fixed English string by spec (cf. CanNotPreview's <ext>).
         Err(e) => format!("[can not preview: load failed] {e}"),
     }
 }
@@ -939,7 +964,7 @@ mod gitdiff_tests {
         std::fs::write(&f, b"alpha\nbeta\ngamma_keep\n").unwrap();
         run_git(&dir, &["add", "-A"]);
         run_git(&dir, &["commit", "-m", "init"]);
-        // 1 行を変更(beta → gamma)。
+        // Change one line (beta → gamma).
         std::fs::write(&f, b"alpha\ngamma\ngamma_keep\n").unwrap();
 
         let canon = dir.canonicalize().unwrap();
@@ -954,12 +979,12 @@ mod gitdiff_tests {
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         let buf = term.backend().buffer();
 
-        // 画面文字列(削除/追加の両方の行内容が出る)。
+        // The on-screen string (both the deleted and added line contents appear).
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(s.contains("beta"), "削除行(beta)が出ていない: {s:?}");
         assert!(s.contains("gamma"), "追加行(gamma)が出ていない");
 
-        // 変更行に赤 or 緑の背景セルが少なくとも 1 つある(Zed 風着色の証拠)。
+        // A changed row has at least one red or green background cell (evidence of Zed-style coloring).
         let added_bg = Color::Rgb(20, 48, 28);
         let removed_bg = Color::Rgb(58, 24, 26);
         let has_green = buf.content().iter().any(|c| c.bg == added_bg);
