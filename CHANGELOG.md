@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-07-30
+
 ### Fixed
 - **git integration now switches itself off when no `git` executable is present, instead of
   half-working.** Repository discovery goes through the bundled libgit2 and succeeded regardless, so
@@ -1074,7 +1076,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.20.0...v0.21.0
