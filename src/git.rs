@@ -339,6 +339,28 @@ pub fn workdir(_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Returns the **git directory** (where `HEAD`/`index`/refs actually live) for the repository that
+/// `root` belongs to (canonicalized). For an ordinary repository this is `<repo>/.git/`. For a
+/// **linked worktree** (created with `git worktree add`) it is instead
+/// `<main-repo>/.git/worktrees/<name>/` — that linked worktree's own `HEAD` and `index` live there,
+/// not under the worktree's checkout. This is a different path from [`workdir`], which always
+/// returns the *checked-out tree* side (for a linked worktree, that is the worktree's own root, not
+/// the main repo's root). Returns None when not a repo / when the feature is disabled.
+#[cfg(feature = "git")]
+pub fn git_dir(root: &Path) -> Option<PathBuf> {
+    if !external_git_enabled() {
+        return None;
+    }
+    let repo = git2::Repository::discover(root).ok()?;
+    let p = repo.path().to_path_buf();
+    Some(p.canonicalize().unwrap_or(p))
+}
+
+#[cfg(not(feature = "git"))]
+pub fn git_dir(_root: &Path) -> Option<PathBuf> {
+    None
+}
+
 /// Returns the current branch name. A short hash when detached, or the HEAD reference name before the first commit (unborn).
 /// Returns None when not a repo / when the feature is disabled.
 #[cfg(feature = "git")]

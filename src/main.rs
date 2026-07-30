@@ -392,10 +392,12 @@ fn run(
     // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
     // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
     let mut watched_extra: Option<PathBuf> = None;
-    // When root is a subdirectory of a repo, the parent's `.git` falls outside the recursive
-    // watch. Watch `.git` non-recursively so external git operations (a commit that doesn't touch
-    // working files / an external checkout) are picked up (`App::git_dir_watch`). When root is the
-    // repo root, this is already covered by the recursive watch, so it's None.
+    // When root is a subdirectory of a repo — or root is a *linked worktree* (`git worktree add`),
+    // whose own `HEAD`/`index` live under the main repo's `.git/worktrees/<name>/`, entirely outside
+    // the worktree's own checkout — the git directory falls outside the recursive watch. Watch it
+    // non-recursively so external git operations (a commit that doesn't touch working files / an
+    // external checkout) are picked up (`App::git_dir_watch`). When root *is* the repo root, this is
+    // already covered by the recursive watch, so it's None.
     let mut watched_git: Option<PathBuf> = None;
 
     // Loading: warm the code grammar in the background and notify the run loop of completion over
@@ -724,8 +726,9 @@ fn run(
         if watched_extra.as_deref() != want_extra.as_deref() {
             set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref());
         }
-        // When root is a subdirectory, watch the parent repo's `.git` non-recursively to catch
-        // external git operations.
+        // When root is a subdirectory of a repo, or is a linked worktree whose own `HEAD`/`index`
+        // live under the main repo's `.git/worktrees/<name>/`, watch that git directory
+        // non-recursively to catch external git operations.
         let want_git = app.git_dir_watch();
         if watched_git.as_deref() != want_git.as_deref() {
             set_extra_watch(watcher.as_mut(), &mut watched_git, want_git.as_deref());

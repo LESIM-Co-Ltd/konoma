@@ -11222,6 +11222,89 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
     std::fs::remove_dir_all(&plain).ok();
 }
 
+/// `git_dir_watch` for a **linked worktree** (`git worktree add`): that worktree's own `HEAD`/`index`
+/// live under the main repo's `.git/worktrees/<name>/`, entirely outside the worktree's own checkout,
+/// so no event under the worktree root — however deep — ever used to reach the recursive watch.
+/// Before the fix this returned `None` for two independent reasons (root == `workdir()`'s result, and
+/// the worktree's own `.git` is a *file*, not a directory), so an external `git commit`/`checkout` on
+/// a linked worktree root was never picked up and stale `M`/`U` markers lingered forever.
+#[cfg(feature = "git")]
+#[test]
+fn git_dir_watch_targets_worktrees_git_dir_for_linked_worktree_root() {
+    let main_dir = unique_tmp("konoma_git_dir_watch_wt_main");
+    std::fs::create_dir_all(&main_dir).unwrap();
+    init_git_repo(&main_dir);
+    let main_root = main_dir.canonicalize().unwrap();
+
+    // `git worktree add` creates the target directory itself, so pick a path that doesn't exist yet.
+    let wt_dir = unique_tmp("konoma_git_dir_watch_wt_linked");
+    let out = std::process::Command::new("git")
+        .arg("worktree")
+        .arg("add")
+        .arg("-q")
+        .arg("-b")
+        .arg("konoma-wt-test-branch")
+        .arg(&wt_dir)
+        .current_dir(&main_root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let wt_root = wt_dir.canonicalize().unwrap();
+    std::fs::create_dir_all(wt_root.join("sub")).unwrap();
+
+    // Ask git itself where this worktree's git dir lives, instead of hard-coding git's
+    // worktree-naming rules in the test.
+    let gd_out = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(&wt_root)
+        .output()
+        .unwrap();
+    assert!(gd_out.status.success());
+    let raw = String::from_utf8(gd_out.stdout).unwrap().trim().to_string();
+    let expected_git_dir = std::path::PathBuf::from(&raw);
+    let expected_git_dir = if expected_git_dir.is_absolute() {
+        expected_git_dir
+    } else {
+        wt_root.join(expected_git_dir)
+    };
+    let expected_git_dir = expected_git_dir.canonicalize().unwrap();
+    assert!(
+        expected_git_dir.starts_with(main_root.join(".git").join("worktrees")),
+        "sanity: a linked worktree's git dir must live under the main repo's .git/worktrees/, got {expected_git_dir:?}"
+    );
+
+    // Linked worktree root: its own HEAD/index live entirely outside its checkout -> must be watched.
+    let app_wt = App::new(wt_root.clone(), Config::default()).unwrap();
+    assert_eq!(
+        app_wt.git_dir_watch(),
+        Some(expected_git_dir.clone()),
+        "linked worktree root は自分の .git/worktrees/<name> を監視対象に返す"
+    );
+
+    // A subdirectory of the linked worktree: same target.
+    let app_wt_sub = App::new(wt_root.join("sub"), Config::default()).unwrap();
+    assert_eq!(
+        app_wt_sub.git_dir_watch(),
+        Some(expected_git_dir),
+        "linked worktree のサブディレクトリでも同じ監視対象を返す"
+    );
+
+    std::process::Command::new("git")
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(&wt_root)
+        .current_dir(&main_root)
+        .output()
+        .ok();
+    std::fs::remove_dir_all(&wt_dir).ok();
+    std::fs::remove_dir_all(&main_dir).ok();
+}
+
 /// A tab switch (load_active) is a checkpoint for re-validating git status: it sets dirty so that
 /// external changes missed by a background tab's watch are picked up, and status is re-fetched on
 /// the render after the switch (does not go stale even across **different subdirectory** tabs of

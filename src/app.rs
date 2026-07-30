@@ -2744,22 +2744,32 @@ impl App {
         p.parent().map(|d| d.to_path_buf())
     }
 
-    /// The repo's `.git` directory to watch **non-recursively** when the tree root is a *subdirectory*
-    /// of the repo (so the parent `.git` sits above `root` and is not covered by the recursive root
-    /// watch). Without this, an external git op that touches only `.git` (a commit of already-staged
-    /// files, an external checkout) fires no event under the subdir, so the cached `git status` /
-    /// branch would linger stale — the per-workdir status cache no longer re-verifies on `h`/`l`.
-    /// `.git/index` and `.git/HEAD` are direct children, so a non-recursive watch catches the signals
-    /// that change status/branch. Returns None when root *is* the repo root (`.git` already watched)
-    /// or outside any repo. konoma's own reads are lock-free (`--no-optional-locks`), so this does not
-    /// create a self-feedback loop.
+    /// The git directory to watch **non-recursively** when it is not already covered by the
+    /// recursive root watch. Without this, an external git op that touches only the git directory
+    /// (a commit of already-staged files, an external checkout) fires no event under root, so the
+    /// cached `git status` / branch would linger stale — the per-workdir status cache no longer
+    /// re-verifies on `h`/`l`. Two cases land here:
+    /// - **root is a subdirectory of the repo**: the parent `.git` sits above `root`, outside the
+    ///   recursive watch.
+    /// - **root is a linked worktree** (`git worktree add`): that worktree's own `HEAD`/`index` live
+    ///   under `<main-repo>/.git/worktrees/<name>/`, not under the worktree's own checkout at all —
+    ///   so *no* event ever reaches the recursive root watch, no matter how deep the tree goes.
+    ///   ([`crate::git::git_dir`] returns this location; [`crate::git::workdir`] would instead
+    ///   return the worktree's own root, which is exactly what makes this case easy to miss.)
+    ///
+    /// `HEAD`/`index` are direct children of the git directory, so a non-recursive watch catches
+    /// the signals that change status/branch. Returns None when the git directory is already under
+    /// `root` (nothing extra to watch) or outside any repo. konoma's own reads are lock-free
+    /// (`--no-optional-locks`), so this does not create a self-feedback loop.
     pub fn git_dir_watch(&self) -> Option<PathBuf> {
-        let wd = crate::git::workdir(&self.tab.root)?;
-        if self.tab.root == wd {
-            return None; // root is the repo root → `.git` is already under the recursive watch
-        }
-        let git = wd.join(".git");
-        git.is_dir().then_some(git)
+        let gd = crate::git::git_dir(&self.tab.root)?;
+        let root = self
+            .tab
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.tab.root.clone());
+        // Watch it only when it is NOT already covered by the recursive root watch.
+        (!gd.starts_with(&root)).then_some(gd)
     }
 
     /// Whether in windowed (large file) mode. Used for the render and scroll branching.

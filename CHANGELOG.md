@@ -6,6 +6,17 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **External git operations were never picked up when the tree root was a linked worktree**
+  (`git worktree add`), so `M`/`U` markers stayed stale forever. A linked worktree's own `HEAD` and
+  `index` live under the main repository's `.git/worktrees/<name>/`, not under the worktree's own
+  checkout at all, so no filesystem event under root — however deep — ever reached the recursive
+  watch, and the watch-gap detector (`git_dir_watch`) additionally short-circuited to "already
+  watched" because it compared against the checked-out tree instead of the actual git directory.
+  konoma now derives the git directory directly (`git::git_dir`) and watches it non-recursively
+  whenever it isn't already covered by root, which also naturally covers the pre-existing
+  subdirectory-root case in one check instead of two.
+
 ## [0.22.2] - 2026-07-30
 
 ### Fixed
