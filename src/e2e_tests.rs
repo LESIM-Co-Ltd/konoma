@@ -1556,6 +1556,186 @@ fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
 
 #[cfg(feature = "git")]
 #[test]
+fn e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list() {
+    // o → w → d on a **linked** worktree that has both committed and uncommitted work on top of
+    // the base: the detail shows both (committed+uncommitted, not just one), the title names the
+    // worktree's branch and the base it's diffed against, and q returns to the worktree list
+    // (not the hub, not the tree) — the list is still open underneath, never closed by this action.
+    let dir = sandbox("git_worktree_show_changes");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    let base = crate::git::branch(&root).expect("sanity: has a branch after seed_repo's commit");
+
+    let linked = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_linked");
+    let _ = std::fs::remove_dir_all(&linked);
+    let sh = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-since-feature",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let linked = linked.canonicalize().unwrap();
+
+    // ① Something committed *inside the worktree* (what an agent typically does mid-task).
+    std::fs::write(linked.join("agent_landed.txt"), "AGENT_LANDED_MARKER\n").unwrap();
+    sh(&linked, &["add", "-A"]);
+    sh(&linked, &["commit", "-q", "-m", "agent commit"]);
+    // ② Something still uncommitted on top of that.
+    std::fs::write(linked.join("agent_pending.txt"), "AGENT_PENDING_MARKER\n").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.ui.graph_base_branches = vec![base.clone()];
+    let mut s = Sim::with_config(&root, cfg);
+    s.key('o');
+    s.key('w');
+    assert!(s.app.is_git_worktrees());
+
+    // Move the cursor onto the linked worktree's row (position by content, not assumed order —
+    // git's non-main listing order isn't creation order, confirmed empirically elsewhere in this
+    // file).
+    let view = s.app.git_worktree_view();
+    let cur = s.app.git_worktree_sel();
+    let target = view
+        .iter()
+        .position(|w| w.path == linked)
+        .expect("linked worktree row");
+    for _ in 0..target.abs_diff(cur) {
+        s.key(if target > cur { 'j' } else { 'k' });
+    }
+
+    s.key('d');
+    assert!(
+        s.app.is_git_detail(),
+        "d でこのワークツリーの diff が detail として開く"
+    );
+    s.see(&format!("wt-since-feature ← {base}"));
+    s.see("agent_landed.txt");
+    s.see("AGENT_LANDED_MARKER");
+    s.see("agent_pending.txt");
+    s.see("AGENT_PENDING_MARKER");
+
+    s.key('q');
+    assert!(!s.app.is_git_detail(), "q で detail のみ閉じる");
+    assert!(
+        s.app.is_git_worktrees(),
+        "detail の裏にあったワークツリー一覧へ戻る（ハブでもツリーでもない）"
+    );
+    assert!(!s.app.is_git_view());
+
+    std::fs::remove_dir_all(&linked).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktree_show_changes_works_on_the_currently_active_worktree() {
+    // Unlike `worktree_goto`'s "already here" guard, `d` does NOT refuse the worktree the tab is
+    // presently inside — viewing its own diff is perfectly legitimate. The cursor starts there
+    // (per the worktree list's documented behavior), so pressing `d` immediately exercises this.
+    let dir = sandbox("git_worktree_show_changes_current");
+    seed_repo(&dir); // leaves uncommitted changes on a.rs + an untracked new.txt
+    let root = canon(&dir);
+    let mut s = Sim::new(&root); // default config: graph_base_branches = [] → falls back to the
+                                 // main worktree's own branch, which is exactly the one it's on
+    s.key('o');
+    s.key('w');
+    assert_eq!(
+        s.app.git_worktree_sel(),
+        s.app
+            .git_worktree_view()
+            .iter()
+            .position(|w| w.is_current)
+            .unwrap(),
+        "cursor はカレントから始まる"
+    );
+    s.key('d');
+    assert!(
+        s.app.is_git_detail(),
+        "現在地のワークツリーでも d は拒否されない（AlreadyCurrent は worktree_goto 専用のガード）"
+    );
+    s.see("new.txt"); // the uncommitted untracked file from seed_repo
+    s.see("_x = 1"); // the uncommitted edit to a.rs from seed_repo
+
+    s.key('q');
+    assert!(s.app.is_git_worktrees(), "一覧へ戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktree_show_changes_refuses_bare_worktree() {
+    // Same guard `worktree_goto` uses for a bare main worktree (no checkout to diff at all): `d`
+    // refuses with a flash and leaves the list open, rather than crashing or showing nothing.
+    let src = sandbox("git_worktree_show_changes_refuse_bare_src");
+    seed_repo(&src);
+    let src = canon(&src);
+    let bare = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_refuse_bare.git");
+    let wt = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_refuse_wt");
+    for p in [&bare, &wt] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+    let sh = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(
+        &std::env::temp_dir(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            src.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    sh(
+        &bare,
+        &["worktree", "add", "-q", wt.to_str().unwrap(), "master"],
+    );
+    let wt = wt.canonicalize().unwrap();
+
+    let mut s = Sim::new(&wt);
+    s.key('o');
+    s.key('w');
+    let view = s.app.git_worktree_view();
+    let cur = s.app.git_worktree_sel();
+    let bare_idx = view.iter().position(|w| w.is_bare).expect("bare row");
+    for _ in 0..bare_idx.abs_diff(cur) {
+        s.key(if bare_idx > cur { 'j' } else { 'k' });
+    }
+
+    s.key('d');
+    assert!(
+        !s.app.is_git_detail(),
+        "bare は拒否されて detail は開かない"
+    );
+    assert!(s.app.is_git_worktrees(), "一覧は開いたまま");
+    s.see("bare repository");
+
+    std::fs::remove_dir_all(&wt).ok();
+    std::fs::remove_dir_all(&bare).ok();
+    std::fs::remove_dir_all(&src).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
 fn e2e_git_commit_detail_shows_full_message() {
     // log → Enter opens commit detail. The full message (body newlines preserved) shows up in the header.
     let dir = sandbox("git_commit_detail");

@@ -89,6 +89,8 @@ graph_max_branches = 12
 # 2. The first one that exists becomes the "base" = pinned to lane0 in a straight line.
 # 3. The order also drives the legend/panel display order (array → HEAD → recency).
 # The graph's `b` panel J/K reorders for the current session only (never written back to the config).
+# Also reused as the base for the worktree list's diff (`d`, in git_worktrees): the first branch here
+# that exists is what a selected worktree's "everything since base" diff is computed against.
 graph_base_branches = []
 
 # In the log (o→l) / graph (o→g) commit rows, how the right-side metadata (author, date; also short hash in the
@@ -420,6 +422,11 @@ builtin = "pdf"
 #                    name is still config-rebindable to another key)
 #                  "worktree_goto_new_tab" (Ctrl-t: open the selected worktree in a new tab,
 #                    leaving this tab as-is) "worktree_close" (q/Esc)
+#                  "worktree_show_changes" (d: show the selected worktree's diff since the base
+#                    branch — committed AND uncommitted together, so it still shows something even
+#                    if the worktree already committed its work. The base is graph_base_branches
+#                    below, falling back to the main worktree's branch. Falls back further to an
+#                    uncommitted-only diff when there's no base or nothing has piled up yet.)
 #   Disable      : "noop" (alias "disabled") = remove that key's default binding.
 #
 # ■ Leaders (two-stage keys / which-key): pressing one shows the candidates in the footer.

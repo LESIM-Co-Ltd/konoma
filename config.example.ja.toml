@@ -87,6 +87,8 @@ graph_max_branches = 12
 # ② 左から最初に存在するものを「基準」= lane0 に左一直線で固定する。
 # ③ 並び順が凡例/パネルの表示順にも反映される(配列→HEAD→最近順)。
 # グラフ内 `b` パネルの J/K で当セッション限り並び替え可(config への書き戻しはしない)。
+# ワークツリー一覧の diff(`d`・git_worktrees)の基準にも流用される＝選択ワークツリーの
+# 「base からの積み上げ全部」diff は、ここに挙げた中で最初に実在するブランチを基準に計算する。
 graph_base_branches = []
 
 # log(o→l)/グラフ(o→g)のコミット行で、右側メタ情報(author・日付、グラフは short も)の寄せ方。
@@ -410,6 +412,10 @@ builtin = "pdf"
 #                    Enter は固定キーだが(branch_checkout と同様)、config で別キーにも割当可)
 #                  "worktree_goto_new_tab"(Ctrl-t: 選択ワークツリーを別タブで開く。現在のタブは不変)
 #                  "worktree_close"(q/Esc)
+#                  "worktree_show_changes"(d: 選択ワークツリーの base ブランチからの diff を表示
+#                    ＝コミット済み＋未コミットの両方(ワークツリーが既にコミット済みでも何かは表示される)。
+#                    base は下の graph_base_branches・無ければメインワークツリーのブランチにフォールバック。
+#                    base が無い/積み上げが無い時はさらに未コミットのみの diff にフォールバック)
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
 # ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。

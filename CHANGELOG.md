@@ -13,7 +13,15 @@ All notable changes to konoma are documented in this file. The format is based o
   copies stay anchored to the new location) to the selected worktree; `Ctrl-t` opens it in a new
   tab, leaving the current tab untouched. A bare main worktree, a locked/prunable one, or the
   currently-active one all refuse to switch with an explanatory flash instead. `/` filters by
-  branch name or path.
+  branch name or path. `d` shows the selected worktree's diff since the base branch —
+  **committed and uncommitted changes together** (equivalent to
+  `git diff $(git merge-base <base> HEAD)`), so it still shows something even when an AI agent has
+  been committing along the way inside that worktree (an uncommitted-only diff would otherwise go
+  blank the moment it commits). The base is `graph_base_branches` (reusing the graph's existing
+  setting), falling back to the main worktree's branch; falls back further to an
+  uncommitted-only diff when there's no resolvable base or nothing has piled up yet, with the
+  title making clear which one is being shown. Opens as a detail overlay on top of the list
+  (`q`/Esc returns to it); unlike switching, this also works on the currently-active worktree.
 
 ### Fixed
 - **External git operations were never picked up when the tree root was a linked worktree**

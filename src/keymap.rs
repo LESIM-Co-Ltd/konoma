@@ -260,6 +260,10 @@ pub enum Action {
     /// Worktree list: close it (returns to the changes hub).
     #[cfg(feature = "git")]
     WorktreeClose,
+    /// Worktree list: show the selected worktree's diff since the base branch (committed +
+    /// uncommitted together), overlaid as a detail view on top of the list.
+    #[cfg(feature = "git")]
+    WorktreeShowChanges,
 
     // --- Git copy (y→ commit info / branches branch name) ---
     /// log/graph/detail: copy the selected commit's info (hash / subject / message / author / date).
@@ -983,6 +987,7 @@ impl KeyMap {
             gwt.insert(KeyPress::ch('G'), nav(Motion::Bottom));
             gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
             gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
+            gwt.insert(KeyPress::ch('d'), run(Action::WorktreeShowChanges));
             gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
             per_surface.insert(Surface::GitWorktrees, gwt);
 
@@ -1948,6 +1953,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "worktree_close" => Action::WorktreeClose,
         #[cfg(feature = "git")]
+        "worktree_show_changes" => Action::WorktreeShowChanges,
+        #[cfg(feature = "git")]
         "git_copy_short_hash" => Action::GitCopy(GitCopyKind::ShortHash),
         #[cfg(feature = "git")]
         "git_copy_full_hash" => Action::GitCopy(GitCopyKind::FullHash),
@@ -2125,6 +2132,8 @@ pub fn action_name(a: Action) -> String {
         Action::WorktreeGotoNewTab => "worktree_goto_new_tab",
         #[cfg(feature = "git")]
         Action::WorktreeClose => "worktree_close",
+        #[cfg(feature = "git")]
+        Action::WorktreeShowChanges => "worktree_show_changes",
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => "git_copy_short_hash",
         #[cfg(feature = "git")]
@@ -3043,6 +3052,10 @@ mod tests {
             Resolution::Action(Action::WorktreeGotoNewTab)
         );
         assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('d')),
+            Resolution::Action(Action::WorktreeShowChanges)
+        );
+        assert_eq!(
             m.resolve(Surface::GitWorktrees, None, KeyPress::ch('q')),
             Resolution::Action(Action::WorktreeClose)
         );
@@ -3063,6 +3076,7 @@ mod tests {
             ("worktree_goto", Action::WorktreeGoto),
             ("worktree_goto_new_tab", Action::WorktreeGotoNewTab),
             ("worktree_close", Action::WorktreeClose),
+            ("worktree_show_changes", Action::WorktreeShowChanges),
         ];
         for &(s, a) in pairs {
             assert_eq!(action_from_str(s), Some(a), "{s} → {a:?}");

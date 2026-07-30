@@ -763,6 +763,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("j / k", l(crate::i18n::Msg::GitMove))
             .row("Enter", l(crate::i18n::Msg::GitWorktreeSwitch))
             .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
+            .row("d", l(crate::i18n::Msg::WorktreeShowChangesHelp))
             .row("/", l(crate::i18n::Msg::GitFilterByName))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
     } else {

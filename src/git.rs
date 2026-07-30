@@ -1803,6 +1803,76 @@ pub fn worktree_diff(_root: &Path) -> Vec<DiffLine> {
     Vec::new()
 }
 
+/// Returns the diff from `base`'s merge-base with HEAD, through the index, to the working tree —
+/// committed **and** uncommitted changes together — equivalent to
+/// `git diff $(git merge-base <base> HEAD)`. This is "everything this worktree has piled up since
+/// branching off `base`", which is what the worktree list's `d` wants to show: an AI agent working
+/// inside a worktree very often commits along the way, so an uncommitted-only diff
+/// (`worktree_diff`) would go empty the moment it commits, hiding everything it actually did.
+/// Diffing from the merge-base shows committed and uncommitted work together, correctly, across
+/// any mix of the two.
+///
+/// `root` is the **target worktree's own checkout path** (not necessarily the caller's current
+/// root — this is meant to inspect a *different* linked worktree picked from the list). Opening the
+/// repo via `Repository::discover(root)` from inside a specific worktree gives a `Repository`
+/// bound to that worktree's own HEAD (libgit2 resolves the per-worktree `HEAD`/index through its
+/// private `.git/worktrees/<name>` git-dir), so `repo.head()` below is that worktree's HEAD, not
+/// whichever worktree happened to open the repo first — same reasoning `worktree_diff` already
+/// relies on. Local branches (`base`) are shared repo-wide via the common git-dir, so `find_branch`
+/// resolves the same commit regardless of which worktree's path was used to discover the repo.
+///
+/// Returns an empty Vec when not a repo / `base` does not exist / HEAD is unborn / there is no
+/// merge-base / on any other failure or when the feature is disabled — same "quietly render blank"
+/// contract as every other diff function here, so the caller can fall back to `worktree_diff`.
+#[cfg(feature = "git")]
+pub fn diff_since(root: &Path, base: &str) -> Vec<DiffLine> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
+    let Ok(repo) = git2::Repository::discover(root) else {
+        return Vec::new();
+    };
+    let Ok(base_branch) = repo.find_branch(base, git2::BranchType::Local) else {
+        return Vec::new();
+    };
+    let Some(base_oid) = base_branch.get().peel_to_commit().ok().map(|c| c.id()) else {
+        return Vec::new();
+    };
+    let Some(head_oid) = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|c| c.id())
+    else {
+        return Vec::new(); // unborn HEAD
+    };
+    let Ok(merge_base_oid) = repo.merge_base(base_oid, head_oid) else {
+        return Vec::new(); // no common ancestor (unrelated histories)
+    };
+    let Some(base_tree) = repo
+        .find_commit(merge_base_oid)
+        .ok()
+        .and_then(|c| c.tree().ok())
+    else {
+        return Vec::new();
+    };
+    let mut opts = git2::DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let diff = match repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts)) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    collect_diff_lines(&diff, true)
+}
+
+#[cfg(not(feature = "git"))]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn diff_since(_root: &Path, _base: &str) -> Vec<DiffLine> {
+    Vec::new()
+}
+
 #[cfg(not(feature = "git"))]
 pub fn stage(_root: &Path, _file: &Path) -> anyhow::Result<()> {
     Err(anyhow::anyhow!("git feature 無効"))
@@ -2267,6 +2337,122 @@ mod tests {
 
         std::fs::remove_dir_all(&wt1).ok();
         std::fs::remove_dir_all(&bare).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The whole point of `diff_since` over `worktree_diff`: it must show **both** what the
+    /// worktree has already committed since branching off `base` **and** what's still uncommitted
+    /// on top of that — because an AI agent working in a worktree very often commits along the
+    /// way, and a plain uncommitted-only diff would go blank the moment it does, hiding everything
+    /// it actually produced. This test would fail if `diff_since` were implemented as a thin
+    /// wrapper around `worktree_diff` (HEAD → workdir+index only): the committed file's content
+    /// would then be absent from the result, since it's already at HEAD and would show as
+    /// unchanged.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_since_includes_both_committed_and_uncommitted_changes() {
+        let dir = std::env::temp_dir().join("konoma_git_diff_since_both_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("base.txt"), b"base content\n").unwrap();
+        stage(&dir, &dir.join("base.txt")).unwrap();
+        commit(&dir, "base commit").unwrap();
+        let main_root = dir.canonicalize().unwrap();
+
+        // A linked worktree branched off `main` (whatever the initial branch is named — read it
+        // back rather than assuming "main", since git's default varies by user/global config).
+        let base_name = branch(&main_root).expect("sanity: has a branch after the base commit");
+        let linked = std::env::temp_dir().join("konoma_git_diff_since_both_linked");
+        let _ = std::fs::remove_dir_all(&linked);
+        let sh = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&main_root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "konoma-diff-since-feature",
+            linked.to_str().unwrap(),
+        ]);
+        let linked = linked.canonicalize().unwrap();
+
+        // ① A commit made *inside the worktree* — the kind of thing an agent does mid-task. Named
+        // so its filename/content share no substring with the uncommitted file below (a naive
+        // "committed"/"uncommitted" naming would have "committed.txt" as a substring of
+        // "uncommitted.txt", making the sanity check below vacuously true).
+        std::fs::write(linked.join("agent_landed.txt"), b"AGENT_LANDED_MARKER\n").unwrap();
+        stage(&linked, &linked.join("agent_landed.txt")).unwrap();
+        commit(&linked, "agent commit inside the worktree").unwrap();
+
+        // ② On top of that, still-pending (uncommitted) work.
+        std::fs::write(linked.join("agent_pending.txt"), b"AGENT_PENDING_MARKER\n").unwrap();
+
+        let lines = diff_since(&linked, &base_name);
+        assert!(
+            !lines.is_empty(),
+            "base からの積み上げがあるので空のはずがない"
+        );
+        let joined: String = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("agent_landed.txt") && joined.contains("AGENT_LANDED_MARKER"),
+            "コミット済みの変更が含まれる（worktree_diff だけの実装ならここが無い）: {joined}"
+        );
+        assert!(
+            joined.contains("agent_pending.txt") && joined.contains("AGENT_PENDING_MARKER"),
+            "未コミットの変更も含まれる: {joined}"
+        );
+
+        // Sanity check on the premise itself: a plain uncommitted-only diff must NOT contain the
+        // committed file's content (it's already at HEAD, so it reads as unchanged) — proving the
+        // two functions really do answer different questions, and this test isn't accidentally
+        // passing for some other reason. This is exactly the assertion that would fail if
+        // `diff_since` were swapped for `worktree_diff`.
+        let uncommitted_only = worktree_diff(&linked);
+        let uncommitted_only_joined: String = uncommitted_only
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !uncommitted_only_joined.contains("AGENT_LANDED_MARKER")
+                && !uncommitted_only_joined.contains("agent_landed.txt"),
+            "前提の確認: worktree_diff は未コミットのみで、コミット済みの内容は含まれないはず: {uncommitted_only_joined}"
+        );
+
+        std::fs::remove_dir_all(&linked).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `base` that doesn't exist in the repo → empty Vec, so the caller's fallback path
+    /// (`worktree_diff`) actually runs instead of panicking or silently returning garbage.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_since_returns_empty_for_a_nonexistent_base() {
+        let dir = std::env::temp_dir().join("konoma_git_diff_since_missing_base_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::write(dir.join("a.txt"), b"two\n").unwrap(); // an uncommitted change too
+
+        assert!(
+            diff_since(&dir, "this-branch-does-not-exist").is_empty(),
+            "存在しない base は空 Vec（フォールバック経路が動く）"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

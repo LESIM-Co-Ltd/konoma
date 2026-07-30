@@ -767,6 +767,110 @@ impl App {
         Ok(())
     }
 
+    /// Decides the base branch for `worktree_show_changes`'s "everything since base" diff. Reuses
+    /// the graph's existing `[ui] graph_base_branches` (deliberately — no new setting to learn just
+    /// for this one feature): the first configured name that actually exists in this repo
+    /// (`git::branch_tip`), same "left to right, first hit wins" rule the graph's base-pinning
+    /// already uses (`derive_base_from_order`). Falls back to the **main** worktree's checked-out
+    /// branch (the first row `git worktree list` always reports, see `worktrees()`'s doc) when none
+    /// of the configured names exist — every real repo has a main worktree, and absent an explicit
+    /// config choice, whatever the main worktree is on is the most reasonable guess at "base".
+    /// `None` when neither resolves (e.g. an unconfigured base and a detached/unborn main worktree).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    fn worktree_diff_base(&self) -> Option<String> {
+        for name in &self.cfg.ui.graph_base_branches {
+            if crate::git::branch_tip(&self.tab.root, name).is_some() {
+                return Some(name.clone());
+            }
+        }
+        self.tab
+            .git_worktrees
+            .as_ref()?
+            .iter()
+            .find(|w| w.is_main)
+            .and_then(|w| w.branch.clone())
+    }
+
+    /// `d` in the worktree list: show what the **selected** worktree has piled up relative to the
+    /// base branch — the diff since `git merge-base <base> HEAD`, i.e. committed *and* uncommitted
+    /// content together (see `git::diff_since`'s doc for why: an AI agent working inside a worktree
+    /// very often commits along the way, so an uncommitted-only diff would go blank the moment it
+    /// does and hide everything the agent actually produced).
+    ///
+    /// Opens as a detail overlay **on top of the worktree list**, same layering as
+    /// `open_worktree_detail`/`open_git_graph_detail`: `is_git_detail()` is checked before
+    /// `is_git_worktrees()` in both `surface()` and `internal_mode()`, so as long as this doesn't
+    /// touch `self.tab.git_worktrees`, `q`/Esc closes only the detail and the list underneath
+    /// reappears untouched, cursor and filter intact.
+    ///
+    /// Refuses (flash, list stays open) a bare or unavailable (prunable/missing) row — the same
+    /// guard `worktree_goto` uses (`worktree_switch_target`) — but **not** `AlreadyCurrent`: viewing
+    /// the diff of the worktree you're presently in is perfectly legitimate.
+    ///
+    /// The base is `worktree_diff_base()`. When there's no resolvable base, or the since-base diff
+    /// comes back empty (e.g. this worktree sits exactly at the base with nothing piled up yet),
+    /// falls back to an uncommitted-only diff (`worktree_diff`) — the title makes clear which one is
+    /// being shown, so an uncommitted-only view is never mistaken for a diff against the base.
+    /// Flashes "no changes" if both come back empty.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn worktree_show_changes(&mut self) {
+        match self.worktree_switch_target() {
+            Some(WorktreeTarget::Bare) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeIsBare).into());
+                return;
+            }
+            Some(WorktreeTarget::Unavailable) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeUnavailable).into());
+                return;
+            }
+            // AlreadyCurrent / Go: both have a perfectly viewable diff — proceed to fetch the row's
+            // fields (branch/head/path) below rather than destructuring them out of the enum, since
+            // AlreadyCurrent doesn't carry a path anyway.
+            Some(WorktreeTarget::AlreadyCurrent) | Some(WorktreeTarget::Go(_)) => {}
+            // Selection vanished (e.g. filter narrowed the list to zero rows) — nothing to show.
+            None => return,
+        }
+        let Some(w) = self.git_worktree_selected() else {
+            return;
+        };
+        let branch_label = w
+            .branch
+            .clone()
+            .or_else(|| w.head.clone())
+            .unwrap_or_else(|| "?".to_string());
+        let path = home_relative(&w.path);
+
+        let base = self.worktree_diff_base();
+        let since = base
+            .as_deref()
+            .map(|b| crate::git::diff_since(&w.path, b))
+            .unwrap_or_default();
+
+        let (lines, title) = if !since.is_empty() {
+            let base_name = base.expect("non-empty `since` implies `base` resolved above");
+            (since, format!("{branch_label} ← {base_name}  {path}"))
+        } else {
+            (
+                crate::git::worktree_diff(&w.path),
+                format!(
+                    "{branch_label}  {path}  ({})",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::UncommittedChanges)
+                ),
+            )
+        };
+        if lines.is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
+            return;
+        }
+        self.tab.git_detail = Some(lines);
+        self.tab.git_detail_meta = None; // no single commit message — this is a range/aggregate
+        self.tab.git_detail_scroll = 0;
+        self.tab.git_detail_hscroll = 0;
+        self.tab.git_detail_title = Some(title);
+    }
+
     // --- Worktree filtering (`/`) ----------------------------------------------
     /// Whether worktree-filter input is active (while true, main captures keys as characters).
     pub fn git_worktree_filtering(&self) -> bool {
@@ -1421,5 +1525,126 @@ impl App {
         self.tab.git_detail_title = None;
         self.tab.git_detail_scroll = 0;
         self.tab.git_detail_hscroll = 0;
+    }
+}
+
+// `worktree_diff_base` is private, so its tests live here (a descendant module of `git_view`) —
+// same idiom as `paste_jump.rs`/`session_actions.rs`'s own co-located `mod tests`, rather than
+// `src/app/tests.rs` (which cannot see it).
+#[cfg(test)]
+mod tests {
+    // Every test below needs a real repo (git2), so the imports are only actually used under the
+    // `git` feature — gate them too, rather than leaving them to warn as unused in a no-git build.
+    #[cfg(feature = "git")]
+    use super::*;
+    #[cfg(feature = "git")]
+    use crate::config::Config;
+
+    #[cfg(feature = "git")]
+    fn init_repo(dir: &std::path::Path) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        cfg.set_str("commit.gpgsign", "false").ok();
+    }
+
+    #[cfg(feature = "git")]
+    fn sh(cwd: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// A main repo (one commit) with a linked worktree branched off it. Returns
+    /// `(main_root, base_branch_name, linked_worktree_path)`.
+    #[cfg(feature = "git")]
+    fn sandbox_with_worktree(name: &str) -> (PathBuf, String, PathBuf) {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        let root = dir.canonicalize().unwrap();
+        let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
+        let linked = std::env::temp_dir().join(format!("{name}_linked"));
+        let _ = std::fs::remove_dir_all(&linked);
+        sh(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-x",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let linked = linked.canonicalize().unwrap();
+        (root, base, linked)
+    }
+
+    /// `graph_base_branches` mixing branches that don't exist with one that does: the first
+    /// **existing** one wins, regardless of its position among the missing ones.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_diff_base_picks_first_existing_configured_branch() {
+        let (root, base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_prefer");
+        let mut cfg = Config::default();
+        cfg.ui.graph_base_branches = vec![
+            "konoma-does-not-exist".to_string(),
+            base.clone(),
+            "konoma-also-missing".to_string(),
+        ];
+        let mut app = App::new(root.clone(), cfg).unwrap();
+        app.open_git_worktrees(); // populates `tab.git_worktrees` (the fallback path's source)
+        assert_eq!(
+            app.worktree_diff_base(),
+            Some(base),
+            "設定済みの中で最初に実在するものを選ぶ"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An empty `graph_base_branches` (the default): falls back to the **main** worktree's
+    /// checked-out branch.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_diff_base_falls_back_to_main_worktree_branch_when_config_is_empty() {
+        let (root, base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_fallback");
+        let cfg = Config::default(); // graph_base_branches defaults to []
+        assert!(cfg.ui.graph_base_branches.is_empty(), "前提: 既定は []");
+        let mut app = App::new(root.clone(), cfg).unwrap();
+        app.open_git_worktrees();
+        assert_eq!(
+            app.worktree_diff_base(),
+            Some(base),
+            "config が空ならメインワークツリーのブランチへ"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A non-empty `graph_base_branches` whose entries **all** fail to resolve also falls back to
+    /// the main worktree's branch (not just the empty-config case).
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_diff_base_falls_back_when_every_configured_branch_is_missing() {
+        let (root, base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_all_missing");
+        let mut cfg = Config::default();
+        cfg.ui.graph_base_branches =
+            vec!["konoma-nope".to_string(), "konoma-also-nope".to_string()];
+        let mut app = App::new(root.clone(), cfg).unwrap();
+        app.open_git_worktrees();
+        assert_eq!(
+            app.worktree_diff_base(),
+            Some(base),
+            "設定が全滅ならメインワークツリーのブランチへ"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }
