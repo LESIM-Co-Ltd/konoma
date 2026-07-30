@@ -250,6 +250,90 @@ pub fn render_branches(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(widget, area);
 }
 
+/// Render the linked-worktree list (`w` from the changes hub) as a full-screen list.
+/// One row = current marker (`* ` current / blank) + branch name (or `(detached)`/`(bare)`) +
+/// short hash + path, with `main`/`bare`/`locked: <reason>`/`prunable` shown dim at the end where
+/// they apply. The current worktree's branch name is green + bold (same convention as
+/// `render_branches`). The selected row is reversed. Scrolls vertically to keep the selection visible.
+pub fn render_worktrees(frame: &mut Frame, app: &App, area: Rect) {
+    use ratatui::style::Color;
+    let lang = app.lang;
+    let entries = app.git_worktree_view(); // the display list after filtering
+    let sel = app.git_worktree_sel();
+    // While filtering / with a query, show "/<query>" in the title (same convention as branches).
+    let q = app.git_worktree_query();
+    let title = if q.is_empty() {
+        format!(" Git worktrees  ({}) ", entries.len())
+    } else {
+        format!(" Git worktrees  /{q}  ({}) ", entries.len())
+    };
+
+    let lines: Vec<Line> = if entries.is_empty() {
+        vec![Line::from(
+            Span::from(tr(lang, crate::i18n::Msg::GitNoWorktreesItem).to_string()).dim(),
+        )]
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let mark = if w.is_current { "* " } else { "  " };
+                let label = if w.is_bare {
+                    "(bare)".to_string()
+                } else {
+                    w.branch.clone().unwrap_or_else(|| "(detached)".to_string())
+                };
+                let label_span = if w.is_current {
+                    Span::styled(label, Style::new().fg(Color::Green).bold())
+                } else {
+                    Span::from(label)
+                };
+                let head = w.head.as_deref().unwrap_or("-------");
+                let path = crate::app::home_relative(&w.path);
+                let mut spans = vec![
+                    Span::from(mark.to_string()).fg(Color::Green),
+                    label_span,
+                    Span::from(format!("  {head}  {path}")),
+                ];
+                if w.is_main {
+                    spans.push(Span::from("  main").dim());
+                }
+                if w.is_bare {
+                    spans.push(Span::from("  bare").dim());
+                }
+                if let Some(reason) = &w.locked {
+                    let text = if reason.is_empty() {
+                        "  locked".to_string()
+                    } else {
+                        format!("  locked: {reason}")
+                    };
+                    spans.push(Span::from(text).dim());
+                }
+                if w.prunable {
+                    spans.push(Span::from("  prunable").dim());
+                }
+                let line = Line::from(spans);
+                if i == sel {
+                    line.reversed()
+                } else {
+                    line
+                }
+            })
+            .collect()
+    };
+
+    let visible = area.height.saturating_sub(2) as usize;
+    let offset = if visible > 0 && sel >= visible {
+        (sel - visible + 1) as u16
+    } else {
+        0
+    };
+    let widget = Paragraph::new(lines)
+        .block(Block::bordered().title(title))
+        .scroll((offset, 0));
+    frame.render_widget(widget, area);
+}
+
 /// Render the commit graph (`G`, SourceTree / Git Graph style).
 /// Each row = colored lanes (derived from git's `--graph --color`) + refs label + subject + (short hash, author, date).
 /// Only commit rows can hold the cursor; the selected row is reversed. Scrolls vertically to keep the selection visible.
@@ -674,6 +758,13 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("d", l(crate::i18n::Msg::GitDelete))
             .row("/", l(crate::i18n::Msg::GitFilterByName))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
+    } else if app.is_git_worktrees() {
+        HelpSection::new(l(crate::i18n::Msg::GitWorktreesLabel))
+            .row("j / k", l(crate::i18n::Msg::GitMove))
+            .row("Enter", l(crate::i18n::Msg::GitWorktreeSwitch))
+            .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
+            .row("/", l(crate::i18n::Msg::GitFilterByName))
+            .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
     } else {
         // Changes hub (o)
         HelpSection::new(l(crate::i18n::Msg::GitChangesLabel))
@@ -686,6 +777,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("d", l(crate::i18n::Msg::GitDiffAll))
             .row("l / g", l(crate::i18n::Msg::GitLogGraph))
             .row("b", l(crate::i18n::Msg::GitBranches))
+            .row("w", l(crate::i18n::Msg::GitWorktreesRow))
             .row("!", l(crate::i18n::Msg::GitExternalTool))
             .row("q / Esc", l(crate::i18n::Msg::GitCloseView))
     };

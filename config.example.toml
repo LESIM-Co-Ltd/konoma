@@ -364,6 +364,7 @@ builtin = "pdf"
 #   preview_table : CSV/TSV/archive tables    table_cell : the full-cell popup (Enter in preview_table)
 #   git_changes   : the Git changes hub (o)   git_log / git_graph / git_branches / git_detail
 #   git_graph_picker : the graph's branch-visibility panel (b)
+#   git_worktrees : the linked-worktree list (w, in the changes hub)
 #   sort  bookmarks  tabs (tab list: d=tab_list_close)  info  help
 #
 # ■ Key notation: single char (uppercase = with Shift: "G"), "space", literals "0 $ ! + - = . / '",
@@ -410,6 +411,15 @@ builtin = "pdf"
 #   Git graph    : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
 #                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
 #                  "git_graph_picker_move_up" "git_graph_picker_move_down"
+#   Git worktrees: "git_open_worktrees" (w, in the changes hub: open the linked-worktree list — a
+#                    *linked* working tree from `git worktree add`, not the "worktree" meant
+#                    everywhere else in this file, which is always the uncommitted working tree)
+#                  "worktree_filter_start" (/: filter by branch name / path)
+#                  "worktree_goto" (Enter: switch this tab's root — and open_dir — to the selected
+#                    worktree; Enter is a fixed key here, same as branch_checkout, but the action
+#                    name is still config-rebindable to another key)
+#                  "worktree_goto_new_tab" (Ctrl-t: open the selected worktree in a new tab,
+#                    leaving this tab as-is) "worktree_close" (q/Esc)
 #   Disable      : "noop" (alias "disabled") = remove that key's default binding.
 #
 # ■ Leaders (two-stage keys / which-key): pressing one shows the candidates in the footer.

@@ -101,6 +101,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         git::render_log(frame, app, content);
     } else if app.is_git_branches() {
         git::render_branches(frame, app, content);
+    } else if app.is_git_worktrees() {
+        git::render_worktrees(frame, app, content);
     } else if app.is_git_view() {
         git::render_changes(frame, app, content);
     } else {

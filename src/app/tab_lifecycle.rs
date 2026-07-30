@@ -250,6 +250,10 @@ impl App {
         self.tab.git_branch_sel = 0;
         self.tab.git_branch_filter.clear();
         self.tab.git_branch_filtering = false;
+        self.tab.git_worktrees = None;
+        self.tab.git_worktree_sel = 0;
+        self.tab.git_worktree_filter.clear();
+        self.tab.git_worktree_filtering = false;
         self.tab.git_graph = None;
         self.tab.git_graph_sel = 0;
         // A new tab also starts the graph's decoration state (base/legend/visible branches/order)

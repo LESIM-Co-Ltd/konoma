@@ -242,7 +242,7 @@ Surface names: `global`, `tree`, `tree_visual`, `preview_text`, `preview_text_vi
 `preview_image`, `preview_table`, `table_cell` (the full-cell popup opened by `Enter` in
 `preview_table`), `sort`, `bookmarks`, `tabs`, `outline`, `info`, `help`, and (git builds)
 `preview_git_diff`, `git_changes`, `git_log`, `git_graph`, `git_graph_picker`, `git_branches`,
-`git_detail`.
+`git_worktrees` (the linked-worktree list, `w` in the changes hub), `git_detail`.
 
 Key tokens: single characters (uppercase = Shift), `space`, literals like `0 $ ! + - = . / '`,
 modifiers `ctrl-<k>` (alias `c-<k>`), named keys `tab enter esc backspace delete up down
@@ -264,6 +264,7 @@ Action names are snake_case strings — the full annotated list is in
 - **Paste-jump** (`global`): `paste_jump` (`P`) — reads a path or GitHub link from the clipboard and jumps there (reveal + preview). Understands local absolute/relative paths, GitHub `blob`/`raw` URLs, and `#L123` / `:123` line anchors; switches root to the target's repository when it lies outside the current root.
 - **Git**: `open_git_view` (`o`), `open_git_diff_cursor` (`d`), `git_stage`, `git_unstage`, `git_stage_all`, `git_unstage_all`, `git_discard`, `git_commit`, `git_open_log`, `git_open_graph`, `git_open_branches`, `git_launch_tool` (`!`, in the changes hub), `cycle_diff_layout`, `git_copy_*`, `branch_*`
 - **Git graph** (`git_graph`): `git_graph_set_base`, `git_graph_clear_base`, `git_graph_open_picker` (`b`, opens the branch panel). Inside the branch panel (`[keys.git_graph_picker]`): `git_graph_picker_toggle`, `git_graph_picker_all`, `git_graph_picker_current_only`, `git_graph_picker_move_up`, `git_graph_picker_move_down`
+- **Git worktrees** (`git_worktrees` — a *linked* working tree from `git worktree add`, a different concept from the "worktree" meant everywhere else on this page, which is always the uncommitted working tree): `git_open_worktrees` (`w`, in the changes hub), `worktree_filter_start` (`/`, filter by branch name / path), `worktree_goto` (`Enter`, fixed key: switch this tab's root — and `open_dir` — to the selected worktree; still config-rebindable to another key), `worktree_goto_new_tab` (`Ctrl-t`: open the selection in a new tab, leaving this tab as-is), `worktree_close` (`q`/Esc). A bare main worktree, a locked/prunable one, or the currently-active one all refuse to switch (a flash explains why).
 - **Tabs / app** (`global`): `tab_new` (`t`), `toggle_tab_list` (`T` — tab list; `tab_list_close` = `d` inside it), `tab_prev`/`tab_next` (`[`/`]`), `quit` (`Q`), `toggle_help` (`?`). `tab_close` has no default key (closing is `q` on the tree; rebind with `"w" = "tab_close"` if you want it back)
 - `noop` (alias `disabled`) removes a default binding.
 

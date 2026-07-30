@@ -102,6 +102,8 @@ pub enum InternalMode {
     GitLog,
     GitDetail,
     GitBranch,
+    /// The linked-worktree list (`w` from the changes hub).
+    GitWorktrees,
     GitGraph,
     GitGraphPicker,
 }
@@ -1281,6 +1283,12 @@ pub(crate) struct PerTab {
     git_branch_sel: usize,
     git_branch_filter: String,
     git_branch_filtering: bool,
+    // The linked-worktree list (`w` from the changes hub). Same shape as the branch-list fields
+    // right above (list / cursor / filter query / filter-input-active).
+    git_worktrees: Option<Vec<crate::git::WorktreeInfo>>,
+    git_worktree_sel: usize,
+    git_worktree_filter: String,
+    git_worktree_filtering: bool,
     git_graph: Option<Vec<crate::git::GraphRow>>,
     git_graph_sel: usize,
     // Since we save the graph body itself (git_graph), the derived state that decorates it (base
@@ -1365,6 +1373,10 @@ impl Default for PerTab {
             git_branch_sel: 0,
             git_branch_filter: String::new(),
             git_branch_filtering: false,
+            git_worktrees: None,
+            git_worktree_sel: 0,
+            git_worktree_filter: String::new(),
+            git_worktree_filtering: false,
             git_graph: None,
             git_graph_sel: 0,
             git_graph_base: None,
@@ -1785,6 +1797,9 @@ impl App {
         if self.is_git_branches() {
             return Some(InternalMode::GitBranch);
         }
+        if self.is_git_worktrees() {
+            return Some(InternalMode::GitWorktrees);
+        }
         if self.is_git_view() {
             return Some(InternalMode::GitChanges);
         }
@@ -1879,6 +1894,13 @@ impl App {
                     S::BranchFilter
                 } else {
                     S::GitBranches
+                };
+            }
+            if self.is_git_worktrees() {
+                return if self.git_worktree_filtering() {
+                    S::WorktreeFilter
+                } else {
+                    S::GitWorktrees
                 };
             }
             if self.is_git_view() {

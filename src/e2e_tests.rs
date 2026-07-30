@@ -1333,6 +1333,229 @@ fn e2e_git_branches_view_lists_branches() {
 
 #[cfg(feature = "git")]
 #[test]
+fn e2e_git_worktrees_view_lists_and_enter_switches_root() {
+    // Changes hub (o) → worktrees (w). Both the main and a linked worktree show up; `Enter` on the
+    // linked one switches this tab's root **and** open_dir (so `y @`/`Y` references anchor to the
+    // new location, not the one the tab launched from).
+    let dir = sandbox("git_worktrees_view");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    let linked = std::env::temp_dir().join("konoma_e2e_git_worktrees_view_linked");
+    let _ = std::fs::remove_dir_all(&linked);
+    let out = std::process::Command::new("git")
+        .current_dir(&root)
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-feature",
+            linked.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git worktree add: {out:?}");
+    let linked = linked.canonicalize().unwrap();
+
+    let mut s = Sim::new(&root);
+    s.key('o');
+    s.key('w'); // in the hub, w = worktrees
+    assert!(s.app.is_git_worktrees(), "w でワークツリー一覧へ");
+    // The outer mode chip must promote to GIT here, same as the hub/log/graph/branches/detail
+    // views (`in_git_view()` — regression coverage for a spot where the worktree list was missing
+    // from that predicate and the chip stayed on TREE).
+    s.see("GIT");
+    s.see("WORKTREES");
+    s.see("Git worktrees");
+    s.see("wt-feature");
+    s.see("*"); // current-worktree marker
+    assert_eq!(
+        s.app.git_worktree_sel(),
+        0,
+        "cursor はカレント(main)から始まる"
+    );
+
+    s.key('j'); // move onto the linked worktree
+    s.enter();
+    assert!(!s.app.is_git_worktrees(), "Enter で一覧が閉じる");
+    assert!(!s.app.is_git_view(), "ハブへも戻らず Tree に着地する");
+    assert_eq!(s.app.tab.root, linked, "root が切り替わる");
+    assert_eq!(s.app.tab.open_dir, linked, "open_dir も切り替わる");
+    assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
+
+    std::fs::remove_dir_all(&linked).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
+    let dir = sandbox("git_worktrees_new_tab");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    let linked = std::env::temp_dir().join("konoma_e2e_git_worktrees_new_tab_linked");
+    let _ = std::fs::remove_dir_all(&linked);
+    let out = std::process::Command::new("git")
+        .current_dir(&root)
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-feature",
+            linked.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git worktree add: {out:?}");
+    let linked = linked.canonicalize().unwrap();
+
+    let mut s = Sim::new(&root);
+    s.key('o');
+    s.key('w');
+    s.key('j'); // move onto the linked worktree
+    s.ctrl('t');
+    assert_eq!(s.app.tab_count(), 2, "新規タブが開く");
+    assert_eq!(s.app.tab.root, linked, "新タブの root が対象ワークツリー");
+    assert_eq!(s.app.tab.open_dir, linked);
+    assert!(matches!(s.app.tab.mode, Mode::Tree));
+    assert!(
+        !s.app.is_git_worktrees(),
+        "新タブは素の Tree（一覧を引き継がない）"
+    );
+
+    // The original tab's own worktree list is left open (this action doesn't own it).
+    s.key('[');
+    assert_eq!(s.app.tab.root, root, "元タブの root は不変");
+    assert!(
+        s.app.is_git_worktrees(),
+        "元タブのワークツリー一覧は開いたまま"
+    );
+
+    std::fs::remove_dir_all(&linked).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub() {
+    // The safety guard for "already here": Enter on the currently-active worktree must not touch
+    // root, and must close back to the changes hub (not silently land in Tree) — a regression here
+    // (guard removed) would instead re-run jump_to_dir on the same path and skip open_git_view.
+    let dir = sandbox("git_worktrees_already_current");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    let mut s = Sim::new(&root);
+    s.key('o');
+    s.key('w');
+    assert!(s.app.is_git_worktrees());
+    s.enter(); // cursor starts on the current (main) worktree
+    s.see("already in this worktree");
+    assert!(!s.app.is_git_worktrees(), "閉じる");
+    assert!(
+        s.app.is_git_view(),
+        "ハブへ戻る（root は動かないので Tree ではない）"
+    );
+    assert_eq!(s.app.tab.root, root, "root は不変");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
+    // Safety guards: a bare main worktree (no checkout) and a prunable/missing one both refuse with
+    // a flash, and the list stays open (unlike a successful switch, which closes it).
+    let src = sandbox("git_worktrees_refuse_src");
+    seed_repo(&src);
+    let src = canon(&src);
+    let bare = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_bare.git");
+    let wt = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_wt");
+    let gone = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_gone");
+    for p in [&bare, &wt, &gone] {
+        let _ = std::fs::remove_dir_all(p);
+    }
+    let sh = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(
+        &std::env::temp_dir(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            src.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    sh(
+        &bare,
+        &["worktree", "add", "-q", wt.to_str().unwrap(), "master"],
+    );
+    sh(
+        &bare,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "gone-branch",
+            gone.to_str().unwrap(),
+        ],
+    );
+    let wt = wt.canonicalize().unwrap();
+    std::fs::remove_dir_all(&gone).unwrap(); // now prunable (checkout gone, entry still listed)
+
+    let mut s = Sim::new(&wt);
+    s.key('o');
+    s.key('w');
+    assert!(s.app.is_git_worktrees());
+    s.see("bare");
+
+    // Locate rows by content rather than assuming a fixed order: git's listing order for
+    // non-main entries is not creation order (confirmed empirically), only "main is always
+    // first" is guaranteed.
+    let view = s.app.git_worktree_view();
+    let cur_idx = view.iter().position(|w| w.is_current).expect("current");
+    let bare_idx = view.iter().position(|w| w.is_bare).expect("bare");
+    let gone_idx = view.iter().position(|w| w.prunable).expect("prunable");
+    assert_eq!(
+        s.app.git_worktree_sel(),
+        cur_idx,
+        "cursor はカレント(wt)から始まる"
+    );
+
+    // Move onto the bare main worktree's row: refused.
+    let step = |s: &mut Sim, from: usize, to: usize| {
+        let delta = to as i32 - from as i32;
+        for _ in 0..delta.unsigned_abs() {
+            s.key(if delta > 0 { 'j' } else { 'k' });
+        }
+    };
+    step(&mut s, cur_idx, bare_idx);
+    s.enter();
+    assert!(s.app.is_git_worktrees(), "bare は拒否されて一覧のまま");
+    assert_eq!(s.app.tab.root, wt, "root は不変");
+    s.see("bare repository");
+
+    // Move onto the removed/prunable worktree's row: also refused.
+    step(&mut s, bare_idx, gone_idx);
+    s.enter();
+    assert!(s.app.is_git_worktrees(), "prunable は拒否されて一覧のまま");
+    assert_eq!(s.app.tab.root, wt, "root は不変");
+    s.see("missing");
+
+    std::fs::remove_dir_all(&wt).ok();
+    std::fs::remove_dir_all(&bare).ok();
+    std::fs::remove_dir_all(&src).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
 fn e2e_git_commit_detail_shows_full_message() {
     // log → Enter opens commit detail. The full message (body newlines preserved) shows up in the header.
     let dir = sandbox("git_commit_detail");

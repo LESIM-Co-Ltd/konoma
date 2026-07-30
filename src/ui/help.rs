@@ -45,6 +45,7 @@ pub fn help_lines(app: &App) -> Vec<Line<'static>> {
         || app.is_git_log()
         || app.is_git_graph()
         || app.is_git_branches()
+        || app.is_git_worktrees()
         || app.is_git_detail();
     let mut sections = if git_active {
         crate::ui::git::help_sections(app)

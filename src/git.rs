@@ -471,6 +471,180 @@ pub fn branches(_root: &Path) -> Vec<BranchInfo> {
     Vec::new()
 }
 
+/// One entry from `git worktree list` — **a linked working tree** (created with `git worktree add`),
+/// not to be confused with the rest of this codebase's "worktree" (always "the working tree = the
+/// uncommitted changes", e.g. `worktree_diff`/`GraphRow.worktree`/config's `git_worktree_diff`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeInfo {
+    /// Absolute, canonicalized checkout root.
+    pub path: PathBuf,
+    /// Checked-out branch name (`refs/heads/` stripped). `None` when detached (or, for a bare main
+    /// worktree, when there is no checkout at all).
+    pub branch: Option<String>,
+    /// Short (7-char) HEAD hash. `None` for a bare main worktree, or a linked worktree created
+    /// before the repository had its first commit (git reports the all-zero OID there).
+    pub head: Option<String>,
+    /// Whether this is the worktree the caller (`root`) is presently inside.
+    pub is_current: bool,
+    /// Whether this is the **main** worktree (always the first record `git worktree list` reports,
+    /// regardless of which worktree's directory it is invoked from).
+    pub is_main: bool,
+    /// Whether this is a bare repository standing in as the main worktree (`git clone --bare` +
+    /// `git worktree add`) — it has no checkout of its own to switch into.
+    pub is_bare: bool,
+    /// `Some(reason)` when locked (`git worktree lock`); `Some("")` when locked with no reason given.
+    pub locked: Option<String>,
+    /// Whether git considers this entry prunable (its checkout directory is missing/moved).
+    pub prunable: bool,
+}
+
+/// Returns every worktree linked to the repository containing `root` — the **main** worktree first,
+/// then any **linked** worktrees created with `git worktree add` — parsed from
+/// `git worktree list --porcelain -z`. Returns an empty Vec when not a repo / on failure / when the
+/// feature is disabled (the caller treats that the same as "no repository", same as `branches()`).
+///
+/// **Computation is delegated to the `git worktree` CLI**, not git2/libgit2: git2's
+/// `Repository::worktrees()` only returns the *names* of linked worktrees (never the main one, and
+/// not their branch/HEAD/lock state) — matching this function's shape would take several more git2
+/// calls per entry. `--porcelain -z` gives the whole picture (path/HEAD/branch/detached/bare/locked/
+/// prunable) in one call: the same "heavy or structured read → CLI" split as `statuses()`/`ignored()`.
+///
+/// **`-z` record shape** (verified against git 2.54.0): each field is one NUL-terminated "line"
+/// (`worktree <path>`, then any of `HEAD <sha>`, `branch refs/heads/<name>` XOR `detached`, `bare`,
+/// `locked [<reason>]`, `prunable [<reason>]`), and a record ends with one *extra* NUL — two NULs in
+/// a row mark the boundary between records, the `-z` equivalent of the blank line that separates
+/// records in the non-`-z` porcelain output. `-z` is not optional here: without it a worktree path
+/// containing a literal newline would be misparsed (same reasoning as `-z` on `status`). The **first**
+/// record is always the main worktree, regardless of which worktree's directory git is invoked from.
+/// A bare-repo-as-main-worktree record has only `worktree` + `bare` fields (no `HEAD`/`branch`) — no
+/// checkout exists there to switch into.
+#[cfg(feature = "git")]
+pub fn worktrees(root: &Path) -> Vec<WorktreeInfo> {
+    if !external_git_enabled() {
+        return Vec::new();
+    }
+    // `git worktree list` returns the same listing no matter which of the repo's worktrees it's
+    // invoked from, so this is just picking *some* directory to run git in — not "the main
+    // worktree's workdir". If `root` is inside a linked worktree, this resolves to that linked
+    // worktree's own path, not the main one.
+    let Some(cwd) = git2::Repository::discover(root)
+        .ok()
+        .and_then(|r| r.workdir().map(Path::to_path_buf))
+    else {
+        return Vec::new(); // not a repo / a bare repo opened directly as root
+    };
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+
+    let out = std::process::Command::new("git")
+        .current_dir(&cwd)
+        .args([
+            "--no-optional-locks", // read-only background call (same etiquette as statuses()/ignored())
+            "worktree",
+            "list",
+            "--porcelain",
+            "-z",
+        ])
+        .output();
+    let Ok(out) = out else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+
+    // The worktree this konoma tab is presently inside (compared against each record's path below
+    // to compute `is_current`). Not necessarily equal to `root` itself: `root` can be a subdirectory
+    // of a worktree's checkout.
+    let current = workdir(root);
+
+    let mut list: Vec<WorktreeInfo> = Vec::new();
+    let mut rec: Vec<&[u8]> = Vec::new();
+    for field in out.stdout.split(|&b| b == 0) {
+        if field.is_empty() {
+            if !rec.is_empty() {
+                let is_main = list.is_empty();
+                list.push(worktree_from_record(&rec, is_main, current.as_deref()));
+                rec.clear();
+            }
+            continue;
+        }
+        rec.push(field);
+    }
+    if !rec.is_empty() {
+        let is_main = list.is_empty();
+        list.push(worktree_from_record(&rec, is_main, current.as_deref()));
+    }
+    list
+}
+
+/// Parses one `git worktree list --porcelain -z` record (its NUL-separated field lines, `worktree
+/// <path>` always first) into a `WorktreeInfo`. `is_main` = this is the first record in the whole
+/// listing. `current` is `workdir(root)` — the checked-out root of whichever worktree the caller is
+/// presently inside — compared against this record's (canonicalized) path for `is_current`.
+#[cfg(feature = "git")]
+fn worktree_from_record(fields: &[&[u8]], is_main: bool, current: Option<&Path>) -> WorktreeInfo {
+    use std::os::unix::ffi::OsStrExt;
+    let mut path = PathBuf::new();
+    let mut head: Option<String> = None;
+    let mut branch: Option<String> = None;
+    let mut is_bare = false;
+    let mut locked: Option<String> = None;
+    let mut prunable = false;
+
+    for &f in fields {
+        if let Some(rest) = f.strip_prefix(b"worktree ") {
+            // Raw bytes, not a lossy UTF-8 conversion: a checkout path could in principle hold
+            // non-UTF-8 bytes (same care as `statuses()`'s path handling).
+            path = PathBuf::from(std::ffi::OsStr::from_bytes(rest));
+            continue;
+        }
+        // Every other tag line is git-generated ASCII (HEAD/branch/detached/bare/locked/prunable),
+        // so a lossy UTF-8 view is safe here — only the path above needs raw-byte handling.
+        let line = String::from_utf8_lossy(f);
+        if let Some(rest) = line.strip_prefix("HEAD ") {
+            // An unborn linked worktree (its branch was created before the repository had any
+            // commit) reports the all-zero OID; treat that the same as "no HEAD yet", not a real
+            // short hash.
+            if !rest.bytes().all(|b| b == b'0') {
+                head = Some(rest.chars().take(7).collect());
+            }
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            branch = Some(
+                rest.strip_prefix("refs/heads/")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| rest.to_string()),
+            );
+        } else if line == "bare" {
+            is_bare = true;
+        } else if line == "locked" {
+            locked = Some(String::new());
+        } else if let Some(rest) = line.strip_prefix("locked ") {
+            locked = Some(rest.to_string());
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            prunable = true;
+        }
+        // "detached" itself carries no data beyond "branch is absent" (already the default).
+    }
+
+    let path = path.canonicalize().unwrap_or(path);
+    let is_current = current.is_some_and(|c| c == path);
+    WorktreeInfo {
+        path,
+        branch,
+        head,
+        is_current,
+        is_main,
+        is_bare,
+        locked,
+        prunable,
+    }
+}
+
+#[cfg(not(feature = "git"))]
+pub fn worktrees(_root: &Path) -> Vec<WorktreeInfo> {
+    Vec::new()
+}
+
 /// For selecting which branches to show in the graph: returns local branches **ordered by most-recent tip commit**.
 /// `(name, is_current, time_epoch)`. Ordered so the cap (`ui.graph_max_branches`) can take from the front.
 #[cfg(feature = "git")]
@@ -1840,6 +2014,7 @@ mod tests {
         assert!(branch(&dir).is_none(), "branch");
         assert!(branches(&dir).is_empty(), "branches");
         assert!(branches_by_recency(&dir).is_empty(), "branches_by_recency");
+        assert!(worktrees(&dir).is_empty(), "worktrees");
         assert!(file_diff(&dir, &file).is_empty(), "file_diff");
         assert!(changed_files(&dir).is_empty(), "changed_files");
         assert!(log(&dir, 10).is_empty(), "log");
@@ -1875,7 +2050,223 @@ mod tests {
             "statuses work again once re-enabled"
         );
         assert!(branch(&dir).is_some(), "branch works again once re-enabled");
+        assert!(
+            !worktrees(&dir).is_empty(),
+            "worktrees work again once re-enabled"
+        );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `git worktree list --porcelain -z` parsing: main worktree first (`is_main`), the current
+    /// worktree flagged (`is_current`), a linked worktree's branch/short-hash read correctly, a
+    /// detached worktree has `branch: None`, and a locked worktree carries its reason. Verified
+    /// against a real sandbox (not synthetic bytes) so the record shape matches actual git output.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktrees_parses_main_linked_detached_and_locked_records() {
+        let dir = std::env::temp_dir().join("konoma_git_worktrees_parse_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+        let main_root = dir.canonicalize().unwrap();
+
+        // `git worktree add` creates the target directory itself, so pick paths that don't exist yet.
+        let linked = std::env::temp_dir().join("konoma_git_worktrees_parse_linked");
+        let detached = std::env::temp_dir().join("konoma_git_worktrees_parse_detached");
+        let _ = std::fs::remove_dir_all(&linked);
+        let _ = std::fs::remove_dir_all(&detached);
+        let sh = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&main_root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "konoma-wt-feature",
+            linked.to_str().unwrap(),
+        ]);
+        sh(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            detached.to_str().unwrap(),
+        ]);
+        sh(&[
+            "worktree",
+            "lock",
+            linked.to_str().unwrap(),
+            "--reason",
+            "editing",
+        ]);
+
+        let list = worktrees(&main_root);
+        assert!(
+            list.len() >= 3,
+            "main + linked + detached の3件以上: {list:?}"
+        );
+        assert!(list[0].is_main, "先頭レコードは必ずメインワークツリー");
+        assert!(
+            list[0].is_current,
+            "root=main_root なので main が is_current"
+        );
+        assert!(
+            list[1..].iter().all(|w| !w.is_main),
+            "2件目以降は is_main=false"
+        );
+
+        let linked_abs = linked.canonicalize().unwrap();
+        let l = list
+            .iter()
+            .find(|w| w.path == linked_abs)
+            .expect("linked worktree が一覧に無い");
+        assert_eq!(l.branch.as_deref(), Some("konoma-wt-feature"));
+        assert!(!l.is_current, "linked は現在地ではない");
+        assert!(!l.is_main);
+        assert!(!l.is_bare);
+        assert_eq!(
+            l.locked.as_deref(),
+            Some("editing"),
+            "lock 理由が読める: {l:?}"
+        );
+        assert!(!l.prunable);
+        assert!(
+            l.head.as_deref().map(|h| h.len()).unwrap_or(0) <= 7,
+            "短縮ハッシュは7文字以内: {:?}",
+            l.head
+        );
+
+        let detached_abs = detached.canonicalize().unwrap();
+        let d = list
+            .iter()
+            .find(|w| w.path == detached_abs)
+            .expect("detached worktree が一覧に無い");
+        assert_eq!(d.branch, None, "detached は branch=None");
+        assert!(d.locked.is_none());
+        assert!(!d.prunable);
+
+        std::fs::remove_dir_all(&detached).ok();
+        // Undo the lock before removing (a locked worktree resists a plain rm/prune, though a bare
+        // `remove_dir_all` on the checkout itself is unaffected — this just mirrors real usage).
+        let _ = std::process::Command::new("git")
+            .current_dir(&main_root)
+            .args(["worktree", "unlock", linked.to_str().unwrap()])
+            .output();
+        std::fs::remove_dir_all(&linked).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A bare main worktree (`git clone --bare` + `git worktree add`) has no `HEAD`/`branch` of its
+    /// own to switch into (`is_bare=true`, `branch=None`, `head=None`), while a linked worktree
+    /// added from it parses normally. A **different** linked worktree whose checkout directory is
+    /// later removed out from under git is still listed, but reported `prunable`.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktrees_bare_main_worktree_has_no_checkout_and_gone_checkout_is_prunable() {
+        let dir = std::env::temp_dir().join("konoma_git_worktrees_bare_src");
+        let bare = std::env::temp_dir().join("konoma_git_worktrees_bare_repo.git");
+        let wt1 = std::env::temp_dir().join("konoma_git_worktrees_bare_wt1");
+        let wt2 = std::env::temp_dir().join("konoma_git_worktrees_bare_wt2");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare);
+        let _ = std::fs::remove_dir_all(&wt1);
+        let _ = std::fs::remove_dir_all(&wt2);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(
+            &std::env::temp_dir(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                dir.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        sh(
+            &bare,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt1-branch",
+                wt1.to_str().unwrap(),
+            ],
+        );
+        sh(
+            &bare,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt2-branch",
+                wt2.to_str().unwrap(),
+            ],
+        );
+
+        // `root` is a *linked* (non-bare) checkout, matching real usage: konoma is pointed at an
+        // ordinary working tree, not at the bare repository's own directory — `workdir()` (which
+        // `worktrees()` uses to discover the repo) returns None for a bare repo opened directly, by
+        // design (mirrors `statuses()`'s "not a repo / a bare repo" early return).
+        let list = worktrees(&wt1);
+        assert_eq!(list.len(), 3, "bare main + wt1 + wt2: {list:?}");
+        let main = &list[0];
+        assert!(main.is_main);
+        assert!(main.is_bare, "bare メインは is_bare=true");
+        assert_eq!(main.branch, None, "bare メインに branch は無い");
+        assert_eq!(main.head, None, "bare メインに head は無い");
+        assert!(!main.prunable);
+        assert!(!main.is_current, "bare メインは現在地ではない");
+
+        let wt1_abs = wt1.canonicalize().unwrap();
+        let wt2_abs = wt2.canonicalize().unwrap();
+        let w1 = list.iter().find(|w| w.path == wt1_abs).unwrap();
+        assert!(!w1.is_bare);
+        assert_eq!(w1.branch.as_deref(), Some("wt1-branch"));
+        assert!(!w1.prunable);
+        assert!(w1.is_current, "root=wt1 なので wt1 が is_current");
+        let w2 = list.iter().find(|w| w.path == wt2_abs).unwrap();
+        assert!(!w2.prunable);
+        assert!(!w2.is_current);
+
+        // Remove wt2's checkout out from under git (without `git worktree remove`) → git reports
+        // it prunable. Query again from wt1, which is untouched and still a valid discovery root.
+        std::fs::remove_dir_all(&wt2).unwrap();
+        let list2 = worktrees(&wt1);
+        let gone = list2
+            .iter()
+            .find(|w| w.path == wt2_abs)
+            .expect("消えた worktree もエントリとしては残る");
+        assert!(gone.prunable, "実体が無ければ prunable: {gone:?}");
+        let still_here = list2.iter().find(|w| w.path == wt1_abs).unwrap();
+        assert!(!still_here.prunable, "無事な方は prunable にならない");
+
+        std::fs::remove_dir_all(&wt1).ok();
+        std::fs::remove_dir_all(&bare).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

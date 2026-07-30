@@ -354,6 +354,7 @@ builtin = "pdf"
 #   preview_table : CSV/TSV/アーカイブ表   table_cell : セル全文ポップアップ(preview_table の Enter)
 #   git_changes   : Git 変更ハブ(o)        git_log / git_graph / git_branches / git_detail
 #   git_graph_picker : グラフのブランチ表示パネル(b)
+#   git_worktrees : リンクワークツリー一覧(w・変更ハブ内)
 #   sort  bookmarks  tabs(タブ一覧: d=tab_list_close)  info  help
 #
 # ■ キー表記: 単文字(大文字=Shift 込み: "G")・"space"・リテラル "0 $ ! + - = . / '"・
@@ -401,6 +402,14 @@ builtin = "pdf"
 #   Git グラフ   : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
 #                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
 #                  "git_graph_picker_move_up" "git_graph_picker_move_down"
+#   Git ワークツリー: "git_open_worktrees"(w・変更ハブ内: リンクワークツリー一覧を開く。
+#                    「ワークツリー」は本設定の他の箇所で使う「未コミットの作業ツリー」とは別概念＝
+#                    git worktree add で作る「リンクワークツリー」のこと)
+#                  "worktree_filter_start"(/: ブランチ名/パスで絞り込み)
+#                  "worktree_goto"(Enter: このタブの root(と open_dir)を選択ワークツリーへ切替。
+#                    Enter は固定キーだが(branch_checkout と同様)、config で別キーにも割当可)
+#                  "worktree_goto_new_tab"(Ctrl-t: 選択ワークツリーを別タブで開く。現在のタブは不変)
+#                  "worktree_close"(q/Esc)
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
 # ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。

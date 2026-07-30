@@ -111,6 +111,8 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::GitDetail => (Msg::StCommitDiff, Color::Blue, true),
         // Branch operations are also part of the Git family's yellow.
         InternalMode::GitBranch => (Msg::StBranch, Color::Yellow, false),
+        // Worktrees are also part of the Git family's yellow.
+        InternalMode::GitWorktrees => (Msg::StWorktrees, Color::Yellow, false),
         InternalMode::GitGraph => (Msg::StGraph, Color::Yellow, false),
         // GitGraphPicker is already handled as a breadcrumb up top (early return) = it never
         // reaches here. Even if that guard ever slips, fall back gently to the GRAPH chip so
@@ -232,6 +234,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
         InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),
         InternalMode::GitBranch => tr(lang, crate::i18n::Msg::BranchesNavHint),
+        InternalMode::GitWorktrees => tr(lang, crate::i18n::Msg::WorktreesNavHint),
         InternalMode::GitDiff => tr(lang, crate::i18n::Msg::DiffScrollDiscardHint),
         InternalMode::Commit => tr(lang, crate::i18n::Msg::StCommitHint),
         InternalMode::GitLog => tr(lang, crate::i18n::Msg::GitNavDetailHint),
@@ -257,6 +260,19 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
     // footer).
     if app.git_branch_filtering() {
         let q = app.git_branch_query();
+        return vec![
+            Span::from(format!("/{q}")).bold(),
+            Span::from("▏").dim(),
+            Span::from(format!(
+                "  {}",
+                tr(lang, crate::i18n::Msg::StApplyClearHint)
+            ))
+            .dim(),
+        ];
+    }
+    // Same treatment for the worktree list's own filter input.
+    if app.git_worktree_filtering() {
+        let q = app.git_worktree_query();
         return vec![
             Span::from(format!("/{q}")).bold(),
             Span::from("▏").dim(),

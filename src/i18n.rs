@@ -65,6 +65,27 @@ impl Lang {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Msg {
     GitNoBranchesItem,
+    /// Worktree list's empty-state row (shown when a filter narrows the list to zero rows).
+    GitNoWorktreesItem,
+    /// `?` help section title for the worktree list.
+    GitWorktreesLabel,
+    /// Flash on `w` (open the worktree list) when there is nothing to show (not a repo / git off —
+    /// a real repository always has at least the main worktree).
+    NoWorktrees,
+    /// Flash refusing to switch/open into a bare main worktree (no checkout exists there).
+    WorktreeIsBare,
+    /// Flash refusing to switch/open into a prunable or missing worktree.
+    WorktreeUnavailable,
+    /// Flash when the selected worktree is already the one this tab is in.
+    WorktreeAlreadyCurrent,
+    /// Footer/help hint for the worktree list's own keys.
+    WorktreesNavHint,
+    /// Inner-mode chip label while the worktree list is open.
+    StWorktrees,
+    /// `?` help row label for `Enter` in the worktree list.
+    GitWorktreeSwitch,
+    /// Changes-hub `?` help row label for `w` (short noun, matching `GitBranches`'s "branches").
+    GitWorktreesRow,
     GitNoChangesItem,
     GitNoCommitsItem,
     BmTitle,
@@ -505,6 +526,16 @@ fn en(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitNoBranchesItem => "  (no branches)",
+        GitNoWorktreesItem => "  (no worktrees)",
+        GitWorktreesLabel => "Git worktrees (w)",
+        NoWorktrees => "no worktrees",
+        WorktreeIsBare => "bare repository — no checkout to switch into",
+        WorktreeUnavailable => "worktree is missing (run `git worktree prune`)",
+        WorktreeAlreadyCurrent => "already in this worktree",
+        WorktreesNavHint => "j/k:nav  Enter:switch  Ctrl-t:new tab  /:search  q/Esc:back",
+        StWorktrees => "WORKTREES",
+        GitWorktreeSwitch => "switch to it",
+        GitWorktreesRow => "worktrees",
         GitNoChangesItem => "  (no changes)",
         GitNoCommitsItem => "  (no commits)",
         BmTitle => " Bookmarks ",
@@ -720,7 +751,7 @@ fn en(msg: Msg) -> &'static str {
         ResetRoot => "reset root to start directory",
         ResetFit => "reset to fit",
         Root => "root",
-        StGitHubKeys => "s/S:stage(all) u/U:unstage(all) x:discard c:commit Enter:diff d:diff-all l:log g:graph b:branch !:tool q:close",
+        StGitHubKeys => "s/S:stage(all) u/U:unstage(all) x:discard c:commit Enter:diff d:diff-all l:log g:graph b:branch w:worktrees !:tool q:close",
         Scroll => "scroll",
         Scroll10Lines => "scroll 10 lines",
         SearchHint => "search (code/text); next / prev match",
@@ -932,6 +963,16 @@ fn jp(msg: Msg) -> &'static str {
     use Msg::*;
     match msg {
         GitNoBranchesItem => "  (ブランチなし)",
+        GitNoWorktreesItem => "  (ワークツリーなし)",
+        GitWorktreesLabel => "Git ワークツリー (w)",
+        NoWorktrees => "ワークツリーなし",
+        WorktreeIsBare => "ベアリポジトリ（実体のチェックアウトがありません）",
+        WorktreeUnavailable => "ワークツリーが見つかりません（`git worktree prune` を実行してください）",
+        WorktreeAlreadyCurrent => "既にこのワークツリーにいます",
+        WorktreesNavHint => "j/k:移動  Enter:切替  Ctrl-t:新規タブ  /:検索  q/Esc:戻る",
+        StWorktrees => "ワークツリー",
+        GitWorktreeSwitch => "切り替える",
+        GitWorktreesRow => "ワークツリー",
         GitNoChangesItem => "  (変更なし)",
         GitNoCommitsItem => "  (コミットなし)",
         BmTitle => " ブックマーク ",
@@ -1143,7 +1184,7 @@ fn jp(msg: Msg) -> &'static str {
         ResetRoot => "ルートを起動ディレクトリへ戻す",
         ResetFit => "フィットに戻す",
         Root => "ルート",
-        StGitHubKeys => "s/S:ステージ(全) u/U:解除(全) x:破棄 c:コミット Enter:差分 d:全変更差分 l:ログ g:グラフ b:ブランチ !:ツール q:閉じる",
+        StGitHubKeys => "s/S:ステージ(全) u/U:解除(全) x:破棄 c:コミット Enter:差分 d:全変更差分 l:ログ g:グラフ b:ブランチ w:ワークツリー !:ツール q:閉じる",
         Scroll => "スクロール",
         Scroll10Lines => "10 行スクロール",
         SearchHint => "検索(コード/テキスト); 次 / 前の一致",
@@ -1427,6 +1468,16 @@ mod tests {
     // referenced under both features.
     const ALL_MSGS: &[Msg] = &[
         Msg::GitNoBranchesItem,
+        Msg::GitNoWorktreesItem,
+        Msg::GitWorktreesLabel,
+        Msg::NoWorktrees,
+        Msg::WorktreeIsBare,
+        Msg::WorktreeUnavailable,
+        Msg::WorktreeAlreadyCurrent,
+        Msg::WorktreesNavHint,
+        Msg::StWorktrees,
+        Msg::GitWorktreeSwitch,
+        Msg::GitWorktreesRow,
         Msg::GitNoChangesItem,
         Msg::GitNoCommitsItem,
         Msg::BmTitle,

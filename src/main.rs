@@ -1071,6 +1071,14 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::Bottom => app.git_branch_move(i32::MAX),
             _ => {}
         },
+        #[cfg(feature = "git")]
+        Surface::GitWorktrees => match m {
+            Motion::Up => app.git_worktree_move(-1),
+            Motion::Down => app.git_worktree_move(1),
+            Motion::Top => app.git_worktree_move(i32::MIN),
+            Motion::Bottom => app.git_worktree_move(i32::MAX),
+            _ => {}
+        },
         Surface::Bookmarks => match m {
             // j/k only, matching legacy behavior (g/G/Home/End are unassigned).
             Motion::Up => app.bookmark_list_move(-1),
@@ -1292,6 +1300,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::GitOpenBranches => app.open_git_branches(),
         #[cfg(feature = "git")]
+        Action::GitOpenWorktrees => app.open_git_worktrees(),
+        #[cfg(feature = "git")]
         Action::GitLaunchTool => app.launch_git_tool(),
         #[cfg(feature = "git")]
         Action::GitOpenSelectedDiff => {
@@ -1329,6 +1339,14 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::BranchCreate => app.start_create_branch(),
         #[cfg(feature = "git")]
         Action::BranchDelete => app.start_delete_branch(),
+        #[cfg(feature = "git")]
+        Action::WorktreeFilterStart => app.git_worktree_start_filter(),
+        #[cfg(feature = "git")]
+        Action::WorktreeGoto => app.worktree_goto(),
+        #[cfg(feature = "git")]
+        Action::WorktreeGotoNewTab => app.worktree_goto_new_tab()?,
+        #[cfg(feature = "git")]
+        Action::WorktreeClose => app.close_git_worktrees(),
         #[cfg(feature = "git")]
         Action::GitCopy(kind) => app.git_copy(kind),
         #[cfg(feature = "git")]
@@ -1394,6 +1412,16 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Down, _) => app.git_branch_move(1),
             (KeyCode::Up, _) => app.git_branch_move(-1),
             (KeyCode::Char(c), false) => app.git_branch_filter_push(c),
+            _ => {}
+        },
+        #[cfg(feature = "git")]
+        Surface::WorktreeFilter => match (code, ctrl) {
+            (KeyCode::Esc, _) => app.git_worktree_filter_clear(),
+            (KeyCode::Enter, _) => app.git_worktree_filter_commit(),
+            (KeyCode::Backspace, _) => app.git_worktree_filter_backspace(),
+            (KeyCode::Down, _) => app.git_worktree_move(1),
+            (KeyCode::Up, _) => app.git_worktree_move(-1),
+            (KeyCode::Char(c), false) => app.git_worktree_filter_push(c),
             _ => {}
         },
         _ => {}
@@ -1497,6 +1525,16 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
             }
         }
         #[cfg(feature = "git")]
+        Surface::GitWorktrees => {
+            // Esc with a query clears the filter; without one, closes it (same convention as
+            // the branches list / tree filter).
+            if app.git_worktree_query().is_empty() {
+                app.close_git_worktrees();
+            } else {
+                app.git_worktree_filter_clear();
+            }
+        }
+        #[cfg(feature = "git")]
         Surface::GitChanges => app.close_git_view(),
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => app.close_git_diff(),
@@ -1530,6 +1568,8 @@ fn handle_enter(app: &mut App, sfc: Surface) -> Result<bool> {
         Surface::GitGraphPicker => app.git_graph_picker_apply(),
         #[cfg(feature = "git")]
         Surface::GitBranches => app.checkout_selected_branch()?,
+        #[cfg(feature = "git")]
+        Surface::GitWorktrees => app.worktree_goto(),
         _ => {}
     }
     Ok(false)

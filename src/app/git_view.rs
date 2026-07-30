@@ -1,6 +1,21 @@
-//! Git views: changes hub, branches, commit graph, and commit detail — methods on `App`.
+//! Git views: changes hub, branches, worktrees, commit graph, and commit detail — methods on `App`.
 
 use super::*;
+
+/// Outcome of checking whether the worktree list's selected row can be switched to / opened in a
+/// new tab (`worktree_goto`/`worktree_goto_new_tab` share this).
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorktreeTarget {
+    /// A real, present, non-bare, non-current checkout — safe to switch/open into.
+    Go(PathBuf),
+    /// Already the worktree this tab is in; nothing to do.
+    AlreadyCurrent,
+    /// A bare repository standing in as the main worktree — no checkout exists to switch into.
+    Bare,
+    /// git considers it prunable, or its checkout directory is missing.
+    Unavailable,
+}
 
 impl App {
     // --- Git view (changes hub, default key `o`, changeable via keymap) -----------------
@@ -572,6 +587,232 @@ impl App {
         }
     }
 
+    // --- Linked worktrees (`w` from the changes hub) --------------------------------
+    // "Worktree" here means a **linked working tree** (`git worktree add`) — a different concept
+    // from the rest of this codebase's "worktree", which always means *the uncommitted working
+    // tree* (`GitWorktreeDiff`/`GraphRow.worktree`/config's `git_worktree_diff`). Do not rename
+    // either to avoid the ambiguity; the doc comments carry the distinction instead.
+
+    /// `w`: Open the linked-worktree list. Opened from the Git view, so the view closes. The cursor
+    /// starts on the worktree this tab is presently inside. Flashes if the list is empty (not a
+    /// repo, or the feature/config disables git — a real repository always has at least the main
+    /// worktree, so this is the same "not really a repo" edge case as `open_git_branches`'s "no
+    /// branches yet").
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn open_git_worktrees(&mut self) {
+        let list = crate::git::worktrees(&self.tab.root);
+        if list.is_empty() {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoWorktrees).into());
+            return;
+        }
+        self.tab.git_worktree_filter.clear();
+        self.tab.git_worktree_filtering = false;
+        self.tab.git_worktree_sel = list.iter().position(|w| w.is_current).unwrap_or(0);
+        self.tab.git_worktrees = Some(list);
+        self.tab.git_view = false;
+    }
+    /// Whether the worktree list is showing.
+    pub fn is_git_worktrees(&self) -> bool {
+        self.tab.git_worktrees.is_some()
+    }
+    /// The filtered display list (branch name or path containing the query, case-insensitive). All
+    /// entries if the query is empty. Used for rendering/operations.
+    pub fn git_worktree_view(&self) -> Vec<crate::git::WorktreeInfo> {
+        let Some(all) = &self.tab.git_worktrees else {
+            return Vec::new();
+        };
+        let q = self.tab.git_worktree_filter.to_lowercase();
+        if q.is_empty() {
+            all.clone()
+        } else {
+            all.iter()
+                .filter(|w| {
+                    w.branch
+                        .as_deref()
+                        .is_some_and(|b| b.to_lowercase().contains(&q))
+                        || w.path.to_string_lossy().to_lowercase().contains(&q)
+                })
+                .cloned()
+                .collect()
+        }
+    }
+    /// Cursor position in the display list.
+    pub fn git_worktree_sel(&self) -> usize {
+        self.tab.git_worktree_sel
+    }
+    /// Move the display-list cursor by delta (clamped to range).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_move(&mut self, delta: i32) {
+        self.tab.git_worktree_sel = clamp_cursor(
+            self.tab.git_worktree_sel,
+            delta,
+            self.git_worktree_view().len(),
+        );
+    }
+    /// The worktree selected in the display list.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(super) fn git_worktree_selected(&self) -> Option<crate::git::WorktreeInfo> {
+        self.git_worktree_view()
+            .into_iter()
+            .nth(self.tab.git_worktree_sel)
+    }
+    /// Close the worktree list (q/Esc). Returns to the Git view since it came from there. Also
+    /// resets the filter.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn close_git_worktrees(&mut self) {
+        self.reset_git_worktree_list_state();
+        self.open_git_view();
+    }
+    /// Clears the worktree list's transient UI state (list/cursor/filter/filtering). Shared by
+    /// `close_git_worktrees` (which follows up with `open_git_view()` to return to the hub) and
+    /// `worktree_goto`'s `Go` arm (which follows up with `jump_to_dir` instead — switching root,
+    /// not returning to the hub, so it can't just call `close_git_worktrees`). Kept as one spot so
+    /// a future field added to this state can't be reset in one caller and forgotten in the other.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    fn reset_git_worktree_list_state(&mut self) {
+        self.tab.git_worktrees = None;
+        self.tab.git_worktree_sel = 0;
+        self.tab.git_worktree_filter.clear();
+        self.tab.git_worktree_filtering = false;
+    }
+    /// Classifies the selected row for `worktree_goto`/`worktree_goto_new_tab` (shared guard: a
+    /// bare main worktree has no checkout, a prunable/missing one has nothing to switch into, and
+    /// the currently-active worktree needs no switch).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    fn worktree_switch_target(&self) -> Option<WorktreeTarget> {
+        let w = self.git_worktree_selected()?;
+        Some(if w.is_bare {
+            WorktreeTarget::Bare
+        } else if w.prunable || !w.path.is_dir() {
+            WorktreeTarget::Unavailable
+        } else if w.is_current {
+            WorktreeTarget::AlreadyCurrent
+        } else {
+            WorktreeTarget::Go(w.path)
+        })
+    }
+    /// `Enter` in the worktree list: switch this tab's root **and `open_dir`** to the selected
+    /// worktree. `jump_to_dir` alone does not touch `open_dir` (it is meant for descending, where
+    /// staying relative to the original launch location is correct); a worktree switch is a "you
+    /// are now somewhere else entirely" move, so `open_dir` must follow too — otherwise the `y @`/`Y`
+    /// AI-reference copy (relative to `open_dir`) would keep producing paths like
+    /// `@../other-worktree/src/x.rs`, anchored to a location that no longer means anything once
+    /// you've switched. Refuses (flash, list stays open so another row can be picked) a bare main
+    /// worktree or a prunable/missing one; on the already-current worktree, flashes and just closes
+    /// the list back to the changes hub (root untouched).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn worktree_goto(&mut self) {
+        match self.worktree_switch_target() {
+            None => {}
+            Some(WorktreeTarget::Bare) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeIsBare).into());
+            }
+            Some(WorktreeTarget::Unavailable) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeUnavailable).into());
+            }
+            Some(WorktreeTarget::AlreadyCurrent) => {
+                self.flash = Some(
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeAlreadyCurrent).into(),
+                );
+                self.close_git_worktrees();
+            }
+            Some(WorktreeTarget::Go(path)) => {
+                self.reset_git_worktree_list_state();
+                self.jump_to_dir(path.clone());
+                self.tab.open_dir = path;
+                self.flash = Some(format!(
+                    "{}: {}",
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::SwitchedTo),
+                    home_relative(&self.tab.root)
+                ));
+            }
+        }
+    }
+    /// `Ctrl-t` in the worktree list: open the selected worktree in a new (foreground) tab, leaving
+    /// this tab — and its own open worktree list — untouched (mirrors `tab_new_from_selection`'s
+    /// directory branch). Same guards as `worktree_goto` (also sets `open_dir`, see there for why);
+    /// on refusal or "already current" nothing else happens beyond the flash, since this action
+    /// does not own the list to close.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn worktree_goto_new_tab(&mut self) -> Result<()> {
+        match self.worktree_switch_target() {
+            None => {}
+            Some(WorktreeTarget::Bare) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeIsBare).into());
+            }
+            Some(WorktreeTarget::Unavailable) => {
+                self.flash =
+                    Some(crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeUnavailable).into());
+            }
+            Some(WorktreeTarget::AlreadyCurrent) => {
+                self.flash = Some(
+                    crate::i18n::tr(self.lang, crate::i18n::Msg::WorktreeAlreadyCurrent).into(),
+                );
+            }
+            Some(WorktreeTarget::Go(path)) => {
+                self.tab_new()?; // fresh Tree tab at the current root, now active — this tab's
+                                 // worktree list was already preserved by tab_new's save_active
+                self.clear_for_root_change();
+                self.tab.root = path.clone();
+                self.tab.open_dir = path;
+                self.tab.entries.clear();
+                self.tab.selected = 0;
+                self.rebuild_tree()?;
+                self.save_session();
+            }
+        }
+        Ok(())
+    }
+
+    // --- Worktree filtering (`/`) ----------------------------------------------
+    /// Whether worktree-filter input is active (while true, main captures keys as characters).
+    pub fn git_worktree_filtering(&self) -> bool {
+        self.tab.git_worktree_filtering
+    }
+    /// The current filter query (for the footer prompt).
+    pub fn git_worktree_query(&self) -> &str {
+        &self.tab.git_worktree_filter
+    }
+    /// `/`: Start filter input (query starts empty).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_start_filter(&mut self) {
+        self.tab.git_worktree_filtering = true;
+        self.tab.git_worktree_filter.clear();
+        self.tab.git_worktree_sel = 0;
+    }
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_filter_push(&mut self, c: char) {
+        self.tab.git_worktree_filter.push(c);
+        self.clamp_git_worktree_sel();
+    }
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_filter_backspace(&mut self) {
+        self.tab.git_worktree_filter.pop();
+        self.clamp_git_worktree_sel();
+    }
+    /// Enter: Commit the input (keeps the query; navigate with j/k afterwards).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_filter_commit(&mut self) {
+        self.tab.git_worktree_filtering = false;
+    }
+    /// Esc: Clear the filter (return to all entries).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_worktree_filter_clear(&mut self) {
+        self.tab.git_worktree_filter.clear();
+        self.tab.git_worktree_filtering = false;
+        self.clamp_git_worktree_sel();
+    }
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    fn clamp_git_worktree_sel(&mut self) {
+        let len = self.git_worktree_view().len();
+        if self.tab.git_worktree_sel >= len {
+            self.tab.git_worktree_sel = len.saturating_sub(1);
+        }
+    }
+
     // --- Commit graph (`G`: SourceTree / Git Graph style) -----------------------
     /// `G`: Open the commit graph (colored output like `git log --all --graph`). Closes the Git view.
     /// Moves the cursor to the first commit row. Flashes if there are no commits.
@@ -978,14 +1219,15 @@ impl App {
     pub fn is_git_graph(&self) -> bool {
         self.tab.git_graph.is_some()
     }
-    /// **Whether Git is the main mode** (one of the changes hub / log / graph / branches / detail / diff).
-    /// Used to set the outer (main) mode chip to `GIT`. The git views overlay tree/preview.
+    /// **Whether Git is the main mode** (one of the changes hub / log / graph / branches / worktrees /
+    /// detail / diff). Used to set the outer (main) mode chip to `GIT`. The git views overlay tree/preview.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn in_git_view(&self) -> bool {
         self.is_git_view()
             || self.is_git_log()
             || self.is_git_graph()
             || self.is_git_branches()
+            || self.is_git_worktrees()
             || self.is_git_detail()
             || self.is_git_diff_preview()
     }

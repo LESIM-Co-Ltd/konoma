@@ -6,6 +6,15 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Linked-worktree list**: `w` in the changes hub opens a list of the repository's linked worktrees
+  (`git worktree add`) — not to be confused with the rest of the app's "worktree" (always the
+  uncommitted working tree). `Enter` switches this tab's root (and `open_dir`, so `@`-reference
+  copies stay anchored to the new location) to the selected worktree; `Ctrl-t` opens it in a new
+  tab, leaving the current tab untouched. A bare main worktree, a locked/prunable one, or the
+  currently-active one all refuse to switch with an explanatory flash instead. `/` filters by
+  branch name or path.
+
 ### Fixed
 - **External git operations were never picked up when the tree root was a linked worktree**
   (`git worktree add`), so `M`/`U` markers stayed stale forever. A linked worktree's own `HEAD` and

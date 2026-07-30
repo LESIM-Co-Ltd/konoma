@@ -238,6 +238,29 @@ pub enum Action {
     #[cfg(feature = "git")]
     BranchDelete,
 
+    // --- Git worktrees (linked working trees — `git worktree add`; unrelated to the rest of this
+    // codebase's "worktree" = the uncommitted working tree, e.g. `GitWorktreeDiff`/`GraphRow.worktree`) ---
+    /// Changes hub: open the linked-worktree list (`w`).
+    #[cfg(feature = "git")]
+    GitOpenWorktrees,
+    /// Worktree list: start filtering by branch name / path (`/`).
+    #[cfg(feature = "git")]
+    WorktreeFilterStart,
+    /// Worktree list: switch this tab's root (and `open_dir`) to the selected worktree. The real
+    /// trigger is the fixed `Enter` key (see `handle_enter`); this variant exists purely so it is
+    /// config-registrable and round-trips through `action_from_str`/`action_name` — same idiom as
+    /// `BranchCheckout` (Enter, hardcoded) coexisting with its own action. It has no default key
+    /// binding here, same as `GitOpenSelectedDiff`.
+    #[cfg(feature = "git")]
+    WorktreeGoto,
+    /// Worktree list: open the selected worktree in a new (foreground) tab, leaving this tab (and
+    /// its open worktree list) untouched.
+    #[cfg(feature = "git")]
+    WorktreeGotoNewTab,
+    /// Worktree list: close it (returns to the changes hub).
+    #[cfg(feature = "git")]
+    WorktreeClose,
+
     // --- Git copy (y→ commit info / branches branch name) ---
     /// log/graph/detail: copy the selected commit's info (hash / subject / message / author / date).
     #[cfg(feature = "git")]
@@ -292,6 +315,8 @@ pub enum Surface {
     Mark,
     #[cfg(feature = "git")]
     BranchFilter,
+    #[cfg(feature = "git")]
+    WorktreeFilter,
 
     // --- Confirm modal (y/n/c/m/! fixed) ---
     DialogConfirmDelete,
@@ -326,6 +351,9 @@ pub enum Surface {
     GitBranches,
     #[cfg(feature = "git")]
     GitChanges,
+    /// The linked-worktree list (`w` from the changes hub).
+    #[cfg(feature = "git")]
+    GitWorktrees,
 
     // --- Basic full-screen surfaces (keymap-driven) ---
     Visual,
@@ -347,6 +375,8 @@ impl Surface {
             Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
             #[cfg(feature = "git")]
             Surface::BranchFilter => true,
+            #[cfg(feature = "git")]
+            Surface::WorktreeFilter => true,
             _ => false,
         }
     }
@@ -876,6 +906,7 @@ impl KeyMap {
             gchg.insert(KeyPress::ch('c'), run(Action::GitCommit));
             gchg.insert(KeyPress::ch('d'), run(Action::GitWorktreeDiff));
             gchg.insert(KeyPress::ch('b'), run(Action::GitOpenBranches));
+            gchg.insert(KeyPress::ch('w'), run(Action::GitOpenWorktrees));
             gchg.insert(KeyPress::ch('l'), run(Action::GitOpenLog));
             gchg.insert(KeyPress::ch('g'), run(Action::GitOpenGraph));
             gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
@@ -938,6 +969,22 @@ impl KeyMap {
             // no menu).
             gbr.insert(KeyPress::ch('y'), run(Action::CopyBranchName));
             per_surface.insert(Surface::GitBranches, gbr);
+
+            // Git worktrees (`w` from the changes hub). `Enter`→worktree_goto and `Esc`→
+            // worktree_close (via handle_esc) are fixed keys (same idiom as branches' Enter→
+            // checkout); `WorktreeGoto` has no default key binding here, same as
+            // `GitOpenSelectedDiff` — it still round-trips through action_from_str/action_name so a
+            // user can rebind another key to it. Ctrl-t (config-rebindable, unlike Enter) opens the
+            // selection in a new tab.
+            let mut gwt: ContextMap = HashMap::new();
+            gwt.insert(KeyPress::ch('j'), nav(Motion::Down));
+            gwt.insert(KeyPress::ch('k'), nav(Motion::Up));
+            gwt.insert(KeyPress::ch('g'), nav(Motion::Top));
+            gwt.insert(KeyPress::ch('G'), nav(Motion::Bottom));
+            gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
+            gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
+            gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
+            per_surface.insert(Surface::GitWorktrees, gwt);
 
             // Git detail (all Motions enabled; page/half are swapped per scheme).
             let mut gdet: ContextMap = HashMap::new();
@@ -1327,6 +1374,8 @@ fn surface_config_name(sfc: Surface) -> Option<&'static str> {
         Surface::Mark => None,
         #[cfg(feature = "git")]
         Surface::BranchFilter => None,
+        #[cfg(feature = "git")]
+        Surface::WorktreeFilter => None,
         // --- Confirm modal (is_modal_confirm): not configurable ---
         Surface::DialogConfirmDelete => None,
         Surface::DialogConfirmDrop => None,
@@ -1353,6 +1402,8 @@ fn surface_config_name(sfc: Surface) -> Option<&'static str> {
         Surface::GitBranches => Some("git_branches"),
         #[cfg(feature = "git")]
         Surface::GitChanges => Some("git_changes"),
+        #[cfg(feature = "git")]
+        Surface::GitWorktrees => Some("git_worktrees"),
         // --- Basic full-screen surfaces (keymap-driven): configurable ---
         Surface::Visual => Some("tree_visual"),
         Surface::Tree => Some("tree"),
@@ -1396,6 +1447,8 @@ fn key_target_from_name(name: &str) -> Option<KeyTarget> {
         "git_graph_picker" => Surface::GitGraphPicker,
         #[cfg(feature = "git")]
         "git_branches" => Surface::GitBranches,
+        #[cfg(feature = "git")]
+        "git_worktrees" => Surface::GitWorktrees,
         #[cfg(feature = "git")]
         "git_detail" => Surface::GitDetail,
         _ => return None,
@@ -1885,6 +1938,16 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "branch_delete" => Action::BranchDelete,
         #[cfg(feature = "git")]
+        "git_open_worktrees" => Action::GitOpenWorktrees,
+        #[cfg(feature = "git")]
+        "worktree_filter_start" => Action::WorktreeFilterStart,
+        #[cfg(feature = "git")]
+        "worktree_goto" => Action::WorktreeGoto,
+        #[cfg(feature = "git")]
+        "worktree_goto_new_tab" => Action::WorktreeGotoNewTab,
+        #[cfg(feature = "git")]
+        "worktree_close" => Action::WorktreeClose,
+        #[cfg(feature = "git")]
         "git_copy_short_hash" => Action::GitCopy(GitCopyKind::ShortHash),
         #[cfg(feature = "git")]
         "git_copy_full_hash" => Action::GitCopy(GitCopyKind::FullHash),
@@ -2052,6 +2115,16 @@ pub fn action_name(a: Action) -> String {
         Action::BranchCreate => "branch_create",
         #[cfg(feature = "git")]
         Action::BranchDelete => "branch_delete",
+        #[cfg(feature = "git")]
+        Action::GitOpenWorktrees => "git_open_worktrees",
+        #[cfg(feature = "git")]
+        Action::WorktreeFilterStart => "worktree_filter_start",
+        #[cfg(feature = "git")]
+        Action::WorktreeGoto => "worktree_goto",
+        #[cfg(feature = "git")]
+        Action::WorktreeGotoNewTab => "worktree_goto_new_tab",
+        #[cfg(feature = "git")]
+        Action::WorktreeClose => "worktree_close",
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => "git_copy_short_hash",
         #[cfg(feature = "git")]
@@ -2931,6 +3004,70 @@ mod tests {
             m.resolve(Surface::GitChanges, None, KeyPress::ch('!')),
             Resolution::Action(Action::GitLaunchTool)
         );
+        assert_eq!(
+            m.resolve(Surface::GitChanges, None, KeyPress::ch('w')),
+            Resolution::Action(Action::GitOpenWorktrees)
+        );
+    }
+
+    /// The worktree list's own bindings: `j`/`k`/`g`/`G` movement, `/`→filter, `Ctrl-t`→open in a
+    /// new tab, `q`→close. `Enter` is deliberately **not** bound here (it is a fixed key handled by
+    /// `handle_enter`, same as branches' Enter→checkout) — `WorktreeGoto` still round-trips through
+    /// `action_from_str`/`action_name` below so a user can rebind another key to it.
+    #[cfg(feature = "git")]
+    #[test]
+    fn git_worktrees_bindings() {
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('j')),
+            Resolution::Action(Action::Navigate(Motion::Down))
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('k')),
+            Resolution::Action(Action::Navigate(Motion::Up))
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('g')),
+            Resolution::Action(Action::Navigate(Motion::Top))
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('G')),
+            Resolution::Action(Action::Navigate(Motion::Bottom))
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('/')),
+            Resolution::Action(Action::WorktreeFilterStart)
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ctrl_ch('t')),
+            Resolution::Action(Action::WorktreeGotoNewTab)
+        );
+        assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('q')),
+            Resolution::Action(Action::WorktreeClose)
+        );
+        // `WorktreeGoto` has no default binding here (Enter is fixed elsewhere), but it still
+        // round-trips through the config-string layer.
+        assert_eq!(action_from_str("worktree_goto"), Some(Action::WorktreeGoto));
+        assert_eq!(action_name(Action::WorktreeGoto), "worktree_goto");
+    }
+
+    /// Config-string round trip for every new worktree action (mirrors `keymap_actions_round_trip`,
+    /// but explicit for the actions that have no default binding to be auto-collected there).
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_action_strings_round_trip() {
+        let pairs: &[(&str, Action)] = &[
+            ("git_open_worktrees", Action::GitOpenWorktrees),
+            ("worktree_filter_start", Action::WorktreeFilterStart),
+            ("worktree_goto", Action::WorktreeGoto),
+            ("worktree_goto_new_tab", Action::WorktreeGotoNewTab),
+            ("worktree_close", Action::WorktreeClose),
+        ];
+        for &(s, a) in pairs {
+            assert_eq!(action_from_str(s), Some(a), "{s} → {a:?}");
+            assert_eq!(action_name(a), s, "{a:?} → {s}");
+        }
     }
 
     #[test]
