@@ -25,6 +25,14 @@ All notable changes to konoma are documented in this file. The format is based o
   base or nothing has piled up yet, with the title making clear which one is being shown. Opens as
   a detail overlay on top of the list
   (`q`/Esc returns to it); unlike switching, this also works on the currently-active worktree.
+- **Linked-worktree indicator**: a persistent `WT <origin>` chip in the top context bar, shown
+  whenever the current root is inside a linked worktree (`git worktree add`) — never for the main
+  working tree. Without it there was nowhere on screen that said "you're in a worktree" or named
+  the repository it belongs to: the tree/preview title shows only the root directory's own name,
+  which for a linked worktree is an unrelated branch/feature name, not the project's. `<origin>` is
+  the main repository's directory name (or, for a bare-repo layout, the bare repo's directory name
+  with the trailing `.git` stripped), truncated to 20 columns. Computed alongside the branch name in
+  the existing background status scan — never recomputed on every render.
 
 ### Fixed
 - **External git operations were never picked up when the tree root was a linked worktree**

@@ -11500,6 +11500,7 @@ fn stale_git_status_result_is_discarded() {
             crate::git::FileStatus::Modified,
         )]),
         branch: Some("stale".into()),
+        worktree_origin: None,
     };
     assert!(!app.apply_statuses(stale), "古い世代の結果は捨てる");
     assert!(

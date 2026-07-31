@@ -387,6 +387,51 @@ pub fn branch(_root: &Path) -> Option<String> {
     None
 }
 
+/// The name of the repository a **linked worktree** (`git worktree add`) belongs to, or `None`
+/// when `root` is not inside one (including: not a repo, the repo's own main worktree, or the
+/// feature/config-disabled build). Nothing besides this is shown for the main worktree — the
+/// asymmetry (shown only in a linked worktree) is itself the information: konoma's tree/preview
+/// title already shows the root directory's own name, which for a linked worktree is some
+/// unrelated branch/feature name, not the project's.
+///
+/// `repo.is_worktree()` answers "linked worktree" directly (true even from a subdirectory reached
+/// by descending with `l`, since discovery walks up to the repo regardless of `root`). The origin
+/// name is derived from `repo.commondir()` (the shared git-dir every worktree of one repository
+/// points at), whose shape differs by layout:
+/// - ordinary repo + its linked worktrees: commondir = `<main>/.git/` → the origin name is the
+///   **parent directory's** name (`<main>`'s basename).
+/// - bare repo + its worktrees (`git clone --bare` + `git worktree add`): commondir = `<bare>/repo.git/`
+///   itself (there is no `.git` **inside** a bare repo) → the origin name is commondir's own
+///   basename with a trailing `.git` stripped.
+///
+/// The two are told apart by whether commondir's basename is literally `.git`.
+#[cfg(feature = "git")]
+pub fn worktree_origin(root: &Path) -> Option<String> {
+    if !external_git_enabled() {
+        return None;
+    }
+    let repo = git2::Repository::discover(root).ok()?;
+    if !repo.is_worktree() {
+        return None; // the main worktree (or a bare repo with no worktree at all)
+    }
+    let commondir = repo.commondir();
+    let name = commondir.file_name()?.to_str()?;
+    if name == ".git" {
+        commondir
+            .parent()?
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+    } else {
+        Some(name.strip_suffix(".git").unwrap_or(name).to_string())
+    }
+}
+
+#[cfg(not(feature = "git"))]
+pub fn worktree_origin(_root: &Path) -> Option<String> {
+    None
+}
+
 // ── Read+write API for diff / changed-files / log (for the Git view) ──────────
 //
 // Reads go through git2; writes (stage/unstage/discard/commit) are delegated to the `git` CLI
@@ -2383,6 +2428,144 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `worktree_origin`: `None` for the main working tree (including from a subdirectory reached
+    /// via `l`), `Some("<main's directory name>")` for a linked worktree — and the same value from a
+    /// subdirectory inside that linked worktree, since discovery walks up to the repo regardless of
+    /// where `root` points.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_origin_is_none_for_main_and_the_repo_name_for_a_linked_worktree() {
+        let dir = unique_tmp("konoma_git_worktree_origin_main");
+        let linked = unique_tmp("konoma_git_worktree_origin_linked");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&linked);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+        let main_root = dir.canonicalize().unwrap();
+        let expected_origin = main_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
+
+        assert_eq!(
+            worktree_origin(&main_root),
+            None,
+            "メインの作業ツリーでは None"
+        );
+        std::fs::create_dir_all(main_root.join("sub")).unwrap();
+        assert_eq!(
+            worktree_origin(&main_root.join("sub")),
+            None,
+            "メインのサブディレクトリでも None"
+        );
+
+        let sh = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&main_root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "konoma-wt-origin-feature",
+            linked.to_str().unwrap(),
+        ]);
+        let linked_abs = linked.canonicalize().unwrap();
+
+        assert_eq!(
+            worktree_origin(&linked_abs),
+            Some(expected_origin.clone()),
+            "リンクワークツリーではメインの repo 名"
+        );
+        std::fs::create_dir_all(linked_abs.join("nested")).unwrap();
+        assert_eq!(
+            worktree_origin(&linked_abs.join("nested")),
+            Some(expected_origin),
+            "リンクワークツリーのサブディレクトリでも同じ値"
+        );
+
+        std::fs::remove_dir_all(&linked).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `worktree_origin` in a **bare** layout (`git clone --bare` + `git worktree add`): there is no
+    /// `.git` directory inside a bare repo, so `commondir()` is the bare repo's own directory
+    /// (`<name>.git/`) — the origin name is that basename with the trailing `.git` stripped.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_origin_bare_layout_strips_the_trailing_git_suffix() {
+        let dir = unique_tmp("konoma_git_worktree_origin_bare_src");
+        let bare = unique_tmp("konoma_git_worktree_origin_bare_repo").with_extension("git");
+        let wt = unique_tmp("konoma_git_worktree_origin_bare_wt");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare);
+        let _ = std::fs::remove_dir_all(&wt);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+
+        let sh = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(
+            &std::env::temp_dir(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                dir.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        sh(
+            &bare,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt-branch",
+                wt.to_str().unwrap(),
+            ],
+        );
+
+        let bare_abs = bare.canonicalize().unwrap();
+        let expected_origin = bare_abs
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .strip_suffix(".git")
+            .unwrap()
+            .to_string();
+        let wt_abs = wt.canonicalize().unwrap();
+
+        assert_eq!(
+            worktree_origin(&wt_abs),
+            Some(expected_origin),
+            "bare レイアウトでは commondir 自身の名前から `.git` を落とした名前"
+        );
+
+        std::fs::remove_dir_all(&wt).ok();
+        std::fs::remove_dir_all(&bare).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The whole point of `diff_since` over `worktree_diff`: it must show **both** what the
     /// worktree has already committed since branching off `base` **and** what's still uncommitted
     /// on top of that — because an AI agent working in a worktree very often commits along the
@@ -2812,6 +2995,17 @@ mod tests {
         cfg.set_str("user.name", "Test").unwrap();
         cfg.set_str("user.email", "test@example.com").unwrap();
         cfg.set_str("commit.gpgsign", "false").ok();
+    }
+
+    /// A unique temp directory per call (pid + a process-global counter), same pattern as
+    /// `app/tests.rs`'s helper of the same name: worktree tests create several sibling directories
+    /// per case, and a fixed path would collide across parallel test runs.
+    #[cfg(feature = "git")]
+    fn unique_tmp(prefix: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
     }
 
     #[cfg(feature = "git")]

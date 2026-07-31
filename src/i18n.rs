@@ -82,6 +82,10 @@ pub enum Msg {
     WorktreesNavHint,
     /// Inner-mode chip label while the worktree list is open.
     StWorktrees,
+    /// Persistent chip shown whenever the current root is inside a **linked worktree** (never for
+    /// the main working tree). Language-neutral by design (an abbreviation, not a sentence), but
+    /// kept as a `Msg` for the usual catalog sweep/consistency.
+    StWorktreeChip,
     /// `?` help row label for `Enter` in the worktree list.
     GitWorktreeSwitch,
     /// Changes-hub `?` help row label for `w` (short noun, matching `GitBranches`'s "branches").
@@ -536,6 +540,7 @@ fn en(msg: Msg) -> &'static str {
         WorktreeAlreadyCurrent => "already in this worktree",
         WorktreesNavHint => "j/k:nav  Enter:switch  Ctrl-t:new tab  d:diff  /:search  q/Esc:back",
         StWorktrees => "WORKTREES",
+        StWorktreeChip => "WT",
         GitWorktreeSwitch => "switch to it",
         GitWorktreesRow => "worktrees",
         WorktreeShowChangesHelp => "diff since base (or uncommitted)",
@@ -974,6 +979,7 @@ fn jp(msg: Msg) -> &'static str {
         WorktreeAlreadyCurrent => "既にこのワークツリーにいます",
         WorktreesNavHint => "j/k:移動  Enter:切替  Ctrl-t:新規タブ  d:diff  /:検索  q/Esc:戻る",
         StWorktrees => "ワークツリー",
+        StWorktreeChip => "WT",
         GitWorktreeSwitch => "切り替える",
         GitWorktreesRow => "ワークツリー",
         WorktreeShowChangesHelp => "base からの diff（無ければ未コミットのみ）",
@@ -1480,6 +1486,7 @@ mod tests {
         Msg::WorktreeAlreadyCurrent,
         Msg::WorktreesNavHint,
         Msg::StWorktrees,
+        Msg::StWorktreeChip,
         Msg::GitWorktreeSwitch,
         Msg::GitWorktreesRow,
         Msg::WorktreeShowChangesHelp,

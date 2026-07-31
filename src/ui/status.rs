@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, DisplayMode, InternalMode, KeyScheme, Mode, PathStyle};
 use crate::i18n::{tr, Lang, Msg};
@@ -22,6 +22,31 @@ use crate::keymap::Surface;
 /// Shared helper that builds one mode chip. Background color = meaning; foreground is black/white by lightness.
 fn chip(lang: Lang, msg: Msg, bg: Color, dark_bg: bool) -> Span<'static> {
     chip_str(tr(lang, msg).to_string(), bg, dark_bg)
+}
+
+/// Truncates `s` to display width `max` (CJK-aware; appends `…` when cut). The context bar shares
+/// width with the tab bar (`context_width` is used to size it), so labels here — like the linked-
+/// worktree chip's origin repo name — must stay bounded rather than growing unboundedly with an
+/// arbitrary directory name.
+fn truncate_display(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if used + cw > max - 1 {
+            break; // reserve room for the trailing `…` (width 1)
+        }
+        out.push(ch);
+        used += cw;
+    }
+    out.push('…');
+    out
 }
 
 /// A chip for arbitrary text (used for breadcrumbs like `GRAPH - BRANCH`).
@@ -180,6 +205,18 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
     if app.follow_enabled() {
         spans.push(Span::from(" "));
         spans.push(chip(app.lang, Msg::StFollow, Color::Green, false));
+    }
+    // Linked-worktree indicator: shown **only** while inside a linked worktree (never the main
+    // working tree), so — like FOLLOW above — it coexists with any other state and always appears
+    // as its own chip. Without this, the tree/preview title's root-directory name is the sole clue
+    // to "where am I", and for a linked worktree that name is an unrelated branch/feature name, not
+    // the project's — there is nowhere else on screen that says "this is a worktree" or names the
+    // origin repo. `app.worktree_origin()` reads a value cached alongside `git_branch` (refreshed
+    // once per root change), never git itself, so this costs nothing extra per frame.
+    if let Some(origin) = app.worktree_origin() {
+        spans.push(Span::from(" "));
+        spans.push(chip(app.lang, Msg::StWorktreeChip, Color::Cyan, false));
+        spans.push(Span::from(format!(" {}", truncate_display(origin, 20))).dim());
     }
     // Each view's own addition (Tree = sort/selection count / Preview = image zoom). No chip is
     // shown here.
@@ -497,6 +534,24 @@ mod tests {
         assert_eq!(fit_tokens(&toks, 0), "");
     }
 
+    /// `truncate_display` (used by the linked-worktree chip to bound an arbitrary origin directory
+    /// name) is a no-op under the limit, truncates with a trailing `…` over it, is CJK-width-aware
+    /// (a 2-column glyph counts as 2), and doesn't panic at `max == 0`.
+    #[test]
+    fn truncate_display_truncates_long_names() {
+        assert_eq!(truncate_display("short", 20), "short", "上限以下はそのまま");
+        let long = "a".repeat(30);
+        let t = truncate_display(&long, 20);
+        assert_eq!(t.width(), 20, "上限ちょうどの表示幅に収める");
+        assert!(t.ends_with('…'), "切った印に … を付ける");
+        // CJK: each glyph is display-width 2, so 20 columns holds far fewer than 20 characters.
+        let cjk = "名".repeat(30);
+        let tc = truncate_display(&cjk, 20);
+        assert!(tc.width() <= 20, "CJK でも表示幅の上限を超えない: {tc:?}");
+        assert!(tc.ends_with('…'));
+        assert_eq!(truncate_display("x", 0), "", "上限0でもパニックしない");
+    }
+
     #[test]
     fn footer_shows_whichkey_menu_while_leader_pending() {
         let dir = std::env::temp_dir().join("konoma_whichkey_footer_test");
@@ -528,6 +583,100 @@ mod tests {
             f.contains("hello flash") && !f.contains('▸'),
             "flash 優先: {f}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The "WT <origin>" chip appears **only** while inside a linked worktree (`git worktree add`),
+    /// never for the main working tree — the asymmetry is itself the signal. `origin` reads
+    /// `App::worktree_origin()`, which is populated by the background status scan alongside
+    /// `git_branch`, so this also exercises the real refresh path rather than poking the field directly.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_chip_shows_only_inside_a_linked_worktree() {
+        // Kept short (<= the chip's 20-char truncation budget) so this test asserts the *exact*
+        // origin name; `truncate_display_truncates_long_names` below covers the truncation itself.
+        let dir = std::env::temp_dir().join("konoma_wt_chip_main");
+        let linked = std::env::temp_dir().join("konoma_wt_chip_linked");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&linked);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        {
+            let mut c = repo.config().unwrap();
+            c.set_str("user.name", "T").unwrap();
+            c.set_str("user.email", "t@t").unwrap();
+            c.set_str("commit.gpgsign", "false").ok();
+        }
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "init"]);
+        let main_root = dir.canonicalize().unwrap();
+
+        // Main working tree: no chip at all.
+        let mut app_main = App::new(main_root.clone(), Config::default()).unwrap();
+        app_main.refresh_git_if_needed();
+        assert_eq!(
+            app_main.worktree_origin(),
+            None,
+            "メインの作業ツリーでは worktree_origin が None"
+        );
+        let main_text: String = context_spans(&app_main)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !main_text.contains("WT"),
+            "メインの作業ツリーでは WT チップが出てはいけない: {main_text}"
+        );
+
+        git(
+            &main_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let linked_root = linked.canonicalize().unwrap();
+        let expected_origin = main_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
+
+        // Linked worktree: the chip + the origin repo's name.
+        let mut app_wt = App::new(linked_root, Config::default()).unwrap();
+        app_wt.refresh_git_if_needed();
+        assert_eq!(
+            app_wt.worktree_origin(),
+            Some(expected_origin.as_str()),
+            "linked worktree では元の repo 名が取れる"
+        );
+        let wt_text: String = context_spans(&app_wt)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            wt_text.contains("WT"),
+            "linked worktree では WT チップが出るはず: {wt_text}"
+        );
+        assert!(
+            wt_text.contains(&expected_origin),
+            "元の repo 名 ({expected_origin}) が出ていない: {wt_text}"
+        );
+
+        std::fs::remove_dir_all(&linked).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

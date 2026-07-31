@@ -682,6 +682,7 @@ impl App {
         if self.git_status_workdir != wd {
             self.git_status.clear();
             self.git_branch = None;
+            self.git_worktree_origin = None;
             self.git_status_workdir = None;
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
@@ -706,6 +707,7 @@ impl App {
                 gen,
                 statuses: Default::default(),
                 branch: None,
+                worktree_origin: None,
                 workdir,
             };
             self.apply_statuses(res);
@@ -737,6 +739,7 @@ impl App {
             gen,
             statuses: crate::git::statuses(&root),
             branch: crate::git::branch(&root),
+            worktree_origin: crate::git::worktree_origin(&root),
             workdir,
         }
     }
@@ -782,6 +785,7 @@ impl App {
         }
         self.git_status = res.statuses;
         self.git_branch = res.branch;
+        self.git_worktree_origin = res.worktree_origin;
         self.git_status_workdir = res.workdir;
         // A matching generation = this result belongs to the current workdir. The root at the time
         // the scan started can differ from the current root if `l`/`h` moved within the same repo.
@@ -870,6 +874,14 @@ impl App {
     /// The current branch name (None if not a repo). Used for the tree's title display.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
+    }
+
+    /// The origin repo's name when the current root is inside a **linked worktree**, else `None`
+    /// (main worktree / not a repo / git off). Cached alongside `git_branch` — refreshed once per
+    /// root change by the background status scan, never recomputed on render. Drives the
+    /// persistent "WT <origin>" chip (`ui/status.rs::context_spans`).
+    pub fn worktree_origin(&self) -> Option<&str> {
+        self.git_worktree_origin.as_deref()
     }
 
     /// Whether there is at least one change (= a git repo with uncommitted changes). Used to decide the status-gutter display.

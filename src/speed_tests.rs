@@ -261,6 +261,94 @@ fn same_repo_navigation_does_not_rescan_git_status() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// GUARD: the linked-worktree chip's origin repo name (`App::worktree_origin`, shown by
+/// `ui/status.rs::context_spans`) rides along with `git_branch`/`git status` in the background
+/// scan (`scan_statuses`) and must be computed **once per root change**, never recomputed on every
+/// render (the context bar draws every frame).
+///
+/// Counted by **scan dispatches landing on the channel**, not `git::WORKTREE_ORIGIN_CALLS` — that
+/// counter is process-shared, and any *other* test's `App::refresh_git_if_needed()` running
+/// concurrently (the default test harness runs tests in parallel threads) also increments it, the
+/// same pitfall `STATUS_CALLS`'s doc comment already warns about (confirmed: this test flaked when
+/// run alongside the other worktree tests before switching to the channel). Since `worktree_origin`
+/// is computed *only* inside `scan_statuses` — the very function `refresh_git_if_needed` dispatches
+/// — "no extra scan dispatched" is equivalent to "no extra `worktree_origin` computed", and this
+/// count is immune to unrelated tests' git activity.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_chip_is_not_recomputed_on_every_render() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = std::env::temp_dir().join("konoma_speed_worktree_chip_main");
+    let linked = std::env::temp_dir().join("konoma_speed_worktree_chip_linked");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&linked);
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = git2::Repository::init(&dir).unwrap();
+    {
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "T").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+        c.set_str("commit.gpgsign", "false").ok();
+    }
+    std::fs::write(dir.join("a.txt"), b"x\n").unwrap();
+    let git = |cwd: &Path, a: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(a)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {a:?}: {out:?}");
+    };
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "init"]);
+    let main_root = dir.canonicalize().unwrap();
+    git(
+        &main_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let linked_root = linked.canonicalize().unwrap();
+
+    let mut app = crate::app::App::new(linked_root, Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed(); // dispatch the 1st (only) scan
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1本目の結果");
+    assert!(app.apply_statuses(res));
+    assert!(
+        app.worktree_origin().is_some(),
+        "linked worktree のはずが origin が取れていない"
+    );
+
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    for _ in 0..50 {
+        // Exercises the real render path: `ui::tree::render` calls `refresh_git_if_needed()` itself
+        // every frame (the same call the run loop makes before drawing).
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "同じ root への描画50回で worktree_origin(scan_statuses)を再計算してはいけない"
+    );
+    assert!(
+        app.worktree_origin().is_some(),
+        "50回の描画後も表示は保たれているはず"
+    );
+    std::fs::remove_dir_all(&linked).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Generate a large, GFM-feature-complete Markdown document (headings, tables, alerts, footnotes,
 /// task lists, `<details>`, autolink, inline HTML, nested lists, blockquotes, code fences). Feeding
 /// this through the decorated preview exercises most of `preview/markdown.rs` — so it guards the whole

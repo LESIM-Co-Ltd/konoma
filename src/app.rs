@@ -502,6 +502,11 @@ pub struct StatusResult {
     workdir: Option<PathBuf>,
     statuses: std::collections::HashMap<PathBuf, crate::git::FileStatus>,
     branch: Option<String>,
+    /// The origin repo name when `root` is inside a **linked worktree**, else `None`. Same
+    /// lifecycle as `branch` (computed alongside it in `scan_statuses`, applied together in
+    /// `apply_statuses`) — see `App::worktree_origin`'s doc comment for why it rides along here
+    /// instead of having its own refresh path.
+    worktree_origin: Option<String>,
 }
 
 /// Which long-running filesystem operation a background job is performing.
@@ -859,6 +864,12 @@ pub struct App {
     diff_layout: DiffLayout,
     /// The current branch name (fetched at the same time as git status). None if not a repo.
     git_branch: Option<String>,
+    /// The origin repo name when the current root is inside a **linked worktree** (`git worktree
+    /// add`), else `None`. Same lifecycle/cache as `git_branch` — fetched by the same background
+    /// scan (`scan_statuses`), applied by the same `apply_statuses`, cleared whenever `git_branch`
+    /// is (moving to a different repo). Drives the persistent "WT <origin>" chip (`ui/status.rs`),
+    /// which needs it recomputed exactly once per root change, never per render.
+    git_worktree_origin: Option<String>,
 
     /// Whether the branch-visibility panel (`b`) is open. Modal/transient — not per-tab (reset, not
     /// restored, on tab switch; see `PerTab` for the per-tab git-view overlay state).
@@ -1543,6 +1554,7 @@ impl App {
             ignored_tx: None,
             diff_layout,
             git_branch: None,
+            git_worktree_origin: None,
             git_graph_picker: false,
             git_graph_picker_sel: 0,
             git_graph_picker_set: std::collections::HashSet::new(),
