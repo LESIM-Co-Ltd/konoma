@@ -1873,6 +1873,49 @@ pub fn diff_since(_root: &Path, _base: &str) -> Vec<DiffLine> {
     Vec::new()
 }
 
+/// The commit time (Unix epoch seconds) of `git merge-base <base> HEAD`, i.e. the point where
+/// `base` and this worktree's HEAD last shared history. Used by `App::worktree_diff_base`
+/// (`src/app/git_view.rs`) to rank several candidate base branches for the worktree list's `d`
+/// diff: the candidate whose merge-base is *newest* is the branch this worktree most recently
+/// diverged from, which is the base that actually explains "everything since base" without
+/// dragging in an unrelated branch's own unrelated history.
+///
+/// `root` must be the **target worktree's own checkout path**, not necessarily the caller's
+/// current root — same reasoning `diff_since` above already documents: `Repository::discover
+/// (root)` resolves a `Repository` bound to *that* worktree's private per-worktree `HEAD` (via its
+/// own `.git/worktrees/<name>` git-dir), so `repo.head()` below returns that worktree's HEAD, not
+/// whichever worktree happened to open the repo. `base` is a local branch name, shared repo-wide
+/// through the common git-dir, so it resolves to the same commit regardless of which worktree's
+/// path was used to discover the repo.
+///
+/// Returns `None` when not a repo / `base` does not exist / HEAD is unborn / there is no common
+/// ancestor / the merge-base commit can't be read / the feature is disabled — same "quietly return
+/// nothing, caller treats this candidate as unusable" contract as `branch_tip`/`diff_since`.
+#[cfg(feature = "git")]
+pub fn merge_base_time(root: &Path, base: &str) -> Option<i64> {
+    if !external_git_enabled() {
+        return None;
+    }
+    let repo = git2::Repository::discover(root).ok()?;
+    let base_oid = repo
+        .find_branch(base, git2::BranchType::Local)
+        .ok()?
+        .get()
+        .peel_to_commit()
+        .ok()?
+        .id();
+    let head_oid = repo.head().ok()?.peel_to_commit().ok()?.id();
+    let merge_base_oid = repo.merge_base(base_oid, head_oid).ok()?;
+    repo.find_commit(merge_base_oid)
+        .ok()
+        .map(|c| c.time().seconds())
+}
+
+#[cfg(not(feature = "git"))]
+pub fn merge_base_time(_root: &Path, _base: &str) -> Option<i64> {
+    None
+}
+
 #[cfg(not(feature = "git"))]
 pub fn stage(_root: &Path, _file: &Path) -> anyhow::Result<()> {
     Err(anyhow::anyhow!("git feature 無効"))

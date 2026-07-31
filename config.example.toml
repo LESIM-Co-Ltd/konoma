@@ -89,8 +89,10 @@ graph_max_branches = 12
 # 2. The first one that exists becomes the "base" = pinned to lane0 in a straight line.
 # 3. The order also drives the legend/panel display order (array → HEAD → recency).
 # The graph's `b` panel J/K reorders for the current session only (never written back to the config).
-# Also reused as the base for the worktree list's diff (`d`, in git_worktrees): the first branch here
-# that exists is what a selected worktree's "everything since base" diff is computed against.
+# Also reused as the base for the worktree list's diff (`d`, in git_worktrees): the candidate pool is the
+# entries here that exist plus the main worktree's branch, and whichever candidate's merge-base (common
+# ancestor) with the diffed worktree's HEAD is newest becomes the base — i.e. the branch it actually
+# diverged from, not necessarily the first one listed here; ties fall back to this array's order.
 graph_base_branches = []
 
 # In the log (o→l) / graph (o→g) commit rows, how the right-side metadata (author, date; also short hash in the

@@ -767,28 +767,69 @@ impl App {
         Ok(())
     }
 
-    /// Decides the base branch for `worktree_show_changes`'s "everything since base" diff. Reuses
-    /// the graph's existing `[ui] graph_base_branches` (deliberately — no new setting to learn just
-    /// for this one feature): the first configured name that actually exists in this repo
-    /// (`git::branch_tip`), same "left to right, first hit wins" rule the graph's base-pinning
-    /// already uses (`derive_base_from_order`). Falls back to the **main** worktree's checked-out
-    /// branch (the first row `git worktree list` always reports, see `worktrees()`'s doc) when none
-    /// of the configured names exist — every real repo has a main worktree, and absent an explicit
-    /// config choice, whatever the main worktree is on is the most reasonable guess at "base".
-    /// `None` when neither resolves (e.g. an unconfigured base and a detached/unborn main worktree).
+    /// Decides the base branch for `worktree_show_changes`'s "everything since base" diff for a
+    /// given target worktree `w`. Reuses the graph's existing `[ui] graph_base_branches`
+    /// (deliberately — no new setting to learn just for this one feature) plus the **main**
+    /// worktree's checked-out branch (the first row `git worktree list` always reports, see
+    /// `worktrees()`'s doc) as the candidate pool, then picks whichever candidate's merge-base with
+    /// `w`'s own HEAD is **newest** — i.e. the branch `w` actually diverged from most recently —
+    /// rather than picking by config-list position. `w`'s own branch is excluded from the pool
+    /// (its merge-base with its own HEAD is HEAD itself, never a useful base).
+    ///
+    /// This ranking, not list order, matters in practice: on a repo where the main worktree sat on
+    /// `develop` (well ahead of `main`) and a linked worktree branched off `develop`'s tip, diffing
+    /// against `main` (first in `graph_base_branches = ["main", "develop"]`) showed +24 lines, 22 of
+    /// which `develop` had already piled up *before* the worktree ever branched off it — `main`'s
+    /// merge-base with the worktree was three weeks older than `develop`'s. Ranking by merge-base
+    /// recency instead picks `develop` and correctly shows +2 lines.
+    ///
+    /// Ties (equal merge-base time — normally shouldn't happen, but handled defensively) are broken
+    /// by candidate order: `graph_base_branches` entries in their configured order, then the main
+    /// worktree's branch last — a strictly-greater comparison means the first-encountered candidate
+    /// keeps its lead on a tie.
+    ///
+    /// `None` when no candidate resolves to a usable merge-base (doesn't exist in this repo, no
+    /// merge-base with `w`'s HEAD, or the only candidate collapses to `w`'s own branch) — same
+    /// "quietly return `None`, caller falls back to uncommitted-only diff" contract as before.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    fn worktree_diff_base(&self) -> Option<String> {
+    fn worktree_diff_base(&self, w: &crate::git::WorktreeInfo) -> Option<String> {
+        let mut candidates: Vec<&str> = Vec::new();
         for name in &self.cfg.ui.graph_base_branches {
-            if crate::git::branch_tip(&self.tab.root, name).is_some() {
-                return Some(name.clone());
+            let name = name.as_str();
+            if !candidates.contains(&name) && crate::git::branch_tip(&self.tab.root, name).is_some()
+            {
+                candidates.push(name);
             }
         }
-        self.tab
+        if let Some(main_branch) = self
+            .tab
             .git_worktrees
-            .as_ref()?
-            .iter()
-            .find(|w| w.is_main)
-            .and_then(|w| w.branch.clone())
+            .as_ref()
+            .and_then(|list| list.iter().find(|x| x.is_main))
+            .and_then(|x| x.branch.as_deref())
+        {
+            if !candidates.contains(&main_branch) {
+                candidates.push(main_branch);
+            }
+        }
+        let own_branch = w.branch.as_deref();
+        let mut best: Option<(&str, i64)> = None;
+        for name in candidates {
+            if Some(name) == own_branch {
+                continue;
+            }
+            let Some(t) = crate::git::merge_base_time(&w.path, name) else {
+                continue;
+            };
+            let better = match best {
+                None => true,
+                Some((_, best_t)) => t > best_t,
+            };
+            if better {
+                best = Some((name, t));
+            }
+        }
+        best.map(|(name, _)| name.to_string())
     }
 
     /// `d` in the worktree list: show what the **selected** worktree has piled up relative to the
@@ -807,7 +848,7 @@ impl App {
     /// guard `worktree_goto` uses (`worktree_switch_target`) — but **not** `AlreadyCurrent`: viewing
     /// the diff of the worktree you're presently in is perfectly legitimate.
     ///
-    /// The base is `worktree_diff_base()`. When there's no resolvable base, or the since-base diff
+    /// The base is `worktree_diff_base(&w)`. When there's no resolvable base, or the since-base diff
     /// comes back empty (e.g. this worktree sits exactly at the base with nothing piled up yet),
     /// falls back to an uncommitted-only diff (`worktree_diff`) — the title makes clear which one is
     /// being shown, so an uncommitted-only view is never mistaken for a diff against the base.
@@ -842,7 +883,7 @@ impl App {
             .unwrap_or_else(|| "?".to_string());
         let path = home_relative(&w.path);
 
-        let base = self.worktree_diff_base();
+        let base = self.worktree_diff_base(&w);
         let since = base
             .as_deref()
             .map(|b| crate::git::diff_since(&w.path, b))
@@ -1559,6 +1600,23 @@ mod tests {
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
+    /// `git commit` with an explicit, well-separated author/committer date (`GIT_AUTHOR_DATE` /
+    /// `GIT_COMMITTER_DATE`, accepted as `@<unix-epoch> +0000`) so tests that assert "the newer
+    /// commit wins" aren't flaky from two real `git commit` calls landing in the same wall-clock
+    /// second.
+    #[cfg(feature = "git")]
+    fn commit_at(cwd: &std::path::Path, msg: &str, epoch: i64) {
+        let date = format!("@{epoch} +0000");
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(["commit", "-q", "-m", msg])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git commit -m {msg:?}: {out:?}");
+    }
+
     /// A main repo (one commit) with a linked worktree branched off it. Returns
     /// `(main_root, base_branch_name, linked_worktree_path)`.
     #[cfg(feature = "git")]
@@ -1589,8 +1647,30 @@ mod tests {
         (root, base, linked)
     }
 
-    /// `graph_base_branches` mixing branches that don't exist with one that does: the first
-    /// **existing** one wins, regardless of its position among the missing ones.
+    /// Fetches the linked worktree's row (added by `sandbox_with_worktree`, checked out on
+    /// `branch`) from `tab.git_worktrees`, populated by a prior `open_git_worktrees()` call. All
+    /// three "existing branch resolves" tests below target this row rather than the main
+    /// worktree's: `worktree_diff_base` now excludes the *target's own* branch from its candidate
+    /// pool, and in each of these configs the main worktree's own branch is the only (or first)
+    /// candidate — targeting the main worktree row would make it resolve to `None`, not the branch
+    /// under test. The linked worktree branched off that same branch and made no commits of its
+    /// own, so its HEAD *is* the candidate's tip: `merge_base(candidate, HEAD)` trivially equals
+    /// that tip, giving `merge_base_time` something to compare.
+    #[cfg(feature = "git")]
+    fn linked_worktree_row(app: &App, branch: &str) -> crate::git::WorktreeInfo {
+        app.tab
+            .git_worktrees
+            .as_ref()
+            .expect("git_worktrees populated by open_git_worktrees()")
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .cloned()
+            .unwrap_or_else(|| panic!("no worktree row for branch {branch:?}"))
+    }
+
+    /// `graph_base_branches` mixing branches that don't exist with one that does: the existing one
+    /// resolves as the diff base for the linked worktree (branched off it, so it's also the only
+    /// candidate with a merge-base against the linked worktree's HEAD).
     #[cfg(feature = "git")]
     #[test]
     fn worktree_diff_base_picks_first_existing_configured_branch() {
@@ -1603,16 +1683,17 @@ mod tests {
         ];
         let mut app = App::new(root.clone(), cfg).unwrap();
         app.open_git_worktrees(); // populates `tab.git_worktrees` (the fallback path's source)
+        let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
-            app.worktree_diff_base(),
+            app.worktree_diff_base(&target),
             Some(base),
-            "設定済みの中で最初に実在するものを選ぶ"
+            "設定済みの中で実在するものを選ぶ"
         );
         std::fs::remove_dir_all(&root).ok();
     }
 
     /// An empty `graph_base_branches` (the default): falls back to the **main** worktree's
-    /// checked-out branch.
+    /// checked-out branch as the sole candidate for the linked worktree.
     #[cfg(feature = "git")]
     #[test]
     fn worktree_diff_base_falls_back_to_main_worktree_branch_when_config_is_empty() {
@@ -1621,8 +1702,9 @@ mod tests {
         assert!(cfg.ui.graph_base_branches.is_empty(), "前提: 既定は []");
         let mut app = App::new(root.clone(), cfg).unwrap();
         app.open_git_worktrees();
+        let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
-            app.worktree_diff_base(),
+            app.worktree_diff_base(&target),
             Some(base),
             "config が空ならメインワークツリーのブランチへ"
         );
@@ -1640,10 +1722,92 @@ mod tests {
             vec!["konoma-nope".to_string(), "konoma-also-nope".to_string()];
         let mut app = App::new(root.clone(), cfg).unwrap();
         app.open_git_worktrees();
+        let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
-            app.worktree_diff_base(),
+            app.worktree_diff_base(&target),
             Some(base),
             "設定が全滅ならメインワークツリーのブランチへ"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The motivating regression, reproduced from a measurement on a real repo: `main` is listed
+    /// **first** in `graph_base_branches`, but the worktree actually branched off `develop`'s tip
+    /// (which had already advanced past `main`). The old "first configured branch that exists"
+    /// rule picked `main`, dragging in everything `develop` had already piled up *before* the
+    /// worktree ever branched off it — a diff that was mostly noise. Ranking candidates by
+    /// merge-base recency instead picks `develop`, the branch actually diverged from, regardless
+    /// of its position in the config list.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_diff_base_prefers_newest_merge_base_over_config_order() {
+        let dir = std::env::temp_dir().join("konoma_gitview_diffbase_recency");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("main.txt"), b"main\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        commit_at(&dir, "on main", 1_700_000_000); // deterministic: 20 days apart from develop's commit
+        sh(&dir, &["branch", "-m", "main"]); // name the initial branch deterministically
+
+        sh(&dir, &["checkout", "-q", "-b", "develop"]);
+        std::fs::write(dir.join("develop.txt"), b"develop\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        commit_at(&dir, "on develop", 1_720_000_000); // newer than main's commit — develop's tip
+                                                      // is now the merge-base any worktree branched off it will have with `develop`.
+
+        let root = dir.canonicalize().unwrap();
+        let linked = std::env::temp_dir().join("konoma_gitview_diffbase_recency_linked");
+        let _ = std::fs::remove_dir_all(&linked);
+        sh(
+            &root, // root is currently checked out on `develop`, so the worktree branches off its tip
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "agent-branch",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let linked = linked.canonicalize().unwrap();
+        std::fs::write(linked.join("agent.txt"), b"agent\n").unwrap();
+        sh(&linked, &["add", "-A"]);
+        commit_at(&linked, "agent work", 1_730_000_000);
+
+        let mut cfg = Config::default();
+        cfg.ui.graph_base_branches = vec!["main".to_string(), "develop".to_string()];
+        let mut app = App::new(root.clone(), cfg).unwrap();
+        app.open_git_worktrees();
+        let target = linked_worktree_row(&app, "agent-branch");
+        assert_eq!(
+            app.worktree_diff_base(&target),
+            Some("develop".to_string()),
+            "develop の方が merge-base が新しい＝実際に分岐した枝を選ぶ（config では main が先でも）"
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&linked).ok();
+    }
+
+    /// When the only candidate collapses to the diffed worktree's own branch (empty config, so the
+    /// only fallback candidate is the main worktree's branch, and the target *is* the main
+    /// worktree), it's excluded from the pool and nothing is left to compare against — `None`, not
+    /// a self-diff.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_diff_base_is_none_when_only_candidate_is_the_targets_own_branch() {
+        let (root, _base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_self_excluded");
+        let cfg = Config::default(); // graph_base_branches defaults to []
+        let mut app = App::new(root.clone(), cfg).unwrap();
+        app.open_git_worktrees();
+        let main_row = app
+            .git_worktree_selected()
+            .expect("cursor defaults to the main worktree row (is_current)");
+        assert!(main_row.is_main, "前提: カーソルはメインワークツリー行");
+        assert_eq!(
+            app.worktree_diff_base(&main_row),
+            None,
+            "唯一の候補＝自分自身のブランチは除外されるので None"
         );
         std::fs::remove_dir_all(&root).ok();
     }

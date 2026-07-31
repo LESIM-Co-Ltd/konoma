@@ -17,10 +17,13 @@ All notable changes to konoma are documented in this file. The format is based o
   **committed and uncommitted changes together** (equivalent to
   `git diff $(git merge-base <base> HEAD)`), so it still shows something even when an AI agent has
   been committing along the way inside that worktree (an uncommitted-only diff would otherwise go
-  blank the moment it commits). The base is `graph_base_branches` (reusing the graph's existing
-  setting), falling back to the main worktree's branch; falls back further to an
-  uncommitted-only diff when there's no resolvable base or nothing has piled up yet, with the
-  title making clear which one is being shown. Opens as a detail overlay on top of the list
+  blank the moment it commits). The base is picked from `graph_base_branches` (reusing the graph's
+  existing setting) plus the main worktree's branch, choosing whichever candidate's merge-base with
+  the diffed worktree is newest — the branch it actually diverged from, not necessarily the first
+  one listed — so a stale first-listed branch doesn't pull in an unrelated sibling branch's
+  accumulated history; falls back further to an uncommitted-only diff when there's no resolvable
+  base or nothing has piled up yet, with the title making clear which one is being shown. Opens as
+  a detail overlay on top of the list
   (`q`/Esc returns to it); unlike switching, this also works on the currently-active worktree.
 
 ### Fixed
