@@ -82,6 +82,24 @@ and shows you only what the agent just did. Press `f` to swap between the two vi
   the full <code>git diff</code>, where both show up.
 </p>
 
+## Worktrees — one checkout per agent
+
+Agents work best with a checkout of their own, so `git worktree` has become the way
+to run several at once. `o` then `w` lists the repository's worktrees; `d` shows what
+one of them has added since its base branch — **committed and uncommitted together**,
+because an agent that commits mid-task would otherwise show you an empty diff. `Enter`
+moves in, `Ctrl-t` opens it in a new tab, and the `WT` chip keeps naming the repository
+you came from, since a worktree's directory rarely does.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/worktrees.gif" alt="Worktrees — listing the repository's worktrees, showing what an agent's worktree added since its base branch, and stepping into it with the WT chip naming the repository" width="860">
+</p>
+<p align="center">
+  <b>Worktrees</b> — the agent's checkout has a landed commit <i>and</i> an unfinished line;
+  <code>d</code> shows both. After <code>Enter</code>, <code>WT demo</code> says which repository
+  <code>add-retry</code> belongs to.
+</p>
+
 ## Features
 
 - **Full-screen preview**: images, Markdown, Mermaid, code, SVG, video thumbnails, and
@@ -97,7 +115,8 @@ and shows you only what the agent just did. Press `f` to swap between the two vi
   codes. Other terminals (sixel, iTerm2, half-blocks) fall back to ratatui-image.
 - **Agent watch**: `F` follows whatever your AI edits — konoma jumps to each file on its own and shows
   the diff *since you pressed `F`*, so pre-existing changes stay out of the way.
-- **Git suite**: status, diff, log, a custom commit-graph renderer, branches, and commits, all in-app.
+- **Git suite**: status, diff, log, a custom commit-graph renderer, branches, commits, and
+  **worktrees** — list them, diff one against its base branch, and switch or open it in a tab.
 - **File manager**: create / rename / delete (trash by default) / copy / move, plus search,
   bookmarks, and sorting. Destructive actions require a confirmation dialog.
 - **Optional dependencies**: the app never breaks when an external tool (mpv, etc.) is missing.
