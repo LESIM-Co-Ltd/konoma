@@ -54,7 +54,17 @@ the bottom.
 ## Branches — `b`
 
 List with ahead/behind info. `Enter` checks out, `n` creates, `d` deletes
-(confirmed), `/` filters. Worktrees are listed too.
+(confirmed), `/` filters. Branches checked out in another worktree appear here
+too, though checking one out fails — git keeps a branch in one worktree at a
+time, and says which one holds it.
+
+## Worktrees — `w`
+
+Lists the repository's worktrees with their branch, short hash and path, marking
+the one you are in. `Enter` makes it this tab's root, `Ctrl-t` opens it in a new
+tab, and `d` diffs it against its base branch — committed and uncommitted work
+together. See [Working with an AI agent](../agent-watch/) for why that matters when an
+agent is doing the committing.
 
 ## External tool — `!` (inside the changes hub)
 

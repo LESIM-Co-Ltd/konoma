@@ -60,7 +60,7 @@ copy_prefix = "y"
 | `svg_max_px` | `800` | Max rasterization side (px) for SVG previews. Larger = crisper but heavier. |
 | `details` | `[]` | Metadata columns on tree rows, in order. Available: `"size"`, `"modified"`, `"perm"`, `"type"`, `"items"` (directory entry count). |
 | `graph_max_branches` | `12` | Cap on branches drawn simultaneously in the commit graph (`o` → `g`). `0` = unlimited. Toggle branches at runtime with `b` inside the graph. |
-| `graph_base_branches` | `[]` | Ordered list of preferred base branches for the graph, e.g. `["main", "develop"]`. The first one that exists becomes the base (pinned to lane 0); the array order becomes the display priority. |
+| `graph_base_branches` | `[]` | Ordered list of preferred base branches, e.g. `["main", "develop"]`. In the graph, the first one that exists becomes the base (pinned to lane 0) and the array order becomes the display priority. A worktree's diff (`o` `w`, then `d`) treats these as candidates and picks whichever shares the most recent common ancestor with that worktree, so the order only breaks ties. |
 | `commit_meta_align` | `"right"` | Author/date column in git log & graph: `"right"` (aligned right-edge column) or `"inline"` (directly after the subject). |
 | `confirm_quit` | `true` | Ask before quitting (`q`/`y`/`Enter` = quit, `n`/`Esc` = cancel; `qq` quits quickly). `false` = quit immediately. |
 | `confirm_bookmark_overwrite` | `true` | Ask before a bookmark key (`m`) overwrites a **different** existing path (`y`/`Enter` = overwrite, `n`/`Esc` = cancel). Re-registering the same path or an unused key never prompts. `false` = overwrite silently. |

@@ -70,6 +70,37 @@ Coding agents accept `@path` references. konoma copies them ready-to-paste:
 
 Paste into the conversation and the agent knows exactly which lines you mean.
 
+## Worktrees — one checkout per agent — `o` `w`
+
+Agents work best with a checkout of their own, which is why `git worktree` has
+become the usual way to run several at once. konoma lists them: `o` then `w`.
+
+<img src="/konoma/worktrees.gif" alt="Worktrees — listing the repository's worktrees, showing what an agent's worktree added since its base branch, and stepping into it with the WT chip naming the repository" width="1268" height="768" style="width:100%;height:auto;border-radius:8px" />
+
+*Your own checkout has an uncommitted edit of your own. `o` `w` lists the
+worktrees; the agent has one to itself. `d` shows what that worktree added since
+its base branch — the commit it landed **and** the line it is still writing. After
+`Enter` you are inside it, and `WT demo` names the repository `add-retry` belongs
+to.*
+
+- **`d` spans committed and uncommitted work.** An agent usually commits as it
+  goes, so a diff of uncommitted changes alone would go blank exactly when it got
+  something done. konoma diffs from the merge base instead, and includes untracked
+  files, so a new file the agent just wrote is visible too.
+- **The base branch is the nearest one.** Among the branches in
+  `graph_base_branches` and the one checked out in the main worktree, konoma picks
+  whichever shares the most recent common ancestor — the branch the worktree
+  actually grew out of, so unrelated work on other branches stays out of the diff.
+- **`Enter` moves this tab, `Ctrl-t` opens another.** Switching also re-bases
+  `@` references on the worktree you are now in, so what you paste into the chat
+  points at the right file.
+- **The `WT` chip is always there.** A worktree's directory is named after the
+  branch, not the project, so nothing on screen would otherwise say which
+  repository you are in. In an ordinary checkout no chip appears.
+- Worktrees git will not let you enter — a bare repository, or one whose directory
+  has been deleted — say so instead of failing quietly. A locked one can still be
+  entered: the lock guards moving and deleting it, not reading it.
+
 ## A typical loop
 
 1. `F` — follow on. Ask the agent for a change.

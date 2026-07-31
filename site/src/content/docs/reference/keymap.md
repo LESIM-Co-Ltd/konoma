@@ -89,12 +89,14 @@ information contextually inside the app.
 |---|---|
 | Hub (`o`): `s` `u` / `S` `U` | stage/unstage file / all |
 | Hub: `c` / `x` / `Enter` | commit / discard file / open diff |
-| Hub: `l` / `g` / `b` | log / commit graph / branches |
+| Hub: `l` / `g` / `b` / `w` | log / commit graph / branches / worktrees |
 | Diff: `s` / `n` `N` / `x` | layout unified⇄split⇄auto / next/prev changed file / discard |
 | Follow diff: `f` | toggle scope: since follow-start (default) ⇄ full git diff |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
 | Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |
 | Branches: `Enter` / `n` / `d` / `/` | checkout / create / delete / filter |
+| Worktrees (`w`): `Enter` / `Ctrl-t` | switch this tab to it / open it in a new tab |
+| Worktrees: `d` / `/` | diff it against its base branch / filter |
 
 ## Tab list (`T`)
 
