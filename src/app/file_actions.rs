@@ -2,7 +2,54 @@
 
 use super::*;
 
+/// Translate an error that may have come from `fileops` into the language the UI is currently
+/// showing. `fileops` doesn't know `Lang` (see `fileops::FileOpError`'s doc comment for why), so
+/// this downcasts instead: anyhow keeps a `.context(FileOpError::…)`-wrapped variant reachable via
+/// `downcast_ref` exactly like a directly-returned one (it checks both the context value and the
+/// wrapped error), so this works everywhere `fileops` uses either style. Anything that isn't one of
+/// ours (a plain io error, git's own `fatal:` text, …) falls through to its own `Display` unchanged
+/// — that text was never Japanese-only to begin with, so there's nothing to translate.
+///
+/// A free function (not an `App` method) so `run_file_op` can call it from the background worker
+/// thread, where there is no `&self` to read `lang` from — the caller (`start_file_op`) resolves
+/// `self.lang` once, before dispatch, and threads it through (same idea as `err_self_paste`/
+/// `err_failed` below, which are pre-translated for the same reason).
+fn describe_file_op_error(lang: crate::i18n::Lang, e: &anyhow::Error) -> String {
+    use crate::fileops::FileOpError;
+    use crate::i18n::{tr, Msg};
+    match e.downcast_ref::<FileOpError>() {
+        Some(FileOpError::AlreadyExists(p)) => {
+            format!("{}{}", tr(lang, Msg::AlreadyExists), p.display())
+        }
+        Some(FileOpError::TrashFailed) => tr(lang, Msg::TrashFailed).to_string(),
+        Some(FileOpError::RenameTempExists(p)) => {
+            format!("{}{}", tr(lang, Msg::RenameTempExists), p.display())
+        }
+        Some(FileOpError::RenameDestExists(p)) => {
+            format!("{}{}", tr(lang, Msg::RenameDestExists), p.display())
+        }
+        Some(FileOpError::NameUnavailable(p)) => {
+            format!("{}{}", tr(lang, Msg::NameUnavailable), p.display())
+        }
+        Some(FileOpError::RenameStageFailed(p)) => {
+            format!("{}{}", tr(lang, Msg::RenameStageFailed), p.display())
+        }
+        Some(FileOpError::RenameCommitFailed(p)) => {
+            format!("{}{}", tr(lang, Msg::RenameCommitFailed), p.display())
+        }
+        None => e.to_string(),
+    }
+}
+
 impl App {
+    /// User-facing text for an error that may have come from `fileops` (create/rename collisions,
+    /// Trash failures, batch-rename issues), translated to whichever language the UI is currently
+    /// showing (`self.lang`). Falls back to the error's own message when it isn't one of ours — see
+    /// `describe_file_op_error` (this just supplies `self.lang` to it).
+    pub fn describe_error(&self, e: &anyhow::Error) -> String {
+        describe_file_op_error(self.lang, e)
+    }
+
     // --- File operations: create/rename/delete (M7 Phase B, confirm + trash) -------------
     /// Whether a confirm/input dialog is showing (while true, main intercepts keys).
     pub fn is_dialog(&self) -> bool {
@@ -219,8 +266,11 @@ impl App {
         let progress = Arc::new(crate::fileops::Progress::default());
         self.fileop_progress = Some(progress.clone());
 
+        // Resolve `self.lang` here (on the UI thread) ahead of time: the worker thread has no
+        // `&self`, so `run_file_op` can't call `tr()`/`describe_file_op_error` without it.
+        let lang = self.lang;
         let Some(tx) = self.fileop_tx.clone() else {
-            let res = Self::run_file_op(gen, job, &progress);
+            let res = Self::run_file_op(gen, job, &progress, lang);
             self.apply_file_op(res);
             return true;
         };
@@ -233,16 +283,17 @@ impl App {
             // If the worker panics, no result comes back and `fileop_pending` stays set forever,
             // leaving the spinner spinning. Use the same safety net as the other workers to
             // always return a result (design principle #3).
-            let res =
-                crate::preview::markdown::catch_silent(|| Self::run_file_op(gen, job, &progress))
-                    .unwrap_or(FileOpResult {
-                        gen,
-                        kind,
-                        root,
-                        ok: 0,
-                        last: None,
-                        err: Some(panic_err),
-                    });
+            let res = crate::preview::markdown::catch_silent(|| {
+                Self::run_file_op(gen, job, &progress, lang)
+            })
+            .unwrap_or(FileOpResult {
+                gen,
+                kind,
+                root,
+                ok: 0,
+                last: None,
+                err: Some(panic_err),
+            });
             let _ = tx.send(res);
         });
         true
@@ -250,8 +301,14 @@ impl App {
 
     /// The actual work (pure: no `&self`), shared by the worker thread and the synchronous fallback.
     /// `PasteCopy`/`PasteMove`/`Duplicate` continue past a failing target (existing behaviour);
-    /// `DropCopy`/`DropMove` stop at the first error (existing `drop_apply` behaviour).
-    fn run_file_op(gen: u64, job: FileOpJob, p: &crate::fileops::Progress) -> FileOpResult {
+    /// `DropCopy`/`DropMove` stop at the first error (existing `drop_apply` behaviour). `lang` is
+    /// resolved by the caller (`start_file_op`) — see `describe_file_op_error`'s doc comment for why.
+    fn run_file_op(
+        gen: u64,
+        job: FileOpJob,
+        p: &crate::fileops::Progress,
+        lang: crate::i18n::Lang,
+    ) -> FileOpResult {
         let FileOpJob {
             kind,
             targets,
@@ -291,7 +348,7 @@ impl App {
                             ok += 1;
                             last = Some(path);
                         }
-                        Err(e) => err = Some(e.to_string()),
+                        Err(e) => err = Some(describe_file_op_error(lang, &e)),
                     }
                     p.bump_item();
                 }
@@ -320,7 +377,7 @@ impl App {
                             p.bump_item();
                         }
                         Err(e) => {
-                            err = Some(e.to_string());
+                            err = Some(describe_file_op_error(lang, &e));
                             break; // a drop stops at the first failure (same as the existing drop_apply)
                         }
                     }
@@ -340,7 +397,7 @@ impl App {
                             ok += 1;
                             last = Some(path);
                         }
-                        Err(e) => err = Some(e.to_string()),
+                        Err(e) => err = Some(describe_file_op_error(lang, &e)),
                     }
                     p.bump_item();
                 }
@@ -355,14 +412,14 @@ impl App {
                         p.bump_item();
                     }
                 }
-                Err(e) => err = Some(e.to_string()),
+                Err(e) => err = Some(describe_file_op_error(lang, &e)),
             },
             // Permanent deletion loops per path, so progress can advance one item at a time
             // (`_with_progress`).
             FileOpKind::DeletePermanent => {
                 match crate::fileops::delete_permanently_with_progress(&targets, p) {
                     Ok(()) => ok = targets.len(),
-                    Err(e) => err = Some(e.to_string()),
+                    Err(e) => err = Some(describe_file_op_error(lang, &e)),
                 }
             }
         }
@@ -422,8 +479,9 @@ impl App {
         if res.err.is_none() {
             if let Err(e) = post {
                 self.flash = Some(format!(
-                    "{}: {e}",
-                    crate::i18n::tr(lang, crate::i18n::Msg::Failed)
+                    "{}: {}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed),
+                    self.describe_error(&e)
                 ));
                 return true;
             }

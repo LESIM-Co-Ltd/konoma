@@ -7422,6 +7422,98 @@ fn stale_file_op_result_is_dropped() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `App::describe_error` translates every `fileops::FileOpError` variant to whichever language the
+/// UI is currently showing (`app.lang`) — cross-checked against the `i18n` catalog itself, so a
+/// match arm accidentally reaching for the wrong `Msg` (e.g. `RenameTempExists` using
+/// `RenameDestExists`'s wording) fails this, since the two texts differ.
+#[test]
+fn describe_error_translates_file_op_errors_to_the_ui_language() {
+    use crate::fileops::FileOpError;
+    use crate::i18n::{tr, Lang, Msg};
+
+    let dir = unique_tmp("konoma_describe_error_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let p = dir.join("some name.txt");
+    // (variant, its Msg, whether the wording carries the path)
+    let cases: Vec<(anyhow::Error, Msg, bool)> = vec![
+        (
+            FileOpError::AlreadyExists(p.clone()).into(),
+            Msg::AlreadyExists,
+            true,
+        ),
+        (
+            anyhow::Error::new(FileOpError::TrashFailed),
+            Msg::TrashFailed,
+            false,
+        ),
+        (
+            FileOpError::RenameTempExists(p.clone()).into(),
+            Msg::RenameTempExists,
+            true,
+        ),
+        (
+            FileOpError::RenameDestExists(p.clone()).into(),
+            Msg::RenameDestExists,
+            true,
+        ),
+        (
+            FileOpError::NameUnavailable(p.clone()).into(),
+            Msg::NameUnavailable,
+            true,
+        ),
+        (
+            FileOpError::RenameStageFailed(p.clone()).into(),
+            Msg::RenameStageFailed,
+            true,
+        ),
+        (
+            FileOpError::RenameCommitFailed(p.clone()).into(),
+            Msg::RenameCommitFailed,
+            true,
+        ),
+    ];
+    for (err, msg, has_path) in &cases {
+        for lang in [Lang::En, Lang::Jp] {
+            app.lang = lang;
+            let want = if *has_path {
+                format!("{}{}", tr(lang, *msg), p.display())
+            } else {
+                tr(lang, *msg).to_string()
+            };
+            assert_eq!(app.describe_error(err), want, "{msg:?} / {lang:?}");
+        }
+    }
+
+    // Lock in the literal wording for the case the bug report was actually about (an existing
+    // filename), in both languages — not just "matches the catalog" (which would also pass if the
+    // catalog itself were wrong).
+    let already = FileOpError::AlreadyExists(p.clone()).into();
+    app.lang = Lang::En;
+    assert_eq!(
+        app.describe_error(&already),
+        format!("already exists: {}", p.display())
+    );
+    app.lang = Lang::Jp;
+    assert_eq!(
+        app.describe_error(&already),
+        format!("既に存在します: {}", p.display())
+    );
+
+    // A non-`fileops` error (e.g. a plain `anyhow!` from elsewhere, or git's own `fatal:` text) is
+    // not one of ours — describe_error can't invent a translation for text it doesn't recognize, so
+    // it passes the message through unmodified regardless of `app.lang`.
+    let other = anyhow::anyhow!("boom, not a fileops error");
+    for lang in [Lang::En, Lang::Jp] {
+        app.lang = lang;
+        assert_eq!(app.describe_error(&other), "boom, not a fileops error");
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // The regression in `copy_into_with_progress`'s leaf-file counter is verified on the
 // `src/fileops.rs` side by `file_op_progress_counts_leaf_files` (fileops can be hit directly
 // from there without going through `App`).

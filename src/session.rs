@@ -89,17 +89,17 @@ impl SessionStore {
         sess.dir = self.dir.clone();
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("セッション保存先の作成: {}", parent.display()))?;
+                .with_context(|| format!("create session directory: {}", parent.display()))?;
         }
-        let text = toml::to_string(&sess).context("セッションの TOML 整形")?;
+        let text = toml::to_string(&sess).context("format session as TOML")?;
         let mut tmp = self.path.clone().into_os_string();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
         std::fs::write(&tmp, text)
-            .with_context(|| format!("セッション一時保存: {}", tmp.display()))?;
+            .with_context(|| format!("write session temp file: {}", tmp.display()))?;
         // rename is within the same directory = the same FS, so it's atomic (replaces the existing file instantly).
         std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("セッション保存: {}", self.path.display()))
+            .with_context(|| format!("save session: {}", self.path.display()))
     }
 
     /// Remove this dir's session file (used when single-tab sessions are disabled). A missing file

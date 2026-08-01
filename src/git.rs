@@ -1254,7 +1254,7 @@ fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
         .current_dir(&cwd)
         .args(args)
         .output()
-        .with_context(|| format!("git {} の起動に失敗", args.join(" ")))?;
+        .with_context(|| format!("failed to launch git {}", args.join(" ")))?;
     if out.status.success() {
         Ok(())
     } else {
@@ -2031,47 +2031,47 @@ pub fn merge_base_time(_root: &Path, _base: &str) -> Option<i64> {
 
 #[cfg(not(feature = "git"))]
 pub fn stage(_root: &Path, _file: &Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn unstage(_root: &Path, _file: &Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn stage_all(_root: &Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn unstage_all(_root: &Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn discard(_root: &Path, _file: &Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn commit(_root: &Path, _message: &str) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn checkout(_root: &Path, _name: &str) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn create_branch(_root: &Path, _name: &str) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
 pub fn delete_branch(_root: &Path, _name: &str, _force: bool) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 #[cfg(not(feature = "git"))]
@@ -2081,7 +2081,7 @@ pub fn worktree_add(
     _branch: &str,
     _create_branch: bool,
 ) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("git feature 無効"))
+    Err(anyhow::anyhow!("git feature disabled"))
 }
 
 /// Applies the status to a file and its ancestor directories (up to workdir). Directories keep the higher priority.

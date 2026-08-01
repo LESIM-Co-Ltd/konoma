@@ -333,6 +333,54 @@ fn e2e_file_create_via_dialog() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Creating a file that already exists must flash in whichever language the UI is configured for
+/// (not a fixed language regardless of `ui.lang`) — the bug this whole i18n pass fixes.
+#[test]
+fn e2e_file_create_existing_name_flashes_in_ui_language() {
+    let dir_en = sandbox("file_create_existing_name_en");
+    seed_files(&dir_en);
+    let mut cfg_en = Config::default();
+    cfg_en.ui.lang = "en".into();
+    let mut s = Sim::with_config(&canon(&dir_en), cfg_en);
+    s.select("notes.txt");
+    s.key(' ');
+    s.key('n'); // Space→n create
+    s.keys("notes.txt"); // op_base_dir = notes.txt's parent (root), which already has notes.txt
+    s.enter();
+    let flash_en = s.app.flash.clone().unwrap_or_default();
+    assert!(
+        flash_en.contains("already exists: "),
+        "英語 UI では英語で: {flash_en:?}"
+    );
+    assert!(
+        !flash_en.contains("既に存在"),
+        "英語 UI に日本語が混ざってはならない: {flash_en:?}"
+    );
+    assert!(
+        !dir_en.join("notes.txt.tmp").exists(),
+        "衝突時は何も作られない"
+    ); // sanity: the collision really was rejected, not silently overwritten
+
+    let dir_jp = sandbox("file_create_existing_name_jp");
+    seed_files(&dir_jp);
+    let mut cfg_jp = Config::default();
+    cfg_jp.ui.lang = "jp".into();
+    let mut s2 = Sim::with_config(&canon(&dir_jp), cfg_jp);
+    s2.select("notes.txt");
+    s2.key(' ');
+    s2.key('n');
+    s2.keys("notes.txt");
+    s2.enter();
+    let flash_jp = s2.app.flash.clone().unwrap_or_default();
+    assert!(
+        flash_jp.contains("既に存在します: "),
+        "日本語 UI では日本語で: {flash_jp:?}"
+    );
+
+    std::fs::remove_dir_all(&dir_en).ok();
+    std::fs::remove_dir_all(&dir_jp).ok();
+}
+
 #[test]
 fn e2e_file_duplicate_in_place() {
     let dir = sandbox("file_duplicate");

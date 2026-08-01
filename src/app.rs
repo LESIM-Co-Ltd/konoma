@@ -4235,7 +4235,14 @@ fn parse_dropped_paths(text: &str) -> Vec<PathBuf> {
 /// Build a plan for sequential rename. Number `targets` **in display order** as `{n}`=1,2,…,
 /// expand the template, and create each (old, new) path. If the template has no extension, the original extension is kept automatically.
 /// **Pre-validates** collisions: an empty name / a `/` mixed in / duplicate final names / a collision with an existing file (not vacated within the batch) is an Err.
-fn build_rename_plan(targets: &[PathBuf], template: &str) -> Result<Vec<(PathBuf, PathBuf)>> {
+/// A method-shaped free function (not `fileops`): unlike `fileops`, this already has `lang` in hand
+/// at every call site (`App::dialog_submit`), so — unlike the typed-error/`describe_error` detour
+/// `fileops` needs — it can just build the already-localized text with `tr()` directly.
+fn build_rename_plan(
+    targets: &[PathBuf],
+    template: &str,
+    lang: crate::i18n::Lang,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(targets.len());
     for (idx, src) in targets.iter().enumerate() {
         let n = idx + 1;
@@ -4244,10 +4251,13 @@ fn build_rename_plan(targets: &[PathBuf], template: &str) -> Result<Vec<(PathBuf
         let rendered = crate::fileops::render_rename_template(template, n, stem, ext);
         let rendered = rendered.trim().to_string();
         if rendered.is_empty() {
-            anyhow::bail!("空の名前になります (n={n})");
+            anyhow::bail!("{} (n={n})", tr(lang, crate::i18n::Msg::RenameEmptyName));
         }
         if rendered.contains('/') {
-            anyhow::bail!("名前に / は使えません: {rendered}");
+            anyhow::bail!(
+                "{}{rendered}",
+                tr(lang, crate::i18n::Msg::RenameSlashInName)
+            );
         }
         // Extension: if the template result has no extension, automatically append the original extension (a user decision).
         let has_ext = Path::new(&rendered)
@@ -4269,7 +4279,11 @@ fn build_rename_plan(targets: &[PathBuf], template: &str) -> Result<Vec<(PathBuf
     let mut seen = BTreeSet::new();
     for (_, dst) in &plan {
         if !seen.insert(dst.clone()) {
-            anyhow::bail!("リネーム先が重複: {}", dst.display());
+            anyhow::bail!(
+                "{}{}",
+                tr(lang, crate::i18n::Msg::RenameDestDuplicate),
+                dst.display()
+            );
         }
     }
     // Validate against collisions with existing files (excluding source paths that are "vacated by moving" within the batch).
@@ -4285,7 +4299,13 @@ fn build_rename_plan(targets: &[PathBuf], template: &str) -> Result<Vec<(PathBuf
             continue;
         }
         if dst.exists() && !vacated.contains(dst) {
-            anyhow::bail!("既に存在します: {}", dst.display());
+            // Shares `Msg::AlreadyExists` with `fileops::FileOpError::AlreadyExists` (via
+            // `describe_error`) — same condition ("this path already exists"), one wording.
+            anyhow::bail!(
+                "{}{}",
+                tr(lang, crate::i18n::Msg::AlreadyExists),
+                dst.display()
+            );
         }
     }
     Ok(plan)

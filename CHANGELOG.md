@@ -20,6 +20,16 @@ All notable changes to konoma are documented in this file. The format is based o
   the flash footer is a single line clipped at the terminal width and anything ahead of the reason
   just pushes it off-screen.
 
+### Fixed
+- **File-operation errors always showed Japanese, regardless of `ui.lang`**: `fileops` (which
+  doesn't — and shouldn't — know the display language) reported conditions like "a file/directory
+  with that name already exists" or "failed to move to Trash" as hardcoded Japanese strings that
+  went straight into the flash message, so an English-configured UI would suddenly show Japanese
+  text on the most common mistakes (creating a file with a name that already exists, a rename
+  collision, a batch-rename collision, a Trash failure). These are now typed
+  (`fileops::FileOpError`) and translated on the `App` side (`App::describe_error`, via
+  `anyhow::Error::downcast_ref`) into whichever language the UI is currently showing.
+
 ## [0.23.0] - 2026-07-31
 
 ### Added

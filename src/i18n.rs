@@ -532,6 +532,37 @@ pub enum Msg {
     ExternalGitToolDisabled,
     /// Opening a link/file (Markdown link, `P`, ...) when `[external] open_links = false`.
     ExternalOpenLinksDisabled,
+    // --- fileops error translation (`App::describe_error`/`build_rename_plan`) ---
+    /// A create/rename target already exists. Shared by `fileops::FileOpError::AlreadyExists`
+    /// (create/rename) and `build_rename_plan`'s own final-collision check (same condition, one
+    /// wording — see the call site in `app.rs`).
+    AlreadyExists,
+    /// `fileops::FileOpError::TrashFailed`: moving to Trash failed (the OS trash service itself,
+    /// not a missing file — the underlying error is kept as `source()` for logs/debugging).
+    TrashFailed,
+    /// `fileops::FileOpError::RenameTempExists`: batch rename's temp staging name already exists
+    /// (a defensive, effectively unreachable check — see the variant's own doc comment).
+    RenameTempExists,
+    /// `fileops::FileOpError::RenameDestExists`: batch rename's own destination re-check found the
+    /// name already taken (distinct from `AlreadyExists`: this is the apply phase, not the
+    /// create/rename dialog).
+    RenameDestExists,
+    /// `fileops::FileOpError::NameUnavailable`: could not determine a name for the copy/move
+    /// source (e.g. it's `/`).
+    NameUnavailable,
+    /// `fileops::FileOpError::RenameStageFailed`: batch rename's `rename()` call itself failed
+    /// while staging a source aside to its temp name.
+    RenameStageFailed,
+    /// `fileops::FileOpError::RenameCommitFailed`: batch rename's `rename()` call itself failed
+    /// while committing a temp name to its final destination.
+    RenameCommitFailed,
+    /// `build_rename_plan`: the rendered name is empty (e.g. an all-`{ext}` template on a file
+    /// with no extension).
+    RenameEmptyName,
+    /// `build_rename_plan`: the rendered name contains `/` (would create a path, not a name).
+    RenameSlashInName,
+    /// `build_rename_plan`: two targets rendered to the same final name within the same batch.
+    RenameDestDuplicate,
 }
 
 /// English table.
@@ -973,6 +1004,16 @@ fn en(msg: Msg) -> &'static str {
         GitNotInstalled => "git is not installed — git integration is off",
         ExternalGitToolDisabled => "external git tool is disabled (config: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "opening links/files is disabled (config: [external] open_links = false)",
+        AlreadyExists => "already exists: ",
+        TrashFailed => "failed to move to Trash",
+        RenameTempExists => "temporary rename name already exists: ",
+        RenameDestExists => "rename destination already exists: ",
+        NameUnavailable => "could not determine a name: ",
+        RenameStageFailed => "staging rename: ",
+        RenameCommitFailed => "committing rename: ",
+        RenameEmptyName => "the rendered name is empty",
+        RenameSlashInName => "name cannot contain /: ",
+        RenameDestDuplicate => "duplicate rename destination: ",
     }
 }
 
@@ -1406,6 +1447,16 @@ fn jp(msg: Msg) -> &'static str {
         GitNotInstalled => "git が見つかりません — git 連携はオフです",
         ExternalGitToolDisabled => "外部 git ツールは無効です(設定: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "リンク/ファイルを開く機能は無効です(設定: [external] open_links = false)",
+        AlreadyExists => "既に存在します: ",
+        TrashFailed => "ゴミ箱への移動に失敗しました",
+        RenameTempExists => "一時ファイル名が既存: ",
+        RenameDestExists => "リネーム先が既存: ",
+        NameUnavailable => "名前の取得に失敗: ",
+        RenameStageFailed => "一括リネーム(一時退避): ",
+        RenameCommitFailed => "一括リネーム(確定): ",
+        RenameEmptyName => "空の名前になります",
+        RenameSlashInName => "名前に / は使えません: ",
+        RenameDestDuplicate => "リネーム先が重複: ",
     }
 }
 
@@ -1910,6 +1961,16 @@ mod tests {
         Msg::GitNotInstalled,
         Msg::ExternalGitToolDisabled,
         Msg::ExternalOpenLinksDisabled,
+        Msg::AlreadyExists,
+        Msg::TrashFailed,
+        Msg::RenameTempExists,
+        Msg::RenameDestExists,
+        Msg::NameUnavailable,
+        Msg::RenameStageFailed,
+        Msg::RenameCommitFailed,
+        Msg::RenameEmptyName,
+        Msg::RenameSlashInName,
+        Msg::RenameDestDuplicate,
     ];
 
     #[test]

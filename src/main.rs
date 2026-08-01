@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     // panic — return gracefully via ?.
     let dir = match std::env::args().nth(1) {
         Some(arg) => PathBuf::from(arg),
-        None => std::env::current_dir().context("カレントディレクトリを取得できません")?,
+        None => std::env::current_dir().context("could not get the current directory")?,
     };
     // Normalize so path-copy still produces a correct absolute path even for a relative argument
     // (e.g. `konoma samples`).

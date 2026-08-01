@@ -130,7 +130,7 @@ impl App {
                 }
                 Err(e) => {
                     // Show the failure (stderr) and reopen the input dialog with the same message (so it can be retried).
-                    self.flash = Some(format!("{e}"));
+                    self.flash = Some(self.describe_error(&e));
                     let cursor = message.chars().count();
                     self.dialog = Some(Dialog {
                         op: PendingOp::GitCommit,
@@ -163,7 +163,7 @@ impl App {
                     ));
                 }
                 Err(e) => {
-                    self.flash = Some(format!("{e}"));
+                    self.flash = Some(self.describe_error(&e));
                     let cursor = bname.chars().count();
                     self.dialog = Some(Dialog {
                         op: PendingOp::GitCreateBranch,
@@ -206,7 +206,7 @@ impl App {
                 // git's own `fatal: ...` message, shown unmodified (same contract as branch
                 // creation above). `self.tab.git_worktrees` was never touched here, so the list is
                 // still showing once this (now-closed) dialog is gone.
-                Err(e) => self.flash = Some(format!("{e}")),
+                Err(e) => self.flash = Some(self.describe_error(&e)),
             }
             return Ok(());
         }
@@ -235,8 +235,9 @@ impl App {
                     }
                     Err(e) => {
                         self.flash = Some(format!(
-                            "{}: {e}",
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+                            "{}: {}",
+                            crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
+                            self.describe_error(&e)
                         ))
                     }
                 }
@@ -253,13 +254,14 @@ impl App {
                 }
                 Err(e) => {
                     self.flash = Some(format!(
-                        "{}: {e}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+                        "{}: {}",
+                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
+                        self.describe_error(&e)
                     ))
                 }
             },
             PendingOp::BatchRenameInput { targets } => {
-                match build_rename_plan(&targets, name) {
+                match build_rename_plan(&targets, name, self.lang) {
                     Ok(plan) => {
                         // Move to the preview (old → new). Applying it happens in dialog_preview_apply.
                         let lines: Vec<String> = plan
@@ -290,8 +292,9 @@ impl App {
                     Err(e) => {
                         // Reopen the input dialog with the same template so the input can be retried.
                         self.flash = Some(format!(
-                            "{}: {e}",
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+                            "{}: {}",
+                            crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
+                            self.describe_error(&e)
                         ));
                         let cursor = name.chars().count();
                         let title = self.batch_rename_title(targets.len());
@@ -340,8 +343,9 @@ impl App {
                 }
                 Err(e) => {
                     self.flash = Some(format!(
-                        "{}: {e}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+                        "{}: {}",
+                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
+                        self.describe_error(&e)
                     ))
                 }
             }
@@ -399,8 +403,9 @@ impl App {
                 }
                 Err(e) => {
                     self.flash = Some(format!(
-                        "{}: {e}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
+                        "{}: {}",
+                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
+                        self.describe_error(&e)
                     ))
                 }
             },

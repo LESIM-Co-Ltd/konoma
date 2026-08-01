@@ -6,6 +6,73 @@ use anyhow::{Context, Result};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+/// Errors `fileops` returns for conditions the UI wants to word for the user (create/rename
+/// collisions, Trash failures, batch-rename issues). `fileops` deliberately doesn't know the UI
+/// language (threading `Lang` through every signature here for a handful of conditions would be
+/// invasive for a "language-agnostic" module) — the translation step lives on the `App` side, in
+/// `describe_error`/`describe_file_op_error` (`src/app/file_actions.rs`), which downcasts an
+/// `anyhow::Error` back to this type. That works whether a variant is the top-level error
+/// (`anyhow::bail!(FileOpError::…)`) or was attached as `.context(FileOpError::…)` around a lower
+/// io error: anyhow's downcast checks both the context value and the wrapped error (see
+/// `anyhow::Context`'s docs, "Effect on downcasting"), so the wrapped io error stays reachable via
+/// `source()`/`chain()` either way — this module never has to discard it to make the type carry a
+/// translatable label.
+///
+/// Every other error condition in this module (a plain io failure while creating a parent
+/// directory, reading a symlink, etc.) stays a plain English `.context(...)` string: those are
+/// low-value, rarely-hit implementation detail, not something a Japanese-reading user needs
+/// worded in Japanese, so typing them would be needless enum sprawl. Falls back to `Display` (see
+/// below) unmodified when it doesn't match any arm below (see `describe_error`'s fallback).
+#[derive(Debug)]
+pub enum FileOpError {
+    /// `create_file`/`create_dir`/`rename` (single-file rename): the target name already exists.
+    AlreadyExists(PathBuf),
+    /// `move_to_trash`: the OS trash service failed (e.g. no Trash support in this environment).
+    /// The underlying error from the `trash` crate is kept as `source()`.
+    TrashFailed,
+    /// `batch_rename`: the temp staging name (`.konoma-rename-tmp-N`) already exists — this would
+    /// require a file already using that exact reserved name, so it's effectively unreachable in
+    /// practice, but the check (and this variant) exist as a defensive belt-and-braces.
+    RenameTempExists(PathBuf),
+    /// `batch_rename`: the final destination name already exists. A defensive re-check — the
+    /// caller (`App::build_rename_plan`) already validates this before showing the preview — so
+    /// this only fires if the filesystem changed out from under the plan between preview and apply.
+    RenameDestExists(PathBuf),
+    /// `copy_into_with_progress`/`move_into_with_progress`: `src.file_name()` returned nothing
+    /// usable (e.g. `src` is `/` or ends in `..`).
+    NameUnavailable(PathBuf),
+    /// `batch_rename`: the `rename()` call itself failed (e.g. permission denied) while staging
+    /// `src` aside to its temp name. The underlying io error is kept as `source()`.
+    RenameStageFailed(PathBuf),
+    /// `batch_rename`: the `rename()` call itself failed while committing the temp name to `dst`.
+    /// The underlying io error is kept as `source()`.
+    RenameCommitFailed(PathBuf),
+}
+
+/// English only — for logs/tests/developers. The UI-facing (localized) text is built separately by
+/// `describe_error`/`describe_file_op_error`, which match on the variant instead of using this.
+impl std::fmt::Display for FileOpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileOpError::AlreadyExists(p) => write!(f, "already exists: {}", p.display()),
+            FileOpError::TrashFailed => write!(f, "failed to move to Trash"),
+            FileOpError::RenameTempExists(p) => {
+                write!(f, "temporary rename name already exists: {}", p.display())
+            }
+            FileOpError::RenameDestExists(p) => {
+                write!(f, "rename destination already exists: {}", p.display())
+            }
+            FileOpError::NameUnavailable(p) => {
+                write!(f, "could not determine a name: {}", p.display())
+            }
+            FileOpError::RenameStageFailed(p) => write!(f, "staging rename: {}", p.display()),
+            FileOpError::RenameCommitFailed(p) => write!(f, "committing rename: {}", p.display()),
+        }
+    }
+}
+
+impl std::error::Error for FileOpError {}
+
 /// File information (for the `i` popup). For a symlink, holds the link's own info plus its target.
 pub struct FileInfo {
     pub is_dir: bool,
@@ -25,7 +92,7 @@ pub struct FileInfo {
 /// Retrieve metadata for `path` (does not follow symlinks; inspects the link itself).
 pub fn file_info(path: &Path) -> Result<FileInfo> {
     let meta =
-        std::fs::symlink_metadata(path).with_context(|| format!("情報取得: {}", path.display()))?;
+        std::fs::symlink_metadata(path).with_context(|| format!("get info: {}", path.display()))?;
     let is_symlink = meta.file_type().is_symlink();
     let is_dir = meta.is_dir();
     let modified_epoch = meta
@@ -237,7 +304,7 @@ impl Progress {
 
 /// Move multiple paths to Trash (recoverable). On macOS this is the proper Trash (supports Finder's "Put Back").
 pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
-    trash::delete_all(paths).context("ゴミ箱への移動に失敗しました")?;
+    trash::delete_all(paths).context(FileOpError::TrashFailed)?;
     Ok(())
 }
 
@@ -258,12 +325,13 @@ fn delete_permanently(paths: &[PathBuf]) -> Result<()> {
 pub fn delete_permanently_with_progress(paths: &[PathBuf], p: &Progress) -> Result<()> {
     for path in paths {
         let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("情報取得: {}", path.display()))?;
+            .with_context(|| format!("get info: {}", path.display()))?;
         if meta.is_dir() {
             std::fs::remove_dir_all(path)
-                .with_context(|| format!("ディレクトリ完全削除: {}", path.display()))?;
+                .with_context(|| format!("permanently delete directory: {}", path.display()))?;
         } else {
-            std::fs::remove_file(path).with_context(|| format!("完全削除: {}", path.display()))?;
+            std::fs::remove_file(path)
+                .with_context(|| format!("permanently delete: {}", path.display()))?;
         }
         p.bump_item();
     }
@@ -274,13 +342,13 @@ pub fn delete_permanently_with_progress(paths: &[PathBuf], p: &Progress) -> Resu
 pub fn create_file(dir: &Path, name: &str) -> Result<PathBuf> {
     let path = dir.join(name);
     if path.exists() {
-        anyhow::bail!("既に存在します: {}", path.display());
+        anyhow::bail!(FileOpError::AlreadyExists(path));
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("親ディレクトリ作成: {}", parent.display()))?;
+            .with_context(|| format!("create parent directory: {}", parent.display()))?;
     }
-    std::fs::File::create(&path).with_context(|| format!("ファイル作成: {}", path.display()))?;
+    std::fs::File::create(&path).with_context(|| format!("create file: {}", path.display()))?;
     Ok(path)
 }
 
@@ -288,10 +356,10 @@ pub fn create_file(dir: &Path, name: &str) -> Result<PathBuf> {
 pub fn create_dir(dir: &Path, name: &str) -> Result<PathBuf> {
     let path = dir.join(name);
     if path.exists() {
-        anyhow::bail!("既に存在します: {}", path.display());
+        anyhow::bail!(FileOpError::AlreadyExists(path));
     }
     std::fs::create_dir_all(&path)
-        .with_context(|| format!("ディレクトリ作成: {}", path.display()))?;
+        .with_context(|| format!("create directory: {}", path.display()))?;
     Ok(path)
 }
 
@@ -304,9 +372,9 @@ pub fn rename(src: &Path, new_name: &str) -> Result<PathBuf> {
         return Ok(dst);
     }
     if dst.exists() {
-        anyhow::bail!("既に存在します: {}", dst.display());
+        anyhow::bail!(FileOpError::AlreadyExists(dst));
     }
-    std::fs::rename(src, &dst).with_context(|| format!("リネーム: {}", dst.display()))?;
+    std::fs::rename(src, &dst).with_context(|| format!("rename: {}", dst.display()))?;
     Ok(dst)
 }
 
@@ -377,12 +445,11 @@ pub fn batch_rename(plan: &[(PathBuf, PathBuf)]) -> Result<()> {
         let parent = src.parent().unwrap_or_else(|| Path::new("."));
         let tmp = parent.join(format!(".konoma-rename-tmp-{i}"));
         if tmp.exists() {
-            let err = anyhow::anyhow!("一時ファイル名が既存: {}", tmp.display());
+            let err = anyhow::Error::new(FileOpError::RenameTempExists(tmp));
             return Err(rollback_batch_rename(err, &staged, committed));
         }
         if let Err(e) = std::fs::rename(src, &tmp) {
-            let err =
-                anyhow::Error::new(e).context(format!("一括リネーム(一時退避): {}", src.display()));
+            let err = anyhow::Error::new(e).context(FileOpError::RenameStageFailed(src.clone()));
             return Err(rollback_batch_rename(err, &staged, committed));
         }
         staged.push((tmp, src.clone(), dst.clone()));
@@ -391,12 +458,11 @@ pub fn batch_rename(plan: &[(PathBuf, PathBuf)]) -> Result<()> {
     for idx in 0..staged.len() {
         let (tmp, _src, dst) = &staged[idx];
         if dst.exists() {
-            let err = anyhow::anyhow!("リネーム先が既存: {}", dst.display());
+            let err = anyhow::Error::new(FileOpError::RenameDestExists(dst.clone()));
             return Err(rollback_batch_rename(err, &staged, committed));
         }
         if let Err(e) = std::fs::rename(tmp, dst) {
-            let err =
-                anyhow::Error::new(e).context(format!("一括リネーム(確定): {}", dst.display()));
+            let err = anyhow::Error::new(e).context(FileOpError::RenameCommitFailed(dst.clone()));
             return Err(rollback_batch_rename(err, &staged, committed));
         }
         committed += 1;
@@ -423,7 +489,7 @@ fn rollback_batch_rename(
     for (tmp, _src, dst) in staged[..committed].iter().rev() {
         if let Err(e) = std::fs::rename(dst, tmp) {
             err = err.context(format!(
-                "巻き戻し失敗(確定分退避 {} → {}): {e}",
+                "rollback failed (unstage committed {} → {}): {e}",
                 dst.display(),
                 tmp.display()
             ));
@@ -434,7 +500,7 @@ fn rollback_batch_rename(
     for (tmp, src, _dst) in staged.iter().rev() {
         if let Err(e) = std::fs::rename(tmp, src) {
             err = err.context(format!(
-                "巻き戻し失敗(復元 {} → {}): {e}",
+                "rollback failed (restore {} → {}): {e}",
                 tmp.display(),
                 src.display()
             ));
@@ -469,9 +535,9 @@ fn unique_name(dir: &Path, name: &str) -> String {
 /// Used on every copy/move path to avoid materializing a symlink→file or following a symlink→dir.
 fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
     let target =
-        std::fs::read_link(src).with_context(|| format!("リンク読込: {}", src.display()))?;
+        std::fs::read_link(src).with_context(|| format!("read link: {}", src.display()))?;
     std::os::unix::fs::symlink(&target, dst)
-        .with_context(|| format!("リンク作成: {}", dst.display()))?;
+        .with_context(|| format!("create link: {}", dst.display()))?;
     Ok(())
 }
 
@@ -485,13 +551,13 @@ fn copy_dir_all(src: &Path, dst: &Path, p: &Progress) -> Result<()> {
     // Symmetric to paste()'s starts_with guard — defend every copy/move/drop path here in one place.
     if dst.starts_with(src) {
         anyhow::bail!(
-            "コピー先がコピー元の配下です: {} ⊂ {}",
+            "copy destination is inside the copy source: {} ⊂ {}",
             dst.display(),
             src.display()
         );
     }
-    std::fs::create_dir_all(dst).with_context(|| format!("作成: {}", dst.display()))?;
-    for entry in std::fs::read_dir(src).with_context(|| format!("読込: {}", src.display()))? {
+    std::fs::create_dir_all(dst).with_context(|| format!("create: {}", dst.display()))?;
+    for entry in std::fs::read_dir(src).with_context(|| format!("read: {}", src.display()))? {
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
@@ -502,7 +568,7 @@ fn copy_dir_all(src: &Path, dst: &Path, p: &Progress) -> Result<()> {
         } else if ft.is_dir() {
             copy_dir_all(&from, &to, p)?;
         } else {
-            std::fs::copy(&from, &to).with_context(|| format!("コピー: {}", from.display()))?;
+            std::fs::copy(&from, &to).with_context(|| format!("copy: {}", from.display()))?;
             p.bump_file();
         }
     }
@@ -526,7 +592,7 @@ pub fn copy_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
     let name = src
         .file_name()
         .and_then(|n| n.to_str())
-        .context("名前の取得に失敗")?;
+        .context(FileOpError::NameUnavailable(src.to_path_buf()))?;
     let dst = dir.join(unique_name(dir, name));
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
@@ -535,7 +601,7 @@ pub fn copy_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
     } else if meta.is_dir() {
         copy_dir_all(src, &dst, p)?;
     } else {
-        std::fs::copy(src, &dst).with_context(|| format!("コピー: {}", src.display()))?;
+        std::fs::copy(src, &dst).with_context(|| format!("copy: {}", src.display()))?;
         p.bump_file();
     }
     Ok(dst)
@@ -557,7 +623,7 @@ pub fn move_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
     let name = src
         .file_name()
         .and_then(|n| n.to_str())
-        .context("名前の取得に失敗")?;
+        .context(FileOpError::NameUnavailable(src.to_path_buf()))?;
     let same = dir.join(name);
     if same == src {
         return Ok(same); // already in the same place
@@ -578,7 +644,7 @@ pub fn move_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
         copy_dir_all(src, &dst, p)?;
         std::fs::remove_dir_all(src)?;
     } else {
-        std::fs::copy(src, &dst).with_context(|| format!("移動(コピー): {}", src.display()))?;
+        std::fs::copy(src, &dst).with_context(|| format!("move (copy): {}", src.display()))?;
         std::fs::remove_file(src)?;
         p.bump_file();
     }
@@ -605,7 +671,7 @@ mod tests {
         // Copy parent into child → self-contained, so Err (does not recurse forever).
         let err = copy_into(&child, &parent).unwrap_err();
         assert!(
-            err.to_string().contains("配下"),
+            err.to_string().contains("inside the copy source"),
             "自己包含エラーであるべき: {err}"
         );
         // No infinite nesting was created (parent was not grown under child).
@@ -1024,7 +1090,7 @@ mod tests {
         std::fs::write(dir.join("blocker"), b"x").unwrap();
         let err = create_file(&dir, "blocker/inner.txt").unwrap_err();
         assert!(
-            err.to_string().contains("親ディレクトリ作成"),
+            err.to_string().contains("create parent directory"),
             "親作成エラー: {err}"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -1124,6 +1190,96 @@ mod tests {
             p.files(),
             3,
             "3枚の末端ファイルぶん進む(ディレクトリは数えない)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `create_file`/`create_dir`/`rename` report a name collision as `FileOpError::AlreadyExists`
+    /// (not just an ad-hoc string), so the UI layer (`App::describe_error`) can translate it instead
+    /// of showing whatever language this module's own `Display` happens to be written in.
+    #[test]
+    fn already_exists_errors_downcast_to_file_op_error() {
+        let dir = unique_tmp("konoma_fileops_typed_exists_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+        let e1 = create_file(&dir, "a.txt").unwrap_err();
+        assert!(
+            matches!(
+                e1.downcast_ref::<FileOpError>(),
+                Some(FileOpError::AlreadyExists(p)) if p == &dir.join("a.txt")
+            ),
+            "create_file: {e1:?}"
+        );
+
+        let e2 = create_dir(&dir, "sub").unwrap_err();
+        assert!(
+            matches!(
+                e2.downcast_ref::<FileOpError>(),
+                Some(FileOpError::AlreadyExists(p)) if p == &dir.join("sub")
+            ),
+            "create_dir: {e2:?}"
+        );
+
+        std::fs::write(dir.join("b.txt"), b"y").unwrap();
+        let e3 = rename(&dir.join("b.txt"), "a.txt").unwrap_err();
+        assert!(
+            matches!(
+                e3.downcast_ref::<FileOpError>(),
+                Some(FileOpError::AlreadyExists(p)) if p == &dir.join("a.txt")
+            ),
+            "rename: {e3:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A source whose `file_name()` is unavailable (e.g. `/`) fails the copy/move with a typed
+    /// `NameUnavailable`, before touching the filesystem any further.
+    #[test]
+    fn copy_into_with_progress_errors_typed_when_name_is_unavailable() {
+        let dir = unique_tmp("konoma_fileops_name_unavailable_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p = Progress::default();
+        let err = copy_into_with_progress(&dir, Path::new("/"), &p).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<FileOpError>(),
+                Some(FileOpError::NameUnavailable(src)) if src == Path::new("/")
+            ),
+            "{err:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `batch_rename` itself re-checks the destination for a collision (defense in depth beyond
+    /// `App::build_rename_plan`'s own pre-check) and reports it as a typed `RenameDestExists`,
+    /// distinct from the single-file `AlreadyExists` (it's the batch apply phase, not create/rename).
+    #[test]
+    fn batch_rename_dest_exists_downcasts_to_file_op_error() {
+        let dir = unique_tmp("konoma_fileops_batch_dest_exists_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let existing = dir.join("existing.txt");
+        std::fs::write(&a, b"A").unwrap();
+        std::fs::write(&existing, b"E").unwrap();
+
+        // Call fileops::batch_rename directly (bypassing App::build_rename_plan's own collision
+        // pre-check) with a plan whose destination already exists on disk.
+        let err = batch_rename(&[(a, existing.clone())]).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<FileOpError>(),
+                Some(FileOpError::RenameDestExists(p)) if p == &existing
+            ),
+            "{err:?}"
         );
 
         std::fs::remove_dir_all(&dir).ok();

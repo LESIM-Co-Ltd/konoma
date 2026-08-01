@@ -87,8 +87,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
         Err(e) => {
             lines.push(
-                Line::from(format!("{}: {e}", tr(app.lang, crate::i18n::Msg::Failed)))
-                    .fg(Color::Red),
+                Line::from(format!(
+                    "{}: {}",
+                    tr(app.lang, crate::i18n::Msg::Failed),
+                    app.describe_error(&e)
+                ))
+                .fg(Color::Red),
             );
         }
     }

@@ -197,10 +197,10 @@ fn read_marks(path: &Path) -> BTreeMap<char, PathBuf> {
 fn write_marks(path: &Path, mf: &MarksFile) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("ブックマーク保存先の作成: {}", parent.display()))?;
+            .with_context(|| format!("create bookmarks directory: {}", parent.display()))?;
     }
-    let text = toml::to_string(mf).context("ブックマークの TOML 整形")?;
-    std::fs::write(path, text).with_context(|| format!("ブックマーク保存: {}", path.display()))?;
+    let text = toml::to_string(mf).context("format bookmarks as TOML")?;
+    std::fs::write(path, text).with_context(|| format!("write bookmarks: {}", path.display()))?;
     Ok(())
 }
 
