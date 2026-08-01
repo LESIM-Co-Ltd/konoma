@@ -429,6 +429,9 @@ builtin = "pdf"
 #                    if the worktree already committed its work. The base is graph_base_branches
 #                    below, falling back to the main worktree's branch. Falls back further to an
 #                    uncommitted-only diff when there's no base or nothing has piled up yet.)
+#                  "worktree_create" (n: open an input dialog for a branch name — new vs. existing is
+#                    auto-detected, no separate prompt for it — then `git worktree add` it under
+#                    [git] worktree_dir next to the main worktree, and switch this tab into it)
 #   Disable      : "noop" (alias "disabled") = remove that key's default binding.
 #
 # ■ Leaders (two-stage keys / which-key): pressing one shows the candidates in the footer.
@@ -484,6 +487,12 @@ tool        = "lazygit"   # The external git tool launched with `!` in the hub (
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph (post-release, docs/GRAPH-BASE-SPEC.md).
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
+worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved
+                        # against the MAIN worktree's own path (not wherever this tab's root is), then joined with the
+                        # branch name (its / replaced with -, since a slash would otherwise make git nest directories).
+                        # Default = a sibling of the main worktree, e.g. ~/work/proj + branch feat -> ~/work/feat. An
+                        # absolute path is used as-is. Avoid a path inside the repo itself (e.g. ".worktrees/") without
+                        # adding it to .git/info/exclude yourself — konoma never writes that file for you.
 
 # ── External process switches ────────────────────────────────────────────────
 # One on/off switch per external process konoma can launch. All default to `true` (unchanged

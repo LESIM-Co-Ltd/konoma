@@ -1436,6 +1436,46 @@ fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `o` `w` `n`: type a branch name into the input dialog, submit → `git worktree add` creates it
+/// next to the main worktree (default `[git] worktree_dir = "../"`) and this tab switches into it
+/// (both `root` and `open_dir`, mirroring `worktree_goto`'s `Enter`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_worktree_create_switches_into_it() {
+    let dir = sandbox("git_worktree_create");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    // The default worktree_dir ("../") places the new worktree as a sibling of the sandbox dir —
+    // pre-clean any stale leftover from a previous failed run (a *non-empty* leftover would make a
+    // fresh `git worktree add` fail with "already exists"; this test's own cleanup removes it again
+    // at the end, but a prior interrupted run could have skipped that).
+    let expected = std::env::temp_dir().join("e2e-wt-branch");
+    let _ = std::fs::remove_dir_all(&expected);
+
+    let mut s = Sim::new(&root);
+    s.key('o');
+    s.key('w');
+    assert!(s.app.is_git_worktrees());
+    s.key('n');
+    assert!(s.app.is_dialog(), "n で入力面に入る");
+    s.keys("e2e-wt-branch");
+    s.enter();
+
+    assert!(!s.app.is_git_worktrees(), "作成後は一覧を閉じる");
+    let new_root = s.app.tab.root.clone();
+    assert_ne!(new_root, root, "root が新しいワークツリーへ切替わる");
+    assert_eq!(s.app.tab.open_dir, new_root, "open_dir も切り替わる");
+    assert_eq!(new_root, expected.canonicalize().unwrap());
+    assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
+    assert!(
+        crate::git::branch_tip(&root, "e2e-wt-branch").is_some(),
+        "新規ブランチが作られる"
+    );
+
+    std::fs::remove_dir_all(&expected).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub() {

@@ -5073,6 +5073,296 @@ fn git_branches_list_checkout_and_create() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `worktree_create_target`'s directory-name rule: every `/` in the branch name becomes `-` (git
+/// would otherwise create a **nested** directory for a branch like `feat/nested/deep`, i.e.
+/// `feat/nested/deep/` as three levels, not one flat sibling directory).
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_target_replaces_slash_with_dash_for_the_directory_name() {
+    use std::process::Command;
+    let dir = unique_tmp("konoma_wt_target_slash");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .unwrap();
+    let root = dir.canonicalize().unwrap();
+    let app = App::new(root.clone(), Config::default()).unwrap();
+
+    let target = app.worktree_create_target("feat/nested/deep");
+    assert_eq!(
+        target.file_name().and_then(|n| n.to_str()),
+        Some("feat-nested-deep"),
+        "全ての / が - に置換され、1階層のディレクトリ名になる: {target:?}"
+    );
+    // Not a nested structure: the parent of `target` must not itself be named after a slash-split prefix.
+    let parent_name = target
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    assert_ne!(
+        parent_name,
+        Some("feat"),
+        "入れ子ディレクトリが作られてはいけない: {target:?}"
+    );
+    assert_ne!(
+        parent_name,
+        Some("feat-nested"),
+        "入れ子ディレクトリが作られてはいけない: {target:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `worktree_create_target` resolves against the **main** worktree's own path, not `self.tab.root`,
+/// and respects `[git] worktree_dir` — the default `"../"` places it as a sibling of the main
+/// worktree, and a custom (here: absolute) value changes the placement entirely.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_target_respects_worktree_dir_config() {
+    use std::process::Command;
+    let dir = unique_tmp("konoma_wt_target_dircfg");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .unwrap();
+    let root = dir.canonicalize().unwrap();
+
+    // Default ("../"): a sibling of the main worktree.
+    let app_default = App::new(root.clone(), Config::default()).unwrap();
+    let default_target = app_default.worktree_create_target("brA");
+    assert_eq!(
+        default_target.parent().unwrap().canonicalize().unwrap(),
+        root.parent().unwrap().canonicalize().unwrap(),
+        "既定 \"../\" はメインワークツリーの隣に置く: {default_target:?}"
+    );
+
+    // Custom (absolute) worktree_dir: placement follows it instead.
+    let custom_base = unique_tmp("konoma_wt_target_dircfg_custom");
+    std::fs::create_dir_all(&custom_base).unwrap();
+    let mut cfg = Config::default();
+    cfg.git.worktree_dir = custom_base.to_string_lossy().into_owned();
+    let app_custom = App::new(root.clone(), cfg).unwrap();
+    let custom_target = app_custom.worktree_create_target("brB");
+    assert_eq!(
+        custom_target.parent().unwrap().canonicalize().unwrap(),
+        custom_base.canonicalize().unwrap(),
+        "worktree_dir を変えると置き場所が変わる: {custom_target:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&custom_base).ok();
+}
+
+/// Full `n` flow: type a brand-new branch name, submit → `git worktree add -b` creates the branch
+/// and the directory, the list closes, and this tab switches its root (and `open_dir`) into it.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_flow_creates_a_new_branch_and_switches_into_it() {
+    use std::process::Command;
+    let dir = unique_tmp("konoma_wt_flow_new");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .unwrap();
+    let root = dir.canonicalize().unwrap();
+    // A private worktree_dir keeps this test's placement from ever colliding with another
+    // test/parallel run sharing the OS temp dir (unlike a branch name, this base is unique per test).
+    let base = unique_tmp("konoma_wt_flow_new_base");
+    std::fs::create_dir_all(&base).unwrap();
+    let mut cfg = Config::default();
+    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
+    let mut app = App::new(root.clone(), cfg).unwrap();
+
+    app.open_git_worktrees();
+    assert!(app.is_git_worktrees());
+    app.start_create_worktree();
+    assert!(app.is_dialog());
+    for c in "feat-fresh".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert!(!app.is_git_worktrees(), "作成後は一覧を閉じる");
+    let new_root = app.tab.root.clone();
+    assert_ne!(new_root, root, "root が新しいワークツリーへ切替わる");
+    assert_eq!(app.tab.open_dir, new_root, "open_dir も追従する");
+    assert!(new_root.is_dir(), "ディレクトリが実際に作られる");
+
+    let list = crate::git::worktrees(&root);
+    let created = list
+        .iter()
+        .find(|w| w.path == new_root)
+        .expect("git worktree list に出る");
+    assert_eq!(created.branch.as_deref(), Some("feat-fresh"));
+    assert!(
+        crate::git::branch_tip(&root, "feat-fresh").is_some(),
+        "新規ブランチが作られる"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Full `n` flow on an **existing** branch (not checked out anywhere): no `-b`, checked out as-is,
+/// and the branch is not duplicated.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplicate() {
+    use std::process::Command;
+    let dir = unique_tmp("konoma_wt_flow_existing");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .unwrap();
+    // A branch that already exists but isn't checked out anywhere yet.
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["branch", "already-there"])
+        .output()
+        .unwrap();
+    let root = dir.canonicalize().unwrap();
+    let base = unique_tmp("konoma_wt_flow_existing_base");
+    std::fs::create_dir_all(&base).unwrap();
+    let mut cfg = Config::default();
+    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
+    let mut app = App::new(root.clone(), cfg).unwrap();
+
+    app.open_git_worktrees();
+    app.start_create_worktree();
+    for c in "already-there".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    let new_root = app.tab.root.clone();
+    assert_ne!(new_root, root);
+    assert!(new_root.is_dir());
+    let branches = crate::git::branches(&root);
+    assert_eq!(
+        branches
+            .iter()
+            .filter(|b| b.name == "already-there")
+            .count(),
+        1,
+        "既存ブランチが二重作成されない: {branches:?}"
+    );
+    let list = crate::git::worktrees(&root);
+    let created = list
+        .iter()
+        .find(|w| w.path == new_root)
+        .expect("git worktree list に出る");
+    assert_eq!(created.branch.as_deref(), Some("already-there"));
+
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A branch already checked out by another worktree: `git worktree add` refuses, `dialog_submit`
+/// flashes git's own `fatal: ...` line (leading, not buried behind the command that was run — the
+/// flash footer is a single line clipped at the terminal width, so anything ahead of the reason
+/// pushes it off-screen), the root stays put, and the list — never touched on this failure path —
+/// is still open once the (now-closed) dialog is gone.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_out_elsewhere() {
+    use std::process::Command;
+    let dir = unique_tmp("konoma_wt_flow_conflict");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(&dir)
+        .args(["commit", "-q", "-m", "init"])
+        .output()
+        .unwrap();
+    let root = dir.canonicalize().unwrap();
+    let base = unique_tmp("konoma_wt_flow_conflict_base");
+    std::fs::create_dir_all(&base).unwrap();
+
+    // A first worktree already has branch "taken" checked out.
+    let first = base.join("first");
+    let out = Command::new("git")
+        .current_dir(&root)
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "taken",
+            first.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "setup: git worktree add: {out:?}");
+
+    let mut cfg = Config::default();
+    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
+    let mut app = App::new(root.clone(), cfg).unwrap();
+
+    app.open_git_worktrees();
+    app.start_create_worktree();
+    for c in "taken".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert_eq!(app.tab.root, root, "失敗時は root が変わらない");
+    assert!(app.is_git_worktrees(), "失敗時は一覧が開いたまま");
+    let flash = app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.starts_with("fatal:"),
+        "git の fatal: メッセージが先頭に来る(コマンド文字列で押し出されない): {flash}"
+    );
+    assert!(
+        !flash.contains("worktree add"),
+        "実行したコマンド文字列は含まない: {flash}"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn git_commit_flow_creates_commit_with_message() {

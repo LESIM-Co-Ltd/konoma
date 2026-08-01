@@ -303,6 +303,9 @@ enum PendingOp {
     GitCommit,
     /// In the branch list, `n`=enter a new branch name. On confirm, git::create_branch (create and switch).
     GitCreateBranch,
+    /// In the worktree list, `n`=enter a branch name for a new linked worktree. On confirm,
+    /// `dialog_submit` auto-detects new-vs-existing (`git::branch_tip`) and runs `git::worktree_add`.
+    WorktreeCreate,
     /// In the branch list, `d`=delete confirmation. `y`=safe (-d) / `!`=force (-D).
     GitDeleteBranch { name: String },
     /// A transfer received via file drag & drop (through a terminal paste). `c`=copy / `m`=move / Esc=cancel.
@@ -1784,6 +1787,9 @@ impl App {
                     PendingOp::BatchRenameInput { .. } => InternalMode::BatchRename,
                     PendingOp::GitCommit => InternalMode::Commit,
                     PendingOp::GitCreateBranch => InternalMode::GitBranch,
+                    // Same idiom as GitCreateBranch: reuse the list's own chip/footer rather than
+                    // inventing a dedicated "creating a worktree" mode.
+                    PendingOp::WorktreeCreate => InternalMode::GitWorktrees,
                     _ => InternalMode::Rename,
                 },
             });

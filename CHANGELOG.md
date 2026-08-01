@@ -6,6 +6,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Create a linked worktree from the list**: `n` in the worktree list (`w` from the changes hub)
+  opens a one-line input for a branch name. New-vs-existing is auto-detected
+  (`git branch_tip`) — an existing branch is checked out without `-b`, a new name creates the
+  branch (`-b`, from HEAD) — so there's no separate prompt for it. Placed next to the **main**
+  worktree under the new `[git] worktree_dir` setting (default `"../"`; a branch name's `/` is
+  replaced with `-` for the directory name, since a slash would otherwise make git create a nested
+  directory). On success, closes the list and switches this tab's root — and `open_dir` — into the
+  new worktree (same treatment as `worktree_goto`'s `Enter`). On failure, git's own `fatal: ...`
+  message is flashed and the list stays open — the flash now leads with that line specifically
+  (not the command that was run, and not `git`'s own progress chatter ahead of it on stderr), since
+  the flash footer is a single line clipped at the terminal width and anything ahead of the reason
+  just pushes it off-screen.
+
 ## [0.23.0] - 2026-07-31
 
 ### Added

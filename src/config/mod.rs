@@ -83,6 +83,17 @@ pub struct GitConfig {
     /// [Unimplemented/reserved] For the base-branch-pinned graph (post-release; docs/GRAPH-BASE-SPEC.md).
     /// Currently referenced by nothing (parsed only). Wired up when implemented.
     pub main_branch: String,
+    /// Where `n` (in the worktree list, `[keys.git_worktrees]`) places a newly created linked
+    /// worktree — resolved against the **main** worktree's own path (not wherever the tab's root
+    /// happens to be, so creating from inside another linked worktree doesn't change where new ones
+    /// land), then joined with the branch name (its `/`, if any, replaced with `-`, since a slash
+    /// would otherwise make `git worktree add` create a **nested** directory). Default `"../"` — a
+    /// sibling of the main worktree, e.g. `~/work/proj` + branch `feat` → `~/work/feat`. An absolute
+    /// path is used as-is. **Avoid a path inside the repository itself** (e.g. `".worktrees/"`):
+    /// every linked worktree created there would show up as an untracked directory in the *main*
+    /// worktree's own `git status` unless you add it to `.git/info/exclude` yourself — konoma never
+    /// writes to that file for you.
+    pub worktree_dir: String,
 }
 
 impl Default for GitConfig {
@@ -91,6 +102,7 @@ impl Default for GitConfig {
             tool: "lazygit".into(),
             diff: "unified".into(), // default is vertical. horizontal/Auto via config or runtime `s`.
             main_branch: "".into(),
+            worktree_dir: "../".into(),
         }
     }
 }

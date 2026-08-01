@@ -1544,10 +1544,12 @@ fn cfg_git_defaults() {
     assert_eq!(d.tool, "lazygit");
     assert_eq!(d.diff, "unified");
     assert_eq!(d.main_branch, "");
+    assert_eq!(d.worktree_dir, "../");
     let g = Config::default().git;
     assert_eq!(g.tool, "lazygit");
     assert_eq!(g.diff, "unified");
     assert_eq!(g.main_branch, "");
+    assert_eq!(g.worktree_dir, "../");
 }
 
 #[test]
@@ -1556,10 +1558,14 @@ fn cfg_git_parses_from_toml() {
     assert_eq!(cfg.git.tool, "tig status");
     assert_eq!(cfg.git.diff, "split");
     assert_eq!(cfg.git.main_branch, "");
+    assert_eq!(cfg.git.worktree_dir, "../");
     let cfg2: Config = toml::from_str("[git]\nmain_branch = \"develop\"\n").unwrap();
     assert_eq!(cfg2.git.main_branch, "develop");
     assert_eq!(cfg2.git.tool, "lazygit");
     assert_eq!(cfg2.git.diff, "unified");
+    assert_eq!(cfg2.git.worktree_dir, "../");
+    let cfg3: Config = toml::from_str("[git]\nworktree_dir = \"../wt\"\n").unwrap();
+    assert_eq!(cfg3.git.worktree_dir, "../wt");
 }
 
 // =============================================================================

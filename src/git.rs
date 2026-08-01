@@ -1209,7 +1209,40 @@ fn workdir_of(root: &Path) -> PathBuf {
         .unwrap_or_else(|| root.to_path_buf())
 }
 
-/// Runs the `git` CLI in the repo workdir. A non-zero exit returns an Err carrying stderr.
+/// Picks the single line out of `git`'s stderr that's worth showing the user.
+///
+/// Two facts about how this ends up on screen drive the order here: the flash footer renders
+/// the message as **one line**, clipped at the terminal width — an embedded newline doesn't
+/// wrap, it just burns width before the useful part ever gets there — and `git` routinely
+/// writes progress chatter to stderr *before* the line that actually explains the failure (e.g.
+/// `worktree add` prints `Preparing worktree (checking out '<branch>')` ahead of its `fatal:`
+/// line). So: prefer a `fatal:`-prefixed line, then `error:`, then fall back to the last
+/// non-empty line (covers subcommands whose failure line uses neither prefix). Only when stderr
+/// was empty do we synthesize a message from the exit status.
+#[cfg(feature = "git")]
+fn git_error_message(out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if let Some(l) = lines.iter().find(|l| l.starts_with("fatal:")) {
+        return (*l).to_string();
+    }
+    if let Some(l) = lines.iter().find(|l| l.starts_with("error:")) {
+        return (*l).to_string();
+    }
+    if let Some(l) = lines.last() {
+        return (*l).to_string();
+    }
+    format!("git exited with {}", out.status)
+}
+
+/// Runs the `git` CLI in the repo workdir. A non-zero exit returns an Err whose message is
+/// `git`'s own `fatal:`/`error:` line (see `git_error_message`) — deliberately *not* the command
+/// line that was run: the caller just pressed the key that triggered it, so echoing back what it
+/// did only pushes the actual reason further right, off the edge of the flash line.
 #[cfg(feature = "git")]
 fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
     use anyhow::{anyhow, Context};
@@ -1225,8 +1258,7 @@ fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
     if out.status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        Err(anyhow!("git {}: {}", args.join(" "), stderr.trim()))
+        Err(anyhow!(git_error_message(&out)))
     }
 }
 
@@ -1289,6 +1321,42 @@ pub fn create_branch(root: &Path, name: &str) -> anyhow::Result<()> {
 pub fn delete_branch(root: &Path, name: &str, force: bool) -> anyhow::Result<()> {
     let flag = if force { "-D" } else { "-d" };
     run_git(root, &["branch", flag, name])
+}
+
+/// Creates a new **linked worktree** (`git worktree add`) at `path`, checked out to `branch`.
+/// `create_branch=true` also creates `branch` fresh (`-b`, starting from HEAD — same starting
+/// point as `create_branch()`'s `switch -c`); `create_branch=false` checks out an existing branch
+/// (no `-b`). The caller (`App::dialog_submit`'s `PendingOp::WorktreeCreate` arm) decides which by
+/// probing `branch_tip` first — this function just executes whichever was decided, it does not
+/// re-probe.
+///
+/// No `--no-optional-locks` here, unlike `worktrees()`/`statuses()`/`ignored()`: that flag is
+/// this codebase's etiquette for *background reads* not to contend with a concurrent user-facing
+/// write (e.g. so `git pull` never trips on a lock our own idle status scan happens to be
+/// holding). `worktree add` is the opposite — a write the user just explicitly triggered by
+/// submitting the dialog — so it takes the same lock any other write here does, same as `stage`/
+/// `commit`/`checkout`/`create_branch` right above.
+///
+/// Errors surface as `git`'s own `fatal:` line via `run_git`'s `git_error_message` (same contract
+/// as `create_branch`/`checkout` — the caller flashes it as-is). Real cases hit in practice: the
+/// target directory already has content (`fatal: '<path>' already exists` — an *empty* directory
+/// is fine, git happily uses it), the branch is already checked out by another worktree (`fatal:
+/// '<branch>' is already used by worktree at '<path>'`), and — defensively, since the caller
+/// already checked via `branch_tip` — `create_branch=true` racing an existing branch name (`fatal:
+/// a branch named '<branch>' already exists`).
+#[cfg(feature = "git")]
+pub fn worktree_add(
+    root: &Path,
+    path: &Path,
+    branch: &str,
+    create_branch: bool,
+) -> anyhow::Result<()> {
+    let path = path.to_string_lossy();
+    if create_branch {
+        run_git(root, &["worktree", "add", "-b", branch, &path])
+    } else {
+        run_git(root, &["worktree", "add", &path, branch])
+    }
 }
 
 /// One row of the commit graph (`G`: SourceTree / Git Graph style). `graph` = the (char, style) sequence of the colored lane area;
@@ -2006,6 +2074,16 @@ pub fn delete_branch(_root: &Path, _name: &str, _force: bool) -> anyhow::Result<
     Err(anyhow::anyhow!("git feature 無効"))
 }
 
+#[cfg(not(feature = "git"))]
+pub fn worktree_add(
+    _root: &Path,
+    _path: &Path,
+    _branch: &str,
+    _create_branch: bool,
+) -> anyhow::Result<()> {
+    Err(anyhow::anyhow!("git feature 無効"))
+}
+
 /// Applies the status to a file and its ancestor directories (up to workdir). Directories keep the higher priority.
 #[cfg(feature = "git")]
 fn rollup(map: &mut HashMap<PathBuf, FileStatus>, workdir: &Path, abs: &Path, st: FileStatus) {
@@ -2189,6 +2267,10 @@ mod tests {
         assert!(create_branch(&dir, "nope").is_err(), "create_branch");
         assert!(delete_branch(&dir, "nope", false).is_err(), "delete_branch");
         assert!(
+            worktree_add(&dir, &dir.join("nope-wt"), "nope", true).is_err(),
+            "worktree_add"
+        );
+        assert!(
             graph_with_base(&dir, None, crate::i18n::Lang::En, None).is_empty(),
             "graph_with_base"
         );
@@ -2321,6 +2403,47 @@ mod tests {
             .args(["worktree", "unlock", linked.to_str().unwrap()])
             .output();
         std::fs::remove_dir_all(&linked).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `worktree_add` against a branch another worktree already has checked out: the error message
+    /// leads with git's own `fatal:` line, not the command that was run. This matters because the
+    /// flash footer renders the message as one line clipped at the terminal width, and `worktree
+    /// add` writes a progress line (`Preparing worktree (checking out '<branch>')`) to stderr
+    /// *before* the `fatal:` line — so a naive "command: stderr.trim()" message buries the actual
+    /// reason behind the (often long) command/path, past the visible width, and the user never
+    /// sees why it failed. Before the fix (`run_git` prefixing `"git {args}: {stderr}"`), this test
+    /// fails: the message starts with `"git worktree add "`, not `"fatal:"`.
+    #[cfg(feature = "git")]
+    #[test]
+    fn worktree_add_error_leads_with_gits_fatal_line_not_the_command() {
+        let dir = unique_tmp("konoma_git_worktree_add_err_msg");
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        stage(&dir, &dir.join("a.txt")).unwrap();
+        commit(&dir, "init").unwrap();
+        let root = dir.canonicalize().unwrap();
+
+        // A first worktree already has branch "taken" checked out.
+        let first = unique_tmp("konoma_git_worktree_add_err_msg_first");
+        worktree_add(&root, &first, "taken", true).unwrap();
+
+        // Second attempt on the same branch: git refuses.
+        let second = unique_tmp("konoma_git_worktree_add_err_msg_second");
+        let err = worktree_add(&root, &second, "taken", false)
+            .expect_err("同じブランチへの2本目の worktree add は失敗する");
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("fatal:"),
+            "理由(fatal:)が先頭に来る: {msg:?}"
+        );
+        assert!(
+            !msg.contains("worktree add"),
+            "実行したコマンド文字列は含まない(理由を押し出すため): {msg:?}"
+        );
+
+        std::fs::remove_dir_all(&first).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1350,6 +1350,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::WorktreeShowChanges => app.worktree_show_changes(),
         #[cfg(feature = "git")]
+        Action::WorktreeCreate => app.start_create_worktree(),
+        #[cfg(feature = "git")]
         Action::GitCopy(kind) => app.git_copy(kind),
         #[cfg(feature = "git")]
         Action::CopyBranchName => app.git_copy_branch_name(),

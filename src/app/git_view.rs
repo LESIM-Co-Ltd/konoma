@@ -664,16 +664,55 @@ impl App {
         self.open_git_view();
     }
     /// Clears the worktree list's transient UI state (list/cursor/filter/filtering). Shared by
-    /// `close_git_worktrees` (which follows up with `open_git_view()` to return to the hub) and
+    /// `close_git_worktrees` (which follows up with `open_git_view()` to return to the hub),
     /// `worktree_goto`'s `Go` arm (which follows up with `jump_to_dir` instead — switching root,
-    /// not returning to the hub, so it can't just call `close_git_worktrees`). Kept as one spot so
-    /// a future field added to this state can't be reset in one caller and forgotten in the other.
+    /// not returning to the hub, so it can't just call `close_git_worktrees`), and `dialog_submit`'s
+    /// `PendingOp::WorktreeCreate` success arm (same "switched root, don't return to the hub" case
+    /// as `worktree_goto`, hence `pub(super)` rather than private — `dialog_submit` lives in the
+    /// sibling `dialog_actions` module). Kept as one spot so a future field added to this state
+    /// can't be reset in one caller and forgotten in the others.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    fn reset_git_worktree_list_state(&mut self) {
+    pub(super) fn reset_git_worktree_list_state(&mut self) {
         self.tab.git_worktrees = None;
         self.tab.git_worktree_sel = 0;
         self.tab.git_worktree_filter.clear();
         self.tab.git_worktree_filtering = false;
+    }
+    /// `n`: Open the input dialog for a new linked worktree's branch name. The actual creation
+    /// (new-vs-existing detection + `git::worktree_add` + success/failure handling) lives in
+    /// `dialog_submit`'s `PendingOp::WorktreeCreate` arm — same split as `start_create_branch`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn start_create_worktree(&mut self) {
+        self.dialog = Some(Dialog {
+            op: PendingOp::WorktreeCreate,
+            kind: DialogKind::Input {
+                title: crate::i18n::tr(self.lang, crate::i18n::Msg::NewWorktree).into(),
+                buffer: String::new(),
+                cursor: 0,
+            },
+        });
+    }
+    /// Where a newly created worktree for `branch` should live: `[git] worktree_dir` resolved
+    /// against the **main** worktree's own path (not `self.tab.root` — creating from inside a
+    /// linked worktree must not make the placement drift with it; note the main entry's `path` is
+    /// the right base even when it's a **bare** main worktree, since `git worktree list` always
+    /// reports the bare repository's own directory there, the same "no checkout to switch into but
+    /// still a real directory to build from" fact `worktree_switch_target`'s `Bare` case relies on),
+    /// then joined with `branch`'s directory name — `/` replaced with `-`, since a slash in the leaf
+    /// component would otherwise make `git worktree add` create a **nested** directory (`feat/`
+    /// containing `nested/`) rather than one flat sibling; a worktree's directory name has no reason
+    /// to mirror the branch's slash structure anyway. Falls back to `self.tab.root` if `worktrees()`
+    /// somehow can't find a main entry (defensive only: a real repository always has one, and `n`
+    /// only appears once the list — built from that same call — is already showing).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(super) fn worktree_create_target(&self, branch: &str) -> PathBuf {
+        let main = crate::git::worktrees(&self.tab.root)
+            .into_iter()
+            .find(|w| w.is_main)
+            .map(|w| w.path)
+            .unwrap_or_else(|| self.tab.root.clone());
+        let dir_name = branch.replace('/', "-");
+        main.join(&self.cfg.git.worktree_dir).join(dir_name)
     }
     /// Classifies the selected row for `worktree_goto`/`worktree_goto_new_tab` (shared guard: a
     /// bare main worktree has no checkout, a prunable/missing one has nothing to switch into, and

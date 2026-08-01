@@ -177,6 +177,39 @@ impl App {
             }
             return Ok(());
         }
+        // Creating a linked worktree: the typed name is a branch — new-vs-existing is auto-detected
+        // (no separate prompt for it), then placed under `[git] worktree_dir` next to the main
+        // worktree (`worktree_create_target`) and switched into (same "root changed entirely, don't
+        // return to the hub" treatment as `worktree_goto`'s `Go` arm, not `close_git_worktrees`).
+        if matches!(dialog.op, PendingOp::WorktreeCreate) {
+            let bname = buffer.trim();
+            if bname.is_empty() {
+                self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NameEmpty).into());
+                return Ok(());
+            }
+            let target = self.worktree_create_target(bname);
+            let create_new = crate::git::branch_tip(&self.tab.root, bname).is_none();
+            match crate::git::worktree_add(&self.tab.root, &target, bname, create_new) {
+                Ok(()) => {
+                    // The target now exists on disk, so canonicalize it for a clean root/open_dir/
+                    // flash (`worktree_dir` can carry a literal `..` component, e.g. the default "../").
+                    let path = target.canonicalize().unwrap_or(target);
+                    self.reset_git_worktree_list_state();
+                    self.jump_to_dir(path.clone());
+                    self.tab.open_dir = path.clone();
+                    self.flash = Some(format!(
+                        "{}: {}",
+                        crate::i18n::tr(self.lang, crate::i18n::Msg::CreatedWorktree),
+                        home_relative(&path)
+                    ));
+                }
+                // git's own `fatal: ...` message, shown unmodified (same contract as branch
+                // creation above). `self.tab.git_worktrees` was never touched here, so the list is
+                // still showing once this (now-closed) dialog is gone.
+                Err(e) => self.flash = Some(format!("{e}")),
+            }
+            return Ok(());
+        }
         let name = buffer.trim().trim_end_matches('/').trim();
         let want_folder = buffer.trim_end().ends_with('/');
         if name.is_empty() {
@@ -274,12 +307,13 @@ impl App {
                 }
             }
             // Delete/Git discard live on the confirmation-dialog side / batch rename apply lives on the preview side.
-            // GitCommit already returned early above, so it never reaches here.
+            // GitCommit/GitCreateBranch/WorktreeCreate already returned early above, so they never reach here.
             PendingOp::Delete { .. }
             | PendingOp::BatchRenameApply { .. }
             | PendingOp::GitDiscard { .. }
             | PendingOp::GitCommit
             | PendingOp::GitCreateBranch
+            | PendingOp::WorktreeCreate
             | PendingOp::GitDeleteBranch { .. }
             | PendingOp::DropTransfer { .. }
             | PendingOp::BookmarkOverwrite { .. }

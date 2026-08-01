@@ -264,6 +264,11 @@ pub enum Action {
     /// uncommitted together), overlaid as a detail view on top of the list.
     #[cfg(feature = "git")]
     WorktreeShowChanges,
+    /// Worktree list: open the input dialog for a new linked worktree (`n`). The typed name is a
+    /// branch name — `App::dialog_submit` auto-detects new-vs-existing (no separate prompt for it)
+    /// and runs `git worktree add` under `[git] worktree_dir`, next to the main worktree.
+    #[cfg(feature = "git")]
+    WorktreeCreate,
 
     // --- Git copy (y→ commit info / branches branch name) ---
     /// log/graph/detail: copy the selected commit's info (hash / subject / message / author / date).
@@ -979,13 +984,15 @@ impl KeyMap {
             // checkout); `WorktreeGoto` has no default key binding here, same as
             // `GitOpenSelectedDiff` — it still round-trips through action_from_str/action_name so a
             // user can rebind another key to it. Ctrl-t (config-rebindable, unlike Enter) opens the
-            // selection in a new tab.
+            // selection in a new tab. `n` opens the "new worktree" input dialog, same idiom as
+            // `BranchCreate`'s `n` in `[keys.git_branches]` below.
             let mut gwt: ContextMap = HashMap::new();
             gwt.insert(KeyPress::ch('j'), nav(Motion::Down));
             gwt.insert(KeyPress::ch('k'), nav(Motion::Up));
             gwt.insert(KeyPress::ch('g'), nav(Motion::Top));
             gwt.insert(KeyPress::ch('G'), nav(Motion::Bottom));
             gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
+            gwt.insert(KeyPress::ch('n'), run(Action::WorktreeCreate));
             gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
             gwt.insert(KeyPress::ch('d'), run(Action::WorktreeShowChanges));
             gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
@@ -1955,6 +1962,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "worktree_show_changes" => Action::WorktreeShowChanges,
         #[cfg(feature = "git")]
+        "worktree_create" => Action::WorktreeCreate,
+        #[cfg(feature = "git")]
         "git_copy_short_hash" => Action::GitCopy(GitCopyKind::ShortHash),
         #[cfg(feature = "git")]
         "git_copy_full_hash" => Action::GitCopy(GitCopyKind::FullHash),
@@ -2134,6 +2143,8 @@ pub fn action_name(a: Action) -> String {
         Action::WorktreeClose => "worktree_close",
         #[cfg(feature = "git")]
         Action::WorktreeShowChanges => "worktree_show_changes",
+        #[cfg(feature = "git")]
+        Action::WorktreeCreate => "worktree_create",
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::ShortHash) => "git_copy_short_hash",
         #[cfg(feature = "git")]
@@ -3048,6 +3059,10 @@ mod tests {
             Resolution::Action(Action::WorktreeFilterStart)
         );
         assert_eq!(
+            m.resolve(Surface::GitWorktrees, None, KeyPress::ch('n')),
+            Resolution::Action(Action::WorktreeCreate)
+        );
+        assert_eq!(
             m.resolve(Surface::GitWorktrees, None, KeyPress::ctrl_ch('t')),
             Resolution::Action(Action::WorktreeGotoNewTab)
         );
@@ -3063,6 +3078,12 @@ mod tests {
         // round-trips through the config-string layer.
         assert_eq!(action_from_str("worktree_goto"), Some(Action::WorktreeGoto));
         assert_eq!(action_name(Action::WorktreeGoto), "worktree_goto");
+        // `WorktreeCreate` (`n`, the row just resolved above) round-trips too.
+        assert_eq!(
+            action_from_str("worktree_create"),
+            Some(Action::WorktreeCreate)
+        );
+        assert_eq!(action_name(Action::WorktreeCreate), "worktree_create");
     }
 
     /// Config-string round trip for every new worktree action (mirrors `keymap_actions_round_trip`,
