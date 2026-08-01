@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-08-01
+
 ### Added
 - **Create a linked worktree from the list**: `n` in the worktree list (`w` from the changes hub)
   opens a one-line input for a branch name. New-vs-existing is auto-detected
@@ -1141,7 +1143,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.2...v0.23.0
 [0.22.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.0...v0.22.1
