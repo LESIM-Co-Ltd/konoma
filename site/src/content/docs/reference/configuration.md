@@ -183,6 +183,7 @@ Mermaid and images always open at the top.
 |---|---|---|
 | `tool` | `"lazygit"` | External git tool launched with `!` inside the changes hub (command + args). |
 | `diff` | `"unified"` | Initial diff layout: `"unified"` (vertical) / `"split"` (side by side) / `"auto"` (by width). Cycle at runtime with `s` while viewing a diff. |
+| `worktree_dir` | `"../"` | Where `n` in the worktree list puts a new worktree, resolved against the **main** worktree so the location doesn't depend on which worktree you started from. The directory is named after the branch, with `/` replaced by `-`. Pointing this inside the repository works, but then that path needs a `.gitignore` or `.git/info/exclude` entry of your own — konoma never writes one for you. |
 
 ## `[external]` — external process on/off switches
 

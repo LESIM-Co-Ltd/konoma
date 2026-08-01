@@ -97,6 +97,7 @@ information contextually inside the app.
 | Branches: `Enter` / `n` / `d` / `/` | checkout / create / delete / filter |
 | Worktrees (`w`): `Enter` / `Ctrl-t` | switch this tab to it / open it in a new tab |
 | Worktrees: `d` / `/` | diff it against its base branch / filter |
+| Worktrees: `n` | create one — asks for a branch name, then switches into it |
 
 ## Tab list (`T`)
 
