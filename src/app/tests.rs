@@ -10030,6 +10030,251 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     std::fs::remove_file(&outside).ok();
 }
 
+// =============================================================================
+// Follow scope leaking across a root change (`follow_root`, 2026-08)
+//
+// `follow_mode`/`follow_session`/`follow_baseline` are App-level (a session isn't per-tab — `F` is
+// a global key), but they describe one specific repo. The root can change out from under a RUNNING
+// follow session without ever calling `toggle_follow` (tab switch, `l`/`h`, worktree switch via
+// `o`→`w`→`Enter`, paste-jump, a bookmark jump, ...). Before `follow_root`, this silently mixed
+// paths from two repos into `n`/`N`'s population (and the title's `(i/n)` denominator), and — worse
+// — let `follow_baseline_diff`'s `blob_at` call *successfully* resolve against a linked worktree's
+// shared object database using the WRONG worktree's pinned HEAD, producing a diff that looked
+// plausible but was wrong.
+// =============================================================================
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_session_and_diff_denominator_do_not_leak_across_tabs_with_different_roots() {
+    // Regression ①: switching to a tab rooted in an entirely different repo must not leave the
+    // OLD repo's file in the follow session — `diff_change_position`'s denominator must reflect
+    // only the NEW repo's changes.
+    let dir_x = unique_tmp("konoma_follow_scope_leak_x");
+    std::fs::create_dir_all(&dir_x).unwrap();
+    git_repo_with_commits(&dir_x);
+    let root_x = dir_x.canonicalize().unwrap();
+
+    let dir_y = unique_tmp("konoma_follow_scope_leak_y");
+    std::fs::create_dir_all(&dir_y).unwrap();
+    git_repo_with_commits(&dir_y);
+    let root_y = dir_y.canonicalize().unwrap();
+
+    let mut app = App::new(root_x.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    assert!(app.follow_enabled());
+
+    // A change in X, recorded and opened while the tab is still rooted at X.
+    std::fs::write(root_x.join("a.txt"), b"one\ntwo\nX-CHANGE\n").unwrap();
+    assert!(app.follow_note_change(&root_x.join("a.txt")));
+    app.follow_jump(&root_x.join("a.txt"));
+    assert!(app.is_git_diff_preview(), "X の変更は全画面 diff で開く");
+    assert_eq!(app.diff_change_position(), Some((1, 1)), "X 単独で 1/1");
+
+    // Switch tabs and re-root the new tab at an entirely different repo (Y) — one of several
+    // root-changing paths that never call `toggle_follow` (tab switch + `jump_to_dir`, the same
+    // primitive `worktree_goto`/a bookmark jump use).
+    app.tab_new().expect("tab_new");
+    app.jump_to_dir(root_y.clone());
+    assert_eq!(app.tab.root, root_y, "新タブの root は Y");
+
+    // The first follow_note_change after a root change recaptures the scope (clears the old
+    // session, retakes the baseline, pins follow_root=Y) BEFORE recording anything — a.txt is
+    // still clean at this instant, so this call itself folds it into the fresh baseline (the same
+    // "pre-existing state becomes invisible" fold a plain F-on already does), not into a visible diff.
+    assert!(app.follow_note_change(&root_y.join("a.txt")));
+    assert_eq!(
+        app.follow_root,
+        Some(root_y.clone()),
+        "スコープが Y に取り直される"
+    );
+
+    // The actual change since recapture — this is what `n`/`N`/diff_change_position should count.
+    std::fs::write(root_y.join("a.txt"), b"one\ntwo\nY-CHANGE\n").unwrap();
+    assert!(
+        app.follow_note_change(&root_y.join("a.txt")),
+        "Y での変更は追尾対象"
+    );
+    app.follow_jump(&root_y.join("a.txt"));
+    assert!(app.is_git_diff_preview(), "Y の変更も全画面 diff で開く");
+    assert_eq!(
+        app.diff_change_position(),
+        Some((1, 1)),
+        "X の a.txt が母集合に混ざらず、Y 単独で 1/1(修正前は分母が 2 になる)"
+    );
+
+    std::fs::remove_dir_all(&dir_x).ok();
+    std::fs::remove_dir_all(&dir_y).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_baseline_diff_is_none_after_switching_to_a_linked_worktree_in_the_same_tab() {
+    // Regression ②: linked worktrees share ONE object database. Switching this tab's root to a
+    // linked worktree — the same `jump_to_dir` primitive `worktree_goto`'s `Enter` uses, entirely
+    // within one tab, never touching `toggle_follow` — must not let a stale `follow_baseline`
+    // silently resolve against the OLD worktree's pinned HEAD (which `blob_at` would happily do,
+    // since the object is reachable from either worktree).
+    let dir_m = unique_tmp("konoma_follow_scope_wt_main");
+    std::fs::create_dir_all(&dir_m).unwrap();
+    git_repo_with_commits(&dir_m);
+    let root_m = dir_m.canonicalize().unwrap();
+
+    let dir_w = unique_tmp("konoma_follow_scope_wt_linked");
+    let out = std::process::Command::new("git")
+        .current_dir(&root_m)
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-follow-scope",
+            dir_w.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git worktree add: {out:?}");
+    let root_w = dir_w.canonicalize().unwrap();
+
+    let mut app = App::new(root_m.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    assert!(app.follow_enabled());
+    assert_eq!(app.follow_root, Some(root_m.clone()));
+
+    // A change in main opens correctly against main's baseline while still rooted there.
+    std::fs::write(root_m.join("a.txt"), b"one\ntwo\nMAIN-CHANGE\n").unwrap();
+    assert!(app.follow_note_change(&root_m.join("a.txt")));
+    assert!(
+        app.follow_baseline_diff(&root_m.join("a.txt")).is_some(),
+        "同一 root ではベースライン diff が引ける"
+    );
+
+    // Switch this SAME tab's root to the linked worktree (mirroring worktree_goto's Enter),
+    // WITHOUT any follow_note_change in between.
+    app.jump_to_dir(root_w.clone());
+    assert_eq!(app.tab.root, root_w);
+
+    // A naive blob_at(root_w, <main's pinned HEAD>, a.txt) would SUCCEED here — the object database
+    // is shared — and silently produce a diff against the wrong worktree's history. This must
+    // refuse instead, purely from the cheap root comparison (no git call at all).
+    assert!(
+        app.follow_baseline_diff(&root_w.join("a.txt")).is_none(),
+        "worktree 切替直後は別 root の基準を静かに使い回さない"
+    );
+
+    std::fs::remove_dir_all(&dir_w).ok();
+    std::fs::remove_dir_all(&dir_m).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn follow_note_change_recaptures_baseline_and_session_when_the_scope_root_changes() {
+    // Regression ③ (re-acquisition): once the scope goes stale, the NEXT follow_note_change call —
+    // the event-drain side, never the render path — rebuilds the session/baseline fresh against the
+    // CURRENT root, the same recovery a fresh `F`-on gives, so the old root's path never lingers.
+    let dir_x = unique_tmp("konoma_follow_scope_reacquire_x");
+    std::fs::create_dir_all(&dir_x).unwrap();
+    git_repo_with_commits(&dir_x);
+    let root_x = dir_x.canonicalize().unwrap();
+
+    let dir_y = unique_tmp("konoma_follow_scope_reacquire_y");
+    std::fs::create_dir_all(&dir_y).unwrap();
+    git_repo_with_commits(&dir_y);
+    let root_y = dir_y.canonicalize().unwrap();
+
+    let mut app = App::new(root_x.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    std::fs::write(root_x.join("a.txt"), b"one\ntwo\nX-CHANGE\n").unwrap();
+    assert!(app.follow_note_change(&root_x.join("a.txt")));
+    assert_eq!(app.follow_session.len(), 1, "X で 1 件記録");
+
+    app.jump_to_dir(root_y.clone());
+    assert!(
+        !app.follow_scope_valid(),
+        "root 変更直後はスコープ無効(まだ follow_note_change を呼んでいない)"
+    );
+
+    // The first event since the root change recaptures (a.txt is still clean here, so it's folded
+    // into the fresh baseline rather than the visible diff — see the leak test above for why).
+    assert!(app.follow_note_change(&root_y.join("a.txt")));
+    assert!(app.follow_scope_valid(), "再取得後はスコープ有効");
+    assert_eq!(
+        app.follow_root,
+        Some(root_y.clone()),
+        "follow_root が新しい root に更新される"
+    );
+    assert_eq!(
+        app.follow_session,
+        vec![root_y.join("a.txt")],
+        "旧 root(X)のパスは残らず新 root(Y)のパスだけになる"
+    );
+
+    // The recaptured baseline is actually usable for Y (not just an empty/stale placeholder).
+    std::fs::write(root_y.join("a.txt"), b"one\ntwo\nY-CHANGE\n").unwrap();
+    assert!(
+        app.follow_baseline_diff(&root_y.join("a.txt")).is_some(),
+        "再取得後は新 root の基準で diff が引ける"
+    );
+
+    std::fs::remove_dir_all(&dir_x).ok();
+    std::fs::remove_dir_all(&dir_y).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn render_path_never_recaptures_the_follow_baseline_after_a_root_change() {
+    // Regression ④ (the invariant most likely to be broken by a future change): `follow_baseline_diff`
+    // is read from the render path (`ui/preview.rs` calls `diff_change_position`, which shares the
+    // same scope check, on every frame). It takes `&self` — the compiler already refuses a
+    // `&mut self` recapture from inside it — but pin the *behavioral* guarantee too: repeatedly
+    // calling it after a root change must never advance `follow_root`, which only
+    // `follow_note_change` (the event-drain side) is allowed to update. If this regresses, a stale
+    // scope would trigger a synchronous git-status scan + file reads on every single render.
+    let dir_x = unique_tmp("konoma_follow_scope_render_x");
+    std::fs::create_dir_all(&dir_x).unwrap();
+    git_repo_with_commits(&dir_x);
+    let root_x = dir_x.canonicalize().unwrap();
+
+    let dir_y = unique_tmp("konoma_follow_scope_render_y");
+    std::fs::create_dir_all(&dir_y).unwrap();
+    git_repo_with_commits(&dir_y);
+    let root_y = dir_y.canonicalize().unwrap();
+
+    let mut app = App::new(root_x.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    assert_eq!(app.follow_root, Some(root_x.clone()));
+
+    // Root changes WITHOUT any follow_note_change call (no fs event has arrived yet).
+    app.jump_to_dir(root_y.clone());
+    let stale_root = app.follow_root.clone();
+    assert_eq!(
+        stale_root,
+        Some(root_x.clone()),
+        "root 変更直後はまだ古い root を指す"
+    );
+    assert!(!app.follow_scope_valid());
+
+    // Simulate several frames' worth of render-path reads (the same call `diff_change_position`
+    // makes every draw) with no event-drain call in between.
+    for _ in 0..5 {
+        assert!(
+            app.follow_baseline_diff(&root_y.join("a.txt")).is_none(),
+            "スコープ無効な間は安い判定だけで None を返す"
+        );
+    }
+    assert_eq!(
+        app.follow_root, stale_root,
+        "描画経路の呼び出しだけでは follow_root(=ベースラインの取得元)が動かない\
+         (=同期 git status を毎フレーム走らせない)"
+    );
+    assert!(
+        !app.follow_scope_valid(),
+        "描画経路だけではスコープも有効化されない(再取得は event-drain 側の follow_note_change だけの責務)"
+    );
+
+    std::fs::remove_dir_all(&dir_x).ok();
+    std::fs::remove_dir_all(&dir_y).ok();
+}
+
 #[test]
 fn collapse_links_folds_table_hidden_targets_in_document_order() {
     // A table cell's "label + hidden target" pair gets collected into targets **interleaved by

@@ -62,6 +62,22 @@ All notable changes to konoma are documented in this file. The format is based o
   landing it exactly on the window's top row — still "on screen" — so `follow_cursor` had nothing
   to do and the window never moved. Text/code paging now moves the window directly and carries the
   caret along, preserving its on-screen row; `j`/`k` (single-step) are unaffected.
+- **Follow mode's session and "since follow-start" baseline could silently leak across repositories.**
+  `follow_mode`/`follow_session`/`follow_baseline` are App-level (follow is a global mode, not
+  per-tab), but they describe one specific repository — and the active root can change without ever
+  calling `toggle_follow` (tab switch, `l`/`h`, worktree switch via `o`→`w`→`Enter`, paste-jump, a
+  bookmark jump, ...). Two symptoms: (1) switching to a tab rooted in a *different* repo kept the old
+  repo's file in the follow session, so `n`/`N`'s population and the title's `(i/n)` denominator
+  mixed paths from two repositories; (2) switching this *same* tab's root to a linked worktree (which
+  shares one object database with the repo the baseline was captured against) let `follow_baseline_diff`'s
+  `blob_at` call *successfully* resolve against the wrong worktree's pinned HEAD, producing a diff
+  that looked plausible but was wrong — worse than symptom 1, because it failed silently instead of
+  visibly. Root cause: nothing recorded which root a captured session/baseline belonged to. Fixed by
+  adding `follow_root` (the root pinned at capture time) and a cheap `follow_scope_valid` check
+  (compares it against the tab's current root, no I/O); `follow_session_paths`/`follow_baseline_diff`
+  degrade to empty/`None` the moment the scope goes stale, and only `follow_note_change` — the
+  event-drain side, never the render path — recaptures a stale scope, the same recovery a fresh
+  `F`-on gives.
 
 ## [0.23.2] - 2026-08-03
 

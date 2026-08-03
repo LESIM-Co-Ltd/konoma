@@ -14,9 +14,12 @@ impl App {
             self.diff_cache = None;
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
+            // Pin the root this session/baseline describes (see `follow_root`'s doc comment).
+            self.follow_root = Some(self.tab.root.clone());
         }
-        // On OFF, keep the baseline (so that after follow_break/F-off, `n`/`N` cycling and revisiting
-        // via the `f` toggle still work on top of diff_follow_scope; it's rebuilt on the next F — bounded memory).
+        // On OFF, keep the baseline (and follow_root) so that after follow_break/F-off, `n`/`N`
+        // cycling and revisiting via the `f` toggle still work on top of diff_follow_scope; it's
+        // rebuilt on the next F — bounded memory).
         let msg = if self.follow_mode {
             crate::i18n::Msg::FollowOn
         } else {
@@ -58,12 +61,27 @@ impl App {
         self.follow_baseline = Some(FollowBaseline { dirty, head });
     }
 
+    /// Whether `follow_session`/`follow_baseline` still describe the tab's *current* root — cheap
+    /// (no I/O), so it's safe to call from the render path. `false` means the root moved out from
+    /// under the session since it was (re)captured (tab switch, `l`/`h`, worktree switch, paste-jump,
+    /// a bookmark jump, ...); consumers must degrade rather than serve stale-repo data. Only
+    /// `follow_note_change` (the event-drain side) acts on a `false` result by recapturing.
+    pub(super) fn follow_scope_valid(&self) -> bool {
+        self.follow_root.as_deref() == Some(self.tab.root.as_path())
+    }
+
     /// The follow diff for `path`: baseline (follow-start) content vs the current on-disk content, as
     /// `DiffLine`s for the existing GitDiff renderer. None (→ caller uses the full git diff) when there
-    /// is no baseline session, the file was dirty-but-too-large at follow-start, the current file is
-    /// unreadable / too large, or either side is non-UTF-8 (binary).
+    /// is no baseline session, the session belongs to a different root than the current tab (see
+    /// `follow_scope_valid` — critically, this also catches a same-tab root switch between linked
+    /// worktrees, where `blob_at` would otherwise *successfully* resolve against the wrong worktree's
+    /// HEAD and produce a plausible-looking but wrong diff), the file was dirty-but-too-large at
+    /// follow-start, the current file is unreadable / too large, or either side is non-UTF-8 (binary).
     #[cfg(feature = "git")]
     pub(super) fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
+        if !self.follow_scope_valid() {
+            return None;
+        }
         let base = self.follow_baseline.as_ref()?;
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let baseline: Vec<u8> = match base.dirty.get(&key) {
@@ -224,8 +242,28 @@ impl App {
     /// Record one changed file into the current follow session (called from the run loop's event drain
     /// while follow is ON). Returns whether the path is a valid follow target (the caller uses this to
     /// decide whether it may become the pending jump target). First-change order, deduped.
+    ///
+    /// **The only place that recaptures a stale follow scope.** The root can change out from under an
+    /// ON follow session without ever going through `toggle_follow` (tab switch, `l`/`h`, worktree
+    /// switch via `o`→`w`→`Enter`, paste-jump, a bookmark jump, ...). When that happens the session and
+    /// baseline still describe the *old* root, so before recording anything here they're rebuilt fresh
+    /// against the current root — the same as a fresh `F`-on — so `n`/`N` and any follow diff never mix
+    /// paths from two repos (see `follow_root`'s doc comment). This is deliberately confined to the
+    /// event-drain side: `follow_baseline_diff`/`follow_session_paths` (read from the render path) only
+    /// ever consult `follow_scope_valid` and degrade — they never trigger a git-status call themselves.
     pub fn follow_note_change(&mut self, path: &Path) -> bool {
-        if !self.follow_mode || !self.follow_target_ok(path) {
+        if !self.follow_mode {
+            return false;
+        }
+        if !self.follow_scope_valid() {
+            self.follow_session.clear();
+            self.follow_diff_full = false;
+            self.diff_cache = None;
+            #[cfg(feature = "git")]
+            self.capture_follow_baseline();
+            self.follow_root = Some(self.tab.root.clone());
+        }
+        if !self.follow_target_ok(path) {
             return false;
         }
         if !self.follow_session.iter().any(|p| p == path) {

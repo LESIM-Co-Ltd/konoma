@@ -546,7 +546,13 @@ impl App {
 
     /// The follow session's reviewable files (recorded while `F` was ON), pruned to still-existing
     /// non-media files. First-change order (chronological — the review order of "what just happened").
+    /// Empty when the session belongs to a different root than the current tab (`follow_scope_valid`)
+    /// — e.g. the tab switched or the root changed (worktree switch, `l`/`h`, paste-jump, a bookmark
+    /// jump) since the session was captured — rather than silently mixing in paths from another repo.
     fn follow_session_paths(&self) -> Vec<PathBuf> {
+        if !self.follow_scope_valid() {
+            return Vec::new();
+        }
         self.follow_session
             .iter()
             .filter(|p| p.is_file() && !self.follow_is_media(p))

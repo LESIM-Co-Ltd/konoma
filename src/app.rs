@@ -662,6 +662,18 @@ pub struct App {
     /// under `diff_follow_scope`. See `docs/FEATURE-FOLLOW-BASELINE-2026-07.md`.
     #[cfg(feature = "git")]
     follow_baseline: Option<FollowBaseline>,
+    /// The tab root that was active when `follow_session`/`follow_baseline` were (re)captured. Follow
+    /// mode is a global (not per-tab) mode, but its session and baseline describe one specific repo —
+    /// tab switching, `l`/`h` navigation, worktree switching (`o`→`w`→`Enter`), paste-jump, and bookmark
+    /// jumps can all change `tab.root` without going through `toggle_follow`. Without this, the session
+    /// and baseline silently kept referring to the OLD root: `n`/`N`'s population mixed paths from a
+    /// different repo (the denominator in the title's `(2/5)` lied), and worse — because linked
+    /// worktrees share one object database, `follow_baseline_diff`'s `blob_at` call would *successfully*
+    /// resolve against the wrong worktree's HEAD, producing a diff that looked plausible but was wrong.
+    /// `follow_scope_valid` compares this against `tab.root` (cheap, no I/O) so every consumer can
+    /// degrade safely; only `follow_note_change` (the event-drain side, never the render path) recaptures
+    /// it when it goes stale.
+    follow_root: Option<PathBuf>,
 
     /// Total wrapped display rows of the current decorated Markdown at the last render (what
     /// `preview_scroll` is clamped against). Set by the preview renderer; used with `MdCache::src_lines`
@@ -1537,6 +1549,7 @@ impl App {
             follow_diff_full: false,
             #[cfg(feature = "git")]
             follow_baseline: None,
+            follow_root: None,
             md_view_rows: 0,
             preview_win: None,
             preview_total_lines: None,

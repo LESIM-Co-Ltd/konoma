@@ -71,8 +71,13 @@ impl App {
         };
         // The decoration cache isn't carried over (decorated_lines regenerates it).
         self.md_cache = None;
-        // A restored diff preview doesn't carry over the follow-origin mark (a session isn't a
-        // cross-tab concept).
+        // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
+        // lives on `App` (not `PerTab`), so switching tabs always shows a restored GitDiff view in
+        // the ordinary full-diff scope, even if it happens to be the same file a follow jump opened
+        // before the switch. This is independent of the follow session/baseline themselves (also
+        // App-level, not per-tab) — those persist across the switch and stay valid for the *new*
+        // active tab's root exactly as long as `follow_root` matches it (see its doc comment);
+        // `follow_note_change` recaptures them once it doesn't.
         self.diff_follow_scope = false;
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
         // image-type preview, restore it by reloading instead.
