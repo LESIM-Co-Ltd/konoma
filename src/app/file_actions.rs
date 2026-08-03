@@ -412,14 +412,39 @@ impl App {
                         p.bump_item();
                     }
                 }
-                Err(e) => err = Some(describe_file_op_error(lang, &e)),
+                Err(e) => {
+                    // `move_to_trash` doesn't say which (if any) targets it got to before the
+                    // error — observe the filesystem instead of assuming zero succeeded (see
+                    // `trash_partial_outcome`'s doc comment). Without this, a batch that actually
+                    // removed some targets was reported as a flat "Failed", leaving the user
+                    // thinking nothing happened when part of the batch is already gone.
+                    let (found_ok, still_present) = crate::fileops::trash_partial_outcome(&targets);
+                    ok = found_ok;
+                    for _ in 0..ok {
+                        p.bump_item();
+                    }
+                    let mut msg = describe_file_op_error(lang, &e);
+                    if let Some(remaining) = still_present {
+                        msg = format!("{msg}: {}", remaining.display());
+                    }
+                    err = Some(msg);
+                }
             },
             // Permanent deletion loops per path, so progress can advance one item at a time
             // (`_with_progress`).
             FileOpKind::DeletePermanent => {
                 match crate::fileops::delete_permanently_with_progress(&targets, p) {
                     Ok(()) => ok = targets.len(),
-                    Err(e) => err = Some(describe_file_op_error(lang, &e)),
+                    Err(e) => {
+                        // Targets before the one that failed were already removed **for good**
+                        // and bumped into `p` by `delete_permanently_with_progress`'s per-path
+                        // loop (it returns via `?` on the first failure) — read that count back
+                        // instead of leaving `ok` at its initial 0, or the flash claims an
+                        // irreversible delete "failed" outright when part of the batch is already
+                        // unrecoverably gone.
+                        ok = p.items();
+                        err = Some(describe_file_op_error(lang, &e));
+                    }
                 }
             }
         }
@@ -533,7 +558,17 @@ impl App {
                     None => format!("{verb} ({})", res.ok),
                 }
             }
+            // A failure with `res.ok > 0` uses the same "<verb> N / Failed: <e>" shape as
+            // PasteCopy/Duplicate above — some targets are genuinely gone (trashed or, for
+            // DeletePermanent, unrecoverably deleted), so saying only "Failed" would be a lie by
+            // omission. `res.ok == 0` keeps the plain "Failed: <e>" (no count to show).
             FileOpKind::Trash => match &res.err {
+                Some(e) if res.ok > 0 => format!(
+                    "{} {} / {}: {e}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::MovedToTrash),
+                    res.ok,
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed),
+                ),
                 Some(e) => format!("{}: {e}", crate::i18n::tr(lang, crate::i18n::Msg::Failed)),
                 None => format!(
                     "{} ({})",
@@ -542,6 +577,12 @@ impl App {
                 ),
             },
             FileOpKind::DeletePermanent => match &res.err {
+                Some(e) if res.ok > 0 => format!(
+                    "{} {} / {}: {e}",
+                    crate::i18n::tr(lang, crate::i18n::Msg::DeletedPermanently),
+                    res.ok,
+                    crate::i18n::tr(lang, crate::i18n::Msg::Failed),
+                ),
                 Some(e) => format!("{}: {e}", crate::i18n::tr(lang, crate::i18n::Msg::Failed)),
                 None => format!(
                     "{} ({})",

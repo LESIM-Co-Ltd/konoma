@@ -78,6 +78,21 @@ All notable changes to konoma are documented in this file. The format is based o
   degrade to empty/`None` the moment the scope goes stale, and only `follow_note_change` — the
   event-drain side, never the render path — recaptures a stale scope, the same recovery a fresh
   `F`-on gives.
+- **A batch permanent-delete or send-to-trash that failed partway through said "Failed" as if
+  *nothing* had happened, when in fact some of the targets were already gone — for permanent
+  delete, unrecoverably.** `delete_permanently_with_progress` loops per path and bumps its progress
+  counter on each success before returning early on the first failure, but `App::run_file_op`'s
+  `DeletePermanent` arm never read that counter back on the error path, leaving the reported
+  success count at 0 regardless of how far the batch actually got. Trash has the opposite problem —
+  `trash::delete_all` is a single call with no partial-progress signal at all — so a failure there
+  always looked like a flat "nothing succeeded" even when part of the batch had genuinely been
+  trashed. Both now report what actually happened: `DeletePermanent` reads back the real count of
+  targets removed before the failure; Trash observes the filesystem afterward (`fileops::
+  trash_partial_outcome`) to see which targets are actually gone, since the library doesn't say. The
+  flash now reads "<Moved to Trash|Deleted permanently> N / Failed: <reason>" whenever at least one
+  target actually succeeded, and additionally names one target that's still present for Trash
+  failures — giving the user something concrete instead of a bare "Failed". A failure where nothing
+  succeeded at all still shows the plain "Failed: <reason>" with no misleading zero count.
 
 ## [0.23.2] - 2026-08-03
 

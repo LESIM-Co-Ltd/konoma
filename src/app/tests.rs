@@ -8223,6 +8223,265 @@ fn failed_delete_keeps_the_selection() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression: a permanent delete that fails partway through used to flash a flat "Failed" with
+/// no success count at all — even though the earlier targets in the batch had already been
+/// unrecoverably removed by the time the failing one was hit. `delete_permanently_with_progress`
+/// loops per path and bumps `Progress` on each success before returning `Err` via `?` on the first
+/// failure (see `delete_permanently_reports_progress_per_path`), so that count was always sitting
+/// right there — `App::run_file_op`'s `DeletePermanent` arm just never read it back on the error
+/// path, leaving `ok` at its initial 0. With 3 real targets and the *middle* one made
+/// undeletable, this exercises the full dispatch path (`start_delete` → `dialog_delete_permanent`
+/// → `start_file_op` → `run_file_op` → `apply_file_op`) and checks against the actual on-disk
+/// outcome, not an assumption: exactly one target is gone for good, one failed and is still there,
+/// and one was never attempted (the loop breaks at the first failure) — and the flash must say "1"
+/// succeeded, not imply zero.
+#[test]
+#[cfg(unix)]
+fn delete_permanent_partial_failure_reports_the_real_success_count() {
+    use std::os::unix::fs::PermissionsExt;
+    // This test depends on "permission bits deny removing an entry from a directory". Under root
+    // (or any process able to bypass permission bits), the removal succeeds anyway and the test
+    // alone would go red for environmental reasons even though the product is correct — same
+    // caveat as `md_task_toggle_flashes_on_write_error`/`write_denied_by_permissions`. Skip rather
+    // than report a false failure.
+    if !write_denied_by_permissions() {
+        eprintln!(
+            "delete_permanent_partial_failure_reports_the_real_success_count: このプロセスはパーミッションで書込みを拒否されない(root 等)ためスキップ"
+        );
+        return;
+    }
+    let dir = unique_tmp("konoma_delete_partial_fail_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    std::fs::write(dir.join("a.txt"), b"a").unwrap();
+    let blocked = dir.join("blocked");
+    std::fs::create_dir_all(&blocked).unwrap();
+    std::fs::write(blocked.join("inner.txt"), b"x").unwrap();
+    std::fs::write(dir.join("c.txt"), b"c").unwrap();
+    // Deny write on `blocked` itself: removing `inner.txt` (required before the directory itself
+    // can go) needs write+exec on its containing directory. Sorted order (`op_targets` collects a
+    // `BTreeSet`) is a.txt, blocked, c.txt, so this fails exactly the *middle* target while its
+    // siblings stay removable — a.txt gets deleted before the loop reaches `blocked`, and c.txt is
+    // never attempted because the loop returns via `?` at `blocked`.
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    app.rebuild_tree().unwrap();
+    for name in ["a.txt", "blocked", "c.txt"] {
+        let idx = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path == dir.join(name))
+            .unwrap();
+        app.tab.selected = idx;
+        app.toggle_select();
+    }
+    assert_eq!(app.marked_count(), 3, "3件選択");
+
+    app.start_delete();
+    assert!(app.dialog_is_confirm() && app.dialog_allow_permanent());
+    app.dialog_delete_permanent().unwrap();
+
+    // Restore permissions so cleanup below can actually remove `blocked`, regardless of outcome.
+    let _ = std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755));
+
+    // Ground truth from the filesystem itself, independent of anything the flash claims.
+    assert!(!dir.join("a.txt").exists(), "a.txt は実際に消えている");
+    assert!(dir.join("blocked").exists(), "blocked は失敗して残っている");
+    assert!(
+        dir.join("c.txt").exists(),
+        "blocked で ? 早期returnしたので c.txt は未着手のまま残っている"
+    );
+
+    let flash = app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.contains("Deleted permanently 1"),
+        "実際に消えた1件ぶんの成功数が flash に出る(0でも3でもない): {flash:?}"
+    );
+    assert!(
+        flash.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Failed)),
+        "失敗の事実も flash に残る: {flash:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression, the Trash side of the same bug: a batch send-to-trash where one target is a path
+/// that no longer exists (e.g. removed by another process/agent between selecting it and
+/// confirming) used to just say "Failed", with no way to tell whether the *other*, still-valid
+/// target actually got trashed or not. `trash::delete_all` doesn't report partial success, so the
+/// fix (`trash_partial_outcome`) observes the filesystem afterward instead of assuming zero. This
+/// hits the real OS Trash (macOS's default `Finder`-AppleScript backend, gated accordingly, same
+/// as the existing `move_to_trash_removes_from_original_then_cleanup` live test) and asserts
+/// against whatever it actually did, not a guess: `ok` must equal the number of targets that are
+/// actually gone (never a number that overstates it — this fix's whole point), and the error must
+/// name a target that is still actually present whenever one exists.
+#[test]
+#[cfg(target_os = "macos")]
+fn trash_partial_failure_reports_the_real_outcome_and_names_a_remaining_target() {
+    let dir = unique_tmp("konoma_trash_missing_target_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    // Unique names (not just "a.txt"/"b.txt") so a leftover in the real ~/.Trash from a previous
+    // run — or from another test — can never look like this run's own artifact.
+    let name_a = format!("konoma_trash_probe_a_{}.txt", std::process::id());
+    let name_b = format!("konoma_trash_probe_b_{}.txt", std::process::id());
+    let a = dir.join(&name_a);
+    let b = dir.join(&name_b);
+    std::fs::write(&a, b"a").unwrap();
+    std::fs::write(&b, b"b").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    app.rebuild_tree().unwrap();
+    for name in [&name_a, &name_b] {
+        let idx = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path == dir.join(name))
+            .unwrap();
+        app.tab.selected = idx;
+        app.toggle_select();
+    }
+    assert_eq!(app.marked_count(), 2, "2件選択");
+
+    // `b` disappears out from under the selection — the real-world repro (deleted externally
+    // between select and confirm) — leaving `move_to_trash` a target that no longer exists mixed
+    // in with one that does.
+    std::fs::remove_file(&b).unwrap();
+
+    app.start_delete();
+    app.dialog_confirm(true).unwrap();
+
+    // Ground truth, matching `trash_partial_outcome`'s own contract exactly (count of targets
+    // that are simply gone right now, whether this specific call removed them or — as with `b`
+    // here — they were already gone going in): never assume, always ask the filesystem for both
+    // targets, not just the one the operation could plausibly have touched.
+    let a_gone = !a.exists();
+    let b_gone = !b.exists(); // always true here — `b` was removed above, before the call even ran
+    assert!(b_gone, "b は事前に外部削除済み(このテストの前提)");
+    let real_ok = usize::from(a_gone) + usize::from(b_gone);
+
+    let flash = app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.contains(&format!("Moved to Trash {real_ok}")),
+        "実際に(今)存在しない対象の数と flash の成功数が一致する: {flash:?}"
+    );
+    assert!(
+        flash.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Failed)),
+        "失敗の事実が flash に出る: {flash:?}"
+    );
+    // Whichever of the two targets is still actually present gets named in the error. `b` never
+    // qualifies (it was never present during this call), so if anything is named it must be `a`.
+    if !a_gone {
+        assert!(
+            flash.contains(&name_a),
+            "まだ残っている対象(a)の名前がエラーに出る: {flash:?}"
+        );
+    } else {
+        // Both targets ended up gone (the real Trash backend actually managed `a` too, despite
+        // reporting an error) — nothing is left standing, so there is nothing to name; the error
+        // must fall back to the plain reason with no dangling ": <path>" suffix.
+        assert!(
+            !flash.trim_end().ends_with(".txt"),
+            "残っている対象が無ければパスを付け足さない: {flash:?}"
+        );
+    }
+
+    // Best-effort cleanup of the real trash, in case `a` did get moved there (same courtesy as
+    // the existing `move_to_trash_removes_from_original_then_cleanup` live test).
+    if let Some(home) = std::env::var_os("HOME") {
+        let _ = std::fs::remove_file(std::path::PathBuf::from(home).join(".Trash").join(&name_a));
+    }
+    let _ = std::fs::remove_file(&a);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression for both delete kinds: a fully successful batch must keep showing "<verb> (N)"
+/// with no `Failed` wording — the new partial-success branch (`Some(e) if res.ok > 0`) must not
+/// somehow also swallow the plain-success `None` arm.
+#[test]
+fn file_op_full_success_flash_is_unchanged_for_trash_and_delete_permanent() {
+    let dir = unique_tmp("konoma_fileop_full_success_flash_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    app.rebuild_tree().unwrap();
+
+    for (kind, verb) in [
+        (FileOpKind::Trash, "Moved to Trash"),
+        (FileOpKind::DeletePermanent, "Deleted permanently"),
+    ] {
+        app.fileop_gen = app.fileop_gen.wrapping_add(1);
+        let gen = app.fileop_gen;
+        app.fileop_pending = Some(kind);
+        assert!(app.apply_file_op(FileOpResult {
+            gen,
+            kind,
+            root: dir.clone(),
+            ok: 2,
+            last: None,
+            err: None,
+        }));
+        let flash = app.flash.clone().unwrap_or_default();
+        assert_eq!(
+            flash,
+            format!("{verb} (2)"),
+            "{kind:?}: 全部成功したときの文言は従来どおり"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression for both delete kinds: when **nothing at all** succeeded (`ok == 0`), the flash
+/// must stay the plain "Failed: <reason>" — no count, since showing "<verb> 0 / Failed: ..." would
+/// be a technically-true but pointless (and newly-introduced-looking) "0 succeeded" message. Only
+/// `res.ok > 0` should ever switch to the partial-success wording.
+#[test]
+fn file_op_zero_success_flash_stays_plain_failed_for_trash_and_delete_permanent() {
+    let dir = unique_tmp("konoma_fileop_zero_success_flash_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    app.rebuild_tree().unwrap();
+
+    for kind in [FileOpKind::Trash, FileOpKind::DeletePermanent] {
+        app.fileop_gen = app.fileop_gen.wrapping_add(1);
+        let gen = app.fileop_gen;
+        app.fileop_pending = Some(kind);
+        assert!(app.apply_file_op(FileOpResult {
+            gen,
+            kind,
+            root: dir.clone(),
+            ok: 0,
+            last: None,
+            err: Some("boom".into()),
+        }));
+        let flash = app.flash.clone().unwrap_or_default();
+        assert_eq!(
+            flash,
+            format!(
+                "{}: boom",
+                crate::i18n::tr(app.lang, crate::i18n::Msg::Failed)
+            ),
+            "{kind:?}: 0件成功時は数を出さず従来どおり Failed: <reason>"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `Q` while a file operation is running must always confirm — even with `ui.confirm_quit = false`,
 /// because the worker is detached and quitting would truncate a half-finished copy. Quitting is not
 /// blocked (the dialog's `y` still quits); the message just gains the warning line.

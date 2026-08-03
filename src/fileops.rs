@@ -308,6 +308,29 @@ pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// After a **failed** `move_to_trash`, work out what actually happened rather than assuming
+/// "nothing" — `trash::delete_all` doesn't report which (if any) targets it got to before the
+/// error, and different Trash backends behave differently here: macOS's default `Finder`
+/// AppleScript method batches the whole list into a single `osascript` call (so one bad path can
+/// fail the entire command before anything is removed), while the `NsFileManager` method (and the
+/// freedesktop backend on Linux) loops per path and can succeed on several targets before hitting
+/// one that fails. Either way, the ground truth is the filesystem, not the library's error: a
+/// target that no longer exists was actually trashed, regardless of which backend or code path did
+/// it. `symlink_metadata` (not `metadata`) so a target that is itself a symlink is judged by
+/// whether the link was removed, not whether whatever it pointed at still exists.
+///
+/// Returns `(how many actually disappeared, the first target that is still there)` — the caller
+/// uses the count for an honest "N succeeded" message and the still-present path to give the user
+/// something concrete to act on instead of just "failed" (see `App::run_file_op`'s `Trash` arm).
+pub fn trash_partial_outcome(targets: &[PathBuf]) -> (usize, Option<&PathBuf>) {
+    let still_present: Vec<&PathBuf> = targets
+        .iter()
+        .filter(|t| std::fs::symlink_metadata(t).is_ok())
+        .collect();
+    let ok = targets.len() - still_present.len();
+    (ok, still_present.first().copied())
+}
+
 /// **Permanently delete** multiple paths (unrecoverable; does not go through Trash). Directories are deleted with their contents.
 /// For a symlink, only the link itself is removed (the target is not followed).
 ///
@@ -1162,6 +1185,115 @@ mod tests {
         for path in &paths {
             assert!(!path.exists(), "対象が消えている: {}", path.display());
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `trash_partial_outcome` is the pure fs-observation step `App::run_file_op`'s `Trash` arm
+    /// leans on when `move_to_trash` fails: it must count a target as "actually removed" purely
+    /// by whether it's still there, in every combination (some gone / all present / all gone), and
+    /// name the first still-present one as "something to act on" (or `None` when there's nothing
+    /// left to report). Pure fs stat'ing, so no real Trash call and no permission tricks needed —
+    /// this always runs, unlike the live-Trash test below.
+    #[test]
+    fn trash_partial_outcome_observes_which_targets_actually_disappeared() {
+        let dir = unique_tmp("konoma_trash_partial_outcome_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = dir.join("gone.txt"); // never created: stands in for "the backend removed this one"
+        let still_there = dir.join("still_there.txt");
+        std::fs::write(&still_there, b"x").unwrap();
+
+        let mixed = vec![gone.clone(), still_there.clone()];
+        let (ok, remaining) = trash_partial_outcome(&mixed);
+        assert_eq!(ok, 1, "gone の1件だけ実際に消えたと数える");
+        assert_eq!(
+            remaining,
+            Some(&still_there),
+            "まだ残っている対象を名指しする"
+        );
+
+        let all_present = vec![still_there.clone()];
+        let (ok2, remaining2) = trash_partial_outcome(&all_present);
+        assert_eq!(ok2, 0, "何も消えていなければ0=嘘の成功数を出さない");
+        assert_eq!(remaining2, Some(&still_there));
+
+        let all_gone = vec![gone.clone()];
+        let (ok3, remaining3) = trash_partial_outcome(&all_gone);
+        assert_eq!(ok3, 1, "全部消えていれば全数");
+        assert_eq!(remaining3, None, "残っている対象が無ければ None");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Mirrors `write_denied_by_permissions` in `src/app/tests.rs` (same idea, duplicated rather
+    /// than shared across the module boundary — this file already keeps its own `unique_tmp` for
+    /// the same reason). Probes whether this process is actually denied a write, so permission-
+    /// dependent tests can skip cleanly under root instead of going red for environmental reasons.
+    #[cfg(unix)]
+    fn write_denied_by_permissions() -> bool {
+        let probe = unique_tmp("konoma_fileops_perm_probe");
+        std::fs::write(&probe, "x").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let denied = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&probe)
+            .is_err();
+        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::remove_file(&probe);
+        denied
+    }
+
+    /// `delete_permanently_with_progress` loops per path and returns via `?` on the first
+    /// failure (see its doc comment) — this pins down that `Progress` only counts what was
+    /// removed *before* the failing target, not 0 and not the full batch. This function itself
+    /// was never the bug (it already bumped `p` correctly); `App::run_file_op`'s `DeletePermanent`
+    /// arm discarding that count on error was (see
+    /// `delete_permanent_partial_failure_reports_the_real_success_count` in `src/app/tests.rs` for
+    /// the user-visible half of that fix) — so this test passes on both sides of that fix. It's
+    /// kept here as a foundation check: the App-level fix reads `p.items()` back out, and this
+    /// pins down that the primitive it reads actually behaves that way.
+    #[test]
+    #[cfg(unix)]
+    fn delete_permanently_with_progress_counts_only_what_actually_got_removed() {
+        if !write_denied_by_permissions() {
+            eprintln!(
+                "delete_permanently_with_progress_counts_only_what_actually_got_removed: このプロセスはパーミッションで書込みを拒否されない(root 等)ためスキップ"
+            );
+            return;
+        }
+        let dir = unique_tmp("konoma_progress_partial_delete_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("inner.txt"), b"x").unwrap();
+        std::fs::write(dir.join("c.txt"), b"c").unwrap();
+        // Deny write on `blocked` itself: removing `inner.txt` (required before the directory
+        // itself can go) needs write+exec on its containing directory, so this makes exactly the
+        // *middle* target fail (in the order below) while its siblings stay removable.
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let targets = vec![dir.join("a.txt"), blocked.clone(), dir.join("c.txt")];
+        let p = Progress::default();
+        let res = delete_permanently_with_progress(&targets, &p);
+
+        // Restore permissions so cleanup below can actually remove `blocked`, regardless of outcome.
+        let _ = std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755));
+
+        assert!(res.is_err(), "blocked の削除失敗で Err になる");
+        assert_eq!(
+            p.items(),
+            1,
+            "a.txt の1件だけ実際に消えた分をProgressが数える(0でも3でもない)"
+        );
+        assert!(!dir.join("a.txt").exists(), "a.txt は実際に削除済み");
+        assert!(dir.join("blocked").exists(), "blocked は失敗して残っている");
+        assert!(
+            dir.join("c.txt").exists(),
+            "blocked で ? 早期returnしたので c.txt は未着手のまま残っている"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
