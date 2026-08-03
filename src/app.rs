@@ -383,6 +383,17 @@ pub enum MediaPayload {
         img: image::DynamicImage,
         svg: std::sync::Arc<Vec<u8>>,
     },
+    /// Text-mode `PreviewKind::Command` output: the temp file its captured stdout / `{out}`
+    /// artifact was written to. Goes to `tab.command_out`, which the windowed (less-style) text
+    /// reader reads from instead of the previewed path — see `App::windowed_src`.
+    CommandText(PathBuf),
+    /// A `PreviewKind::Command` job failed (missing binary, non-zero exit, `{out}` never produced,
+    /// or a produced image that couldn't be decoded). Carried as a payload — rather than the plain
+    /// `None` every other job's failure uses — so the reason travels through the same
+    /// generation-checked channel as success and can't be raced by a newer attempt's result;
+    /// `apply_payload` turns it into `App::command_err` for the render side's `[can not preview]`
+    /// fallback (`ui/preview.rs`).
+    CommandFailed(String),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -422,6 +433,17 @@ enum MediaJob {
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
+    /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
+    /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
+    /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
+    Command {
+        argv: Vec<String>,
+        out: PathBuf,
+        /// Whether the template contains `{out}` (the command is expected to write it itself) —
+        /// otherwise captured stdout is written to `out` instead. See `command::run_capture`.
+        uses_out: bool,
+        as_image: bool,
+    },
 }
 
 impl MediaJob {
@@ -463,6 +485,34 @@ impl MediaJob {
                 let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
                 Some(MediaPayload::Vector { img, svg })
             }
+            MediaJob::Command {
+                argv,
+                out,
+                uses_out,
+                as_image,
+            } => match crate::preview::command::run_capture(&argv, &out, uses_out) {
+                Ok(result_path) => {
+                    if as_image {
+                        let img = image::ImageReader::open(&result_path)
+                            .ok()
+                            .and_then(|r| r.with_guessed_format().ok())
+                            .and_then(|r| r.decode().ok());
+                        // Consumed immediately, like `preview::video::thumbnail`'s temp PNG — the
+                        // image path only needs the decoded pixels from here on.
+                        let _ = std::fs::remove_file(&result_path);
+                        match img {
+                            Some(im) => Some(MediaPayload::Static(im)),
+                            None => Some(MediaPayload::CommandFailed(format!(
+                                "could not read image output: {}",
+                                result_path.display()
+                            ))),
+                        }
+                    } else {
+                        Some(MediaPayload::CommandText(result_path))
+                    }
+                }
+                Err(e) => Some(MediaPayload::CommandFailed(e.to_string())),
+            },
         }
     }
 }
@@ -724,6 +774,13 @@ pub struct App {
     /// mtime of the previewed media file at load time. Media (image/svg/gif/video/pdf) is reloaded on an
     /// FS event only when this changes (avoids re-decoding / re-running external tools on unrelated edits).
     preview_media_mtime: Option<std::time::SystemTime>,
+    /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
+    /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
+    /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
+    /// used for the rest of the media state) and set either directly (a synchronous detached-launch
+    /// failure) or via `apply_payload`'s `MediaPayload::CommandFailed`. Read by `ui/preview.rs`'s
+    /// `[can not preview]` fallback through `App::command_error`.
+    command_err: Option<String>,
     /// The decoded media of the tab we most recently switched **away from**, so switching back does not
     /// redo the work that produced it. That work is not just an image decode: SVG/mermaid are
     /// rasterized and PDF/video shell out to `pdftocairo` / `ffmpeg`, which costs hundreds of
@@ -1320,6 +1377,14 @@ pub(crate) struct PerTab {
     // --- Internal scroll state for a windowed (Code/Text/raw md) preview ---
     preview_byte_top: u64,
     preview_top_line: usize,
+    /// Text-mode `PreviewKind::Command`'s generated output (the `{out}` artifact / captured
+    /// stdout) — the windowed reader opens **this** instead of `preview_path` (see
+    /// `App::windowed_src`), so the temp path never leaks into the title. `None` for every other
+    /// preview kind, and while a fresh run hasn't landed yet (the render side shows a loading/
+    /// failure state instead — see `App::setup_windowed`/`ui/preview.rs`). Owned per tab so a
+    /// background tab's leftover artifact survives a switch away and back long enough to be
+    /// cleaned up (`App::clear_command_out`) rather than orphaned.
+    command_out: Option<PathBuf>,
     // --- Windowed preview's 2D caret position (the selection anchor is not carried over) ---
     preview_cursor_line: usize,
     preview_cursor_col: usize,
@@ -1401,6 +1466,7 @@ impl Default for PerTab {
             git_graph_order: Vec::new(),
             preview_byte_top: 0,
             preview_top_line: 0,
+            command_out: None,
             preview_cursor_line: 0,
             preview_cursor_col: 0,
             // App::new used to initialize image_zoom to 1.0 (whole image fits), not 0.0.
@@ -1502,6 +1568,7 @@ impl App {
             md_overlay_seen: None,
             md_overlay_moved: false,
             preview_media_mtime: None,
+            command_err: None,
             media_cache: None,
             table_data: None,
             tab: PerTab {
@@ -2353,6 +2420,11 @@ impl App {
         // = the one render pass with the collapsed layout would clamp the restored scroll/focus,
         // breaking the "return to where you were" promise.
         let same_file = self.tab.preview_path.as_deref() == Some(path);
+        // Moving to a new preview target on this tab: any delegated-command output left over from
+        // the *previous* target (which might not even be a Command kind — deleting it here, rather
+        // than only from apply_payload's CommandText handler, is what covers "left a command
+        // preview for something else entirely") is done for.
+        self.clear_command_out();
         self.tab.preview_path = Some(path.to_path_buf());
         // Resolve the preview kind via config. Unsupported kinds become CanNotPreview.
         let kind = self.cfg.resolve_preview(path);
@@ -2375,8 +2447,13 @@ impl App {
         if matches!(kind, PreviewKind::Pdf(_)) {
             self.tab.pdf_pages = crate::preview::pdf::page_count(path);
         }
+        // Set `preview_kind` **before** `start_media_load`, not after: the sync-fallback media path
+        // (no media_tx — tests, or a picker-less terminal) runs `apply_payload` synchronously inside
+        // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
+        // `setup_windowed`, which decides whether to open the windowed reader by reading
+        // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
+        self.tab.preview_kind = Some(kind.clone());
         self.start_media_load(&kind, path);
-        self.tab.preview_kind = Some(kind);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
@@ -2447,14 +2524,26 @@ impl App {
         self.hl_warming = false;
         // Code/Text are always windowed. Markdown/Mermaid become windowed only in raw display
         // (`R`) = read the plain source with matching line/column so the 2D caret selection works as-is.
+        // A text-mode delegated command (`PreviewKind::Command` whose `render_as` isn't "image") is
+        // windowed too, but only once its generated output has actually arrived (`tab.command_out`
+        // — set by `apply_payload`'s `CommandText` handling): before that, staying non-windowed lets
+        // the render side's media-loading / `[can not preview]` branches show instead of opening a
+        // reader onto a file that doesn't exist yet (or, on a reload, a briefly-stale one — see
+        // `windowed_src`'s doc comment).
+        let is_text_command = self.tab.command_out.is_some()
+            && matches!(
+                self.tab.preview_kind,
+                Some(PreviewKind::Command { ref render_as, .. }) if render_as.as_deref() != Some("image")
+            );
         let windowed_kind = matches!(
             self.tab.preview_kind,
             Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
-        ) || self.is_raw_source();
+        ) || self.is_raw_source()
+            || is_text_command;
         if !windowed_kind {
             return;
         }
-        let Some(path) = self.tab.preview_path.clone() else {
+        let Some(path) = self.windowed_src().map(Path::to_path_buf) else {
             return;
         };
         if let Ok(w) = crate::preview::window::FileWindow::open(&path) {
@@ -2943,6 +3032,7 @@ impl App {
         self.detail_cells_cache.clear();
         self.tab.preview_path = None;
         self.tab.preview_kind = None;
+        self.clear_command_out(); // release any delegated-command temp output
         self.clear_image(); // release the graphics state
         self.md_cache = None;
         self.tab.md_raw = false;
@@ -3069,6 +3159,12 @@ impl App {
                 | PreviewKind::Pdf(_)
         ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
             && self.mermaid_image_mode())
+            // A non-detached delegated command (image or text render_as): its output is a
+            // function of the source file, so a tab switch / mtime-changed reload must re-run it
+            // exactly like every other media kind. `detached=true` is deliberately excluded — that
+            // one launches once, from `enter_preview` only, and must never be re-triggered by a
+            // tab switch (relaunching mpv every time you flip back to that tab).
+            || matches!(kind, PreviewKind::Command { detached: false, .. })
     }
 
     /// Release and reset the image display state (protocol, source image, zoom/pan).
@@ -3103,6 +3199,44 @@ impl App {
         // reload_media_if_changed misjudge it as unchanged and block the reload (one of the root
         // causes behind mermaid degrading to a text diagram on tab return).
         self.preview_media_mtime = None;
+        self.command_err = None;
+    }
+
+    /// Delete the current tab's delegated-command temp output (if any) and clear the reference.
+    /// Called at preview-transition checkpoints — a new preview target (`enter_preview`), leaving
+    /// Preview mode (`back_to_tree`), and this tab closing (`tab_close`) — so a text-mode command's
+    /// `{out}`/captured-stdout scratch file doesn't accumulate on disk forever. Also called from
+    /// `apply_payload`'s `CommandText` handling right before installing a freshly regenerated one
+    /// (a source-file reload or a tab-switch-triggered re-run both replace, rather than reuse, the
+    /// previous output).
+    ///
+    /// Deliberately **not** folded into `clear_image`: unlike the rest of the image state,
+    /// `command_out` lives in `PerTab` (cloned into every tab snapshot) — calling this from
+    /// `clear_image` while `self.tab` transiently holds a snapshot cloned from a *different* tab
+    /// (as `tab_new` does, briefly, before resetting `preview_path`/`preview_kind`) would delete a
+    /// file another (inactive) tab's snapshot still legitimately owns.
+    fn clear_command_out(&mut self) {
+        if let Some(p) = self.tab.command_out.take() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    /// The file the windowed (less-style) reader should actually read from. Normally the previewed
+    /// file itself, but a text-mode delegated `PreviewKind::Command` reads from the **generated
+    /// output** (`tab.command_out`) instead — while the preview title still shows `preview_path`
+    /// unchanged (`ui/preview.rs::render_windowed` builds the title from that field, not from this
+    /// one), so the temp path never leaks into the UI.
+    pub fn windowed_src(&self) -> Option<&Path> {
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {
+            return self.tab.command_out.as_deref();
+        }
+        self.tab.preview_path.as_deref()
+    }
+
+    /// Failure reason for the current `PreviewKind::Command` attempt, if any (see `command_err`'s
+    /// doc comment). Read by `ui/preview.rs`'s `[can not preview]` fallback.
+    pub fn command_error(&self) -> Option<&str> {
+        self.command_err.as_deref()
     }
 
     /// Page the text preview by one page (dir: +1=next page / -1=previous page).

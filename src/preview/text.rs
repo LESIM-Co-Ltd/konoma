@@ -13,8 +13,11 @@ use std::path::Path;
 
 /// Number of bytes read at once for detection and incremental reading.
 const SNIFF_BYTES: usize = 8 * 1024;
-/// Maximum bytes read for preview (to guard against huge files).
-const MAX_BYTES: usize = 1024 * 1024; // 1 MiB
+/// Maximum bytes read for preview (to guard against huge files). `pub(crate)` so
+/// `preview::command`'s captured-stdout cap can share it (a delegated command's output and the
+/// windowed text reader then agree on what's actually usable, and neither buffers an unbounded
+/// amount from a runaway command like `yes`) — no second definition to drift out of sync.
+pub(crate) const MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 /// Maximum number of lines shown in preview.
 const MAX_LINES: usize = 5000;
 

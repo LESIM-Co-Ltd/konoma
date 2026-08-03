@@ -297,7 +297,9 @@ code_theme = "TwoDark"
 #   csv      = comma-separated shown as an aligned table (rainbow columns + cell cursor). hjkl=move cell / y→=cell/row/column copy.
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
-# render_as: how to treat the command's output ("image" shows a PNG etc. as a full-screen image).
+# render_as: how to treat the command's output ("image" shows a PNG etc. as a full-screen image;
+#            anything else — unset, "text", or an unrecognized value — captures the output and
+#            shows it as plain text through the ordinary windowed reader).
 # detached: open in a separate process without blocking the TUI (video, etc.).
 
 [[preview.rules]]

@@ -231,6 +231,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // or a blank area. While an image is already displayable (PDF page paging, zoom's sharp
     // re-rasterization), keep showing the old image (replacing it with a full-screen spinner would
     // flicker on every zoom).
+    // A `detached` command never sets media_loading (it's a synchronous spawn-and-forget, not a
+    // worker job — see `App::start_media_load`), so it never hits this branch; it's handled by the
+    // final kind-summary match below instead.
     if app.is_media_loading()
         && !app.is_image_preview()
         && matches!(
@@ -242,6 +245,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     | PreviewKind::Pdf(_)
                     | PreviewKind::Mermaid(_)
                     | PreviewKind::MermaidFence(_)
+                    | PreviewKind::Command { .. }
             )
         )
     {
@@ -268,6 +272,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 | PreviewKind::Pdf(_)
                 | PreviewKind::Mermaid(_)
                 | PreviewKind::MermaidFence(_)
+                | PreviewKind::Command { .. }
         )
     ) && app.is_image_preview()
     {
@@ -341,19 +346,40 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
+        // Reached only for `detached` (a one-line "opened externally" summary that stays on
+        // screen the whole time you're on this preview) or a failed delegated command (image/text
+        // decode/run failure — `app.command_error()`); a successful non-detached run is drawn via
+        // the windowed/image paths above instead, and an in-flight one is caught by the
+        // media-loading branch near the top of this function.
         Some(PreviewKind::Command {
             path,
             template,
-            render_as,
             detached,
-        }) => (
-            format!(
-                "[command] {} :: {} (render_as={render_as:?}, detached={detached})",
-                template,
-                path.display()
+            ..
+        }) => match app.command_error() {
+            Some(reason) => {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                (
+                    format!(
+                        "[can not preview: {ext}]\n{}{reason}",
+                        tr(app.lang, crate::i18n::Msg::CommandPreviewFailed)
+                    ),
+                    false,
+                )
+            }
+            None if *detached => (
+                format!(
+                    "{}{}",
+                    tr(app.lang, crate::i18n::Msg::CommandOpenedExternally),
+                    template
+                ),
+                false,
             ),
-            false,
-        ),
+            // Defensive fallback (should be unreachable — a non-detached, non-failed Command with
+            // no image and no windowed reader means the loading branch above should have caught
+            // it): keep it safe rather than exhaustiveness-forcing a panic.
+            None => (tr(app.lang, crate::i18n::Msg::Loading).to_string(), false),
+        },
         // Tables are already drawn via the dedicated path above. Reaching here means the parse
         // failed = show the raw CSV/TSV as text (safe degradation).
         Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),

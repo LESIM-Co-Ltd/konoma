@@ -146,6 +146,12 @@ command = "merman -i {path} -o {out}.png --scale 2"
 render_as = "image"         # treat the command's output as an image
 ```
 
+Omitting `render_as` (or setting it to anything other than `"image"`) captures the
+command's output and shows it as plain text through the ordinary windowed reader — a
+missing/failing command (binary not found, non-zero exit, `{out}` never produced)
+degrades safely to `[can not preview: <ext>]` with the reason attached, instead of
+crashing.
+
 Anything that matches no rule and doesn't look like text shows a safe
 `[can not preview: <ext>]` screen — konoma never crashes on unknown input, and missing
 optional tools degrade to a hint.

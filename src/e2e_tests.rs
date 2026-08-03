@@ -5514,3 +5514,45 @@ fn e2e_tab_scrolls_open_details_body_into_view() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// =============================================================================
+// External command delegation (`[[preview.rules]] command = "..."`)
+// =============================================================================
+
+/// A real key press (`Enter` on a file matched by a `command = "..."` rule) shows the delegated
+/// command's captured output through the ordinary windowed text reader. This is the actual
+/// regression this module exists to prevent: before implementation, the preview showed the raw
+/// `{:?}` Debug dump of `PreviewKind::Command` (`render_as=None, detached=false`) instead of any
+/// real content — `command.rs`'s own tests cover `run_capture`/`build_argv` in isolation, and
+/// `app/tests.rs` covers `MediaJob::Command` and the render-side fallback directly, but only this
+/// full key→render path proves the delegation is actually wired end to end. Image-mode delegation
+/// isn't exercised here — `Sim` has no real image backend/picker, so `App::is_image_preview()` can
+/// never become true in this harness; `MediaJob::Command`'s `as_image` branch is covered directly
+/// in `app/tests.rs` instead.
+#[cfg(unix)]
+#[test]
+fn e2e_delegated_command_text_preview_shows_captured_output() {
+    let dir = sandbox("cmd_delegate_text");
+    std::fs::write(dir.join("app.log"), "line one\nline two\n").unwrap();
+    let root = canon(&dir);
+
+    let mut cfg = Config::default();
+    // Put it first so it wins over the builtin rules (which don't match *.log anyway, but this
+    // mirrors how a user rule is meant to take priority).
+    cfg.preview.rules.insert(
+        0,
+        crate::config::Rule {
+            glob: Some("*.log".into()),
+            command: Some("cat {path}".into()),
+            ..Default::default()
+        },
+    );
+    let mut s = Sim::with_config(&root, cfg);
+    s.select("app.log");
+    s.enter();
+    s.see("line one");
+    s.see("line two");
+    // The title still names the original file — the generated temp path never leaks into the UI.
+    s.see("app.log");
+    std::fs::remove_dir_all(&dir).ok();
+}

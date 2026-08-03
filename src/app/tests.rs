@@ -8107,17 +8107,310 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
         "動画フォールバックが出ない: {video}"
     );
 
-    // External command delegation: template display.
+    // External command delegation (detached): a one-line "opened externally" summary naming the
+    // template — not the raw `{:?}` dump this used to be (that bug is what motivated this rewrite:
+    // `render_as=None, detached=true` leaking straight onto the screen).
     app.tab.preview_kind = Some(PreviewKind::Command {
         path: dir.join("c.xyz"),
         template: "mpv {path}".into(),
         render_as: None,
         detached: true,
     });
+    let detached_body = dump(&mut app);
     assert!(
-        dump(&mut app).contains("command"),
-        "コマンド委譲表示が出ない"
+        detached_body.contains("mpv"),
+        "detached コマンドの案内(テンプレート)が出ない: {detached_body}"
     );
+    assert!(
+        !detached_body.contains("render_as") && !detached_body.contains("detached="),
+        "Debug 書式が画面に漏れている: {detached_body}"
+    );
+
+    // External command delegation (failed, non-detached): degrades to [can not preview: <ext>]
+    // with the reason attached — never a Debug dump. `command_err` is set directly here (this test
+    // targets the render fallback, not process execution — see preview::command's own tests for
+    // run_capture/run_detached and app/media_load's MediaJob::Command coverage for the worker path).
+    app.tab.preview_kind = Some(PreviewKind::Command {
+        path: dir.join("c.xyz"),
+        template: "does-not-exist {path}".into(),
+        render_as: None,
+        detached: false,
+    });
+    app.command_err = Some("failed to launch `does-not-exist`".into());
+    let failed_body = dump(&mut app);
+    assert!(
+        failed_body.contains("can not preview") && failed_body.contains("xyz"),
+        "失敗時に can not preview へ降格しない: {failed_body}"
+    );
+    assert!(
+        failed_body.contains("failed to launch"),
+        "失敗理由が表示されない: {failed_body}"
+    );
+    assert!(
+        !failed_body.contains("render_as") && !failed_body.contains("detached="),
+        "Debug 書式が画面に漏れている: {failed_body}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- External command delegation (`preview::command` wired into `MediaJob`/`App`) ----
+
+/// `MediaJob::Command` run directly (no App/thread involved): text mode (`as_image=false`) returns
+/// `MediaPayload::CommandText` pointing at the file the captured output was written to.
+#[cfg(unix)]
+#[test]
+fn media_job_command_text_mode_returns_command_text_payload() {
+    let dir = unique_tmp("cmd_job_text");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("note.txt");
+    std::fs::write(&src, "hello").unwrap();
+    let out = dir.join("out.txt");
+    let argv = crate::preview::command::build_argv("cat {path}", &src, &out);
+    let job = MediaJob::Command {
+        argv,
+        out: out.clone(),
+        uses_out: false,
+        as_image: false,
+    };
+    match job.run() {
+        Some(MediaPayload::CommandText(p)) => {
+            assert_eq!(p, out);
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
+        }
+        Some(_) => panic!("CommandText を期待したが別の payload だった"),
+        None => panic!("CommandText を期待したが None (失敗) だった"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Image mode (`as_image=true`) decodes the produced artifact into `MediaPayload::Static` and
+/// deletes the artifact right after (like `preview::video::thumbnail`'s temp PNG — the image path
+/// only needs the decoded pixels from here on).
+#[cfg(unix)]
+#[test]
+fn media_job_command_image_mode_decodes_and_cleans_up_artifact() {
+    let dir = unique_tmp("cmd_job_image");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A real (tiny) PNG this "command" just copies via `cp`, so the test doesn't depend on any
+    // image-conversion tool being installed.
+    let seed = dir.join("seed.png");
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        4,
+        4,
+        image::Rgb([200, 10, 10]),
+    ));
+    img.save(&seed).unwrap();
+    let out = dir.join("out.png");
+    let argv = vec![
+        "cp".to_string(),
+        seed.to_string_lossy().to_string(),
+        out.to_string_lossy().to_string(),
+    ];
+    let job = MediaJob::Command {
+        argv,
+        out: out.clone(),
+        uses_out: true,
+        as_image: true,
+    };
+    match job.run() {
+        Some(MediaPayload::Static(im)) => {
+            assert_eq!((im.width(), im.height()), (4, 4));
+        }
+        Some(_) => panic!("Static を期待したが別の payload だった"),
+        None => panic!("Static を期待したが None (失敗) だった"),
+    }
+    assert!(
+        !out.exists(),
+        "画像モード成功後に成果物ファイルが残っている: {}",
+        out.display()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Same as above, but the template writes to a **suffixed** artifact (`<out>.png`) rather than the
+/// literal `{out}` path — the documented `merman -i {path} -o {out}.png` idiom (`command.rs`'s
+/// `find_suffixed_out`). Cleanup must target the path actually used (the suffixed one), not the
+/// unused literal `out` — deleting the wrong (nonexistent) path would silently leak the real artifact.
+#[cfg(unix)]
+#[test]
+fn media_job_command_image_mode_cleans_up_a_suffixed_artifact() {
+    let dir = unique_tmp("cmd_job_image_suffix");
+    std::fs::create_dir_all(&dir).unwrap();
+    let seed = dir.join("seed.png");
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        4,
+        4,
+        image::Rgb([10, 200, 10]),
+    ));
+    img.save(&seed).unwrap();
+    // A bare {out} path (as `temp_out_path` produces — no extension); the "command" appends its
+    // own extension, so the real artifact lands at `out`.png, never at the literal `out` path.
+    let out = dir.join("konoma-cmd-suffix-test");
+    let suffixed = out.with_extension("png");
+    let argv = vec![
+        "cp".to_string(),
+        seed.to_string_lossy().to_string(),
+        suffixed.to_string_lossy().to_string(),
+    ];
+    let job = MediaJob::Command {
+        argv,
+        out: out.clone(),
+        uses_out: true,
+        as_image: true,
+    };
+    match job.run() {
+        Some(MediaPayload::Static(im)) => {
+            assert_eq!((im.width(), im.height()), (4, 4));
+        }
+        Some(_) => panic!("Static を期待したが別の payload だった"),
+        None => panic!("Static を期待したが None (失敗) だった"),
+    }
+    assert!(
+        !suffixed.exists(),
+        "画像モード成功後に接尾辞つき成果物ファイルが残っている: {}",
+        suffixed.display()
+    );
+    assert!(!out.exists(), "リテラル out は元々書かれていないはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A failing command (missing binary) returns `MediaPayload::CommandFailed` with a non-empty
+/// reason, not a bare `None` — this is what lets the render side show *why* it failed instead of a
+/// generic hint (`app.command_error()`, exercised by `ui_preview_renders_text_fallbacks_for_unsupported_kinds`).
+#[cfg(unix)]
+#[test]
+fn media_job_command_failure_returns_command_failed_payload() {
+    let out = unique_tmp("cmd_job_fail_out");
+    let argv = vec!["konoma-definitely-nonexistent-command-xyz123".to_string()];
+    let job = MediaJob::Command {
+        argv,
+        out,
+        uses_out: false,
+        as_image: false,
+    };
+    match job.run() {
+        Some(MediaPayload::CommandFailed(msg)) => assert!(!msg.is_empty()),
+        Some(_) => panic!("CommandFailed を期待したが別の payload だった"),
+        None => panic!("CommandFailed を期待したが None だった"),
+    }
+}
+
+/// `detached=true` is launched exactly once (from `enter_preview`) and never re-launched by
+/// redrawing the same preview repeatedly or by switching tabs away and back — the whole point of
+/// excluding it from `kind_loads_media` (re-triggering it there would relaunch e.g. mpv every time
+/// you flip back to that tab). Counted via `preview::command::calls_for_test` (a thread-local
+/// counter of `temp_out_path` calls — `start_media_load` calls it exactly once per
+/// `PreviewKind::Command` attempt, detached or not — rather than parsing the process-global,
+/// cross-test-polluted counter baked into the generated filename).
+#[cfg(unix)]
+#[test]
+fn detached_command_spawns_once_per_preview_entry_not_per_redraw_or_tab_switch() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("cmd_detached_once");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("note.detach");
+    std::fs::write(&src, "x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.cfg.preview.rules = vec![crate::config::Rule {
+        glob: Some("*.detach".into()),
+        command: Some("true".into()), // a real, instantly-exiting POSIX no-op
+        detached: true,
+        ..Default::default()
+    }];
+
+    let before = crate::preview::command::calls_for_test();
+
+    app.enter_preview(&src); // 1 attempt
+
+    // Redrawing the same preview repeatedly must not re-attempt.
+    for _ in 0..5 {
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
+            .unwrap();
+    }
+
+    // Nor must creating a new tab and switching back to this one.
+    app.tab_new().unwrap();
+    app.tab_cycle(-1);
+
+    let after = crate::preview::command::calls_for_test();
+    assert_eq!(
+        after - before,
+        1,
+        "detached コマンドが enter_preview 以外のタイミングでも起動された"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A text-mode delegated command becomes windowed (2D caret / search / `v`/`V` selection all just
+/// work), the title still shows the original file (not the temp path), and moving to a different
+/// preview deletes the generated temp output.
+#[cfg(unix)]
+#[test]
+fn text_command_becomes_windowed_with_original_title_and_cleans_up_on_leaving() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("cmd_text_windowed");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("report.custom");
+    std::fs::write(&src, "irrelevant").unwrap();
+    let other = dir.join("plain.txt");
+    std::fs::write(&other, "just text").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.cfg.preview.rules = vec![crate::config::Rule {
+        glob: Some("*.custom".into()),
+        command: Some("echo hello-from-command".into()),
+        ..Default::default()
+    }];
+
+    app.enter_preview(&src);
+    // Synchronous fallback (no media_tx attached in a bare App::new) ⇒ apply_payload already ran.
+    assert!(
+        app.is_windowed(),
+        "テキストモードのコマンド出力が windowed にならない"
+    );
+    let out_path = app
+        .tab
+        .command_out
+        .clone()
+        .expect("command_out が設定されていない");
+    assert!(out_path.exists());
+    assert!(std::fs::read_to_string(&out_path)
+        .unwrap()
+        .trim_start()
+        .starts_with("hello-from-command"));
+
+    // The title still shows the original file, never the temp path.
+    let mut term = Terminal::new(TestBackend::new(70, 10)).unwrap();
+    term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
+        .unwrap();
+    let s: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        s.contains("report.custom"),
+        "タイトルに元ファイル名が出ない: {s}"
+    );
+    assert!(
+        !s.contains(&out_path.to_string_lossy().to_string()),
+        "タイトルに一時ファイルパスが漏れている: {s}"
+    );
+
+    // Moving to a different preview deletes the temp output.
+    app.enter_preview(&other);
+    assert!(
+        !out_path.exists(),
+        "別プレビューに移っても一時ファイルが残っている"
+    );
+    assert!(app.tab.command_out.is_none());
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

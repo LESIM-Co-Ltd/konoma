@@ -29,6 +29,11 @@ impl App {
         // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
+        // Same reason: `kind_loads_media`/`start_media_load` below may read/overwrite it
+        // (a text-mode delegated command regenerating synchronously) before `self.tab = t` restores
+        // the whole bundle at the end — hoist this tab's own saved value first so that happens
+        // against the *target* tab's leftover output, not whatever tab was live a moment ago.
+        self.tab.command_out = t.command_out.clone();
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -105,6 +110,11 @@ impl App {
                 // image_center: a plain copy with no transformation. Not read here, so leave it to
                 // the bulk restore at the end.
                 self.image_crop = None;
+                // Carry a synchronously-regenerated command_out (the sync-fallback path used by
+                // tests without a media_tx) back into `t`, or the bulk `self.tab = t` below would
+                // revert it to this tab's stale pre-restore leftover — same reasoning as the
+                // `t.pdf_page` clamp above.
+                t.command_out = self.tab.command_out.clone();
                 if reused {
                     // Restore doesn't go through apply_payload, so the sharp reraster that would
                     // normally fire there doesn't run. This prevents an SVG/mermaid that left its
@@ -220,6 +230,10 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        // Just a reference reset — the file itself (if any) is still legitimately owned by the
+        // *previous* tab's snapshot just taken by save_active() above, so it must not be deleted
+        // here (see clear_command_out's doc comment for why this can't just call that).
+        self.tab.command_out = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -316,6 +330,9 @@ impl App {
         // Nobody will come back to the tab that's closing, so its media is done for. If the
         // one-slot cache kept holding it, an image unrelated to any tab would stay resident.
         self.drop_media_cache_for_active();
+        // Same for a live delegated-command temp output — this tab's own slot in `self.tabs` is
+        // about to be removed below without ever being saved again, so nothing else will clean it up.
+        self.clear_command_out();
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
@@ -392,6 +409,12 @@ impl App {
                 let closing = t.preview_path.clone();
                 if matches!((&self.media_cache, &closing), (Some(c), Some(p)) if &c.path == p) {
                     self.media_cache = None;
+                }
+                // Likewise, delete that (inactive) tab's own delegated-command temp output — its
+                // slot in `self.tabs` is removed below without ever becoming active again, so
+                // `clear_command_out` (which only ever acts on the *live* `self.tab`) can't reach it.
+                if let Some(p) = &t.command_out {
+                    let _ = std::fs::remove_file(p);
                 }
             }
             self.tabs.remove(i);

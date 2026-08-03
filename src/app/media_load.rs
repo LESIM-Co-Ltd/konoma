@@ -116,6 +116,41 @@ impl App {
                     ));
                 }
             }
+            // External command delegation. `detached` spawns-and-forgets right here, synchronously
+            // (Command::spawn returns immediately — it doesn't wait for the child — so this can't
+            // block the UI either); it is reached **only from `enter_preview`**, since
+            // `kind_loads_media` deliberately excludes `detached=true` so a tab switch / an
+            // unrelated fs-triggered reload never relaunches it (opening mpv again every time you
+            // flip back to that tab). A non-detached command (image or text `render_as`) runs on
+            // the worker like every other media kind above.
+            PreviewKind::Command {
+                template,
+                render_as,
+                detached,
+                ..
+            } => {
+                let out = crate::preview::command::temp_out_path();
+                let argv = crate::preview::command::build_argv(template, path, &out);
+                if *detached {
+                    if let Err(e) = crate::preview::command::run_detached(&argv) {
+                        self.command_err = Some(e.to_string());
+                    }
+                } else {
+                    let as_image = render_as.as_deref() == Some("image");
+                    let uses_out = template.contains("{out}");
+                    self.spawn_or_sync_media_gated(
+                        MediaJob::Command {
+                            argv,
+                            out,
+                            uses_out,
+                            as_image,
+                        },
+                        // Only image mode needs a graphics backend — text mode shows through the
+                        // ordinary windowed reader, same as Code/Text, and must work on any terminal.
+                        as_image,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -175,7 +210,16 @@ impl App {
     /// Run a media-load job on a separate thread (when media_tx is present). Otherwise run it synchronously.
     /// If there is no backend (picker), do nothing (the render side falls back).
     fn spawn_or_sync_media(&mut self, job: MediaJob) {
-        if self.picker.is_none() {
+        self.spawn_or_sync_media_gated(job, true);
+    }
+
+    /// Same as `spawn_or_sync_media`, but the picker requirement is a parameter instead of always
+    /// on. Every existing job kind (SVG/GIF/video/PDF/mermaid) only exists to feed the image
+    /// pipeline, so needing a picker is correct for them — but a **text-mode** delegated command
+    /// (`MediaJob::Command` with `as_image=false`) shows through the ordinary windowed text reader,
+    /// exactly like Code/Text, and must run on any terminal, image backend or not.
+    fn spawn_or_sync_media_gated(&mut self, job: MediaJob, requires_picker: bool) {
+        if requires_picker && self.picker.is_none() {
             return; // terminal doesn't support it: the render side falls back to text/a message
         }
         let Some(tx) = self.media_tx.clone() else {
@@ -235,6 +279,17 @@ impl App {
                 // converge (returns immediately on the not-needed side if it's already sufficient /
                 // at the 4096 cap).
                 self.maybe_sharpen_vector();
+            }
+            MediaPayload::CommandText(p) => {
+                // Replace, not reuse: a source-file reload or a tab-switch-triggered re-run both
+                // regenerate rather than keep the previous artifact, so the old one (if any) is done for.
+                self.clear_command_out();
+                self.tab.command_out = Some(p);
+                self.command_err = None;
+                self.setup_windowed(); // opens the windowed reader onto the fresh command_out
+            }
+            MediaPayload::CommandFailed(msg) => {
+                self.command_err = Some(msg);
             }
         }
     }
@@ -375,6 +430,10 @@ impl App {
                         | PreviewKind::Pdf(_)
                         | PreviewKind::Mermaid(_)
                         | PreviewKind::MermaidFence(_)
+                        // A delegated command counts only when it actually produced image_src —
+                        // text-mode ones never do (they never call set_static_image), so the
+                        // `image_src.is_some()` half of this && is what actually disambiguates them.
+                        | PreviewKind::Command { .. }
                 )
             )
     }

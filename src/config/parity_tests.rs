@@ -1329,6 +1329,25 @@ preview_commands = false
 }
 
 #[test]
+fn cfg_preview_command_rule_explicit_true_still_delegates() {
+    // The default-true case is already covered by cfg_preview_command_rule_produces_command_kind
+    // (an absent [external] table); this pins the explicitly-written `true` too.
+    let toml = r#"
+[external]
+preview_commands = true
+
+[[preview.rules]]
+glob = "*.xyz"
+command = "cat {path}"
+"#;
+    let cfg: Config = toml::from_str(toml).unwrap();
+    assert!(matches!(
+        cfg.resolve_preview(Path::new("/tmp/whatever.xyz")),
+        PreviewKind::Command { .. }
+    ));
+}
+
+#[test]
 fn cfg_preview_unknown_builtin_falls_back_to_can_not_preview() {
     let toml = r#"
 [[preview.rules]]

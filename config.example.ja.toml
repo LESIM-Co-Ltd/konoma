@@ -286,7 +286,8 @@ code_theme = "TwoDark"
 #   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
-# render_as: command 出力の扱い ("image" でPNG等を全画面画像表示)
+# render_as: command 出力の扱い ("image" でPNG等を全画面画像表示。それ以外(未指定/"text"/未知の値)は
+#            出力をキャプチャして通常の windowed リーダーでテキスト表示)
 # detached: 別プロセスで開きTUIをブロックしない(動画等)
 
 [[preview.rules]]

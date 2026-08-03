@@ -511,6 +511,11 @@ pub enum Msg {
     ArchiveListUnavailable,
     MermaidUnavailable,
     DiagramOpenFailed,
+    /// Preview body for a `detached=true` `[[preview.rules]] command = "..."` delegation, once launched.
+    CommandOpenedExternally,
+    /// Prefix before a delegated command's failure reason (missing binary / non-zero exit / `{out}`
+    /// never produced) in the `[can not preview]` fallback.
+    CommandPreviewFailed,
     MermaidCaption,
     MermaidZoomAffordance,
     MermaidPanAffordance,
@@ -992,6 +997,8 @@ fn en(msg: Msg) -> &'static str {
         }
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
         DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
+        CommandOpenedExternally => "opened externally: ",
+        CommandPreviewFailed => "delegated command failed: ",
         // Inline-diagram caption/frame affordances. `MermaidCaption` keeps the word "Enter" so the
         // caption is the same in both languages up to that point (the `◇ mermaid` prefix is a render
         // sentinel and stays literal in code, so it is not translated here).
@@ -1438,6 +1445,8 @@ fn jp(msg: Msg) -> &'static str {
         }
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
         DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
+        CommandOpenedExternally => "外部プログラムで開きました: ",
+        CommandPreviewFailed => "外部コマンド委譲に失敗: ",
         MermaidCaption => "Enter: 全画面",
         MermaidZoomAffordance => "+/-: ズーム",
         MermaidPanAffordance => "hjkl:パン  0:フィット",
@@ -1948,6 +1957,8 @@ mod tests {
         Msg::ArchiveListUnavailable,
         Msg::MermaidUnavailable,
         Msg::DiagramOpenFailed,
+        Msg::CommandOpenedExternally,
+        Msg::CommandPreviewFailed,
         Msg::MermaidCaption,
         Msg::MermaidZoomAffordance,
         Msg::MermaidPanAffordance,

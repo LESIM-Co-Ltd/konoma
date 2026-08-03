@@ -6,6 +6,22 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **External command delegation (`[[preview.rules]] command = "..."`) is now implemented.** The
+  config docs have documented this since the beginning (`{path}`/`{out}` templates, `render_as =
+  "image"`, `detached = true`) but the renderer itself (`src/preview/command.rs`) was a stub —
+  matching a rule with `command` set showed a raw `{:?}` dump of the resolved kind
+  (`[command] mpv {path} :: /note.mp4 (render_as=None, detached=true)`) instead of running
+  anything. Three modes, matching the documented contract: `detached = true` spawns the process
+  without waiting (a video player, etc. — never blocks the TUI); `render_as = "image"` runs on the
+  existing media worker thread and shows the produced artifact full-screen like any other image;
+  anything else (unset, `"text"`, or an unrecognized value) runs on the same worker and shows the
+  captured output through the ordinary windowed (less-style) text reader, with the title still
+  naming the original file rather than the generated temp path. A missing/failing command
+  (binary not found, non-zero exit, `{out}` never produced, an undecodable image) degrades safely
+  to `[can not preview: <ext>]` with the failure reason attached — never a crash, never a raw Debug
+  dump. `[external] preview_commands = false` continues to disable the whole delegation path.
+
 ## [0.23.2] - 2026-08-03
 
 ### Fixed
