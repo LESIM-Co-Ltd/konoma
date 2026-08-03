@@ -5314,7 +5314,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.23.1
+- konoma 0.23.2
 
 ```
 MIT License
@@ -7658,5 +7658,4 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 ```
-
 
