@@ -465,7 +465,16 @@ impl App {
         // Clear the selection for delete-type operations **only on success** (same as the old
         // synchronous version). If a partial failure — such as a permission error on the 3rd of
         // 12 items — also wiped the selection, the user would have to start over from scratch.
-        if res.err.is_none() && matches!(res.kind, FileOpKind::Trash | FileOpKind::DeletePermanent)
+        // Same root guard as `reveal_and_select` above, and for the same reason: `self.tab` is
+        // whichever tab happens to be active when the result arrives, which may not be the one
+        // that dispatched the delete. Without this guard, finishing a delete in tab A could wipe a
+        // selection the user is still building in tab B. Leaving the originating tab's now-defunct
+        // selection alone here is fine — `refresh_fs_inner`'s `self.tab.selection.retain(...)`
+        // (called on every tab switch via `refresh_fs_after_tab_switch`) prunes paths that no
+        // longer exist, so it self-heals the moment that tab becomes active again.
+        if res.err.is_none()
+            && matches!(res.kind, FileOpKind::Trash | FileOpKind::DeletePermanent)
+            && res.root == self.tab.root
         {
             self.clear_selection();
         }

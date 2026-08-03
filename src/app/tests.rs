@@ -7878,6 +7878,203 @@ fn file_op_result_does_not_disturb_another_tab() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+/// A delete/trash that finishes while a *different* tab is active must not clear that tab's
+/// committed selection. `clear_selection` used to run unconditionally — unlike `reveal_and_select`
+/// a few lines above it in the very same function, which already carries a root guard for exactly
+/// this reason (the user can switch tabs while a delete is in flight) — so finishing a delete
+/// dispatched from tab A could silently wipe a selection the user is still building in tab B. Same
+/// root-comparison fix as `file_op_result_does_not_disturb_another_tab`, applied to the
+/// clear-selection branch instead. Covers both delete kinds.
+///
+/// This only checks the **committed** `selection` set (a set of paths), not `visual_anchor` (an
+/// index into `entries`). `visual_anchor` is a separate story: `apply_file_op` calls
+/// `self.refresh()` unconditionally at the very top, *before* either guard is reached (by design —
+/// see its own comment: the disk actually changed, regardless of which tab is being viewed), and
+/// `refresh()` always ends up calling `rebuild_tree()` against whichever tab happens to be active.
+/// `rebuild_tree()` in turn *always* resets `visual_anchor` to `None` ("entries index, always
+/// stale after a rebuild" — see its doc comment), unconditionally, regardless of file-op kind,
+/// root, or the guard added here. So an in-progress visual range on tab B is wiped by that
+/// unconditional rebuild the moment *any* background refresh lands while B is active — this is
+/// pre-existing behaviour this fix neither introduces nor can address without also scoping the
+/// whole `refresh()` call by root, which would defeat its documented purpose. Confirmed directly:
+/// `file_op_result_clears_selection_on_the_same_tab` (below) demonstrates the case where
+/// `clear_selection` *does* legitimately clear `visual_anchor` too — the same-tab path, where this
+/// unrelated invalidation and the guarded one are not in tension.
+#[test]
+fn file_op_result_does_not_clear_another_tabs_selection() {
+    for kind in [FileOpKind::Trash, FileOpKind::DeletePermanent] {
+        let base = unique_tmp("konoma_fileop_del_other_tab_sel_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.canonicalize().unwrap();
+        let a = base.join("a");
+        let b = base.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("x.txt"), b"x").unwrap();
+        std::fs::write(a.join("y.txt"), b"x").unwrap();
+        std::fs::write(b.join("p.txt"), b"x").unwrap();
+        std::fs::write(b.join("q.txt"), b"x").unwrap();
+
+        let mut app = App::new(a.clone(), Config::default()).unwrap();
+        app.rebuild_tree().unwrap();
+
+        // Tab A (the dispatching tab): select both files, then remove them from disk to stand in
+        // for the worker having already finished the delete — `apply_file_op` only performs the
+        // book-keeping step here, same idea as `file_op_refresh_failure_is_reported_not_masked`.
+        app.tab.selected = 0;
+        app.toggle_select();
+        app.toggle_select();
+        assert_eq!(app.marked_count(), 2, "タブAで2件選択");
+        std::fs::remove_file(a.join("x.txt")).unwrap();
+        std::fs::remove_file(a.join("y.txt")).unwrap();
+        app.fileop_gen = 11;
+        app.fileop_pending = Some(kind);
+
+        // Switch to tab B and build an unrelated committed selection there.
+        app.tab_new().unwrap();
+        app.tab.root = b.clone();
+        app.tab.entries.clear();
+        app.tab.selected = 0;
+        app.rebuild_tree().unwrap();
+        app.tab.selected = 0;
+        app.toggle_select(); // selects p.txt
+        assert_eq!(app.tab.selection.len(), 1, "タブBで1件選択(コミット済み)");
+        let before_selection = app.tab.selection.clone();
+
+        // The result belongs to tab A (root == a), but tab B is active when it arrives.
+        assert!(app.apply_file_op(FileOpResult {
+            gen: 11,
+            kind,
+            root: a.clone(),
+            ok: 2,
+            last: None,
+            err: None,
+        }));
+
+        assert_eq!(
+            app.tab.selection, before_selection,
+            "{kind:?}: 別タブ(B)で組み立て中の選択が消えてはいけない"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+/// The exact same completed-elsewhere delete must still clear the selection (and, per
+/// `clear_selection`'s own doc comment, the in-progress visual range too) when the user is still
+/// sitting on the tab that dispatched it — no regression from the new root guard. Covers both
+/// delete kinds. (`visual_anchor` is meaningfully checkable here, unlike in the cross-tab test
+/// above, because on the *same* tab we actually want it gone either way — there is no tension
+/// between the guarded `clear_selection` call and the unconditional `rebuild_tree` invalidation.)
+#[test]
+fn file_op_result_clears_selection_on_the_same_tab() {
+    for kind in [FileOpKind::Trash, FileOpKind::DeletePermanent] {
+        let dir = unique_tmp("konoma_fileop_del_same_tab_sel_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.txt"), b"x").unwrap();
+        std::fs::write(dir.join("y.txt"), b"x").unwrap();
+        let dir = dir.canonicalize().unwrap();
+
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.rebuild_tree().unwrap();
+        app.tab.selected = 0;
+        app.toggle_select();
+        app.toggle_select();
+        assert_eq!(app.marked_count(), 2, "2件選択した状態から始める");
+        app.enter_visual();
+        assert!(app.is_visual(), "ビジュアルモードにも入っている");
+        std::fs::remove_file(dir.join("x.txt")).unwrap();
+        std::fs::remove_file(dir.join("y.txt")).unwrap();
+        app.fileop_gen = 12;
+        app.fileop_pending = Some(kind);
+
+        assert!(app.apply_file_op(FileOpResult {
+            gen: 12,
+            kind,
+            root: dir.clone(),
+            ok: 2,
+            last: None,
+            err: None,
+        }));
+
+        assert!(
+            !app.has_selection(),
+            "{kind:?}: 同じタブに留まっていれば従来どおり選択は消える"
+        );
+        assert!(
+            app.tab.visual_anchor.is_none(),
+            "{kind:?}: clear_selection はビジュアル範囲も消す(同じタブでは従来どおり)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Self-healing check for the "leave the originating tab's stale selection alone" claim in
+/// `apply_file_op`'s doc comment: switching back to the tab that dispatched a delete must prune
+/// the now-vanished paths from its selection, via `refresh_fs_inner`'s
+/// `self.tab.selection.retain(...)` — the same pruning `refresh_fs_after_tab_switch` performs on
+/// every tab switch. This is exercised for real (not asserted from reading the source): a delete
+/// finishes while tab B is active (so `apply_file_op` intentionally leaves tab A's selection
+/// untouched, per the previous two tests), then switching back to tab A is expected to have swept
+/// it clean.
+#[test]
+fn returning_to_the_originating_tab_prunes_its_stale_selection() {
+    let base = unique_tmp("konoma_fileop_del_self_heal_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let a = base.join("a");
+    let b = base.join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("x.txt"), b"x").unwrap();
+    std::fs::write(a.join("y.txt"), b"x").unwrap();
+    std::fs::write(b.join("p.txt"), b"x").unwrap();
+
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.tab.selected = 0;
+    app.toggle_select();
+    app.toggle_select();
+    assert_eq!(app.marked_count(), 2, "タブAで2件選択");
+    std::fs::remove_file(a.join("x.txt")).unwrap();
+    std::fs::remove_file(a.join("y.txt")).unwrap();
+    app.fileop_gen = 13;
+    app.fileop_pending = Some(FileOpKind::Trash);
+
+    // Switch away before the result lands, exactly like the previous two tests.
+    app.tab_new().unwrap();
+    app.tab.root = b.clone();
+    app.tab.entries.clear();
+    app.tab.selected = 0;
+    app.rebuild_tree().unwrap();
+
+    assert!(app.apply_file_op(FileOpResult {
+        gen: 13,
+        kind: FileOpKind::Trash,
+        root: a.clone(),
+        ok: 2,
+        last: None,
+        err: None,
+    }));
+    // Tab A's snapshot still carries the stale selection at this point (the previous two tests
+    // assert exactly that); this test instead follows through on what happens when the user
+    // actually switches back to it. Tab A is index 0: `App::new` pushes the initial tab as
+    // `tabs[0]`, and `tab_new()` only ever appends — it never touches index 0 afterwards.
+    app.tab_goto(0);
+    assert_eq!(app.tab.root, a, "タブAへ切替できている");
+    assert!(
+        app.tab.selection.is_empty(),
+        "存在しないファイルへの選択は切替時に剪定される: {:?}",
+        app.tab.selection
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+}
+
 /// Probes whether this process is actually denied reading a 0o000 directory.
 /// Under root (or a process able to bypass permission bits), this has no effect and read_dir
 /// succeeds anyway, so permission-dependent tests skip in that case (same spirit as

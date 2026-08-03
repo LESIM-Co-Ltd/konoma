@@ -23,6 +23,17 @@ All notable changes to konoma are documented in this file. The format is based o
   dump. `[external] preview_commands = false` continues to disable the whole delegation path.
 
 ### Fixed
+- **Finishing a background delete/trash could silently wipe the selection you were still building
+  in a *different* tab.** `apply_file_op` (the async file-operation completion handler) has two
+  places that must only act on the tab that actually dispatched the operation, because the user
+  can switch tabs while a delete is in flight: the tree-cursor reveal already carried a `res.root
+  == self.tab.root` guard for exactly this reason, but the selection-clearing branch a few lines
+  below it in the same function did not — so a delete finishing while a different tab was active
+  cleared *that* tab's selection instead of leaving it alone. Added the same root guard to the
+  selection-clearing branch. The originating tab's now-stale selection (paths that no longer
+  exist) is left as-is when this guard skips it; it self-heals the moment that tab becomes active
+  again, since every tab switch already prunes vanished paths from the selection
+  (`refresh_fs_inner`'s `self.tab.selection.retain(...)`, run via `refresh_fs_after_tab_switch`).
 - **Switching to a different repository's tab left the branch name and the `WT <origin>` chip
   showing the *previous* tab's repository**, even though the changed-file list updated correctly
   (a "list is right, branch is wrong" split). Root cause: `git_branch`/`worktree_origin` are only
