@@ -59,6 +59,23 @@ impl Sim {
         self
     }
 
+    /// Attach a bare image backend — a deterministic, no-real-terminal-needed `Picker::halfblocks()`
+    /// — WITHOUT attaching any of the async decode/encode worker channels (media_tx / md_img_tx /
+    /// md_enc_tx). This is enough to unlock every picker-gated code path that only needs
+    /// `picker.font_size()` (still-image decode, and the Markdown mermaid-fence / math-expression
+    /// classification and placement sizing), because those all have a synchronous fallback when no
+    /// worker tx is attached (`ensure_mermaid_fence_render` / `ensure_math_render` / `load_image`).
+    /// What stays out of reach without a real encode-worker thread is the actual **pixel content**
+    /// of a rendered raster (e.g. comparing colors for `math_color`/`mermaid_theme`) — that needs
+    /// `md_enc_tx` + a running `md_encode_worker`, which this helper does not set up.
+    fn with_picker(mut self) -> Sim {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        std::mem::forget(rx); // never drained: nothing sends without media_tx/md_img_tx attached
+        self.app
+            .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), tx);
+        self
+    }
+
     /// Wait for the in-flight file operation's result and apply it (the run loop's
     /// `while let Ok(result) = rx.fileop.try_recv()` step), then redraw.
     #[track_caller]
@@ -6080,5 +6097,1211 @@ fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
         "4列のヘッダ行は3色以上の前景色が混在するはず(レインボー)"
     );
     s.key('q');
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// H3 (docs/AUDIT-TESTS-2026-08.md): full `[ui]` config-field coverage table.
+//
+// Layer (c) from the audit: does setting a field to a NON-default value, through `App::new`,
+// actually change observable behavior (screen text/style) or app-state through real keystrokes —
+// as opposed to (a) TOML parses into the right default (config/parity_tests.rs) or (b) calling the
+// logic directly with an argument (app/tests.rs)? `ui.keys` was the first gap found (fixed by the
+// three `e2e_ui_keys_*` tests above); this table makes sure the other 41 fields aren't hiding the
+// same kind of gap, and the completeness test below means a newly added field can't be silently
+// left out (mirrors i18n's `ALL_MSGS` exhaustiveness check).
+// =============================================================================
+
+/// How a `[ui]` field's role is demonstrated at this layer.
+#[derive(Debug, Clone, Copy)]
+enum Coverage {
+    /// A `Sim` test in this file sets the field to a non-default value and asserts the screen/style/
+    /// app-state differs from the default — written specifically for this table (possibly alongside
+    /// a pre-existing test). `.0` names the covering test(s).
+    Covered(&'static str),
+    /// A pre-existing `Sim` test (written before this table, for a related feature) already exercises
+    /// the field with a genuine default-vs-non-default contrast. `.0` names it.
+    CoveredElsewhere(&'static str),
+    /// A dedicated unit/integration test outside the `Sim`/keystroke harness already drives
+    /// `App::new(path, cfg)` end to end with real file I/O (so it satisfies layer (c) without going
+    /// through `handle_key`). `.0` names it.
+    CoveredByUnitTest(&'static str),
+    /// Not observable at this layer, with the concrete reason an attempt was made and what it hit.
+    /// Every field except `show_hidden` turned out to be observable once actually tried (see the
+    /// task report) — including the 7 picker-gated fields
+    /// (image_render_scale/svg_max_px/math/math_color/mermaid/mermaid_theme/mermaid_rows) that were
+    /// expected to need this category. `show_hidden` lands here not because of a test-layer
+    /// limitation but because it's genuinely dead code (see its table entry) — nothing to observe.
+    NotObservable(&'static str),
+}
+
+const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
+    (
+        "show_hidden",
+        Coverage::NotObservable(
+            "BUG FOUND, not fixed (out of this task's scope): cfg.ui.show_hidden is never read by \
+             App::new — tab.show_hidden always initializes to false regardless of config and only \
+             toggles via the `.` key / session restore. The config field is dead. Pinned down as a \
+             red, #[ignore]d test: e2e_ui_show_hidden_config_starts_with_dotfiles_visible",
+        ),
+    ),
+    (
+        "filter_mode",
+        Coverage::Covered("e2e_ui_filter_mode_fuzzy_vs_substring_noncontiguous_query"),
+    ),
+    (
+        "tabbar",
+        Coverage::Covered("e2e_ui_tabbar_always_vs_auto_with_a_single_tab"),
+    ),
+    (
+        "icons",
+        Coverage::CoveredElsewhere("e2e_md_task_markers_render_ascii_or_nf_by_icons"),
+    ),
+    (
+        "wrap",
+        Coverage::CoveredElsewhere("e2e_md_wrapped_focus_follows_offscreen_item"),
+    ),
+    (
+        "line_numbers",
+        Coverage::Covered("e2e_ui_line_numbers_toggle_shows_gutter"),
+    ),
+    (
+        "git_gutter",
+        Coverage::Covered("e2e_ui_git_gutter_toggle_shows_or_hides_change_marker"),
+    ),
+    (
+        "tab_width",
+        Coverage::Covered("e2e_ui_tab_width_changes_expansion_columns"),
+    ),
+    (
+        "syntax_highlight",
+        Coverage::Covered("e2e_ui_syntax_highlight_toggle_changes_color_diversity"),
+    ),
+    (
+        "preview_loading",
+        Coverage::Covered("e2e_ui_preview_loading_indicator_vs_progressive_for_cold_language"),
+    ),
+    (
+        "path_style",
+        Coverage::Covered("e2e_ui_path_style_config_sets_initial_style"),
+    ),
+    (
+        "keys",
+        Coverage::CoveredElsewhere(
+            "e2e_ui_keys_less_scheme_uses_plain_letters_not_ctrl / e2e_ui_keys_vim_scheme_uses_ctrl_not_plain_letters / e2e_ui_keys_unknown_value_falls_back_to_vim_scheme",
+        ),
+    ),
+    (
+        "lang",
+        Coverage::Covered("e2e_ui_lang_toggle_switches_footer_translation"),
+    ),
+    (
+        "statusbar",
+        Coverage::Covered("e2e_ui_statusbar_layout_split_vs_bottom_moves_context_row"),
+    ),
+    (
+        "theme",
+        Coverage::Covered("e2e_ui_theme_code_bg_toggle_changes_code_block_background"),
+    ),
+    (
+        "image_render_scale",
+        Coverage::Covered("e2e_ui_image_render_scale_shrinks_display_rect"),
+    ),
+    (
+        "svg_max_px",
+        Coverage::Covered("e2e_ui_svg_max_px_changes_apparent_display_size"),
+    ),
+    (
+        "sort",
+        Coverage::Covered("e2e_ui_sort_config_sets_initial_order_without_pressing_s"),
+    ),
+    (
+        "details",
+        Coverage::CoveredElsewhere("e2e_details_columns_show_size_and_modified"),
+    ),
+    (
+        "graph_max_branches",
+        Coverage::Covered("e2e_ui_graph_max_branches_caps_legend_entries"),
+    ),
+    (
+        "graph_base_branches",
+        Coverage::Covered("e2e_ui_graph_base_branches_config_auto_selects_base"),
+    ),
+    (
+        "commit_meta_align",
+        Coverage::Covered("e2e_ui_commit_meta_align_right_vs_inline_moves_author_column"),
+    ),
+    (
+        "confirm_quit",
+        Coverage::CoveredElsewhere(
+            "e2e_last_tab_q_quits_when_confirm_off / e2e_last_tab_q_confirms_when_confirm_on",
+        ),
+    ),
+    (
+        "confirm_bookmark_overwrite",
+        Coverage::CoveredElsewhere(
+            "e2e_bookmark_overwrite_prompts_confirm_then_applies / e2e_bookmark_overwrite_off_applies_silently",
+        ),
+    ),
+    (
+        "follow_view",
+        Coverage::Covered(
+            "e2e_follow_opens_full_screen_diff (default) / e2e_ui_follow_view_file_shows_content_preview_not_diff",
+        ),
+    ),
+    (
+        "csv_rainbow",
+        Coverage::CoveredElsewhere(
+            "e2e_csv_rainbow_columns_use_distinct_foreground_colors / e2e_csv_table_renders_and_navigates_without_rainbow",
+        ),
+    ),
+    (
+        "md_task_states",
+        Coverage::CoveredElsewhere("e2e_markdown_task_cycles_custom_states"),
+    ),
+    (
+        "md_autolink",
+        Coverage::CoveredElsewhere(
+            "e2e_markdown_autolink_and_emoji_full_pipeline (on) / e2e_markdown_autolink_emoji_alerts_toggle_off (off)",
+        ),
+    ),
+    (
+        "md_alerts",
+        Coverage::CoveredElsewhere(
+            "e2e_markdown_alert_all_five_types_and_aliases (on) / e2e_markdown_autolink_emoji_alerts_toggle_off (off)",
+        ),
+    ),
+    (
+        "md_emoji",
+        Coverage::CoveredElsewhere(
+            "e2e_markdown_autolink_and_emoji_full_pipeline (on) / e2e_markdown_autolink_emoji_alerts_toggle_off (off)",
+        ),
+    ),
+    (
+        "md_frontmatter",
+        Coverage::CoveredElsewhere(
+            "e2e_markdown_front_matter_renders_as_metadata (on) / e2e_markdown_front_matter_off_leaves_body_intact (off)",
+        ),
+    ),
+    (
+        "md_footnotes",
+        Coverage::CoveredElsewhere(
+            "e2e_markdown_footnotes_render_superscript_and_section (on) / e2e_markdown_footnotes_off_stays_literal (off)",
+        ),
+    ),
+    (
+        "md_inline_html",
+        Coverage::Covered(
+            "e2e_markdown_inline_html_renders (on) / e2e_ui_md_inline_html_off_keeps_raw_tags",
+        ),
+    ),
+    (
+        "md_details",
+        Coverage::Covered(
+            "e2e_md_html_details_collapse_and_toggle (auto) / e2e_ui_md_details_config_forces_open_despite_missing_attribute",
+        ),
+    ),
+    (
+        "math",
+        Coverage::Covered("e2e_ui_math_image_mode_lifts_expression_text_mode_keeps_it_inline"),
+    ),
+    (
+        "math_color",
+        Coverage::Covered("e2e_ui_math_color_changes_rendered_pixel_hue"),
+    ),
+    (
+        "busy_indicator",
+        Coverage::Covered(
+            "e2e_busy_indicator_absent_when_idle (idle invariant) / e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled",
+        ),
+    ),
+    (
+        "mermaid",
+        Coverage::Covered("e2e_ui_mermaid_image_mode_shows_caption_text_mode_does_not"),
+    ),
+    (
+        "mermaid_theme",
+        Coverage::Covered("e2e_ui_mermaid_theme_changes_rendered_pixel_brightness"),
+    ),
+    (
+        "mermaid_rows",
+        Coverage::Covered("e2e_ui_mermaid_rows_changes_reserved_diagram_height"),
+    ),
+    (
+        "restore_tabs",
+        Coverage::CoveredElsewhere(
+            "e2e_session_restore_reopens_previous_tabs (on, via Sim) / session_actions::restore_tabs_off_neither_saves_nor_restores (off, via App::new)",
+        ),
+    ),
+    (
+        "restore_single_tab",
+        Coverage::CoveredByUnitTest(
+            "session_actions::restore_single_tab_true_saves_a_lone_tab / restore_single_tab_false_deletes_a_lone_tab_session / restore_single_tab_false_still_saves_multi_tab / restore_single_tab_false_skips_and_deletes_stale_single_tab_file",
+        ),
+    ),
+];
+
+/// Extract `UiConfig`'s field names directly from `config/mod.rs`'s own source text: locate
+/// `pub struct UiConfig {`, brace-match to the closing `}`, then pull every `pub <name>:` line in
+/// between. Mirrors i18n's `ALL_MSGS` exhaustiveness pattern — a newly added `[ui]` field fails
+/// `ui_config_coverage_table_is_complete` below until it gets a table entry.
+fn extract_ui_config_field_names() -> Vec<String> {
+    let src = include_str!("config/mod.rs");
+    let marker = "pub struct UiConfig {";
+    let start = src
+        .find(marker)
+        .expect("UiConfig struct not found in config/mod.rs — did it move or get renamed?");
+    let body_start = start + marker.len() - 1; // the opening '{' itself
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut end = body_start;
+    for (i, &b) in bytes[body_start..].iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = body_start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(end > body_start, "matching closing brace not found");
+    let body = &src[body_start..end];
+    let mut names = Vec::new();
+    for line in body.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("pub ") {
+            if let Some(colon) = rest.find(':') {
+                let name = rest[..colon].trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Safety valve for the extractor above: if the brace/regex-ish scan above breaks (e.g. someone
+/// reformats the struct in a way the simple line scan can't follow), it must fail LOUD by finding
+/// too few fields — not silently return an empty/tiny list that would make
+/// `ui_config_coverage_table_is_complete` vacuously pass. `UiConfig` currently has 42 fields; 35 is
+/// a conservative floor that still catches "extraction basically broke."
+#[test]
+fn ui_config_field_extraction_finds_at_least_35_fields() {
+    let names = extract_ui_config_field_names();
+    assert!(
+        names.len() >= 35,
+        "抽出数が少なすぎる(安全弁): {} 件 — パーサが壊れている可能性: {:?}",
+        names.len(),
+        names
+    );
+}
+
+/// Completeness: every field `UiConfig` actually has must appear in `UI_CONFIG_COVERAGE`, and vice
+/// versa (no stale entries for fields that got removed/renamed). Add a field to `UiConfig` without
+/// adding a table entry → this test fails and names exactly which field is missing.
+#[test]
+fn ui_config_coverage_table_is_complete() {
+    let extracted = extract_ui_config_field_names();
+    assert!(
+        extracted.len() >= 35,
+        "抽出数が少なすぎる(安全弁): {} 件",
+        extracted.len()
+    );
+    let extracted: std::collections::BTreeSet<&str> =
+        extracted.iter().map(|s| s.as_str()).collect();
+    let table: std::collections::BTreeSet<&str> =
+        UI_CONFIG_COVERAGE.iter().map(|(name, _)| *name).collect();
+    let missing_from_table: Vec<&&str> = extracted.difference(&table).collect();
+    let stale_in_table: Vec<&&str> = table.difference(&extracted).collect();
+    assert!(
+        missing_from_table.is_empty() && stale_in_table.is_empty(),
+        "UiConfig のフィールドと UI_CONFIG_COVERAGE テーブルが不一致。\n\
+         テーブルに無い(新規フィールド?): {missing_from_table:?}\n\
+         構造体に無い(削除/改名?): {stale_in_table:?}"
+    );
+    // No duplicate entries either (a copy-paste of an existing field name would hide a gap).
+    assert_eq!(
+        table.len(),
+        UI_CONFIG_COVERAGE.len(),
+        "UI_CONFIG_COVERAGE に重複キーがある"
+    );
+}
+
+/// Print the coverage breakdown by category (also gives every entry's payload string a real read,
+/// so the enum variants document genuine data, not accidental waste). Run with `-- --nocapture` to
+/// see the table; the assertions just guard against an accidentally-empty test-name string.
+#[test]
+fn ui_config_coverage_table_breakdown() {
+    let mut covered = 0usize;
+    let mut covered_elsewhere = 0usize;
+    let mut covered_by_unit_test = 0usize;
+    let mut not_observable: Vec<(&str, &str)> = Vec::new();
+    for (field, cov) in UI_CONFIG_COVERAGE {
+        match cov {
+            Coverage::Covered(test) => {
+                assert!(!test.is_empty(), "{field}: Covered のテスト名が空");
+                covered += 1;
+            }
+            Coverage::CoveredElsewhere(test) => {
+                assert!(!test.is_empty(), "{field}: CoveredElsewhere のテスト名が空");
+                covered_elsewhere += 1;
+            }
+            Coverage::CoveredByUnitTest(test) => {
+                assert!(
+                    !test.is_empty(),
+                    "{field}: CoveredByUnitTest のテスト名が空"
+                );
+                covered_by_unit_test += 1;
+            }
+            Coverage::NotObservable(reason) => {
+                assert!(!reason.is_empty(), "{field}: NotObservable の理由が空");
+                not_observable.push((field, reason));
+            }
+        }
+    }
+    eprintln!(
+        "UI_CONFIG_COVERAGE breakdown: total={} Covered={covered} CoveredElsewhere={covered_elsewhere} CoveredByUnitTest={covered_by_unit_test} NotObservable={}",
+        UI_CONFIG_COVERAGE.len(),
+        not_observable.len()
+    );
+    for (field, reason) in &not_observable {
+        eprintln!("  NotObservable: {field} — {reason}");
+    }
+}
+
+// =============================================================================
+// H3: the field-specific tests referenced by UI_CONFIG_COVERAGE above (new coverage only —
+// pre-existing tests referenced as CoveredElsewhere/CoveredByUnitTest live elsewhere in this file
+// or in src/app/session_actions.rs).
+// =============================================================================
+
+/// FINDING (discovered while writing this H3 config-coverage pass): `[ui] show_hidden` parses fine
+/// (config/parity_tests.rs) but is **never read anywhere in app/*.rs** — grep confirms zero
+/// non-test/non-config references to `ui.show_hidden`. `App`'s runtime hidden-file flag
+/// (`tab.show_hidden`) is unconditionally initialized to `false` in the `PerTab` default and only
+/// ever flips via the `.` keypress (`app.rs`, `toggle_hidden`) or session restore
+/// (`session_actions.rs`) — never from config at `App::new`. So `show_hidden = true` in
+/// `~/.config/konoma/config.toml` currently has **zero effect** at startup: exactly the "config
+/// field parsed but never wired up" bug class this coverage pass exists to catch (the same shape as
+/// the `ui.keys` gap that motivated it). Kept as a red, `#[ignore]`d test per this file's header
+/// policy (documented-vs-reality mismatches are pinned down, not silently adjusted to match the
+/// bug) rather than fixed — this task's scope is test coverage, not product code.
+#[test]
+#[ignore = "FINDING-2026-08: [ui] show_hidden is parsed but never applied at App::new (dead config field) — see doc comment"]
+fn e2e_ui_show_hidden_config_starts_with_dotfiles_visible() {
+    let dir = sandbox("ui_show_hidden_cfg");
+    seed_files(&dir);
+    let root = canon(&dir);
+
+    let s_default = Sim::new(&root); // show_hidden=false
+    s_default.dont_see(".hidden.txt");
+
+    let mut cfg = Config::default();
+    cfg.ui.show_hidden = true;
+    let s_on = Sim::with_config(&root, cfg);
+    s_on.see(".hidden.txt"); // visible from the very first draw, no `.` key needed
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_filter_mode_fuzzy_vs_substring_noncontiguous_query() {
+    let dir = sandbox("ui_filter_mode_cfg");
+    std::fs::write(dir.join("app_resolver.rs"), "x").unwrap();
+    let root = canon(&dir);
+
+    // default "fuzzy": a non-contiguous subsequence query still matches (fzf-style).
+    let mut s_fuzzy = Sim::new(&root);
+    s_fuzzy.key('/');
+    s_fuzzy.keys("aprs");
+    s_fuzzy.see("app_resolver.rs");
+
+    // "substring": the same query is not a literal substring, so nothing matches.
+    let mut cfg = Config::default();
+    cfg.ui.filter_mode = "substring".into();
+    let mut s_sub = Sim::with_config(&root, cfg);
+    s_sub.key('/');
+    s_sub.keys("aprs");
+    s_sub.dont_see("app_resolver.rs");
+    assert_eq!(
+        s_sub.app.tab.entries.len(),
+        0,
+        "substring は非連続クエリに一致しないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_tabbar_always_vs_auto_with_a_single_tab() {
+    let dir = sandbox("ui_tabbar_cfg");
+    seed_files(&dir);
+    let root = canon(&dir);
+
+    let s_auto = Sim::new(&root); // default "auto": 1 tab → tab bar hidden
+    let label = s_auto.app.tab_label(0);
+    let chip = format!("1:{label}");
+    s_auto.dont_see(&chip);
+
+    let mut cfg = Config::default();
+    cfg.ui.tabbar = "always".into();
+    let s_always = Sim::with_config(&root, cfg);
+    s_always.see(&chip); // shown even with a single tab
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_line_numbers_toggle_shows_gutter() {
+    let dir = sandbox("ui_line_numbers_cfg");
+    std::fs::write(dir.join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s_off = Sim::new(&root); // default false
+    s_off.select("f.txt");
+    s_off.enter();
+    s_off.dont_see("  1 alpha");
+
+    let mut cfg = Config::default();
+    cfg.ui.line_numbers = true;
+    let mut s_on = Sim::with_config(&root, cfg);
+    s_on.select("f.txt");
+    s_on.enter();
+    s_on.see("  1 alpha");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_git_gutter_toggle_shows_or_hides_change_marker() {
+    let dir = sandbox("ui_git_gutter_cfg");
+    seed_repo(&dir);
+    let dir = canon(&dir);
+    std::fs::write(dir.join("a.rs"), "fn a() {}\nfn a2() {}\n").unwrap(); // an uncommitted addition
+
+    let mut cfg_on = Config::default();
+    cfg_on.ui.syntax_highlight = false; // determinism: don't depend on cold/warm grammar state
+    let mut s_on = Sim::with_config(&dir, cfg_on);
+    s_on.select("a.rs");
+    s_on.enter();
+    s_on.see("▌"); // default git_gutter=true: the added-line marker shows
+
+    let mut cfg_off = Config::default();
+    cfg_off.ui.syntax_highlight = false;
+    cfg_off.ui.git_gutter = false;
+    let mut s_off = Sim::with_config(&dir, cfg_off);
+    s_off.select("a.rs");
+    s_off.enter();
+    s_off.dont_see("▌");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_tab_width_changes_expansion_columns() {
+    let dir = sandbox("ui_tab_width_cfg");
+    std::fs::write(dir.join("f.txt"), "\tX\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s4 = Sim::new(&root); // default tab_width=4: marker + 3 spaces = 4 cols
+    s4.select("f.txt");
+    s4.enter();
+    s4.see("→   X");
+
+    let mut cfg = Config::default();
+    cfg.ui.tab_width = 8;
+    let mut s8 = Sim::with_config(&root, cfg); // marker + 7 spaces = 8 cols
+    s8.select("f.txt");
+    s8.enter();
+    s8.see("→       X");
+    s8.dont_see("→   X");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_syntax_highlight_toggle_changes_color_diversity() {
+    let dir = sandbox("ui_syntax_hl_cfg");
+    let path = dir.join("code.rs");
+    std::fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
+    // Deterministic: warm the grammar ourselves so the very first render already shows real
+    // syntax coloring rather than a "loading" placeholder (whose state is otherwise shared/global
+    // across the whole test binary — see the comment on e2e_search_works_in_code_preview).
+    crate::preview::code::warm_file("rs", &path);
+    let root = canon(&dir);
+
+    let mut s_on = Sim::new(&root); // default: syntax_highlight=true
+    s_on.select("code.rs");
+    s_on.enter();
+    let (row_on, _) = s_on.find_text("fn main").expect("code line drawn");
+    let variety_on = s_on.distinct_fg_in_row(row_on);
+
+    let mut cfg = Config::default();
+    cfg.ui.syntax_highlight = false;
+    let mut s_off = Sim::with_config(&root, cfg);
+    s_off.select("code.rs");
+    s_off.enter();
+    let (row_off, _) = s_off.find_text("fn main").expect("code line drawn");
+    let variety_off = s_off.distinct_fg_in_row(row_off);
+
+    assert!(
+        variety_on > variety_off,
+        "既定はハイライトで複数色/off は単色のはず: on={variety_on} off={variety_off}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_preview_loading_indicator_vs_progressive_for_cold_language() {
+    // Note: the sandbox name must not contain "loading" — it would leak into the title bar path
+    // and false-positive the `dont_see("loading")` check below.
+    let dir = sandbox("ui_cold_lang_cfg");
+    // A fabricated extension registered as `code` via a custom rule, so it is both (a) guaranteed
+    // never warmed by any other test in this binary and (b) still classified as `PreviewKind::Code`
+    // (an unrecognized extension with no custom rule would fall through to Text, where
+    // syntax-highlight warm-up — and so `preview_loading` — never applies).
+    std::fs::write(dir.join("f.zzzcoldlang"), "UNIQUEBODYTEXT123\n").unwrap();
+    let root = canon(&dir);
+    let rule = crate::config::Rule {
+        glob: Some("*.zzzcoldlang".into()),
+        builtin: Some("code".into()),
+        ..Default::default()
+    };
+
+    // default "indicator": a cold grammar shows a centered loading message, not the body.
+    let mut cfg_ind = Config::default();
+    cfg_ind.preview.rules.insert(0, rule.clone());
+    let mut s_ind = Sim::with_config(&root, cfg_ind);
+    s_ind.select("f.zzzcoldlang");
+    s_ind.enter();
+    assert!(
+        s_ind.app.is_highlight_pending(),
+        "登録したての拡張子はコールドのはず"
+    );
+    s_ind.see("loading"); // i18n Msg::Loading = "loading…"
+    s_ind.dont_see("UNIQUEBODYTEXT123");
+
+    // "progressive": the same cold grammar shows the plain body immediately instead.
+    let mut cfg_prog = Config::default();
+    cfg_prog.preview.rules.insert(0, rule);
+    cfg_prog.ui.preview_loading = "progressive".into();
+    let mut s_prog = Sim::with_config(&root, cfg_prog);
+    s_prog.select("f.zzzcoldlang");
+    s_prog.enter();
+    assert!(s_prog.app.is_highlight_pending());
+    s_prog.see("UNIQUEBODYTEXT123");
+    s_prog.dont_see("loading");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_path_style_config_sets_initial_style() {
+    use crate::app::PathStyle;
+    let dir = sandbox("ui_path_style_cfg");
+    seed_files(&dir);
+    let root = canon(&dir);
+    let mut cfg = Config::default();
+    cfg.ui.path_style = "full".into();
+    let s = Sim::with_config(&root, cfg);
+    assert_eq!(
+        s.app.path_style,
+        PathStyle::Full,
+        "config で起動時から full のはず(既定は relative — e2e_path_style_cycles参照)"
+    );
+    s.see("path:abs");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_lang_toggle_switches_footer_translation() {
+    let dir = sandbox("ui_lang_cfg");
+    seed_files(&dir);
+    let root = canon(&dir);
+
+    let mut cfg_en = Config::default();
+    cfg_en.ui.lang = "en".into();
+    let s_en = Sim::with_config(&root, cfg_en);
+    s_en.see("quit");
+
+    let mut cfg_jp = Config::default();
+    cfg_jp.ui.lang = "jp".into();
+    let s_jp = Sim::with_config(&root, cfg_jp);
+    s_jp.dont_see("quit");
+    s_jp.see("終"); // "終了" (quit)
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_statusbar_layout_split_vs_bottom_moves_context_row() {
+    let dir = sandbox("ui_statusbar_cfg");
+    seed_files(&dir);
+    let root = canon(&dir);
+
+    let s_split = Sim::new(&root); // default "split": context chip on the top row
+    let (row_split, _) = s_split.find_text("TREE").expect("TREE chip shown");
+    assert_eq!(row_split, 0, "split: 上段(0行目)に TREE チップ");
+
+    let mut cfg = Config::default();
+    cfg.ui.statusbar = "bottom".into();
+    let s_bottom = Sim::with_config(&root, cfg);
+    let (row_bottom, _) = s_bottom
+        .find_text("TREE")
+        .expect("TREE chip shown (combined bottom line)");
+    assert_ne!(
+        row_bottom, 0,
+        "bottom: 上段は消え最終行にまとめて表示されるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_theme_code_bg_toggle_changes_code_block_background() {
+    let body = "```rust\nfn a(){}\n```\n";
+    let (s_on, dir1) = md_preview(Config::default(), "ui_theme_bg_on", body);
+    let bg_on = s_on.style_of("fn a").map(|st| st.bg);
+    std::fs::remove_dir_all(&dir1).ok();
+
+    let (s_off, dir2) = md_preview(cfg_code_bg_none(), "ui_theme_bg_off", body);
+    let bg_off = s_off.style_of("fn a").map(|st| st.bg);
+    std::fs::remove_dir_all(&dir2).ok();
+
+    assert!(
+        matches!(bg_on, Some(Some(ratatui::style::Color::Rgb(..)))),
+        "既定のコード背景は実色のはず: {bg_on:?}"
+    );
+    assert_eq!(
+        bg_off,
+        Some(Some(ratatui::style::Color::Reset)),
+        "code_bg=none は背景なし(Reset)のはず: {bg_off:?}"
+    );
+    assert_ne!(bg_on, bg_off);
+}
+
+/// `image_render_scale`: `App::prepare_image` (the function `ui/preview.rs` calls right before
+/// drawing) shrinks the on-screen target rect proportionally when < 1.0. Calling it directly with a
+/// fixed `inner` rect avoids needing to inspect drawn pixels. A picker is required (`with_picker`)
+/// only for `picker.font_size()`/`is_some()` — no async worker needed since still-image decode
+/// (`load_image`) has a synchronous fallback.
+#[test]
+fn e2e_ui_image_render_scale_shrinks_display_rect() {
+    let dir = sandbox("ui_image_render_scale_cfg");
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        800,
+        600,
+        image::Rgb([200, 50, 50]),
+    ));
+    img.save(dir.join("p.png")).unwrap();
+    let root = canon(&dir);
+    let inner = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    let mut s_default = Sim::new(&root).with_picker(); // image_render_scale=1.0
+    s_default.select("p.png");
+    s_default.enter();
+    let target_default = s_default
+        .app
+        .prepare_image(inner)
+        .expect("画像がデコードされ target rect が計算されるはず");
+
+    let mut cfg = Config::default();
+    cfg.ui.image_render_scale = 0.3;
+    let mut s_small = Sim::with_config(&root, cfg).with_picker();
+    s_small.select("p.png");
+    s_small.enter();
+    let target_small = s_small
+        .app
+        .prepare_image(inner)
+        .expect("画像がデコードされ target rect が計算されるはず");
+
+    assert!(
+        target_small.width < target_default.width && target_small.height < target_default.height,
+        "image_render_scale=0.3 は既定1.0より小さい表示矩形になるはず: small={target_small:?} default={target_default:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `svg_max_px`: a lower rasterization cap produces a raster with fewer pixels, which
+/// `image_layout`'s natural-size calculation (pixels ÷ font size) maps to a smaller apparent
+/// on-screen cell size for the very first display of a vector image.
+#[test]
+fn e2e_ui_svg_max_px_changes_apparent_display_size() {
+    let dir = sandbox("ui_svg_max_px_cfg");
+    std::fs::copy("samples/sample.svg", dir.join("p.svg")).unwrap();
+    let root = canon(&dir);
+    let inner = ratatui::layout::Rect::new(0, 0, 80, 20);
+
+    let mut s_default = Sim::new(&root).with_picker(); // svg_max_px=800
+    s_default.select("p.svg");
+    s_default.enter();
+    let target_default = s_default
+        .app
+        .prepare_image(inner)
+        .expect("SVG がラスタライズされ target rect が計算されるはず");
+
+    let mut cfg = Config::default();
+    cfg.ui.svg_max_px = 40;
+    let mut s_small = Sim::with_config(&root, cfg).with_picker();
+    s_small.select("p.svg");
+    s_small.enter();
+    let target_small = s_small
+        .app
+        .prepare_image(inner)
+        .expect("SVG がラスタライズされ target rect が計算されるはず");
+
+    assert!(
+        target_small.width < target_default.width || target_small.height < target_default.height,
+        "svg_max_px=40 は既定800より小さい見かけサイズになるはず: small={target_small:?} default={target_default:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_sort_config_sets_initial_order_without_pressing_s() {
+    let dir = sandbox("ui_sort_cfg");
+    std::fs::write(dir.join("aaa.txt"), vec![b'a'; 300]).unwrap();
+    std::fs::write(dir.join("bbb.txt"), vec![b'b'; 30]).unwrap();
+    std::fs::write(dir.join("ccc.txt"), vec![b'c'; 150]).unwrap();
+    let root = canon(&dir);
+
+    fn names(s: &Sim) -> Vec<&str> {
+        s.app
+            .tab
+            .entries
+            .iter()
+            .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+            .collect()
+    }
+
+    let s_default = Sim::new(&root); // default sort.key="name"
+    assert_eq!(names(&s_default), vec!["aaa.txt", "bbb.txt", "ccc.txt"]);
+
+    let mut cfg = Config::default();
+    cfg.ui.sort.key = "size".into();
+    let s_cfg = Sim::with_config(&root, cfg);
+    assert_eq!(
+        names(&s_cfg),
+        vec!["bbb.txt", "ccc.txt", "aaa.txt"],
+        "sort.key=\"size\" は起動時からサイズ順のはず(sメニュー不要)"
+    );
+    assert!(
+        !s_cfg.app.is_sort_menu(),
+        "メニューを開かず既に反映済みのはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_graph_max_branches_caps_legend_entries() {
+    let dir = sandbox("ui_graph_max_branches_cfg");
+    seed_repo_history(&dir); // main + feature-x = 2 branches already
+    let dir = canon(&dir);
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["branch", "b1"]);
+    run(&["branch", "b2"]);
+    run(&["branch", "b3"]); // now 5 branches total
+
+    let mut cfg = Config::default();
+    cfg.ui.graph_max_branches = 2;
+    let mut s = Sim::with_config(&dir, cfg);
+    s.key('o');
+    s.key('g');
+    s.see("hidden)");
+
+    let mut cfg2 = Config::default();
+    cfg2.ui.graph_max_branches = 0; // 0 = unlimited
+    let mut s2 = Sim::with_config(&dir, cfg2);
+    s2.key('o');
+    s2.key('g');
+    s2.dont_see("hidden)");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_graph_base_branches_config_auto_selects_base() {
+    let dir = sandbox("ui_graph_base_branches_cfg");
+    seed_repo(&dir);
+    let root = canon(&dir);
+    let base = crate::git::branch(&root).expect("has a branch after seed_repo's commit");
+
+    let mut s_default = Sim::new(&root); // default graph_base_branches=[]: no auto base
+    s_default.key('o');
+    s_default.key('g');
+    s_default.dont_see("⌖ base:");
+
+    let mut cfg = Config::default();
+    cfg.ui.graph_base_branches = vec![base];
+    let mut s_cfg = Sim::with_config(&root, cfg);
+    s_cfg.key('o');
+    s_cfg.key('g');
+    s_cfg.see("⌖ base:"); // auto-pinned without pressing `s`
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_commit_meta_align_right_vs_inline_moves_author_column() {
+    let dir = sandbox("ui_commit_meta_align_cfg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "AuthorZZZ"]);
+    std::fs::write(dir.join("a.rs"), "fn a(){}\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "shortsubj"]);
+    let dir = canon(&dir);
+
+    let mut s_right = Sim::new(&dir); // default "right": a padded column near the right edge
+    s_right.key('o');
+    s_right.key('l');
+    let (_, col_right) = s_right
+        .find_text("AuthorZZZ")
+        .expect("author shown in the log row");
+
+    let mut cfg = Config::default();
+    cfg.ui.commit_meta_align = "inline".into();
+    let mut s_inline = Sim::with_config(&dir, cfg); // right after the (short) subject
+    s_inline.key('o');
+    s_inline.key('l');
+    let (_, col_inline) = s_inline
+        .find_text("AuthorZZZ")
+        .expect("author shown in the log row");
+
+    assert!(
+        col_right > col_inline,
+        "right は列揃え(右寄り)/inline は subject 直後(左寄り)のはず: right_col={col_right} inline_col={col_inline}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_follow_view_file_shows_content_preview_not_diff() {
+    let dir = sandbox("ui_follow_view_file_cfg");
+    seed_repo(&dir); // a.rs is tracked
+    let mut cfg = Config::default();
+    cfg.ui.follow_view = "file".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.key('F');
+    assert!(s.app.follow_enabled(), "F でフォロー ON");
+
+    let a = s.app.tab.root.join("a.rs");
+    std::fs::write(&a, "fn a() { let _x = 2; }\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "follow_view=\"file\" は diff でなく通常プレビューのはず(既定は diff — e2e_follow_opens_full_screen_diff参照)"
+    );
+    assert_eq!(s.app.tab.mode, Mode::Preview);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_md_inline_html_off_keeps_raw_tags() {
+    // The doc comment on `md_inline_html` is precise about what "off" means: "false leaves all
+    // these tags to be stripped" — i.e. off doesn't restore the literal `<sub>...</sub>` tags (both
+    // on and off strip them; tui-markdown always drops unrecognized tags), it just stops converting
+    // the surviving text to Unicode. So the contrast is glyph-level ("2" vs "₂"), not tag-visibility.
+    let body = "H<sub>2</sub>O\n";
+    let mut cfg = Config::default();
+    cfg.ui.md_inline_html = false;
+    let (s, dir) = md_preview(cfg, "ui_inline_html_off", body);
+    s.see("H2O"); // literal "2" — not converted to a Unicode subscript
+    s.dont_see("H₂O");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_md_details_config_forces_open_despite_missing_attribute() {
+    let dir = sandbox("ui_md_details_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "<details>\n<summary>Sum</summary>\n\nBODYMARKER\n\n</details>\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    // No `open` attribute → "auto" (default) honors it and collapses.
+    let mut s_auto = Sim::new(&root);
+    s_auto.select("d.md");
+    s_auto.enter();
+    s_auto.dont_see("BODYMARKER");
+
+    // md_details="open" forces it open despite the missing attribute.
+    let mut cfg = Config::default();
+    cfg.ui.md_details = "open".into();
+    let mut s_open = Sim::with_config(&root, cfg);
+    s_open.select("d.md");
+    s_open.enter();
+    s_open.see("BODYMARKER");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `math`: with a picker attached (only needed for `picker.font_size()` — decode itself is
+/// synchronous without `md_img_tx`), the default "image" mode lifts an inline `$...$` expression
+/// onto its own reserved image placement (so the literal LaTeX text is NOT shown inline); "text"
+/// mode disables extraction entirely, so the literal source stays in the paragraph text.
+#[test]
+fn e2e_ui_math_image_mode_lifts_expression_text_mode_keeps_it_inline() {
+    let dir = sandbox("ui_math_mode_cfg");
+    std::fs::write(dir.join("d.md"), "before $E=mc^2$ after\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s_image = Sim::new(&root).with_picker(); // default math="image"
+    s_image.select("d.md");
+    s_image.enter();
+    assert_eq!(
+        s_image.app.md_images().len(),
+        1,
+        "画像モードは math 用のプレースメントを1つ持つはず"
+    );
+    s_image.dont_see("E=mc^2"); // lifted onto its own image row, not shown as literal text
+
+    let mut cfg = Config::default();
+    cfg.ui.math = "text".into();
+    let mut s_text = Sim::with_config(&root, cfg).with_picker();
+    s_text.select("d.md");
+    s_text.enter();
+    assert!(
+        s_text.app.md_images().is_empty(),
+        "text モードは画像プレースメント無しのはず"
+    );
+    s_text.see("$E=mc^2$");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `math_color`: drives the real `md_encode_worker` (the same worker `main` spawns) so the
+/// rendered raster's pixel colors actually reach a halfblocks-protocol drawn cell, then reads the
+/// foreground RGB channels off the drawn buffer. The default light-gray (#d0d0d0) paints
+/// approximately-equal r/g/b; a saturated red (#ff0000) paints g≈b≈0 with r>0 — a signal that
+/// can't be produced by anything except the glyph color itself.
+#[test]
+fn e2e_ui_math_color_changes_rendered_pixel_hue() {
+    let dir = sandbox("ui_math_color_cfg");
+    std::fs::write(dir.join("d.md"), "$E=mc^2$\n").unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_rgbs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_picker();
+        let (enc_tx, enc_worker_rx) = std::sync::mpsc::channel();
+        let (enc_res_tx, enc_res_rx) = std::sync::mpsc::channel();
+        s.app.attach_md_encoder(enc_tx);
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        std::thread::spawn(move || crate::app::md_encode_worker(picker, enc_worker_rx, enc_res_tx));
+        s.select("d.md");
+        s.enter(); // decode (sync, no md_img_tx) + kick an encode request
+        let res = enc_res_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker returns a result");
+        assert!(s.app.apply_md_encode(res), "現世代の結果は適用されるはず");
+        s.draw(); // now the protocol is Some → the Image widget actually draws pixels
+        let buf = s.term.backend().buffer();
+        let mut out = Vec::new();
+        for cell in buf.content().iter() {
+            if let Some(ratatui::style::Color::Rgb(r, g, b)) = cell.style().fg {
+                out.push((r, g, b));
+            }
+        }
+        out
+    }
+
+    let rgbs_default = render_and_get_rgbs(Config::default(), &root); // #d0d0d0
+    assert!(
+        !rgbs_default.is_empty(),
+        "既定色でも実ピクセルが描かれるはず"
+    );
+    assert!(
+        rgbs_default
+            .iter()
+            .all(|&(r, g, b)| r.abs_diff(g) <= 2 && g.abs_diff(b) <= 2),
+        "既定(#d0d0d0)は無彩色(r≈g≈b)のはず: {rgbs_default:?}"
+    );
+
+    let mut cfg_red = Config::default();
+    cfg_red.ui.math_color = "#ff0000".into();
+    let rgbs_red = render_and_get_rgbs(cfg_red, &root);
+    assert!(!rgbs_red.is_empty(), "赤色設定でも実ピクセルが描かれるはず");
+    assert!(
+        rgbs_red.iter().any(|&(r, g, b)| r > 20 && g == 0 && b == 0),
+        "math_color=#ff0000 は赤チャンネルのみのはず: {rgbs_red:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid`: same reasoning as `math` above — a picker unlocks classification/sizing without
+/// needing the encode worker. Default "image" shows the sentinel caption and a reserved image
+/// placement; "text" disables the whole image path (legacy Unicode box-drawing renders instead,
+/// with no caption and no placement).
+#[test]
+fn e2e_ui_mermaid_image_mode_shows_caption_text_mode_does_not() {
+    let dir = sandbox("ui_mermaid_mode_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "# Doc\n\n```mermaid\nflowchart TD\nA-->B\n```\n\nafter\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s_image = Sim::new(&root).with_picker(); // default mermaid="image"
+    s_image.select("d.md");
+    s_image.enter();
+    s_image.see("◇ mermaid");
+    assert_eq!(s_image.app.md_images().len(), 1);
+
+    let mut cfg = Config::default();
+    cfg.ui.mermaid = "text".into();
+    let mut s_text = Sim::with_config(&root, cfg).with_picker();
+    s_text.select("d.md");
+    s_text.enter();
+    s_text.dont_see("◇ mermaid");
+    assert!(s_text.app.md_images().is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid_theme`: same driven-encode-worker technique as `math_color`. "dark" paints near-black
+/// low RGB values; "neutral" paints near-white high RGB values — a difference confirmed directly
+/// against `mermaid_to_svg`+`rasterize_bytes` output (204,204,204 vs 212,212,212 at a sample pixel)
+/// before this test was written, then verified to actually reach the drawn buffer once the diagram
+/// is sized small enough to stay fully inside the viewport (a too-tall diagram gets clipped and its
+/// visible band alone doesn't reach the encode step in this harness — see mermaid_rows below).
+#[test]
+fn e2e_ui_mermaid_theme_changes_rendered_pixel_brightness() {
+    let dir = sandbox("ui_mermaid_theme_cfg");
+    std::fs::write(dir.join("d.md"), "```mermaid\nflowchart TD\nA-->B\n```\n").unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_fgs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_picker();
+        let (enc_tx, enc_worker_rx) = std::sync::mpsc::channel();
+        let (enc_res_tx, enc_res_rx) = std::sync::mpsc::channel();
+        s.app.attach_md_encoder(enc_tx);
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        std::thread::spawn(move || crate::app::md_encode_worker(picker, enc_worker_rx, enc_res_tx));
+        s.select("d.md");
+        s.enter();
+        let res = enc_res_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker returns a result");
+        assert!(s.app.apply_md_encode(res));
+        s.draw();
+        let buf = s.term.backend().buffer();
+        let mut out = Vec::new();
+        for cell in buf.content().iter() {
+            if let Some(ratatui::style::Color::Rgb(r, g, b)) = cell.style().fg {
+                out.push((r, g, b));
+            }
+        }
+        out
+    }
+
+    let mut cfg_dark = Config::default();
+    cfg_dark.ui.mermaid_theme = "dark".into();
+    cfg_dark.ui.mermaid_rows = 6; // keep the whole block inside the 26-row test terminal
+    let fg_dark = render_and_get_fgs(cfg_dark, &root);
+    assert!(
+        !fg_dark.is_empty(),
+        "dark テーマでも実ピクセルが描かれるはず"
+    );
+
+    let mut cfg_neutral = Config::default();
+    cfg_neutral.ui.mermaid_theme = "neutral".into();
+    cfg_neutral.ui.mermaid_rows = 6;
+    let fg_neutral = render_and_get_fgs(cfg_neutral, &root);
+    assert!(
+        !fg_neutral.is_empty(),
+        "neutral テーマでも実ピクセルが描かれるはず"
+    );
+
+    let avg = |v: &[(u8, u8, u8)]| -> f64 {
+        v.iter()
+            .map(|&(r, g, b)| (r as f64 + g as f64 + b as f64) / 3.0)
+            .sum::<f64>()
+            / v.len() as f64
+    };
+    let avg_dark = avg(&fg_dark);
+    let avg_neutral = avg(&fg_neutral);
+    assert!(
+        avg_dark < avg_neutral,
+        "dark は neutral より暗い(低RGB)はず: dark_avg={avg_dark:.1} neutral_avg={avg_neutral:.1}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid_rows`: the reserved cell box (`ImagePlacement.rows`) scales directly with the target
+/// row count, independent of any encode/rendering — a picker alone (for `font_size()`) is enough.
+#[test]
+fn e2e_ui_mermaid_rows_changes_reserved_diagram_height() {
+    let dir = sandbox("ui_mermaid_rows_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "```mermaid\nflowchart TD\nA-->B-->C-->D-->E-->F\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s_default = Sim::new(&root).with_picker(); // default mermaid_rows=24
+    s_default.select("d.md");
+    s_default.enter();
+    let rows_default = s_default.app.md_images()[0].rows;
+
+    let mut cfg = Config::default();
+    cfg.ui.mermaid_rows = 4;
+    let mut s_small = Sim::with_config(&root, cfg).with_picker();
+    s_small.select("d.md");
+    s_small.enter();
+    let rows_small = s_small.app.md_images()[0].rows;
+
+    assert!(
+        rows_small < rows_default,
+        "mermaid_rows=4 は既定24より小さい高さになるはず: small={rows_small} default={rows_default}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled() {
+    let dir = sandbox("ui_busy_indicator_cfg");
+    std::fs::copy("samples/sample.svg", dir.join("p.svg")).unwrap();
+    let root = canon(&dir);
+
+    // default busy_indicator=true: while media is loading, the spinner+label shows.
+    let (tx_on, rx_on) = std::sync::mpsc::channel();
+    let mut s_on = Sim::new(&root).with_picker();
+    s_on.app.attach_media_loader(tx_on);
+    std::mem::forget(rx_on); // never drained: media_loading stays true for this frame
+    s_on.select("p.svg");
+    s_on.enter();
+    assert!(s_on.app.is_media_loading());
+    s_on.see("loading media");
+
+    // busy_indicator=false: the same in-flight state, but the indicator is suppressed.
+    let (tx_off, rx_off) = std::sync::mpsc::channel();
+    let mut cfg = Config::default();
+    cfg.ui.busy_indicator = false;
+    let mut s_off = Sim::with_config(&root, cfg).with_picker();
+    s_off.app.attach_media_loader(tx_off);
+    std::mem::forget(rx_off);
+    s_off.select("p.svg");
+    s_off.enter();
+    assert!(s_off.app.is_media_loading());
+    s_off.dont_see("loading media");
     std::fs::remove_dir_all(&dir).ok();
 }
