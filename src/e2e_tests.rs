@@ -3961,6 +3961,193 @@ fn e2e_search_second_query_replaces_first() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// ---- Windowed page/half-page scroll: real keystrokes (both key schemes) ----
+// Regression: after paging *down* through a windowed (Code/Text) preview, the caret sits on the
+// last visible row, so the very next page/half-page *up* moved the caret back to `top` — still
+// on screen — and `follow_cursor` saw nothing to do: the window didn't move (the first upward
+// page/half-page after a downward one was silently swallowed). Fixed by `App::windowed_page_scroll`,
+// which moves the window directly and carries the caret along. These drive real key input through
+// `handle_key` (not the App method directly) for both the vim (Ctrl-f/b/d/u) and less (f/b/d/u)
+// key schemes, and cross-check the two schemes land on identical window positions.
+
+/// 400 lines "line001".."line400", one per line — enough room to page through repeatedly without
+/// hitting the top/bottom clamp.
+fn paging_body() -> String {
+    let mut body = String::new();
+    for i in 1..=400 {
+        body.push_str(&format!("line{i:03}\n"));
+    }
+    body
+}
+
+#[test]
+fn e2e_preview_page_vim_scheme_first_page_up_after_paging_down_moves_the_window() {
+    let (mut s, dir) = text_preview(Config::default(), "wpage_vim", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let page = (s.app.tab.preview_viewport as i64 - 1).max(1);
+
+    s.ctrl('f');
+    s.ctrl('f');
+    s.ctrl('f');
+    let top_after_downs = s.app.preview_top_line();
+    assert_eq!(top_after_downs as i64, 3 * page, "Ctrl-f×3 後の窓位置");
+
+    s.ctrl('b');
+    assert_ne!(
+        s.app.preview_top_line(),
+        top_after_downs,
+        "vim: Ctrl-f の直後、最初の Ctrl-b で窓が動かない(バグの再現)"
+    );
+    assert_eq!(
+        s.app.preview_top_line() as i64,
+        2 * page,
+        "Ctrl-b は 1 ページ分だけ戻るはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_preview_half_page_vim_scheme_first_half_up_after_half_paging_down_moves_the_window() {
+    let (mut s, dir) = text_preview(Config::default(), "whalf_vim", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let half = (s.app.tab.preview_viewport as i64 / 2).max(1);
+
+    s.ctrl('d');
+    s.ctrl('d');
+    let top_after_downs = s.app.preview_top_line();
+    assert_eq!(top_after_downs as i64, 2 * half, "Ctrl-d×2 後の窓位置");
+
+    s.ctrl('u');
+    assert_ne!(
+        s.app.preview_top_line(),
+        top_after_downs,
+        "vim: Ctrl-d の直後、最初の Ctrl-u で窓が動かない(バグの再現)"
+    );
+    assert_eq!(
+        s.app.preview_top_line() as i64,
+        half,
+        "Ctrl-u は半ページ分だけ戻るはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_preview_page_less_scheme_first_page_up_after_paging_down_moves_the_window() {
+    let mut cfg = Config::default();
+    cfg.ui.keys = "less".into();
+    let (mut s, dir) = text_preview(cfg, "wpage_less", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let page = (s.app.tab.preview_viewport as i64 - 1).max(1);
+
+    // less: Space also pages down (in addition to `f`) — exercise both.
+    s.key(' ');
+    s.key('f');
+    s.key('f');
+    let top_after_downs = s.app.preview_top_line();
+    assert_eq!(top_after_downs as i64, 3 * page, "Space,f,f 後の窓位置");
+
+    s.key('b');
+    assert_ne!(
+        s.app.preview_top_line(),
+        top_after_downs,
+        "less: f の直後、最初の b で窓が動かない(バグの再現)"
+    );
+    assert_eq!(
+        s.app.preview_top_line() as i64,
+        2 * page,
+        "b は 1 ページ分だけ戻るはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_preview_half_page_less_scheme_first_half_up_after_half_paging_down_moves_the_window() {
+    let mut cfg = Config::default();
+    cfg.ui.keys = "less".into();
+    let (mut s, dir) = text_preview(cfg, "whalf_less", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let half = (s.app.tab.preview_viewport as i64 / 2).max(1);
+
+    s.key('d');
+    s.key('d');
+    let top_after_downs = s.app.preview_top_line();
+    assert_eq!(top_after_downs as i64, 2 * half, "d×2 後の窓位置");
+
+    s.key('u');
+    assert_ne!(
+        s.app.preview_top_line(),
+        top_after_downs,
+        "less: d の直後、最初の u で窓が動かない(バグの再現)"
+    );
+    assert_eq!(
+        s.app.preview_top_line() as i64,
+        half,
+        "u は半ページ分だけ戻るはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_preview_paging_vim_and_less_schemes_land_on_identical_positions() {
+    // Both schemes route the same keys to the same `Action::Navigate(Motion::Page*/Half*)`, so a
+    // vim session (Ctrl-f/b/d/u) and a less session (f/b/d/u) run through the identical scenario
+    // must end up with the identical window/caret state.
+    fn drive(scheme: &str) -> (usize, usize, usize, usize) {
+        let mut cfg = Config::default();
+        cfg.ui.keys = scheme.into();
+        let (mut s, dir) = text_preview(
+            cfg,
+            &format!("wpage_agree_{scheme}"),
+            "big.txt",
+            &paging_body(),
+        );
+        assert!(s.app.is_windowed(), "{scheme}");
+        if scheme == "less" {
+            s.key('f');
+            s.key('f');
+            s.key('f');
+        } else {
+            s.ctrl('f');
+            s.ctrl('f');
+            s.ctrl('f');
+        }
+        let down3 = s.app.preview_top_line();
+        if scheme == "less" {
+            s.key('b');
+        } else {
+            s.ctrl('b');
+        }
+        let up1 = s.app.preview_top_line();
+        if scheme == "less" {
+            s.key('d');
+            s.key('d');
+        } else {
+            s.ctrl('d');
+            s.ctrl('d');
+        }
+        let halfdown2 = s.app.preview_top_line();
+        if scheme == "less" {
+            s.key('u');
+        } else {
+            s.ctrl('u');
+        }
+        let halfup1 = s.app.preview_top_line();
+        std::fs::remove_dir_all(&dir).ok();
+        (down3, up1, halfdown2, halfup1)
+    }
+
+    let vim = drive("vim");
+    let less = drive("less");
+    assert_eq!(
+        vim, less,
+        "vim/less スキームで同じキー操作の結果が一致しない"
+    );
+    // Also pin the regression fix down in this combined scenario: none of the "first up after
+    // paging down" steps left the window where it was.
+    assert_ne!(vim.0, vim.1);
+    assert_ne!(vim.2, vim.3);
+}
+
 // ---- preview 2D caret + visual selection (v/V) + Y reference ----
 // The caret line is verified via selection_ref_string() (@path#L{n}), the caret column via preview_selection().
 

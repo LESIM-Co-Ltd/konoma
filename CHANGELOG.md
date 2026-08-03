@@ -22,6 +22,19 @@ All notable changes to konoma are documented in this file. The format is based o
   to `[can not preview: <ext>]` with the failure reason attached — never a crash, never a raw Debug
   dump. `[external] preview_commands = false` continues to disable the whole delegation path.
 
+### Fixed
+- **Text/code preview: the first PageUp/HalfPageUp right after paging down was silently
+  ignored — happens with the default keymap.** `Ctrl-f Ctrl-f Ctrl-f Ctrl-b` (vim scheme) or
+  `f f f b` (less scheme) left the window exactly where it was on that first `Ctrl-b`/`b`;
+  `Ctrl-d`/`Ctrl-u` and `PageDown`/`PageUp` had the same problem. Root cause: paging reused the
+  single-step "always-visible caret" model (`preview_cursor_move`/`follow_cursor`), which moves
+  the caret first and only scrolls the window once the caret would leave the screen. Paging down
+  leaves the caret sitting exactly on the last visible row (the closest `follow_cursor` gets while
+  keeping it on screen); the next page/half-page up then moves the caret back up by one page,
+  landing it exactly on the window's top row — still "on screen" — so `follow_cursor` had nothing
+  to do and the window never moved. Text/code paging now moves the window directly and carries the
+  caret along, preserving its on-screen row; `j`/`k` (single-step) are unaffected.
+
 ## [0.23.2] - 2026-08-03
 
 ### Fixed

@@ -2913,6 +2913,14 @@ impl App {
         self.tab.focused_item
     }
 
+    /// The windowed preview's current top line (0-based, the first line shown on screen).
+    /// Read-only query used by the E2E simulation tests to pin down page/half-page scrolling
+    /// (whether the *window*, not just the caret, actually moved).
+    #[cfg(test)]
+    pub fn preview_top_line(&self) -> usize {
+        self.tab.preview_top_line
+    }
+
     /// The link targets in the current Markdown preview's `md_items`, in document order (E2E: assert
     /// exactly which URLs became focusable links — e.g. that a URL inside code did NOT).
     #[cfg(test)]
@@ -3243,13 +3251,51 @@ impl App {
     /// Overlaps one row to keep context. The upper bound is clamped at render time.
     pub fn preview_page(&mut self, dir: i32) {
         let page = self.tab.preview_viewport.saturating_sub(1).max(1) as i32;
+        if self.is_windowed() {
+            self.windowed_page_scroll(dir * page);
+            return;
+        }
         self.preview_scroll(dir * page);
     }
 
     /// Half-page the text preview (vim: Ctrl-d/Ctrl-u, less: d/u).
     pub fn preview_half_page(&mut self, dir: i32) {
         let half = (self.tab.preview_viewport / 2).max(1) as i32;
+        if self.is_windowed() {
+            self.windowed_page_scroll(dir * half);
+            return;
+        }
         self.preview_scroll(dir * half);
+    }
+
+    /// Windowed (Code/Text) page/half-page scroll: moves the **window** by `delta` lines and
+    /// carries the caret along, preserving its on-screen row.
+    ///
+    /// Single-step scrolling (`j`/`k`, via `preview_scroll`→`preview_cursor_move`) intentionally
+    /// moves the caret first and lets `follow_cursor` scroll the window only once the caret would
+    /// leave the screen (an "always-visible cursor" model). Paging through that same path breaks
+    /// down: `Ctrl-f` (dir=+1) lands the caret exactly on the last visible row (the closest
+    /// `follow_cursor` gets while keeping it on screen — see its `cur >= top + vh` branch). The very
+    /// next `Ctrl-b` (dir=-1) then moves the caret back up by one page, which lands it back at
+    /// `top` — still inside the *current* (not-yet-scrolled) viewport — so `follow_cursor` sees
+    /// nothing to do and the window doesn't move. The first upward page/half-page after a downward
+    /// one is silently swallowed (and symmetrically for `Ctrl-u` after `Ctrl-d`). Paging must
+    /// instead move the window directly (`win_scroll_lines`, which already clamps at both the top
+    /// and the last page) and reposition the caret at the row it occupied before the move, so the
+    /// caret and the window always move together on a page/half-page step.
+    fn windowed_page_scroll(&mut self, delta: i32) {
+        let row_in_view = self
+            .tab
+            .preview_cursor_line
+            .saturating_sub(self.tab.preview_top_line);
+        self.win_scroll_lines(delta);
+        let total = self.win_total().unwrap_or(usize::MAX);
+        let maxl = total.saturating_sub(1);
+        self.tab.preview_cursor_line = self
+            .tab
+            .preview_top_line
+            .saturating_add(row_in_view)
+            .min(maxl);
     }
 
     /// To the top of the preview.

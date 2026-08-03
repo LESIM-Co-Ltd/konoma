@@ -5692,6 +5692,285 @@ fn preview_scroll_paging_and_to_top_non_windowed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Opens a fresh windowed (Code/Text) text preview: creates `name` with `n` lines
+/// ("line001".."lineNNN"), activates it from the tree, and sets `preview_viewport`. Used by the
+/// `windowed_page_*` regression tests below (see `App::windowed_page_scroll`'s doc comment for the
+/// bug this whole group pins down).
+fn windowed_text_app(dir: &std::path::Path, name: &str, n: usize, viewport: u16) -> App {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut body = String::new();
+    for i in 1..=n {
+        body.push_str(&format!("line{i:03}\n"));
+    }
+    std::fs::write(dir.join(name), &body).unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    let idx = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with(name))
+        .unwrap();
+    app.tab.selected = idx;
+    app.tree_activate().unwrap();
+    assert!(app.is_windowed(), "テキストファイルは windowed のはず");
+    app.tab.preview_viewport = viewport;
+    app
+}
+
+#[test]
+fn windowed_page_down_then_up_returns_to_the_same_position() {
+    // #1 symmetry: PageDown then PageUp (same size) lands back exactly where it started,
+    // including the caret's on-screen row, when neither step is clamped by an edge.
+    let dir = unique_tmp("konoma_wpage_symmetry");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    // Start away from the top row (row_in_view=5) so the round-trip actually exercises the
+    // caret-carrying math, not just the trivial top==0 case.
+    app.preview_scroll(5); // j×5: cursor 0→5, window doesn't move yet (still on screen)
+    let top0 = app.tab.preview_top_line;
+    let cur0 = app.tab.preview_cursor_line;
+    assert_eq!((top0, cur0), (0, 5));
+
+    app.preview_page(1);
+    assert_ne!(app.tab.preview_top_line, top0, "ページ送りで窓が動くはず");
+    app.preview_page(-1);
+    assert_eq!(
+        app.tab.preview_top_line, top0,
+        "1往復で窓が元の位置に戻らない"
+    );
+    assert_eq!(
+        app.tab.preview_cursor_line, cur0,
+        "キャレットも元の行に戻らない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_first_page_up_after_paging_down_moves_the_window() {
+    // #2 the regression itself: after paging down repeatedly, the caret sits on the last visible
+    // row. The *old* code moved the caret back up by one page via `preview_cursor_move`, which
+    // landed it exactly on `top` — still "on screen" — so `follow_cursor` saw nothing to do and
+    // the window never moved: the first PageUp after a run of PageDowns was silently swallowed.
+    let dir = unique_tmp("konoma_wpage_regression");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    // page = viewport.saturating_sub(1) = 19.
+    app.preview_page(1);
+    app.preview_page(1);
+    app.preview_page(1);
+    assert_eq!(app.tab.preview_top_line, 57, "3 回の下ページ送り後の窓位置");
+    assert_eq!(app.tab.preview_cursor_line, 57);
+
+    let top_before_up = app.tab.preview_top_line;
+    app.preview_page(-1);
+    assert_ne!(
+        app.tab.preview_top_line, top_before_up,
+        "下ページ送りの直後、最初の上ページ送りで窓が動かない(バグの再現)"
+    );
+    assert_eq!(app.tab.preview_top_line, 38, "1 ページ分だけ戻るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_first_half_page_up_after_half_paging_down_moves_the_window() {
+    // #3: the same regression for the half-page motions (vim Ctrl-d/Ctrl-u, less d/u).
+    let dir = unique_tmp("konoma_whalf_regression");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    // half = viewport/2 = 10.
+    app.preview_half_page(1);
+    app.preview_half_page(1);
+    assert_eq!(
+        app.tab.preview_top_line, 20,
+        "2 回の下半ページ送り後の窓位置"
+    );
+
+    let top_before_up = app.tab.preview_top_line;
+    app.preview_half_page(-1);
+    assert_ne!(
+        app.tab.preview_top_line, top_before_up,
+        "下半ページ送りの直後、最初の上半ページ送りで窓が動かない(バグの再現)"
+    );
+    assert_eq!(app.tab.preview_top_line, 10, "半ページ分だけ戻るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_page_scroll_preserves_the_caret_on_screen_row() {
+    // #4: the caret's row relative to the top of the window (`cursor_line - top_line`) is carried
+    // across a page/half-page move, not reset to 0 and not left behind.
+    let dir = unique_tmp("konoma_wpage_caret_row");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    app.preview_scroll(5); // caret at on-screen row 5 (top=0, cursor=5)
+    let row = |a: &App| a.tab.preview_cursor_line - a.tab.preview_top_line;
+    assert_eq!(row(&app), 5);
+
+    app.preview_page(1);
+    assert_eq!(
+        row(&app),
+        5,
+        "ページ送り後もキャレットの画面上の行位置が保たれない"
+    );
+    app.preview_page(1);
+    assert_eq!(row(&app), 5, "2 回目のページ送りでも保たれない");
+    app.preview_half_page(-1);
+    assert_eq!(row(&app), 5, "半ページ送りでも保たれない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_page_up_at_top_is_a_noop_and_does_not_panic() {
+    // #5 clamp (top edge): PageUp/HalfPageUp already at the top don't move and don't panic.
+    let dir = unique_tmp("konoma_wpage_top_clamp");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    assert_eq!(
+        (app.tab.preview_top_line, app.tab.preview_cursor_line),
+        (0, 0)
+    );
+    app.preview_page(-1);
+    assert_eq!(
+        (app.tab.preview_top_line, app.tab.preview_cursor_line),
+        (0, 0)
+    );
+    app.preview_half_page(-1);
+    assert_eq!(
+        (app.tab.preview_top_line, app.tab.preview_cursor_line),
+        (0, 0)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_page_down_at_bottom_does_not_pass_the_last_page() {
+    // #5 clamp (bottom edge): PageDown/HalfPageDown at the end don't scroll past the last page.
+    let dir = unique_tmp("konoma_wpage_bottom_clamp");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    app.preview_to_bottom();
+    let top_at_bottom = app.tab.preview_top_line;
+    assert_eq!(
+        app.tab.preview_cursor_line, 399,
+        "to_bottom で最終行(0基準399)へ"
+    );
+
+    app.preview_page(1);
+    assert_eq!(
+        app.tab.preview_top_line, top_at_bottom,
+        "最終ページより先へ動かない"
+    );
+    assert_eq!(
+        app.tab.preview_cursor_line, 399,
+        "キャレットは最終行にクランプされる"
+    );
+    app.preview_half_page(1);
+    assert_eq!(app.tab.preview_top_line, top_at_bottom);
+    assert_eq!(app.tab.preview_cursor_line, 399);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_single_step_scroll_is_unaffected_by_the_page_scroll_fix() {
+    // #6 non-regression: j/k (single-step, via `preview_scroll`) still just move the caret inside
+    // the current window and only scroll once the caret would leave the screen — unchanged by the
+    // page/half-page fix above (a separate code path, `preview_cursor_move`/`follow_cursor`).
+    let dir = unique_tmp("konoma_wpage_jk_nonregression");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    app.preview_scroll(5); // cursor 0→5, still on screen
+    assert_eq!(app.tab.preview_cursor_line, 5);
+    assert_eq!(app.tab.preview_top_line, 0, "窓内移動では窓は動かない");
+    for _ in 0..14 {
+        app.preview_scroll(1); // cursor 5→19 (still the last visible row, vh=20)
+    }
+    assert_eq!(app.tab.preview_cursor_line, 19);
+    assert_eq!(app.tab.preview_top_line, 0, "まだ窓は動かない");
+    app.preview_scroll(1); // cursor 19→20: now past the bottom edge
+    assert_eq!(app.tab.preview_cursor_line, 20);
+    assert_eq!(
+        app.tab.preview_top_line, 1,
+        "下端超えでようやく窓が1行だけ追従"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn windowed_page_scroll_extends_an_active_visual_selection() {
+    // #7: paging while a visual (V) selection is active must extend the selection by the same
+    // amount the caret moves (the anchor stays fixed; `preview_selection` reads the live caret).
+    //
+    // Note on why this test also pins `preview_top_line`: the selection extent tracks
+    // `preview_cursor_line`, and that value happens to be a plain cumulative sum of the applied
+    // deltas in *both* the pre-fix and the fixed implementation (the pre-fix bug only ever left
+    // the *window* behind — the caret itself always advanced correctly). So asserting only on
+    // `preview_selection()` here can never fail against the pre-fix code; it would be a
+    // non-discriminating test. Asserting the window position too makes this a real regression
+    // guard for visual mode specifically (paging must still move the window while selecting, not
+    // just move the caret/selection edge).
+    let dir = unique_tmp("konoma_wpage_visual_extend");
+    let mut app = windowed_text_app(&dir, "big.txt", 400, 20);
+    app.preview_enter_visual(true); // V: linewise, anchor at (0, 0)
+
+    app.preview_page(1);
+    app.preview_page(1);
+    app.preview_page(1);
+    let (hi_after_downs, top_after_downs) = match app.preview_selection() {
+        PreviewSelection::Line { lo, hi } => {
+            assert_eq!(lo, 0, "アンカーは固定");
+            assert_eq!(hi, app.tab.preview_cursor_line);
+            assert_eq!(hi, 57, "3 回のページ送りで選択が伸びていない");
+            (hi, app.tab.preview_top_line)
+        }
+        other => panic!("linewise 選択のはず: {other:?}"),
+    };
+    assert_eq!(top_after_downs, 57, "選択中でも窓は 3 ページ分動くはず");
+
+    app.preview_page(-1);
+    match app.preview_selection() {
+        PreviewSelection::Line { lo, hi } => {
+            assert_eq!(lo, 0, "アンカーは固定のまま");
+            assert_ne!(hi, hi_after_downs, "上ページ送りで選択端が縮まない");
+            assert_eq!(hi, 38, "1 ページ分だけ選択が縮むはず");
+        }
+        other => panic!("linewise 選択のはず: {other:?}"),
+    }
+    assert_ne!(
+        app.tab.preview_top_line, top_after_downs,
+        "選択中でも、下ページ送り直後の最初の上ページ送りで窓が動かない(バグの再現)"
+    );
+    assert_eq!(app.tab.preview_top_line, 38, "窓も 1 ページ分だけ戻るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn preview_page_non_windowed_decorated_markdown_is_unaffected() {
+    // #9 non-regression: decorated Markdown (not windowed) still pages via the pre-existing
+    // `preview_scroll` path — the windowed fix must not touch it.
+    let dir = unique_tmp("konoma_wpage_md_nonregression");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut src = String::from("# Title\n\n");
+    for i in 0..200 {
+        src.push_str(&format!("filler line {i}\n\n"));
+    }
+    std::fs::write(dir.join("doc.md"), &src).unwrap();
+
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    let md = dir.canonicalize().unwrap().join("doc.md");
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&md));
+    app.tab.preview_path = Some(md);
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_viewport = 10;
+    let _ = app.md_layout(80); // populate the decoration cache (same path as the real render)
+    assert!(!app.is_windowed(), "装飾 Markdown は windowed ではない");
+
+    app.preview_page(1); // +9 (overlaps by 1 line)
+    assert_eq!(app.tab.preview_scroll, 9);
+    app.preview_half_page(1); // +5
+    assert_eq!(app.tab.preview_scroll, 14);
+    app.preview_page(-1); // -9
+    assert_eq!(app.tab.preview_scroll, 5);
+    app.preview_half_page(-1); // -5
+    assert_eq!(
+        app.tab.preview_scroll, 0,
+        "非 windowed は preview_scroll に委譲されたまま"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn preview_hscroll_moves_and_home_end() {
     let dir = std::env::temp_dir().join("konoma_preview_hscroll_test");
