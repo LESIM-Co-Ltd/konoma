@@ -1502,6 +1502,10 @@ impl App {
         let key_scheme = KeyScheme::parse(&cfg.ui.keys);
         let lang = crate::i18n::Lang::resolve(&cfg.ui.lang);
         let sort = Sort::from_config(&cfg.ui.sort);
+        // `[ui] show_hidden` — captured before `cfg` is moved into `Self` below, and used as the
+        // fresh tab's starting value (rebuild_tree, called right after construction, reads
+        // `self.tab.show_hidden`, so this has to land before that first build).
+        let show_hidden = cfg.ui.show_hidden;
         // The diff layout's initial value (config git.diff). At runtime, `s` cycles vertical → horizontal → Auto.
         let diff_layout = DiffLayout::parse(&cfg.git.diff);
         // Run2 keymap: merge the defaults + config (`[keys.<surface>]` + the old copy_* alias) and
@@ -1574,6 +1578,7 @@ impl App {
             tab: PerTab {
                 root: root.clone(),
                 open_dir: root.clone(),
+                show_hidden,
                 ..PerTab::default()
             },
             table_viewport_rows: 0,

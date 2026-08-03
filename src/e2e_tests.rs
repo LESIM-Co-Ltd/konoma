@@ -6125,25 +6125,18 @@ enum Coverage {
     /// A dedicated unit/integration test outside the `Sim`/keystroke harness already drives
     /// `App::new(path, cfg)` end to end with real file I/O (so it satisfies layer (c) without going
     /// through `handle_key`). `.0` names it.
+    ///
+    /// (There used to be a fourth `NotObservable` category here for a field genuinely not wired up
+    /// to anything observable — `show_hidden` was its only occupant, tracking the dead-config-field
+    /// bug fixed in 2026-08. Every field is `Covered`/`CoveredElsewhere`/`CoveredByUnitTest` now, so
+    /// the category was removed rather than left with no variant to construct it.)
     CoveredByUnitTest(&'static str),
-    /// Not observable at this layer, with the concrete reason an attempt was made and what it hit.
-    /// Every field except `show_hidden` turned out to be observable once actually tried (see the
-    /// task report) — including the 7 picker-gated fields
-    /// (image_render_scale/svg_max_px/math/math_color/mermaid/mermaid_theme/mermaid_rows) that were
-    /// expected to need this category. `show_hidden` lands here not because of a test-layer
-    /// limitation but because it's genuinely dead code (see its table entry) — nothing to observe.
-    NotObservable(&'static str),
 }
 
 const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
     (
         "show_hidden",
-        Coverage::NotObservable(
-            "BUG FOUND, not fixed (out of this task's scope): cfg.ui.show_hidden is never read by \
-             App::new — tab.show_hidden always initializes to false regardless of config and only \
-             toggles via the `.` key / session restore. The config field is dead. Pinned down as a \
-             red, #[ignore]d test: e2e_ui_show_hidden_config_starts_with_dotfiles_visible",
-        ),
+        Coverage::Covered("e2e_ui_show_hidden_config_starts_with_dotfiles_visible"),
     ),
     (
         "filter_mode",
@@ -6440,7 +6433,6 @@ fn ui_config_coverage_table_breakdown() {
     let mut covered = 0usize;
     let mut covered_elsewhere = 0usize;
     let mut covered_by_unit_test = 0usize;
-    let mut not_observable: Vec<(&str, &str)> = Vec::new();
     for (field, cov) in UI_CONFIG_COVERAGE {
         match cov {
             Coverage::Covered(test) => {
@@ -6458,20 +6450,12 @@ fn ui_config_coverage_table_breakdown() {
                 );
                 covered_by_unit_test += 1;
             }
-            Coverage::NotObservable(reason) => {
-                assert!(!reason.is_empty(), "{field}: NotObservable の理由が空");
-                not_observable.push((field, reason));
-            }
         }
     }
     eprintln!(
-        "UI_CONFIG_COVERAGE breakdown: total={} Covered={covered} CoveredElsewhere={covered_elsewhere} CoveredByUnitTest={covered_by_unit_test} NotObservable={}",
+        "UI_CONFIG_COVERAGE breakdown: total={} Covered={covered} CoveredElsewhere={covered_elsewhere} CoveredByUnitTest={covered_by_unit_test}",
         UI_CONFIG_COVERAGE.len(),
-        not_observable.len()
     );
-    for (field, reason) in &not_observable {
-        eprintln!("  NotObservable: {field} — {reason}");
-    }
 }
 
 // =============================================================================
@@ -6480,19 +6464,17 @@ fn ui_config_coverage_table_breakdown() {
 // or in src/app/session_actions.rs).
 // =============================================================================
 
-/// FINDING (discovered while writing this H3 config-coverage pass): `[ui] show_hidden` parses fine
-/// (config/parity_tests.rs) but is **never read anywhere in app/*.rs** — grep confirms zero
-/// non-test/non-config references to `ui.show_hidden`. `App`'s runtime hidden-file flag
-/// (`tab.show_hidden`) is unconditionally initialized to `false` in the `PerTab` default and only
-/// ever flips via the `.` keypress (`app.rs`, `toggle_hidden`) or session restore
-/// (`session_actions.rs`) — never from config at `App::new`. So `show_hidden = true` in
-/// `~/.config/konoma/config.toml` currently has **zero effect** at startup: exactly the "config
-/// field parsed but never wired up" bug class this coverage pass exists to catch (the same shape as
-/// the `ui.keys` gap that motivated it). Kept as a red, `#[ignore]`d test per this file's header
-/// policy (documented-vs-reality mismatches are pinned down, not silently adjusted to match the
-/// bug) rather than fixed — this task's scope is test coverage, not product code.
+/// FIXED (2026-08, was FINDING-2026-08): `[ui] show_hidden` used to parse fine
+/// (config/parity_tests.rs) but was **never read anywhere in app/*.rs** — `tab.show_hidden` was
+/// unconditionally initialized to `false` in the `PerTab` default and only ever flipped via the
+/// `.` keypress (`app.rs`, `toggle_hidden`) or session restore (`session_actions.rs`), never from
+/// config at `App::new`. `App::new` now captures `cfg.ui.show_hidden` before `cfg` is moved into
+/// `Self` and feeds it into the fresh tab's `PerTab` (before the first `rebuild_tree`, so the very
+/// first draw already reflects it). `tab_new` (`t`/`Ctrl-t`) resets to the same config value rather
+/// than silently inheriting whatever the source tab's `.` toggle last left it at; session restore
+/// (`apply_saved_tab`) still overwrites it afterwards, so a restored tab's saved visibility wins
+/// over the config default, matching its documented persistence.
 #[test]
-#[ignore = "FINDING-2026-08: [ui] show_hidden is parsed but never applied at App::new (dead config field) — see doc comment"]
 fn e2e_ui_show_hidden_config_starts_with_dotfiles_visible() {
     let dir = sandbox("ui_show_hidden_cfg");
     seed_files(&dir);
@@ -6506,6 +6488,70 @@ fn e2e_ui_show_hidden_config_starts_with_dotfiles_visible() {
     let s_on = Sim::with_config(&root, cfg);
     s_on.see(".hidden.txt"); // visible from the very first draw, no `.` key needed
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A fresh tab (`t` → `tab_new`) starts hidden-file visibility from `[ui] show_hidden` again — it
+/// does not silently inherit whatever the source tab's `.` toggle last left it at. Exercised in
+/// both directions (config-on overriding a toggled-off source tab, and config-off overriding a
+/// toggled-on one) so either "always inherits the previous tab" or "always resets to false" would
+/// fail this.
+#[test]
+fn e2e_ui_show_hidden_new_tab_resets_to_config_default() {
+    // config on: toggle off in tab0, then `t` — tab1 should come back on.
+    let dir_on = sandbox("ui_show_hidden_new_tab_on");
+    seed_files(&dir_on);
+    let root_on = canon(&dir_on);
+    let mut cfg_on = Config::default();
+    cfg_on.ui.show_hidden = true;
+    let mut s_on = Sim::with_config(&root_on, cfg_on);
+    s_on.see(".hidden.txt");
+    s_on.key('.'); // toggle off in tab0
+    s_on.dont_see(".hidden.txt");
+    s_on.key('t'); // new tab
+    s_on.see(".hidden.txt"); // config default (on), not tab0's toggled-off state
+    std::fs::remove_dir_all(&dir_on).ok();
+
+    // config off (default): toggle on in tab0, then `t` — tab1 should come back off.
+    let dir_off = sandbox("ui_show_hidden_new_tab_off");
+    seed_files(&dir_off);
+    let root_off = canon(&dir_off);
+    let mut s_off = Sim::new(&root_off);
+    s_off.dont_see(".hidden.txt");
+    s_off.key('.'); // toggle on in tab0
+    s_off.see(".hidden.txt");
+    s_off.key('t'); // new tab
+    s_off.dont_see(".hidden.txt"); // config default (off), not tab0's toggled-on state
+    std::fs::remove_dir_all(&dir_off).ok();
+}
+
+/// The `.` toggle flips correctly from both possible starting points (config on and config off) —
+/// a regression that always flips to a hardcoded state (e.g. always ending up `false`) would pass
+/// the two config-default tests above (they only toggle once) but fail this.
+#[test]
+fn e2e_ui_show_hidden_dot_key_toggles_from_either_config_default() {
+    let dir_on = sandbox("ui_show_hidden_toggle_from_on");
+    seed_files(&dir_on);
+    let root_on = canon(&dir_on);
+    let mut cfg_on = Config::default();
+    cfg_on.ui.show_hidden = true;
+    let mut s_on = Sim::with_config(&root_on, cfg_on);
+    s_on.see(".hidden.txt");
+    s_on.key('.');
+    s_on.dont_see(".hidden.txt");
+    s_on.key('.'); // toggle back
+    s_on.see(".hidden.txt");
+    std::fs::remove_dir_all(&dir_on).ok();
+
+    let dir_off = sandbox("ui_show_hidden_toggle_from_off");
+    seed_files(&dir_off);
+    let root_off = canon(&dir_off);
+    let mut s_off = Sim::new(&root_off); // show_hidden=false
+    s_off.dont_see(".hidden.txt");
+    s_off.key('.');
+    s_off.see(".hidden.txt");
+    s_off.key('.'); // toggle back
+    s_off.dont_see(".hidden.txt");
+    std::fs::remove_dir_all(&dir_off).ok();
 }
 
 #[test]

@@ -23,6 +23,13 @@ All notable changes to konoma are documented in this file. The format is based o
   dump. `[external] preview_commands = false` continues to disable the whole delegation path.
 
 ### Fixed
+- **`[ui] show_hidden = true` had no effect at startup.** The config field parsed correctly and
+  the reference docs described it as "show dotfiles at startup", but `App::new` never read it —
+  the fresh tab's hidden-file flag was unconditionally initialized to `false`, only ever changing
+  via the `.` keypress or session restore. Dotfiles now start visible when the config says so, a
+  new tab (`t`/`Ctrl-t`) resets to the same config default instead of silently inheriting whatever
+  the source tab's `.` toggle last left it at, and a restored tab's saved visibility still wins
+  over the config default (unchanged).
 - **Text/code preview: the first PageUp/HalfPageUp right after paging down was silently
   ignored — happens with the default keymap.** `Ctrl-f Ctrl-f Ctrl-f Ctrl-b` (vim scheme) or
   `f f f b` (less scheme) left the window exactly where it was on that first `Ctrl-b`/`b`;

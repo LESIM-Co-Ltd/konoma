@@ -218,6 +218,11 @@ impl App {
         self.tab.open_dir = root.clone();
         self.tab.root = root;
         self.tab.selected = 0;
+        // A fresh tab starts from `[ui] show_hidden` again rather than silently inheriting
+        // whatever the source tab had toggled `.` to — the config default is a per-tab starting
+        // point, not a one-time app-startup value (matches `App::new`; session restore still wins,
+        // since `apply_saved_tab` overwrites this right after `tab_new` creates the tab it restores into).
+        self.tab.show_hidden = self.cfg.ui.show_hidden;
         self.tab.entries.clear();
         self.rebuild_tree()?;
         // Reset to Tree before the snapshot (order matters since the snapshot also captures

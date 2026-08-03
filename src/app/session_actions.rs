@@ -449,6 +449,73 @@ mod tests {
         fs::remove_dir_all(&base).ok();
     }
 
+    /// Session restore's saved `show_hidden` wins over the `[ui] show_hidden` default `App::new`
+    /// already applied — in both directions (config-on with a saved-off tab, and config-off with a
+    /// saved-on tab), so neither "config always wins" nor "restore always wins in one direction"
+    /// would pass this.
+    #[test]
+    fn session_restore_overrides_config_show_hidden_default_both_directions() {
+        // config on, saved off → restored tab should be off.
+        {
+            let (dir, base) = setup("konoma_sess_hidden_cfg_on_saved_off");
+            let store = SessionStore::with_base(base.clone(), &dir);
+            store
+                .write(SavedSession {
+                    dir: String::new(),
+                    active: 0,
+                    tabs: vec![SavedTab {
+                        root: dir.to_string_lossy().into(),
+                        show_hidden: false,
+                        ..Default::default()
+                    }],
+                })
+                .unwrap();
+
+            let mut cfg = Config::default();
+            cfg.ui.show_hidden = true;
+            let mut app = App::new(dir.clone(), cfg).unwrap();
+            assert!(app.tab.show_hidden, "App::new 直後は config の既定(on)");
+            app.attach_session_store(store);
+            app.restore_session();
+            assert!(
+                !app.tab.show_hidden,
+                "セッション復元の保存値(off)が config の既定(on)に勝つ"
+            );
+
+            fs::remove_dir_all(&dir).ok();
+            fs::remove_dir_all(&base).ok();
+        }
+
+        // config off (default), saved on → restored tab should be on.
+        {
+            let (dir, base) = setup("konoma_sess_hidden_cfg_off_saved_on");
+            let store = SessionStore::with_base(base.clone(), &dir);
+            store
+                .write(SavedSession {
+                    dir: String::new(),
+                    active: 0,
+                    tabs: vec![SavedTab {
+                        root: dir.to_string_lossy().into(),
+                        show_hidden: true,
+                        ..Default::default()
+                    }],
+                })
+                .unwrap();
+
+            let mut app = App::new(dir.clone(), Config::default()).unwrap();
+            assert!(!app.tab.show_hidden, "App::new 直後は config の既定(off)");
+            app.attach_session_store(store);
+            app.restore_session();
+            assert!(
+                app.tab.show_hidden,
+                "セッション復元の保存値(on)が config の既定(off)に勝つ"
+            );
+
+            fs::remove_dir_all(&dir).ok();
+            fs::remove_dir_all(&base).ok();
+        }
+    }
+
     /// #6: the per-op writes fired by tab_new during restore are suppressed (session_restoring guard),
     /// so a crash mid-restore can't overwrite the file with a partial set.
     #[test]
