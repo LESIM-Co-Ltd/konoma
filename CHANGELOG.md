@@ -6,6 +6,21 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Inline math (`$…$`) inside a block structure tore that structure apart.** Worst case: a math
+  expression inside a **closed** `<details>` block made its hidden body render anyway — the `▸`
+  collapsed marker stopped hiding anything, which is an information disclosure. The same lifting
+  spilled a GitHub alert's remaining lines out of its callout box as raw `>`-prefixed text, emptied
+  the cell of a table row and dumped the rest of the table as raw `| a | b |` text, and split a
+  plain blockquote's continuation into a separate unquoted paragraph. Root cause: math extraction
+  ran over the whole document up front and lifted every `$…$` onto its own line, but an alert, a
+  `<details>`/HTML block and a table are each recognized by their own parser only while their lines
+  stay consecutive — lifting math out mid-block tore that continuity. Math inside one of those
+  blocks is now left as literal `$…$` text: the structure survives and only that one expression
+  stays unrendered instead of becoming an image (principle #3). Lists and headings are unaffected —
+  splitting a line there does not change how they parse. Visible only in terminals with an image
+  backend, where math renders as images at all.
+
 ## [0.23.1] - 2026-08-01
 
 ### Added

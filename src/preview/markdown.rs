@@ -639,6 +639,11 @@ fn split_block_images(src: &str) -> Vec<BlockPart> {
 /// image or a ```mermaid fence placed inside a `<details>` body is pulled out here and rendered
 /// outside the collapsible region (always visible, un-indented) rather than folded with the block.
 /// Regular text, code fences and inline images inside `<details>` fold correctly.
+///
+/// Inline math (handled downstream by `split_math`, per `BlockPart::Text` run) takes the opposite
+/// stance on purpose: it stays *inside* a `<details>`/blockquote/table/HTML block rather than being
+/// pulled out, because those blocks' own splitters need the run of lines intact to recognize the
+/// block at all (see `split_math`'s doc comment).
 fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
@@ -1963,10 +1968,25 @@ fn flush_math(out: &mut Vec<MathPart>, buf: &mut String, latex: &str, display: b
 /// `$…$` / `\(…\)` (inline, same line). Fence- and inline-code-aware: a `$` inside a ``` fence or a
 /// `` `code span` `` is literal. Escaped `\$` is literal. A currency-style `$5 and $10` is not
 /// mistaken for math (an inline closing `$` may not be preceded by whitespace nor followed by a digit).
+///
+/// Structure-aware (`structure_mask`): a line inside a blockquote/alert, a `<details>` block, another
+/// HTML block, or a GFM table row is copied verbatim — its math (if any) is left as literal `$…$`
+/// text rather than lifted onto its own line. Those blocks' own splitters require an unbroken run of
+/// lines to recognize the block at all; lifting math out mid-block breaks that run and the block falls
+/// apart — an alert's closing lines spill out of its callout box, a closed `<details>` block's body
+/// becomes visible (an information-disclosure bug, since a `▸` collapsed marker no longer hides
+/// anything), and a table's remaining rows degrade to raw `| a | b |` text. Leaving the math literal
+/// there is a safe degradation (principle #3): the structure survives, only that one expression stays
+/// unrendered text instead of becoming an image.
 fn split_math(text: &str) -> Vec<MathPart> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let bare_lines: Vec<&str> = lines
+        .iter()
+        .map(|l| l.strip_suffix('\n').unwrap_or(l))
+        .collect();
+    let structure = structure_mask(&bare_lines);
     let mut in_fence: Option<(u8, usize)> = None;
     let mut i = 0;
     while i < lines.len() {
@@ -1988,6 +2008,13 @@ fn split_math(text: &str) -> Vec<MathPart> {
             i += 1;
             continue;
         }
+        // Inside a blockquote/alert, `<details>`, other HTML block, or table row: copy verbatim,
+        // never scanning it for math (see the doc comment above for why).
+        if structure[i] {
+            buf.push_str(raw);
+            i += 1;
+            continue;
+        }
         // Multi-line display opener: a line that is exactly `$$` or `\[` (collect to the matching close).
         let trimmed = bare.trim();
         if trimmed == "$$" || trimmed == "\\[" {
@@ -1996,6 +2023,11 @@ fn split_math(text: &str) -> Vec<MathPart> {
             let mut j = i + 1;
             let mut found = false;
             while j < lines.len() {
+                // A structural line before the close: stop rather than swallow it into the math
+                // body (which would silently eat, e.g., a table row into an unrendered equation).
+                if structure[j] {
+                    break;
+                }
                 let bj = lines[j].strip_suffix('\n').unwrap_or(lines[j]);
                 if bj.trim() == closer {
                     found = true;
@@ -2317,6 +2349,86 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
                 }
             }
         }
+    }
+    mask
+}
+
+/// For each of `lines`, whether it sits inside a construct whose own parser requires line
+/// continuity to work: a blockquote (a plain quote or a GitHub alert — both are `>`-prefixed),
+/// a `<details>` block, another HTML block, or a GFM table row. `split_math` consults this mask
+/// so it never lifts an inline math expression out onto its own line from inside one of these —
+/// doing so breaks the very line sequence those blocks' own splitters (`split_alerts`,
+/// `split_details`, `split_html_blocks`, `split_tables`) require, tearing the block apart (see
+/// `split_math`'s doc comment for the concrete failure modes this prevents).
+///
+/// Reuses the same predicates the block splitters themselves use to decide where a block starts
+/// and ends, so this mask can never drift out of sync with what those splitters actually carve
+/// out. Gated by `fence_mask`, exactly like `split_tables`/`split_html_blocks`/`split_alerts`: a
+/// `>`/`|`/`<div>`-looking line inside a code fence is ordinary code, not structure.
+fn structure_mask(lines: &[&str]) -> Vec<bool> {
+    let fenced = fence_mask(lines);
+    let mut mask = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if fenced[i] {
+            i += 1;
+            continue;
+        }
+        // Blockquote / GitHub alert: `split_alerts` captures a run of `>`-prefixed lines (its body
+        // loop is exactly `while is_blockquote_line(...)`), and a plain (non-alert) blockquote is
+        // parsed the same way by tui-markdown itself — one masked line at a time is enough since
+        // every continuation line re-tests true.
+        // Deliberately NOT extended to CommonMark "lazy continuation" (a quote line followed by an
+        // unprefixed paragraph line): `split_alerts` stops at the first non-`>` line too, and staying
+        // on its exact rule is what keeps this mask from drifting. The residue is mild and matches
+        // what already happens to a list item — the lazy line's tail moves below the lifted math —
+        // with no marker leak, no broken callout box and no hidden content revealed.
+        if is_blockquote_line(lines[i]) {
+            mask[i] = true;
+            i += 1;
+            continue;
+        }
+        // `<details>` … `</details>`: mirrors `split_details`'s span (opening tag line through the
+        // closing tag line inclusive, spanning blank lines; runs to the end of input if unclosed).
+        if details_open_tag(lines[i]).is_some() {
+            let start = i;
+            let mut j = i + 1;
+            while j < lines.len() && !is_details_close(lines[j]) {
+                j += 1;
+            }
+            let end = if j < lines.len() { j } else { lines.len() - 1 };
+            mask[start..=end].fill(true);
+            i = end + 1;
+            continue;
+        }
+        // GFM table: header row + delimiter row + consecutive data rows, mirroring `split_tables`.
+        if i + 1 < lines.len()
+            && !fenced[i + 1]
+            && looks_like_table_row(lines[i])
+            && is_table_delimiter(lines[i + 1])
+        {
+            let start = i;
+            let mut j = start + 2;
+            while j < lines.len() && !fenced[j] && looks_like_table_row(lines[j]) {
+                j += 1;
+            }
+            mask[start..j].fill(true);
+            i = j;
+            continue;
+        }
+        // Any other HTML block: opening tag line through the line before the next blank line,
+        // mirroring `split_html_blocks`.
+        if is_html_block_start(lines[i]) {
+            let start = i;
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim().is_empty() {
+                j += 1;
+            }
+            mask[start..j].fill(true);
+            i = j;
+            continue;
+        }
+        i += 1;
     }
     mask
 }
@@ -5922,6 +6034,35 @@ mod fence_and_math_extraction_tests {
             ("inside inline code", "`$x$`\n", vec![]),
             ("inside a fence", "```\n$x$\n```\n", vec![]),
             ("empty is not math", "$$\n", vec![]),
+            // Structure-mask cases (see `structure_mask`): math inside a construct whose own
+            // parser needs line continuity is left literal, never extracted/lifted.
+            (
+                "inside an alert",
+                "> [!NOTE]\n> here is $x^2$ math\n",
+                vec![],
+            ),
+            (
+                "inside a blockquote",
+                "> plain quote $x^2$ inside\n",
+                vec![],
+            ),
+            (
+                "inside details",
+                "<details>\n<summary>S</summary>\n\nhere is $x^2$ math\n\n</details>\n",
+                vec![],
+            ),
+            (
+                "inside a table row",
+                "| formula | value |\n|---|---|\n| $x^2$ | 4 |\n",
+                vec![],
+            ),
+            // The mask must not overreach past the end of the table: a paragraph right after it
+            // still gets its math extracted normally.
+            (
+                "after a table it is still math",
+                "| a | b |\n|---|---|\n| 1 | 2 |\n\n$x$ still math\n",
+                vec![inline("x")],
+            ),
         ];
         for (name, src, want) in cases {
             let got = collect_math_exprs(src);
@@ -5930,5 +6071,234 @@ mod fence_and_math_extraction_tests {
                 "{name}: 数式抽出が期待と違う\n--- src ---\n{src}"
             );
         }
+    }
+
+    /// Regression: math inside a GitHub alert used to be lifted out of the alert's own text run
+    /// before `split_alerts` ever saw it. `render_markdown_with_images` then rendered the pieces
+    /// as independent Markdown parses, so everything **after** the math (including the alert's own
+    /// `>`-prefixed lines) fell outside the callout box and leaked out as raw, un-styled text.
+    #[test]
+    fn math_inside_alert_keeps_the_callout_intact() {
+        set_details_open(Vec::new());
+        let md = "# H\n\n> [!NOTE]\n> here is $x^2$ math\n> more alert text\n\nTail paragraph.\n";
+        let (lines, imgs) = render_markdown_with_images(
+            md,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 },
+            true,
+        );
+        assert!(
+            imgs.is_empty(),
+            "math inside an alert must stay literal, not become an image placement: {imgs:?}"
+        );
+        let joined: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let full = joined.join("\n");
+        assert!(
+            !full.contains("> more alert text"),
+            "the alert's own blockquote marker must never leak out of the callout box as raw \
+             text: {full:?}"
+        );
+        let note_idx = joined
+            .iter()
+            .position(|l| l.contains("Note"))
+            .expect("alert header line ('Note') must be present");
+        let tail_idx = joined
+            .iter()
+            .position(|l| l.contains("Tail paragraph."))
+            .expect("the trailing paragraph must still render");
+        assert!(
+            tail_idx > note_idx,
+            "the tail must come after the alert box"
+        );
+        for l in &joined[note_idx..tail_idx] {
+            if l.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                l.contains('▌'),
+                "every alert line (header + body) must carry the callout bar: {l:?}\nfull:\n{full}"
+            );
+        }
+    }
+
+    /// Regression (information disclosure): math inside a **closed** `<details>` block used to be
+    /// lifted out before `split_details` ever saw the source, breaking the `<details>`…`</details>`
+    /// span it relies on — the body then rendered through an independent Markdown parse
+    /// unconditionally, ignoring the collapsed `▸` state entirely.
+    #[test]
+    fn math_inside_closed_details_stays_hidden() {
+        set_details_open(Vec::new());
+        let md = "# H\n\n<details>\n<summary>Click to expand</summary>\n\nhere is $x^2$ math\n\nSECRET-SHOULD-BE-HIDDEN\n\n</details>\n\nTail paragraph.\n";
+        let (lines, _imgs) = render_markdown_with_images(
+            md,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 },
+            true,
+        );
+        let full: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !full.contains("SECRET-SHOULD-BE-HIDDEN"),
+            "a closed <details> body must stay hidden behind the collapsed marker — this is an \
+             information-disclosure regression if it appears: {full:?}"
+        );
+    }
+
+    /// Regression: math inside a table cell used to be lifted out before `split_tables` saw the
+    /// rows, breaking the row-run it depends on to recognize the table at all — the remaining rows
+    /// fell out of the grid and rendered as raw `| a | b |` text instead of drawn cells.
+    #[test]
+    fn math_inside_table_keeps_the_grid() {
+        set_details_open(Vec::new());
+        let md = "# H\n\n| formula | value |\n|---|---|\n| $x^2$ | 4 |\n| plain | 5 |\n\nTail paragraph.\n";
+        let (lines, imgs) = render_markdown_with_images(
+            md,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 },
+            true,
+        );
+        assert!(
+            imgs.is_empty(),
+            "math inside a table cell must stay literal, not become an image placement: {imgs:?}"
+        );
+        let full: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(full.contains('┌'), "table top border must render: {full:?}");
+        assert!(
+            full.contains('└'),
+            "table bottom border must render: {full:?}"
+        );
+        assert!(
+            full.contains("$x^2$"),
+            "the math cell can't become an image inside a table, so it renders its raw LaTeX \
+             literally: {full:?}"
+        );
+        assert!(
+            !full.contains("| 4 |"),
+            "no row must fall out of the table grid as raw, un-drawn text: {full:?}"
+        );
+    }
+
+    /// Regression: math inside a plain (non-alert) blockquote used to split it into two
+    /// independently-parsed Markdown fragments — the fragment starting right after the math began
+    /// with an unquoted continuation line, breaking the quote into two separate blocks with a
+    /// stray unquoted paragraph in between (the broken output was `> plain quote` / math /
+    /// `inside` / `> second line`, verified on a real terminal against v0.23.1).
+    #[test]
+    fn math_inside_blockquote_is_left_literal() {
+        set_details_open(Vec::new());
+        let md = "> plain quote $x^2$ inside\n> second line\n";
+        let (lines, imgs) = render_markdown_with_images(
+            md,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 },
+            true,
+        );
+        assert!(
+            imgs.is_empty(),
+            "math inside a blockquote must stay literal, not become an image placement: {imgs:?}"
+        );
+        let full: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            full.contains("quote $x^2$ inside second line"),
+            "the quote must stay one unbroken block (its second line joined onto the first, not \
+             split into two separate quotes with a stray paragraph in between): {full:?}"
+        );
+    }
+
+    /// Non-regression: the mask only suppresses lifting *inside* a structural block — math at the
+    /// top level, even in a document that also has an alert, still becomes an image.
+    #[test]
+    fn math_outside_structures_still_renders() {
+        set_details_open(Vec::new());
+        let md = "> [!NOTE]\n> here is $x^2$ math\n\n$y^2$ outside\n";
+        let (_lines, imgs) = render_markdown_with_images(
+            md,
+            60,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &|_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 },
+            true,
+        );
+        assert_eq!(
+            imgs.len(),
+            1,
+            "the alert's math stays suppressed but the top-level math is still lifted: {imgs:?}"
+        );
+        assert!(
+            is_math_url(&imgs[0].url),
+            "the one placement must be the top-level math expression: {imgs:?}"
+        );
     }
 }
