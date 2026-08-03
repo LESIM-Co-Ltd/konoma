@@ -12304,9 +12304,17 @@ fn tab_switch_re_verifies_git_status() {
 
     // Switch back to tab 0 (subx). The destination root (subx) != git_status_for (suby), so
     // without dirty the workdir cache would be reused and the sentinel would remain. With dirty
-    // it re-fetches and the sentinel disappears.
+    // it re-fetches and the sentinel disappears. Render through the real `crate::ui::render`
+    // (rather than calling `refresh_git_if_needed` by hand) so this test exercises the actual call
+    // site the fix lives at, instead of resting on the unverified assumption that a render is
+    // "equivalent" to it.
     app.tab_cycle(-1);
-    app.refresh_git_if_needed(); // equivalent to the render after the switch
+    {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
 
     assert!(
         app.git_status_of(&sentinel).is_none(),
@@ -12601,6 +12609,299 @@ fn changed_filter_list_follows_async_status_results() {
             .iter()
             .any(|e| e.path.ends_with("agent_new.txt")),
         "非同期スキャンの到着で C の一覧が作り直される(再描画だけでは直らない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Core regression**: switching to a different repository's tab must re-verify `git_branch`
+/// even when the destination view is the Git changes hub (not Tree). `git_branch`/`worktree_origin`
+/// used to be re-verified only inside `tree::render`'s own call to `refresh_git_if_needed` — and the
+/// changes hub (like log/graph/branches/worktrees/commit-detail and Preview) bypasses `tree::render`
+/// entirely (see the content dispatch in `ui::render`), so switching straight from one repo's
+/// changes hub to another's never re-verified the branch name. The hub's *file list*
+/// (`git_view_entries`) is separate per-tab state rebuilt by `open_git_view`/`git_view_reload` and
+/// was already correct across tab switches — only the branch-name title (and the `WT <origin>`
+/// chip, covered separately below) lagged behind.
+///
+/// Renders through the real `crate::ui::render` (not a direct `refresh_git_if_needed()` call), so
+/// this exercises the actual call site the fix moved to, rather than the primitive it calls.
+#[cfg(feature = "git")]
+#[test]
+fn git_view_branch_re_verifies_when_switching_to_a_different_repo() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let repo_a = unique_tmp("konoma_git_view_branch_switch_a");
+    let repo_b = unique_tmp("konoma_git_view_branch_switch_b");
+    for d in [&repo_a, &repo_b] {
+        let _ = std::fs::remove_dir_all(d);
+        std::fs::create_dir_all(d).unwrap();
+    }
+    init_git_repo(&repo_a);
+    init_git_repo(&repo_b);
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    // repoA: branch "alpha", with a modified tracked file (shows up in the changes hub).
+    std::fs::write(repo_a.join("fileA.txt"), b"one\n").unwrap();
+    git(&repo_a, &["add", "-A"]);
+    git(&repo_a, &["commit", "-qm", "init"]);
+    git(&repo_a, &["checkout", "-q", "-b", "alpha"]);
+    std::fs::write(repo_a.join("fileA.txt"), b"one\nmodified\n").unwrap();
+    // repoB: branch "beta", likewise with a modified tracked file.
+    std::fs::write(repo_b.join("fileB.txt"), b"two\n").unwrap();
+    git(&repo_b, &["add", "-A"]);
+    git(&repo_b, &["commit", "-qm", "init"]);
+    git(&repo_b, &["checkout", "-q", "-b", "beta"]);
+    std::fs::write(repo_b.join("fileB.txt"), b"two\nmodified\n").unwrap();
+
+    let root_a = repo_a.canonicalize().unwrap();
+    let root_b = repo_b.canonicalize().unwrap();
+
+    let render_text = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    // tab0 = repoA, changes hub open, rendered once (establishes git_branch = "alpha").
+    let mut app = App::new(root_a.clone(), Config::default()).unwrap();
+    app.open_git_view();
+    assert!(app.is_git_view(), "テストの前提: Git changes hub にいる");
+    let text = render_text(&mut app);
+    assert!(
+        text.contains("⎇ alpha"),
+        "repoA の初回描画で alpha が出ない: {text}"
+    );
+
+    // tab1 = repoB, changes hub open, rendered once (establishes git_branch = "beta").
+    app.tab_new().unwrap();
+    app.tab.root = root_b.clone();
+    app.tab.open_dir = root_b.clone();
+    app.open_git_view();
+    assert!(app.is_git_view());
+    let text = render_text(&mut app);
+    assert!(
+        text.contains("⎇ beta"),
+        "repoB の描画で beta が出ない: {text}"
+    );
+
+    // Switch back to tab0 (repoA) and render once more: the branch title must follow, not stay on
+    // the previously-active tab's repo.
+    app.tab_cycle(-1);
+    assert!(
+        app.is_git_view(),
+        "タブ0は Git changes hub のままのはず(per-tab 状態)"
+    );
+    let text = render_text(&mut app);
+    assert!(
+        text.contains("⎇ alpha"),
+        "別 repo のタブへ戻ったのにブランチ名が更新されない(スケール前の症状): {text}"
+    );
+    assert!(
+        !text.contains("⎇ beta"),
+        "前のタブ(repoB)のブランチ名が居座っている: {text}"
+    );
+    // The change list itself is per-tab state and was already correct before this fix — confirm it
+    // stays correct alongside the now-fixed branch name (no regression introduced in that half).
+    assert!(
+        app.git_view_entries()
+            .iter()
+            .any(|e| e.path.ends_with("fileA.txt")),
+        "変更ファイル一覧は repoA のものであるべき"
+    );
+
+    std::fs::remove_dir_all(&repo_a).ok();
+    std::fs::remove_dir_all(&repo_b).ok();
+}
+
+/// The persistent `WT <origin>` chip (linked-worktree indicator) must likewise re-verify across a
+/// tab switch to/from an unrelated repo — in **both directions**, and while the destination tab is
+/// showing **Preview**, not just Tree/the Git hub (the chip is drawn by `context_spans`, shared by
+/// every mode, so a stale `worktree_origin()` would leak into Preview too if re-verification only
+/// happened from `tree::render`).
+#[cfg(feature = "git")]
+#[test]
+fn worktree_chip_re_verifies_across_tab_switch_into_preview() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    // Fixed (not `unique_tmp`) names, kept short: the origin-name assertions below check for the
+    // *exact* string, and `unique_tmp`'s pid+counter suffix would push the directory's basename
+    // past the chip's 20-char truncation budget (`truncate_display`) — same reasoning as
+    // `worktree_chip_shows_only_inside_a_linked_worktree` above, which does the same for the same
+    // reason. Distinct from that test's directory names, so the two don't collide.
+    let main_dir = std::env::temp_dir().join("konoma_wtsw_main");
+    let other_dir = std::env::temp_dir().join("konoma_wtsw_other");
+    let linked_dir = std::env::temp_dir().join("konoma_wtsw_linked");
+    for d in [&main_dir, &other_dir] {
+        let _ = std::fs::remove_dir_all(d);
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&linked_dir);
+    init_git_repo(&main_dir);
+    init_git_repo(&other_dir);
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::write(main_dir.join("a.txt"), b"one\n").unwrap();
+    git(&main_dir, &["add", "-A"]);
+    git(&main_dir, &["commit", "-qm", "init"]);
+    std::fs::write(other_dir.join("b.txt"), b"two\n").unwrap();
+    git(&other_dir, &["add", "-A"]);
+    git(&other_dir, &["commit", "-qm", "init"]);
+    let main_root = main_dir.canonicalize().unwrap();
+    let other_root = other_dir.canonicalize().unwrap();
+    let expected_origin = main_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    git(
+        &main_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "konoma-wt-chip-switch",
+            linked_dir.to_str().unwrap(),
+        ],
+    );
+    let linked_root = linked_dir.canonicalize().unwrap();
+    std::fs::write(linked_root.join("note.txt"), b"hello\n").unwrap();
+
+    let render_text = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    // tab0 = other_root (a plain repo, no linked worktree): render once to establish "no chip".
+    let mut app = App::new(other_root.clone(), Config::default()).unwrap();
+    assert!(
+        !render_text(&mut app).contains("WT"),
+        "プレーンな repo では WT チップが出てはいけない"
+    );
+
+    // tab1 = the linked worktree, in **Preview** mode (not Tree, not the Git hub) — item 3: not
+    // just the git full-screen views.
+    app.tab_new().unwrap();
+    app.tab.root = linked_root.clone();
+    app.tab.open_dir = linked_root.clone();
+    app.enter_preview(&linked_root.join("note.txt"));
+    assert_eq!(
+        app.tab.mode,
+        Mode::Preview,
+        "テストの前提: Preview 面にいる"
+    );
+    let text = render_text(&mut app);
+    assert!(
+        text.contains("WT"),
+        "linked worktree の Preview では WT チップが出るはず: {text}"
+    );
+    assert!(
+        text.contains(&expected_origin),
+        "チップに元 repo 名 {expected_origin} が出ない: {text}"
+    );
+
+    // Switch back to tab0 (plain repo) and render: the chip must disappear (not leak the previous
+    // tab's linked-worktree origin).
+    app.tab_cycle(-1);
+    let text = render_text(&mut app);
+    assert!(
+        !text.contains("WT"),
+        "別 repo のタブへ戻ったら WT チップは消えるはず: {text}"
+    );
+
+    // Switch forward again to tab1 (the linked worktree) and render: the chip must reappear.
+    app.tab_cycle(1);
+    let text = render_text(&mut app);
+    assert!(
+        text.contains("WT") && text.contains(&expected_origin),
+        "linked worktree のタブへ戻ったら WT チップが復活するはず: {text}"
+    );
+
+    std::fs::remove_dir_all(&linked_dir).ok();
+    std::fs::remove_dir_all(&other_dir).ok();
+    std::fs::remove_dir_all(&main_dir).ok();
+}
+
+/// Performance invariant for the new call site: `ui::render` now calls `refresh_git_if_needed`
+/// unconditionally every frame (previously only `tree::render` did), so this guards that rendering
+/// a **non-Tree** view (the changes hub) repeatedly still dispatches **at most one** git-status scan
+/// while one is in flight, and none at all once it has landed and the root hasn't changed —
+/// mirroring `repeated_renders_dispatch_at_most_one_git_status_scan`, but through the real
+/// `crate::ui::render` call site instead of a direct `refresh_git_if_needed()` loop.
+#[cfg(feature = "git")]
+#[test]
+fn repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_status_async_render_norekick");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.open_git_view();
+    assert!(
+        app.is_git_view(),
+        "テストの前提: changes hub(非 Tree)にいる"
+    );
+
+    let render_once = |app: &mut App| {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    };
+
+    // 20 renders while the 1st scan is still in flight (nothing has been received/applied yet).
+    for _ in 0..20 {
+        render_once(&mut app);
+    }
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1本目の結果");
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "非 Tree 面を毎フレーム描画しても走行中に git status を投げ直してはいけない"
+    );
+    assert!(app.apply_statuses(res));
+
+    // 20 more renders after applying: the per-workdir cache must still prevent a rescan.
+    for _ in 0..20 {
+        render_once(&mut app);
+    }
+    assert_eq!(
+        rx.try_iter().count(),
+        0,
+        "適用後も非 Tree 面の毎フレーム描画で再スキャンしてはいけない"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

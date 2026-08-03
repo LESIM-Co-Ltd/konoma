@@ -222,9 +222,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Re-fetch git status if root has changed (FR-7). No recomputation for the same root.
-    app.refresh_git_if_needed();
-
+    // Re-validation now happens once per frame in `ui::render` (before this dispatch), covering
+    // every mode/view, not just the tree — see the comment there.
     let icons_on = app.cfg.ui.icons;
     // If there is even one change, show a status gutter (2 columns) at the start of every row for alignment.
     let show_gutter = app.git_has_changes();

@@ -23,6 +23,16 @@ All notable changes to konoma are documented in this file. The format is based o
   dump. `[external] preview_commands = false` continues to disable the whole delegation path.
 
 ### Fixed
+- **Switching to a different repository's tab left the branch name and the `WT <origin>` chip
+  showing the *previous* tab's repository**, even though the changed-file list updated correctly
+  (a "list is right, branch is wrong" split). Root cause: `git_branch`/`worktree_origin` are only
+  re-verified by `App::refresh_git_if_needed`, which used to be called solely from inside
+  `tree::render` — but the Git full-screen views (changes hub, log, graph, branches, worktrees,
+  commit detail) and Preview mode all bypass `tree::render` entirely, so re-verification never ran
+  while any of those were on screen. The changed-file list itself is separate per-tab state
+  (rebuilt by `open_git_view`), which is why it always looked right while the chrome around it
+  didn't. Moved the re-verification call to the top of `ui::render`, once per frame, ahead of
+  every view (still a cheap no-op when the root hasn't changed and nothing is dirty).
 - **`[ui] show_hidden = true` had no effect at startup.** The config field parsed correctly and
   the reference docs described it as "show dotfiles at startup", but `App::new` never read it —
   the fresh tab's hidden-file flag was unconditionally initialized to `false`, only ever changing

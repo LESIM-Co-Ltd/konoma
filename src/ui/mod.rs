@@ -25,6 +25,19 @@ use crate::app::{App, Mode, StatusbarLayout};
 
 /// Full-screen rendering per mode + status chrome (placement via `ui.statusbar`).
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Re-validate git status if the root changed or a re-validation was requested (FR-7). Never
+    // blocks (async kick + reuse of the previous frame's data): see `App::refresh_git_if_needed`.
+    //
+    // This must run **once per frame, unconditionally, before anything reads git_branch/
+    // worktree_origin/git_status** — not only when `tree::render` happens to run. The Git
+    // full-screen views (changes hub / log / graph / branches / worktrees / detail) and Preview
+    // mode bypass `tree::render` entirely (see the content dispatch below), so a call placed only
+    // inside `tree::render` never re-verifies while those views are showing. That let a stale
+    // `git_branch`/`worktree_origin` from a previously active tab linger on-screen after switching
+    // to a different repo's tab (the changes hub's file *list* is per-tab state and did update
+    // correctly, but the branch-name chip in its title, and the persistent `WT <origin>` chip,
+    // are process-wide caches that only this call refreshes).
+    app.refresh_git_if_needed();
     // Move detection for the inline image overlay (across frames): reset the reading at the start, compare at the end.
     app.begin_md_overlay_frame();
     // If config `ui.theme.bg` is set, paint the whole background first. A text span's bg=None does
