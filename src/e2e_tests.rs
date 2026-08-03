@@ -162,6 +162,96 @@ impl Sim {
         self.app.tab.selected = i;
         self.draw();
     }
+
+    // ---- Style inspection (H2: konoma leans on "sentinel styles" — REVERSED focus, colored
+    // gutters/markers — that plain `screen()` string matching cannot see. These helpers read the
+    // drawn buffer's per-cell `Style` so a test can assert on it directly.) ----
+
+    /// The style of the cell at (row, col) in the last drawn frame.
+    fn cell_style(&self, row: u16, col: u16) -> ratatui::style::Style {
+        let buf = self.term.backend().buffer();
+        buf[(col, row)].style()
+    }
+
+    /// The (row, col) of the first cell where `needle` starts, searching row by row from the top.
+    /// Only matches within a single row (konoma's screen rows are independent grids; a needle that
+    /// wraps across rows will not be found — none of this harness's needles do). Multi-byte glyphs
+    /// (CJK, icons) are handled the same way `screen()` renders them: one cell's `symbol()` may be
+    /// several bytes, and the byte→column mapping below accounts for that.
+    fn find_text(&self, needle: &str) -> Option<(u16, u16)> {
+        let buf = self.term.backend().buffer();
+        let w = buf.area.width;
+        let h = buf.area.height;
+        for row in 0..h {
+            let mut row_str = String::new();
+            let mut col_at_byte: Vec<u16> = Vec::new();
+            for col in 0..w {
+                let sym = buf[(col, row)].symbol();
+                for _ in 0..sym.len() {
+                    col_at_byte.push(col);
+                }
+                row_str.push_str(sym);
+            }
+            if let Some(byte_idx) = row_str.find(needle) {
+                let col = col_at_byte.get(byte_idx).copied().unwrap_or(0);
+                return Some((row, col));
+            }
+        }
+        None
+    }
+
+    /// The style of the first cell of `needle`'s first on-screen occurrence, if any.
+    fn style_of(&self, needle: &str) -> Option<ratatui::style::Style> {
+        self.find_text(needle).map(|(r, c)| self.cell_style(r, c))
+    }
+
+    /// Assert `needle` is on screen and its (first cell's) style satisfies `pred`. Fails loudly —
+    /// both when `needle` cannot be found at all, and when it's found but styled wrong — with the
+    /// full screen dumped either way, so a failure is diagnosable without rerunning under a debugger.
+    #[track_caller]
+    fn see_styled(&self, needle: &str, pred: impl Fn(&ratatui::style::Style) -> bool, what: &str) {
+        let Some((row, col)) = self.find_text(needle) else {
+            panic!(
+                "画面に「{needle}」が見えるはず({what}を確認できない):\n{}",
+                self.screen()
+            );
+        };
+        let style = self.cell_style(row, col);
+        assert!(
+            pred(&style),
+            "「{needle}」のスタイルが {what} を満たさない(実際: {style:?}, 位置=({row},{col})):\n{}",
+            self.screen()
+        );
+    }
+
+    /// How many distinct foreground colors appear in row `row` (e.g. to confirm a rainbow-colored
+    /// table row actually alternates colors instead of being uniformly styled).
+    fn distinct_fg_in_row(&self, row: u16) -> usize {
+        let buf = self.term.backend().buffer();
+        let w = buf.area.width;
+        let mut set = std::collections::HashSet::new();
+        for col in 0..w {
+            set.insert(buf[(col, row)].fg);
+        }
+        set.len()
+    }
+
+    /// Every (row, col) currently drawn with the REVERSED modifier.
+    fn reversed_cells(&self) -> Vec<(u16, u16)> {
+        use ratatui::style::Modifier;
+        let buf = self.term.backend().buffer();
+        let w = buf.area.width;
+        let h = buf.area.height;
+        let mut out = Vec::new();
+        for row in 0..h {
+            for col in 0..w {
+                if buf[(col, row)].modifier.contains(Modifier::REVERSED) {
+                    out.push((row, col));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Fresh sandbox dir under the OS temp dir (recreated per test).
@@ -5741,5 +5831,254 @@ fn e2e_delegated_command_text_preview_shows_captured_output() {
     s.see("line two");
     // The title still names the original file — the generated temp path never leaks into the UI.
     s.see("app.log");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// H2/H3 (docs/AUDIT-TESTS-2026-08.md): style-attribute assertions + config→keybinding wiring.
+//
+// The audit found two "breakable with zero red tests" gaps: (1) `keymap::scheme_from_str` (the
+// `ui.keys` string → paging key scheme) had no test that goes config string → real keystrokes →
+// screen — only unit tests that construct a `KeyScheme` directly. (2) `Sim::screen()` only ever
+// returned glyphs, never `Style`, so konoma's "sentinel style" focus markers (REVERSED on Tab
+// focus) were unverifiable at the e2e layer even though `grep -rn REVERSED src` shows they're
+// central to the UI. Both are demonstrated broken-with-red-tests below by literally breaking the
+// implementation locally and re-running (see the task report for the failure output); these tests
+// are what stayed red.
+// =============================================================================
+
+/// `ui.keys = "less"`: plain `f`/Space page down, plain `b` pages up — and `Ctrl-f`/`Ctrl-b`,
+/// which are the *vim* scheme's keys, are simply unbound in this surface (no fallback, no-op).
+/// Breaking `scheme_from_str` to always return `KeyScheme::Vim` makes `f`/Space do nothing here
+/// (verified: this test goes red with "left: 0 right: <n>"-style failures when that's done).
+#[test]
+fn e2e_ui_keys_less_scheme_uses_plain_letters_not_ctrl() {
+    let mut cfg = Config::default();
+    cfg.ui.keys = "less".into();
+    let (mut s, dir) = text_preview(cfg, "keys_less", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let top0 = s.app.preview_top_line();
+
+    // Ctrl-f is the *vim* scheme's page-down key — unbound here, so nothing happens.
+    s.ctrl('f');
+    assert_eq!(
+        s.app.preview_top_line(),
+        top0,
+        "less スキームでは Ctrl-f はバインドされていないはず"
+    );
+
+    // Plain `f` pages down (the less scheme's own key).
+    s.key('f');
+    let top1 = s.app.preview_top_line();
+    assert!(top1 > top0, "less: 素の f がページ送りになるはず");
+
+    // Space also pages down (less has both).
+    s.key(' ');
+    let top2 = s.app.preview_top_line();
+    assert!(top2 > top1, "less: Space もページ送りになるはず");
+
+    // Plain `b` pages back up.
+    s.key('b');
+    let top3 = s.app.preview_top_line();
+    assert!(top3 < top2, "less: 素の b がページ戻しになるはず");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `ui.keys = "vim"` (also the default): `Ctrl-f`/`Ctrl-b` page, and the *less* scheme's plain
+/// `f`/`b`/Space are simply unbound (no-op) in this surface.
+#[test]
+fn e2e_ui_keys_vim_scheme_uses_ctrl_not_plain_letters() {
+    let mut cfg = Config::default();
+    cfg.ui.keys = "vim".into();
+    let (mut s, dir) = text_preview(cfg, "keys_vim", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let top0 = s.app.preview_top_line();
+
+    // Plain f/Space/b are the *less* scheme's keys — unbound here.
+    s.key('f');
+    assert_eq!(
+        s.app.preview_top_line(),
+        top0,
+        "vim スキームでは素の f はバインドされていないはず"
+    );
+    s.key(' ');
+    assert_eq!(
+        s.app.preview_top_line(),
+        top0,
+        "vim スキームでは Space もバインドされていないはず"
+    );
+
+    // Ctrl-f/Ctrl-b (vim's own keys) work.
+    s.ctrl('f');
+    let top1 = s.app.preview_top_line();
+    assert!(top1 > top0, "vim: Ctrl-f がページ送りになるはず");
+    s.ctrl('b');
+    let top2 = s.app.preview_top_line();
+    assert!(top2 < top1, "vim: Ctrl-b がページ戻しになるはず");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An unrecognized `ui.keys` value (anything but `"less"`) falls back to vim — pinning down
+/// `scheme_from_str`'s documented contract ("anything but 'less' is vim") through real keystrokes,
+/// not just by constructing `KeyScheme::Vim` directly.
+#[test]
+fn e2e_ui_keys_unknown_value_falls_back_to_vim_scheme() {
+    let mut cfg = Config::default();
+    cfg.ui.keys = "emacs".into(); // not a recognized scheme name
+    let (mut s, dir) = text_preview(cfg, "keys_unknown", "big.txt", &paging_body());
+    assert!(s.app.is_windowed());
+    let top0 = s.app.preview_top_line();
+
+    // Falls back to vim: plain f is unbound...
+    s.key('f');
+    assert_eq!(
+        s.app.preview_top_line(),
+        top0,
+        "不明な ui.keys は vim にフォールバックするはず(素の f は無効)"
+    );
+    // ...but Ctrl-f (vim's key) works.
+    s.ctrl('f');
+    assert!(
+        s.app.preview_top_line() > top0,
+        "不明な ui.keys は vim にフォールバックするはず(Ctrl-f が有効)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Tab-focus reversal, verified through the actual render buffer's `Style` (not internal indices)
+/// — one test per `MdItemKind` that's reachable without an image `Picker` (`Sim` never attaches
+/// one; see the mermaid note at the end). Each item is checked both while focused (REVERSED) and
+/// while *not* focused (not REVERSED), so this also proves the effect is exclusive to the current
+/// focus rather than sticking around. Breaking `invert_focused_line` into a no-op (returning the
+/// line unchanged) turns every `reversed(...)` assertion below red (verified: see the task report).
+#[test]
+fn e2e_markdown_tab_focus_reverses_only_the_focused_marker_style() {
+    let mut cfg = Config::default();
+    cfg.ui.icons = false; // plain "[ ]" checkbox / no link-icon prefix glyph to worry about
+    let (mut s, dir) = md_preview(
+        cfg,
+        "focus_styles",
+        "Read the [guide](https://example.com/guide) first.\n\n\
+         - [ ] pending task\n\n\
+         ```rust\n\
+         fn main() {}\n\
+         ```\n\n\
+         <details>\n\
+         <summary>Extra Info</summary>\n\n\
+         Some hidden body text.\n\n\
+         </details>\n",
+    );
+
+    fn reversed(s: &Sim, needle: &str) -> bool {
+        s.style_of(needle)
+            .is_some_and(|st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED))
+    }
+
+    // Nothing is focused before the first Tab: no marker is reversed, and in fact the buffer holds
+    // no REVERSED cells at all (decorated Markdown has no separate block caret the way windowed
+    // text/code previews do).
+    assert!(
+        s.reversed_cells().is_empty(),
+        "フォーカス前は反転セルが1つも無いはず: {:?}",
+        s.reversed_cells()
+    );
+    assert!(!reversed(&s, "guide"));
+    assert!(!reversed(&s, "[ ]"));
+    assert!(!reversed(&s, "rust"));
+    assert!(!reversed(&s, "▸"));
+
+    // 1st Tab → the link (document order: link, task, code block, details).
+    s.tab();
+    s.see_styled(
+        "guide",
+        |st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED),
+        "フォーカス中のリンク=反転",
+    );
+    assert!(
+        !reversed(&s, "[ ]"),
+        "リンクにフォーカス中はチェックボックスは反転しない"
+    );
+    assert!(
+        !reversed(&s, "rust"),
+        "リンクにフォーカス中はコードブロックは反転しない"
+    );
+    assert!(
+        !reversed(&s, "▸"),
+        "リンクにフォーカス中は details は反転しない"
+    );
+
+    // 2nd Tab → the checkbox marker.
+    s.tab();
+    assert!(
+        !reversed(&s, "guide"),
+        "フォーカスが移ればリンクは反転が解ける"
+    );
+    s.see_styled(
+        "[ ]",
+        |st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED),
+        "フォーカス中のチェックボックス=反転",
+    );
+    assert!(!reversed(&s, "rust"));
+    assert!(!reversed(&s, "▸"));
+
+    // 3rd Tab → the code block header (the *whole header line* inverts, per `invert_focused_line`'s
+    // `whole_line` handling for `MdItemKind::CodeBlock`).
+    s.tab();
+    assert!(!reversed(&s, "[ ]"));
+    s.see_styled(
+        "rust",
+        |st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED),
+        "フォーカス中のコードブロック=ヘッダ行が反転",
+    );
+    assert!(!reversed(&s, "▸"));
+
+    // 4th Tab → the <details> summary marker (▸ = closed, the default with no `open` attribute).
+    s.tab();
+    assert!(!reversed(&s, "rust"));
+    s.see_styled(
+        "▸",
+        |st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED),
+        "フォーカス中の <details>=▸ が反転",
+    );
+
+    // 5th Tab wraps back around to the link.
+    s.tab();
+    s.see_styled(
+        "guide",
+        |st| st.add_modifier.contains(ratatui::style::Modifier::REVERSED),
+        "巡回して先頭(リンク)へ戻る",
+    );
+    assert!(!reversed(&s, "▸"));
+
+    // A mermaid fence is not covered here: `Sim` never attaches an image `Picker` (that's a
+    // separate, larger change — H1 in docs/AUDIT-TESTS-2026-08.md, out of scope for this task), so
+    // `mermaid_image_mode()` is false and a ```mermaid fence degrades to the plain-text
+    // box-drawing diagram — it never becomes an `MdItemKind::MermaidFence` Tab item at all.
+    // Confirmed by hand: opening a mermaid-only doc through this same harness, `focused_item()`
+    // stays `None` through every `Tab` press (there is nothing to cycle to), so there is no
+    // reachable "focused mermaid caption" state to assert on here.
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `distinct_fg_in_row`: a CSV/TSV preview's rainbow column coloring (`ui.csv_rainbow`, default on)
+/// actually uses multiple distinct foreground colors across one row, not a single uniform color.
+#[test]
+fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
+    let dir = sandbox("csv_rainbow_style");
+    std::fs::write(dir.join("wide.csv"), "colA,colB,colC,colD\n1,2,3,4\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("wide.csv");
+    s.enter();
+    s.see("TABLE");
+    let (header_row, _) = s.find_text("colA").expect("header row is drawn");
+    assert!(
+        s.distinct_fg_in_row(header_row) >= 3,
+        "4列のヘッダ行は3色以上の前景色が混在するはず(レインボー)"
+    );
+    s.key('q');
     std::fs::remove_dir_all(&dir).ok();
 }
