@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.3] - 2026-08-04
+
 ### Added
 - **External command delegation (`[[preview.rules]] command = "..."`) is now implemented.** The
   config docs have documented this since the beginning (`{path}`/`{out}` templates, `render_as =
@@ -1248,7 +1250,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...HEAD
+[0.23.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.2...v0.23.3
 [0.23.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.1...v0.23.2
 [0.23.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.22.2...v0.23.0
