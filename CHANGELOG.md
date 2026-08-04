@@ -7,6 +7,53 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **A closed `<details>` block containing a GitHub alert (`> [!NOTE]` etc.) leaked the alert's
+  body — an information disclosure — regardless of whether the block was collapsed.** The renderer
+  used to run `split_alerts` over the whole document *before* `split_details`, so a `> [!NOTE]`
+  nested inside a `<details>` block was pulled out and drawn at the top level, outside the fold,
+  before `<details>`'s own open/closed check ever got a say. **The reverse nesting — a `<details>`
+  block inside an alert's body — was worse: it always leaked, `open` or not**, because an alert
+  body's rendering pipeline had no `<details>` handling at all; the block fell through to the
+  generic HTML-block-rescue fallback, which strips tags and shows whatever text remains
+  unconditionally. Fixed by gating `split_alerts`'s header detection on a new `<details>`-block mask
+  (so an alert nested inside one stays literal text until that block's own fold decides whether to
+  show it), and by making both an alert's and a `<details>` block's body render through a shared,
+  recursive pipeline that understands both constructs — so a `<details>` found inside an alert now
+  folds too. A `<details>` reached only through nesting (inside an alert, inside another
+  `<details>`, or any depth of alternating the two) is rendered using its own `open` attribute
+  directly rather than a document-wide Tab-toggle ordinal slot, so it is not individually
+  toggleable but — critically — can never drift that ordinal sequence out of step with what's drawn
+  on screen (the exact failure mode a previous, unrelated fix for plain nested `<details>` blocks
+  already had to guard against). The write-back scanners (`task_source_locs`/
+  `code_block_source_locs`, used by checkbox toggling and `y c`) were updated to recognize the same
+  nesting so a checkbox or code fence reachable this way can still be toggled/copied when visible,
+  not just correctly hidden when it isn't.
+- **A Markdown fence nested inside a longer fence of the same character** (e.g. a `` ```` `` fence
+  wrapping a `` ``` `` fence — the standard way to show "how to write a fence" in a document about
+  Markdown) **made the renderer (`decorate_code_blocks`), not just the write-back scanners fixed
+  below, mistake the inner marker for the block's real close.** Everything after it — headings,
+  links, tasks — silently rendered as a second, bogus, empty code block, so the rest of the document
+  went dark with no crash to notice. Like the write-back scanners, the renderer used to scan the
+  rendered **text** of each line for `` ``` ``; it now groups a code block's lines by tui-markdown's
+  own per-line **style** (`is_code_block_line`) instead — the same signal tui-markdown itself uses
+  to color a code block, which stays correct no matter what `` ``` ``-looking text ends up inside
+  the block's body.
+- **Six Markdown write-back/panic-retry scanners tracked "am I inside a code fence" with their own
+  naive per-function toggle** (`starts_with("```") || starts_with("~~~")`, closing on the first
+  line that merely started with 3 of the same character) instead of the file's one CommonMark-correct
+  `parse_fence` (matching fence character, requiring the closing fence's length to be at least the
+  opening fence's, and requiring 0-3 columns of indentation for a line to count as a fence at all —
+  `parse_fence` itself was missing that indentation check and has been fixed too). For a fence
+  nested inside a longer fence of the same type (` ```` ` around ` ``` `), or a fence-lookalike
+  indented 4+ columns (which is CommonMark for an *indented code block*, not a fence), the old
+  per-function count of code blocks/checkboxes could still happen to match what's drawn on screen
+  — so `y c` (copy focused code block) was never refused — while the *content* it silently copied to
+  the clipboard was wrong (missing text, extra leading indentation, or an empty string). Unified
+  `code_block_source_locs`, `task_source_locs`, `process_inline_html`, `process_footnotes`,
+  `split_details`, and `split_block_for_retry` (the panic-isolation retry splitter) onto
+  `parse_fence`/`fence_mask`, so all six now agree on fence boundaries with each other and with
+  CommonMark. `code_block_source_locs` also now strips the fence's own indentation from its
+  content (0-3 columns), matching what's actually shown on screen.
 - **`y c` (copy focused code block) and checkbox toggling refused to work on any Markdown document
   that contained a CommonMark indented (4+ column) code block**, even for a real fence right next
   to it — the write-back scanners (`code_block_source_locs`/`task_source_locs`) only recognized
@@ -24,6 +71,16 @@ All notable changes to konoma are documented in this file. The format is based o
   the renderer (indented code blocks, `*`/`+` bullet lists, content inside a GitHub alert or
   `<details>`, a document over the size cap), not a concurrent external edit. The messages no
   longer blame the file.
+- **An indented code block right after a heading, with no blank line between them, was invisible to
+  the write-back scanners** — CommonMark only gates a following indented code block behind a
+  *paragraph*; a heading isn't one, so the renderer draws the block fine, but
+  `code_block_source_locs`/`task_source_locs` conservatively still required a blank line. As with
+  the other indented-code-block mismatches above, this refused `y c`/checkbox toggling for the
+  *whole document*, not just the block after the heading — so an unrelated real fence later in the
+  same file (e.g. an actual shell example right after a `## Usage` heading whose next line is an
+  indented example) was collaterally refused too. The scanners now also recognize a thematic break
+  (`---`/`***`/`___`) and a setext heading underline (`Title\n=====`) as non-paragraph content, the
+  same way they already treat a heading — verified against the renderer for each construct.
 
 ## [0.23.3] - 2026-08-04
 

@@ -3083,6 +3083,55 @@ fn e2e_md_indented_code_block_before_fences_keeps_ordinals_correct() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Root cause (heading/thematic-break/setext gate, 2026-08): an indented code block right after a
+/// heading, with no blank line between them, used to go unrecognized by the write-back scanner (the
+/// renderer draws it fine — only a paragraph gates a following indented block, and a heading isn't
+/// one). The mismatch cancelled `y c` for the *whole document*, so an unrelated real fence right
+/// after it (`npm test`, below) was collaterally refused too. Drives real keys through both blocks.
+#[test]
+fn e2e_md_indented_code_after_heading_no_blank_keeps_fence_copyable() {
+    let dir = sandbox("md_heading_then_indented");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        "## Usage\n    npm install foo\n\n```bash\nnpm test\n```\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+    s.see("Usage");
+
+    // 1st focusable item: the indented block right under the heading (no blank line).
+    s.tab();
+    assert!(
+        s.app.md_focused_code(),
+        "1番目=見出し直後(空行なし)の字下げコードにフォーカス"
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("npm install foo"),
+        "見出し直後の字下げコードの内容が取得できる(以前は文書全体のコピーが拒否されていた)"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "字下げ側のコピー通知が出る");
+
+    // 2nd focusable item: the real fence right after it — must not be collaterally refused.
+    s.tab();
+    assert!(s.app.md_focused_code(), "2番目=フェンスコードにフォーカス");
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("npm test"),
+        "無関係な実フェンスまで巻き添えで拒否されない"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "フェンス側のコピー通知も出る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_md_wrapped_focus_follows_offscreen_item() {
     // When wrapped: moving with Tab to a link after a paragraph taller than the screen makes preview_scroll follow.

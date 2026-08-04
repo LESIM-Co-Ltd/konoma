@@ -140,6 +140,12 @@ struct MdRenderCtx<'a> {
     theme: &'a str,
     icons: bool,
     tasks: &'a [char],
+    /// Whether `> [!TYPE]` blockquotes render as colored GitHub-alert callouts (`ui.md_alerts`).
+    /// Carried on the context (rather than as a separate loose parameter) so every body-rendering
+    /// pipeline that recurses through [`render_md_body_nested`] — an alert's own body, a
+    /// `<details>` block's body, one nested inside the other, arbitrarily deep — agrees on it
+    /// without a call site forgetting to thread it through.
+    alerts: bool,
 }
 
 /// Like [`render_markdown_tasks`], with the GitHub-alert (`> [!NOTE]` …) rendering gated by
@@ -159,6 +165,7 @@ fn render_markdown_tasks_opts(
         theme,
         icons,
         tasks,
+        alerts,
     };
     let mut out = Vec::new();
     for seg in split_segments(src) {
@@ -172,16 +179,14 @@ fn render_markdown_tasks_opts(
                     // tables/HTML) and draw a colored callout box, rendering the rest normally.
                     for ap in split_alerts(&text) {
                         match ap {
-                            AlertPart::Text(t) => {
-                                render_md_text(&mut out, &t, width, code, theme, icons, tasks)
-                            }
+                            AlertPart::Text(t) => render_md_text(&mut out, &t, &ctx),
                             AlertPart::Alert { kind, title, body } => {
                                 out.extend(render_alert(kind, &title, &body, &ctx))
                             }
                         }
                     }
                 } else {
-                    render_md_text(&mut out, &text, width, code, theme, icons, tasks);
+                    render_md_text(&mut out, &text, &ctx);
                 }
             }
             Segment::Mermaid(code) => out.extend(render_mermaid_block(&code, width)),
@@ -192,56 +197,85 @@ fn render_markdown_tasks_opts(
 
 /// One Markdown text run: pull out collapsible `<details>` blocks first (they span blank lines, so
 /// the plain HTML-block splitter can't keep them whole), then render the rest through the normal
-/// tables → HTML → tui-markdown pipeline. Shared by the top level and by GitHub-alert bodies.
-fn render_md_text(
-    out: &mut Vec<Line<'static>>,
-    text: &str,
-    width: u16,
-    code: CodeStyle,
-    theme: &str,
-    icons: bool,
-    tasks: &[char],
-) {
-    let ctx = MdRenderCtx {
-        width,
-        code,
-        theme,
-        icons,
-        tasks,
-    };
+/// tables → HTML → tui-markdown pipeline. This is the **single top-level entry point** that
+/// advances the document-wide `<details>` Tab-toggle ordinal sequence (`next_details_open`) — a
+/// `<details>` discovered any other way (inside an alert's body, inside another `<details>`'s
+/// body) goes through [`render_md_body_nested`] instead, which renders it statically without
+/// touching that sequence. See `render_md_body_nested`'s doc comment for why.
+fn render_md_text(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
     for part in split_details(text) {
         match part {
-            DetailsPart::Text(t) => render_md_text_inner(out, &t, width, code, theme, icons, tasks),
+            DetailsPart::Text(t) => render_md_text_inner(out, &t, ctx),
             DetailsPart::Details {
                 open_attr,
                 summary,
                 body,
             } => {
                 let open = next_details_open(open_attr);
-                out.extend(render_details(open, &summary, &body, &ctx));
+                out.extend(render_details(open, &summary, &body, true, ctx));
+            }
+        }
+    }
+}
+
+/// Render one Markdown text run that lives **inside** an alert's or a `<details>`'s own body (as
+/// opposed to the single top-level entry point, [`render_md_text`]) — used by both [`render_alert`]
+/// and [`render_details`] for their bodies. Handles GitHub alerts recursively (`ctx.alerts`) —
+/// alerts carry no per-block state, so nesting them arbitrarily deep is always safe — and
+/// collapsible `<details>` blocks, but renders any `<details>` found here **statically**
+/// (`render_details(.., interactive: false, ..)`), honoring its own `open` attribute directly
+/// instead of consuming a slot from the document-wide Tab-toggle ordinal sequence
+/// (`next_details_open`/`collect_details_open`, which only ever walks the single top-level entry
+/// point — `collect_details_open`'s own doc comment already establishes that a `<details>` nested
+/// inside another is "swallowed into its parent's body and not counted separately", precisely to
+/// keep that sequence in lockstep with `build_md_items`'s on-screen span count; the identical
+/// reasoning extends to a `<details>` reachable only through an alert, so it gets the same static
+/// treatment here). A `<details>` rendered by this path is therefore not individually
+/// Tab/Space-toggleable, and its summary marker deliberately does not use
+/// `details_marker_style()` (`is_details_header_span` won't match it) — but this still fixes the
+/// actual information-disclosure this function exists for: nested inside an alert or another
+/// `<details>` (recursively, for `<details>`-in-`<details>` or
+/// `<details>`-in-alert-in-`<details>` etc.), a closed one no longer always shows its body — the
+/// generic HTML-block fallback used before this existed had no concept of open vs. closed at all.
+fn render_md_body_nested(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+    if ctx.alerts {
+        for ap in split_alerts(text) {
+            match ap {
+                AlertPart::Text(t) => render_md_details_static(out, &t, ctx),
+                AlertPart::Alert { kind, title, body } => {
+                    out.extend(render_alert(kind, &title, &body, ctx))
+                }
+            }
+        }
+    } else {
+        render_md_details_static(out, text, ctx);
+    }
+}
+
+/// The `<details>`-only half of [`render_md_body_nested`] (factored out so both the `ctx.alerts`
+/// and the `!ctx.alerts` branch there share it) — every `<details>` found here renders statically
+/// (see `render_md_body_nested`'s doc comment for why); the rest of the text goes to
+/// [`render_md_text_inner`].
+fn render_md_details_static(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+    for dp in split_details(text) {
+        match dp {
+            DetailsPart::Text(t2) => render_md_text_inner(out, &t2, ctx),
+            DetailsPart::Details {
+                open_attr,
+                summary,
+                body,
+            } => {
+                out.extend(render_details(open_attr, &summary, &body, false, ctx));
             }
         }
     }
 }
 
 /// The tables → HTML-block → tui-markdown pipeline for one Markdown text run (no `<details>`).
-fn render_md_text_inner(
-    out: &mut Vec<Line<'static>>,
-    text: &str,
-    width: u16,
-    code: CodeStyle,
-    theme: &str,
-    icons: bool,
-    tasks: &[char],
-) {
-    let opts = Options::new(KonomaStyles { code_bg: code.bg });
-    let ctx = MdRenderCtx {
-        width,
-        code,
-        theme,
-        icons,
-        tasks,
-    };
+fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+    let opts = Options::new(KonomaStyles {
+        code_bg: ctx.code.bg,
+    });
     // tui-markdown collapses a GFM table into one line, so table blocks alone are intercepted
     // first and drawn with our own borders. The rest of the text still goes to tui-markdown as before.
     for part in split_tables(text) {
@@ -265,13 +299,13 @@ fn render_md_text_inner(
                             // the smallest failing block** to plain text (degrading the whole thing
                             // would leave a real document entirely undecorated — reported by the
                             // user on 2026-07-07).
-                            render_text_block_safe(out, &t2, &opts, &ctx, 0);
+                            render_text_block_safe(out, &t2, &opts, ctx, 0);
                         }
                         HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                     }
                 }
             }
-            MdPart::Table(raw) => out.extend(render_table(&raw, width, icons)),
+            MdPart::Table(raw) => out.extend(render_table(&raw, ctx.width, ctx.icons)),
         }
     }
 }
@@ -1148,6 +1182,70 @@ fn looks_like_list_marker(t: &str) -> bool {
     marker_end == bytes.len() || bytes[marker_end] == b' '
 }
 
+/// Whether `line` opens an ATX heading (`#` through `######`) — up to 3 columns of indentation,
+/// then 1-6 `#` characters, then whitespace or end of line (CommonMark §4.2). A run of 7+ `#`, or a
+/// `#` immediately followed by non-whitespace (`#nospace`), is not a heading — it's ordinary
+/// paragraph text, verified directly against the renderer (both draw as a plain paragraph, and a
+/// following indented line stays a lazy continuation of it, not code).
+fn is_atx_heading_line(line: &str) -> bool {
+    let ws = leading_ws_width(line);
+    if ws > 3 {
+        return false;
+    }
+    let rest = strip_ws_columns(line, ws);
+    let hashes = rest.chars().take_while(|&c| c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return false;
+    }
+    matches!(rest.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
+}
+
+/// Whether `line` is a thematic break (`---`, `***`, `___`, `- - -`, ...) — up to 3 columns of
+/// indentation, then 3 or more of the same character among `-`/`_`/`*`, optionally interleaved with
+/// spaces/tabs, and nothing else on the line (CommonMark §4.1). Checked unconditionally, with no
+/// need to look at the preceding line: a run of 3+ of one of these characters is *never* itself
+/// paragraph content, whether it resolves as a thematic break (no paragraph precedes it) or as a
+/// setext heading underline (one does — see `is_setext_underline_line`) — the two interpretations
+/// never disagree on the one thing this scanner needs to know: "does this end a paragraph".
+fn is_thematic_break_line(line: &str) -> bool {
+    let ws = leading_ws_width(line);
+    if ws > 3 {
+        return false;
+    }
+    let rest = strip_ws_columns(line, ws);
+    for marker in ['-', '_', '*'] {
+        let count = rest.chars().filter(|&c| c == marker).count();
+        if count >= 3 && rest.chars().all(|c| c == marker || c == ' ' || c == '\t') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `line` has the *shape* of a setext heading underline: up to 3 columns of indentation,
+/// then a run of one or more `=` characters, or a run of one or more `-` characters, with any
+/// trailing spaces/tabs (CommonMark §4.3 — unlike a thematic break, there is no minimum count). A
+/// setext underline retroactively turns the immediately *preceding* line into a heading, so this
+/// shape only actually behaves as "not a paragraph" when a paragraph precedes it — callers must gate
+/// on that separately (the "previous line closed a paragraph" flag being false right before this
+/// line). Without a preceding open paragraph, the renderer draws a line like this as an ordinary
+/// paragraph of its own; calling this unconditionally would wrongly mark it as non-paragraph content
+/// and let a following indented line open as code when the renderer keeps it as a lazy continuation.
+///
+/// `-`/`_`/`*` runs of 3+ are already handled unconditionally by `is_thematic_break_line` — see its
+/// doc comment for why the two constructs never disagree on "does this end a paragraph". What only
+/// *this* function adds, once the caller gates it, is `=` runs of any length and `-` runs shorter
+/// than 3 (a `-`/`--` underline is valid right after a paragraph even though it's too short to ever
+/// be a thematic break on its own).
+fn is_setext_underline_line(line: &str) -> bool {
+    let ws = leading_ws_width(line);
+    if ws > 3 {
+        return false;
+    }
+    let rest = strip_ws_columns(line, ws).trim_end();
+    !rest.is_empty() && (rest.chars().all(|c| c == '=') || rest.chars().all(|c| c == '-'))
+}
+
 /// Tracks whether the scan is currently inside a (possibly nested) list item, to scope "top-level
 /// indented code block" detection the way pulldown-cmark (the parser tui-markdown renders through)
 /// actually does: a real, CommonMark-correct indented code block *inside* a list item needs 4
@@ -1181,9 +1279,11 @@ impl ListGuard {
         self.in_list
     }
 
-    /// Call when a fence/alert/details/html/table match is found at `ws` columns — those container
-    /// types all require dedenting to their own baseline, so a match at column 0 unambiguously ends
-    /// any active list (matches `observe`'s column-0 rule). A match found while still indented is
+    /// Call when a fence/alert/details/html/table/heading/thematic-break/setext-underline match is
+    /// found at `ws` columns — each of those is its own top-level block (container types require
+    /// dedenting to their own baseline; the leaf ones — heading, thematic break, setext underline —
+    /// simply can never be list content at column 0 either way), so a match at column 0 unambiguously
+    /// ends any active list (matches `observe`'s column-0 rule). A match found while still indented is
     /// assumed to still be inside the list — the same conservative default `observe` uses for other
     /// indented content.
     fn observe_special(&mut self, ws: usize) {
@@ -1195,7 +1295,7 @@ impl ListGuard {
 
 /// Consume one indented code block — one or more blank-line-separated chunks — starting at
 /// `lines[*i]`, which the caller has already verified opens one (`leading_ws_width >= 4`, not inside
-/// a list, allowed to open here per `prev_blank`). Advances `*i` past the block (leaving it at the
+/// a list, allowed to open here per `prev_not_paragraph`). Advances `*i` past the block (leaving it at the
 /// first line that is *not* part of the block) and returns its content: each line with exactly 4
 /// columns of indentation stripped (CommonMark: "minus four spaces of indentation" — anything beyond
 /// that is real content). A blank line strictly *between* two chunks is dropped rather than kept as
@@ -1247,11 +1347,11 @@ fn code_block_source_locs_inner(
     let mut out = Vec::new();
     let mut details_idx = 0usize;
     let mut i = 0;
-    // See `ListGuard` / `consume_indented_code_block` docs. `prev_blank` starts `true`: the very
+    // See `ListGuard` / `consume_indented_code_block` docs. `prev_not_paragraph` starts `true`: the very
     // first block of a document (or of a recursed alert/details body — its own local coordinate
     // system) needs no preceding blank line to open as indented code.
     let mut list = ListGuard::new();
-    let mut prev_blank = true;
+    let mut prev_not_paragraph = true;
     while i < lines.len() {
         let t = lines[i].trim_start();
         let ws = leading_ws_width(lines[i]);
@@ -1263,7 +1363,7 @@ fn code_block_source_locs_inner(
             list.observe_special(ws);
             // Verified against the renderer: a non-paragraph block (alert/details/fence) does not
             // gate a following indented code block behind a blank line the way a paragraph does.
-            prev_blank = true;
+            prev_not_paragraph = true;
             i += 1;
             let mut body = String::new();
             while i < lines.len() && is_blockquote_line(lines[i]) {
@@ -1278,7 +1378,7 @@ fn code_block_source_locs_inner(
         // never appears on screen). Open/closed is runtime state, so it's received from the caller.
         if let Some(open_attr) = details_open_tag(lines[i]) {
             list.observe_special(ws);
-            prev_blank = true;
+            prev_not_paragraph = true;
             let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
             details_idx += 1;
             i += 1;
@@ -1299,43 +1399,76 @@ fn code_block_source_locs_inner(
             }
             continue;
         }
-        let fence = if t.starts_with("```") {
-            Some('`')
-        } else if t.starts_with("~~~") {
-            Some('~')
-        } else {
-            None
-        };
-        let Some(fc) = fence else {
+        // ATX heading (`#` … `######`) — a leaf block, never a paragraph, so it does not gate a
+        // following indented code block behind a blank line the way a paragraph does. Verified
+        // against the renderer: a heading immediately followed by an indented block, with no blank
+        // line between them, still draws the indented block as code.
+        if is_atx_heading_line(lines[i]) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            i += 1;
+            continue;
+        }
+        // Thematic break (`---`/`***`/`___`, `- - -`, ...) — same treatment. Unconditional: see
+        // `is_thematic_break_line`'s doc comment for why the thematic-break/setext-underline
+        // ambiguity for `-` runs of length 3+ never matters for "does this end a paragraph".
+        if is_thematic_break_line(lines[i]) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            i += 1;
+            continue;
+        }
+        // Setext heading underline (`===`/`---`, any length) — only actually behaves as "not a
+        // paragraph" when it retroactively closes one, hence gated on `!prev_not_paragraph` (the
+        // previous line just closed a paragraph). See `is_setext_underline_line`'s doc comment.
+        if !prev_not_paragraph && is_setext_underline_line(lines[i]) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            i += 1;
+            continue;
+        }
+        let Some((fence, info)) = parse_fence(lines[i]) else {
             // Regular content: a blank line, a list-item marker (skip nested content — see
-            // `ListGuard`), a top-level indented (4+ column) code block, or plain prose.
+            // `ListGuard`), a top-level indented (4+ column) code block, or plain prose. A line
+            // that merely *looks* like a fence but is indented 4+ columns falls through to here too
+            // (`parse_fence` rejects it) — it is the literal first line of an indented code block,
+            // not a fence header.
             if t.trim().is_empty() {
-                prev_blank = true;
+                prev_not_paragraph = true;
                 i += 1;
                 continue;
             }
             let in_list = list.observe(ws, t);
-            if !in_list && ws >= 4 && prev_blank {
+            if !in_list && ws >= 4 && prev_not_paragraph {
                 out.push(consume_indented_code_block(&lines, &mut i));
-                prev_blank = true;
+                prev_not_paragraph = true;
                 continue;
             }
             // Plain prose (or list content deliberately left unscanned) — CommonMark requires a
             // blank line between a paragraph and a following indented code block, so this also
             // closes the door on the *next* line opening one without a blank in between.
-            prev_blank = false;
+            prev_not_paragraph = false;
             i += 1;
             continue;
         };
         list.observe_special(ws);
-        prev_blank = true;
-        let info = t.trim_start_matches(fc).trim();
-        let is_mermaid = is_mermaid_info(info);
-        let close = fc.to_string().repeat(3);
+        prev_not_paragraph = true;
+        let is_mermaid = is_mermaid_info(&info);
+        // CommonMark: content lines have up to the opening fence's own indentation stripped (if
+        // present) — verified against the renderer (pulldown-cmark does exactly this before handing
+        // the code block to tui-markdown): a fence indented 2-3 columns (inside a list item, say)
+        // shows its body flush-left on screen, not with the fence's indentation still attached.
+        let fence_indent = ws;
         i += 1; // opening fence
         let mut body = Vec::new();
-        while i < lines.len() && !lines[i].trim_start().starts_with(&close) {
-            body.push(lines[i].to_string());
+        while i < lines.len() {
+            let closing = parse_fence(lines[i])
+                .map(|(f, info)| f.ch == fence.ch && f.len >= fence.len && info.is_empty())
+                .unwrap_or(false);
+            if closing {
+                break;
+            }
+            body.push(strip_ws_columns(lines[i], fence_indent).to_string());
             i += 1;
         }
         if i < lines.len() {
@@ -1366,21 +1499,80 @@ pub(crate) struct TaskLoc {
 /// `(original absolute line index for TaskLoc.line, this line's own text, extra prefix bytes already
 /// stripped off the **source** line — e.g. a blockquote "> " marker — needed to translate a byte
 /// offset within the text back to a byte offset within the real source line)`.
+///
+/// Recurses into a GitHub alert or a `<details>` block found *within* this body — the write-back
+/// half of the same fix `render_md_body_nested` is the render half of (see its doc comment for the
+/// full reasoning): a `<details>`'s body can contain an alert, an alert's body can contain a
+/// `<details>`, either can nest again inside what that produces, and so on. A `<details>` found
+/// this way always uses its own `open` attribute directly, never a document-wide ordinal slot — it
+/// never participates in that sequence on the render side either (only the single top-level
+/// `task_source_locs` scan, mirroring `render_md_text`, does).
 fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut Vec<TaskLoc>) {
     let mut list = ListGuard::new();
-    let mut prev_blank = true;
+    let mut prev_not_paragraph = true;
     let mut idx = 0usize;
     while idx < logical.len() {
         let (orig_line, text, prefix) = logical[idx];
         let ws = leading_ws_width(text);
         let rest = strip_ws_columns(text, ws);
         if rest.trim().is_empty() {
-            prev_blank = true;
+            prev_not_paragraph = true;
+            idx += 1;
+            continue;
+        }
+        if parse_alert_header(text).is_some() {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            idx += 1;
+            let mut nested: Vec<(usize, String, usize)> = Vec::new();
+            while idx < logical.len() && is_blockquote_line(logical[idx].1) {
+                let (oln, txt, pfx) = logical[idx];
+                let stripped = strip_blockquote(txt);
+                let extra = txt.len() - stripped.len();
+                nested.push((oln, stripped, pfx + extra));
+                idx += 1;
+            }
+            let refs: Vec<(usize, &str, usize)> = nested
+                .iter()
+                .map(|(o, s, p)| (*o, s.as_str(), *p))
+                .collect();
+            scan_task_lines(&refs, tasks, out);
+            continue;
+        }
+        if let Some(open_attr) = details_open_tag(text) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            idx += 1;
+            let mut nested: Vec<(usize, &str, usize)> = Vec::new();
+            while idx < logical.len() && !is_details_close(logical[idx].1) {
+                nested.push(logical[idx]);
+                idx += 1;
+            }
+            if idx < logical.len() {
+                idx += 1; // skip `</details>`
+            }
+            if open_attr {
+                scan_task_lines(&nested, tasks, out);
+            }
+            continue;
+        }
+        // Heading / thematic break / setext underline: same "not a paragraph" treatment as
+        // `code_block_source_locs_inner` — see that function's matching checks and the three
+        // detector functions' doc comments for the CommonMark reasoning (identical here).
+        if is_atx_heading_line(text) || is_thematic_break_line(text) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            idx += 1;
+            continue;
+        }
+        if !prev_not_paragraph && is_setext_underline_line(text) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
             idx += 1;
             continue;
         }
         let in_list = list.observe(ws, rest);
-        if !in_list && ws >= 4 && prev_blank {
+        if !in_list && ws >= 4 && prev_not_paragraph {
             // Skip the whole indented code chunk — the same chunk-gluing rule as
             // `consume_indented_code_block`, just discarding content (nothing inside code is a task).
             while let Some(&(_, t2, _)) = logical.get(idx) {
@@ -1401,7 +1593,7 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
                 }
                 break;
             }
-            prev_blank = true;
+            prev_not_paragraph = true;
             continue;
         }
         if let Some(state) = task_prefix_state(rest, tasks) {
@@ -1411,7 +1603,7 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
                 state,
             });
         }
-        prev_blank = false;
+        prev_not_paragraph = false;
         idx += 1;
     }
 }
@@ -1431,39 +1623,35 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
 pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool]) -> Vec<TaskLoc> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
-    let mut fence: Option<char> = None;
+    let mut fence: Option<Fence> = None;
     let mut details_idx = 0usize;
     let mut i = 0;
     // See `ListGuard` / `consume_indented_code_block` docs (shared with `code_block_source_locs`).
-    // `prev_blank` starts `true`: the very first block of the document needs no preceding blank line
+    // `prev_not_paragraph` starts `true`: the very first block of the document needs no preceding blank line
     // to open as indented code.
     let mut list = ListGuard::new();
-    let mut prev_blank = true;
+    let mut prev_not_paragraph = true;
     while i < lines.len() {
         let line = lines[i];
         let t = line.trim_start();
         let ws = leading_ws_width(line);
         if let Some(f) = fence {
-            if t.starts_with(&f.to_string().repeat(3)) {
+            let closing = parse_fence(line)
+                .map(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
+                .unwrap_or(false);
+            if closing {
                 fence = None;
             }
             i += 1;
             continue;
         }
-        if t.starts_with("```") {
+        if let Some((f, _info)) = parse_fence(line) {
             list.observe_special(ws);
             // Verified against the renderer: a non-paragraph block (fence/alert/details/html/table)
             // does not gate a following indented code block behind a blank line the way a paragraph
             // does.
-            prev_blank = true;
-            fence = Some('`');
-            i += 1;
-            continue;
-        }
-        if t.starts_with("~~~") {
-            list.observe_special(ws);
-            prev_blank = true;
-            fence = Some('~');
+            prev_not_paragraph = true;
+            fence = Some(f);
             i += 1;
             continue;
         }
@@ -1473,7 +1661,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         // what's on screen and every toggle gets cancelled.
         if parse_alert_header(line).is_some() {
             list.observe_special(ws);
-            prev_blank = true;
+            prev_not_paragraph = true;
             i += 1;
             let mut logical: Vec<(usize, String, usize)> = Vec::new();
             while i < lines.len() && is_blockquote_line(lines[i]) {
@@ -1496,7 +1684,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         // cancel toggles across the whole document that contains a closed details).
         if let Some(open_attr) = details_open_tag(line) {
             list.observe_special(ws);
-            prev_blank = true;
+            prev_not_paragraph = true;
             // The fallback is **the same as the renderer's** (`next_details_open`) = the tag's
             // `open` attribute. In production the caller supplies a value for every block so this
             // never gets hit, but if it drifts, fall on the side that matches the render.
@@ -1522,7 +1710,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         }
         if is_html_block_start(line) {
             list.observe_special(ws);
-            prev_blank = true;
+            prev_not_paragraph = true;
             while i < lines.len() && !lines[i].trim().is_empty() {
                 i += 1;
             }
@@ -1530,25 +1718,40 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         }
         if looks_like_table_row(line) && i + 1 < lines.len() && is_table_delimiter(lines[i + 1]) {
             list.observe_special(ws);
-            prev_blank = true;
+            prev_not_paragraph = true;
             i += 2;
             while i < lines.len() && looks_like_table_row(lines[i]) {
                 i += 1;
             }
             continue;
         }
+        // Heading / thematic break / setext underline: same "not a paragraph" treatment as
+        // `code_block_source_locs_inner` — see that function's matching checks and the three
+        // detector functions' doc comments for the CommonMark reasoning (identical here).
+        if is_atx_heading_line(line) || is_thematic_break_line(line) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            i += 1;
+            continue;
+        }
+        if !prev_not_paragraph && is_setext_underline_line(line) {
+            list.observe_special(ws);
+            prev_not_paragraph = true;
+            i += 1;
+            continue;
+        }
         if t.trim().is_empty() {
-            prev_blank = true;
+            prev_not_paragraph = true;
             i += 1;
             continue;
         }
         let in_list = list.observe(ws, t);
-        if !in_list && ws >= 4 && prev_blank {
+        if !in_list && ws >= 4 && prev_not_paragraph {
             // The renderer shows this as an indented code block, not a task — same rule as
             // `code_block_source_locs_inner`. A `- [ ] fake` example inside stays literal and does
             // not get counted (and mis-toggled) as a real checkbox.
             consume_indented_code_block(&lines, &mut i);
-            prev_blank = true;
+            prev_not_paragraph = true;
             continue;
         }
         let indent = line.len() - t.len();
@@ -1559,16 +1762,111 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
                 state,
             });
         }
-        prev_blank = false;
+        prev_not_paragraph = false;
         i += 1;
     }
     out
+}
+
+/// Whether tui-markdown styled this **already-rendered** line as belonging to a fenced or
+/// indented code block: its synthesized opening/closing marker lines, and every content/blank
+/// line in between. **Depends on tui-markdown's internal implementation — verified directly
+/// against its source** (`tui-markdown-0.3.7/src/lib.rs`: `start_codeblock`/`text`/
+/// `end_codeblock`, and empirically against its actual output, see
+/// `tui_markdown_codeblock_lines_are_styled_white` below): while pulldown-cmark (the parser
+/// tui-markdown renders through) is inside a `Tag::CodeBlock`, tui-markdown pushes
+/// `KonomaStyles::code()` (our `StyleSheet` impl) onto its internal line-style stack and patches
+/// **every** `Line` it creates during that span with it — the synthesized `` ```lang `` opener,
+/// every content and blank line, and the synthesized `` ``` `` closer alike — popping the style
+/// only at `TagEnd::CodeBlock`. Crucially, this happens regardless of what the line's *text*
+/// looks like, so a maximal run of styled lines is exactly one code block on screen, however many
+/// `` ``` ``-looking substrings occur *inside* it: an inner fence nested inside a longer outer one
+/// of the same character (`` ```` `` around `` ``` ``, the bug this function exists to fix — the
+/// document past the inner marker used to render as a second, bogus code block, silencing every
+/// heading/link/task after it), or an indented block whose literal first line happens to look
+/// like a fence header. Scanning `line.style` instead of the line's *text* means those inner
+/// look-alikes can never be mistaken for a boundary. `KonomaStyles::code()` is `fg(White)`
+/// regardless of `ui.theme.code_bg` (same bg-independence as `is_inline_code_span`), so this
+/// check is too. This is a **different** signal from `is_code_line` (which scans spans of the
+/// *already-decorated* output — the `▎` gutter this very function adds — to let later passes like
+/// autolink skip real code): `is_code_block_line` runs *before* decoration, straight on
+/// tui-markdown's own output.
+fn is_code_block_line(line: &Line<'_>) -> bool {
+    line.style.fg == Some(Color::White)
+}
+
+/// Render one maximal run of [`is_code_block_line`] lines (drained from `run`) as a decorated
+/// code block: language-badge header + syntect-highlighted body + bottom padding row. By
+/// construction (see `is_code_block_line`'s docs — `start_codeblock`/`end_codeblock` always
+/// synthesize both markers, and pulldown-cmark auto-closes any code block still open at end of
+/// input) a run produced by real fenced/indented code is always at least 2 lines, starting with
+/// the opening `` ```lang `` marker and ending with the closing `` ``` `` marker. The one case
+/// that reaches this function without that shape: a *plain* (non-alert) block quote wrapping an
+/// indented code block. konoma doesn't special-case those — they run through tui-markdown's own
+/// native blockquote handling, which inserts a visual `"> "` prefix **in front of** every line
+/// while it is active, including the (still `code()`-styled) marker/body lines of code nested
+/// inside it — so the run's first line reads `"> ```"` rather than `"```"`. That shape is
+/// unreachable for a real fence/indented block (the constructs this fix actually supports), so
+/// rather than mis-parse it as code (stripping markers that were never really there) or panic
+/// indexing into it, the safe response (principle #3) is to hand the run back completely
+/// unchanged — exactly what this function's pre-fix caller did for the same input (it never
+/// recognized a `` ``` `` preceded by other text as an opener at all).
+fn flush_code_run(
+    out: &mut Vec<Line<'static>>,
+    run: &mut Vec<Line<'static>>,
+    w: usize,
+    code_bg: Option<Color>,
+    theme: &str,
+    code: CodeStyle,
+) {
+    if run.is_empty() {
+        return;
+    }
+    let lines = std::mem::take(run);
+    let opening = lines[0].to_string();
+    let opening_trimmed = opening.trim_start();
+    let closing_ok = lines.last().is_some_and(|l| {
+        let text = l.to_string();
+        is_closing_fence(text.trim_start())
+    });
+    if lines.len() < 2 || !opening_trimmed.starts_with("```") || !closing_ok {
+        out.extend(lines);
+        return;
+    }
+    let lang = opening_trimmed.trim_matches('`').trim().to_string();
+    let label = if lang.is_empty() {
+        "code"
+    } else {
+        lang.as_str()
+    };
+    out.push(code_header(label, w, code));
+    let body: Vec<String> = lines[1..lines.len() - 1]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    out.extend(highlight_body(
+        &body,
+        &lang,
+        w,
+        code_bg,
+        theme,
+        code.tab_width,
+        code.wrap,
+    ));
+    // Signal the block's end with a bottom padding row (gutter only).
+    out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
 }
 
 /// Turn the range enclosed by ```lang fences into a special area. When `code.bg`=None there is no background band
 /// (left gutter and foreground color only). The body collects the raw text and highlights it all at once at the closing
 /// fence via **our own syntect** (tui-markdown's highlight-code is disabled = avoids oniguruma).
 /// Highlighting it all together lets multi-line comments/strings be colored correctly.
+///
+/// Block boundaries are found by [`is_code_block_line`] (tui-markdown's own per-line *style*),
+/// not by scanning rendered *text* for `` ``` `` — the latter used to mistake an inner fence
+/// marker nested inside a longer outer fence of the same character for the block's real close,
+/// silently swallowing the rest of the document (headings, links, tasks) into a bogus second code
+/// block (reported by a user; see `is_code_block_line`'s docs for the full mechanism).
 fn decorate_code_blocks(
     lines: Vec<Line<'static>>,
     width: u16,
@@ -1578,60 +1876,17 @@ fn decorate_code_blocks(
     let w = width as usize;
     let code_bg = code.bg;
     let mut out = Vec::with_capacity(lines.len());
-    let mut in_code = false;
-    let mut lang = String::new();
-    let mut body: Vec<String> = Vec::new();
+    let mut run: Vec<Line<'static>> = Vec::new();
     for line in lines {
-        let text = line.to_string();
-        let trimmed = text.trim_start();
-        if !in_code && trimmed.starts_with("```") {
-            in_code = true;
-            lang = trimmed.trim_matches('`').trim().to_string();
-            let label = if lang.is_empty() {
-                "code"
-            } else {
-                lang.as_str()
-            };
-            out.push(code_header(label, w, code));
-            body.clear();
+        if is_code_block_line(&line) {
+            run.push(line);
             continue;
         }
-        if in_code && is_closing_fence(trimmed) {
-            in_code = false;
-            out.extend(highlight_body(
-                &body,
-                &lang,
-                w,
-                code_bg,
-                theme,
-                code.tab_width,
-                code.wrap,
-            ));
-            // Signal the block's end with a bottom padding row (gutter only).
-            out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
-            body.clear();
-            continue;
-        }
-        if in_code {
-            // Collect body lines as raw text (highlighting happens all at once at the closing fence = correctly tracks multi-line syntax).
-            body.push(text);
-            continue;
-        }
+        flush_code_run(&mut out, &mut run, w, code_bg, theme, code);
         out.push(line);
     }
-    // Also flush the body if it ends without a closing fence (the safe side).
-    if in_code {
-        out.extend(highlight_body(
-            &body,
-            &lang,
-            w,
-            code_bg,
-            theme,
-            code.tab_width,
-            code.wrap,
-        ));
-        out.push(pad_to_width(vec![gutter_span(code_bg)], w, code_bg));
-    }
+    // Also flush a trailing run with no line after it (the safe side).
+    flush_code_run(&mut out, &mut run, w, code_bg, theme, code);
     out
 }
 
@@ -1807,15 +2062,22 @@ fn render_text_block_safe(
 fn split_block_for_retry(src: &str) -> Option<(&str, &str)> {
     let mut blanks: Vec<usize> = Vec::new(); // start offsets of blank lines
     let mut newlines: Vec<usize> = Vec::new(); // newline positions (outside fences)
-    let mut in_fence = false;
+    let mut fence: Option<Fence> = None;
     let mut off = 0usize;
     for line in src.split_inclusive('\n') {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
+        let bare = line.strip_suffix('\n').unwrap_or(line);
+        if let Some(f) = fence {
+            let closing = parse_fence(bare)
+                .map(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
+                .unwrap_or(false);
+            if closing {
+                fence = None;
+            }
+        } else if let Some((f, _info)) = parse_fence(bare) {
+            fence = Some(f);
         }
         let end = off + line.len();
-        if !in_fence && line.ends_with('\n') {
+        if fence.is_none() && line.ends_with('\n') {
             if line.trim().is_empty() {
                 blanks.push(off);
             }
@@ -2481,13 +2743,24 @@ enum Segment {
 }
 
 /// Information about an open code fence (the fence character and its length).
+#[derive(Clone, Copy)]
 struct Fence {
     ch: u8,
     len: usize,
 }
 
-/// If the line is a code fence (three or more of ``` or ~~~), return (fence, info string).
+/// If the line is a code fence (three or more of ``` or ~~~, indented no more than three columns),
+/// return (fence, info string). CommonMark §4.5: a fence indented 4+ columns is not a fence at all —
+/// it is (part of) an indented code block instead, and its content — including anything that merely
+/// *looks* like fence syntax — is literal text (verified against the renderer: `"para\n\n    ```rust\n
+/// fn a(){}\n    ```\n"` shows as one indented code block whose literal first line is `` ```rust ``,
+/// not a code-block header). This threshold applies uniformly to both the opening line and any
+/// candidate closing line — CommonMark requires the closing fence to independently satisfy the same
+/// ≤3-column rule, regardless of the opening fence's own indentation.
 fn parse_fence(line: &str) -> Option<(Fence, String)> {
+    if leading_ws_width(line) >= 4 {
+        return None;
+    }
     let trimmed = line.trim_start();
     let ch = *trimmed.as_bytes().first()?;
     if ch != b'`' && ch != b'~' {
@@ -2650,15 +2923,14 @@ fn structure_mask(lines: &[&str]) -> Vec<bool> {
         }
         // `<details>` … `</details>`: mirrors `split_details`'s span (opening tag line through the
         // closing tag line inclusive, spanning blank lines; runs to the end of input if unclosed).
+        // `details_block_close` is `split_details`'s own scan, shared (see its doc comment) so
+        // this can never drift out of sync with what `split_details` actually carves out.
         if details_open_tag(lines[i]).is_some() {
             let start = i;
-            let mut j = i + 1;
-            while j < lines.len() && !is_details_close(lines[j]) {
-                j += 1;
-            }
-            let end = if j < lines.len() { j } else { lines.len() - 1 };
+            let close = details_block_close(lines, start);
+            let end = close.unwrap_or(lines.len() - 1);
             mask[start..=end].fill(true);
-            i = end + 1;
+            i = close.map_or(lines.len(), |c| c + 1);
             continue;
         }
         // GFM table: header row + delimiter row + consecutive data rows, mirroring `split_tables`.
@@ -2898,15 +3170,22 @@ fn strip_blockquote(line: &str) -> String {
 /// (`fence_mask`): a `> [!NOTE]`-looking line inside a code fence must stay literal code, not open
 /// a callout box (whose body-capture loop then stops at the first non-`>` line — usually the very
 /// next line of code — leaving the rest of the fence, including its closing marker, to fall through
-/// to plain text and break the code block in two).
+/// to plain text and break the code block in two). Also gated by `details_mask`: an alert header
+/// found inside a still-folded `<details>` block must stay literal text there too — extracting it
+/// here would render it *outside* the fold, leaking its body regardless of whether the `<details>`
+/// block is open or closed (see `details_mask`'s doc comment). Left alone, that text flows through
+/// to `render_md_text`'s own `split_details` call, which correctly folds it away; from there,
+/// `render_details`/`render_md_body_nested` re-run `split_alerts` on just that block's body, where
+/// this same gate no longer applies (the surrounding `<details>` tags aren't part of the substring).
 fn split_alerts(md: &str) -> Vec<AlertPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
     let lines: Vec<&str> = md.lines().collect();
     let fenced = fence_mask(&lines);
+    let in_details = details_mask(&lines, &fenced);
     let mut i = 0;
     while i < lines.len() {
-        let header = if fenced[i] {
+        let header = if fenced[i] || in_details[i] {
             None
         } else {
             parse_alert_header(lines[i])
@@ -2936,8 +3215,10 @@ fn split_alerts(md: &str) -> Vec<AlertPart> {
 }
 
 /// Render a GitHub alert as a colored callout box: a header (`icon Label` in the type's color, bold)
-/// and the Markdown body, every line carrying a colored left bar (`▌`). The body is rendered by the
-/// shared Markdown pipeline, so links, code, lists etc. inside an alert work like anywhere else.
+/// and the Markdown body, every line carrying a colored left bar (`▌`). The body goes through
+/// [`render_md_body_nested`] (not the top-level [`render_md_text`]), so links, code, lists, a
+/// nested alert, and a `<details>` block (rendered statically — see that function's doc comment)
+/// inside an alert all work.
 fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
     let color = kind.color();
     let bar = || Span::styled("▌ ".to_string(), Style::new().fg(color));
@@ -2961,17 +3242,12 @@ fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> 
     ));
     out.push(Line::from(header));
     // Body via the shared pipeline (width reduced by the 2-col bar), each line bar-prefixed.
-    let inner = ctx.width.saturating_sub(2);
+    let inner_ctx = MdRenderCtx {
+        width: ctx.width.saturating_sub(2),
+        ..*ctx
+    };
     let mut body_lines = Vec::new();
-    render_md_text_inner(
-        &mut body_lines,
-        body,
-        inner,
-        ctx.code,
-        ctx.theme,
-        ctx.icons,
-        ctx.tasks,
-    );
+    render_md_body_nested(&mut body_lines, body, &inner_ctx);
     for bl in body_lines {
         let style = bl.style;
         let mut spans = vec![bar()];
@@ -3038,47 +3314,48 @@ fn is_details_close(line: &str) -> bool {
     line.trim().eq_ignore_ascii_case("</details>")
 }
 
+/// The line index of the `</details>` line that closes the `<details>` … `</details>` block opening
+/// at `lines[start]` (the caller has already confirmed this via `details_open_tag`) — `None` if
+/// unclosed (the block runs to the end of input). **The one place that scans for a `<details>`
+/// block's extent** — `split_details`, `structure_mask`, and `details_mask` all call it, so all
+/// three can never drift out of sync with each other about where a block starts and ends.
+fn details_block_close(lines: &[&str], start: usize) -> Option<usize> {
+    ((start + 1)..lines.len()).find(|&j| is_details_close(lines[j]))
+}
+
 /// Split off `<details>` … `</details>` blocks (spanning blank lines) from a text run, extracting the
 /// `<summary>` and the body. Non-details text is returned verbatim for the normal pipeline.
 /// Fence-aware (a `<details>` inside a code fence is left as text) so the block count and order match
 /// `collect_details_open`, which seeds the per-ordinal open state.
 fn split_details(md: &str) -> Vec<DetailsPart> {
     let lines: Vec<&str> = md.lines().collect();
+    let fenced = fence_mask(&lines);
     let mut parts = Vec::new();
     let mut text = String::new();
-    let mut in_fence = false;
     let mut i = 0;
     while i < lines.len() {
-        let t = lines[i].trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
+        if fenced[i] {
             text.push_str(lines[i]);
             text.push('\n');
             i += 1;
             continue;
         }
-        if !in_fence {
-            if let Some(open_attr) = details_open_tag(lines[i]) {
-                if !text.is_empty() {
-                    parts.push(DetailsPart::Text(std::mem::take(&mut text)));
-                }
-                i += 1;
-                let mut block = Vec::new();
-                while i < lines.len() && !is_details_close(lines[i]) {
-                    block.push(lines[i]);
-                    i += 1;
-                }
-                if i < lines.len() {
-                    i += 1; // skip </details>
-                }
-                let (summary, body) = extract_summary_body(&block.join("\n"));
-                parts.push(DetailsPart::Details {
-                    open_attr,
-                    summary,
-                    body,
-                });
-                continue;
+        if let Some(open_attr) = details_open_tag(lines[i]) {
+            if !text.is_empty() {
+                parts.push(DetailsPart::Text(std::mem::take(&mut text)));
             }
+            let start = i;
+            let close = details_block_close(&lines, start);
+            let body_end = close.unwrap_or(lines.len());
+            let block = &lines[start + 1..body_end];
+            let (summary, body) = extract_summary_body(&block.join("\n"));
+            parts.push(DetailsPart::Details {
+                open_attr,
+                summary,
+                body,
+            });
+            i = close.map_or(lines.len(), |c| c + 1);
+            continue;
         }
         text.push_str(lines[i]);
         text.push('\n');
@@ -3088,6 +3365,37 @@ fn split_details(md: &str) -> Vec<DetailsPart> {
         parts.push(DetailsPart::Text(text));
     }
     parts
+}
+
+/// For each of `lines`, whether it sits inside a top-level `<details>` … `</details>` block — the
+/// same span `split_details` extracts (via the shared `details_block_close`). Used by `split_alerts`
+/// so it doesn't pull a `> [!TYPE]` alert header out of a `<details>` block that is still folded: an
+/// alert nested there used to render *outside* the fold unconditionally, leaking its body regardless
+/// of the block's open/closed state (a closed `<details>` wrapping an alert showed the alert's body
+/// — reported by the user). Gated by `fence_mask`, exactly like `split_details`/`structure_mask`.
+///
+/// Deliberately narrower than `structure_mask` (which also masks every blockquote line, table row,
+/// and other HTML block): masking blockquote lines here would suppress `split_alerts` everywhere,
+/// since an alert header *is* a blockquote line — this mask exists purely to protect `<details>`
+/// blocks specifically.
+fn details_mask(lines: &[&str], fenced: &[bool]) -> Vec<bool> {
+    let mut mask = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if fenced[i] {
+            i += 1;
+            continue;
+        }
+        if details_open_tag(lines[i]).is_some() {
+            let close = details_block_close(lines, i);
+            let end = close.unwrap_or(lines.len() - 1);
+            mask[i..=end].fill(true);
+            i = close.map_or(lines.len(), |c| c + 1);
+            continue;
+        }
+        i += 1;
+    }
+    mask
 }
 
 /// Pull the `<summary>` text and the remaining body out of a details block's inner content. Tags in
@@ -3153,9 +3461,30 @@ pub(crate) fn is_details_body_line(line: &Line<'_>) -> bool {
         .is_some_and(|s| s.content.starts_with('▏') && s.style.fg == Some(TABLE_BORDER_FG))
 }
 
-/// Render a `<details>` block: a summary line marked `▾`/`▸` (a Tab-focus toggle), and — when open —
-/// its Markdown body indented under a colored left bar (like an alert). `summary` empty → "Details".
-fn render_details(open: bool, summary: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
+/// Render a `<details>` block: a summary line marked `▾`/`▸`, and — when open — its Markdown body
+/// indented under a colored left bar (like an alert). `summary` empty → "Details". The body goes
+/// through [`render_md_body_nested`] (not the top-level [`render_md_text`]), so a nested alert
+/// renders as a proper callout and a nested `<details>` renders statically — see that function's
+/// doc comment.
+///
+/// `interactive` distinguishes the **single top-level entry point** ([`render_md_text`], which
+/// hands it `true` and has already consumed a slot from the document-wide Tab-toggle ordinal
+/// sequence via `next_details_open`) from every other caller ([`render_md_body_nested`], `false`,
+/// for a `<details>` discovered inside an alert's or another `<details>`'s body): only the
+/// `true` case draws the summary marker in `details_marker_style()`, the exact style
+/// `is_details_header_span`/`build_md_items` look for to make a block Tab/Space-toggleable. A
+/// `false` block still draws the same `▾`/`▸` glyph (so it visually folds/unfolds with its `open`
+/// attribute) but in a plain style that `is_details_header_span` does not match, so
+/// `build_md_items`'s on-screen span count can never include it and drift out of step with
+/// `collect_details_open`'s source-order count (which likewise never counts it) — see
+/// `render_md_body_nested`'s doc comment for the full reasoning.
+fn render_details(
+    open: bool,
+    summary: &str,
+    body: &str,
+    interactive: bool,
+    ctx: &MdRenderCtx,
+) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let arrow = if open { '▾' } else { '▸' };
     let label = if summary.trim().is_empty() {
@@ -3163,23 +3492,23 @@ fn render_details(open: bool, summary: &str, body: &str, ctx: &MdRenderCtx) -> V
     } else {
         summary.trim()
     };
+    let marker_style = if interactive {
+        details_marker_style()
+    } else {
+        Style::new().fg(Color::Cyan)
+    };
     out.push(Line::from(vec![
-        Span::styled(format!("{arrow} "), details_marker_style()),
+        Span::styled(format!("{arrow} "), marker_style),
         Span::styled(label.to_string(), Style::new().add_modifier(Modifier::BOLD)),
     ]));
     if open && !body.trim().is_empty() {
         let bar = || Span::styled("▏ ".to_string(), Style::new().fg(TABLE_BORDER_FG));
-        let inner = ctx.width.saturating_sub(2);
+        let inner_ctx = MdRenderCtx {
+            width: ctx.width.saturating_sub(2),
+            ..*ctx
+        };
         let mut body_lines = Vec::new();
-        render_md_text_inner(
-            &mut body_lines,
-            body,
-            inner,
-            ctx.code,
-            ctx.theme,
-            ctx.icons,
-            ctx.tasks,
-        );
+        render_md_body_nested(&mut body_lines, body, &inner_ctx);
         for bl in body_lines {
             let style = bl.style;
             let mut spans = vec![bar()];
@@ -3192,10 +3521,14 @@ fn render_details(open: bool, summary: &str, body: &str, ctx: &MdRenderCtx) -> V
 
 /// The `open` attribute of every top-level `<details>` block in `src`, in document order. Derived
 /// from `split_details` itself so the collect order is identical to the split/render order and to the
-/// `MdItemKind::Details` ordinals — a nested `<details>` is swallowed into its parent's body and not
-/// counted separately (counting it here, as a flat tag scan did, drifted the per-ordinal open state
-/// so a later block read the wrong slot). Fence-aware via `split_details`. Used by the app to seed
-/// the default open state.
+/// `MdItemKind::Details` ordinals — a `<details>` nested inside another **or reachable only through
+/// a GitHub alert's body** is swallowed and not counted separately (counting it here, as a flat tag
+/// scan once did, drifted the per-ordinal open state so a later block read the wrong slot) — see
+/// `render_md_body_nested`'s doc comment, which renders exactly those cases statically for the same
+/// reason. A `<details>`-inside-an-alert is invisible to this function specifically because
+/// `split_details` sees the raw, not-yet-alert-stripped source, where such a block's opening tag is
+/// still `>`-prefixed and so does not match `details_open_tag`. Fence-aware via `split_details`.
+/// Used by the app to seed the default open state.
 pub fn collect_details_open(src: &str) -> Vec<bool> {
     split_details(src)
         .into_iter()
@@ -3271,16 +3604,26 @@ fn replace_tag_pair(s: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
 /// to tui-markdown (their tags are stripped, text kept).
 pub fn process_inline_html(src: &str) -> String {
     let mut out = String::new();
-    let mut in_fence = false;
+    let mut fence: Option<Fence> = None;
     for line in src.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
+        if let Some(f) = fence {
+            let closing = parse_fence(line)
+                .map(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
+                .unwrap_or(false);
+            if closing {
+                fence = None;
+            }
             out.push_str(line);
             out.push('\n');
             continue;
         }
-        if in_fence || !line.contains('<') {
+        if let Some((f, _info)) = parse_fence(line) {
+            fence = Some(f);
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if !line.contains('<') {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -3378,17 +3721,14 @@ fn replace_footnote_refs(line: &str, num: &std::collections::HashMap<String, usi
 pub fn process_footnotes(src: &str) -> String {
     use std::collections::HashMap;
     let lines: Vec<&str> = src.lines().collect();
+    // Same "is this line part of a fence" mask `split_tables`/`split_html_blocks`/`split_alerts` use —
+    // all three passes below just need to know, per line, whether to skip/echo it verbatim.
+    let fenced = fence_mask(&lines);
     // Pass 1: collect definitions (fence-aware) and mark their lines.
     let mut defs: Vec<(String, String)> = Vec::new();
     let mut is_def = vec![false; lines.len()];
-    let mut in_fence = false;
     for (i, line) in lines.iter().enumerate() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
+        if fenced[i] {
             continue;
         }
         if let Some((id, text)) = parse_footnote_def(line) {
@@ -3403,14 +3743,8 @@ pub fn process_footnotes(src: &str) -> String {
     // Pass 2: number by first reference appearance (fence-aware, defs excluded).
     let mut num: HashMap<String, usize> = HashMap::new();
     let mut next = 1usize;
-    in_fence = false;
     for (i, line) in lines.iter().enumerate() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence || is_def[i] {
+        if fenced[i] || is_def[i] {
             continue;
         }
         for id in find_footnote_refs(line) {
@@ -3425,16 +3759,8 @@ pub fn process_footnotes(src: &str) -> String {
     }
     // Pass 3: rebuild the body (drop def lines, replace refs; fences verbatim).
     let mut out = String::new();
-    in_fence = false;
     for (i, line) in lines.iter().enumerate() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        if in_fence {
+        if fenced[i] {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -4533,6 +4859,234 @@ mod tests {
             c_arrow,
             Some('▾'),
             "C honors <details open> → expanded marker"
+        );
+    }
+
+    /// Regression for the reported bug: a GitHub alert nested inside a **closed** `<details>` block
+    /// used to render unconditionally, leaking its body regardless of the fold — because
+    /// `split_alerts` used to run over the whole document *before* `split_details`, extracting the
+    /// alert (and rendering it, via `render_alert`, at the top level) before `<details>`'s own fold
+    /// ever got a say. Fixed by gating `split_alerts`'s header detection on `details_mask`, so the
+    /// alert stays literal text inside the block and is only ever reached (via
+    /// `render_details`/`render_md_body_nested`) if that block is actually open.
+    #[test]
+    fn alert_inside_closed_details_is_not_leaked() {
+        let md = "<details>\n<summary>S</summary>\n\n> [!NOTE]\n\
+                  > SECRET-INSIDE-CLOSED-DETAILS\n\n</details>\n\nTail.\n";
+        set_details_open(collect_details_open(md));
+        assert_eq!(
+            collect_details_open(md),
+            vec![false],
+            "one top-level (closed) details block"
+        );
+        let lines =
+            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !joined.contains("SECRET-INSIDE-CLOSED-DETAILS"),
+            "closed <details> must not leak the alert nested inside it: {joined:?}"
+        );
+        // The rest of the document still renders: the (closed) summary and the trailing paragraph.
+        assert!(joined.contains('S'), "summary still shows: {joined:?}");
+        assert!(
+            joined.contains("Tail."),
+            "trailing text survives: {joined:?}"
+        );
+        let summary_arrow = lines.iter().find_map(|l| {
+            let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            joined
+                .trim_end()
+                .ends_with('S')
+                .then(|| joined.chars().next().unwrap_or(' '))
+        });
+        assert_eq!(summary_arrow, Some('▸'), "summary shows the closed marker");
+    }
+
+    /// Companion to `alert_inside_closed_details_is_not_leaked`: when the `<details>` is **open**,
+    /// the nested alert must now actually show — and show as a proper colored callout (via
+    /// `render_md_body_nested` → `render_alert`), not as a literal blockquote with `[!NOTE]` still
+    /// in the text (which is what the pre-fix generic-HTML-block fallback produced).
+    #[test]
+    fn alert_inside_open_details_renders_as_a_callout() {
+        let md = "<details open>\n<summary>S</summary>\n\n> [!NOTE]\n\
+                  > SECRET-INSIDE-OPEN-DETAILS\n\n</details>\n";
+        set_details_open(collect_details_open(md));
+        assert_eq!(collect_details_open(md), vec![true]);
+        let lines =
+            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined.contains("SECRET-INSIDE-OPEN-DETAILS"),
+            "open <details> shows the nested alert's body: {joined:?}"
+        );
+        assert!(
+            joined.contains("Note"),
+            "rendered as a callout with its label: {joined:?}"
+        );
+        assert!(
+            !joined.contains("[!NOTE]"),
+            "the raw `[!NOTE]` marker must be gone, not left literal: {joined:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(|s| s.content.contains('▌') && s.style.fg == Some(Color::Blue)),
+            "colored left bar (Note = blue) on the callout"
+        );
+    }
+
+    /// Reverse nesting: a `<details>` block found **inside a GitHub alert's body**. Before this fix
+    /// there was no `<details>` handling in an alert's body pipeline at all (`render_alert` called
+    /// `render_md_text_inner` directly) — a `<details>` there fell through to the generic
+    /// HTML-block-rescue fallback, which strips tags and always shows the text, `open` or not. Now
+    /// it renders via `render_details(.., interactive: false, ..)`: closed hides the body, open
+    /// shows it — and crucially, this uses the tag's own `open` attribute directly rather than
+    /// consuming a document-wide ordinal slot (see `render_md_body_nested`'s doc comment for why:
+    /// `collect_details_open`'s source-order scan cannot see this `<details>` at all, because its
+    /// opening tag is still `>`-prefixed at that point).
+    #[test]
+    fn details_inside_alert_closed_is_not_leaked_and_open_shows() {
+        let closed = "> [!NOTE]\n> <details>\n> <summary>S</summary>\n>\n\
+                       > SECRET-C\n>\n> </details>\n\nTail.\n";
+        assert_eq!(
+            collect_details_open(closed),
+            Vec::<bool>::new(),
+            "a <details> reachable only through an alert is not in the top-level count"
+        );
+        set_details_open(collect_details_open(closed));
+        let lines =
+            render_markdown_tasks_opts(closed, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !joined.contains("SECRET-C"),
+            "closed <details> nested inside an alert must not leak: {joined:?}"
+        );
+        assert!(joined.contains("Note"), "the alert callout still shows");
+        assert!(joined.contains("Tail."), "trailing text survives");
+        // The nested block's own summary marker must NOT be the interactive sentinel
+        // (`is_details_header_span`/`build_md_items` would otherwise count it and drift the
+        // document's Tab-toggle ordinal out of step with `collect_details_open` — see
+        // `render_md_body_nested`'s doc comment).
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(is_details_header_span),
+            "a <details> nested inside an alert must not be Tab-toggleable"
+        );
+
+        let open = "> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n\
+                     > SECRET-O\n>\n> </details>\n";
+        set_details_open(collect_details_open(open));
+        let lines_open =
+            render_markdown_tasks_opts(open, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined_open: String = lines_open
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined_open.contains("SECRET-O"),
+            "open <details> nested inside an alert shows its body: {joined_open:?}"
+        );
+    }
+
+    /// Ordinal-contract stress test: a top-level `<details>` block ("A") whose body contains an
+    /// alert wrapping a *further* nested, open `<details>` ("Nested") — the composite of both
+    /// nesting directions this fix supports — followed by a second, independent top-level
+    /// `<details>` ("C"). "Nested" must never be counted by `collect_details_open` (it is only
+    /// reachable through A's body via an alert, matching the plain-nested-details rule this mirrors
+    /// — see `render_md_body_nested`'s doc comment), so C must still read **its own** correct slot
+    /// regardless of what's nested inside A. Checked both with A closed (nothing inside A, including
+    /// "Nested", may render at all) and with A open (the deep nesting fully round-trips).
+    #[test]
+    fn alert_and_details_mutual_nesting_preserves_the_details_ordinal() {
+        let build = |a_open: &str| -> String {
+            format!(
+                "<details{a_open}>\n<summary>A</summary>\n\n> [!NOTE]\n\
+                 > <details open>\n> <summary>Nested</summary>\n>\n\
+                 > nested-open-body\n>\n> </details>\n\n</details>\n\n\
+                 <details open>\n<summary>C</summary>\nc body\n</details>\n"
+            )
+        };
+
+        // A closed: only 2 top-level blocks are counted (A, C) — "Nested" is invisible to the
+        // source-order scan no matter how deep it's buried in A's body.
+        let closed = build("");
+        assert_eq!(
+            collect_details_open(&closed),
+            vec![false, true],
+            "top-level only: A(closed) + C(open) — Nested never counted"
+        );
+        set_details_open(collect_details_open(&closed));
+        let lines = render_markdown_tasks_opts(
+            &closed,
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !joined.contains("nested-open-body") && !joined.contains("Nested"),
+            "A closed hides everything nested inside it, however deep: {joined:?}"
+        );
+        let c_arrow = lines.iter().find_map(|l| {
+            let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            joined
+                .trim_end()
+                .ends_with('C')
+                .then(|| joined.chars().next().unwrap_or(' '))
+        });
+        assert_eq!(
+            c_arrow,
+            Some('▾'),
+            "C still honors <details open> — not shifted by whatever is nested inside A"
+        );
+
+        // A open: the deep nesting renders end-to-end, and C's ordinal is still correct.
+        let open = build(" open");
+        assert_eq!(
+            collect_details_open(&open),
+            vec![true, true],
+            "top-level only: A(open) + C(open)"
+        );
+        set_details_open(collect_details_open(&open));
+        let lines_open =
+            render_markdown_tasks_opts(&open, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let joined_open: String = lines_open
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            joined_open.contains("nested-open-body"),
+            "A open + Nested open renders the deeply nested body: {joined_open:?}"
+        );
+        let c_arrow_open = lines_open.iter().find_map(|l| {
+            let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            joined
+                .trim_end()
+                .ends_with('C')
+                .then(|| joined.chars().next().unwrap_or(' '))
+        });
+        assert_eq!(
+            c_arrow_open,
+            Some('▾'),
+            "C still reads its own (second) slot, not shifted by A's now-visible nested content"
         );
     }
 
@@ -5999,6 +6553,95 @@ pub(crate) mod task_corpus {
                 "an indented paragraph inside a list item is not a task even if it starts with a dash",
                 "- item\n\n  - [ ] looks like a task but is just this item's own indentation\n",
             ),
+            // Root cause (fence unification, 2026-08) — see the matching comment in `code_corpus`:
+            // a task-lookalike must stay hidden (literal code) for exactly as long as the fence it
+            // sits inside is actually still open, per CommonMark's char/length/indentation rules —
+            // not per a naive "any 3-of-the-same-char line toggles it" approximation.
+            (
+                "task-lookalike inside a fence indented 3 columns (still a real fence)",
+                "para\n\n   ```rust\n   - [ ] fake\n   ```\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike inside a fence-lookalike top-level indented code block",
+                "para\n\n    ```rust\n    - [ ] fake\n    ```\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike inside a tilde fence with a shorter nested tilde lookalike",
+                "~~~~md\n~~~\n- [ ] fake\n~~~\n~~~~\n\n- [ ] real\n",
+            ),
+            // Fence unification stage 2: same shape as the tilde entry above, but with the
+            // renderer's own now-fixed same-character-backtick-nesting bug (see the matching
+            // comment in `code_corpus`) — before stage 2 the renderer drew **zero** checkboxes for
+            // this document (the fake one hidden as intended, but the real one also swallowed into
+            // the bogus second code block), disagreeing with the scanner's correct count of 1.
+            (
+                "task-lookalike inside a backtick fence with a shorter nested backtick lookalike (same char)",
+                "````md\n```\n- [ ] fake\n```\n````\n\n- [ ] real\n",
+            ),
+            // Root cause (alert/details mutual nesting, 2026-08): an alert nested inside a
+            // `<details>` block used to render unconditionally, leaking regardless of the fold —
+            // and the reverse (a `<details>` nested inside an alert) had no fold at all (always
+            // shown). See `render_md_body_nested`'s doc comment. These entries pin the write-back
+            // scanner's (`task_source_locs`/`scan_task_lines`) side of that fix: the checkbox count
+            // must still match what's actually drawn, in both nesting directions and both
+            // open/closed states, or every toggle in the document gets refused.
+            (
+                "alert nested inside a closed details hides its task",
+                "<details>\n<summary>S</summary>\n\n> [!NOTE]\n> - [ ] hidden\n\n</details>\n",
+            ),
+            (
+                "alert nested inside an open details shows its task",
+                "<details open>\n<summary>S</summary>\n\n> [!NOTE]\n> - [ ] shown\n\n</details>\n",
+            ),
+            (
+                "details nested inside an alert, closed, hides its task",
+                "> [!NOTE]\n> <details>\n> <summary>S</summary>\n>\n\
+                 > - [ ] hidden\n>\n> </details>\n",
+            ),
+            (
+                "details nested inside an alert, open, shows its task",
+                "> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n\
+                 > - [ ] shown\n>\n> </details>\n",
+            ),
+            (
+                "a details nested inside an alert nested inside a closed details hides everything",
+                "<details>\n<summary>Outer</summary>\n\n> [!NOTE]\n> <details open>\n\
+                 > <summary>Inner</summary>\n>\n> - [ ] deeply hidden\n>\n> </details>\n\n\
+                 </details>\n\n- [ ] real\n",
+            ),
+            (
+                "a details nested inside an alert nested inside an open details shows everything",
+                "<details open>\n<summary>Outer</summary>\n\n> [!NOTE]\n> <details open>\n\
+                 > <summary>Inner</summary>\n>\n> - [ ] deeply shown\n>\n> </details>\n\n\
+                 </details>\n\n- [ ] real\n",
+            ),
+            (
+                "an alert nested inside a details nested inside an alert, all open, shows the task",
+                "> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n\
+                 > > [!TIP]\n> > - [ ] triple-nested\n>\n> </details>\n",
+            ),
+            // Root cause (heading/thematic-break/setext gate, 2026-08): an indented block right
+            // after a heading, thematic break, or setext heading underline (no blank line needed —
+            // only a paragraph gates a following indented block, and none of these three is one) was
+            // not recognized by the write-back scanner at all, so a `- [ ] fake` example inside one
+            // was mistaken for a real, toggleable checkbox. Mirrors the matching `code_corpus`
+            // entries below.
+            (
+                "task-lookalike in an indented block right after an ATX heading (no blank) stays literal",
+                "## Usage\n    - [ ] fake\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike in an indented block right after a thematic break (no blank) stays literal",
+                "---\n    - [ ] fake\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike in an indented block right after a setext heading underline (no blank) stays literal",
+                "Title\n=====\n    - [ ] fake\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike in an indented block right after a short setext dash underline (no blank) stays literal",
+                "Title\n--\n    - [ ] fake\n\n- [ ] real\n",
+            ),
         ]
     }
 }
@@ -6085,6 +6728,76 @@ pub(crate) mod code_corpus {
                  <details open>\n<summary>More</summary>\n\ndetail para\n\n    indented in details\n\n</details>\n\n\
                  ```rust\nfn real_fence() {}\n```\n",
             ),
+            // Root cause (fence unification, 2026-08): several scanners tracked "am I inside a fence"
+            // with their own naive per-function toggle (`starts_with("```") || starts_with("~~~")`,
+            // closing on the first line that merely starts with 3 of the same char) instead of the
+            // file's one CommonMark-correct `parse_fence` (matching char, length ≥ the opener's, and
+            // requiring 0-3 columns of indentation to even count as a fence at all). The naive version
+            // let the *count* the count-guard checks happen to still agree with what the renderer draws
+            // for these shapes (both sides were wrong in step), while the *content* — verified against
+            // `code_block_content_matches_the_render_for_fence_edge_cases` below — was corrupted. These
+            // entries pin count parity; content is pinned separately.
+            (
+                "fence indented 3 columns is still a fence, not an indented code block",
+                "para\n\n   ```rust\n   fn a(){}\n   ```\n",
+            ),
+            (
+                "a fence-lookalike indented 4 columns is the literal content of an indented code block",
+                "para\n\n    ```rust\n    fn a(){}\n    ```\n",
+            ),
+            (
+                "closing fence line with a language suffix does not close (has to be exactly the fence chars)",
+                "```rust\nbody\n```js\nmore\n```\n",
+            ),
+            (
+                "a shorter nested tilde fence lookalike inside a longer tilde fence doesn't close it",
+                "~~~~md\n~~~\ninner\n~~~\n~~~~\n",
+            ),
+            (
+                "a tilde-fence lookalike nested inside a backtick fence doesn't close it (different fence char)",
+                "```rust\n~~~\nnot closing\n~~~\n```\n",
+            ),
+            ("plain 4-backtick fence, no nesting", "````rust\nbody\n````\n"),
+            // Root cause (fence unification stage 2, 2026-08): `decorate_code_blocks` (the
+            // **renderer**) had its own, independent version of the exact same class of bug as the
+            // scanner entries above — it scanned rendered *text* for `` ``` `` instead of keying off
+            // tui-markdown's own per-line *style* (`is_code_block_line`) — so a shorter nested
+            // fence-lookalike of the *same character* as its enclosing fence used to be mistaken for
+            // the real close, silencing the rest of the document into a bogus second code block.
+            // Deliberately outside the strict `drawn == scanned` loop in stage 1 (the renderer's own
+            // count was 2 there, disagreeing with the scanner's correct 1); now that the renderer is
+            // fixed too, this belongs in the corpus like every other fence shape.
+            (
+                "a shorter nested backtick fence lookalike inside a longer backtick fence doesn't close it (same char)",
+                "````md\n```\ninner\n```\n````\n",
+            ),
+            // Root cause (heading/thematic-break/setext gate, 2026-08): an indented code block right
+            // after a heading, thematic break, or setext heading underline — with no blank line
+            // needed, since none of those three is a paragraph — was not recognized by the
+            // write-back scanner at all, so any document containing one refused `y c` for **every**
+            // code block in it, fenced ones included (the count guard is document-wide). Reported by
+            // the user via a heading directly followed by an indented example, with an unrelated real
+            // fence right after it also collaterally refused.
+            (
+                "indented block immediately after an ATX heading (no blank line)",
+                "## Usage\n    npm install foo\n",
+            ),
+            (
+                "indented block immediately after a thematic break (no blank line)",
+                "---\n    code here\n",
+            ),
+            (
+                "indented block immediately after a setext level-1 heading underline (no blank line)",
+                "Title\n=====\n    code here\n",
+            ),
+            (
+                "indented block immediately after a short setext dash underline, too short to also be a thematic break (no blank line)",
+                "Title\n--\n    code here\n",
+            ),
+            (
+                "heading then an indented block then an unrelated real fence — the fence must not be collaterally refused",
+                "## Usage\n    npm install foo\n\n```bash\nnpm test\n```\n",
+            ),
         ]
     }
 }
@@ -6092,6 +6805,254 @@ pub(crate) mod code_corpus {
 #[cfg(test)]
 mod task_scan_parity_tests {
     use super::*;
+
+    /// Locks in tui-markdown's own behavior that `is_code_block_line` depends on (see its doc
+    /// comment): while rendering a fenced/indented code block, **tui-markdown itself** — not any
+    /// konoma code — styles the synthesized opening marker, every content line, and any blank line
+    /// *inside* the block with `fg(White)` (`KonomaStyles::code()`, since konoma supplies
+    /// `KonomaStyles` as the `StyleSheet`), and has already popped that style again by the time it
+    /// pushes the very next line — so a maximal run of white lines really is exactly one code
+    /// block, including the blank separator line tui-markdown inserts of its own accord between
+    /// two sibling code blocks even when the *source* has no blank line between them (the fact
+    /// that makes two adjacent blocks merging into one run structurally impossible). If
+    /// tui-markdown ever changes this, `is_code_block_line`/`decorate_code_blocks` would silently
+    /// stop grouping code blocks correctly — every fence in the app could render garbled or
+    /// missing — so this test exists to fail loudly here instead of that happening silently.
+    #[test]
+    fn tui_markdown_codeblock_lines_are_styled_white() {
+        fn check(label: &str, src: &str, expected: &[(&str, bool)]) {
+            let opts = Options::new(KonomaStyles { code_bg: None });
+            let text = tui_markdown::from_str_with_options(src, &opts);
+            let actual: Vec<(String, bool)> = text
+                .lines
+                .iter()
+                .map(|l| (l.to_string(), is_code_block_line(l)))
+                .collect();
+            let expected: Vec<(String, bool)> =
+                expected.iter().map(|(t, w)| (t.to_string(), *w)).collect();
+            assert_eq!(
+                actual, expected,
+                "{label}: tui-markdown の出力の前提が変わった — is_code_block_line が依拠する\
+                 「コードブロックの行は fg(White) で塗られる」という前提が崩れている\
+                 (このテストが落ちたら decorate_code_blocks は静かに壊れる。\
+                 tui-markdown のバージョン/挙動を確認すること)"
+            );
+        }
+
+        // Two sibling fences with no blank line between them in the *source* still get a
+        // non-white separator line from tui-markdown itself — the fact that lets a run boundary
+        // be found purely from style, with no risk of two blocks merging into one run.
+        check(
+            "adjacent blocks",
+            "```a\nx\n```\n```b\ny\n```\n",
+            &[
+                ("```a", true),
+                ("x", true),
+                ("```", true),
+                ("", false),
+                ("```b", true),
+                ("y", true),
+                ("```", true),
+            ],
+        );
+
+        // A shorter same-character fence nested inside a longer one never actually closes the
+        // outer fence (real CommonMark, correctly parsed by pulldown-cmark) — its lines are
+        // literal body text, still styled white throughout — and the document past the *real*
+        // close (a heading, a blank line, a paragraph) is not.
+        check(
+            "4-backtick fence nesting a 3-backtick lookalike",
+            "````markdown\n```rust\nlet x = 1;\n```\n````\n\n# Heading After\n\nReal prose here.\n",
+            &[
+                ("```markdown", true),
+                ("```rust", true),
+                ("let x = 1;", true),
+                ("```", true),
+                ("```", true),
+                ("", false),
+                ("# Heading After", false),
+                ("", false),
+                ("Real prose here.", false),
+            ],
+        );
+    }
+
+    /// `decorate_code_blocks` non-regressions for fence unification stage 2: the run-detection
+    /// rewrite (grouping by `is_code_block_line`'s *style* signal, not by scanning rendered text
+    /// for `` ``` ``) must not disturb any of the ordinary shapes it already handled correctly —
+    /// a plain fence with and without a language label, an empty fence, a 4-column indented block,
+    /// two blank-line-separated fences staying isolated from each other, a tilde fence, a
+    /// 5-backtick fence, a fence inside a GitHub alert, and a fence inside an *open* `<details>`.
+    #[test]
+    fn decorate_code_blocks_render_non_regressions() {
+        fn header_line<'a>(lines: &'a [Line<'static>]) -> &'a Line<'static> {
+            lines
+                .iter()
+                .find(|l| l.spans.iter().any(is_code_header_span))
+                .expect("コードヘッダが描かれていない")
+        }
+
+        // Plain fence with a language label.
+        let src = "```rust\nfn a(){}\n```\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(
+            header_line(&lines).to_string().contains("rust"),
+            "言語ラベルが描かれていない"
+        );
+        assert!(
+            lines.iter().any(|l| l.to_string().contains("fn a(){}")),
+            "本文が描かれていない"
+        );
+
+        // Plain fence with no language label -> the "code" fallback label.
+        let src = "```\nplain body\n```\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(
+            header_line(&lines).to_string().contains("code"),
+            "無ラベルは code と表示されるはず"
+        );
+        assert!(lines.iter().any(|l| l.to_string().contains("plain body")));
+
+        // Empty fence: header + padding row, no leaked fence marker, no panic.
+        let src = "```rust\n```\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(
+            !lines.iter().any(|l| l.to_string().trim() == "```"),
+            "空フェンスにフェンス記号が生テキストとして残ってはいけない"
+        );
+
+        // A top-level 4-column indented block.
+        let src = "para\n\n    indented body\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(lines
+            .iter()
+            .any(|l| l.to_string().contains("indented body")));
+
+        // Two blank-line-separated fences stay isolated — each keeps only its own body, not
+        // merged into a single run by the style-based grouping.
+        let src = "```a\nfirst\n```\n\n```b\nsecond\n```\n";
+        assert_eq!(
+            rendered_code_blocks(src),
+            2,
+            "2つの独立したブロックが1つに融合していないか"
+        );
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        let first = lines
+            .iter()
+            .find(|l| l.to_string().contains("first"))
+            .expect("1つ目の本文が無い");
+        let second = lines
+            .iter()
+            .find(|l| l.to_string().contains("second"))
+            .expect("2つ目の本文が無い");
+        assert!(
+            !first.to_string().contains("second"),
+            "1つ目の本文に2つ目が混ざっている"
+        );
+        assert!(
+            !second.to_string().contains("first"),
+            "2つ目の本文に1つ目が混ざっている"
+        );
+
+        // A tilde fence.
+        let src = "~~~rust\ntilde body\n~~~\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(lines.iter().any(|l| l.to_string().contains("tilde body")));
+
+        // A 5-backtick fence, no nesting.
+        let src = "`````rust\nfive body\n`````\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(lines.iter().any(|l| l.to_string().contains("five body")));
+
+        // A fence inside a GitHub alert: body content survives with the `>` prefix stripped.
+        let src = "> [!NOTE]\n> ```rust\n> alert body\n> ```\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        let body = lines
+            .iter()
+            .find(|l| l.to_string().contains("alert body"))
+            .expect("アラート内の本文が描かれていない");
+        assert!(
+            !body.to_string().trim_start().starts_with('>'),
+            "`>` がアラート本文に残ってはいけない"
+        );
+
+        // A fence inside an *open* `<details>`: body content survives.
+        let src =
+            "<details open>\n<summary>S</summary>\n\n```rust\ndetails body\n```\n\n</details>\n";
+        assert_eq!(rendered_code_blocks(src), 1);
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        assert!(lines.iter().any(|l| l.to_string().contains("details body")));
+    }
+
+    /// `flush_code_run`'s self-defense clause (see its doc comment): a run of
+    /// `is_code_block_line`-styled lines that doesn't have the shape a real fence/indented block
+    /// always produces — too short, or not opening with a `` ``` `` marker (the shape tui-markdown
+    /// actually produces for an indented code block nested in a plain, non-alert block quote,
+    /// where every line — including the still-`code()`-styled marker/body lines — gets a `"> "`
+    /// prefix from tui-markdown's own native blockquote handling) — is handed back completely
+    /// unchanged rather than mis-parsed as code or indexed into with a panic. This exercises that
+    /// branch directly (bypassing tui-markdown) with both a too-short run and the blockquote
+    /// shape, and separately confirms it's what tui-markdown really produces for that document.
+    #[test]
+    fn decorate_code_blocks_degrades_a_malformed_white_run_unchanged() {
+        let lonely = vec![Line::styled("stray", Style::new().fg(Color::White))];
+        let out = decorate_code_blocks(lonely, 40, CodeStyle::default(), "TwoDark");
+        let texts: Vec<String> = out.iter().map(|l| l.to_string()).collect();
+        assert_eq!(
+            texts,
+            vec!["stray".to_string()],
+            "長さ1の run はそのまま素通しされるべき(パニックしない)"
+        );
+
+        let blockquote_like = vec![
+            Line::styled("> ```", Style::new().fg(Color::White)),
+            Line::styled("> code", Style::new().fg(Color::White)),
+            Line::styled("> ```", Style::new().fg(Color::White)),
+        ];
+        let out = decorate_code_blocks(blockquote_like, 40, CodeStyle::default(), "TwoDark");
+        let texts: Vec<String> = out.iter().map(|l| l.to_string()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "> ```".to_string(),
+                "> code".to_string(),
+                "> ```".to_string()
+            ],
+            "先頭が ``` で始まらない run はコードブロックとして解釈されず素通しされるべき"
+        );
+
+        // Confirm this is really the shape tui-markdown produces for a plain (non-alert) block
+        // quote wrapping an indented code block — not a contrived shape this test invented.
+        let opts = Options::new(KonomaStyles { code_bg: None });
+        let text = tui_markdown::from_str_with_options("> para\n>\n>     code\n", &opts);
+        let actual: Vec<(String, bool)> = text
+            .lines
+            .iter()
+            .map(|l| (l.to_string(), is_code_block_line(l)))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("> para".to_string(), false),
+                ("> ".to_string(), false),
+                ("> ```".to_string(), true),
+                ("> code".to_string(), true),
+                ("> ```".to_string(), true),
+            ],
+            "tui-markdown の前提が変わった(ブロック引用内の字下げコードの形)"
+        );
+        // ...and the full pipeline still draws zero code headers for it, matching this crate's
+        // behavior (pinned end-to-end by
+        // `heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch`).
+        assert_eq!(rendered_code_blocks("> para\n>\n>     code\n"), 0);
+    }
 
     /// Count the checkboxes actually drawn on screen (the sentinel marker spans the app counts).
     pub(super) fn rendered_tasks(src: &str) -> usize {
@@ -6198,6 +7159,27 @@ mod task_scan_parity_tests {
                 "fence containing a table lookalike",
                 "```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n",
             ),
+            // Root cause (alert/details mutual nesting, 2026-08) — mirrors the additions to
+            // `task_corpus` above (see that comment): a fence nested inside an alert nested inside
+            // a `<details>`, and the reverse, in both open/closed states.
+            (
+                "fence nested inside an alert nested inside a closed details is not counted",
+                "<details>\n<summary>S</summary>\n\n> [!NOTE]\n> ```\n> hidden\n> ```\n\n</details>\n",
+            ),
+            (
+                "fence nested inside an alert nested inside an open details is counted",
+                "<details open>\n<summary>S</summary>\n\n> [!NOTE]\n> ```\n> shown\n> ```\n\n</details>\n",
+            ),
+            (
+                "fence nested inside a details nested inside an alert, closed, is not counted",
+                "> [!NOTE]\n> <details>\n> <summary>S</summary>\n>\n\
+                 > ```\n> hidden\n> ```\n>\n> </details>\n",
+            ),
+            (
+                "fence nested inside a details nested inside an alert, open, is counted",
+                "> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n\
+                 > ```\n> shown\n> ```\n>\n> </details>\n",
+            ),
         ];
         for (name, src) in cases {
             set_details_open(Vec::new());
@@ -6249,6 +7231,199 @@ mod task_scan_parity_tests {
         }
     }
 
+    /// Root cause (fence unification, 2026-08): the *count* matching the renderer (pinned above via
+    /// `code_corpus`) is not enough on its own — the old per-function toggles (`starts_with("```") ||
+    /// starts_with("~~~")`, closing on the first line that merely starts with 3 of the same char, with
+    /// no indentation check) let the count guard pass by coincidence while the actual *content* handed
+    /// to the clipboard was wrong: an indentation-only fence-lookalike (4+ columns) got treated as a
+    /// real fence and returned with its markers stripped and its indentation kept; a real fence
+    /// indented 1-3 columns got its body returned *with* the fence's own indentation still attached
+    /// (verified against the renderer: the body is shown flush-left); a closing-looking line with a
+    /// language suffix, or a shorter/differently-typed nested fence-lookalike, closed the block early.
+    /// This test pins the exact strings, not just their count.
+    #[test]
+    fn code_block_content_matches_the_render_for_fence_edge_cases() {
+        assert_eq!(
+            code_block_source_locs("para\n\n    ```rust\n    fn a(){}\n    ```\n", &[]),
+            vec!["```rust\nfn a(){}\n```".to_string()],
+            "4カラム字下げは本物のフェンスではなく字下げコードブロック本体。\
+             バッククォートの記号ごと文字どおりの本文として返る(画面表示と一致)"
+        );
+        assert_eq!(
+            code_block_source_locs("para\n\n   ```rust\n   fn a(){}\n   ```\n", &[]),
+            vec!["fn a(){}".to_string()],
+            "3カラム字下げは本物のフェンス。中身はフェンス自身のインデント分だけ剥がれる\
+             (画面表示と一致・4カラムのケースとの違いが本質)"
+        );
+        assert_eq!(
+            code_block_source_locs("```rust\nbody\n```js\nmore\n```\n", &[]),
+            vec!["body\n```js\nmore".to_string()],
+            "info文字列つきの`閉じ風`の行(```js)は閉じない=本文としてそのまま残る"
+        );
+        assert_eq!(
+            code_block_source_locs("~~~~md\n~~~\ninner\n~~~\n~~~~\n", &[]),
+            vec!["~~~\ninner\n~~~".to_string()],
+            "4チルダの中の3チルダは長さ不足で閉じない=本文として残る"
+        );
+        assert_eq!(
+            code_block_source_locs("```rust\n~~~\nnot closing\n~~~\n```\n", &[]),
+            vec!["~~~\nnot closing\n~~~".to_string()],
+            "バッククォートフェンスの中のチルダ風の行は文字種が違うので閉じない"
+        );
+        assert_eq!(
+            code_block_source_locs("````rust\nbody\n````\n", &[]),
+            vec!["body".to_string()],
+            "ネストの無い単純な4バッククォートも問題なく動く"
+        );
+    }
+
+    /// Root cause, fixed in two stages: a 4-backtick fence whose body happens to contain a
+    /// *shorter* (3-backtick) fence-lookalike of the **same** character. Stage 1 fixed the
+    /// write-back scanner (`code_block_source_locs`) via `parse_fence`'s length rule. **Stage 2
+    /// (this test) fixes the renderer** (`decorate_code_blocks`) the same way, by keying off
+    /// tui-markdown's own per-line *style* instead of scanning rendered *text* for `` ``` `` — see
+    /// `is_code_block_line`'s docs. Before stage 2 the renderer mistook the inner marker for the
+    /// block's real close and drew **two** headers (both bodies wrong/empty), silencing everything
+    /// after it — headings, links, tasks — into that bogus second, empty code block. This was the
+    /// exact bug a user reported (a document explaining "wrap 3 backticks in 4" via that very
+    /// construct went dark past the inner marker). Now both sides agree: **one** block, whose
+    /// content matches the true CommonMark interpretation, and the document past it renders
+    /// normally.
+    #[test]
+    fn code_block_content_is_correct_for_a_nested_shorter_backtick_fence() {
+        let src = "````md\n```mermaid\ninner\n```\n````\n";
+        assert_eq!(
+            code_block_source_locs(src, &[]),
+            vec!["```mermaid\ninner\n```".to_string()],
+            "スキャナ自身は正しく1ブロック・中身も真の CommonMark 解釈と一致する"
+        );
+        assert_eq!(
+            rendered_code_blocks(src),
+            1,
+            "レンダラも1ヘッダのみ描く(以前は内側のマーカーを閉じと誤認して2ヘッダ描いていた)"
+        );
+
+        // The document doesn't end at the (bogus) inner marker: everything after the *real*
+        // closing fence — a heading, in this case — keeps rendering normally, not silently
+        // swallowed into a second code block (the user-reported symptom).
+        let src_with_tail =
+            "````md\n```mermaid\ninner\n```\n````\n\n# Heading After\n\nReal prose here.\n";
+        assert_eq!(
+            rendered_code_blocks(src_with_tail),
+            1,
+            "末尾に本文があってもヘッダは1つのまま"
+        );
+        let lines = render_markdown_tasks(
+            src_with_tail,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| heading_text(l).as_deref() == Some("Heading After")),
+            "フェンス以降の見出しがコードブロックに飲まれず、見出しとして描かれる\
+             \n--- rendered ---\n{lines:?}"
+        );
+    }
+
+    /// Same root cause, for the checkbox scanner **and** renderer together: the only
+    /// task-lookalike outside the (correctly recognized) fence is the real one, and after stage 2
+    /// the renderer draws it too — before this fix the renderer's own bug swallowed this checkbox
+    /// into the bogus second code block, drawing **zero** checkboxes for this document while the
+    /// scanner already (correctly) found one — the exact mismatch that refuses every toggle.
+    #[test]
+    fn task_scan_finds_the_real_task_outside_a_correctly_nested_fence() {
+        let src = "````md\n```mermaid\n- [ ] fake\n```\n````\n\n- [ ] real\n";
+        let locs = task_source_locs(src, &[' ', 'x'], &[]);
+        assert_eq!(
+            locs.len(),
+            1,
+            "フェンス内の `- [ ] fake` は本文=非タスクとして無視される"
+        );
+        let lines: Vec<&str> = src.lines().collect();
+        assert_eq!(
+            lines[locs[0].line], "- [ ] real",
+            "見つかった1件はフェンス外の本物のタスク行"
+        );
+        assert_eq!(
+            rendered_tasks(src),
+            1,
+            "レンダラも1件だけ描く(以前は内側のマーカーの誤認でフェンス以降が丸ごとコードに\
+             飲まれ0件になっていた)"
+        );
+    }
+
+    /// The task's own reported bug: `<kbd>` inside a fence whose body happens to contain a shorter
+    /// nested fence-lookalike used to get rewritten to an inline-code keycap, because the naive toggle
+    /// closed early on the inner marker and treated the `<kbd>` line as ordinary (non-fenced) text.
+    #[test]
+    fn process_inline_html_leaves_a_nested_shorter_fence_untouched() {
+        let src = "````md\n```mermaid\n<kbd>Ctrl</kbd>\n```\n````\n";
+        assert_eq!(
+            process_inline_html(src),
+            src,
+            "フェンス内の <kbd> は書き換わらない(文書全体が不変のまま)"
+        );
+
+        // A real fence indented 1-3 columns, and a different-fence-type nested lookalike: same rule.
+        let indented = "para\n\n   ```rust\n   <kbd>Ctrl</kbd>\n   ```\n";
+        assert_eq!(process_inline_html(indented), indented);
+        let mixed = "```rust\n~~~\n<kbd>Ctrl</kbd>\n~~~\n```\n";
+        assert_eq!(process_inline_html(mixed), mixed);
+    }
+
+    /// A `[^1]`-looking token inside a fence whose body contains a shorter nested fence-lookalike must
+    /// stay literal code, not get superscripted — same root cause as the `<kbd>` case above.
+    #[test]
+    fn process_footnotes_leaves_refs_inside_a_nested_shorter_fence_literal() {
+        let src = "````md\n```mermaid\n[^1]\n```\n````\n\n[^1]: note\n";
+        assert_eq!(
+            process_footnotes(src),
+            src,
+            "フェンス内の [^1] は本物の参照ではないので置換されない\
+             (フェンス外に本物の参照も無いので、未使用の定義は無変換のまま残る)"
+        );
+
+        let indented = "para\n\n   ```rust\n   [^1]\n   ```\n\n[^1]: note\n";
+        assert_eq!(process_footnotes(indented), indented);
+    }
+
+    /// A `<details>`-opening-tag-lookalike inside a fence whose body contains a shorter nested
+    /// fence-lookalike must not be sliced out as a real details block — same root cause.
+    #[test]
+    fn split_details_ignores_a_details_lookalike_inside_a_nested_shorter_fence() {
+        let src = "````md\n```mermaid\n<details>lookalike</details>\n```\n````\n";
+        let parts = split_details(src);
+        assert_eq!(
+            parts.len(),
+            1,
+            "文書全体が1つの Text パートのまま(details として切り出されない)"
+        );
+        match &parts[0] {
+            DetailsPart::Text(t) => assert_eq!(t, src),
+            DetailsPart::Details { .. } => {
+                panic!("フェンス内の <details> 風の行を本物の details として切り出してしまった")
+            }
+        }
+    }
+
+    /// A document that is, in its entirety, one correctly-recognized fence containing a blank line as
+    /// literal content (because the shorter nested marker inside it does not actually close it) has no
+    /// safe split point anywhere — the function must refuse (`None`, falling back to plain-text
+    /// rendering for the whole block) rather than pick the blank line inside the fence, which the old
+    /// toggle did (closing early on the inner marker made everything after it look "outside the fence",
+    /// including a blank line that is actually literal fence content — splitting there would tear the
+    /// fence in half and corrupt its rendering).
+    #[test]
+    fn split_block_for_retry_never_splits_inside_a_nested_shorter_fence() {
+        let src = "````md\n```mermaid\n\ninner blank\n\n```\n````\n";
+        assert_eq!(split_block_for_retry(src), None);
+    }
+
     /// Content-level pin: exactly 4 columns are stripped (any extra indentation is real content),
     /// and a blank line strictly *between* two chunks of the same indented block is dropped rather
     /// than kept — matches what the renderer actually draws (verified directly against
@@ -6298,25 +7473,34 @@ mod task_scan_parity_tests {
         );
     }
 
-    /// Documents two constructs the fix deliberately does **not** attempt to support (same class of
-    /// gap as the pre-existing block-quote limitation): an indented block that immediately follows a
-    /// heading with no blank line (the renderer allows it — only a paragraph gates a following
-    /// indented code block — but the scanner conservatively still requires one), and any indented
-    /// block inside a *plain*, non-alert block quote (already unsupported by fenced code too, before
-    /// this fix: the block quote's own `>` marker sits in front of every source line, so
-    /// `decorate_code_blocks`'s literal `"```"` check never matches it — matching the scanner, which
-    /// also never opens a code block inside a bare `>` prefix).
+    /// Two historical footnotes of a different kind now. (1) An indented block that immediately
+    /// follows a heading with no blank line **used to be** a known, deliberately unsupported gap —
+    /// the renderer allows it (CommonMark: only a paragraph gates a following indented code block —
+    /// a heading isn't one), but the scanner conservatively still required a blank line, so any
+    /// mismatch cancelled every code block in the document, not just the affected one. Fixed by
+    /// teaching the scanner to recognize a heading (also a thematic break and a setext underline) as
+    /// non-paragraph content — see `is_atx_heading_line`/`is_thematic_break_line`/
+    /// `is_setext_underline_line`'s doc comments for the CommonMark reasoning. Parity is pinned here
+    /// directly, replacing the old "known gap" assertion. (2) Any indented block inside a *plain*,
+    /// non-alert block quote remains genuinely unsupported on **both** sides — out of scope for this
+    /// fix (already true for fenced code too, before it: the block quote's own `>` marker sits in
+    /// front of every source line, so `decorate_code_blocks`'s literal `` "```" `` check never
+    /// matches it — matching the scanner, which also never opens a code block inside a bare `>`
+    /// prefix) — pinned here as a non-regression: both sides stay at 0, so there is no drawn/scanned
+    /// mismatch to refuse anything over.
     #[test]
-    fn indented_code_known_gaps_are_documented_not_silently_regressed() {
-        let heading_then_code = "# H\n    not detected here\n";
+    fn heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch() {
+        let heading_then_code = "# H\n    now detected\n";
         assert_eq!(
             rendered_code_blocks(heading_then_code),
             1,
             "レンダラは見出し直後(空行なし)でも字下げコードを描く"
         );
-        assert!(
-            code_block_source_locs(heading_then_code, &[]).is_empty(),
-            "スキャナは(既知の制約として)空行必須のまま検出しない"
+        assert_eq!(
+            code_block_source_locs(heading_then_code, &[]),
+            vec!["now detected".to_string()],
+            "見出し直後(空行なし)の字下げコードも検出され、中身も画面表示と一致する\
+             (以前は「既知の制約」として空行必須のまま検出しなかった)"
         );
 
         let quoted = "> para\n>\n>     code\n";
@@ -6327,8 +7511,161 @@ mod task_scan_parity_tests {
         );
         assert!(
             code_block_source_locs(quoted, &[]).is_empty(),
-            "スキャナも同様に検出しない(食い違いなし)"
+            "スキャナも同様に検出しない(食い違いなし・新規リグレッションではなく既知の制約の温存)"
         );
+    }
+
+    /// Direct pins for the three shape detectors themselves — the exact edge cases called out in the
+    /// bug report: 7 `#`s is not a heading (needs 1-6), 2 dashes is not a thematic break (needs 3+),
+    /// `- - -` (space-separated) *is* one, `***`/`___` are the other two marker characters, and a `#`
+    /// with no following space/EOL (`#nospace`) is not a heading either (CommonMark §4.2).
+    #[test]
+    fn heading_and_thematic_break_detectors_match_commonmark_boundaries() {
+        // ATX heading: 1-6 `#`s followed by space/tab/EOL.
+        assert!(is_atx_heading_line("# H"));
+        assert!(is_atx_heading_line("## H"));
+        assert!(is_atx_heading_line("###### H"));
+        assert!(
+            is_atx_heading_line("#"),
+            "本文なしの単独 # も見出し(EOL 扱い)"
+        );
+        assert!(is_atx_heading_line("#\t"), "# の直後がタブでも見出し");
+        assert!(
+            !is_atx_heading_line("####### H"),
+            "7個の # は見出しではない(1-6個まで)"
+        );
+        assert!(
+            !is_atx_heading_line("#nospace"),
+            "# の直後が空白/EOLでなければ見出しではない"
+        );
+        assert!(!is_atx_heading_line("plain text"));
+        assert!(
+            !is_atx_heading_line("    # H"),
+            "4カラム以上の字下げは見出しではなく字下げコードの本文候補"
+        );
+        assert!(is_atx_heading_line("   # H"), "3カラムまでの字下げは許容");
+
+        // Thematic break: 3+ of the same marker char (-, _, *), optionally space-separated.
+        assert!(is_thematic_break_line("---"));
+        assert!(is_thematic_break_line("***"));
+        assert!(is_thematic_break_line("___"));
+        assert!(is_thematic_break_line("- - -"), "空白区切りの3個も水平線");
+        assert!(is_thematic_break_line("****"), "4個以上でも水平線");
+        assert!(
+            !is_thematic_break_line("--"),
+            "2個は水平線ではない(3個必要)"
+        );
+        assert!(!is_thematic_break_line("**"), "アスタリスク2個も同様");
+        assert!(
+            !is_thematic_break_line("- - "),
+            "マーカーが2個しかなければ水平線ではない"
+        );
+        assert!(
+            !is_thematic_break_line("--x--"),
+            "マーカー以外の文字が混ざれば水平線ではない"
+        );
+        assert!(
+            !is_thematic_break_line("    ---"),
+            "4カラム以上の字下げは水平線ではなく字下げコードの本文候補"
+        );
+
+        // Setext underline shape (context-gating is exercised separately, at the scanner level).
+        assert!(is_setext_underline_line("====="));
+        assert!(is_setext_underline_line("="), "1文字の = も形としては該当");
+        assert!(is_setext_underline_line("-"), "1文字の - も形としては該当");
+        assert!(is_setext_underline_line("--"), "2文字の - も形としては該当");
+        assert!(!is_setext_underline_line("=-="), "= と - が混ざれば非該当");
+        assert!(!is_setext_underline_line(""), "空行は非該当");
+    }
+
+    /// Parity pins for the scanner-level fix: an indented code block right after a thematic break or
+    /// a setext heading underline, with no blank line between them, must be recognized by the
+    /// write-back scanner exactly as the renderer draws it — same class of bug as the heading case in
+    /// `heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch`, pinned here for the other two
+    /// non-paragraph constructs plus the short (non-thematic-break) setext dash underline.
+    #[test]
+    fn thematic_break_and_setext_underline_open_indented_code_without_a_blank_line() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("thematic break (---)", "---\n    code here\n", "code here"),
+            ("thematic break (***)", "***\n    star code\n", "star code"),
+            (
+                "setext level-1 heading (=====)",
+                "Title\n=====\n    code here\n",
+                "code here",
+            ),
+            (
+                "setext level-2 heading, underline length >= 3 (-----)",
+                "Title\n-----\n    code here\n",
+                "code here",
+            ),
+            (
+                "setext level-2 heading, short underline (--), too short to be a thematic break on its own",
+                "Title\n--\n    code here\n",
+                "code here",
+            ),
+            (
+                "setext level-2 heading, single-dash underline (-)",
+                "Title\n-\n    code here\n",
+                "code here",
+            ),
+        ];
+        for (name, src, want) in cases {
+            let drawn = rendered_code_blocks(src);
+            assert_eq!(
+                drawn, 1,
+                "{name}: レンダラの前提(1ブロック描画)がまず崩れている\n--- src ---\n{src}"
+            );
+            let scanned = code_block_source_locs(src, &[]);
+            assert_eq!(
+                scanned,
+                vec![want.to_string()],
+                "{name}: 画面のコードブロック数とスキャナの数・内容が食い違う\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// Non-regressions the fix must not introduce: an indented line that is merely the *lazy
+    /// continuation* of an ordinary paragraph — including one that starts with something that merely
+    /// *looks* like a heading/thematic-break/setext-underline shape but fails the CommonMark
+    /// condition to actually be one (7 `#`s, a bare 2-dash run with no paragraph above it to attach
+    /// to as a setext underline) — must still stay non-code on both sides, and indented content
+    /// scoped inside an active list item must still be skipped, exactly as before this fix.
+    #[test]
+    fn heading_rule_setext_detection_does_not_regress_lazy_continuation_or_list_scoping() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "plain paragraph then lazy continuation (unrelated to this fix, still must hold)",
+                "para\n    not code, just continues the paragraph\n",
+            ),
+            (
+                "indented content inside an active list item stays out of scope",
+                "- item\n\n  still item content, not code\n",
+            ),
+            (
+                "7 hashes is not a heading, so the paragraph it starts still gates the next indented line",
+                "####### not a heading\n    still just the paragraph continuing\n",
+            ),
+            (
+                "a bare 2-dash run at document start is neither a thematic break nor (nothing to \
+                 attach to) a setext underline, so it's an ordinary paragraph that still gates",
+                "--\n    still just the paragraph continuing\n",
+            ),
+            (
+                "a bare 1-dash run at document start, same reasoning",
+                "-\n    still just the paragraph continuing\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let drawn = rendered_code_blocks(src);
+            assert_eq!(
+                drawn, 0,
+                "{name}: レンダラの前提(0ブロック=段落継続)がまず崩れている\n--- src ---\n{src}"
+            );
+            assert!(
+                code_block_source_locs(src, &[]).is_empty(),
+                "{name}: スキャナが誤ってコードとして検出した(逆方向の食い違い)\n--- src ---\n{src}"
+            );
+        }
     }
 
     /// The text handed to the clipboard for a fence inside an alert must be the **code**, with the
