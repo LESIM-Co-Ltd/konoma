@@ -6,6 +6,25 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **`y c` (copy focused code block) and checkbox toggling refused to work on any Markdown document
+  that contained a CommonMark indented (4+ column) code block**, even for a real fence right next
+  to it — the write-back scanners (`code_block_source_locs`/`task_source_locs`) only recognized
+  fenced (```` ``` ```` / `~~~`) code blocks, so an indented one it did not know about threw off the
+  on-screen-vs-source count and the safety check cancelled every code-block copy or checkbox toggle
+  in the whole file. Both scanners now also recognize top-level indented code blocks, matching
+  pulldown-cmark's real behavior (verified empirically): they require a preceding blank line except
+  after a non-paragraph block, glue blank-line-separated chunks into one block, and conservatively
+  treat any content inside an active list as non-code (avoiding false positives on ordinary
+  nested-list paragraphs) at the cost of not detecting the rare deeply-nested-in-a-list case (a
+  known, documented gap, same class as the pre-existing plain-block-quote limitation).
+- **The refusal message named "the file changed" as the cause** ("cannot copy code block (file
+  changed)" / "file changed on disk — reloaded (toggle cancelled)"), which was almost always wrong:
+  in practice this refusal has repeatedly turned out to be konoma's own scanner disagreeing with
+  the renderer (indented code blocks, `*`/`+` bullet lists, content inside a GitHub alert or
+  `<details>`, a document over the size cap), not a concurrent external edit. The messages no
+  longer blame the file.
+
 ## [0.23.3] - 2026-08-04
 
 ### Added

@@ -3011,6 +3011,78 @@ fn e2e_md_code_block_tab_focus_and_copy() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Root cause (indented code blocks, 2026-08): a document containing a 4+-column indented code
+/// block refused `y c` for **every** code block in it (the count guard is document-wide), so a real
+/// fence right next to a perfectly ordinary indented example also stopped copying. Drives Tab → `y`
+/// `c` with real keystrokes across a document mixing a fence and an indented block, and confirms
+/// each one copies its *own* content — not its neighbor's, which an off-by-one in the ordinal
+/// mapping between the two block kinds could otherwise produce silently.
+#[test]
+fn e2e_md_indented_code_block_tab_focus_and_copy() {
+    let dir = sandbox("md_indented_code_copy");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        "Intro paragraph.\n\n```rust\nfn fenced() {}\n```\n\nMore text.\n\n    indented one\n    indented two\n\nTail.\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+    s.see("rust"); // the fence's language header
+
+    // 1st focusable item: the fenced block.
+    s.tab();
+    assert!(s.app.md_focused_code(), "1番目=フェンスコードにフォーカス");
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("fn fenced() {}"),
+        "フェンス側の内容が取得できる(コピー拒否されない)"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "フェンス側のコピー通知が出る");
+
+    // 2nd focusable item: the indented block. Must resolve to its own content, not the fence's.
+    s.tab();
+    assert!(s.app.md_focused_code(), "2番目=字下げコードにフォーカス");
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("indented one\nindented two"),
+        "字下げ側の内容が正しく取得できる(フェンス側を誤って取ってこない)"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "字下げ側のコピー通知が出る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same class of bug, but proven the other way around: an indented block that comes *before*
+/// several real fences in the document must not throw off every later block's ordinal.
+#[test]
+fn e2e_md_indented_code_block_before_fences_keeps_ordinals_correct() {
+    let dir = sandbox("md_indented_before_fences");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        "Para.\n\n    first indented\n\nMid.\n\n```\nsecond fenced\n```\n\n```\nthird fenced\n```\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+
+    s.tab(); // 1st: indented
+    assert_eq!(s.app.focused_code_text().as_deref(), Some("first indented"),);
+    s.tab(); // 2nd: fenced
+    assert_eq!(s.app.focused_code_text().as_deref(), Some("second fenced"));
+    s.tab(); // 3rd: fenced
+    assert_eq!(s.app.focused_code_text().as_deref(), Some("third fenced"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_md_wrapped_focus_follows_offscreen_item() {
     // When wrapped: moving with Tab to a link after a paragraph taller than the screen makes preview_scroll follow.
@@ -5558,9 +5630,9 @@ fn e2e_fileop_create_targets_cursor_file_parent() {
 
 /// The user-facing shape of the alert regression: a document that mixes plain checkboxes with a
 /// checklist inside a `> [!NOTE]`, driven by **real keystrokes**. Before the fix every Space in this
-/// document — including on the plain checkboxes outside the alert — was refused with
-/// "file changed on disk — reloaded (toggle cancelled)" because the write-back scanner never saw the
-/// alert's tasks and so disagreed with the screen about how many there were.
+/// document — including on the plain checkboxes outside the alert — was refused (flash
+/// "couldn't toggle checkbox — reloaded") because the write-back scanner never saw the alert's tasks
+/// and so disagreed with the screen about how many there were.
 #[test]
 fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
     let dir = sandbox("md_task_alert");
@@ -5575,7 +5647,7 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
     s.tab();
     s.key(' ');
     assert!(read().contains("- [x] plain one"), "外側1: {}", read());
-    s.dont_see("file changed on disk");
+    s.dont_see("couldn't toggle checkbox");
 
     // The 2nd and 3rd (inside the alert) — this used to not work at all.
     s.tab();
@@ -5597,7 +5669,7 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
     s.tab();
     s.key(' ');
     assert!(read().contains("- [x] after alert"), "外側2: {}", read());
-    s.dont_see("file changed on disk");
+    s.dont_see("couldn't toggle checkbox");
 
     // Other lines aren't broken (the heading and alert header are unchanged).
     let out = read();
@@ -5649,7 +5721,7 @@ fn e2e_task_toggle_works_with_a_collapsed_details_block() {
         out.contains("- [x] visible") || out.contains("- [ ] collapsed"),
         "可視タスクがトグルできる(全キャンセルされない): {out}"
     );
-    s.dont_see("file changed on disk");
+    s.dont_see("couldn't toggle checkbox");
     std::fs::remove_dir_all(&dir).ok();
 }
 

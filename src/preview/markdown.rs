@@ -979,7 +979,7 @@ fn replace_task_checkbox(
 fn task_prefix_state(t: &str, tasks: &[char]) -> Option<char> {
     // GFM task lists accept any unordered-list bullet (`-`, `*`, `+`) — tui-markdown renders all
     // three as checkboxes, so the source scanner must recognize all three too, or the toggle's
-    // count-guard mismatches and every toggle is cancelled ("file changed on disk"). The state char
+    // count-guard mismatches and every toggle is cancelled (a safe fallback, principle #3). The state char
     // sits at the same offset for each (`<bullet> [` is 3 bytes), so `state_off = indent + 3` holds.
     let rest = t
         .strip_prefix("- [")
@@ -1079,10 +1079,158 @@ pub(crate) fn is_code_line(line: &Line<'_>) -> bool {
         .any(|s| s.content.starts_with('▎') && s.style.fg == Some(CODE_GUTTER_FG))
 }
 
-/// Raw inner text of each fenced code block (```` ``` ```` / `~~~`), in document order, skipping
-/// `mermaid` fences (they are diverted to diagram rendering and produce no code-block header).
-/// Used by the "copy focused code block" action: the Nth entry maps to the Nth focusable block.
-/// The caller cross-checks the count against the on-screen headers before copying (safe fallback).
+/// Column width of `line`'s leading whitespace run, expanding a tab to the next multiple of 4
+/// (CommonMark's tab-stop rule, applied from column 0 — the only case that matters here, since this
+/// is only ever called on a line's own leading run). Verified against the actual renderer: a single
+/// leading tab opens an indented code block exactly like 4 spaces do.
+fn leading_ws_width(line: &str) -> usize {
+    let mut col = 0usize;
+    for ch in line.chars() {
+        match ch {
+            ' ' => col += 1,
+            '\t' => col = (col / 4 + 1) * 4,
+            _ => break,
+        }
+    }
+    col
+}
+
+/// Strip up to `cols` columns of leading whitespace (space/tab, tab-stop aware) from `line`,
+/// returning the rest verbatim — including any leftover indentation beyond `cols`, which is real
+/// content once inside an indented code block (e.g. a snippet that itself uses extra indentation).
+/// Callers only ever ask for `cols == 4` on a line already known to have `leading_ws_width` >= 4, and
+/// 4 is itself always a tab stop, so a leading tab is never left partially consumed.
+fn strip_ws_columns(line: &str, cols: usize) -> &str {
+    let mut col = 0usize;
+    let mut idx = 0usize;
+    for ch in line.chars() {
+        if col >= cols {
+            break;
+        }
+        match ch {
+            ' ' => {
+                col += 1;
+                idx += ch.len_utf8();
+            }
+            '\t' => {
+                col = (col / 4 + 1) * 4;
+                idx += ch.len_utf8();
+            }
+            _ => break,
+        }
+    }
+    &line[idx..]
+}
+
+/// Whether `t` (already stripped of leading whitespace) opens a Markdown list item: a bullet
+/// (`-`/`*`/`+`) or an ordered marker (1-9 digits + `.`/`)`), each required to be followed by a
+/// space or end of line. Not a full CommonMark list-marker parser — in particular it does not need
+/// to special-case a thematic break (`---`/`***`): those never have a space right after the first
+/// marker character, so they never match this.
+fn looks_like_list_marker(t: &str) -> bool {
+    let bytes = t.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let marker_end = if matches!(bytes[0], b'-' | b'*' | b'+') {
+        1
+    } else {
+        let mut j = 0;
+        while j < bytes.len() && j < 9 && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > 0 && j < bytes.len() && matches!(bytes[j], b'.' | b')') {
+            j + 1
+        } else {
+            return false;
+        }
+    };
+    marker_end == bytes.len() || bytes[marker_end] == b' '
+}
+
+/// Tracks whether the scan is currently inside a (possibly nested) list item, to scope "top-level
+/// indented code block" detection the way pulldown-cmark (the parser tui-markdown renders through)
+/// actually does: a real, CommonMark-correct indented code block *inside* a list item needs 4
+/// columns **beyond that item's own content column** — verified against the actual renderer (e.g.
+/// `- item\n\n      nested code\n` at 6 columns *is* code; `- item\n\n    para\n` at 4 columns is
+/// just a second paragraph of the item, not code). Reproducing the exact per-depth column math would
+/// mean re-implementing list-item container tracking; instead this takes the conservative side once
+/// *any* list is active — indented content deeper than the list's own marker is never treated as
+/// code. That covers the common case (plain continuation content) exactly; it under-detects the rare
+/// deeply-nested-code-in-a-list case (same known-gap class as block quotes — see
+/// `code_block_source_locs_inner`'s doc comment), which only means `y c`/toggle stays refused there,
+/// same as before this fix, never a false match on real list content.
+struct ListGuard {
+    in_list: bool,
+}
+
+impl ListGuard {
+    fn new() -> Self {
+        Self { in_list: false }
+    }
+
+    /// Call for every **non-blank** line that reaches "regular content" handling (not already
+    /// claimed by a fence/alert/details/etc). `ws`/`rest` are its leading-whitespace width and the
+    /// text after it. Returns whether the line should be treated as (possibly nested) list content.
+    fn observe(&mut self, ws: usize, rest: &str) -> bool {
+        if ws == 0 {
+            // Column 0 unambiguously settles it: a fresh marker (re-)enters/continues the list; any
+            // other column-0 content (a plain paragraph) means the list has ended.
+            self.in_list = looks_like_list_marker(rest);
+        }
+        self.in_list
+    }
+
+    /// Call when a fence/alert/details/html/table match is found at `ws` columns — those container
+    /// types all require dedenting to their own baseline, so a match at column 0 unambiguously ends
+    /// any active list (matches `observe`'s column-0 rule). A match found while still indented is
+    /// assumed to still be inside the list — the same conservative default `observe` uses for other
+    /// indented content.
+    fn observe_special(&mut self, ws: usize) {
+        if ws == 0 {
+            self.in_list = false;
+        }
+    }
+}
+
+/// Consume one indented code block — one or more blank-line-separated chunks — starting at
+/// `lines[*i]`, which the caller has already verified opens one (`leading_ws_width >= 4`, not inside
+/// a list, allowed to open here per `prev_blank`). Advances `*i` past the block (leaving it at the
+/// first line that is *not* part of the block) and returns its content: each line with exactly 4
+/// columns of indentation stripped (CommonMark: "minus four spaces of indentation" — anything beyond
+/// that is real content). A blank line strictly *between* two chunks is dropped rather than kept as
+/// an empty content line — verified against the actual renderer: for `"para\n\n    a\n\n    b\n"`
+/// the two chunks are glued into **one** code block on screen with no blank row between `a` and `b`,
+/// so a literal copy has to match what is shown, not the source bytes.
+fn consume_indented_code_block(lines: &[&str], i: &mut usize) -> String {
+    let mut body: Vec<&str> = Vec::new();
+    while let Some(line) = lines.get(*i) {
+        if line.trim().is_empty() {
+            let mut k = *i;
+            while k < lines.len() && lines[k].trim().is_empty() {
+                k += 1;
+            }
+            if k < lines.len() && leading_ws_width(lines[k]) >= 4 {
+                *i = k; // The chunk continues past the blank run: drop it, matching the render.
+                continue;
+            }
+            break; // The block ends here; the blank line(s) are left for the caller.
+        }
+        if leading_ws_width(line) >= 4 {
+            body.push(strip_ws_columns(line, 4));
+            *i += 1;
+            continue;
+        }
+        break;
+    }
+    body.join("\n")
+}
+
+/// Raw inner text of each code block — fenced (```` ``` ```` / `~~~`) or indented (4+ columns) — in
+/// document order, skipping `mermaid` fences (they are diverted to diagram rendering and produce no
+/// code-block header). Used by the "copy focused code block" action: the Nth entry maps to the Nth
+/// focusable block. The caller cross-checks the count against the on-screen headers before copying
+/// (safe fallback).
 pub(crate) fn code_block_source_locs(src: &str, details_open: &[bool]) -> Vec<String> {
     code_block_source_locs_inner(src, details_open, false)
 }
@@ -1099,13 +1247,23 @@ fn code_block_source_locs_inner(
     let mut out = Vec::new();
     let mut details_idx = 0usize;
     let mut i = 0;
+    // See `ListGuard` / `consume_indented_code_block` docs. `prev_blank` starts `true`: the very
+    // first block of a document (or of a recursed alert/details body — its own local coordinate
+    // system) needs no preceding blank line to open as indented code.
+    let mut list = ListGuard::new();
+    let mut prev_blank = true;
     while i < lines.len() {
         let t = lines[i].trim_start();
+        let ws = leading_ws_width(lines[i]);
         // An alert body is drawn as Markdown with the `>` stripped, so a fence inside it **also
         // becomes a code block on screen**. Unless we strip it and collect under the same rule, the
         // count won't match the on-screen headers and `y c` copy gets refused (for every block in
         // that document). The stripped body is exactly the copy content.
         if parse_alert_header(lines[i]).is_some() {
+            list.observe_special(ws);
+            // Verified against the renderer: a non-paragraph block (alert/details/fence) does not
+            // gate a following indented code block behind a blank line the way a paragraph does.
+            prev_blank = true;
             i += 1;
             let mut body = String::new();
             while i < lines.len() && is_blockquote_line(lines[i]) {
@@ -1119,6 +1277,8 @@ fn code_block_source_locs_inner(
         // `<details>` only draws **the body of a block that's open** (if closed, a fence inside it
         // never appears on screen). Open/closed is runtime state, so it's received from the caller.
         if let Some(open_attr) = details_open_tag(lines[i]) {
+            list.observe_special(ws);
+            prev_blank = true;
             let open = details_open.get(details_idx).copied().unwrap_or(open_attr);
             details_idx += 1;
             i += 1;
@@ -1147,9 +1307,28 @@ fn code_block_source_locs_inner(
             None
         };
         let Some(fc) = fence else {
+            // Regular content: a blank line, a list-item marker (skip nested content — see
+            // `ListGuard`), a top-level indented (4+ column) code block, or plain prose.
+            if t.trim().is_empty() {
+                prev_blank = true;
+                i += 1;
+                continue;
+            }
+            let in_list = list.observe(ws, t);
+            if !in_list && ws >= 4 && prev_blank {
+                out.push(consume_indented_code_block(&lines, &mut i));
+                prev_blank = true;
+                continue;
+            }
+            // Plain prose (or list content deliberately left unscanned) — CommonMark requires a
+            // blank line between a paragraph and a following indented code block, so this also
+            // closes the door on the *next* line opening one without a blank in between.
+            prev_blank = false;
             i += 1;
             continue;
         };
+        list.observe_special(ws);
+        prev_blank = true;
         let info = t.trim_start_matches(fc).trim();
         let is_mermaid = is_mermaid_info(info);
         let close = fc.to_string().repeat(3);
@@ -1179,6 +1358,64 @@ pub(crate) struct TaskLoc {
     pub state: char,
 }
 
+/// Scan a run of "logical lines" — one alert/details body with its container prefix already
+/// stripped, its own local coordinate system (mirrors `code_block_source_locs_inner`'s recursion
+/// into those bodies) — for task markers, skipping indented (4+ column) code chunks exactly like the
+/// top-level scan in `task_source_locs` does: a `- [ ] this looks like a task` inside a block the
+/// renderer draws as *code* must not be mistaken (and mis-toggled) as a real checkbox. Each entry is
+/// `(original absolute line index for TaskLoc.line, this line's own text, extra prefix bytes already
+/// stripped off the **source** line — e.g. a blockquote "> " marker — needed to translate a byte
+/// offset within the text back to a byte offset within the real source line)`.
+fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut Vec<TaskLoc>) {
+    let mut list = ListGuard::new();
+    let mut prev_blank = true;
+    let mut idx = 0usize;
+    while idx < logical.len() {
+        let (orig_line, text, prefix) = logical[idx];
+        let ws = leading_ws_width(text);
+        let rest = strip_ws_columns(text, ws);
+        if rest.trim().is_empty() {
+            prev_blank = true;
+            idx += 1;
+            continue;
+        }
+        let in_list = list.observe(ws, rest);
+        if !in_list && ws >= 4 && prev_blank {
+            // Skip the whole indented code chunk — the same chunk-gluing rule as
+            // `consume_indented_code_block`, just discarding content (nothing inside code is a task).
+            while let Some(&(_, t2, _)) = logical.get(idx) {
+                if t2.trim().is_empty() {
+                    let mut k = idx;
+                    while k < logical.len() && logical[k].1.trim().is_empty() {
+                        k += 1;
+                    }
+                    if k < logical.len() && leading_ws_width(logical[k].1) >= 4 {
+                        idx = k;
+                        continue;
+                    }
+                    break;
+                }
+                if leading_ws_width(t2) >= 4 {
+                    idx += 1;
+                    continue;
+                }
+                break;
+            }
+            prev_blank = true;
+            continue;
+        }
+        if let Some(state) = task_prefix_state(rest, tasks) {
+            out.push(TaskLoc {
+                line: orig_line,
+                state_off: prefix + ws + 3,
+                state,
+            });
+        }
+        prev_blank = false;
+        idx += 1;
+    }
+}
+
 /// Scan Markdown source for task markers, in document order, skipping exactly what the render
 /// pipeline diverts away from `decorate_extras`: code/mermaid fences, HTML blocks (start line up
 /// to the next blank line) and GFM table blocks. This keeps the Nth checkbox on screen aligned
@@ -1197,9 +1434,15 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
     let mut fence: Option<char> = None;
     let mut details_idx = 0usize;
     let mut i = 0;
+    // See `ListGuard` / `consume_indented_code_block` docs (shared with `code_block_source_locs`).
+    // `prev_blank` starts `true`: the very first block of the document needs no preceding blank line
+    // to open as indented code.
+    let mut list = ListGuard::new();
+    let mut prev_blank = true;
     while i < lines.len() {
         let line = lines[i];
         let t = line.trim_start();
+        let ws = leading_ws_width(line);
         if let Some(f) = fence {
             if t.starts_with(&f.to_string().repeat(3)) {
                 fence = None;
@@ -1208,11 +1451,18 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
             continue;
         }
         if t.starts_with("```") {
+            list.observe_special(ws);
+            // Verified against the renderer: a non-paragraph block (fence/alert/details/html/table)
+            // does not gate a following indented code block behind a blank line the way a paragraph
+            // does.
+            prev_blank = true;
             fence = Some('`');
             i += 1;
             continue;
         }
         if t.starts_with("~~~") {
+            list.observe_special(ws);
+            prev_blank = true;
             fence = Some('~');
             i += 1;
             continue;
@@ -1222,23 +1472,22 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         // screen**. Unless we strip `>` here too and collect the same way, the count won't match
         // what's on screen and every toggle gets cancelled.
         if parse_alert_header(line).is_some() {
+            list.observe_special(ws);
+            prev_blank = true;
             i += 1;
+            let mut logical: Vec<(usize, String, usize)> = Vec::new();
             while i < lines.len() && is_blockquote_line(lines[i]) {
                 let raw = lines[i];
                 let stripped = strip_blockquote(raw);
-                let body = stripped.trim_start();
-                if let Some(state) = task_prefix_state(body, tasks) {
-                    // `state_off` is the byte position in the **original line**. Derived by adding the `>` prefix's length.
-                    let prefix = raw.len() - stripped.len();
-                    let indent = stripped.len() - body.len();
-                    out.push(TaskLoc {
-                        line: i,
-                        state_off: prefix + indent + 3,
-                        state,
-                    });
-                }
+                let prefix = raw.len() - stripped.len();
+                logical.push((i, stripped, prefix));
                 i += 1;
             }
+            let refs: Vec<(usize, &str, usize)> = logical
+                .iter()
+                .map(|(idx, s, p)| (*idx, s.as_str(), *p))
+                .collect();
+            scan_task_lines(&refs, tasks, &mut out);
             continue;
         }
         // `<details>`: the render side only draws **the body of a block that's open** as Markdown
@@ -1246,6 +1495,8 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         // received from the caller, and a closed block's body is not counted (counting it would
         // cancel toggles across the whole document that contains a closed details).
         if let Some(open_attr) = details_open_tag(line) {
+            list.observe_special(ws);
+            prev_blank = true;
             // The fallback is **the same as the renderer's** (`next_details_open`) = the tag's
             // `open` attribute. In production the caller supplies a value for every block so this
             // never gets hit, but if it drifts, fall on the side that matches the render.
@@ -1261,35 +1512,43 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
                 i += 1; // skip `</details>`
             }
             if open {
-                for &bi in &body {
-                    let raw = lines[bi];
-                    let bt = raw.trim_start();
-                    // A `<summary>` line is drawn as a heading, so it never becomes a task.
-                    if bt.starts_with("<summary") {
-                        continue;
-                    }
-                    if let Some(state) = task_prefix_state(bt, tasks) {
-                        out.push(TaskLoc {
-                            line: bi,
-                            state_off: (raw.len() - bt.len()) + 3,
-                            state,
-                        });
-                    }
-                }
+                // A `<summary>` line is drawn as a heading, so `task_prefix_state` never matches it
+                // (it requires the line to start with a bullet) — no special-casing needed here.
+                let logical: Vec<(usize, &str, usize)> =
+                    body.iter().map(|&bi| (bi, lines[bi], 0usize)).collect();
+                scan_task_lines(&logical, tasks, &mut out);
             }
             continue;
         }
         if is_html_block_start(line) {
+            list.observe_special(ws);
+            prev_blank = true;
             while i < lines.len() && !lines[i].trim().is_empty() {
                 i += 1;
             }
             continue;
         }
         if looks_like_table_row(line) && i + 1 < lines.len() && is_table_delimiter(lines[i + 1]) {
+            list.observe_special(ws);
+            prev_blank = true;
             i += 2;
             while i < lines.len() && looks_like_table_row(lines[i]) {
                 i += 1;
             }
+            continue;
+        }
+        if t.trim().is_empty() {
+            prev_blank = true;
+            i += 1;
+            continue;
+        }
+        let in_list = list.observe(ws, t);
+        if !in_list && ws >= 4 && prev_blank {
+            // The renderer shows this as an indented code block, not a task — same rule as
+            // `code_block_source_locs_inner`. A `- [ ] fake` example inside stays literal and does
+            // not get counted (and mis-toggled) as a real checkbox.
+            consume_indented_code_block(&lines, &mut i);
+            prev_blank = true;
             continue;
         }
         let indent = line.len() - t.len();
@@ -1300,6 +1559,7 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
                 state,
             });
         }
+        prev_blank = false;
         i += 1;
     }
     out
@@ -4544,7 +4804,7 @@ mod tests {
     fn task_source_locs_accepts_all_gfm_bullets() {
         // GFM (and tui-markdown) render `-`/`*`/`+` bullets all alike as task items. If the source
         // scanner only recognized `-`, a `*`/`+` task would be rendered but not found by the
-        // rescan, so the toggle's count check fails and every toggle gets cancelled with "file changed on disk" (user report 2026-07-22).
+        // rescan, so the toggle's count check fails and every toggle gets cancelled (user report 2026-07-22).
         let src = "- [ ] dash\n* [ ] star\n+ [x] plus\n  * [ ] nested star\n";
         let locs = task_source_locs(src, &[' ', 'x'], &[]);
         let got: Vec<(usize, char)> = locs.iter().map(|l| (l.line, l.state)).collect();
@@ -5631,7 +5891,7 @@ pub(crate) mod task_corpus {
     /// Documents exercising every construct that the renderer treats specially, each paired with the
     /// number of checkboxes a user actually sees. The whole point is that the *write-back scanner* must
     /// agree with the *renderer* on this number for every one of them: when they disagree the safety
-    /// check cancels every toggle in the document ("file changed on disk"), so one stray construct
+    /// check cancels every toggle in the document (a safe fallback, principle #3), so one stray construct
     /// breaks an entire file. Instances are cheap to add here; the class is what is being pinned.
     pub fn cases() -> Vec<(&'static str, &'static str)> {
         vec![
@@ -5716,6 +5976,115 @@ pub(crate) mod task_corpus {
                  | a | b |\n|---|---|\n| 1 | 2 |\n\n```\n- [ ] fenced\n```\n\n\
                  <details>\n<summary>More</summary>\n\n- [ ] collapsed\n\n</details>\n\n- [x] bottom\n",
             ),
+            // Root cause (indented code blocks, 2026-08): a top-level indented (4+ column) code
+            // block was not recognized as code by the write-back scanner at all — a `- [ ] fake`
+            // example inside one was mistaken for a real, toggleable checkbox.
+            (
+                "task-lookalike inside a top-level indented code block stays literal",
+                "para\n\n    - [ ] fake\n\n- [ ] real\n",
+            ),
+            (
+                "task-lookalike inside an indented block nested in an alert stays literal",
+                "> [!NOTE]\n> para\n>\n>     - [ ] fake\n>\n> - [ ] real\n",
+            ),
+            (
+                "task-lookalike inside an indented block nested in an open details stays literal",
+                "<details open>\n<summary>S</summary>\n\npara\n\n    - [ ] fake\n\n- [ ] real\n\n</details>\n",
+            ),
+            (
+                "a real task at a list item's own indentation is still a real task",
+                "- [ ] outer\n\n  - [ ] nested at matching indent\n",
+            ),
+            (
+                "an indented paragraph inside a list item is not a task even if it starts with a dash",
+                "- item\n\n  - [ ] looks like a task but is just this item's own indentation\n",
+            ),
+        ]
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod code_corpus {
+    /// Documents exercising indented (4+ column) code blocks and their interaction with the other
+    /// constructs the renderer treats specially — mirrors `task_corpus`. The write-back scanner
+    /// (`code_block_source_locs`) must agree with the renderer on the number of code blocks for
+    /// every one of these, or `y c` gets refused for the whole document (one stray construct breaks
+    /// the whole file — reported by the user for indented code blocks specifically, 2026-08).
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "standalone indented block",
+                "Normal paragraph.\n\n    indented code line\n    second line\n\nTail.\n",
+            ),
+            ("indented block at doc start", "    line one\n    line two\n"),
+            ("tab-indented block", "para\n\n\ttabbed line\n"),
+            (
+                "not code: lazy continuation right after a paragraph (no blank)",
+                "para\n    not code, just continues the paragraph\n",
+            ),
+            (
+                "not code: inside a list item at the item's own content column",
+                "- item\n\n  still item content, not code\n",
+            ),
+            (
+                "not code: inside an ordered list item at the item's own content column",
+                "1. item\n\n   still item content, not code\n",
+            ),
+            (
+                "not code: 3-space indent is not enough",
+                "para\n\n   three spaces is not enough\n",
+            ),
+            (
+                "two chunks glued by a blank separator into one code block",
+                "para\n\n    chunk one\n\n    chunk two\n",
+            ),
+            (
+                "mixed: indented block then (after a blank) a real fence",
+                "para\n\n    indented\n\n```rust\nfenced\n```\n",
+            ),
+            (
+                "mixed: fence then an indented block right after (no blank needed)",
+                "```\nfenced\n```\n    indented after fence\n",
+            ),
+            (
+                "indented block nested inside an open alert",
+                "> [!NOTE]\n> para\n>\n>     indented in alert\n",
+            ),
+            (
+                "indented block nested inside an open details",
+                "<details open>\n<summary>S</summary>\n\npara\n\n    indented in details\n\n</details>\n",
+            ),
+            (
+                "indented block nested inside a closed details is not counted",
+                "<details>\n<summary>S</summary>\n\npara\n\n    hidden\n\n</details>\n\n```\nreal\n```\n",
+            ),
+            (
+                "indented block containing a task-lookalike stays literal code",
+                "para\n\n    - [ ] not a real task\n",
+            ),
+            (
+                "front matter then an indented block",
+                "---\ntitle: t\n---\n\npara\n\n    indented after front matter\n",
+            ),
+            (
+                "crlf indented block",
+                "para\r\n\r\n    indented\r\n    second\r\n",
+            ),
+            ("no trailing newline", "para\n\n    indented"),
+            (
+                "indented block followed by a real list",
+                "para\n\n    indented\n\n- item\n",
+            ),
+            (
+                "a plain (non-alert) block quote wrapping a fence is not detected by either side",
+                "> para\n>\n>     code\n",
+            ),
+            (
+                "everything",
+                "# Doc\n\nintro\n\n    top level indented\n\n> [!NOTE]\n> body\n>\n>     indented in note\n\n\
+                 <details open>\n<summary>More</summary>\n\ndetail para\n\n    indented in details\n\n</details>\n\n\
+                 ```rust\nfn real_fence() {}\n```\n",
+            ),
         ]
     }
 }
@@ -5744,7 +6113,7 @@ mod task_scan_parity_tests {
 
     /// The write-back scanner must find **exactly** the checkboxes the renderer draws, for every
     /// construct. When the two disagree the safety check in `md_tasks` cancels *every* toggle in the
-    /// document with "file changed on disk", so a single stray construct breaks the whole file.
+    /// document (a safe fallback, principle #3), so a single stray construct breaks the whole file.
     ///
     /// Regressions this pins: a task inside a GitHub alert (`> [!NOTE]`) is rendered as a checkbox —
     /// the renderer strips the `>` — but the scanner matched only `-`/`*`/`+` at line start and found
@@ -5840,6 +6209,126 @@ mod task_scan_parity_tests {
                  (この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
             );
         }
+    }
+
+    /// Root cause (indented code blocks): a top-level 4+-column indented code block was not
+    /// recognized by the write-back scanner at all — any document containing one refused `y c` for
+    /// **every** code block in it, fenced ones included (the count guard is document-wide). Runs
+    /// `code_corpus` the same way `code_block_scanner_counts_exactly_what_the_renderer_draws` runs
+    /// its own hand-picked cases, covering indented blocks alone and interacting with every other
+    /// construct the scanner special-cases (fences, alerts, `<details>`, front matter, CRLF, lists).
+    #[test]
+    fn code_block_scanner_matches_renderer_across_indented_code_corpus() {
+        for (name, src) in code_corpus::cases() {
+            set_details_open(Vec::new());
+            let drawn = rendered_code_blocks(src);
+            let scanned = code_block_source_locs(src, &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: 画面のコードブロック数とコピー用スキャナの数が食い違う\
+                 (この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// Same corpus, same rule, for the checkbox toggle scanner (`task_source_locs`) — pins the
+    /// "task-lookalike inside an indented block" entries added to `task_corpus` for this fix (a
+    /// `- [ ] fake` example the renderer draws as *code* must not be counted, or the toggle's
+    /// count guard cancels every checkbox in the document, this one included).
+    #[test]
+    fn task_scanner_matches_renderer_across_indented_code_corpus() {
+        for (name, src) in code_corpus::cases() {
+            set_details_open(Vec::new());
+            let drawn = rendered_tasks(src);
+            let scanned = task_source_locs(src, &[' ', 'x'], &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: 画面のチェックボックス数と書き戻しスキャナの数が食い違う\
+                 (この文書ではトグルが全部中止される)\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// Content-level pin: exactly 4 columns are stripped (any extra indentation is real content),
+    /// and a blank line strictly *between* two chunks of the same indented block is dropped rather
+    /// than kept — matches what the renderer actually draws (verified directly against
+    /// `tui-markdown`'s output: the two chunks glue into one block on screen with no blank row).
+    #[test]
+    fn indented_code_block_strips_four_columns_and_glues_chunks_matching_the_render() {
+        let src = "para\n\n    chunk one\n\n    chunk two\n";
+        let blocks = code_block_source_locs(src, &[]);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "2つのチャンクは1つのコードブロックにグルーされる"
+        );
+        assert_eq!(
+            blocks[0], "chunk one\nchunk two",
+            "4カラムだけ除去され、チャンク間の空行は画面表示と一致して落ちる"
+        );
+
+        let extra = "para\n\n        extra indent kept\n";
+        assert_eq!(
+            code_block_source_locs(extra, &[]),
+            vec!["    extra indent kept".to_string()],
+            "4カラムを超える字下げは本文としてそのまま残る"
+        );
+
+        let tabbed = "para\n\n\ttabbed line\n";
+        assert_eq!(
+            code_block_source_locs(tabbed, &[]),
+            vec!["tabbed line".to_string()],
+            "タブ1個は4カラム分として丸ごと除去される"
+        );
+    }
+
+    /// `ListGuard`'s column-0 exit condition, pinned directly: content inside a list item is never
+    /// mistaken for a top-level indented code block, but code genuinely *after* the list (once a
+    /// plain, undented paragraph has closed it) is detected normally.
+    #[test]
+    fn indented_code_is_scoped_out_of_an_active_list_but_resumes_once_it_ends() {
+        assert!(
+            code_block_source_locs("- item\n\n    still list content\n", &[]).is_empty(),
+            "リスト項目内の字下げはコードとして検出しない"
+        );
+        assert_eq!(
+            code_block_source_locs("- item\n\ntop\n\n    code\n", &[]),
+            vec!["code".to_string()],
+            "リストが素の段落で終わった後の字下げは通常どおりコードとして検出する"
+        );
+    }
+
+    /// Documents two constructs the fix deliberately does **not** attempt to support (same class of
+    /// gap as the pre-existing block-quote limitation): an indented block that immediately follows a
+    /// heading with no blank line (the renderer allows it — only a paragraph gates a following
+    /// indented code block — but the scanner conservatively still requires one), and any indented
+    /// block inside a *plain*, non-alert block quote (already unsupported by fenced code too, before
+    /// this fix: the block quote's own `>` marker sits in front of every source line, so
+    /// `decorate_code_blocks`'s literal `"```"` check never matches it — matching the scanner, which
+    /// also never opens a code block inside a bare `>` prefix).
+    #[test]
+    fn indented_code_known_gaps_are_documented_not_silently_regressed() {
+        let heading_then_code = "# H\n    not detected here\n";
+        assert_eq!(
+            rendered_code_blocks(heading_then_code),
+            1,
+            "レンダラは見出し直後(空行なし)でも字下げコードを描く"
+        );
+        assert!(
+            code_block_source_locs(heading_then_code, &[]).is_empty(),
+            "スキャナは(既知の制約として)空行必須のまま検出しない"
+        );
+
+        let quoted = "> para\n>\n>     code\n";
+        assert_eq!(
+            rendered_code_blocks(quoted),
+            0,
+            "素の(アラートでない)引用内のフェンス/字下げはレンダラ側も未対応(既存の制約)"
+        );
+        assert!(
+            code_block_source_locs(quoted, &[]).is_empty(),
+            "スキャナも同様に検出しない(食い違いなし)"
+        );
     }
 
     /// The text handed to the clipboard for a fence inside an alert must be the **code**, with the

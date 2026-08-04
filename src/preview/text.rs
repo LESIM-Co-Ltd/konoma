@@ -53,7 +53,7 @@ pub struct TextContent {
 /// `MAX_LINES` itself — the Markdown checkbox/code-block source scanners (`app/md_tasks.rs`,
 /// `app/md_items.rs`) need this: they must count only what is actually on screen, or a document
 /// larger than the preview caps disagrees with the renderer on how many items exist and every
-/// toggle/copy in the document is refused ("file changed on disk"), even ones fully on screen.
+/// toggle/copy in the document is refused (a safe fallback, principle #3), even ones fully on screen.
 /// Byte-slicing is done on the raw bytes (never on an already-decoded `&str`), so a cut that lands
 /// mid-character is safe — `from_utf8_lossy` turns it into a trailing replacement character instead
 /// of panicking on a non-boundary slice.

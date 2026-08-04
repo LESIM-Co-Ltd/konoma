@@ -693,7 +693,11 @@ fn en(msg: Msg) -> &'static str {
         CopyHint => "copy",
         CopyFailed => "copy failed: ",
         CopiedCodeBlock => "copied code block",
-        CodeBlockCopyUnavailable => "cannot copy code block (file changed)",
+        // Deliberately does not blame "the file changed" — in practice this is almost always
+        // konoma's own write-back scanner disagreeing with what the renderer draws (indented code
+        // blocks, `*`/`+` bullets, an alert/`<details>` body, or a document over the size cap have
+        // all triggered this refusal at one point or another), not a concurrent external edit.
+        CodeBlockCopyUnavailable => "couldn't copy code block",
         HintCopyCode => "copy code",
         CutHint => "cut",
         CyclePathStyle => "cycle path style (rel/~/abs)",
@@ -945,7 +949,9 @@ fn en(msg: Msg) -> &'static str {
         BusyImages => "loading images",
         BusyFileOp => "file op",
         FileOpBusy => "another file operation is still running",
-        TaskFileChanged => "file changed on disk — reloaded (toggle cancelled)",
+        // See `CodeBlockCopyUnavailable`'s comment — same class of refusal, same reason not to
+        // name "the file changed" as the cause.
+        TaskFileChanged => "couldn't toggle checkbox — reloaded",
         AgoMin => "min ago",
         AgoMonths => "months ago",
         WkName => "name",
@@ -1147,7 +1153,7 @@ fn jp(msg: Msg) -> &'static str {
         CopyHint => "コピー",
         CopyFailed => "コピー失敗: ",
         CopiedCodeBlock => "コードブロックをコピー",
-        CodeBlockCopyUnavailable => "コードブロックをコピーできません (ファイルが変更されました)",
+        CodeBlockCopyUnavailable => "コードブロックをコピーできませんでした",
         HintCopyCode => "コード",
         CutHint => "カット",
         CyclePathStyle => "パス表示の切替 (相対/~/絶対)",
@@ -1395,7 +1401,7 @@ fn jp(msg: Msg) -> &'static str {
         BusyImages => "画像読込",
         BusyFileOp => "ファイル操作",
         FileOpBusy => "別のファイル操作を実行中です",
-        TaskFileChanged => "ファイルが外部で変更されたため再読込しました(トグル取消)",
+        TaskFileChanged => "チェックボックスを切り替えられませんでした — 再読込しました",
         AgoMin => "分前",
         AgoMonths => "ヶ月前",
         WkName => "名前",

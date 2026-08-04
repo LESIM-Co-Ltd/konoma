@@ -1620,8 +1620,7 @@ fn md_task_toggle_cycles_and_writes_file() {
 }
 
 /// Checkboxes in `*` and `+` bullet lists can be toggled too (the source scanner used to only
-/// recognize `-`, so the count check drifted and everything got cancelled with "file changed on
-/// disk" — user report 2026-07-22).
+/// recognize `-`, so the count check drifted and everything got cancelled — user report 2026-07-22).
 #[test]
 fn md_task_toggle_star_and_plus_bullets() {
     use ratatui::backend::TestBackend;
@@ -1644,7 +1643,7 @@ fn md_task_toggle_star_and_plus_bullets() {
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert_eq!(app.md_items.len(), 2, "star/plus 両方がタスクとして認識");
 
-    // Toggle the first one (star) → it isn't cancelled and writes back. No "changed on disk" flash.
+    // Toggle the first one (star) → it isn't cancelled and writes back. No refusal flash.
     app.md_focus_move(1);
     app.md_toggle_focused_task();
     let s = std::fs::read_to_string(&f).unwrap();
@@ -1656,9 +1655,9 @@ fn md_task_toggle_star_and_plus_bullets() {
     assert!(
         app.flash
             .as_deref()
-            .map(|m| !m.contains("changed on disk"))
+            .map(|m| !m.contains("couldn't toggle checkbox"))
             .unwrap_or(true),
-        "「file changed on disk」でキャンセルされない: {:?}",
+        "トグル拒否のフラッシュが出ていない: {:?}",
         app.flash
     );
 
