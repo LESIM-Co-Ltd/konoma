@@ -29,6 +29,15 @@ struct Sim {
     /// Receiver for background file operations, once `with_async_file_ops` opted in (the run loop
     /// owns this channel live). `None` = the synchronous fallback in `start_file_op` is used.
     fileop_rx: Option<std::sync::mpsc::Receiver<crate::app::FileOpResult>>,
+    /// Receiver for background inline-Markdown-image decodes (`with_media`). Drained by `drain_md_images`.
+    md_img_rx: Option<std::sync::mpsc::Receiver<crate::app::MdImageResult>>,
+    /// Receiver for the background inline-image encode worker (`with_media`). Drained by `drain_md_encodes`.
+    md_enc_rx: Option<std::sync::mpsc::Receiver<crate::app::MdEncodeResult>>,
+    /// Receiver for full-screen media loads — SVG/GIF/PDF/video/standalone-mermaid/fullscreen-fence
+    /// (`with_media`). Drained by `drain_media`.
+    media_rx: Option<std::sync::mpsc::Receiver<crate::app::MediaResult>>,
+    /// Receiver for background remote (http/https) Markdown image fetches (`with_media`). Drained by `drain_remote`.
+    md_remote_rx: Option<std::sync::mpsc::Receiver<crate::app::RemoteFetch>>,
 }
 
 impl Sim {
@@ -44,6 +53,10 @@ impl Sim {
             term,
             quit: false,
             fileop_rx: None,
+            md_img_rx: None,
+            md_enc_rx: None,
+            media_rx: None,
+            md_remote_rx: None,
         };
         sim.draw();
         sim
@@ -74,6 +87,107 @@ impl Sim {
         self.app
             .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), tx);
         self
+    }
+
+    /// Attach the **full async media pipeline** — the same background workers `main` spawns
+    /// (`md_encode_worker` running on a cloned `Picker::halfblocks()`, plus the raw channels behind
+    /// `attach_media_loader` / `attach_md_image_loader` / `attach_remote_md_loader`) — so a
+    /// keystroke-driven test exercises the real decode(thread) → apply → re-render → encode(thread)
+    /// → apply pipeline, instead of `with_picker()`'s synchronous no-loader-tx fallback. This is what
+    /// reaches `ensure_md_image` / `ensure_mermaid_fence_render`'s and `ensure_math_render`'s
+    /// `if let Some(tx) = ...` thread-spawning branches (previously uncovered — every existing test
+    /// that touched inline images/mermaid/math went through the synchronous else-branch instead).
+    /// The receivers are kept on `Sim` and drained one result at a time by `drain_md_images` /
+    /// `drain_md_encodes` / `drain_media` / `drain_remote` — mirrors `with_async_file_ops` +
+    /// `drain_file_ops`, and the run loop's per-tick `while let Ok(r) = rx.try_recv()` loops in `main.rs`.
+    fn with_media(mut self) -> Sim {
+        let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here (halfblocks)
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        self.app.attach_image_backend(picker.clone(), resize_tx);
+
+        let (media_tx, media_rx) = std::sync::mpsc::channel();
+        self.app.attach_media_loader(media_tx);
+        self.media_rx = Some(media_rx);
+
+        let (md_img_tx, md_img_rx) = std::sync::mpsc::channel();
+        self.app.attach_md_image_loader(md_img_tx);
+        self.md_img_rx = Some(md_img_rx);
+
+        let (md_remote_tx, md_remote_rx) = std::sync::mpsc::channel();
+        self.app.attach_remote_md_loader(md_remote_tx);
+        self.md_remote_rx = Some(md_remote_rx);
+
+        // The inline-image encode worker is a real thread, exactly like `main` spawns it (a cloned
+        // Picker, requests in, results out). It exits on its own once `md_enc_tx` is dropped (App
+        // teardown at the end of the test).
+        let (md_enc_tx, md_enc_worker_rx) = std::sync::mpsc::channel();
+        let (md_enc_res_tx, md_enc_res_rx) = std::sync::mpsc::channel();
+        self.app.attach_md_encoder(md_enc_tx);
+        std::thread::spawn(move || {
+            crate::app::md_encode_worker(picker, md_enc_worker_rx, md_enc_res_tx)
+        });
+        self.md_enc_rx = Some(md_enc_res_rx);
+
+        self
+    }
+
+    /// Wait for the next inline-Markdown-image decode result and apply it (the run loop's
+    /// `rx.md_img.try_recv()` step), then redraw — which is what feeds a decoded image back into
+    /// `ensure_md_image`'s "request an encode" branch on the next frame.
+    #[track_caller]
+    fn drain_md_images(&mut self) {
+        let rx = self
+            .md_img_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("decode worker が結果を返す");
+        assert!(self.app.apply_md_image(res), "現世代の結果は適用される");
+        self.draw();
+    }
+
+    /// Wait for the next inline-image encode result and apply it (the run loop's
+    /// `rx.md_enc.try_recv()` step), then redraw.
+    #[track_caller]
+    fn drain_md_encodes(&mut self) {
+        let rx = self
+            .md_enc_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker が結果を返す");
+        assert!(self.app.apply_md_encode(res), "現世代の結果は適用される");
+        self.draw();
+    }
+
+    /// Wait for the next full-screen media-load result (SVG/GIF/PDF/video/standalone-mermaid/
+    /// fullscreen-fence) and apply it (the run loop's `rx.media.try_recv()` step), then redraw.
+    #[track_caller]
+    fn drain_media(&mut self) {
+        let rx = self.media_rx.as_ref().expect("with_media() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("media loader が結果を返す");
+        assert!(self.app.apply_media(res), "現世代の結果は適用される");
+        self.draw();
+    }
+
+    /// Wait for the next remote (http/https) Markdown image fetch's completion and apply it (the
+    /// run loop's `rx.md_remote.try_recv()` step), then redraw.
+    #[track_caller]
+    fn drain_remote(&mut self) {
+        let rx = self
+            .md_remote_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("remote fetch worker が結果を返す");
+        assert!(self.app.apply_remote_fetch(res), "常に再描画を要求する");
+        self.draw();
     }
 
     /// Wait for the in-flight file operation's result and apply it (the run loop's
@@ -271,9 +385,25 @@ impl Sim {
     }
 }
 
-/// Fresh sandbox dir under the OS temp dir (recreated per test).
+/// Fresh, process-unique sandbox dir under the OS temp dir (recreated per call). The name is
+/// suffixed with the PID + a process-global counter — the same pattern already used by
+/// `app/tests.rs`'s `unique_tmp` and `git.rs`'s `unique_tmp` ("a fixed path would collide across
+/// parallel test runs"). A bare `name`-keyed path let two *concurrently running processes* that
+/// both execute this same test race on `remove_dir_all()` + `create_dir_all()` + file writes in
+/// the identical shared directory (e.g. an overlapping/orphaned `cargo test` invocation, a rerun
+/// while a previous run was still in flight, or parallel CI jobs sharing a temp mount): one
+/// process's sandbox reset can delete a fixture file out from under another process's still-running
+/// test. Root-caused via `e2e_ui_inline_gif_animates_through_real_decode_worker`'s intermittent
+/// "encode worker が結果を返す: Timeout" — two processes both looping that single test reproduced it
+/// reliably (~4% of runs): `resolve_md_image_path`'s `Path::is_file()` transiently observed
+/// `anim.gif` as missing mid-recreation-by-the-other-process, so `ensure_md_image` silently
+/// returned without ever queuing the second encode request, and `drain_md_encodes()` then waited
+/// on a message nobody had sent.
 fn sandbox(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("konoma_e2e_{name}"));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("konoma_e2e_{name}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -7470,5 +7600,435 @@ fn e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled() {
     s_off.enter();
     assert!(s_off.app.is_media_loading());
     s_off.dont_see("loading media");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// H1: real-keystroke-driven async media pipeline (`Sim::with_media`).
+//
+// Every test above that touches an inline image / mermaid fence / math expression uses
+// `with_picker()`, which attaches a `Picker` but no loader channels — so `ensure_md_image` /
+// `ensure_mermaid_fence_render` / `ensure_math_render` all take their **synchronous, no-tx**
+// fallback branch (decode happens inline, on the test's own thread, before the first draw even
+// finishes). That's fine for testing classification/sizing/config, but it never reaches the
+// `if let Some(tx) = ...` branches that spawn a **real background thread** and hand the result
+// back through a channel — the exact code path `main` uses, and the one where two real bugs (a
+// synthetic-URL key going unrecognized, and RaTeX's invisible-black glyphs) shipped in v0.16.0
+// without a single test — unit or e2e — ever exercising it.
+//
+// `with_media()` attaches the real channels (`attach_media_loader` / `attach_md_image_loader` /
+// `attach_remote_md_loader` / `attach_md_encoder` + a real `md_encode_worker` thread), so the
+// tests below drive that pipeline from actual keystrokes (`Sim::key`/`enter`/`tab`) end to end:
+// decode on a worker thread → `drain_md_images` applies it and redraws → the redraw's renderer
+// asks for an encode → `drain_md_encodes` applies that and redraws → real pixels reach the drawn
+// terminal buffer, read back exactly like `e2e_ui_math_color_changes_rendered_pixel_hue` already
+// does for the encode half alone.
+// =============================================================================
+
+/// Every `Color::Rgb` currently painted into the drawn buffer's cell foregrounds. Real
+/// image/diagram/equation rasters (halfblocks protocol) paint actual pixel colors this way; plain
+/// text/UI chrome uses named `Color` variants, never `Rgb`. Used to tell "a real raster reached the
+/// screen" apart from "still a placeholder/blank" without needing to inspect `App`'s private cache.
+fn drawn_rgb_fgs(term: &Terminal<TestBackend>) -> Vec<(u8, u8, u8)> {
+    let buf = term.backend().buffer();
+    let mut out = Vec::new();
+    for cell in buf.content().iter() {
+        if let Some(ratatui::style::Color::Rgb(r, g, b)) = cell.style().fg {
+            out.push((r, g, b));
+        }
+    }
+    out
+}
+
+/// A **local** inline Markdown image, decoded and encoded through the real background threads.
+/// The placement (cols/rows) is available immediately after `enter()` (it's sized straight off the
+/// file's on-disk dimensions, synchronously — no worker needed for that part), but the raster only
+/// exists once `ensure_md_image`'s real decode thread reports back through `md_img_rx`, and a
+/// drawable protocol only exists once the real `md_encode_worker` thread reports back through
+/// `md_enc_rx`. Confirms both by reading real pixel colors off the drawn buffer, not just "a
+/// `Protocol` object exists" (which a bug in the color pipeline could satisfy while still being
+/// visually wrong).
+#[test]
+fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
+    let dir = sandbox("inline_local_image_real_workers");
+    // A solid, distinctive color: any pixel that reaches the screen unblended is unambiguous proof
+    // this specific raster (not some other placeholder/UI chrome) was drawn.
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        300,
+        120,
+        image::Rgb([10, 210, 10]),
+    ))
+    .save(dir.join("pic.png"))
+    .unwrap();
+    std::fs::write(
+        dir.join("d.md"),
+        "before\n\n![a green square](pic.png)\n\nafter\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    let placements = s.app.md_images();
+    assert_eq!(
+        placements.len(),
+        1,
+        "サイズはファイルの寸法から即座に(デコード前でも)確定するはず"
+    );
+    let (url, cols, rows) = (
+        placements[0].url.clone(),
+        placements[0].cols,
+        placements[0].rows,
+    );
+    assert!(cols > 0 && rows > 0);
+    assert!(
+        s.app.md_image_proto(&url, cols, rows, 0, rows).is_none(),
+        "デコードが終わる前はまだ protocol が無いはず"
+    );
+
+    s.drain_md_images(); // real decode thread applies the raster + redraws (which requests an encode)
+    s.drain_md_encodes(); // real encode-worker thread turns it into a drawable protocol
+
+    assert!(
+        s.app.md_image_proto(&url, cols, rows, 0, rows).is_some(),
+        "エンコードが終われば protocol が立つはず"
+    );
+    let greens: Vec<_> = drawn_rgb_fgs(&s.term)
+        .into_iter()
+        .filter(|&(r, g, b)| g > 150 && r < 60 && b < 60)
+        .collect();
+    assert!(
+        !greens.is_empty(),
+        "実ピクセル(緑)が描画バッファに届いているはず: {:?}",
+        drawn_rgb_fgs(&s.term)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Two ```mermaid fences, both rendered on real background threads: Tab-focuses the caption line
+/// (only reachable once the fence has actually decoded to an `Image` slot — while `Loading`, a
+/// fence produces no `MdItemKind::MermaidFence` Tab item at all, so this also closes the
+/// previously-noted "mermaid focus is unreachable without a picker" gap), opens it full-screen with
+/// Enter, and confirms the **correct** fence opened by its source ordinal — not by draw order or
+/// completion order (the two real decode threads can finish in either order; `fence_ord` is
+/// assigned during the synchronous, single-pass source parse, so it's stable regardless). `q`
+/// restores the exact scroll/focus that were active before opening the diagram.
+#[test]
+fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
+    let dir = sandbox("mermaid_fence_real_async");
+    std::fs::write(
+        dir.join("d.md"),
+        "# Doc\n\n```mermaid\nflowchart TD\nA-->B\n```\n\nmiddle text\n\n```mermaid\nflowchart TD\nC-->D\n```\n\ntail\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter(); // both fences kick off a real decode thread (Loading — no image placement yet)
+    assert!(
+        s.app.md_images().is_empty(),
+        "デコード前はまだ画像プレースメント無し"
+    );
+    assert_eq!(
+        s.app.focused_item(),
+        None,
+        "Loading中はまだ Tab で辿れるアイテムが無いはず"
+    );
+
+    // Both fences finish decoding (the two threads' completion order is not guaranteed, but two
+    // drains always land both entries in md_image_cache, and fence_ord is source-order regardless).
+    s.drain_md_images();
+    s.drain_md_images();
+    let placements = s.app.md_images();
+    assert_eq!(
+        placements.len(),
+        2,
+        "両方の図が画像プレースメントを持つはず"
+    );
+
+    // Tab to the first fence (ordinal 0) and open it.
+    s.tab();
+    assert_eq!(s.app.focused_item(), Some(0));
+    let scroll_before = s.app.tab.preview_scroll;
+    let focus_before = s.app.focused_item();
+    s.enter();
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::MermaidFence(0))
+        ),
+        "1つ目のTabアイテムは序数0の図を開くはず: {:?}",
+        s.app.tab.preview_kind
+    );
+    s.drain_media(); // the fullscreen re-render (MediaJob::MermaidSrc) is a real thread too
+    assert!(
+        s.app
+            .prepare_image(ratatui::layout::Rect::new(0, 0, 80, 20))
+            .is_some(),
+        "フルスクリーン描画用のラスタが実際にデコードされているはず"
+    );
+
+    s.key('q');
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::Markdown(_))
+        ),
+        "q でMarkdownへ戻るはず: {:?}",
+        s.app.tab.preview_kind
+    );
+    assert_eq!(
+        s.app.tab.preview_scroll, scroll_before,
+        "スクロール位置が復元されるはず"
+    );
+    assert_eq!(
+        s.app.focused_item(),
+        focus_before,
+        "フォーカスが復元されるはず"
+    );
+
+    // Tab to the second fence (ordinal 1) and open it — the actual "correct ordinal" regression
+    // check: a draw-order/completion-order-based ordinal would also happen to say "1" here by
+    // coincidence with exactly two fences, but this exercises the same `open_mermaid_fence` path
+    // that re-extracts the fence by its **source** ordinal. `q` above restored focus to item 0, so
+    // a single Tab now reaches item 1.
+    s.tab();
+    assert_eq!(s.app.focused_item(), Some(1));
+    s.enter();
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::MermaidFence(1))
+        ),
+        "2つ目のTabアイテムは序数1の図を開くはず: {:?}",
+        s.app.tab.preview_kind
+    );
+    s.drain_media();
+    assert!(s
+        .app
+        .prepare_image(ratatui::layout::Rect::new(0, 0, 80, 20))
+        .is_some());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A math expression, decoded and encoded through the real background threads — exactly the path
+/// where v0.16.0 shipped two real bugs invisible to every test that existed at the time: (1) the
+/// synthetic `math://` key wasn't recognized by the "should this URL be resolved on disk" check, so
+/// an encode was never even requested (the reserved row stayed permanently blank); (2) RaTeX paints
+/// every glyph pure black, invisible on a dark terminal. Both regressions are pinned here by
+/// actually going through `ensure_math_render`'s real-thread branch (previously unreached) and
+/// reading real pixel colors — a `Some(url)` synthetic key alone (bug 1) or a `Some(protocol)`
+/// alone (bug 2, since black paints a technically-valid protocol) would not have caught either.
+#[test]
+fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
+    let dir = sandbox("math_real_worker");
+    std::fs::write(dir.join("d.md"), "before $E=mc^2$ after\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    // While loading: no placement yet, and the literal LaTeX is not shown as plain text (it's on
+    // its own reserved "loading" row, not inline with "before"/"after").
+    assert!(s.app.md_images().is_empty());
+    s.dont_see("E=mc^2");
+    s.see("loading");
+
+    s.drain_md_images(); // real background render (ensure_math_render's Some(tx) branch)
+    let placements = s.app.md_images();
+    assert_eq!(
+        placements.len(),
+        1,
+        "デコード完了後に画像プレースメントが立つはず"
+    );
+    let (url, cols, rows) = (
+        placements[0].url.clone(),
+        placements[0].cols,
+        placements[0].rows,
+    );
+    assert!(
+        crate::preview::markdown::is_math_url(&url),
+        "合成キー math:// が使われているはず: {url}"
+    );
+
+    // Bug 1's regression: with the synthetic key unrecognized, `ensure_md_image` would try to
+    // resolve `math://...` as a real file path, fail, and never even ask for an encode — this
+    // `drain_md_encodes` would then hang (5s timeout → test failure) instead of completing fast.
+    s.drain_md_encodes();
+
+    assert!(
+        s.app.md_image_proto(&url, cols, rows, 0, rows).is_some(),
+        "エンコード完了後は protocol が立つはず"
+    );
+    // Bug 2's regression: RaTeX's default glyph color is pure black (0,0,0) — invisible on
+    // konoma's dark terminal. `recolor` repaints it (default `math_color` #d0d0d0), so real,
+    // non-black ink must reach the drawn buffer.
+    let visible_ink: Vec<_> = drawn_rgb_fgs(&s.term)
+        .into_iter()
+        .filter(|&(r, g, b)| r > 20 || g > 20 || b > 20)
+        .collect();
+    assert!(
+        !visible_ink.is_empty(),
+        "純黒(不可視)でない実インクが描かれるはず: {:?}",
+        drawn_rgb_fgs(&s.term)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Failure path (design principle #3): when the real background render fails — a mermaid fence
+/// mermaid-rs-renderer can't lay out, and a math expression RaTeX can't parse — the async result
+/// still arrives (never silently drops) and must degrade safely to the raw source text: never stuck
+/// on "loading…" forever, and never a crash. Both failures go through the very same
+/// `md_img_tx`/`apply_md_image` real-thread pipeline as the success-path tests above; only the
+/// renderer's `Result` differs.
+#[test]
+fn e2e_ui_mermaid_and_math_render_failure_degrades_safely_to_raw_source() {
+    let dir = sandbox("mermaid_math_failure_real_worker");
+    std::fs::write(
+        dir.join("d.md"),
+        "```mermaid\ndefinitely not a diagram !!!\n```\n\n$\\frac{$\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.see("loading"); // both start out as loading placeholders
+
+    // Both async renders finish (with failures). Each `drain_md_images` also redraws, which is
+    // what turns a `failed` cache entry back into the text fallback (`apply_md_image` invalidates
+    // `md_cache` on both success *and* failure, so the very next render re-decorates).
+    s.drain_md_images();
+    s.drain_md_images();
+
+    assert!(
+        s.app.md_images().is_empty(),
+        "失敗した図/式は画像プレースメントを持たないはず"
+    );
+    s.dont_see("loading…");
+    // mermaid: mermaid-rs-renderer fails on garbage, and so does the legacy text renderer,
+    // degrading all the way to the raw fence source (`fallback_raw`).
+    s.see("definitely not a diagram");
+    // math: RaTeX fails on unbalanced LaTeX, degrading to the raw `$...$` text.
+    s.see("\\frac{");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An animated GIF embedded inline in Markdown, decoded through the real background decode thread
+/// (`decode_gif_inline`, keeping every frame — the inline-specific budget, separate from the
+/// full-screen GIF path) and cycled via `advance_md_gifs_if_due`/`md_gif_poll_timeout` (the inline
+/// analog of the full-screen `App::advance_gif_if_due`/`gif_poll_timeout`, previously never
+/// exercised through a real decode). Two solid, distinctly-colored frames make the actual frame
+/// swap unambiguous from the drawn buffer's pixel colors, not just an internal frame-index bump.
+#[test]
+fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
+    let dir = sandbox("inline_gif_real_worker");
+    {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame, Rgba, RgbaImage};
+        let out = std::fs::File::create(dir.join("anim.gif")).unwrap();
+        let mut enc = GifEncoder::new(out);
+        let frames = [Rgba([220, 20, 20, 255]), Rgba([20, 20, 220, 255])] // red, then blue
+            .into_iter()
+            .map(|color| {
+                Frame::from_parts(
+                    RgbaImage::from_pixel(120, 80, color),
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(100, 1),
+                )
+            });
+        enc.encode_frames(frames).unwrap();
+    }
+    std::fs::write(dir.join("d.md"), "![anim](anim.gif)\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1);
+    let (url, cols, rows) = (
+        placements[0].url.clone(),
+        placements[0].cols,
+        placements[0].rows,
+    );
+
+    s.drain_md_images(); // real decode thread: decode_gif_inline finds 2 frames
+    assert!(
+        s.app.md_gif_poll_timeout().is_some(),
+        "アニメGIFは巡回のポーリング待ちを要求するはず"
+    );
+    s.drain_md_encodes(); // frame 0 (red)'s protocol
+
+    assert!(s.app.md_image_proto(&url, cols, rows, 0, rows).is_some());
+    let reds: Vec<_> = drawn_rgb_fgs(&s.term)
+        .into_iter()
+        .filter(|&(r, g, b)| r > 150 && g < 60 && b < 60)
+        .collect();
+    assert!(
+        !reds.is_empty(),
+        "1コマ目(赤)の実ピクセルが描かれるはず: {:?}",
+        drawn_rgb_fgs(&s.term)
+    );
+
+    assert!(
+        !s.app.advance_md_gifs_if_due(),
+        "最初の呼び出しはタイマーを起動するだけで、まだ進めないはず"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150)); // > the 100ms per-frame delay
+    assert!(
+        s.app.advance_md_gifs_if_due(),
+        "遅延経過後は次フレームへ進むはず"
+    );
+    s.draw(); // the frame swap invalidated proto_size → the renderer requests a fresh encode
+    s.drain_md_encodes(); // frame 1 (blue)'s protocol
+
+    let blues: Vec<_> = drawn_rgb_fgs(&s.term)
+        .into_iter()
+        .filter(|&(r, g, b)| b > 150 && r < 60 && g < 60)
+        .collect();
+    assert!(
+        !blues.is_empty(),
+        "2コマ目(青)へ切り替わった実ピクセルが描かれるはず: {:?}",
+        drawn_rgb_fgs(&s.term)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A remote (http/https) inline Markdown image, fetched by the real background thread
+/// (`attach_remote_md_loader`) — **without ever reaching a real network**: `http://127.0.0.1:1/...`
+/// fails via connection-refused near-instantly (confirmed separately: ~1ms, well under the
+/// `recv_timeout`), since nothing can bind privileged port 1, and the request never leaves the
+/// loopback interface. Confirms loading → failure → text-placeholder degrade (principle #3)
+/// through actual keystrokes and the real fetch thread, not the config-level synchronous-failure
+/// path (`[external] remote_images = false`) unit tests already cover.
+#[test]
+fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
+    let dir = sandbox("remote_image_no_network");
+    std::fs::write(
+        dir.join("d.md"),
+        "![unreachable](http://127.0.0.1:1/nope.png)\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.see("loading");
+    assert!(s.app.md_images().is_empty());
+
+    s.drain_remote(); // real fetch thread: connection refused instantly, ok=false
+
+    s.dont_see("loading");
+    s.see("http://127.0.0.1:1/nope.png"); // degraded to the text-fallback line (image_text_fallback)
+    assert!(
+        s.app.md_images().is_empty(),
+        "失敗した画像はプレースメントを持たないはず"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
