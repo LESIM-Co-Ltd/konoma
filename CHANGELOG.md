@@ -6,6 +6,22 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **A panic while highlighting a source file could take down the whole app.** Every other renderer
+  — mermaid, LaTeX, PDF, SVG, GIF, archive, remote images — was already wrapped in a panic safety
+  net, but syntect, the code path used by nearly every preview, had none. `highlight()` runs on the
+  main thread inside the draw call and `highlight_line_by_ext()` runs once per diff line, so a
+  pathological input that made syntect panic would abort konoma outright rather than degrade. A
+  panic in the background warm-up had a quieter but equally stuck failure: the completion was never
+  reported, so that file type's loading spinner turned forever. A caught panic now degrades to
+  plain text — the file stays readable, it just loses its coloring — and only the offending line
+  loses color, which is how a syntect error was already handled.
+- **Three background workers could leave a spinner turning forever.** If the ignore-set scan, the
+  git status scan, or a diagram re-rasterization panicked, no result came back and the "in
+  progress" flag was never cleared: the busy indicator kept spinning, git status froze at whatever
+  it last saw, and the affected diagram could never sharpen again. All three now always deliver a
+  result, falling back to a safe empty/failed one, so the flag is always cleared.
+
 ## [0.23.4] - 2026-08-05
 
 ### Fixed
