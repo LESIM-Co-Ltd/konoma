@@ -2682,6 +2682,123 @@ fn split_math(text: &str) -> Vec<MathPart> {
     out
 }
 
+// ---- Inline code spans (the one place that decides "is this byte range literal code?") ----
+//
+// Every source-level pass that rewrites inline syntax (math extraction, `<kbd>`-style inline HTML,
+// footnote references) has to agree on which byte ranges of a line are `` `code spans` ``, because
+// text inside one is a literal *example* of the syntax and must survive untouched. Re-deriving that
+// rule per pass is how this file has repeatedly grown divergent behavior (a footnote ref inside
+// backticks became a superscript; `` `<kbd>x</kbd>` `` gained a second pair of backticks and broke
+// the span outright), so the rule lives here once and the three passes call it.
+//
+// Scope, deliberately shared by all callers: **line-scoped**. CommonMark lets a code span run across
+// a newline; none of these passes follows it there. That is a limitation, but a *uniform* one — a
+// pass that extended it alone would put the passes back out of step, which is the bug class this
+// section exists to prevent.
+
+/// Length of the run of backticks starting at `i` (0 when `bytes[i]` is not a backtick).
+fn backtick_run_len(bytes: &[u8], i: usize) -> usize {
+    let mut n = 0;
+    while i + n < bytes.len() && bytes[i + n] == b'`' {
+        n += 1;
+    }
+    n
+}
+
+/// Given that a backtick run starts at `start`, the byte index just past the run that closes it.
+/// `None` when nothing closes it — CommonMark's rule is that a code span is delimited by runs of
+/// **equal length**, and an opener with no equal-length closer is literal text, not a span.
+fn inline_code_span_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let n = line.len();
+    let run = backtick_run_len(bytes, start);
+    if run == 0 {
+        return None;
+    }
+    let mut j = start + run;
+    while j < n {
+        if bytes[j] == b'`' {
+            let r = backtick_run_len(bytes, j);
+            j += r;
+            if r == run {
+                return Some(j);
+            }
+        } else {
+            // Byte-wise is safe here: only ASCII backticks are matched, and every index handed out
+            // is a run boundary, so slices never land inside a multibyte char.
+            j += 1;
+        }
+    }
+    None
+}
+
+/// The first inline code span at or after byte `from`, as `(start, end)` with `end` exclusive —
+/// `line[start..end]` includes both delimiter runs. Unmatched backtick runs are literal text and are
+/// skipped over, and a backslash-escaped `` \` `` never opens a span (CommonMark: escapes apply
+/// everywhere *except* inside code). Line-scoped; see the section comment above.
+fn next_inline_code_span(line: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let n = line.len();
+    let mut i = from;
+    while i < n {
+        match bytes[i] {
+            b'`' => match inline_code_span_end(line, i) {
+                Some(end) => return Some((i, end)),
+                None => i += backtick_run_len(bytes, i), // literal run: keep looking after it
+            },
+            // Escaped char: skip the backslash + the WHOLE next char. A fixed +2 would split a
+            // multibyte char (`\あ`) and leave `i` off a char boundary.
+            b'\\' if i + 1 < n => i = (i + 1 + utf8_len(bytes[i + 1])).min(n),
+            b => i += utf8_len(b),
+        }
+    }
+    None
+}
+
+/// Stand-in for the `n`-th code span of a line while a pass rewrites around it. NUL is used because
+/// CommonMark forbids it in a document at all ("the character U+0000 must be replaced with the
+/// REPLACEMENT CHARACTER"), so it cannot collide with real content, and because it carries no
+/// meaning to any of the passes — no `<`, `[`, `$` or backtick to react to. The trailing NUL keeps
+/// index 1 from matching inside index 11 when the spans are put back.
+fn code_span_placeholder(n: usize) -> String {
+    format!("\u{0}{n}\u{0}")
+}
+
+/// Replace every inline code span of `line` with `code_span_placeholder`, returning the masked line
+/// and the spans in order. Empty span list means the line had none.
+fn mask_code_spans(line: &str) -> (String, Vec<String>) {
+    let mut masked = String::new();
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while let Some((start, end)) = next_inline_code_span(line, cursor) {
+        masked.push_str(&line[cursor..start]);
+        masked.push_str(&code_span_placeholder(spans.len()));
+        spans.push(line[start..end].to_string());
+        cursor = end;
+    }
+    if spans.is_empty() {
+        return (line.to_string(), spans);
+    }
+    masked.push_str(&line[cursor..]);
+    (masked, spans)
+}
+
+/// Run `edit` over `line` with its inline code spans masked out, then put them back verbatim.
+///
+/// Masking rather than *splitting at* the spans is deliberate: the passes rewrite constructs that
+/// may legitimately wrap a span — `<strike>Enables `named::from_str`, …</strike>` occurs verbatim in
+/// palette's README — and splitting the line there would hide the closing tag from the opening one
+/// and leave both raw. Masking keeps the line's structure whole while making the span's *contents*
+/// unreachable, which is the actual requirement.
+fn rewrite_masking_code_spans(line: &str, edit: impl FnOnce(&str) -> String) -> String {
+    let (masked, spans) = mask_code_spans(line);
+    let mut out = edit(&masked);
+    for (i, span) in spans.iter().enumerate() {
+        out = out.replace(&code_span_placeholder(i), span);
+    }
+    out
+}
+
 /// Scan one line for inline / single-line math, appending literal text to `buf` and lifting each math
 /// expression via `flush_math`. Skips `` `code spans` `` (their `$` is literal) and honors `\$` escapes.
 fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
@@ -2692,36 +2809,11 @@ fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
         let c = bytes[i];
         // Inline code span: copy the whole `…` region literally (a `$` inside is not math).
         if c == b'`' {
-            let start = i;
-            let mut run = 0;
-            while i < n && bytes[i] == b'`' {
-                run += 1;
-                i += 1;
-            }
-            let mut j = i;
-            let mut close = None;
-            while j < n {
-                if bytes[j] == b'`' {
-                    let mut r = 0;
-                    while j < n && bytes[j] == b'`' {
-                        r += 1;
-                        j += 1;
-                    }
-                    if r == run {
-                        close = Some(j);
-                        break;
-                    }
-                } else {
-                    j += 1;
-                }
-            }
-            match close {
-                Some(end) => {
-                    buf.push_str(&line[start..end]);
-                    i = end;
-                }
-                None => buf.push_str(&line[start..i]), // unmatched backticks: literal
-            }
+            // Shared rule (`inline_code_span_end`); an unclosed run is literal and scanning
+            // resumes right after it, so a `$` further along the line is still seen.
+            let end = inline_code_span_end(line, i).unwrap_or(i + backtick_run_len(bytes, i));
+            buf.push_str(&line[i..end]);
+            i = end;
             continue;
         }
         if c == b'\\' && i + 1 < n {
@@ -3735,16 +3827,22 @@ pub fn process_inline_html(src: &str) -> String {
             out.push('\n');
             continue;
         }
-        let mut s = line.to_string();
-        s = replace_tag_pair(&s, "kbd", |i| format!("`{i}`"));
-        s = replace_tag_pair(&s, "del", |i| format!("~~{i}~~"));
-        s = replace_tag_pair(&s, "s", |i| format!("~~{i}~~"));
-        s = replace_tag_pair(&s, "strike", |i| format!("~~{i}~~"));
-        s = replace_tag_pair(&s, "sup", |i| map_all_or_keep(i, sup_char));
-        s = replace_tag_pair(&s, "sub", |i| map_all_or_keep(i, sub_char));
-        for br in ["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<BR />"] {
-            s = s.replace(br, "  \n");
-        }
+        // Inline code spans are literal: `` `<kbd>x</kbd>` `` is documentation *of* the tag, not a
+        // tag to convert. Converting it also wrapped the content in a second pair of backticks
+        // (`` ``x`` ``) and a `<br>` inside a span injected a newline, breaking the span outright.
+        // The spans are masked rather than cut out, so a tag pair may still wrap one.
+        let s = rewrite_masking_code_spans(line, |masked| {
+            let mut s = replace_tag_pair(masked, "kbd", |i| format!("`{i}`"));
+            s = replace_tag_pair(&s, "del", |i| format!("~~{i}~~"));
+            s = replace_tag_pair(&s, "s", |i| format!("~~{i}~~"));
+            s = replace_tag_pair(&s, "strike", |i| format!("~~{i}~~"));
+            s = replace_tag_pair(&s, "sup", |i| map_all_or_keep(i, sup_char));
+            s = replace_tag_pair(&s, "sub", |i| map_all_or_keep(i, sub_char));
+            for br in ["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<BR />"] {
+                s = s.replace(br, "  \n");
+            }
+            s
+        });
         out.push_str(&s);
         out.push('\n');
     }
@@ -3775,9 +3873,17 @@ fn parse_footnote_def(line: &str) -> Option<(String, String)> {
     Some((id.to_string(), after.trim().to_string()))
 }
 
-/// Scan `line` for footnote references `[^id]`, returning the ids in order.
+/// Scan `line` for footnote references `[^id]`, returning the ids in order. References inside an
+/// inline code span are literal examples of the syntax, not references, and are skipped — the same
+/// rule `replace_footnote_refs` applies, so a `` `[^1]` `` is neither numbered nor rewritten.
 fn find_footnote_refs(line: &str) -> Vec<String> {
     let mut ids = Vec::new();
+    collect_footnote_refs(&mask_code_spans(line).0, &mut ids);
+    ids
+}
+
+/// `find_footnote_refs` for one run of text already known to be outside any code span.
+fn collect_footnote_refs(line: &str, ids: &mut Vec<String>) {
     let mut i = 0;
     while i < line.len() {
         if line[i..].starts_with("[^") {
@@ -3792,12 +3898,22 @@ fn find_footnote_refs(line: &str) -> Vec<String> {
         }
         i += line[i..].chars().next().map_or(1, char::len_utf8);
     }
-    ids
 }
 
 /// Replace footnote references `[^id]` in `line` with a superscript number (only ids present in
-/// `num`; an undefined reference is left literal, matching GitHub).
+/// `num`; an undefined reference is left literal, matching GitHub). Inline code spans are copied
+/// verbatim — see `find_footnote_refs`.
 fn replace_footnote_refs(line: &str, num: &std::collections::HashMap<String, usize>) -> String {
+    rewrite_masking_code_spans(line, |masked| {
+        replace_footnote_refs_outside_code(masked, num)
+    })
+}
+
+/// `replace_footnote_refs` for one run of text already known to be outside any code span.
+fn replace_footnote_refs_outside_code(
+    line: &str,
+    num: &std::collections::HashMap<String, usize>,
+) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < line.len() {
@@ -7114,6 +7230,640 @@ pub(crate) mod code_corpus {
                 "- [ ] before\n\n1. Fork it:\n\n    ```sh\n    git clone x\n    ```\n\n- [x] after\n",
             ),
         ]
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod code_span_corpus {
+    /// One document plus what each source-rewriting pass must do to it.
+    pub struct Case {
+        pub name: String,
+        pub src: String,
+        /// Expected `process_footnotes` output, byte for byte.
+        pub footnotes: String,
+        /// Expected `process_inline_html` output, byte for byte.
+        pub inline_html: String,
+        /// Expected `collect_math_exprs` output, as (latex, is_display).
+        pub math: Vec<(String, bool)>,
+    }
+
+    /// The notations every pass rewrites, gathered into one payload so a single case exercises all
+    /// three passes at once. `<br>` is deliberately absent: it rewrites to a hard line break, which
+    /// would restructure the surrounding line and obscure what the case is actually pinning (it gets
+    /// its own cases below).
+    const PAYLOAD: &str = "[^1] <kbd>K</kbd> $x$";
+    /// `PAYLOAD` after `process_footnotes` has numbered the reference.
+    const PAYLOAD_FN: &str = "¹ <kbd>K</kbd> $x$";
+    /// `PAYLOAD` after `process_inline_html` has converted the tag.
+    const PAYLOAD_IH: &str = "[^1] `K` $x$";
+
+    /// A case built around a `block` that must survive **every** pass byte for byte — the block holds
+    /// `PAYLOAD` inside an inline code span (or inside a fence). A control line carrying the same
+    /// payload *outside* any span follows, so the expectations pin both halves at once: a fix that
+    /// merely stopped converting everything fails the control, and a fix that keeps converting inside
+    /// code fails the block.
+    ///
+    /// Every expectation here is plain string concatenation, derived from the case's own inputs and
+    /// not from the passes being checked.
+    fn verbatim(name: &str, block: &str) -> Case {
+        Case {
+            name: name.to_string(),
+            src: format!("{block}\n\nout {PAYLOAD}\n\n[^1]: note\n"),
+            footnotes: format!("{block}\n\nout {PAYLOAD_FN}\n\n\n---\n\n1. note\n"),
+            inline_html: format!("{block}\n\nout {PAYLOAD_IH}\n\n[^1]: note\n"),
+            math: vec![("x".to_string(), false)],
+        }
+    }
+
+    /// The counterpart to `verbatim`: `line` looks like it holds a code span but does not (the
+    /// backticks are literal), so its payload **is** rewritten, exactly like the control line. Pins
+    /// the boundary from the other side — an over-eager "treat any backtick as code" fix fails here.
+    fn no_span(name: &str, line: &str, line_fn: &str, line_ih: &str) -> Case {
+        Case {
+            name: name.to_string(),
+            src: format!("{line}\n\nout {PAYLOAD}\n\n[^1]: note\n"),
+            footnotes: format!("{line_fn}\n\nout {PAYLOAD_FN}\n\n\n---\n\n1. note\n"),
+            inline_html: format!("{line_ih}\n\nout {PAYLOAD_IH}\n\n[^1]: note\n"),
+            math: vec![("x".to_string(), false), ("x".to_string(), false)],
+        }
+    }
+
+    /// A case with hand-written expectations, for the notations and footnote semantics that do not
+    /// fit the shared payload.
+    fn case(
+        name: &str,
+        src: &str,
+        footnotes: &str,
+        inline_html: &str,
+        math: &[(&str, bool)],
+    ) -> Case {
+        Case {
+            name: name.to_string(),
+            src: src.to_string(),
+            footnotes: footnotes.to_string(),
+            inline_html: inline_html.to_string(),
+            math: math.iter().map(|(l, d)| (l.to_string(), *d)).collect(),
+        }
+    }
+
+    /// Documents pinning **the** invariant every source-rewriting pass shares: the contents of an
+    /// inline code span are a literal *example* of some syntax, never syntax to act on. Enumerated
+    /// from the specification's case splits — backtick run lengths, matched/unmatched delimiters,
+    /// where the span sits in the line, backslash escapes, multibyte boundaries — crossed with the
+    /// notations the passes rewrite. Deliberately *not* enumerated from the bugs already found: a
+    /// corpus grown from past bugs only ever prevents those exact bugs from recurring, which is how
+    /// this rule came to be re-derived (and to drift) once per pass in the first place.
+    pub fn cases() -> Vec<Case> {
+        let mut v = vec![
+            // --- Backtick run length: 1 / 2 / 3, and runs that do not pair up ---
+            verbatim("one backtick", &format!("a `{PAYLOAD}` b")),
+            verbatim("two backticks", &format!("a ``{PAYLOAD}`` b")),
+            verbatim("three backticks", &format!("a ```{PAYLOAD}``` b")),
+            verbatim(
+                "a span may contain a shorter backtick run",
+                &format!("a `` `{PAYLOAD}` `` b"),
+            ),
+            verbatim(
+                "a span may contain a lone backtick",
+                &format!("a ``{PAYLOAD} ` tail`` b"),
+            ),
+            // --- Where the span sits in the line ---
+            verbatim("span at line start", &format!("`{PAYLOAD}` tail")),
+            verbatim("span at line end", &format!("head `{PAYLOAD}`")),
+            verbatim("span is the whole line", &format!("`{PAYLOAD}`")),
+            verbatim("two spans on one line", "`[^1]` mid `<kbd>K</kbd>` end"),
+            verbatim("three spans on one line", "`[^1]`, `<kbd>K</kbd>`, `$x$`"),
+            verbatim(
+                "span spanning the line with text either side",
+                &format!("x`{PAYLOAD}`y"),
+            ),
+            // --- Multibyte safety right at the delimiters ---
+            verbatim("cjk around a span", &format!("日本 `{PAYLOAD}` 語")),
+            verbatim(
+                "cjk immediately against the delimiters",
+                &format!("日本`{PAYLOAD}`語"),
+            ),
+            verbatim(
+                "emoji immediately against the delimiters",
+                &format!("🎉`{PAYLOAD}`🎉"),
+            ),
+            verbatim("cjk inside the span", &format!("a `日本{PAYLOAD}語` b")),
+            verbatim(
+                "escaped multibyte char before a span",
+                &format!("a \\あ `{PAYLOAD}` b"),
+            ),
+            verbatim(
+                "escaped emoji before a span",
+                &format!("a \\🎉 `{PAYLOAD}` b"),
+            ),
+            // --- Fences: already protected before this fix; must stay protected ---
+            verbatim("backtick fence", &format!("```\n{PAYLOAD}\n```")),
+            verbatim("tilde fence", &format!("~~~\n{PAYLOAD}\n~~~")),
+            verbatim("fence with a language", &format!("```rust\n{PAYLOAD}\n```")),
+            verbatim(
+                "fence holding an unclosed backtick",
+                &format!("```\n{PAYLOAD} ` alone\n```"),
+            ),
+            verbatim(
+                "span on the line after a fence",
+                &format!("```\ncode\n```\n\nafter `{PAYLOAD}` end"),
+            ),
+            // --- Literal backticks that do NOT open a span (the boundary from the other side) ---
+            no_span(
+                "opener longer than closer is not a span",
+                &format!("a ``{PAYLOAD}` b"),
+                &format!("a ``{PAYLOAD_FN}` b"),
+                &format!("a ``{PAYLOAD_IH}` b"),
+            ),
+            no_span(
+                "closer longer than opener is not a span",
+                &format!("a `{PAYLOAD}`` b"),
+                &format!("a `{PAYLOAD_FN}`` b"),
+                &format!("a `{PAYLOAD_IH}`` b"),
+            ),
+            no_span(
+                "unclosed backtick",
+                &format!("a `{PAYLOAD} b"),
+                &format!("a `{PAYLOAD_FN} b"),
+                &format!("a `{PAYLOAD_IH} b"),
+            ),
+            no_span(
+                "escaped backtick does not open a span",
+                &format!("a \\`{PAYLOAD}` b"),
+                &format!("a \\`{PAYLOAD_FN}` b"),
+                &format!("a \\`{PAYLOAD_IH}` b"),
+            ),
+            no_span(
+                "two adjacent backticks with no closer",
+                &format!("a `` {PAYLOAD} b"),
+                &format!("a `` {PAYLOAD_FN} b"),
+                &format!("a `` {PAYLOAD_IH} b"),
+            ),
+            no_span(
+                "no backticks at all (the control for every case above)",
+                &format!("a {PAYLOAD} b"),
+                &format!("a {PAYLOAD_FN} b"),
+                &format!("a {PAYLOAD_IH} b"),
+            ),
+        ];
+        // An escaped *backslash* leaves the following backtick free to open a real span — the exact
+        // counterpart of "escaped backtick does not open a span" above.
+        v.push(verbatim(
+            "escaped backslash then a real span",
+            &format!("a \\\\`{PAYLOAD}` b"),
+        ));
+        v.extend([
+            // --- One case per notation the passes rewrite, inside and outside a span ---
+            case(
+                "del inside and outside",
+                "`<del>d</del>` and <del>d</del>\n",
+                "`<del>d</del>` and <del>d</del>\n",
+                "`<del>d</del>` and ~~d~~\n",
+                &[],
+            ),
+            case(
+                "s inside and outside",
+                "`<s>d</s>` and <s>d</s>\n",
+                "`<s>d</s>` and <s>d</s>\n",
+                "`<s>d</s>` and ~~d~~\n",
+                &[],
+            ),
+            case(
+                "strike inside and outside",
+                "`<strike>d</strike>` and <strike>d</strike>\n",
+                "`<strike>d</strike>` and <strike>d</strike>\n",
+                "`<strike>d</strike>` and ~~d~~\n",
+                &[],
+            ),
+            case(
+                "sup inside and outside",
+                "`<sup>2</sup>` and <sup>2</sup>\n",
+                "`<sup>2</sup>` and <sup>2</sup>\n",
+                "`<sup>2</sup>` and ²\n",
+                &[],
+            ),
+            case(
+                "sub inside and outside",
+                "`<sub>2</sub>` and <sub>2</sub>\n",
+                "`<sub>2</sub>` and <sub>2</sub>\n",
+                "`<sub>2</sub>` and ₂\n",
+                &[],
+            ),
+            // `<br>` inside a span used to inject a newline *into* the span, splitting it in half.
+            case(
+                "br inside and outside",
+                "`<br>` and <br> tail\n",
+                "`<br>` and <br> tail\n",
+                "`<br>` and   \n tail\n",
+                &[],
+            ),
+            case(
+                "br self-closing inside and outside",
+                "`<br />` and <br /> tail\n",
+                "`<br />` and <br /> tail\n",
+                "`<br />` and   \n tail\n",
+                &[],
+            ),
+            case(
+                "uppercase br inside and outside",
+                "`<BR>` and <BR> tail\n",
+                "`<BR>` and <BR> tail\n",
+                "`<BR>` and   \n tail\n",
+                &[],
+            ),
+            case(
+                "display math inside and outside",
+                "`$$x$$` and $$y$$\n",
+                "`$$x$$` and $$y$$\n",
+                "`$$x$$` and $$y$$\n",
+                &[("y", true)],
+            ),
+            case(
+                "paren math inside and outside",
+                "`\\(x\\)` and \\(y\\)\n",
+                "`\\(x\\)` and \\(y\\)\n",
+                "`\\(x\\)` and \\(y\\)\n",
+                &[("y", false)],
+            ),
+            case(
+                "bracket math inside and outside",
+                "`\\[x\\]` and \\[y\\]\n",
+                "`\\[x\\]` and \\[y\\]\n",
+                "`\\[x\\]` and \\[y\\]\n",
+                &[("y", true)],
+            ),
+            // A tag pair may legitimately *wrap* a code span. Taken verbatim from palette 0.7.7's
+            // README, which is how this case was found at all: the first attempt at this fix split
+            // the line at each span, which hid `</strike>` from `<strike>` and left both tags raw.
+            // The span's contents stay literal; the strikethrough around it still happens.
+            case(
+                "a tag pair straddling a code span (palette README)",
+                "x <strike>Enables `named::from_str`, which maps names.</strike>\n",
+                "x <strike>Enables `named::from_str`, which maps names.</strike>\n",
+                "x ~~Enables `named::from_str`, which maps names.~~\n",
+                &[],
+            ),
+            case(
+                "a tag pair straddling two code spans",
+                "<del>a `b` c `d` e</del>\n",
+                "<del>a `b` c `d` e</del>\n",
+                "~~a `b` c `d` e~~\n",
+                &[],
+            ),
+            case(
+                "a kbd pair straddling a code span",
+                "<kbd>press `X` now</kbd>\n",
+                "<kbd>press `X` now</kbd>\n",
+                "`press `X` now`\n",
+                &[],
+            ),
+            // --- Footnote-specific semantics ---
+            // A reference that exists only inside a span is not a reference at all, so the document
+            // has no *referenced* definitions and the whole pass stays a no-op — no numbering, no
+            // appended section, and the definition line stays where the author put it.
+            case(
+                "the only reference is inside a span",
+                "just `[^1]` here\n\n[^1]: note\n",
+                "just `[^1]` here\n\n[^1]: note\n",
+                "just `[^1]` here\n\n[^1]: note\n",
+                &[],
+            ),
+            case(
+                "reference inside a span on one line, outside on the next",
+                "`[^1]`\n\nreal [^1]\n\n[^1]: note\n",
+                "`[^1]`\n\nreal ¹\n\n\n---\n\n1. note\n",
+                "`[^1]`\n\nreal [^1]\n\n[^1]: note\n",
+                &[],
+            ),
+            // Numbering follows first appearance *outside* spans: `[^b]` inside the span must not
+            // claim number 1, which would also reorder the appended section.
+            case(
+                "numbering ignores references inside spans",
+                "`[^b]` then [^a] then [^b]\n\n[^a]: A\n[^b]: B\n",
+                "`[^b]` then ¹ then ²\n\n\n---\n\n1. A\n2. B\n",
+                "`[^b]` then [^a] then [^b]\n\n[^a]: A\n[^b]: B\n",
+                &[],
+            ),
+            case(
+                "undefined reference stays literal inside and outside",
+                "`[^9]` and [^9] and [^1]\n\n[^1]: note\n",
+                "`[^9]` and [^9] and ¹\n\n\n---\n\n1. note\n",
+                "`[^9]` and [^9] and [^1]\n\n[^1]: note\n",
+                &[],
+            ),
+            // --- Degenerate inputs ---
+            case("empty document", "", "", "", &[]),
+            case(
+                "span holding only spaces",
+                "a `   ` b [^1]\n\n[^1]: note\n",
+                "a `   ` b ¹\n\n\n---\n\n1. note\n",
+                "a `   ` b [^1]\n\n[^1]: note\n",
+                &[],
+            ),
+            case(
+                "line that is nothing but backticks",
+                "````\n",
+                "````\n",
+                "````\n",
+                &[],
+            ),
+            case(
+                "trailing backslash at end of line",
+                "a [^1] \\\n\n[^1]: note\n",
+                "a ¹ \\\n\n\n---\n\n1. note\n",
+                "a [^1] \\\n\n[^1]: note\n",
+                &[],
+            ),
+        ]);
+        v
+    }
+}
+#[cfg(test)]
+mod code_span_parity_tests {
+    use super::*;
+
+    /// Every inline code span of `src`, as `(start_line_index, text_including_delimiters)`, skipping
+    /// lines inside a fence (there the backticks are the fence's own delimiters). Uses the shared
+    /// primitive, so it describes exactly the regions the passes promise to leave alone.
+    fn spans_of(src: &str) -> Vec<String> {
+        let lines: Vec<&str> = src.lines().collect();
+        let fenced = fence_mask(&lines);
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if fenced[i] {
+                continue;
+            }
+            let mut cursor = 0;
+            while let Some((s, e)) = next_inline_code_span(line, cursor) {
+                out.push(line[s..e].to_string());
+                cursor = e;
+            }
+        }
+        out
+    }
+
+    fn count_of(hay: &str, needle: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+        hay.matches(needle).count()
+    }
+
+    /// The precise net: each corpus document, through each pass, compared byte for byte against a
+    /// hand-written expectation. Pins **both** halves at once — a payload inside a code span is
+    /// untouched *and* the identical payload outside one is still rewritten — so neither "keeps
+    /// converting inside code" (the bug) nor "stopped converting anything" (an over-correction) can
+    /// pass.
+    #[test]
+    fn code_spans_are_literal_in_every_source_pass() {
+        for c in code_span_corpus::cases() {
+            assert_eq!(
+                process_footnotes(&c.src),
+                c.footnotes,
+                "process_footnotes disagrees for case {:?} (src {:?})",
+                c.name,
+                c.src
+            );
+            assert_eq!(
+                process_inline_html(&c.src),
+                c.inline_html,
+                "process_inline_html disagrees for case {:?} (src {:?})",
+                c.name,
+                c.src
+            );
+            let math: Vec<(String, bool)> = collect_math_exprs(&c.src);
+            assert_eq!(
+                math, c.math,
+                "collect_math_exprs disagrees for case {:?} (src {:?})",
+                c.name, c.src
+            );
+        }
+    }
+
+    /// The broad net over the same corpus, derived mechanically instead of from expectations: every
+    /// code span of the source must still be present, delimiters and all, in what each string pass
+    /// emits. Catches a future pass that mangles a span in a way nobody wrote an expectation for.
+    #[test]
+    fn code_span_text_survives_every_string_pass_verbatim() {
+        for c in code_span_corpus::cases() {
+            let spans = spans_of(&c.src);
+            for pass in ["footnotes", "inline_html"] {
+                let out = match pass {
+                    "footnotes" => process_footnotes(&c.src),
+                    _ => process_inline_html(&c.src),
+                };
+                for span in &spans {
+                    let want = count_of(&c.src, span);
+                    let got = count_of(&out, span);
+                    assert!(
+                        got >= want,
+                        "{pass} lost or altered the code span {span:?} in case {:?}: \
+                         appears {want}x in the source but {got}x in {out:?}",
+                        c.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// The math pass has no string output to scan, so the same invariant is stated as opacity:
+    /// rewriting every code span's *contents* to an inert `x` must not change which expressions are
+    /// extracted. If the scanner ever looked inside a span, the extracted list would move.
+    #[test]
+    fn math_extraction_treats_code_span_contents_as_opaque() {
+        for c in code_span_corpus::cases() {
+            let lines: Vec<&str> = c.src.lines().collect();
+            let fenced = fence_mask(&lines);
+            let mut blanked = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if fenced[i] {
+                    blanked.push_str(line);
+                    blanked.push('\n');
+                    continue;
+                }
+                let mut cursor = 0;
+                while let Some((s, e)) = next_inline_code_span(line, cursor) {
+                    blanked.push_str(&line[cursor..s]);
+                    // Keep the delimiter runs, replace only the content.
+                    let run = line[s..e].len() - line[s..e].trim_matches('`').len();
+                    let ticks = "`".repeat(run / 2);
+                    blanked.push_str(&ticks);
+                    blanked.push('x');
+                    blanked.push_str(&ticks);
+                    cursor = e;
+                }
+                blanked.push_str(&line[cursor..]);
+                blanked.push('\n');
+            }
+            assert_eq!(
+                collect_math_exprs(&c.src),
+                collect_math_exprs(&blanked),
+                "math extraction changed when only code-span *contents* changed, in case {:?}\n\
+                 src     {:?}\n blanked {:?}",
+                c.name,
+                c.src,
+                blanked
+            );
+        }
+    }
+
+    /// The shared primitive itself, against CommonMark's backtick rules: a span is delimited by runs
+    /// of **equal** length, an unmatched run is literal text, and a backslash-escaped backtick never
+    /// opens one. Every pass inherits exactly these answers, which is the point of having one copy.
+    #[test]
+    fn next_inline_code_span_follows_commonmark_backtick_rules() {
+        /// (line, byte to scan from, expected span as `(start, end)`).
+        type Probe = (&'static str, usize, Option<(usize, usize)>);
+        let cases: &[Probe] = &[
+            ("`a`", 0, Some((0, 3))),
+            ("x `a` y", 0, Some((2, 5))),
+            ("``a``", 0, Some((0, 5))),
+            ("```a```", 0, Some((0, 7))),
+            // Run lengths must match exactly.
+            ("``a`", 0, None),
+            ("`a``", 0, None),
+            ("```a`", 0, None),
+            // A longer run may wrap a shorter one.
+            ("`` `a` ``", 0, Some((0, 9))),
+            // Unmatched run first, real span later: the literal run is skipped, not treated as code.
+            ("`` a `b` c", 0, Some((5, 8))),
+            // Backslash escapes.
+            ("\\`a`", 0, None),
+            ("\\\\`a`", 0, Some((2, 5))),
+            ("a \\あ `b`", 0, Some((7, 10))),
+            ("a \\🎉 `b`", 0, Some((8, 11))),
+            // Multibyte immediately against the delimiters (byte offsets, not char offsets).
+            ("日本`a`語", 0, Some((6, 9))),
+            ("🎉`a`", 0, Some((4, 7))),
+            // Resuming after a span.
+            ("`a` `b`", 3, Some((4, 7))),
+            ("`a` `b`", 7, None),
+            // Nothing to find.
+            ("no backticks here", 0, None),
+            ("```", 0, None),
+            ("", 0, None),
+            // A trailing backslash must not read past the end.
+            ("a \\", 0, None),
+        ];
+        for (line, from, want) in cases {
+            assert_eq!(
+                next_inline_code_span(line, *from),
+                *want,
+                "next_inline_code_span({line:?}, {from}) mismatched"
+            );
+            if let Some((s, e)) = want {
+                assert!(
+                    line.is_char_boundary(*s) && line.is_char_boundary(*e),
+                    "{line:?} span ({s},{e}) must land on char boundaries"
+                );
+            }
+        }
+    }
+
+    /// Documents with no inline code span at all must come out of every pass byte for byte the way
+    /// they always did — the fix narrows *where* each pass acts, and must not change *what* it does
+    /// anywhere else. These expected values were captured from the build predating the shared
+    /// code-span primitive and re-checked against it afterwards.
+    #[test]
+    fn documents_without_code_spans_are_byte_identical_to_the_previous_behavior() {
+        let cases: &[(&str, &str, &str)] = &[
+            // (source, process_footnotes, process_inline_html)
+            (
+                "Press <kbd>Ctrl</kbd>. H<sub>2</sub>O. <del>old</del> new.\n",
+                "Press <kbd>Ctrl</kbd>. H<sub>2</sub>O. <del>old</del> new.\n",
+                "Press `Ctrl`. H₂O. ~~old~~ new.\n",
+            ),
+            (
+                "A claim.[^src] More text.\n\n[^src]: The evidence.\n",
+                "A claim.¹ More text.\n\n\n---\n\n1. The evidence.\n",
+                "A claim.[^src] More text.\n\n[^src]: The evidence.\n",
+            ),
+            (
+                "one[^a] two[^b] one again[^a]\n\n[^a]: A\n[^b]: B\n",
+                "one¹ two² one again¹\n\n\n---\n\n1. A\n2. B\n",
+                "one[^a] two[^b] one again[^a]\n\n[^a]: A\n[^b]: B\n",
+            ),
+            (
+                "line one<br>line two\n",
+                "line one<br>line two\n",
+                "line one  \nline two\n",
+            ),
+            (
+                "x<sup>2</sup> and <s>gone</s> and <strike>also</strike>\n",
+                "x<sup>2</sup> and <s>gone</s> and <strike>also</strike>\n",
+                "x² and ~~gone~~ and ~~also~~\n",
+            ),
+            (
+                "undefined[^nope] stays\n\n[^used]: u\n",
+                "undefined[^nope] stays\n\n[^used]: u\n",
+                "undefined[^nope] stays\n\n[^used]: u\n",
+            ),
+            (
+                "```\n[^1] <kbd>K</kbd>\n```\n\nafter[^1]\n\n[^1]: n\n",
+                "```\n[^1] <kbd>K</kbd>\n```\n\nafter¹\n\n\n---\n\n1. n\n",
+                "```\n[^1] <kbd>K</kbd>\n```\n\nafter[^1]\n\n[^1]: n\n",
+            ),
+            (
+                "日本語[^1]の脚注 <kbd>変換</kbd>\n\n[^1]: 注\n",
+                "日本語¹の脚注 <kbd>変換</kbd>\n\n\n---\n\n1. 注\n",
+                "日本語[^1]の脚注 `変換`\n\n[^1]: 注\n",
+            ),
+            ("", "", ""),
+            (
+                "no markup at all\n",
+                "no markup at all\n",
+                "no markup at all\n",
+            ),
+        ];
+        for (src, want_fn, want_ih) in cases {
+            assert!(
+                !src.contains('`') || src.contains("```"),
+                "this test is only about documents without inline code spans: {src:?}"
+            );
+            assert_eq!(&process_footnotes(src), want_fn, "footnotes for {src:?}");
+            assert_eq!(
+                &process_inline_html(src),
+                want_ih,
+                "inline html for {src:?}"
+            );
+        }
+    }
+
+    /// A documented limitation, pinned so it cannot drift silently: an inline math delimiter pair
+    /// that *straddles* a code span still swallows it, because `scan_inline_math` looks for the
+    /// closing `$` before it ever reaches the backtick. Code spans bind tighter than this in GitHub's
+    /// math extension, so this is a divergence, not a design choice — but changing it would change
+    /// which expressions get rendered, so it is left alone and recorded here instead.
+    #[test]
+    fn math_delimiters_straddling_a_code_span_still_swallow_it_known_limitation() {
+        assert_eq!(
+            collect_math_exprs("straddle $a `b` c$ end\n"),
+            vec![("a `b` c".to_string(), false)],
+            "if this changed, the straddling limitation was fixed (or made worse) — update the note"
+        );
+        // The non-straddling forms are unaffected: a fully-enclosed `$…$` stays literal.
+        assert!(collect_math_exprs("`$a$` only\n").is_empty());
+    }
+
+    /// The passes are line-scoped by construction, and all three agree on it. CommonMark would let a
+    /// code span run across a newline; none of these passes follows it there. Extending one pass
+    /// alone would put them back out of step, so the shared limit is pinned here.
+    #[test]
+    fn code_span_detection_is_line_scoped_for_every_pass() {
+        let src = "open `[^1]\nstill [^1]` closed\n\n[^1]: note\n";
+        // Neither line contains a *closed* span, so both references are ordinary references.
+        assert_eq!(
+            process_footnotes(src),
+            "open `¹\nstill ¹` closed\n\n\n---\n\n1. note\n"
+        );
+        // Neither line has a closed span either, so both `<kbd>` tags are converted; the stray
+        // backticks are just literal characters sitting next to the produced keycaps.
+        let html = "open `<kbd>K</kbd>\nstill <kbd>K</kbd>` closed\n";
+        assert_eq!(process_inline_html(html), "open ``K`\nstill `K`` closed\n");
+        assert_eq!(
+            collect_math_exprs("open `$x$\nstill $y$` closed\n").len(),
+            2
+        );
     }
 }
 

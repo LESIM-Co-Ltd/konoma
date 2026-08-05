@@ -2716,6 +2716,37 @@ fn e2e_markdown_footnotes_render_superscript_and_section() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Documentation *of* a syntax must survive the preview. Both preprocessing passes run in the app
+/// layer (`md_render.rs`), not inside `render_markdown_tasks`, so the unit tests over the passes
+/// alone never touch this path — this scenario drives the real one, from a key press to the drawn
+/// screen, under the user's `code_bg = "none"` theme (the setting that has hidden code-detection
+/// bugs before).
+///
+/// Before the shared code-span primitive: `` `[^1]` `` became `` `¹` `` and `` `<kbd>Ctrl</kbd>` ``
+/// became ``` ``Ctrl`` ``` — a *doubled* backtick pair that broke the span outright — so a document
+/// explaining either syntax could not show it.
+#[test]
+fn e2e_markdown_code_span_examples_are_not_rewritten() {
+    let body = concat!(
+        "Write `<kbd>Ctrl</kbd>` to get a keycap, like <kbd>Ctrl</kbd>.\n\n",
+        "Write `[^1]` for a reference, like this one.[^1]\n\n",
+        "A line break tag is `<br>`.\n\n",
+        "[^1]: The note.\n",
+    );
+    let (s, dir) = md_preview(cfg_code_bg_none(), "code_span_examples", body);
+    // The examples survive verbatim…
+    s.see("<kbd>Ctrl</kbd>");
+    s.see("[^1]");
+    s.see("<br>");
+    // …and the doubled-backtick corruption never appears.
+    s.dont_see("``");
+    // …while the real markup on the same lines is still converted.
+    s.see("¹"); // the reference outside the span became a superscript
+    s.see("The note."); // and its definition moved into the footnotes section
+    s.see("Ctrl"); // the <kbd> outside the span became a keycap
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_markdown_footnotes_off_stays_literal() {
     let body = "A claim.[^src]\n\n[^src]: The evidence.\n";
