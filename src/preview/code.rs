@@ -166,10 +166,37 @@ pub fn warm_file(ext: &str, path: &Path) {
         return; // unreadable (deleted, etc). Allow retrying next time
     };
     let mut hl = HighlightLines::new(syntax, a.themes.get(EmbeddedThemeName::TwoDark));
-    for line in LinesWithEndings::from(&text) {
-        let _ = hl.highlight_line(line, &a.syntaxes); // ignore failures (the goal is just warming)
+    // `warm_loop`'s `false` means a panic was caught partway (principle #3): this runs on a
+    // background thread (main.rs's warm job) whose caller sends its "done" signal right after this
+    // call returns — an unguarded panic would kill that thread before the send, latching
+    // `hl_pending` forever (a spinner that never stops). Stop warming this file right here on a
+    // panic rather than keep feeding `hl` more lines (its state afterward is unspecified) or marking
+    // `ext` warm (compilation didn't provably finish — a later real `highlight()` call still
+    // succeeds or degrades line-by-line on its own, and calls `mark_warm` itself either way, so
+    // nothing is left permanently broken). A plain `Err` from a single line is unaffected: tolerated
+    // exactly as before, since the return value was always thrown away — the only goal here is to
+    // trigger the grammar's one-time regex compilation.
+    if warm_loop(&text, |line| {
+        call_highlight_line(&mut hl, &a.syntaxes, line).map(|_| ())
+    }) {
+        mark_warm(ext); // mark compilation as complete
     }
-    mark_warm(ext); // mark compilation as complete
+}
+
+/// The warm-up loop: call `try_line` for every line of `text`, stopping (and reporting `false`,
+/// i.e. "don't mark this extension warm") on the first line where it returns `None` — a caught
+/// panic, in production. Extracted so the "stop early without crashing or marking done" control
+/// flow can be exercised directly with an injected panic (below), rather than needing to make
+/// syntect itself panic on demand from a test. Production always passes `call_highlight_line(...)
+/// .map(|_| ())`, which collapses "syntect returned `Ok`" and "syntect returned a tolerated `Err`"
+/// into the same `Some(())` (this loop doesn't care which — only a caught panic stops it).
+fn warm_loop(text: &str, mut try_line: impl FnMut(&str) -> Option<()>) -> bool {
+    for line in LinesWithEndings::from(text) {
+        if try_line(line).is_none() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Read at most `max_bytes` from the head of the file (keeps warming of huge files light). Non-UTF-8 is read lossily.
@@ -228,6 +255,46 @@ pub fn has_named_syntax(path: &Path) -> bool {
     }
 }
 
+/// Call `hl.highlight_line`, catching a panic (principle #3: syntect's regex-based parser/scope
+/// engine has known upstream panics on pathological input — e.g. index-out-of-bounds in the scope
+/// stack, stack overflow in fancy-regex — and this is the hottest path in the app: every code/text
+/// preview and every diff line goes through it, while `main.rs` installs no top-level
+/// `catch_unwind`; an unguarded panic here would take down the whole TUI). Keeps the panic/no-panic
+/// distinction visible in the return type instead of collapsing it: outer `None` = a panic was
+/// caught, `Some(_)` = syntect ran to completion (its `Ok`/`Err` unpacked inside — every caller
+/// already tolerated an `Err` the same way as "nothing to color," so it isn't worth a named error
+/// type here too). That distinction matters to `warm_file`, which must keep tolerating a benign
+/// `Err` exactly as before while treating only an actual panic as a reason to stop warming.
+fn call_highlight_line<'b>(
+    hl: &mut HighlightLines<'_>,
+    ss: &SyntaxSet,
+    line: &'b str,
+) -> Option<Option<Vec<(SynStyle, &'b str)>>> {
+    crate::preview::markdown::catch_silent(|| hl.highlight_line(line, ss).ok())
+}
+
+/// Highlight one line into owned, trimmed, non-empty spans — the "syntect ranges → ratatui spans"
+/// conversion shared by `highlight_with` (whole-file highlighting) and `highlight_line_by_ext` (one
+/// diff line), which used to duplicate it. Wraps `call_highlight_line`'s panic safety net (principle
+/// #3). `None` means "degrade this line to plain text" — callers don't need to know whether that was
+/// a syntect `Err` or a caught panic, since both are the same "can't color this, but the text itself
+/// is fine" outcome. Folding the conversion into one place also means the panic guard can't be
+/// forgotten if a third caller of syntect is ever added here.
+fn spans_for_line(
+    hl: &mut HighlightLines<'_>,
+    ss: &SyntaxSet,
+    line: &str,
+) -> Option<Vec<Span<'static>>> {
+    let ranges = call_highlight_line(hl, ss, line).flatten()?;
+    Some(
+        ranges
+            .into_iter()
+            .map(|(st, text)| Span::styled(trim_eol(text).to_string(), to_style(st)))
+            .filter(|s| !s.content.is_empty())
+            .collect(),
+    )
+}
+
 /// Highlight a standalone code/text file into decorated lines. Resolves the syntax by extension, file name, or
 /// first line (see `resolve_syntax`), so dotfiles and named config files (`.bashrc`, `Makefile`, `Dockerfile`, …)
 /// are colored too. `theme` is the configured theme name (unknown/empty → TwoDark). Undetectable content falls
@@ -257,14 +324,25 @@ pub fn highlight_line_by_ext(line: &str, ext: &str, theme: &str) -> Vec<Span<'st
     let mut hl = HighlightLines::new(syntax, theme);
     // syntect assumes a trailing newline for its state transitions, so pass one line plus \n.
     let owned = format!("{}\n", trim_eol(line));
-    let Ok(ranges) = hl.highlight_line(&owned, &assets.syntaxes) else {
+    // `spans_for_line` guards this the same way as `highlight_with` (principle #3). This is called
+    // once per diff line (`gitdiff::diff_line_to_line`/`diff_half_to_line`), so a panic here — or a
+    // plain syntect `Err` — must degrade only this one row, not the whole diff view.
+    line_spans_with(line, || spans_for_line(&mut hl, &assets.syntaxes, &owned))
+}
+
+/// Turn one line's guarded highlight attempt into its final spans: the successful/non-empty case
+/// passes through unchanged; a failure (`spans_for()` returning `None` — syntect `Err` or a caught
+/// panic) degrades to a single unstyled span carrying the **original** `line` text, and a
+/// successful-but-empty result (e.g. a blank line) degrades to a single empty span. Extracted out
+/// of `highlight_line_by_ext` so the degrade path can be exercised directly with an injected panic
+/// (below) instead of needing to make syntect itself panic on demand from a test.
+fn line_spans_with(
+    line: &str,
+    spans_for: impl FnOnce() -> Option<Vec<Span<'static>>>,
+) -> Vec<Span<'static>> {
+    let Some(spans) = spans_for() else {
         return vec![Span::raw(line.to_string())];
     };
-    let spans: Vec<Span<'static>> = ranges
-        .into_iter()
-        .map(|(st, text)| Span::styled(trim_eol(text).to_string(), to_style(st)))
-        .filter(|s| !s.content.is_empty())
-        .collect();
     if spans.is_empty() {
         vec![Span::raw(String::new())]
     } else {
@@ -288,19 +366,35 @@ fn highlight_with(src: &str, syntax: &SyntaxReference, theme: &str) -> Vec<Line<
     let assets = assets();
     let theme = assets.themes.get(parse_theme(theme));
     let mut hl = HighlightLines::new(syntax, theme);
+    // A highlight failure — syntect's own `Err`, or (rarer, but real: syntect's regex-based parser
+    // has known upstream panics on pathological input) a panic caught inside `spans_for_line` — only
+    // degrades *that* line to plain text, without dragging down the whole file (principle #3).
+    // Guarding **per line** here (rather than once around the whole loop in `highlight_lines_with`)
+    // preserves that same per-line contract for panics that already existed for a plain `Err`, and
+    // costs nothing extra on the non-panic path: `catch_unwind` doesn't allocate, and this function
+    // isn't on a per-keystroke path (results are cached by the caller — e.g. the `highlight_body`
+    // LRU — so it runs once per file load / cache miss, not once per frame). Confirmed by
+    // `highlight_lang_large_source_is_bounded`/`warm_then_highlight_is_fast` staying well within
+    // their generous bounds after adding this per-line guard.
+    highlight_lines_with(src, |line| spans_for_line(&mut hl, &assets.syntaxes, line))
+}
 
+/// The line loop shared by every whole-document highlight (`highlight`/`highlight_lang`, via
+/// `highlight_with`): call `spans_for` for each line, pushing its spans, or — on `None` — a single
+/// plain-text `Line` carrying that line's own (trimmed) text, so the returned `Vec<Line>` always has
+/// exactly one entry per source line regardless of how many lines failed to highlight. Extracted so
+/// this count-preserving degrade behavior can be exercised directly with an injected panic (below),
+/// rather than needing to make syntect itself panic on demand from a test.
+fn highlight_lines_with(
+    src: &str,
+    mut spans_for: impl FnMut(&str) -> Option<Vec<Span<'static>>>,
+) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for line in LinesWithEndings::from(src) {
-        // A highlight failure on one line only degrades that line to plain text, without dragging down the whole thing.
-        let Ok(ranges) = hl.highlight_line(line, &assets.syntaxes) else {
+        let Some(spans) = spans_for(line) else {
             out.push(Line::from(trim_eol(line).to_string()));
             continue;
         };
-        let spans: Vec<Span<'static>> = ranges
-            .into_iter()
-            .map(|(st, text)| Span::styled(trim_eol(text).to_string(), to_style(st)))
-            .filter(|s| !s.content.is_empty())
-            .collect();
         out.push(Line::from(spans));
     }
     if out.is_empty() {
@@ -730,5 +824,189 @@ mod tests {
         warm_file("konoma_zzqq", &weird);
         assert!(is_ext_warm("konoma_zzqq"), "文法なしでも warm 済み扱い");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- D1: syntect panic safety net -------------------------------------------
+    //
+    // syntect can't be made to panic on demand from a test, so these exercise the
+    // exact production degrade paths (`highlight_lines_with`/`line_spans_with`/
+    // `warm_loop`) by injecting a real panic through `catch_silent` (the same
+    // primitive `call_highlight_line` uses) in place of the real syntect call. Each
+    // pairs with a "the guard is load-bearing" check: temporarily undoing the
+    // corresponding production guard (see the session's regression-detection step)
+    // makes exactly these tests fail.
+
+    #[test]
+    fn highlight_lines_with_degrades_a_panic_to_plain_text_preserving_line_count() {
+        // Every line's highlight attempt panics (simulating a pathological-input syntect panic on
+        // every call). The loop must still return exactly one Line per source line, uncolored.
+        let src = "alpha\nbeta\ngamma\n";
+        let lines = highlight_lines_with(src, |_line| {
+            crate::preview::markdown::catch_silent(|| -> Vec<Span<'static>> {
+                panic!("simulated syntect panic")
+            })
+        });
+        assert_eq!(
+            lines.len(),
+            3,
+            "パニックしても行数はソースと一致するはず(欠落しない): {}",
+            lines.len()
+        );
+        let texts: Vec<String> = lines.iter().map(line_str).collect();
+        assert_eq!(
+            texts,
+            vec!["alpha", "beta", "gamma"],
+            "各行のテキストは保たれる"
+        );
+        for l in &lines {
+            assert!(
+                l.spans.iter().all(|s| s.style.fg.is_none()),
+                "パニックした行は無装飾のはず: {l:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn highlight_lines_with_degrades_only_the_panicking_line() {
+        // Only the second of three lines panics; the other two keep their real (colored) spans —
+        // "one bad line degrades only that line," the same contract syntect's own Err already had.
+        let src = "one\ntwo\nthree\n";
+        let colored =
+            |text: &str| vec![Span::styled(text.to_string(), Style::new().fg(Color::Red))];
+        let mut call = 0;
+        let lines = highlight_lines_with(src, |line| {
+            call += 1;
+            if call == 2 {
+                crate::preview::markdown::catch_silent(|| -> Vec<Span<'static>> {
+                    panic!("simulated syntect panic on line 2")
+                })
+            } else {
+                Some(colored(trim_eol(line)))
+            }
+        });
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_str(&lines[0]), "one");
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Red)),
+            "パニックしていない1行目は着色されたまま"
+        );
+        assert_eq!(
+            line_str(&lines[1]),
+            "two",
+            "パニックした行もテキストは保たれる"
+        );
+        assert!(
+            lines[1].spans.iter().all(|s| s.style.fg.is_none()),
+            "パニックした2行目だけ無装飾に降格するはず"
+        );
+        assert_eq!(line_str(&lines[2]), "three");
+        assert!(
+            lines[2]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Red)),
+            "パニックしていない3行目は着色されたまま(後続行に波及しない)"
+        );
+    }
+
+    #[test]
+    fn line_spans_with_degrades_a_panic_to_one_unstyled_span_with_original_text() {
+        let spans = line_spans_with("hello world", || {
+            crate::preview::markdown::catch_silent(|| -> Vec<Span<'static>> {
+                panic!("simulated syntect panic")
+            })
+        });
+        assert_eq!(spans.len(), 1, "1 span に降格するはず: {spans:?}");
+        assert_eq!(
+            spans[0].content.as_ref(),
+            "hello world",
+            "元の行テキストを保持するはず(diff の行が消えない)"
+        );
+        assert!(spans[0].style.fg.is_none(), "無装飾のはず");
+    }
+
+    #[test]
+    fn line_spans_with_passes_a_successful_result_through_unchanged() {
+        // Non-regression: when spans_for() succeeds, line_spans_with must not alter the result.
+        let styled = vec![Span::styled(
+            "colored".to_string(),
+            Style::new().fg(Color::Red),
+        )];
+        let spans = line_spans_with("unused-fallback-text", || Some(styled.clone()));
+        assert_eq!(spans, styled);
+    }
+
+    #[test]
+    fn warm_loop_stops_early_on_panic_without_completing() {
+        let text = "line1\nline2\nline3\n";
+        let mut seen = 0;
+        let completed = warm_loop(text, |_line| {
+            seen += 1;
+            if seen == 2 {
+                crate::preview::markdown::catch_silent(|| panic!("simulated syntect panic"))
+            } else {
+                Some(())
+            }
+        });
+        assert!(
+            !completed,
+            "パニックしたら completed=false(=呼び出し側は mark_warm しない合図)のはず"
+        );
+        assert_eq!(seen, 2, "パニックした行で止まり、以降の行は処理しないはず");
+    }
+
+    #[test]
+    fn warm_loop_completes_when_every_line_is_ok_or_a_benign_err() {
+        // Non-regression: a plain (non-panicking) per-line failure must NOT stop the loop early —
+        // only a caught panic (None) does. This is the "ignore failures" tolerance warm_file always had.
+        let text = "a\nb\nc\n";
+        let mut seen = 0;
+        let completed = warm_loop(text, |_line| {
+            seen += 1;
+            Some(()) // stands in for both a real Ok and a tolerated Err (call_highlight_line collapses both)
+        });
+        assert!(completed, "パニックが無ければ最後まで完走するはず");
+        assert_eq!(seen, 3, "全行処理されるはず");
+    }
+
+    #[test]
+    fn warm_file_does_not_mark_warm_when_the_underlying_call_panics() {
+        // Regression guard for the real (non-injected) path: replaces `call_highlight_line`'s
+        // result at the `warm_loop` call site the same way `warm_file` itself does, but forces the
+        // very first line to look like a caught panic. Confirms `warm_file`'s own wiring — "on panic,
+        // call `warm_loop`'s closure with a None-producing step and don't call mark_warm" — end to
+        // end, without needing syntect to actually panic.
+        let text = "does not matter\n";
+        let completed = warm_loop(text, |_line| -> Option<()> { None });
+        assert!(
+            !completed,
+            "warm_loop が false を返すことが mark_warm 抑止の唯一の根拠"
+        );
+    }
+
+    #[test]
+    fn highlight_line_by_ext_still_colors_a_real_line_after_the_refactor() {
+        // Non-regression: highlight_line_by_ext (rewritten atop line_spans_with/spans_for_line)
+        // still highlights real, non-panicking input exactly as before — a keyword-bearing Rust
+        // line comes back as multiple spans with at least one carrying a foreground color.
+        let spans = highlight_line_by_ext("fn add(x: i32) -> i32 { x + 1 }", "rs", "TwoDark");
+        assert!(
+            spans.len() > 1,
+            "着色されていない(単一 span のまま): {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _)))),
+            "前景色が付いていない"
+        );
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            joined, "fn add(x: i32) -> i32 { x + 1 }",
+            "テキスト内容は保たれる"
+        );
     }
 }

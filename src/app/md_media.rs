@@ -203,6 +203,9 @@ impl App {
         entry.reraster_inflight = true;
         let target = needed_px.min(4096);
         let kp = key_path.clone();
+        // A second copy for the panic-fallback result below: `job` (built next) moves its own copy
+        // of `kp` into the `MdImageResult` it builds on success, so the failure path needs its own.
+        let kp_on_panic = kp.clone();
         let job = move || {
             let image =
                 crate::preview::svg::rasterize_bytes(&svg, Path::new("mermaid.svg"), target)
@@ -217,7 +220,24 @@ impl App {
         };
         if let Some(tx) = img_tx {
             std::thread::spawn(move || {
-                let _ = tx.send(job());
+                // Same `compute_or_fallback` safety net as `ensure_mermaid_fence_render`/
+                // `ensure_math_render` (principle #3): `rasterize_bytes` (resvg) is the exact same
+                // panic-prone call those already guard, and the `tx.send(..)` below is unconditional.
+                // Without this, a panic here would kill the thread before it sends anything, leaving
+                // `entry.reraster_inflight` latched `true` forever — this fence could never sharpen
+                // again. `reraster: true` on the fallback makes `apply_md_image` take its "a
+                // re-raster failure leaves the current raster in place" branch (clears
+                // `reraster_inflight`, changes nothing else) rather than wrongly degrading the whole
+                // diagram to the text fallback (that branch is reserved for a genuinely first-ever
+                // failure).
+                let res = crate::preview::markdown::compute_or_fallback(job, || MdImageResult {
+                    path: kp_on_panic,
+                    image: Err("re-raster panicked".to_string()),
+                    svg: None,
+                    reraster: true,
+                    frames: None,
+                });
+                let _ = tx.send(res);
             });
             FenceSharpen::Spawned
         } else {

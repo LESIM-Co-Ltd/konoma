@@ -4678,6 +4678,60 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// D2 (2026-08-05): `spawn_or_sync_ignored`'s worker now sends a fallback `IgnoredResult` (an empty
+/// set, but the correct gen/workdir) if the scan panics, instead of the old "send nothing on
+/// failure" shape that left `git_ignored_pending` latched forever (a spinner that never stops).
+/// This fixes `apply_ignored` at the boundary that actually matters: feeding it that exact
+/// fallback shape must still clear `pending` (the panic-catching itself is exercised for real by
+/// `preview::markdown::tests::catch_silent_returns_none_on_panic_and_some_on_success`, since a real
+/// git-scan panic can't be induced on demand from a test). The stale-generation case (a slow
+/// panic-catch racing a newer request) must still be discarded exactly as before.
+#[test]
+fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
+    let dir = unique_tmp("konoma_apply_ignored_panic_shaped");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.git_ignored_gen = 3;
+    app.git_ignored_pending = Some(dir.clone());
+    // Something was already shown from a previous (successful) scan — the failure result
+    // legitimately replaces it, since the panic means "we don't actually know the ignore set now."
+    app.git_ignored.insert(dir.join("stale-entry"));
+
+    // Current-generation fallback (mirrors what the worker sends on a caught panic): applies and
+    // clears pending, same as a real successful scan would.
+    let panic_fallback = IgnoredResult {
+        gen: 3,
+        workdir: dir.clone(),
+        set: Default::default(),
+    };
+    assert!(app.apply_ignored(panic_fallback), "現世代なので適用される");
+    assert!(
+        app.git_ignored_pending.is_none(),
+        "パニックのフォールバック結果でも pending が解ける(スピナーが固着しない)"
+    );
+    assert!(app.git_ignored.is_empty(), "失敗は安全側=空集合に倒す");
+
+    // A stale-generation fallback (the panic was caught for a request that's since been superseded)
+    // must still be discarded — the unconditional send doesn't bypass the generation guard.
+    app.git_ignored_gen = 4;
+    app.git_ignored_pending = Some(dir.clone());
+    let stale_panic_fallback = IgnoredResult {
+        gen: 3,
+        workdir: dir.clone(),
+        set: Default::default(),
+    };
+    assert!(
+        !app.apply_ignored(stale_panic_fallback),
+        "古い世代のフォールバックは捨てる"
+    );
+    assert!(
+        app.git_ignored_pending.is_some(),
+        "stale では pending を残す(現行計算待ちのまま)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn graph_legend_caps_branches_head_first_and_picker_toggles() {
@@ -12146,6 +12200,64 @@ fn stale_md_image_result_is_dropped() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// D2 (2026-08-05): `fence_sharpen_if_needed`'s worker thread called `rasterize_bytes` (resvg — the
+/// exact same panic-prone call `ensure_mermaid_fence_render`/`ensure_math_render` already guard)
+/// completely unguarded, so a panic there killed the thread before it ever sent anything, latching
+/// `reraster_inflight` `true` forever (this fence could never sharpen again). It now catches the
+/// panic and always sends a `reraster: true, image: Err(_)` fallback. This tests `apply_md_image`
+/// at the boundary that actually matters: feeding it that exact fallback shape must take the
+/// existing "a re-raster failure leaves the current raster in place" branch — clearing
+/// `reraster_inflight` and changing nothing else (not the initial-failure `entry.failed = true`
+/// branch, which is reserved for a diagram that has never rendered at all).
+#[test]
+fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_degrading() {
+    let dir = unique_tmp("konoma_apply_md_image_panic_shaped");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let key = std::path::PathBuf::from("mermaid-fence://deadbeefdeadbeef");
+    let existing = std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48));
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(existing.clone()),
+            layout_px: Some((120, 48)),
+            reraster_inflight: true,
+            ..Default::default()
+        },
+    );
+
+    // Mirrors what fence_sharpen_if_needed's worker now sends when rasterize_bytes panics.
+    let panic_fallback = MdImageResult {
+        path: key.clone(),
+        image: Err("re-raster panicked".to_string()),
+        svg: None,
+        reraster: true,
+        frames: None,
+    };
+    let redraw = app.apply_md_image(panic_fallback);
+    assert!(redraw);
+    let entry = app
+        .md_image_cache
+        .get(&key)
+        .expect("エントリは残る(消えない)");
+    assert!(
+        !entry.reraster_inflight,
+        "パニックのフォールバック結果でも inflight が解ける(再ズームが二度と効かなくならない)"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(entry.decoded.as_ref().unwrap(), &existing),
+        "再ラスタ失敗は現在表示中の画像をそのまま保持するはず(全画面が消えない)"
+    );
+    assert!(
+        !entry.failed,
+        "初回失敗用の text フォールバックへは降格しないはず(既に表示できていたので)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// When a file is externally **shrunk**, the windowed preview's scroll position must not stay past
 /// the new EOF. This happens during everyday Agent Watch operations, e.g. an agent truncating a
 /// log / rewriting a file. `preview_byte_top` can be left pointing at the old file's last page, so
@@ -13176,6 +13288,67 @@ fn stale_git_status_result_is_discarded() {
     assert!(
         app.git_status_of(&sentinel).is_none(),
         "捨てた結果で status を汚染しない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// D2 (2026-08-05): `spawn_or_sync_statuses`'s worker used to guard the scan with `catch_silent`
+/// but only sent a result `if let Some(res) = ...` — so a caught panic sent *nothing*, and
+/// `git_status_pending` still latched forever (the exact bug its own comment claimed was fixed).
+/// It now always sends a result, falling back to an empty/known-nothing `StatusResult` (correct
+/// gen/workdir) on a panic. This tests `apply_statuses` at the boundary that actually matters:
+/// feeding it that fallback shape must clear `pending` just like a real scan would (a real git-scan
+/// panic can't be induced on demand from a test). The stale-generation case must still discard.
+/// Pure state logic (no real git call), so — like `apply_ignored_reflects_current_gen_and_discards_stale`
+/// above — it runs under both features.
+#[test]
+fn apply_statuses_with_a_panic_shaped_result_still_clears_pending() {
+    let dir = unique_tmp("konoma_apply_statuses_panic_shaped");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.git_status_gen = 9;
+    app.git_status_pending = Some(dir.clone());
+    app.git_status
+        .insert(dir.join("stale.txt"), crate::git::FileStatus::Modified);
+
+    // Current-generation fallback (mirrors what the worker sends on a caught panic).
+    let panic_fallback = crate::app::StatusResult {
+        gen: 9,
+        workdir: Some(dir.clone()),
+        statuses: Default::default(),
+        branch: None,
+        worktree_origin: None,
+    };
+    assert!(app.apply_statuses(panic_fallback), "現世代なので適用される");
+    assert!(
+        app.git_status_pending.is_none(),
+        "パニックのフォールバック結果でも pending が解ける(スピナーが固着せず git status も固まらない)"
+    );
+    assert!(
+        app.git_status.is_empty(),
+        "失敗は安全側=空の statuses に倒す"
+    );
+    assert!(app.git_branch.is_none());
+
+    // A stale-generation fallback must still be discarded.
+    app.git_status_gen = 10;
+    app.git_status_pending = Some(dir.clone());
+    let stale_panic_fallback = crate::app::StatusResult {
+        gen: 9,
+        workdir: Some(dir.clone()),
+        statuses: Default::default(),
+        branch: None,
+        worktree_origin: None,
+    };
+    assert!(
+        !app.apply_statuses(stale_panic_fallback),
+        "古い世代のフォールバックは捨てる"
+    );
+    assert!(
+        app.git_status_pending.is_some(),
+        "stale では pending を残す(現行計算待ちのまま)"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

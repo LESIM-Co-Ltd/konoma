@@ -726,12 +726,26 @@ impl App {
         };
         std::thread::spawn(move || {
             // If the worker panics, no result comes back and `git_status_pending` stays set forever,
-            // spinning the spinner and freezing status. Always return a result, with the same safety net as the other workers (principle #3).
-            if let Some(res) =
-                crate::preview::markdown::catch_silent(|| Self::scan_statuses(root, workdir, gen))
-            {
-                let _ = tx.send(res);
-            }
+            // spinning the spinner and freezing status. `compute_or_fallback` (principle #3)
+            // guarantees a result either way — unlike the old `if let Some(res) = catch_silent(..) {
+            // tx.send(res) }`, which still left `pending` latched on the failure branch since
+            // nothing was sent then either — so the `tx.send(res)` right below is truly
+            // unconditional. Clone `workdir` first: it's moved into `scan_statuses` on the happy
+            // path, but the failure fallback below still needs its own copy so `res.workdir`
+            // reflects the repo that was actually being scanned (matters for `apply_statuses`, which
+            // stores it into `git_status_workdir`) rather than silently reporting "not a repo".
+            let workdir_for_failure = workdir.clone();
+            let res = crate::preview::markdown::compute_or_fallback(
+                || Self::scan_statuses(root, workdir, gen),
+                || crate::app::StatusResult {
+                    gen,
+                    statuses: Default::default(),
+                    branch: None,
+                    worktree_origin: None,
+                    workdir: workdir_for_failure,
+                },
+            );
+            let _ = tx.send(res);
         });
     }
 
@@ -822,7 +836,15 @@ impl App {
             return;
         };
         std::thread::spawn(move || {
-            let set = crate::git::ignored(&root);
+            // Same `compute_or_fallback` safety net as `spawn_or_sync_statuses` (principle #3): the
+            // `tx.send(..)` below is unconditional. If the scan panics, `git_ignored_pending` would
+            // otherwise latch forever (a spinner that never stops, and the ignore set frozen at
+            // whatever it was before). An empty set is a safe degrade — nothing gets dimmed/hidden,
+            // the same shape `refresh_ignored_if_needed` already uses for a root that isn't a repo at all.
+            let set = crate::preview::markdown::compute_or_fallback(
+                || crate::git::ignored(&root),
+                Default::default,
+            );
             let _ = tx.send(IgnoredResult { gen, workdir, set });
         });
     }
