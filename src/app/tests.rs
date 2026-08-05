@@ -8136,6 +8136,694 @@ fn returning_to_the_originating_tab_prunes_its_stale_selection() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+// --- Background git writes (design principle #4) ----------------------------------------------
+// These mirror the file-operation tests above, one axis at a time. Git writes were the last thing
+// still shelling out synchronously on the UI thread, even though the *read* side (`git status`,
+// `ignored`) had long been moved off it: a `pre-commit` hook, a network mount, or another process
+// holding `.git/index.lock` each froze konoma outright. Deliberately **not** solved with a
+// timeout+kill — killing `git commit` leaves `.git/index.lock` behind and the repo unusable.
+
+/// A repo with one commit plus one uncommitted modification, and an `App` already in its Git view
+/// (so `git_view_entries` has the row the stage/discard tests act on). Returns the canonical root.
+#[cfg(feature = "git")]
+fn git_repo_with_one_change(prefix: &str) -> (std::path::PathBuf, App) {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let f = dir.join("a.txt");
+    std::fs::write(&f, b"one\n").unwrap();
+    crate::git::stage(&dir, &f).unwrap();
+    crate::git::commit(&dir, "init").unwrap();
+    // Modify the tracked file so there is exactly one changed entry to act on.
+    std::fs::write(&f, b"two\n").unwrap();
+
+    let canon = dir.canonicalize().unwrap();
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.open_git_view();
+    assert!(app.is_git_view(), "{prefix}: Git ビューが開く");
+    assert_eq!(app.git_view_entries().len(), 1, "{prefix}: 変更1件");
+    (canon, app)
+}
+
+/// A git-write runner is attached → the dispatching call must return **immediately**, with the
+/// write still out on the worker (`gitop_pending` set, busy indicator reporting it, watcher bursts
+/// deferred), and the result must apply only once the channel delivers it. This is the whole point
+/// of D3: `git` has no bounded runtime, so it must never run on the UI thread.
+#[cfg(feature = "git")]
+#[test]
+fn git_op_runs_in_background_when_runner_attached() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_bg");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.git_view_stage();
+    // The moment the key handler returns, the write is still in flight: only the main thread's
+    // `apply_git_op` clears `gitop_pending`, so it is always set here even if the worker has
+    // already finished running.
+    assert!(
+        app.gitop_pending.is_some(),
+        "バックグラウンド実行中は gitop_pending が立つ"
+    );
+    assert!(
+        app.busy_jobs().contains(&crate::i18n::Msg::BusyGitOp),
+        "busy インジケーターに git 操作が出る: {:?}",
+        app.busy_jobs()
+    );
+    // Forced on even with `ui.busy_indicator = false`: nothing on screen moves while a hook runs,
+    // so suppressing the spinner would leave no evidence at all that the commit is still going.
+    app.cfg.ui.busy_indicator = false;
+    assert!(
+        app.busy_indicator_active(),
+        "busy_indicator=false でも git 書き込み中は表示する"
+    );
+    app.cfg.ui.busy_indicator = true;
+    assert!(
+        app.should_defer_fs_events(),
+        "実行中は自分が生む watcher イベントを溜める"
+    );
+    // Not applied yet: the Git view still shows the file as unstaged.
+    assert_eq!(
+        app.git_view_entries().first().map(|e| e.staged),
+        Some(false),
+        "結果適用前に UI が先走らない"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res), "現世代の結果は適用される");
+    assert!(app.gitop_pending.is_none(), "適用で pending が解ける");
+    assert!(
+        !app.should_defer_fs_events(),
+        "完了後は watcher イベントの保留も解ける"
+    );
+    assert_eq!(
+        app.git_view_entries().first().map(|e| e.staged),
+        Some(true),
+        "適用後は一覧が staged になる"
+    );
+    assert!(
+        crate::git::changed_files(&dir).iter().any(|e| e.staged),
+        "index に実際にステージされている"
+    );
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::Staged)),
+        "flash にステージ結果が出る: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// With **no** runner attached (unit tests / no run loop), the write must still complete inline and
+/// be observable on return — the same contract as `start_file_op`/`spawn_or_sync_statuses`. This is
+/// what lets every pre-existing test of these flows keep passing unchanged.
+#[cfg(feature = "git")]
+#[test]
+fn git_op_falls_back_to_synchronous_without_a_runner() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_sync");
+    app.git_view_stage();
+    assert!(
+        app.gitop_pending.is_none(),
+        "ランナー未 attach ならその場で完了する(pending が残らない)"
+    );
+    assert_eq!(
+        app.git_view_entries().first().map(|e| e.staged),
+        Some(true),
+        "戻った時点で一覧に反映されている"
+    );
+    assert!(
+        crate::git::changed_files(&dir).iter().any(|e| e.staged),
+        "index に実際にステージされている"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// While one git write is in flight, a second must be rejected (flash `GitOpBusy`, generation
+/// unchanged, nothing written) rather than starting a second `git` that would only lose the race
+/// for `.git/index.lock`.
+#[cfg(feature = "git")]
+#[test]
+fn second_git_op_is_rejected_while_one_is_in_flight() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_busy");
+    // Without launching an actual worker, build the in-flight state directly (private fields are
+    // reachable from within the module).
+    app.gitop_gen = app.gitop_gen.wrapping_add(1);
+    app.gitop_pending = Some(crate::app::GitOpKind::Commit);
+    let gen_before = app.gitop_gen;
+
+    app.git_view_stage();
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::GitOpBusy)),
+        "実行中は GitOpBusy フラッシュで拒否される"
+    );
+    assert_eq!(app.gitop_gen, gen_before, "拒否された2件目は世代を進めない");
+    assert!(
+        !crate::git::changed_files(&dir).iter().any(|e| e.staged),
+        "拒否された操作は git を一度も呼ばない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `apply_git_op` must ignore a result whose generation doesn't match the current one (superseded)
+/// and must not clear `gitop_pending`.
+#[cfg(feature = "git")]
+#[test]
+fn stale_git_op_result_is_dropped() {
+    let dir = unique_tmp("konoma_gitop_stale");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    app.gitop_gen = 5;
+    app.gitop_pending = Some(crate::app::GitOpKind::Stage);
+    let stale = crate::app::GitOpResult {
+        gen: 4,
+        kind: crate::app::GitOpKind::Stage,
+        root: dir.clone(),
+        tab_id: app.tab.id,
+        path: dir.join("a.txt"),
+        text: String::new(),
+        label: "a.txt".into(),
+        count: 0,
+        err: None,
+    };
+    assert!(
+        !app.apply_git_op(stale),
+        "陳腐化した世代の結果は適用されない"
+    );
+    assert!(
+        app.gitop_pending.is_some(),
+        "陳腐化した結果は pending を解かない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A finished git write must not disturb whatever tab happens to be active when the result arrives.
+/// The user can switch tabs while a `pre-commit` hook runs — that is the entire point of moving the
+/// write off the UI thread — so the tab active on arrival may not be the one that dispatched it.
+/// `rebuild_tree_notify`/`git_view_reload` would collapse that other tab's `/` filter and replace
+/// its change list. The generation check does **not** protect against this (the generation is frozen
+/// while an operation is pending) — the root comparison in `apply_git_op` does.
+#[cfg(feature = "git")]
+#[test]
+fn git_op_result_does_not_disturb_another_tab() {
+    let (a, mut app) = git_repo_with_one_change("konoma_gitop_other_tab");
+    // Tab 2's root: a different, plain directory.
+    let b = unique_tmp("konoma_gitop_other_tab_b");
+    let _ = std::fs::remove_dir_all(&b);
+    std::fs::create_dir_all(&b).unwrap();
+    for n in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        std::fs::write(b.join(n), b"x").unwrap();
+    }
+    let b = b.canonicalize().unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+    // Discard through the real key path (`x` → confirm `y`), which on the same tab rebuilds the
+    // tree and reloads the change list.
+    app.git_view_start_discard();
+    assert!(app.is_dialog(), "破棄確認ダイアログが出る");
+    app.dialog_confirm(true).unwrap();
+    assert!(app.gitop_pending.is_some(), "実行中");
+
+    // Switch to a tab with a different root during the write, and put it into a `/` filter there.
+    app.tab_new().unwrap();
+    app.tab.root = b.clone();
+    app.tab.entries.clear();
+    app.tab.selected = 0;
+    app.rebuild_tree().unwrap();
+    app.start_filter();
+    for c in "beta".chars() {
+        app.filter_input_push(c);
+    }
+    app.filter_commit();
+    let before_len = app.tab.entries.len();
+    let before_sel = app.tab.selected;
+    let before_path = app.tab.entries.get(before_sel).map(|e| e.path.clone());
+    assert_eq!(before_len, 1, "絞り込みで beta.txt だけが残っている");
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res), "現世代の結果は適用される");
+    assert_eq!(
+        std::fs::read_to_string(a.join("a.txt")).unwrap(),
+        "one\n",
+        "破棄自体は完了している(コミット時点の内容に戻る)"
+    );
+    assert_eq!(
+        app.tab.entries.len(),
+        before_len,
+        "別タブの絞り込み結果を全表示に戻さない"
+    );
+    assert_eq!(app.tab.selected, before_sel, "別タブのカーソルを動かさない");
+    assert_eq!(
+        app.tab
+            .entries
+            .get(app.tab.selected)
+            .map(|e| e.path.clone()),
+        before_path,
+        "カーソルが指すエントリも変わらない"
+    );
+    // The repo really did change, so the status cache must still be invalidated — that part is
+    // deliberately *not* gated on the root, or the originating tab would keep showing a stale marker.
+    assert!(
+        app.git_status_dirty && app.git_status_for.is_none(),
+        "別タブに着地しても git status の再検証は要求される"
+    );
+
+    std::fs::remove_dir_all(&a).ok();
+    std::fs::remove_dir_all(&b).ok();
+}
+
+/// Moving the write off-thread must not degrade the failure message: `run_git`'s contract is that
+/// git's own `fatal:` line comes **first**, so the reason is never pushed off the end of the
+/// one-line flash by the command string (the v0.23.1 fix). Also checks the retry affordance —
+/// the input dialog reopens carrying what was typed.
+#[cfg(feature = "git")]
+#[test]
+fn failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_fatal");
+    let current = crate::git::branch(&dir).expect("現在のブランチ名が取れる");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    // Creating a branch that already exists → `fatal: a branch named '<x>' already exists`.
+    app.start_create_branch();
+    for c in current.chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+    assert!(app.gitop_pending.is_some(), "失敗する書き込みも裏で走る");
+    assert!(
+        !app.is_dialog(),
+        "投げた時点で入力ダイアログは閉じている(結果待ち)"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    let flash = app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.starts_with("fatal:"),
+        "git の fatal: 行が先頭に来る(コマンド文字列で押し出されない): {flash}"
+    );
+    assert!(
+        !flash.contains("switch -c"),
+        "実行したコマンド文字列は含まない: {flash}"
+    );
+    // The retry affordance the synchronous version had: the dialog comes back with the same text.
+    assert!(app.is_dialog(), "失敗すると入力ダイアログが戻る");
+    assert_eq!(
+        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
+        Some(current.clone()),
+        "打った名前が保持されている(打ち直させない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A failed write must never restore its own dialog **over** one the user opened in the meantime —
+/// only possible now that the write is asynchronous. Losing the draft message is bad; silently
+/// swapping a "new file name" prompt for a commit box mid-typing is worse.
+#[cfg(feature = "git")]
+#[test]
+fn failed_git_op_does_not_clobber_a_dialog_opened_meanwhile() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_no_clobber");
+    let current = crate::git::branch(&dir).expect("現在のブランチ名");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.start_create_branch();
+    for c in current.chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    // While the (doomed) branch creation is out on the worker, the user opens another prompt.
+    app.start_create();
+    assert!(app.is_dialog(), "別のダイアログが開いている");
+    for c in "newfile.txt".chars() {
+        app.dialog_input_push(c);
+    }
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    assert_eq!(
+        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
+        Some("newfile.txt".to_string()),
+        "入力中のダイアログを git の失敗で置き換えない"
+    );
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("fatal:"),
+        "失敗自体は flash で伝える: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A failed **commit** must bring its own dialog back carrying the message, so it can be retried
+/// without retyping — the affordance the synchronous version had. (`git commit` with nothing staged
+/// fails, which is what `git_repo_with_one_change` leaves the repo in.)
+#[cfg(feature = "git")]
+#[test]
+fn failed_commit_reopens_the_dialog_with_the_message() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_retry");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.start_git_commit();
+    for c in "wip: try".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+    assert!(app.gitop_pending.is_some(), "コミットは裏で走る");
+    assert!(!app.is_dialog(), "投げた時点では閉じている");
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    assert_eq!(
+        app.internal_mode(),
+        Some(InternalMode::Commit),
+        "失敗するとコミット入力に戻る"
+    );
+    assert_eq!(
+        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
+        Some("wip: try".to_string()),
+        "打ったメッセージが保持されている(打ち直させない)"
+    );
+    assert!(
+        app.flash.as_deref().is_some_and(|s| !s.is_empty()),
+        "失敗理由が flash に出る: {:?}",
+        app.flash
+    );
+    assert!(
+        crate::git::log(&dir, 10).len() == 1,
+        "コミットは作られていない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// …but it must not restore that commit box **over** a dialog the user opened while the commit was
+/// out on the worker. Losing the draft message is bad; silently swapping a "new file name" prompt
+/// for a commit box mid-typing is worse. (The `CreateBranch` arm carries the same guard and is
+/// covered by `failed_git_op_does_not_clobber_a_dialog_opened_meanwhile`.)
+#[cfg(feature = "git")]
+#[test]
+fn failed_commit_does_not_clobber_a_dialog_opened_meanwhile() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_no_clobber");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.start_git_commit();
+    for c in "wip".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    // While the (doomed) commit is out on the worker, the user opens another prompt and types.
+    app.start_create();
+    assert!(app.is_dialog(), "別のダイアログが開いている");
+    for c in "newfile.txt".chars() {
+        app.dialog_input_push(c);
+    }
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    assert_ne!(
+        app.internal_mode(),
+        Some(InternalMode::Commit),
+        "入力中のダイアログをコミット入力で置き換えない"
+    );
+    assert_eq!(
+        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
+        Some("newfile.txt".to_string()),
+        "入力中の内容がそのまま残る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A completed write changed the repository, so the cached `git status` must be re-validated —
+/// otherwise the tree keeps showing the marker the write just removed.
+#[cfg(feature = "git")]
+#[test]
+fn git_status_is_revalidated_after_a_git_write() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_revalidate");
+    // Pretend the status cache is fresh for this root.
+    app.git_status_for = Some(dir.clone());
+    app.git_status_dirty = false;
+
+    app.git_view_stage(); // synchronous fallback: completes inline
+    assert!(
+        app.git_status_dirty,
+        "書き込み後は status の再取得が要求される"
+    );
+    assert!(
+        app.git_status_for.is_none(),
+        "ツリーの status キャッシュも無効化される"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A refused dispatch (one git write at a time) must not eat what the user typed. `dialog_submit`
+/// takes the dialog before it knows whether the write can start, so the prompt has to come back
+/// with the text intact — otherwise pressing `c`, writing a paragraph and hitting Enter while a
+/// stage happens to still be running silently throws the message away.
+#[cfg(feature = "git")]
+#[test]
+fn refused_git_op_puts_the_typed_text_back() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_refused_keeps_text");
+    // Build the in-flight state directly, without launching a worker.
+    app.gitop_gen = app.gitop_gen.wrapping_add(1);
+    app.gitop_pending = Some(crate::app::GitOpKind::Stage);
+
+    let message = "a carefully written commit message";
+    app.start_git_commit();
+    for c in message.chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert_eq!(
+        app.internal_mode(),
+        Some(InternalMode::Commit),
+        "拒否されてもコミット入力は残る"
+    );
+    assert_eq!(
+        app.dialog_view().map(|(_, _, buf, _)| buf.to_string()),
+        Some(message.to_string()),
+        "打ったメッセージが捨てられない"
+    );
+    assert_eq!(
+        app.dialog_view().map(|(_, _, _, cur)| cur),
+        Some(message.chars().count()),
+        "カーソルは末尾(続けて打てる)"
+    );
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(crate::i18n::tr(app.lang, crate::i18n::Msg::GitOpBusy)),
+        "なぜ起きなかったかは flash が説明する"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The retry dialog must not pop up over input the user has already started. `/` (tree filter),
+/// search and the branch filter are text input too, but none of them is a `Dialog` — checking only
+/// `dialog.is_none()` would restore a commit box on top of a half-typed filter and steal the next
+/// keystrokes. Only reachable because the write is asynchronous.
+#[cfg(feature = "git")]
+#[test]
+fn failed_git_op_does_not_restore_over_an_active_filter() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_no_filter_hijack");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.start_git_commit(); // nothing is staged → the commit will fail
+    for c in "wip".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+    assert!(app.gitop_pending.is_some());
+
+    // While the commit is out on the worker, the user starts filtering the tree.
+    app.back_to_tree();
+    app.start_filter();
+    for c in "a.t".chars() {
+        app.filter_input_push(c);
+    }
+    assert!(app.is_filtering(), "絞り込み入力中");
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    assert!(
+        !app.is_dialog(),
+        "入力中の絞り込みの上にダイアログを出さない"
+    );
+    assert!(app.is_filtering(), "絞り込み入力はそのまま続けられる");
+    assert_eq!(app.filter_query(), Some("a.t"), "打った内容も無傷");
+    assert!(
+        app.flash.as_deref().is_some_and(|s| !s.is_empty()),
+        "失敗自体は flash で伝える"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Root equality is not tab identity.** `t` (`tab_new`) opens the new tab *at the current root*,
+/// so two tabs sharing a root is the ordinary case — and `worktree add` relocates whichever tab it
+/// decides is "the one that asked". Pressing `t` while the worktree is being written must not drag
+/// that brand-new tab into it and strand the tab that actually asked.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_add_never_relocates_a_tab_that_did_not_ask() {
+    let base = unique_tmp("konoma_gitop_worktree_wrong_tab");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_git_repo(&repo);
+    let f = repo.join("a.txt");
+    std::fs::write(&f, b"one\n").unwrap();
+    crate::git::stage(&repo, &f).unwrap();
+    crate::git::commit(&repo, "init").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.git.worktree_dir = base.to_string_lossy().into_owned();
+    let mut app = App::new(repo.clone(), cfg).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    // Tab A asks for a new worktree.
+    app.open_git_worktrees();
+    app.start_create_worktree();
+    for c in "wt-branch".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+    assert!(app.gitop_pending.is_some(), "worktree add は裏で走る");
+    let tab_a = app.tab.id;
+
+    // …and the user opens a new tab while it runs. Same root, different tab.
+    app.tab_new().unwrap();
+    let tab_b = app.tab.id;
+    assert_ne!(tab_a, tab_b, "新しいタブは別の識別子を持つ");
+    assert_eq!(app.tab.root, repo, "新しいタブは同じ root で開く(t の既定)");
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+
+    assert!(
+        base.join("wt-branch").join("a.txt").is_file(),
+        "worktree 自体は作られている"
+    );
+    assert_eq!(
+        app.tab.root, repo,
+        "頼んでいないタブ(B)を新しい worktree へ引きずり込まない"
+    );
+    assert_eq!(app.tab.open_dir, repo, "open_dir(@参照の基準)も動かさない");
+    assert!(
+        app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains(crate::i18n::tr(app.lang, crate::i18n::Msg::CreatedWorktree)),
+        "作成できたことは flash で伝える: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// The counterpart to the guard above: a *repo-scoped refresh* must still happen on any tab rooted
+/// at the repository that changed, even one that did not ask. The two questions ("is this the tab
+/// that asked" / "is this tab showing the repo that changed") have deliberately different answers —
+/// collapsing them into one would either strand stale change lists or relocate innocent tabs.
+#[cfg(feature = "git")]
+#[test]
+fn same_root_tab_is_refreshed_even_though_it_is_not_the_origin() {
+    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_same_root_refresh");
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_gitop_runner(tx);
+
+    app.git_view_stage();
+    let tab_a = app.tab.id;
+
+    // A second tab on the same root (what `t` gives you), which has never opened the Git view.
+    app.tab_new().unwrap();
+    assert_ne!(tab_a, app.tab.id);
+    assert_eq!(app.tab.root, dir);
+    assert!(
+        app.git_view_entries().is_empty(),
+        "新しいタブはまだ変更一覧を持たない"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_git_op(res));
+    assert_eq!(
+        app.git_view_entries().first().map(|e| e.staged),
+        Some(true),
+        "同じ repo を映すタブは、頼んでいなくても最新の変更一覧に追従する"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Quitting mid-write orphans a `git` still holding `.git/index.lock`, so the confirmation is shown
+/// **even with `confirm_quit = false`** — same rule as a running file operation. It only warns;
+/// `y` still quits.
+#[cfg(feature = "git")]
+#[test]
+fn quit_confirms_while_a_git_op_is_running() {
+    let dir = unique_tmp("konoma_gitop_quit");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.confirm_quit = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+
+    assert!(
+        !app.request_quit(),
+        "confirm_quit=false かつアイドルなら即終了"
+    );
+    app.gitop_pending = Some(crate::app::GitOpKind::Commit);
+    assert!(
+        app.request_quit(),
+        "git 書き込み中は設定に関わらず確認を出す"
+    );
+    let message = app
+        .dialog_view()
+        .map(|(_, head, _, _)| head.to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::QuitWhileGitOp)),
+        "実行中である旨の警告行が入る: {message}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Probes whether this process is actually denied reading a 0o000 directory.
 /// Under root (or a process able to bypass permission bits), this has no effect and read_dir
 /// succeeds anyway, so permission-dependent tests skip in that case (same spirit as

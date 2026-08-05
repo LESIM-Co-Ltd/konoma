@@ -177,7 +177,8 @@ impl App {
     }
 
     /// Whether text input is active (a state where a paste should be inserted as characters).
-    fn is_text_input_active(&self) -> bool {
+    /// `pub(super)` so `apply_git_op` can ask the same question before restoring a dialog.
+    pub(super) fn is_text_input_active(&self) -> bool {
         self.dialog_is_text_input()
             || self.is_filtering()
             || self.is_searching()
@@ -242,8 +243,12 @@ impl App {
     /// **one** refresh afterwards — nothing is missed, because `apply_file_op` refreshes on completion
     /// and the deferred burst is flushed right after it. Same idea as `is_content_event`/the `.git`
     /// lock filter: never react to filesystem noise konoma itself caused.
+    ///
+    /// A background **git write** is held back for the same reason: `checkout`/`discard`/`worktree
+    /// add` rewrite the working tree, and a `pre-commit` hook can churn through it too. Nothing is
+    /// missed — `apply_git_op` refreshes on completion, and the deferred burst is flushed right after.
     pub fn should_defer_fs_events(&self) -> bool {
-        self.fileop_pending.is_some()
+        self.fileop_pending.is_some() || self.git_op_running()
     }
 
     /// Start a filesystem operation in the background, or run it synchronously when no runner is

@@ -95,28 +95,330 @@ impl App {
         self.git_status_for = None; // also re-fetch the tree's git status next time
         self.git_status_dirty = true; // status changed due to a git operation = invalidate the workdir cache
     }
+
+    // --- Background git writes (design principle #4) ---------------------------------
+    // Every mutation below (stage/unstage/discard/commit/checkout/branch/worktree) shells out to
+    // `git`, whose runtime is unbounded: a `pre-commit` hook, a network mount, or another process
+    // holding `.git/index.lock` can each stall it indefinitely. Running that on the UI thread froze
+    // konoma outright, while the read side (`git status`, `ignored`) had long since been moved off
+    // it. These follow the shape `start_file_op`/`apply_file_op` established for filesystem
+    // operations: dispatch → worker thread → result applied on the run loop's thread.
+
+    /// Attach the Sender of the worker that runs background git writes (called by main at startup).
+    pub fn attach_gitop_runner(&mut self, tx: std::sync::mpsc::Sender<crate::app::GitOpResult>) {
+        self.gitop_tx = Some(tx);
+    }
+
+    /// Whether a git write is running in the background right now.
+    pub fn git_op_running(&self) -> bool {
+        self.gitop_pending.is_some()
+    }
+
+    /// Start a git write in the background, or run it synchronously when no runner is attached
+    /// (unit tests / no run loop) so the result is observable immediately — the same contract as
+    /// `start_file_op`/`spawn_or_sync_statuses`, and the reason every existing test of these flows
+    /// keeps passing unchanged. Returns false and flashes when another write is already in flight.
+    pub(super) fn start_git_op(&mut self, mut job: crate::app::GitOpJob) -> bool {
+        if self.gitop_pending.is_some() {
+            // Only one at a time: two concurrent writes would contend on `.git/index.lock` and the
+            // loser would just fail. Refuse cleanly instead, and leave every bit of state (the
+            // typed commit message, the selection) untouched.
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::GitOpBusy).into());
+            return false;
+        }
+        // Bake in "which tab this was dispatched from" here at dispatch time (callers pass it
+        // empty). The active tab when it completes may be a different one — `apply_git_op` uses
+        // this to decide whether it may touch tab state.
+        job.root = self.tab.root.clone();
+        job.tab_id = self.tab.id;
+        self.gitop_gen = self.gitop_gen.wrapping_add(1);
+        let gen = self.gitop_gen;
+        self.gitop_pending = Some(job.kind);
+        let Some(tx) = self.gitop_tx.clone() else {
+            let res = Self::run_git_op(gen, job);
+            self.apply_git_op(res);
+            return true;
+        };
+        // Pre-translate the panic fallback message here (the worker has no `&self` to call `tr()`).
+        let panic_err = crate::i18n::tr(self.lang, crate::i18n::Msg::OperationFailed).to_string();
+        let (kind, root, tab_id, path, text, label, count) = (
+            job.kind,
+            job.root.clone(),
+            job.tab_id,
+            job.path.clone(),
+            job.text.clone(),
+            job.label.clone(),
+            job.count,
+        );
+        std::thread::spawn(move || {
+            // If the worker panics, no result comes back and `gitop_pending` latches forever —
+            // the spinner never stops and every later git key is refused as "busy". Same safety
+            // net as the other workers: always produce a result (design principle #3).
+            let res = crate::preview::markdown::compute_or_fallback(
+                || Self::run_git_op(gen, job),
+                || crate::app::GitOpResult {
+                    gen,
+                    kind,
+                    root,
+                    tab_id,
+                    path,
+                    text,
+                    label,
+                    count,
+                    err: Some(panic_err),
+                },
+            );
+            let _ = tx.send(res);
+        });
+        true
+    }
+
+    /// The actual git call (pure: no `&self`), shared by the worker thread and the synchronous
+    /// fallback. The error is flattened to a `String` here rather than in `apply_git_op` because
+    /// `anyhow::Error` is not what crosses the channel; the text is identical to what the old
+    /// synchronous code showed, since `describe_error` only rewrites `fileops::FileOpError`
+    /// variants and a git error is never one of those (it falls through to `Display`).
+    fn run_git_op(gen: u64, job: crate::app::GitOpJob) -> crate::app::GitOpResult {
+        use crate::app::GitOpKind as K;
+        let crate::app::GitOpJob {
+            kind,
+            root,
+            tab_id,
+            path,
+            text,
+            flag,
+            label,
+            count,
+        } = job;
+        let outcome = match kind {
+            K::Stage => crate::git::stage(&root, &path),
+            K::Unstage => crate::git::unstage(&root, &path),
+            K::StageAll => crate::git::stage_all(&root),
+            K::UnstageAll => crate::git::unstage_all(&root),
+            K::Discard => crate::git::discard(&root, &path),
+            K::Commit => crate::git::commit(&root, &text),
+            K::Checkout => crate::git::checkout(&root, &text),
+            K::CreateBranch => crate::git::create_branch(&root, &text),
+            K::DeleteBranch => crate::git::delete_branch(&root, &text, flag),
+            K::WorktreeAdd => crate::git::worktree_add(&root, &path, &text, flag),
+        };
+        crate::app::GitOpResult {
+            gen,
+            kind,
+            root,
+            tab_id,
+            path,
+            text,
+            label,
+            count,
+            err: outcome.err().map(|e| e.to_string()),
+        }
+    }
+
+    /// Whether it is safe for a completing git write to pop its own dialog back up.
+    ///
+    /// It is not, if the user has started typing anything in the meantime — another dialog (input
+    /// *or* confirmation, including the quit confirmation), a `/` tree filter, an in-preview search,
+    /// or a branch-list filter. All of those would have their next keystrokes stolen. This can only
+    /// happen because the write is asynchronous: the synchronous version returned before the user
+    /// could touch anything.
+    fn can_restore_dialog(&self) -> bool {
+        self.dialog.is_none() && !self.is_text_input_active()
+    }
+
+    /// Apply a finished git write: update the views it affects and flash the same summary the
+    /// synchronous implementation used to produce.
+    ///
+    /// The generation check is belt-and-braces only (`gitop_gen` advances solely in `start_git_op`,
+    /// which refuses to start while one is pending, so it is frozen for the whole flight). The guard
+    /// that matters is **which tab this is landing on**: the user can switch tabs, or open a new one,
+    /// while a commit hook runs — that is the entire point of moving the write off the UI thread —
+    /// so the tab active when the result lands may not be the one that dispatched it. Two separate
+    /// questions get two separate guards, because they have different answers:
+    ///
+    /// - `shows_same_repo` (root equality) gates **repo-scoped refreshes** — rebuilding the change
+    ///   list, the branch list, the tree. Any tab rooted at that repository is displaying state the
+    ///   write just invalidated, so refreshing it is right regardless of who asked.
+    /// - `is_origin_tab` (tab identity) gates **navigation and focus** — returning from the diff
+    ///   preview, closing the branch list, moving the tab into a new worktree, restoring a dialog.
+    ///   Only the tab that asked may be moved or typed into. Root equality is *not* good enough
+    ///   here: `t` opens the new tab at the current root, so a `worktree add` completing after the
+    ///   user pressed `t` would otherwise yank the new tab into the worktree and leave the tab that
+    ///   asked for it behind.
+    ///
+    /// The flash and the status invalidation are gated by neither — the repository really did change.
+    pub fn apply_git_op(&mut self, res: crate::app::GitOpResult) -> bool {
+        use crate::app::GitOpKind as K;
+        use crate::i18n::{tr, Msg};
+        if res.gen != self.gitop_gen {
+            return false;
+        }
+        self.gitop_pending = None;
+        let lang = self.lang;
+        let shows_same_repo = res.root == self.tab.root;
+        let is_origin_tab = res.tab_id == self.tab.id;
+        let failed = res.err.clone();
+        if failed.is_none() {
+            // The write changed the repository, so the cached status is stale no matter which tab
+            // is on screen. `git_view_reload` below sets the same two flags; setting them here as
+            // well is what keeps a completion that lands on a *different* tab from silently
+            // skipping the re-validation.
+            self.git_status_for = None;
+            self.git_status_dirty = true;
+        }
+        // Shared "Failed: <git's message>" shape (Msg::Failed + git's own `fatal:` line). Identical
+        // to what the synchronous arms produced: they ran the message through `describe_error`,
+        // which only rewrites `fileops::FileOpError` variants and falls through to `Display` for
+        // anything else — and a git error is never one of those.
+        let failed_flash = |e: &str| format!("{}: {e}", tr(lang, Msg::Failed));
+        match res.kind {
+            K::Stage | K::Unstage | K::StageAll | K::UnstageAll => match &failed {
+                Some(e) => self.flash = Some(failed_flash(e)),
+                None => {
+                    if shows_same_repo {
+                        self.git_view_reload();
+                    }
+                    self.flash = Some(match res.kind {
+                        K::Stage => format!("{}: {}", tr(lang, Msg::Staged), res.label),
+                        K::Unstage => format!("{}: {}", tr(lang, Msg::Unstaged), res.label),
+                        K::StageAll => {
+                            format!("{} ({})", tr(lang, Msg::StagedAll), res.count)
+                        }
+                        _ => tr(lang, Msg::UnstagedAll).to_string(),
+                    });
+                }
+            },
+            K::Discard => match &failed {
+                Some(e) => self.flash = Some(failed_flash(e)),
+                None => {
+                    let mut ok = true;
+                    // Navigation: only the tab that asked gets pulled out of the diff preview.
+                    if is_origin_tab && self.is_git_diff_preview() {
+                        self.tab.came_from_git_view = false;
+                        self.back_to_tree();
+                        self.open_git_view();
+                    }
+                    if shows_same_repo {
+                        self.git_view_reload();
+                        // The discard itself succeeded. If the tree rebuild fails, report that
+                        // instead of covering it with a success flash.
+                        ok = self.rebuild_tree_notify();
+                    }
+                    if ok {
+                        self.flash = Some(format!("{}: {}", tr(lang, Msg::Discarded), res.label));
+                    }
+                }
+            },
+            K::Commit => match &failed {
+                // Show the failure (git's stderr) and reopen the input dialog with the same message
+                // so it can be retried — but only when we're still on the tab that dispatched it and
+                // the user is not in the middle of typing something else. Popping a commit box over
+                // a half-typed `/` filter (or a quit confirmation) steals the next keystrokes, which
+                // is worse than losing the draft. Only possible now that the write is asynchronous.
+                Some(e) => {
+                    self.flash = Some(e.clone());
+                    if is_origin_tab && self.can_restore_dialog() {
+                        self.reopen_input(PendingOp::GitCommit, Msg::CommitMessage, &res.text);
+                    }
+                }
+                None => {
+                    let post = self.refresh();
+                    if shows_same_repo && self.is_git_view() {
+                        self.git_view_reload();
+                    }
+                    self.flash = Some(match post {
+                        // The commit succeeded but the reload didn't — say so rather than
+                        // reporting an unverified success (same rule as `apply_file_op`).
+                        Err(e) => format!("{}: {}", tr(lang, Msg::Failed), self.describe_error(&e)),
+                        Ok(()) => tr(lang, Msg::Committed).to_string(),
+                    });
+                }
+            },
+            K::Checkout | K::CreateBranch => match &failed {
+                // git's own message, unmodified (both arms flashed it raw before).
+                Some(e) => {
+                    self.flash = Some(e.clone());
+                    // Same retry affordance, and the same "don't steal live input" guard, as commit.
+                    if res.kind == K::CreateBranch && is_origin_tab && self.can_restore_dialog() {
+                        self.reopen_input(PendingOp::GitCreateBranch, Msg::NewBranch, &res.text);
+                    }
+                }
+                None => {
+                    let post = self.refresh();
+                    if shows_same_repo {
+                        // The branch label has to be right *now*: after this we land in the Git
+                        // view, which never goes through `ui::tree::render` — the only production
+                        // caller of the non-blocking `refresh_git_if_needed` — so a deferred
+                        // refresh would leave the chip showing the old branch until the user
+                        // happens to return to the tree. See `ensure_git_status_now`'s contract.
+                        self.ensure_git_status_now();
+                    }
+                    // Navigation: only the tab that asked leaves the branch list for the Git view.
+                    if is_origin_tab {
+                        self.close_git_branches();
+                    }
+                    self.flash = Some(match post {
+                        Err(e) => format!("{}: {}", tr(lang, Msg::Failed), self.describe_error(&e)),
+                        Ok(()) if res.kind == K::Checkout => {
+                            format!("{}: {}", tr(lang, Msg::SwitchedTo), res.label)
+                        }
+                        Ok(()) => format!("{}: {}", tr(lang, Msg::CreatedBranch), res.label),
+                    });
+                }
+            },
+            K::DeleteBranch => match &failed {
+                Some(e) => self.flash = Some(e.clone()),
+                None => {
+                    if shows_same_repo {
+                        self.git_branches_reload();
+                    }
+                    self.flash = Some(format!("{}: {}", tr(lang, Msg::DeletedBranch), res.label));
+                }
+            },
+            K::WorktreeAdd => match &failed {
+                // git's own `fatal: ...`, shown unmodified. `git_worktrees` was never touched, so
+                // the list is still showing behind the (now closed) dialog.
+                Some(e) => self.flash = Some(e.clone()),
+                None => {
+                    // The target now exists on disk, so canonicalize it for a clean root/open_dir/
+                    // flash (`worktree_dir` can carry a literal `..`, e.g. the default "../").
+                    let path = res.path.canonicalize().unwrap_or(res.path);
+                    // Moving a tab into the new worktree is the sharpest case for `is_origin_tab`:
+                    // with root equality, pressing `t` while `worktree add` runs would drag the
+                    // brand-new tab in and strand the one that asked.
+                    if is_origin_tab {
+                        self.reset_git_worktree_list_state();
+                        self.jump_to_dir(path.clone());
+                        self.tab.open_dir = path.clone();
+                    }
+                    self.flash = Some(format!(
+                        "{}: {}",
+                        tr(lang, Msg::CreatedWorktree),
+                        home_relative(&path)
+                    ));
+                }
+            },
+        }
+        true
+    }
+
     /// `s` in the Git view = stage. Flashes success/failure and rebuilds the list.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_view_stage(&mut self) {
         let Some(path) = self.git_view_selected() else {
             return;
         };
-        match crate::git::stage(&self.tab.root, &path) {
-            Ok(()) => {
-                self.git_view_reload();
-                self.flash = Some(format!(
-                    "{}: {}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Staged),
-                    self.format_path(&path)
-                ));
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}: {e}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                ))
-            }
-        }
+        let label = self.format_path(&path);
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::Stage,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path,
+            text: String::new(),
+            flag: false,
+            label,
+            count: 0,
+        });
     }
     /// `u` in the Git view = unstage.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -124,22 +426,17 @@ impl App {
         let Some(path) = self.git_view_selected() else {
             return;
         };
-        match crate::git::unstage(&self.tab.root, &path) {
-            Ok(()) => {
-                self.git_view_reload();
-                self.flash = Some(format!(
-                    "{}: {}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Unstaged),
-                    self.format_path(&path)
-                ));
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}: {e}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                ))
-            }
-        }
+        let label = self.format_path(&path);
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::Unstage,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path,
+            text: String::new(),
+            flag: false,
+            label,
+            count: 0,
+        });
     }
     /// `S` in the Git view = stage all (git add -A). Does nothing if there are no changes.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -148,22 +445,19 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoChanges).into());
             return;
         }
-        match crate::git::stage_all(&self.tab.root) {
-            Ok(()) => {
-                let n = self.tab.git_view_entries.len();
-                self.git_view_reload();
-                self.flash = Some(format!(
-                    "{} ({n})",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::StagedAll)
-                ));
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}: {e}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                ))
-            }
-        }
+        // The count in the completion flash is how many entries were listed **when the key was
+        // pressed** — same as the synchronous version, which read it before reloading the list.
+        let count = self.tab.git_view_entries.len();
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::StageAll,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path: PathBuf::new(),
+            text: String::new(),
+            flag: false,
+            label: String::new(),
+            count,
+        });
     }
     /// `U` in the Git view = unstage all (git reset HEAD). Does nothing if nothing is staged.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -172,18 +466,16 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NothingStaged).into());
             return;
         }
-        match crate::git::unstage_all(&self.tab.root) {
-            Ok(()) => {
-                self.git_view_reload();
-                self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::UnstagedAll).into());
-            }
-            Err(e) => {
-                self.flash = Some(format!(
-                    "{}: {e}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::Failed)
-                ))
-            }
-        }
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::UnstageAll,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path: PathBuf::new(),
+            text: String::new(),
+            flag: false,
+            label: String::new(),
+            count: 0,
+        });
     }
     /// `x` in the Git view = discard. Opens a confirmation dialog (on confirm: git::discard then reload).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -479,18 +771,19 @@ impl App {
             return Ok(());
         };
         let name = b.name;
-        match crate::git::checkout(&self.tab.root, &name) {
-            Ok(()) => {
-                self.refresh()?;
-                self.ensure_git_status_now(); // update branch name/status immediately (correct even before the next draw)
-                self.close_git_branches();
-                self.flash = Some(format!(
-                    "{}: {name}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::SwitchedTo)
-                ));
-            }
-            Err(e) => self.flash = Some(format!("{e}")),
-        }
+        // Runs in the background (design principle #4) — a checkout rewrites the working tree and
+        // can stall on a slow filesystem. `refresh`/`ensure_git_status_now`/`close_git_branches`
+        // move to `apply_git_op`.
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::Checkout,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path: PathBuf::new(),
+            text: name.clone(),
+            flag: false,
+            label: name,
+            count: 0,
+        });
         Ok(())
     }
     /// `n`: Open the input dialog for a new branch name (on confirm, create and switch).
@@ -531,16 +824,16 @@ impl App {
     }
     /// Confirm the deletion. `force`=false is safe (-d) / true is force (-D). On success, reloads the list.
     pub fn git_delete_branch(&mut self, name: &str, force: bool) {
-        match crate::git::delete_branch(&self.tab.root, name, force) {
-            Ok(()) => {
-                self.git_branches_reload();
-                self.flash = Some(format!(
-                    "{}: {name}",
-                    crate::i18n::tr(self.lang, crate::i18n::Msg::DeletedBranch)
-                ));
-            }
-            Err(e) => self.flash = Some(format!("{e}")),
-        }
+        self.start_git_op(crate::app::GitOpJob {
+            kind: crate::app::GitOpKind::DeleteBranch,
+            root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+            tab_id: 0,            // likewise filled in by start_git_op
+            path: PathBuf::new(),
+            text: name.to_string(),
+            flag: force,
+            label: name.to_string(),
+            count: 0,
+        });
     }
 
     // --- Branch filtering (`/`) ----------------------------------------------

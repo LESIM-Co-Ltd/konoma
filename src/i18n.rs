@@ -360,6 +360,8 @@ pub enum Msg {
     QuitConfirm,
     /// Extra line in the quit confirmation while a background file operation is still running.
     QuitWhileFileOp,
+    /// Extra line in the quit confirmation while a background git write is still running.
+    QuitWhileGitOp,
     StQuit,
     StQuitHint,
     StFilter,
@@ -405,6 +407,10 @@ pub enum Msg {
     BusyImages,
     BusyFileOp,
     FileOpBusy,
+    /// Busy-indicator label while a git write runs in the background.
+    BusyGitOp,
+    /// Rejection flash when a second git write is requested while one is still running.
+    GitOpBusy,
     TaskFileChanged,
     AgoMin,
     AgoMonths,
@@ -857,6 +863,7 @@ fn en(msg: Msg) -> &'static str {
         StDrop => "DROP",
         QuitConfirm => "Quit konoma?",
         QuitWhileFileOp => "a file operation is still running — quitting will interrupt it",
+        QuitWhileGitOp => "a git operation is still running — quitting will interrupt it",
         StQuit => "QUIT",
         StQuitHint => "y / q / Enter = quit    n / Esc = cancel",
         StFilter => "FILTER",
@@ -949,6 +956,8 @@ fn en(msg: Msg) -> &'static str {
         BusyImages => "loading images",
         BusyFileOp => "file op",
         FileOpBusy => "another file operation is still running",
+        BusyGitOp => "git",
+        GitOpBusy => "another git operation is still running",
         // See `CodeBlockCopyUnavailable`'s comment — same class of refusal, same reason not to
         // name "the file changed" as the cause.
         TaskFileChanged => "couldn't toggle checkbox — reloaded",
@@ -1309,6 +1318,7 @@ fn jp(msg: Msg) -> &'static str {
         StDrop => "ドロップ",
         QuitConfirm => "konoma を終了しますか？",
         QuitWhileFileOp => "ファイル操作が実行中です — 終了すると中断されます",
+        QuitWhileGitOp => "git 操作が実行中です — 終了すると中断されます",
         StQuit => "終了確認",
         StQuitHint => "y / q / Enter = 終了    n / Esc = 取消",
         StFilter => "絞り込み",
@@ -1401,6 +1411,8 @@ fn jp(msg: Msg) -> &'static str {
         BusyImages => "画像読込",
         BusyFileOp => "ファイル操作",
         FileOpBusy => "別のファイル操作を実行中です",
+        BusyGitOp => "git 操作",
+        GitOpBusy => "別の git 操作を実行中です",
         TaskFileChanged => "チェックボックスを切り替えられませんでした — 再読込しました",
         AgoMin => "分前",
         AgoMonths => "ヶ月前",
@@ -1871,6 +1883,8 @@ mod tests {
         Msg::BusyImages,
         Msg::BusyFileOp,
         Msg::FileOpBusy,
+        Msg::BusyGitOp,
+        Msg::GitOpBusy,
         Msg::TaskFileChanged,
         Msg::AgoMin,
         Msg::AgoMonths,
@@ -1970,6 +1984,7 @@ mod tests {
         Msg::MermaidPanAffordance,
         Msg::QuitConfirm,
         Msg::QuitWhileFileOp,
+        Msg::QuitWhileGitOp,
         Msg::StQuit,
         Msg::StQuitHint,
         Msg::StHelp,

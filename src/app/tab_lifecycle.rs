@@ -226,6 +226,12 @@ impl App {
     /// New tab. Create another tree context starting from the current root and switch to it.
     /// The new tab starts in Tree (since it has no preview target). The source tab's preview is
     /// preserved by `save_active`, so it is not lost.
+    /// Hand out the next unused `PerTab::id`.
+    fn next_tab_id(&mut self) -> u64 {
+        self.tab_seq = self.tab_seq.wrapping_add(1);
+        self.tab_seq
+    }
+
     pub fn tab_new(&mut self) -> Result<()> {
         self.save_active();
         // The heading outline overlay isn't carried into the new tab (prevents an empty overlay
@@ -234,6 +240,10 @@ impl App {
         // Same for the table-cell full-text popup.
         self.table_cell_open = false;
         let root = self.tab.root.clone();
+        // A brand-new tab needs its own identity: `tab_new` reuses the `self.tab` struct in place
+        // (it doesn't build a fresh `PerTab`), so without this the new tab would inherit — and be
+        // indistinguishable from — the tab it was opened from. See `PerTab::id`.
+        self.tab.id = self.next_tab_id();
         self.tab.open_dir = root.clone();
         self.tab.root = root;
         self.tab.selected = 0;

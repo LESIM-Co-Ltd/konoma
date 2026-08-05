@@ -608,6 +608,80 @@ pub struct FileOpResult {
     err: Option<String>,
 }
 
+/// Which **git write** a background job is performing (design principle #4 — see
+/// `App::start_git_op`). Every variant shells out to `git`, whose runtime is unbounded in practice:
+/// a `pre-commit` hook can lint a huge repo for a minute, a checkout over a network mount can stall,
+/// and any of them can wait on another process's `index.lock`. Doing that on the UI thread froze
+/// konoma outright, while the *read* side (`git status` / `ignored`) had already been moved off it.
+///
+/// Deliberately **not** solved with a timeout+kill: killing `git commit` mid-flight leaves
+/// `.git/index.lock` behind and the repository unusable until the user removes it by hand, which is
+/// worse than the freeze — and a slow-but-legitimate hook is not an error to abort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOpKind {
+    Stage,
+    Unstage,
+    StageAll,
+    UnstageAll,
+    Discard,
+    Commit,
+    Checkout,
+    CreateBranch,
+    DeleteBranch,
+    WorktreeAdd,
+}
+
+/// A queued git write handed to the background worker (or run synchronously when no worker is
+/// attached — see `App::start_git_op`). The operands are flattened into one struct rather than
+/// carried per-variant so the worker stays a single `match`; each field documents which kinds use it.
+pub struct GitOpJob {
+    kind: GitOpKind,
+    /// The tree root the write is dispatched against. **Callers leave this empty** (`PathBuf::new()`,
+    /// like `FileOpJob::root`): `start_git_op` overwrites it from `self.tab.root` so there is a
+    /// single choke point and no call site can forget it. It travels through to `GitOpResult` so the
+    /// completion can tell whether it is landing on the repository it changed (see `apply_git_op`).
+    root: PathBuf,
+    /// Identity of the tab the write was dispatched from (`PerTab::id`), filled in by `start_git_op`
+    /// alongside `root`. `root` alone cannot answer "did *this* tab ask for it": `t` opens the new
+    /// tab at the current root, so two tabs sharing a root is the ordinary case.
+    tab_id: u64,
+    /// Path operand: the file for `Stage`/`Unstage`/`Discard`, the new directory for `WorktreeAdd`.
+    /// Empty for the kinds that take no path.
+    path: PathBuf,
+    /// Text operand: the message for `Commit`, the branch name for `Checkout`/`CreateBranch`/
+    /// `DeleteBranch`/`WorktreeAdd`. Empty for the kinds that take no text.
+    text: String,
+    /// `DeleteBranch`: force (`-D` instead of `-d`). `WorktreeAdd`: also create the branch (`-b`).
+    flag: bool,
+    /// Pre-formatted display text for the completion flash, resolved on the UI thread at dispatch
+    /// time. `format_path` renders relative to the *dispatching* tab's `open_dir`, and by the time
+    /// the result lands the active tab may be a different one — so the label is frozen here rather
+    /// than recomputed in `apply_git_op` (same "resolve what needs `&self` before dispatch" rule as
+    /// `FileOpJob::err_failed`).
+    label: String,
+    /// `StageAll`: how many entries the Git view listed at dispatch time (the count in its flash).
+    count: usize,
+}
+
+/// Outcome of a background git write, applied on the run loop's thread by `App::apply_git_op`.
+pub struct GitOpResult {
+    gen: u64,
+    kind: GitOpKind,
+    /// The tree root the write was dispatched from (copied from `GitOpJob`). `apply_git_op` compares
+    /// it with the now-active tab's root to answer "is that tab showing the repository that changed".
+    root: PathBuf,
+    /// The dispatching tab's identity (copied from `GitOpJob`), which answers the stricter question
+    /// "is the active tab the one that asked".
+    tab_id: u64,
+    path: PathBuf,
+    text: String,
+    label: String,
+    count: usize,
+    /// `None` = success. Otherwise git's own message, produced by `git.rs`'s `git_error_message`
+    /// (stderr's first `fatal:` line first, so the reason is never pushed off the end of the flash).
+    err: Option<String>,
+}
+
 pub struct App {
     /// The directory opened at startup (immutable). The reset target for `A` ResetAnchor. Kept separately because open_dir moves with `a`.
     launch_dir: PathBuf,
@@ -885,6 +959,8 @@ pub struct App {
 
     /// Tabs (FR-5). Each tab is a tree context. The active tab's working state is held in the fields above as the source of truth.
     tabs: Vec<PerTab>,
+    /// Source of `PerTab::id`. Only ever incremented, so an id is never reused for a later tab.
+    tab_seq: u64,
     active_tab: usize,
     /// Tab-list overlay (`T`). App-global (not per-tab).
     tab_list: bool,
@@ -968,6 +1044,18 @@ pub struct App {
     /// Live progress counters for the in-flight operation, shared with the worker thread. `Arc` so the
     /// UI thread can read it every frame without waiting on the worker.
     fileop_progress: Option<Arc<crate::fileops::Progress>>,
+
+    /// Sender returning results from the worker running background **git writes** (stage/unstage/
+    /// discard/commit/checkout/branch/worktree). If not attached (tests), `start_git_op` falls back
+    /// to running the write synchronously, exactly like `fileop_tx`/`spawn_or_sync_statuses`.
+    gitop_tx: Option<std::sync::mpsc::Sender<GitOpResult>>,
+    /// Generation of the current/most recent background git write. Incremented on dispatch; a result
+    /// is applied only if it still matches (guards against a stray stale send).
+    gitop_gen: u64,
+    /// The git write currently running in the background (None = idle). Only one runs at a time —
+    /// starting another while this is `Some` is rejected with a flash, because two concurrent writes
+    /// would contend on `.git/index.lock` and the second would simply fail.
+    gitop_pending: Option<GitOpKind>,
 }
 
 /// Path-copy kind (FR-6). Chosen by the key after `c`.
@@ -1324,6 +1412,14 @@ struct DecoratedMarkdown {
 /// at 1), matching what `App::new` used to initialize them to before this migration.
 #[derive(Clone)]
 pub(crate) struct PerTab {
+    /// Identity of this tab, unique for the lifetime of the process and never reused.
+    ///
+    /// Needed because a tab has no other stable name: its index moves when tabs are closed or
+    /// reordered, and its `root` is not unique either — `t` (`tab_new`) opens the new tab **at the
+    /// current root**, so two tabs sharing a root is the ordinary case, not a corner case. A
+    /// background git write that finishes after the user pressed `t` must still be able to tell
+    /// which of them asked for it (see `apply_git_op`). Handed out by `App::next_tab_id`.
+    pub(crate) id: u64,
     // --- Tree/root navigation state ---
     pub(crate) root: PathBuf,
     /// The directory opened at startup. The base for relative-path display (kept separately because root moves up with h).
@@ -1428,6 +1524,10 @@ pub(crate) struct PerTab {
 impl Default for PerTab {
     fn default() -> Self {
         Self {
+            // 0 = "no identity assigned yet". Every tab the user can actually reach gets a real id
+            // from `App::next_tab_id` (App::new for the first, tab_new for the rest); the default is
+            // only ever seen by the momentarily-empty slot `mem::take` leaves behind in `tabs`.
+            id: 0,
             // root/open_dir has no meaningful default — App::new overrides both right after
             // `PerTab::default()`, and `rebuild_tree` fills `entries`.
             root: PathBuf::new(),
@@ -1589,11 +1689,13 @@ impl App {
             media_cache: None,
             table_data: None,
             tab: PerTab {
+                id: 1,
                 root: root.clone(),
                 open_dir: root.clone(),
                 show_hidden,
                 ..PerTab::default()
             },
+            tab_seq: 1,
             table_viewport_rows: 0,
             table_cell_open: false,
             table_cell_scroll: 0,
@@ -1652,6 +1754,9 @@ impl App {
             fileop_pending: None,
             fileop_total: 0,
             fileop_progress: None,
+            gitop_tx: None,
+            gitop_gen: 0,
+            gitop_pending: None,
         };
         // Apply `[external] git` to this thread now, before entering the first call that touches
         // git (rebuild_tree). It's thread-local, so it doesn't race with other tests (see git.rs's
@@ -2617,6 +2722,12 @@ impl App {
         if self.fileop_pending.is_some() {
             v.push(crate::i18n::Msg::BusyFileOp);
         }
+        // A git write is the same class of thing: the user pressed `s`/`c`/Enter and is waiting on
+        // it. It comes before the scan label below so a `git commit` stuck in a pre-commit hook is
+        // never mistaken for the routine background status scan.
+        if self.git_op_running() {
+            v.push(crate::i18n::Msg::BusyGitOp);
+        }
         // Both the ignored set and status are "git scan in progress" = represented by the same label (shown if either is running).
         if self.git_ignored_pending.is_some() || self.git_status_pending.is_some() {
             v.push(crate::i18n::Msg::BusyGitScan);
@@ -2643,11 +2754,16 @@ impl App {
     /// for), a copy/move/delete is the very thing the user is waiting on. Hiding it would leave a
     /// multi-minute copy with no feedback at all, which is worse than the old synchronous version
     /// that at least froze visibly.
+    ///
+    /// A running **git write** is forced on for the same reason, and one stronger: a file operation
+    /// at least makes the tree visibly grow as it goes, whereas nothing on screen moves while a
+    /// `pre-commit` hook runs — with the indicator suppressed there would be no evidence at all that
+    /// the commit is still going, and the unchanged Git view would read as "the key did nothing".
     pub fn busy_indicator_active(&self) -> bool {
         if self.busy_jobs().is_empty() {
             return false;
         }
-        self.cfg.ui.busy_indicator || self.fileop_pending.is_some()
+        self.cfg.ui.busy_indicator || self.fileop_pending.is_some() || self.git_op_running()
     }
 
     /// Advance the spinner by one frame (the run loop calls this periodically while waiting = keeps it spinning).

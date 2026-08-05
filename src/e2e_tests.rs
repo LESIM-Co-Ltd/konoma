@@ -30,6 +30,11 @@ struct Sim {
     /// Receiver for background file operations, once `with_async_file_ops` opted in (the run loop
     /// owns this channel live). `None` = the synchronous fallback in `start_file_op` is used.
     fileop_rx: Option<std::sync::mpsc::Receiver<crate::app::FileOpResult>>,
+    /// Receiver for background git writes, once `with_async_git_ops` opted in (the run loop owns
+    /// this channel live). `None` = the synchronous fallback in `start_git_op` is used.
+    /// Gated on the `git` feature: without it there is no git write to run in the background.
+    #[cfg(feature = "git")]
+    gitop_rx: Option<std::sync::mpsc::Receiver<crate::app::GitOpResult>>,
     /// Receiver for background inline-Markdown-image decodes (`with_media`). Drained by `drain_md_images`.
     md_img_rx: Option<std::sync::mpsc::Receiver<crate::app::MdImageResult>>,
     /// Receiver for the background inline-image encode worker (`with_media`). Drained by `drain_md_encodes`.
@@ -54,6 +59,8 @@ impl Sim {
             term,
             quit: false,
             fileop_rx: None,
+            #[cfg(feature = "git")]
+            gitop_rx: None,
             md_img_rx: None,
             md_enc_rx: None,
             media_rx: None,
@@ -70,6 +77,17 @@ impl Sim {
         let (tx, rx) = std::sync::mpsc::channel();
         self.app.attach_fileop_runner(tx);
         self.fileop_rx = Some(rx);
+        self
+    }
+
+    /// Opt in to the **real background path** for git writes (stage/unstage/discard/commit/
+    /// checkout/branch/worktree): attach a runner channel just like `main` does, so `start_git_op`
+    /// spawns a worker instead of running `git` inline. Results are applied by `drain_git_ops`.
+    #[cfg(feature = "git")]
+    fn with_async_git_ops(mut self) -> Sim {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app.attach_gitop_runner(tx);
+        self.gitop_rx = Some(rx);
         self
     }
 
@@ -203,6 +221,22 @@ impl Sim {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("ワーカーが結果を返す");
         assert!(self.app.apply_file_op(res), "現世代の結果は適用される");
+        self.draw();
+    }
+
+    /// Wait for the in-flight git write's result and apply it (the run loop's
+    /// `while let Ok(result) = rx.gitop.try_recv()` step), then redraw.
+    #[cfg(feature = "git")]
+    #[track_caller]
+    fn drain_git_ops(&mut self) {
+        let rx = self
+            .gitop_rx
+            .as_ref()
+            .expect("with_async_git_ops() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("ワーカーが結果を返す");
+        assert!(self.app.apply_git_op(res), "現世代の結果は適用される");
         self.draw();
     }
 
@@ -5385,6 +5419,195 @@ fn e2e_git_stage_then_commit_appears_in_log() {
     assert!(s.app.is_git_log());
     s.see("ZZCOMMITSUBJECT");
     s.see("init");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Background git writes through real key input (design principle #4) -----------------------
+
+/// Install a `pre-commit` hook that parks until the test removes `$GIT_DIR/BLOCK`, so a commit's
+/// duration is controlled by the test rather than by a timer.
+///
+/// The `max` bound is a safety net, not a timing assumption: it exists so that a regression which
+/// puts the write back on the UI thread **fails** (the commit eventually lands, and the "no commit
+/// yet" assertion below breaks) instead of hanging the suite forever.
+#[cfg(feature = "git")]
+fn install_blocking_pre_commit_hook(dir: &std::path::Path) {
+    let hooks = dir.join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Stage and commit through the real key path with the background runner attached: `o` `s` `c`
+/// <message> Enter, then the run loop's drain step. The keys are identical to the synchronous
+/// version (`e2e_git_stage_then_commit_appears_in_log`) — moving the write off-thread must not
+/// change what the user types or sees afterwards.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_stage_and_commit_through_the_background_runner() {
+    let dir = sandbox("git_async_commit");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir)).with_async_git_ops();
+    s.key('o');
+    assert!(s.app.is_git_view());
+    assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
+
+    s.key('s');
+    assert!(s.app.git_op_running(), "ステージは裏で走る");
+    s.drain_git_ops();
+    assert_eq!(
+        staged_of(&s.app, "a.rs"),
+        Some(true),
+        "適用後に staged になる"
+    );
+
+    s.key('c');
+    assert!(s.app.is_dialog());
+    s.keys("ASYNCCOMMITSUBJECT");
+    s.enter();
+    assert!(s.app.git_op_running(), "コミットも裏で走る");
+    s.drain_git_ops();
+
+    let commits = crate::git::log(&s.app.tab.root, 200);
+    assert!(
+        commits.iter().any(|c| c.summary == "ASYNCCOMMITSUBJECT"),
+        "コミットが log に載る: {:?}",
+        commits
+            .iter()
+            .map(|c| c.summary.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(s.app.is_git_view(), "完了後も Git ビューに居る");
+    assert_eq!(
+        staged_of(&s.app, "a.rs"),
+        None,
+        "コミット済みは一覧から消える"
+    );
+    s.key('l');
+    assert!(s.app.is_git_log());
+    s.see("ASYNCCOMMITSUBJECT");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **The point of D3, verified structurally rather than by a clock.** While `git commit` is parked
+/// inside a `pre-commit` hook, konoma must keep handling keys and drawing.
+///
+/// No wall-clock assertion is involved: the hook holds until this test deletes `BLOCK`, so
+/// "`git log` still has only the seed commits" is a fact the test controls, not a race. The
+/// combination of "the commit has demonstrably not finished" and "these keys were processed and
+/// these frames rendered" is what proves the write is not on the UI thread. Before the fix,
+/// `s.enter()` never returned until the hook gave up, so the first assertion below would fail.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_keeps_responding_while_a_git_commit_is_blocked() {
+    let dir = sandbox("git_blocked_commit");
+    seed_repo(&dir);
+    install_blocking_pre_commit_hook(&dir);
+    let root = canon(&dir);
+    let git_dir = root.join(".git");
+    std::fs::write(git_dir.join("BLOCK"), b"").unwrap();
+
+    // Stage outside the harness, so the commit is the *only* git op this test dispatches and the
+    // "still running" assertion below is the first thing a regression trips over.
+    crate::git::stage_all(&root).unwrap();
+    let before = crate::git::log(&root, 200).len();
+    let mut s = Sim::new(&root).with_async_git_ops();
+    s.key('o');
+    s.key('c');
+    s.keys("BLOCKEDCOMMIT");
+    s.enter(); // dispatches the commit; the hook is parked
+
+    assert!(
+        s.app.git_op_running(),
+        "コミットは実行中(まだ完了していない)"
+    );
+    assert_eq!(
+        crate::git::log(&root, 200).len(),
+        before,
+        "フックが握っている間はコミットが作られていない"
+    );
+
+    // Keys keep working, and every one of them redraws (Sim::press draws after each key, exactly
+    // like the run loop) — so this also proves rendering isn't stuck behind the write.
+    s.key('q'); // leave the Git view
+    assert!(!s.app.is_git_view(), "git 実行中でも Git ビューを出られる");
+    let start = s.app.tab.selected;
+    for _ in 0..3 {
+        s.key('j');
+    }
+    assert!(
+        s.app.tab.selected > start,
+        "git 実行中でもツリーのカーソルが動く"
+    );
+    s.key('k');
+    s.see("a.rs"); // a frame really was produced
+                   // Still blocked, and still nothing committed: the keys above did not secretly wait for git.
+    assert!(s.app.git_op_running(), "ここまでキーを叩いてもまだ実行中");
+    assert_eq!(
+        crate::git::log(&root, 200).len(),
+        before,
+        "キー処理の間もコミットは作られていない"
+    );
+
+    // Release the hook and let the result land.
+    std::fs::remove_file(git_dir.join("BLOCK")).unwrap();
+    s.drain_git_ops();
+    assert!(!s.app.git_op_running(), "適用で実行中フラグが解ける");
+    let commits = crate::git::log(&root, 200);
+    assert!(
+        commits.iter().any(|c| c.summary == "BLOCKEDCOMMIT"),
+        "解放後にコミットが完了する: {:?}",
+        commits
+            .iter()
+            .map(|c| c.summary.clone())
+            .collect::<Vec<_>>()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `Q` while a git write is in flight must warn before quitting, even with `confirm_quit = false`:
+/// leaving mid-`commit` orphans a `git` that is still holding `.git/index.lock`.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_quit_during_a_git_write_asks_for_confirmation() {
+    let dir = sandbox("git_quit_during_write");
+    seed_repo(&dir);
+    install_blocking_pre_commit_hook(&dir);
+    let root = canon(&dir);
+    std::fs::write(root.join(".git").join("BLOCK"), b"").unwrap();
+
+    let mut cfg = Config::default();
+    cfg.ui.confirm_quit = false;
+    crate::git::stage_all(&root).unwrap();
+    let mut s = Sim::with_config(&root, cfg).with_async_git_ops();
+    s.key('o');
+    s.key('c');
+    s.keys("WILLQUIT");
+    s.enter();
+    assert!(s.app.git_op_running(), "コミットは裏で実行中");
+
+    s.key('Q');
+    assert!(!s.quit, "確認を出すのでこの時点では終了しない");
+    assert!(s.app.is_dialog(), "確認ダイアログが出る");
+    s.see(crate::i18n::tr(
+        s.app.lang,
+        crate::i18n::Msg::QuitWhileGitOp,
+    ));
+
+    // The warning only warns: `y` still leaves.
+    s.key('y');
+    assert!(s.quit, "y なら終了できる(引き止めない)");
+
+    std::fs::remove_file(root.join(".git").join("BLOCK")).ok();
     std::fs::remove_dir_all(&dir).ok();
 }
 

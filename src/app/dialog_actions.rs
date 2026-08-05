@@ -71,6 +71,23 @@ impl App {
         self.dialog = None;
     }
 
+    /// Put an input dialog back up with `text` already in it and the cursor at its end.
+    ///
+    /// Used when a submit could not go through after `dialog_submit` had already taken the dialog:
+    /// a git write is dispatched to a worker and can be **refused** (one runs at a time), which
+    /// would otherwise discard a commit message the user just wrote. Also used by `apply_git_op`
+    /// to hand a failed write's text back for a retry.
+    pub(super) fn reopen_input(&mut self, op: PendingOp, title: crate::i18n::Msg, text: &str) {
+        self.dialog = Some(Dialog {
+            op,
+            kind: DialogKind::Input {
+                title: crate::i18n::tr(self.lang, title).into(),
+                buffer: text.to_string(),
+                cursor: text.chars().count(),
+            },
+        });
+    }
+
     /// Handle a quit request (`q` at the top level / `Q` from anywhere). If `ui.confirm_quit` is on,
     /// open a yes/no confirmation dialog and return `true` (the caller must NOT quit yet). Otherwise
     /// return `false` (the caller quits immediately).
@@ -78,9 +95,14 @@ impl App {
     /// **While a file operation is running the confirmation is shown regardless of the setting**:
     /// the worker thread is detached, so quitting mid-copy leaves a half-copied directory behind.
     /// The dialog only warns — `y` still quits (we never block the user from leaving).
+    ///
+    /// **A running git write warns the same way**, and for a sharper reason: quitting during a
+    /// `commit`/`checkout`/`worktree add` orphans a `git` process that is still holding
+    /// `.git/index.lock`, so the repository can be left mid-write.
     pub fn request_quit(&mut self) -> bool {
         let file_op_running = self.fileop_pending.is_some();
-        if !self.cfg.ui.confirm_quit && !file_op_running {
+        let git_op_running = self.git_op_running();
+        if !self.cfg.ui.confirm_quit && !file_op_running && !git_op_running {
             return false;
         }
         let mut message = crate::i18n::tr(self.lang, crate::i18n::Msg::QuitConfirm).to_string();
@@ -91,6 +113,10 @@ impl App {
                 self.lang,
                 crate::i18n::Msg::QuitWhileFileOp,
             ));
+        }
+        if git_op_running {
+            message.push('\n');
+            message.push_str(crate::i18n::tr(self.lang, crate::i18n::Msg::QuitWhileGitOp));
         }
         self.dialog = Some(Dialog {
             op: PendingOp::Quit,
@@ -118,30 +144,28 @@ impl App {
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::MessageEmpty).into());
                 return Ok(());
             }
-            match crate::git::commit(&self.tab.root, message) {
-                Ok(()) => {
-                    // Commit succeeded against the staged index → re-fetch git data and update the view.
-                    self.refresh()?;
-                    if self.is_git_view() {
-                        self.git_view_reload();
-                    }
-                    self.flash =
-                        Some(crate::i18n::tr(self.lang, crate::i18n::Msg::Committed).into());
-                }
-                Err(e) => {
-                    // Show the failure (stderr) and reopen the input dialog with the same message (so it can be retried).
-                    self.flash = Some(self.describe_error(&e));
-                    let cursor = message.chars().count();
-                    self.dialog = Some(Dialog {
-                        op: PendingOp::GitCommit,
-                        kind: DialogKind::Input {
-                            title: crate::i18n::tr(self.lang, crate::i18n::Msg::CommitMessage)
-                                .into(),
-                            buffer: message.to_string(),
-                            cursor,
-                        },
-                    });
-                }
+            // Runs in the background (design principle #4): `git commit` runs the repository's
+            // hooks, and a `pre-commit` that lints a large tree takes as long as it takes. The
+            // success path (refresh + view reload) and the failure path (reopen this dialog with
+            // the message so it can be retried) both move to `apply_git_op`.
+            // `dialog` was taken at the top of this function, so a refused dispatch (another git
+            // write already in flight) would silently swallow what the user typed. Put the prompt
+            // back with the text intact — the flash `start_git_op` set explains why nothing happened.
+            if !self.start_git_op(crate::app::GitOpJob {
+                kind: crate::app::GitOpKind::Commit,
+                root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+                tab_id: 0,            // likewise filled in by start_git_op
+                path: PathBuf::new(),
+                text: message.to_string(),
+                flag: false,
+                label: String::new(),
+                count: 0,
+            }) {
+                self.reopen_input(
+                    PendingOp::GitCommit,
+                    crate::i18n::Msg::CommitMessage,
+                    message,
+                );
             }
             return Ok(());
         }
@@ -152,28 +176,24 @@ impl App {
                 self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NameEmpty).into());
                 return Ok(());
             }
-            match crate::git::create_branch(&self.tab.root, bname) {
-                Ok(()) => {
-                    self.refresh()?;
-                    self.ensure_git_status_now(); // update branch name/status immediately (correct even before the next draw)
-                    self.close_git_branches(); // created & switched → close the list and go to the Git view
-                    self.flash = Some(format!(
-                        "{}: {bname}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::CreatedBranch)
-                    ));
-                }
-                Err(e) => {
-                    self.flash = Some(self.describe_error(&e));
-                    let cursor = bname.chars().count();
-                    self.dialog = Some(Dialog {
-                        op: PendingOp::GitCreateBranch,
-                        kind: DialogKind::Input {
-                            title: crate::i18n::tr(self.lang, crate::i18n::Msg::NewBranch).into(),
-                            buffer: bname.to_string(),
-                            cursor,
-                        },
-                    });
-                }
+            // Runs in the background, same as checkout (it is a `git switch -c`, so it rewrites the
+            // working tree too). Success/failure handling moves to `apply_git_op`.
+            if !self.start_git_op(crate::app::GitOpJob {
+                kind: crate::app::GitOpKind::CreateBranch,
+                root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+                tab_id: 0,            // likewise filled in by start_git_op
+                path: PathBuf::new(),
+                text: bname.to_string(),
+                flag: false,
+                label: bname.to_string(),
+                count: 0,
+            }) {
+                // Same as commit above: a refused dispatch must not eat the typed name.
+                self.reopen_input(
+                    PendingOp::GitCreateBranch,
+                    crate::i18n::Msg::NewBranch,
+                    bname,
+                );
             }
             return Ok(());
         }
@@ -188,25 +208,28 @@ impl App {
                 return Ok(());
             }
             let target = self.worktree_create_target(bname);
+            // New-vs-existing is probed here, on the UI thread, and the answer is handed to the
+            // worker: it's a cheap libgit2 ref lookup (not a process), and it belongs with the rest
+            // of the dispatch-time decisions.
             let create_new = crate::git::branch_tip(&self.tab.root, bname).is_none();
-            match crate::git::worktree_add(&self.tab.root, &target, bname, create_new) {
-                Ok(()) => {
-                    // The target now exists on disk, so canonicalize it for a clean root/open_dir/
-                    // flash (`worktree_dir` can carry a literal `..` component, e.g. the default "../").
-                    let path = target.canonicalize().unwrap_or(target);
-                    self.reset_git_worktree_list_state();
-                    self.jump_to_dir(path.clone());
-                    self.tab.open_dir = path.clone();
-                    self.flash = Some(format!(
-                        "{}: {}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::CreatedWorktree),
-                        home_relative(&path)
-                    ));
-                }
-                // git's own `fatal: ...` message, shown unmodified (same contract as branch
-                // creation above). `self.tab.git_worktrees` was never touched here, so the list is
-                // still showing once this (now-closed) dialog is gone.
-                Err(e) => self.flash = Some(self.describe_error(&e)),
+            // Runs in the background (design principle #4): `worktree add` writes out a whole new
+            // checkout. Landing in the new worktree happens in `apply_git_op`.
+            if !self.start_git_op(crate::app::GitOpJob {
+                kind: crate::app::GitOpKind::WorktreeAdd,
+                root: PathBuf::new(), // filled in by start_git_op with tab.root at dispatch time
+                tab_id: 0,            // likewise filled in by start_git_op
+                path: target,
+                text: bname.to_string(),
+                flag: create_new,
+                label: bname.to_string(),
+                count: 0,
+            }) {
+                // Same as commit/branch above: a refused dispatch must not eat the typed name.
+                self.reopen_input(
+                    PendingOp::WorktreeCreate,
+                    crate::i18n::Msg::NewWorktree,
+                    bname,
+                );
             }
             return Ok(());
         }
@@ -380,35 +403,22 @@ impl App {
                 self.start_file_op(job);
             }
             // Git-view discard: git::discard → re-fetch the git status for the list/tree.
-            // If discarded from the GitDiff preview (came_from_git_view), reopen the Git view to return to it.
-            PendingOp::GitDiscard { path } => match crate::git::discard(&self.tab.root, &path) {
-                Ok(()) => {
-                    let from_diff = self.is_git_diff_preview();
-                    if from_diff {
-                        // Collapse the preview and go back to the Git view.
-                        self.tab.came_from_git_view = false;
-                        self.back_to_tree();
-                        self.open_git_view();
-                    }
-                    self.git_view_reload();
-                    // The discard itself succeeded. If the tree rebuild fails, notify about that
-                    // and don't overwrite it with a success flash (never falsely show "success").
-                    if self.rebuild_tree_notify() {
-                        self.flash = Some(format!(
-                            "{}: {}",
-                            crate::i18n::tr(self.lang, crate::i18n::Msg::Discarded),
-                            self.format_path(&path)
-                        ));
-                    }
-                }
-                Err(e) => {
-                    self.flash = Some(format!(
-                        "{}: {}",
-                        crate::i18n::tr(self.lang, crate::i18n::Msg::Failed),
-                        self.describe_error(&e)
-                    ))
-                }
-            },
+            // Runs in the background too (design principle #4) — restoring a large file from the
+            // index is a working-tree write like any other. Returning from the GitDiff preview to
+            // the Git view (came_from_git_view) happens in `apply_git_op`.
+            PendingOp::GitDiscard { path } => {
+                let label = self.format_path(&path);
+                self.start_git_op(crate::app::GitOpJob {
+                    kind: crate::app::GitOpKind::Discard,
+                    root: PathBuf::new(), // start_git_op fills this with tab.root at dispatch time
+                    tab_id: 0,            // likewise filled in by start_git_op
+                    path,
+                    text: String::new(),
+                    flag: false,
+                    label,
+                    count: 0,
+                });
+            }
             // Delete branch (safe): git branch -d. On failure (unmerged etc.) flash git's stderr.
             PendingOp::GitDeleteBranch { name } => self.git_delete_branch(&name, false),
             // Confirming a bookmark overwrite: actually register it (same path as mark_input).

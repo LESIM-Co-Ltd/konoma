@@ -41,8 +41,8 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, FileOpResult, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult, MdImageResult,
-    MediaResult, RemoteFetch, SortKey, StatusResult,
+    App, FileOpResult, GitOpResult, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult,
+    MdImageResult, MediaResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -132,6 +132,11 @@ fn main() -> Result<()> {
     // Long-running file operations (copy/move/duplicate/delete) also go to a separate thread.
     // Pasting/deleting a large directory used to freeze input/rendering (design principle #4).
     let (fileop_tx, fileop_rx) = std::sync::mpsc::channel::<FileOpResult>();
+    // Git **writes** (stage/unstage/discard/commit/checkout/branch/worktree) too. `git` has no
+    // bounded runtime — a pre-commit hook, a network mount, or another process holding
+    // `.git/index.lock` can each stall it — and running one on the UI thread froze konoma
+    // (design principle #4). The read side (status/ignored) was already off-thread above.
+    let (gitop_tx, gitop_rx) = std::sync::mpsc::channel::<GitOpResult>();
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
@@ -142,6 +147,7 @@ fn main() -> Result<()> {
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
     app.attach_fileop_runner(fileop_tx);
+    app.attach_gitop_runner(gitop_tx);
     // Report a config load error + keymap conflicts/ignored settings via a startup message
     // (silently falling back to the default would go unnoticed). If both are present, combine
     // them into one line.
@@ -184,6 +190,7 @@ fn main() -> Result<()> {
             ignored: ignored_rx,
             status: status_rx,
             fileop: fileop_rx,
+            gitop: gitop_rx,
         },
     );
 
@@ -356,6 +363,7 @@ struct WorkerRx {
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
     status: std::sync::mpsc::Receiver<StatusResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
+    gitop: std::sync::mpsc::Receiver<GitOpResult>,
 }
 
 fn run(
@@ -621,6 +629,13 @@ fn run(
         // Apply the separate thread's file operation (copy/move/duplicate/delete) completion.
         while let Ok(result) = rx.fileop.try_recv() {
             if app.apply_file_op(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // Apply the separate thread's git write (stage/commit/checkout/...) completion.
+        while let Ok(result) = rx.gitop.try_recv() {
+            if app.apply_git_op(result) {
                 needs_redraw = true;
             }
         }
