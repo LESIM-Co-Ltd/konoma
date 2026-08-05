@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.4] - 2026-08-05
+
 ### Fixed
 - **A closed `<details>` block containing a GitHub alert (`> [!NOTE]` etc.) leaked the alert's
   body — an information disclosure — regardless of whether the block was collapsed.** The renderer
@@ -1326,7 +1328,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...HEAD
+[0.23.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.2...v0.23.3
 [0.23.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.1...v0.23.2
 [0.23.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.0...v0.23.1
