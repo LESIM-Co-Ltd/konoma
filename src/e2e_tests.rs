@@ -695,6 +695,84 @@ fn e2e_preview_text_roundtrip() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// A file with (almost) no newlines — minified JS, a one-line JSON log — must behave like any other
+// text preview: the draw returns, scrolling works, and `q` goes back. `read_lines` runs inside
+// `terminal.draw`, so the per-line cap is what keeps that true; the allocation bound below is what
+// gives this test teeth (uncapped, opening a 4 MiB one-line file allocated ~21 MB in the frame).
+#[test]
+fn e2e_preview_one_huge_line_file_stays_responsive() {
+    let dir = sandbox("preview_huge_line");
+    seed_files(&dir);
+    let huge = "x".repeat(4 * 1024 * 1024);
+    std::fs::write(
+        dir.join("min.txt"),
+        format!("{huge}\nsecond line\nlast line\n"),
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    // Warm up on an ordinary file first, so one-time process-global init isn't attributed below.
+    s.select("notes.txt");
+    s.enter();
+    s.key('q');
+
+    s.select("min.txt");
+    let open_alloc = crate::mem_tests::allocated_by(|| s.enter());
+    assert_eq!(s.app.tab.mode, Mode::Preview, "巨大1行でもプレビューに入る");
+    s.see("PREVIEW");
+    s.see("xxxxxxxx");
+    assert!(
+        open_alloc < 2 * 1024 * 1024,
+        "4MiB の1行ファイルを開く1フレームが {open_alloc} バイト確保した(行を丸ごと実体化?)"
+    );
+    // Scrolling (the window re-reads on every step, so an uncapped read would be paid again here).
+    let scroll_alloc = crate::mem_tests::allocated_by(|| {
+        s.key('j');
+        s.key('k');
+    });
+    assert!(
+        scroll_alloc < 2 * 1024 * 1024,
+        "巨大1行のスクロール2回が {scroll_alloc} バイト確保した"
+    );
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻る");
+
+    // Again with `wrap = false` (the horizontal-scroll setting): now one logical line is one row,
+    // so the lines after the huge one are reachable and `l` actually moves along it.
+    let mut cfg = Config::default();
+    cfg.ui.wrap = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("min.txt");
+    s.enter();
+    s.see("xxxxxxxx");
+    s.key('G');
+    s.see("last line");
+    s.key('g');
+    s.see("xxxxxxxx");
+    // `l` walks the 2D caret along the line and the unwrapped view follows it horizontally; `$`
+    // goes to its last character. Read the column through the visual selection (the public view of
+    // the caret): on a 4 MiB line it must land inside the readable prefix, not at column ~4,194,303.
+    s.key('v'); // charwise visual, anchored at column 0
+    s.keys("lll");
+    s.press(KeyCode::Char('$'), KeyModifiers::NONE);
+    let end_col = match s.app.preview_selection() {
+        crate::app::PreviewSelection::Char { start, end } => {
+            assert_eq!(start.1, 0, "アンカーは行頭");
+            end.1
+        }
+        other => panic!("charwise 選択のはず: {other:?}"),
+    };
+    assert!(end_col > 2, "l/$ でキャレットが行に沿って進む: {end_col}");
+    assert!(
+        end_col < 100_000,
+        "$ のキャレット列が行長に比例している(上限が効いていない?): {end_col}"
+    );
+    s.esc(); // leave visual
+    s.see("xxxxxxxx");
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_markdown_link_follow_and_back() {
     let dir = sandbox("md_link");

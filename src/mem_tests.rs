@@ -234,6 +234,69 @@ fn windowed_preview_does_not_scale_with_file_size() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// GUARDS: a windowed read is bounded **per line**, not just per window. A file with no newlines
+// (minified JS, a one-line JSON log) used to be materialized whole by `read_lines` —
+// `MAX_LINE_BYTES` caps it and skips the remainder without storing it. Measured on the same axis
+// the sibling guard above uses: double the file and the allocation must NOT double. `read_lines`
+// runs inside `terminal.draw`, so this is a principle-#4 guard as much as a memory one.
+// (Uncapped, the 8 MiB case allocated ~42 MB and the 16 MiB case ~84 MB = an exact 2.0x scaling.)
+#[test]
+fn windowed_read_is_bounded_per_line() {
+    let dir = unique_tmp("konoma_mem_long_line");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // One enormous line, then ordinary ones (so `read_lines` also has to resynchronize past it).
+    let one_line_file = |name: &str, mib: usize| -> std::path::PathBuf {
+        let mut body = vec![b'x'; mib * 1024 * 1024];
+        body.push(b'\n');
+        for i in 0..60 {
+            body.extend_from_slice(format!("tail {i}\n").as_bytes());
+        }
+        let p = dir.join(name);
+        std::fs::write(&p, &body).unwrap();
+        p
+    };
+    let small = one_line_file("small.txt", 8);
+    let large = one_line_file("large.txt", 16); // exactly 2x
+
+    let read_alloc = |p: &Path| -> u64 {
+        let mut w = crate::preview::window::FileWindow::open(p).unwrap();
+        allocated_by(|| {
+            // 50 lines = a typical viewport height, i.e. one frame's worth of reading.
+            let lines = w.read_lines(0, 50).unwrap();
+            std::hint::black_box(&lines);
+        })
+    };
+    let small_alloc = read_alloc(&small);
+    let large_alloc = read_alloc(&large);
+
+    assert!(
+        large_alloc < small_alloc.saturating_mul(2),
+        "read_lines の確保が行の長さに比例している(2倍のファイルで alloc {large_alloc} が {small_alloc} の2倍以上=1行を丸ごと実体化?)"
+    );
+    // Absolute bound too: one call must stay in the hundreds of KB regardless of the line length
+    // (worst case is the per-line cap times the requested line count).
+    assert!(
+        large_alloc < 1024 * 1024,
+        "1回の read_lines が 1MiB 以上確保した: {large_alloc} バイト"
+    );
+
+    // The same must hold for the search scan, which reads line by line as well.
+    let find_alloc = |p: &Path| -> u64 {
+        let mut w = crate::preview::window::FileWindow::open(p).unwrap();
+        allocated_by(|| {
+            let hits = w.find_all_matches("tail 5", 100).unwrap();
+            std::hint::black_box(&hits);
+        })
+    };
+    let (fs_small, fs_large) = (find_alloc(&small), find_alloc(&large));
+    assert!(
+        fs_large < fs_small.saturating_mul(2),
+        "find_all_matches の確保が行の長さに比例している({fs_large} vs {fs_small})"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // GUARDS: cloned-per-tab / core structs stay small. PerTab is cloned on every tab snapshot/restore,
 // so a large buffer accidentally inlined into it multiplies memory by the tab count; App is held once
 // but a runaway struct is still a smell. Generous bounds (measured: App ~4.6KB, PerTab ~1KB).
