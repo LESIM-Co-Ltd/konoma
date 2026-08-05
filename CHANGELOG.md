@@ -17,6 +17,19 @@ All notable changes to konoma are documented in this file. The format is based o
   indentation from the start of the line while Markdown measures it from the start of the enclosing
   block — a list marker shifts everything inside its item to the right. Code blocks are now located
   with the same parser the renderer uses, so the two cannot disagree about what a code block is.
+- **A fenced code block whose closing line carried trailing text swallowed the rest of the
+  document.** Markdown ends such a block where its list item or quote ends, but konoma had no notion
+  of a container, so in nix's changelog everything after line 115 — 1316 lines — stopped being
+  recognized: a table rendered as raw pipe characters and eight list items lost their bullets. Two
+  other published changelogs have the same shape. Code blocks are now identified by the same parser
+  the renderer uses, which knows both about containers and about indented blocks.
+- **Markdown syntax written inside a code block was rewritten as if it were syntax.** Explaining a
+  keycap by writing `` `<kbd>Ctrl</kbd>` `` produced a keycap indistinguishable from a real one;
+  `` `[^1]` `` became a superscript; `` `<br>` `` inserted a line break that split the code span in
+  two. The same held for indented code blocks, where an equation was even lifted out of the block and
+  drawn as an image below it. Inline code and both kinds of code block are now left alone. (An
+  indented block containing `<kbd>` or `<details>` still loses its formatting on screen; its contents
+  are no longer altered.)
 - **Checkbox toggling was refused for documents using two spellings GFM allows**: a bullet followed
   by two to four spaces before the checkbox (`*   [ ] task`), and a checkbox with nothing after its
   closing bracket. Both appear in published crates.
