@@ -200,11 +200,11 @@ fn list_tar<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::io::Write;
 
     fn tmp_dir(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("konoma_archive_test_{name}_{}", std::process::id()));
+        let dir = unique_tmp(&format!("konoma_archive_test_{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

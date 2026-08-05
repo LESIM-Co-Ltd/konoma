@@ -17,6 +17,7 @@ use ratatui::Terminal;
 
 use crate::app::{App, Mode};
 use crate::config::Config;
+use crate::test_support::unique_tmp;
 use crate::{handle_key, ui};
 
 /// One simulated konoma session: an App plus a terminal, with a draw after every key
@@ -400,10 +401,7 @@ impl Sim {
 /// returned without ever queuing the second encode request, and `drain_md_encodes()` then waited
 /// on a message nobody had sent.
 fn sandbox(name: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("konoma_e2e_{name}_{}_{n}", std::process::id()));
+    let dir = crate::test_support::unique_tmp(&format!("konoma_e2e_{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -1625,7 +1623,7 @@ fn e2e_git_worktrees_view_lists_and_enter_switches_root() {
     let dir = sandbox("git_worktrees_view");
     seed_repo(&dir);
     let root = canon(&dir);
-    let linked = std::env::temp_dir().join("konoma_e2e_git_worktrees_view_linked");
+    let linked = unique_tmp("konoma_e2e_git_worktrees_view_linked");
     let _ = std::fs::remove_dir_all(&linked);
     let out = std::process::Command::new("git")
         .current_dir(&root)
@@ -1678,7 +1676,7 @@ fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
     let dir = sandbox("git_worktrees_new_tab");
     seed_repo(&dir);
     let root = canon(&dir);
-    let linked = std::env::temp_dir().join("konoma_e2e_git_worktrees_new_tab_linked");
+    let linked = unique_tmp("konoma_e2e_git_worktrees_new_tab_linked");
     let _ = std::fs::remove_dir_all(&linked);
     let out = std::process::Command::new("git")
         .current_dir(&root)
@@ -1730,11 +1728,20 @@ fn e2e_git_worktree_create_switches_into_it() {
     let dir = sandbox("git_worktree_create");
     seed_repo(&dir);
     let root = canon(&dir);
-    // The default worktree_dir ("../") places the new worktree as a sibling of the sandbox dir —
-    // pre-clean any stale leftover from a previous failed run (a *non-empty* leftover would make a
-    // fresh `git worktree add` fail with "already exists"; this test's own cleanup removes it again
-    // at the end, but a prior interrupted run could have skipped that).
-    let expected = std::env::temp_dir().join("e2e-wt-branch");
+    // The default worktree_dir ("../") places the new worktree as a **sibling of the sandbox
+    // dir** (`worktree_create_target`: `main.join(worktree_dir).join(branch_name)`) — and
+    // `sandbox()` puts `dir` directly under the shared OS temp dir, so that sibling also lands
+    // directly under the shared temp dir with the *branch name* as its only unique component.
+    // A literal branch name here would therefore collide with a concurrently-running instance of
+    // this very test even though `dir` itself is `unique_tmp`-safe — so the branch name itself
+    // must be the unique part; `expected` is then derived from the real placement formula
+    // (`root`'s parent + that branch name), matching `worktree_create_target`.
+    let branch_name = unique_tmp("e2e-wt-branch")
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let expected = root.parent().unwrap().join(&branch_name);
     let _ = std::fs::remove_dir_all(&expected);
 
     let mut s = Sim::new(&root);
@@ -1743,7 +1750,7 @@ fn e2e_git_worktree_create_switches_into_it() {
     assert!(s.app.is_git_worktrees());
     s.key('n');
     assert!(s.app.is_dialog(), "n で入力面に入る");
-    s.keys("e2e-wt-branch");
+    s.keys(&branch_name);
     s.enter();
 
     assert!(!s.app.is_git_worktrees(), "作成後は一覧を閉じる");
@@ -1753,7 +1760,7 @@ fn e2e_git_worktree_create_switches_into_it() {
     assert_eq!(new_root, expected.canonicalize().unwrap());
     assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
     assert!(
-        crate::git::branch_tip(&root, "e2e-wt-branch").is_some(),
+        crate::git::branch_tip(&root, &branch_name).is_some(),
         "新規ブランチが作られる"
     );
 
@@ -1793,9 +1800,9 @@ fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
     let src = sandbox("git_worktrees_refuse_src");
     seed_repo(&src);
     let src = canon(&src);
-    let bare = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_bare.git");
-    let wt = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_wt");
-    let gone = std::env::temp_dir().join("konoma_e2e_git_worktrees_refuse_gone");
+    let bare = unique_tmp("konoma_e2e_git_worktrees_refuse_bare.git");
+    let wt = unique_tmp("konoma_e2e_git_worktrees_refuse_wt");
+    let gone = unique_tmp("konoma_e2e_git_worktrees_refuse_gone");
     for p in [&bare, &wt, &gone] {
         let _ = std::fs::remove_dir_all(p);
     }
@@ -1891,7 +1898,7 @@ fn e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list() {
     let root = canon(&dir);
     let base = crate::git::branch(&root).expect("sanity: has a branch after seed_repo's commit");
 
-    let linked = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_linked");
+    let linked = unique_tmp("konoma_e2e_git_worktree_show_changes_linked");
     let _ = std::fs::remove_dir_all(&linked);
     let sh = |cwd: &std::path::Path, args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -2007,8 +2014,8 @@ fn e2e_git_worktree_show_changes_refuses_bare_worktree() {
     let src = sandbox("git_worktree_show_changes_refuse_bare_src");
     seed_repo(&src);
     let src = canon(&src);
-    let bare = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_refuse_bare.git");
-    let wt = std::env::temp_dir().join("konoma_e2e_git_worktree_show_changes_refuse_wt");
+    let bare = unique_tmp("konoma_e2e_git_worktree_show_changes_refuse_bare.git");
+    let wt = unique_tmp("konoma_e2e_git_worktree_show_changes_refuse_wt");
     for p in [&bare, &wt] {
         let _ = std::fs::remove_dir_all(p);
     }
@@ -3860,7 +3867,7 @@ fn e2e_tab_switch_reloads_tree_from_disk() {
 fn e2e_preview_file_paging_ctrl_n_p() {
     // Ctrl-n/Ctrl-p = paging through files while previewing: tree display order, directories skipped,
     // wraps at the ends, also traverses files inside an expanded subfolder, the tree cursor follows.
-    let dir = std::env::temp_dir().join("konoma_e2e_file_paging");
+    let dir = unique_tmp("konoma_e2e_file_paging");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("mid")).unwrap();
     std::fs::write(dir.join("a.txt"), b"alpha content\n").unwrap();
@@ -3913,7 +3920,7 @@ fn e2e_session_restore_reopens_previous_tabs() {
     let dir = sandbox("session_restore");
     std::fs::write(dir.join("a.txt"), "alpha body\n").unwrap();
     std::fs::write(dir.join("b.txt"), "beta body\n").unwrap();
-    let base = std::env::temp_dir().join("konoma_e2e_session_restore_base");
+    let base = unique_tmp("konoma_e2e_session_restore_base");
     let _ = std::fs::remove_dir_all(&base);
 
     // Session 1: preview a.txt → t for a new tab (tree) → cursor on b.txt.

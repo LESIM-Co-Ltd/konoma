@@ -253,6 +253,7 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     // ---- build_argv ---------------------------------------------------------------------------
 
@@ -345,7 +346,7 @@ mod tests {
 
     #[cfg(unix)]
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("konoma_command_test_{name}_{}", std::process::id()))
+        unique_tmp(&format!("konoma_command_test_{name}"))
     }
 
     #[cfg(unix)]
@@ -475,10 +476,16 @@ mod tests {
         // "...-2") must not be fooled by a sibling from a *different* call whose name happens to
         // start with the same characters without the "." separator ("...-20.png" starts_with
         // "...-2" but is NOT "...-2" + "." + anything).
-        let dir = std::env::temp_dir();
-        let base = format!("konoma_command_test_suffix_dot_{}-2", std::process::id());
-        let out = dir.join(&base);
-        let decoy = dir.join(format!("{base}0.png"));
+        let out = {
+            let mut s = unique_tmp("konoma_command_test_suffix_dot").into_os_string();
+            s.push("-2");
+            PathBuf::from(s)
+        };
+        let decoy = {
+            let mut s = out.clone().into_os_string();
+            s.push("0.png");
+            PathBuf::from(s)
+        };
         let _ = std::fs::remove_file(&out);
         std::fs::write(
             &decoy,

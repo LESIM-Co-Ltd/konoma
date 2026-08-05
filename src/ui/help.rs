@@ -178,6 +178,7 @@ mod tests {
     use super::*;
     use crate::app::{App, Mode};
     use crate::config::Config;
+    use crate::test_support::unique_tmp;
 
     /// Flatten help_lines into a single string (to inspect section/row text).
     fn text(app: &App) -> String {
@@ -194,7 +195,7 @@ mod tests {
     }
 
     fn app() -> App {
-        let dir = std::env::temp_dir().join("konoma_help_lines_test");
+        let dir = unique_tmp("konoma_help_lines_test");
         std::fs::create_dir_all(&dir).unwrap();
         App::new(dir, Config::default()).unwrap()
     }

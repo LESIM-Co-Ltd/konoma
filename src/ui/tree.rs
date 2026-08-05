@@ -417,6 +417,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn highlight_match_marks_query_in_yellow() {
@@ -472,7 +473,7 @@ mod tests {
 
     #[test]
     fn help_sections_lists_tree_keys_and_leaders() {
-        let dir = std::env::temp_dir().join("konoma_help_sections_test");
+        let dir = unique_tmp("konoma_help_sections_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let app = App::new(dir.clone(), crate::config::Config::default()).unwrap();

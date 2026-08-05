@@ -1619,6 +1619,8 @@ mod tests {
     use super::*;
     #[cfg(feature = "git")]
     use crate::config::Config;
+    #[cfg(feature = "git")]
+    use crate::test_support::unique_tmp;
 
     #[cfg(feature = "git")]
     fn init_repo(dir: &std::path::Path) {
@@ -1660,7 +1662,7 @@ mod tests {
     /// `(main_root, base_branch_name, linked_worktree_path)`.
     #[cfg(feature = "git")]
     fn sandbox_with_worktree(name: &str) -> (PathBuf, String, PathBuf) {
-        let dir = std::env::temp_dir().join(name);
+        let dir = unique_tmp(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -1669,7 +1671,7 @@ mod tests {
         sh(&dir, &["commit", "-q", "-m", "init"]);
         let root = dir.canonicalize().unwrap();
         let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
-        let linked = std::env::temp_dir().join(format!("{name}_linked"));
+        let linked = unique_tmp(&format!("{name}_linked"));
         let _ = std::fs::remove_dir_all(&linked);
         sh(
             &root,
@@ -1780,7 +1782,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn worktree_diff_base_prefers_newest_merge_base_over_config_order() {
-        let dir = std::env::temp_dir().join("konoma_gitview_diffbase_recency");
+        let dir = unique_tmp("konoma_gitview_diffbase_recency");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -1796,7 +1798,7 @@ mod tests {
                                                       // is now the merge-base any worktree branched off it will have with `develop`.
 
         let root = dir.canonicalize().unwrap();
-        let linked = std::env::temp_dir().join("konoma_gitview_diffbase_recency_linked");
+        let linked = unique_tmp("konoma_gitview_diffbase_recency_linked");
         let _ = std::fs::remove_dir_all(&linked);
         sh(
             &root, // root is currently checked out on `develop`, so the worktree branches off its tip

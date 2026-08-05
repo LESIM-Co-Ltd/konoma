@@ -103,11 +103,11 @@ pub fn load(path: &Path) -> std::io::Result<TextContent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::io::Write;
 
     fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("konoma_text_test_{name}"));
+        let p = unique_tmp(&format!("konoma_text_test_{name}"));
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(bytes).unwrap();
         p

@@ -956,6 +956,7 @@ fn load_body(path: &Path, lang: crate::i18n::Lang) -> String {
 mod gitdiff_tests {
     use crate::app::App;
     use crate::config::Config;
+    use crate::test_support::unique_tmp;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
@@ -982,7 +983,7 @@ mod gitdiff_tests {
     /// (2) both the deleted line content (beta) and the added line content (gamma) appear on screen.
     #[test]
     fn gitdiff_preview_renders_with_colored_rows() {
-        let dir = std::env::temp_dir().join("konoma_ui_gitdiff_render");
+        let dir = unique_tmp("konoma_ui_gitdiff_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -1022,7 +1023,7 @@ mod gitdiff_tests {
     /// A file with no diff (clean) shows "(no changes)".
     #[test]
     fn gitdiff_clean_file_shows_no_changes() {
-        let dir = std::env::temp_dir().join("konoma_ui_gitdiff_clean");
+        let dir = unique_tmp("konoma_ui_gitdiff_clean");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);

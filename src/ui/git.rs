@@ -790,6 +790,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::test_support::unique_tmp;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -803,7 +804,7 @@ mod tests {
 
     #[test]
     fn git_view_renders_marker_and_filename() {
-        let dir = std::env::temp_dir().join("konoma_git_view_render");
+        let dir = unique_tmp("konoma_git_view_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -838,7 +839,7 @@ mod tests {
 
     #[test]
     fn git_log_render_shows_commit_summary() {
-        let dir = std::env::temp_dir().join("konoma_git_log_render");
+        let dir = unique_tmp("konoma_git_log_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -905,7 +906,7 @@ mod tests {
 
     #[test]
     fn git_branches_render_shows_current_marker() {
-        let dir = std::env::temp_dir().join("konoma_git_branches_render");
+        let dir = unique_tmp("konoma_git_branches_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -935,7 +936,7 @@ mod tests {
 
     #[test]
     fn git_detail_render_shows_diff() {
-        let dir = std::env::temp_dir().join("konoma_git_detail_render");
+        let dir = unique_tmp("konoma_git_detail_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -1029,7 +1030,7 @@ mod tests {
 
     #[test]
     fn graph_picker_renders_panel_title_and_branches() {
-        let dir = std::env::temp_dir().join("konoma_graph_picker_render");
+        let dir = unique_tmp("konoma_graph_picker_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);

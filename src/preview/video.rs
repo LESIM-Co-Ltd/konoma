@@ -94,6 +94,7 @@ fn temp_png_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     /// Returns None when external tools are missing or the target is not a video (does not crash; safe fallback).
     #[test]
@@ -118,7 +119,10 @@ mod tests {
             return;
         }
         // Generate a 64x64, 1-second solid-green video with lavfi and check the extracted frame's center is green.
-        let vid = std::env::temp_dir().join("konoma-vthumb-test-green.mp4");
+        // `.with_extension` (not baking `.mp4` into the `unique_tmp` prefix) keeps the extension
+        // at the very end of the path — ffmpeg infers the output muxer from it, so
+        // `…-green.mp4_1234_5` (no trailing `.mp4`) fails to encode.
+        let vid = unique_tmp("konoma-vthumb-test-green").with_extension("mp4");
         let _ = std::fs::remove_file(&vid);
         let made = Command::new("ffmpeg")
             .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])

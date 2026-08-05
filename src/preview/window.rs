@@ -259,12 +259,12 @@ impl FileWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::io::Write;
     use std::path::PathBuf;
 
     fn tmp(name: &str, bytes: &[u8]) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("konoma_window_{name}"));
+        let p = unique_tmp(&format!("konoma_window_{name}"));
         let mut f = File::create(&p).unwrap();
         f.write_all(bytes).unwrap();
         p

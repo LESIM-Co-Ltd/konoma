@@ -163,6 +163,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::config::Config;
+    use crate::test_support::unique_tmp;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
@@ -171,7 +172,7 @@ mod tests {
     #[test]
     fn git_graph_renders_lanes_refs_and_detail() {
         use std::process::Command;
-        let dir = std::env::temp_dir().join("konoma_graph_render_test");
+        let dir = unique_tmp("konoma_graph_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
@@ -276,7 +277,7 @@ mod tests {
     #[test]
     fn preview_line_start_end_horizontal_jump() {
         // While not wrapping, `$` jumps straight to line-end (END) and `0` jumps straight to line-start (START).
-        let dir = std::env::temp_dir().join("konoma_hscroll_jump_test");
+        let dir = unique_tmp("konoma_hscroll_jump_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let long = format!("START{}END", "x".repeat(200));
@@ -320,7 +321,7 @@ mod tests {
 
     #[test]
     fn global_bg_fills_buffer() {
-        let dir = std::env::temp_dir().join("konoma_ui_bg_test");
+        let dir = unique_tmp("konoma_ui_bg_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hi").unwrap();
 
@@ -354,7 +355,7 @@ mod tests {
 
     #[test]
     fn statusbar_split_puts_context_top_hints_bottom() {
-        let dir = std::env::temp_dir().join("konoma_chrome_split_test");
+        let dir = unique_tmp("konoma_chrome_split_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap(); // default = split
@@ -370,7 +371,7 @@ mod tests {
 
     #[test]
     fn statusbar_bottom_puts_everything_on_bottom() {
-        let dir = std::env::temp_dir().join("konoma_chrome_bottom_test");
+        let dir = unique_tmp("konoma_chrome_bottom_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut cfg = Config::default();
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn lang_jp_localizes_chrome_and_help() {
-        let dir = std::env::temp_dir().join("konoma_lang_jp_test");
+        let dir = unique_tmp("konoma_lang_jp_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
         cfg.ui.lang = "jp".into();
@@ -419,7 +420,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn tree_shows_git_status_marker() {
-        let dir = std::env::temp_dir().join("konoma_git_marker_test");
+        let dir = unique_tmp("konoma_git_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git2::Repository::init(&dir).unwrap();
@@ -442,7 +443,7 @@ mod tests {
         // C3: guarantees that the optimization of turning only the visible range into Lines always
         // keeps the selected row on-screen. With more entries than the viewport, select the last
         // one — the last name gets drawn and the first name is off-screen (= not drawn).
-        let dir = std::env::temp_dir().join("konoma_tree_visrange_test");
+        let dir = unique_tmp("konoma_tree_visrange_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("aaa_first.txt"), b"x").unwrap();
@@ -486,7 +487,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn tree_title_shows_branch() {
-        let dir = std::env::temp_dir().join("konoma_branch_title_test");
+        let dir = unique_tmp("konoma_branch_title_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git2::Repository::init(&dir).unwrap();
@@ -509,7 +510,7 @@ mod tests {
 
     #[test]
     fn help_overlay_renders_when_shown() {
-        let dir = std::env::temp_dir().join("konoma_help_render_test");
+        let dir = unique_tmp("konoma_help_render_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         let buf_text = |app: &mut App| -> String {
@@ -543,7 +544,7 @@ mod tests {
 
     #[test]
     fn sort_indicator_and_menu_render() {
-        let dir = std::env::temp_dir().join("konoma_sort_render_test");
+        let dir = unique_tmp("konoma_sort_render_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         let buf_text = |app: &mut App| -> String {
@@ -573,10 +574,10 @@ mod tests {
 
     #[test]
     fn bookmark_overlay_renders() {
-        let dir = std::env::temp_dir().join("konoma_bm_render_test");
+        let dir = unique_tmp("konoma_bm_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let base = std::env::temp_dir().join("konoma_bm_render_base");
+        let base = unique_tmp("konoma_bm_render_base");
         let _ = std::fs::remove_dir_all(&base);
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         // Swap in a test-only base so the real ~/.config isn't touched, and register local `a`.
@@ -609,7 +610,7 @@ mod tests {
 
     #[test]
     fn dialog_overlay_renders_input_and_confirm() {
-        let dir = std::env::temp_dir().join("konoma_dialog_render_test");
+        let dir = unique_tmp("konoma_dialog_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -647,7 +648,7 @@ mod tests {
 
     #[test]
     fn batch_rename_preview_overlay_renders() {
-        let dir = std::env::temp_dir().join("konoma_batchrename_render_test");
+        let dir = unique_tmp("konoma_batchrename_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -680,7 +681,7 @@ mod tests {
 
     #[test]
     fn selection_marker_and_count_render() {
-        let dir = std::env::temp_dir().join("konoma_selmarker_test");
+        let dir = unique_tmp("konoma_selmarker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -713,7 +714,7 @@ mod tests {
 
     #[test]
     fn info_popup_renders_file_details() {
-        let dir = std::env::temp_dir().join("konoma_info_render_test");
+        let dir = unique_tmp("konoma_info_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hello.txt"), b"hello world").unwrap(); // 11 bytes
@@ -751,7 +752,7 @@ mod tests {
 
     #[test]
     fn details_columns_render_aligned() {
-        let dir = std::env::temp_dir().join("konoma_details_render_test");
+        let dir = unique_tmp("konoma_details_render_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         std::fs::write(dir.join("main.rs"), vec![0u8; 12600]).unwrap(); // ~12.3 KB
@@ -788,7 +789,7 @@ mod tests {
 
     #[test]
     fn mode_chips_have_background_colors() {
-        let dir = std::env::temp_dir().join("konoma_modechip_test");
+        let dir = unique_tmp("konoma_modechip_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -815,7 +816,7 @@ mod tests {
 
     #[test]
     fn footer_reflects_internal_mode() {
-        let dir = std::env::temp_dir().join("konoma_footer_mode_test");
+        let dir = unique_tmp("konoma_footer_mode_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -847,7 +848,7 @@ mod tests {
     /// ops` etc. — which don't work while help is shown) keeps being displayed.
     #[test]
     fn help_chip_and_footer_reflect_the_help_surface_not_the_view_behind_it() {
-        let dir = std::env::temp_dir().join("konoma_help_footer_mode_test");
+        let dir = unique_tmp("konoma_help_footer_mode_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -897,7 +898,7 @@ mod tests {
         // With the default (bg=none), **no overall base coat** is painted = it stays the terminal
         // default (Reset). (Since a mode chip is a small region that intentionally has a background
         // color, verify that the body area = the terminal default.)
-        let dir = std::env::temp_dir().join("konoma_ui_nobg_test");
+        let dir = unique_tmp("konoma_ui_nobg_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hi").unwrap();
 

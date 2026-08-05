@@ -109,10 +109,11 @@ pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::io::Write;
 
     fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("konoma_table_tests");
+        let dir = unique_tmp("konoma_table_tests");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();

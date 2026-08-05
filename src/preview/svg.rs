@@ -131,6 +131,7 @@ pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     const TINY_SVG: &[u8] =
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
@@ -185,7 +186,7 @@ mod tests {
 
     #[test]
     fn intrinsic_size_reads_declared_size_without_rasterizing() {
-        let dir = std::env::temp_dir().join("konoma_svg_intrinsic_test");
+        let dir = unique_tmp("konoma_svg_intrinsic_test");
         let _ = std::fs::create_dir_all(&dir);
         let svg = dir.join("badge.svg");
         std::fs::write(&svg, TINY_SVG).unwrap();

@@ -1,16 +1,7 @@
 use super::bookmark_actions::fuzzy_filter_pool;
 use super::*;
 use crate::config::Config;
-
-/// A unique temp directory per call (pid + a process-global counter). Tests that share a setup
-/// helper (e.g. `app_with_table`) must not reuse one fixed path, or parallel runs collide and
-/// flake — especially on a busy CI runner.
-fn unique_tmp(prefix: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
-}
+use crate::test_support::unique_tmp;
 
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
@@ -25,7 +16,7 @@ fn item_target(it: &MdItem) -> &str {
 
 #[test]
 fn path_styles_format_as_expected() {
-    let open = std::env::temp_dir().join("konoma_app_test_open");
+    let open = unique_tmp("konoma_app_test_open");
     std::fs::create_dir_all(&open).unwrap();
     let mut app = App::new(open.clone(), Config::default()).unwrap();
     let file = open.join("src").join("main.rs");
@@ -33,12 +24,14 @@ fn path_styles_format_as_expected() {
     app.path_style = PathStyle::Full;
     assert_eq!(app.format_path(&file), file.display().to_string());
 
-    // Relative: prefixes the launch directory name.
+    // Relative: prefixes the launch directory name (derived from `open`'s own basename, not a
+    // literal — `open` is a `unique_tmp` fixture so its basename carries a pid/counter suffix).
     app.path_style = PathStyle::Relative;
-    assert_eq!(
-        app.format_path(&file),
-        "konoma_app_test_open/src/main.rs".to_string()
+    let expected_rel = format!(
+        "{}/src/main.rs",
+        open.file_name().unwrap().to_string_lossy()
     );
+    assert_eq!(app.format_path(&file), expected_rel);
 
     // Home-relative: a path under HOME becomes ~/....
     if let Some(home) = std::env::var_os("HOME") {
@@ -54,7 +47,7 @@ fn path_styles_format_as_expected() {
 fn format_path_relative_uses_dotdot_outside_open_dir() {
     // open_dir = .../work/A. Paths under it get the launch dir name prefixed (A/x.rs);
     // paths outside it (siblings/ancestors) are shown with a leading `..`.
-    let work = std::env::temp_dir().join("konoma_relpath_test_work");
+    let work = unique_tmp("konoma_relpath_test_work");
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
     std::fs::create_dir_all(&a).unwrap();
@@ -79,7 +72,7 @@ fn format_path_relative_uses_dotdot_outside_open_dir() {
 
 #[test]
 fn dialog_create_rename_and_delete_is_gated() {
-    let dir = std::env::temp_dir().join("konoma_dialog_ops_test");
+    let dir = unique_tmp("konoma_dialog_ops_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -174,7 +167,7 @@ fn dialog_create_rename_and_delete_is_gated() {
 
 #[test]
 fn dialog_input_cursor_moves_and_edits_midstring() {
-    let dir = std::env::temp_dir().join("konoma_dialog_cursor_test");
+    let dir = unique_tmp("konoma_dialog_cursor_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -211,7 +204,7 @@ fn dialog_input_cursor_moves_and_edits_midstring() {
 
 #[test]
 fn single_toggle_picks_scattered_items() {
-    let dir = std::env::temp_dir().join("konoma_single_toggle_test");
+    let dir = unique_tmp("konoma_single_toggle_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -242,7 +235,7 @@ fn single_toggle_picks_scattered_items() {
 
 #[test]
 fn visual_range_selects_and_batch_deletes() {
-    let dir = std::env::temp_dir().join("konoma_visual_test");
+    let dir = unique_tmp("konoma_visual_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for n in ["a.txt", "b.txt", "c.txt", "d.txt"] {
@@ -279,7 +272,7 @@ fn visual_range_selects_and_batch_deletes() {
 
 #[test]
 fn visual_scope_a_selects_same_dir_level_only() {
-    let dir = std::env::temp_dir().join("konoma_visual_scope_test");
+    let dir = unique_tmp("konoma_visual_scope_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -333,7 +326,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
 
 #[test]
 fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
-    let dir = std::env::temp_dir().join("konoma_batchrename_app_test");
+    let dir = unique_tmp("konoma_batchrename_app_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // Sorting by name ascending gives the order apple.md, mango.rs, zebra.txt.
@@ -373,7 +366,7 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
 
 #[test]
 fn batch_rename_collision_reopens_input() {
-    let dir = std::env::temp_dir().join("konoma_batchrename_collision_test");
+    let dir = unique_tmp("konoma_batchrename_collision_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"a").unwrap();
@@ -408,7 +401,7 @@ fn batch_rename_collision_reopens_input() {
 
 #[test]
 fn parse_dropped_paths_unescapes_splits_and_filters() {
-    let tmp = std::env::temp_dir().join("konoma_parse_drop_test");
+    let tmp = unique_tmp("konoma_parse_drop_test");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
     let a = tmp.join("a b.txt"); // a name with a space
@@ -432,11 +425,11 @@ fn parse_dropped_paths_unescapes_splits_and_filters() {
 
 #[test]
 fn drop_paste_opens_dialog_then_copy_and_move() {
-    let dir = std::env::temp_dir().join("konoma_drop_flow_test");
+    let dir = unique_tmp("konoma_drop_flow_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     // Two files with names containing spaces at the drop source (a different directory).
-    let ext = std::env::temp_dir().join("konoma_drop_src");
+    let ext = unique_tmp("konoma_drop_src");
     let _ = std::fs::remove_dir_all(&ext);
     std::fs::create_dir_all(&ext).unwrap();
     let src1 = ext.join("drop one.txt");
@@ -484,7 +477,7 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
 #[test]
 fn paste_into_filter_inserts_text_not_drop() {
     // Pasting while filter input is active must be **text insertion**, not a "drop" (regression guard).
-    let dir = std::env::temp_dir().join("konoma_paste_filter_test");
+    let dir = unique_tmp("konoma_paste_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -506,7 +499,7 @@ fn paste_into_filter_inserts_text_not_drop() {
 fn reanchor_root_sets_current_position_as_anchor() {
     // `:` takes no text input. It re-anchors the display base (open_dir) to the current tree
     // root reached via h/l.
-    let base = std::env::temp_dir().join("konoma_reanchor_test");
+    let base = unique_tmp("konoma_reanchor_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("sub")).unwrap();
     std::fs::write(base.join("sub").join("f.txt"), b"x").unwrap();
@@ -551,7 +544,7 @@ fn gitignored_entries_detected_and_dimmed() {
     use ratatui::backend::TestBackend;
     use ratatui::style::Modifier;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_gitignore_test");
+    let dir = unique_tmp("konoma_gitignore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git2::Repository::init(&dir).unwrap();
@@ -616,7 +609,7 @@ fn gitignored_entries_detected_and_dimmed() {
 #[cfg(feature = "git")]
 #[test]
 fn fs_burst_build_churn_skips_only_all_ignored_paths() {
-    let dir = std::env::temp_dir().join("konoma_fs_burst_churn_test");
+    let dir = unique_tmp("konoma_fs_burst_churn_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git2::Repository::init(&dir).unwrap();
@@ -684,7 +677,7 @@ fn diff_layout_parse_and_resolve() {
 #[cfg(feature = "git")]
 #[test]
 fn diff_from_tree_and_worktree_detail_and_cycle() {
-    let dir = std::env::temp_dir().join("konoma_diff_entrypoints");
+    let dir = unique_tmp("konoma_diff_entrypoints");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -766,7 +759,7 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
 fn diff_horizontal_scroll_reveals_long_line() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_diff_hscroll");
+    let dir = unique_tmp("konoma_diff_hscroll");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -821,7 +814,7 @@ fn diff_horizontal_scroll_reveals_long_line() {
 
 #[test]
 fn copy_cut_paste_flow() {
-    let dir = std::env::temp_dir().join("konoma_clipboard_test");
+    let dir = unique_tmp("konoma_clipboard_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("dst")).unwrap();
     std::fs::write(dir.join("a.txt"), b"A").unwrap();
@@ -859,7 +852,7 @@ fn copy_cut_paste_flow() {
 
 #[test]
 fn dialog_delete_permanent_removes_immediately() {
-    let dir = std::env::temp_dir().join("konoma_dialog_perm_test");
+    let dir = unique_tmp("konoma_dialog_perm_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("gone.txt"), b"x").unwrap();
@@ -890,7 +883,7 @@ fn dialog_delete_permanent_removes_immediately() {
 
 #[test]
 fn tree_page_clamps_within_bounds() {
-    let dir = std::env::temp_dir().join("konoma_tree_page_test");
+    let dir = unique_tmp("konoma_tree_page_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // Replace with a known count (100 entries).
@@ -942,7 +935,7 @@ fn clamp_cursor_no_overflow_at_extremes() {
 
 #[test]
 fn tree_move_extremes_no_panic() {
-    let dir = std::env::temp_dir().join("konoma_tree_move_extremes_test");
+    let dir = unique_tmp("konoma_tree_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.entries = (0..50)
@@ -965,7 +958,7 @@ fn tree_move_extremes_no_panic() {
 
 #[test]
 fn git_branch_move_extremes_no_panic() {
-    let dir = std::env::temp_dir().join("konoma_branch_move_extremes_test");
+    let dir = unique_tmp("konoma_branch_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.git_branches = Some(
@@ -986,7 +979,7 @@ fn git_branch_move_extremes_no_panic() {
 
 #[test]
 fn git_graph_move_extremes_no_panic() {
-    let dir = std::env::temp_dir().join("konoma_graph_move_extremes_test");
+    let dir = unique_tmp("konoma_graph_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let commit = |id: &str| crate::git::GraphRow {
@@ -1027,7 +1020,7 @@ fn git_graph_move_extremes_no_panic() {
 
 #[test]
 fn git_log_move_extremes_no_panic() {
-    let dir = std::env::temp_dir().join("konoma_log_move_extremes_test");
+    let dir = unique_tmp("konoma_log_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.git_log = Some(
@@ -1051,7 +1044,7 @@ fn git_log_move_extremes_no_panic() {
 
 #[test]
 fn git_view_move_extremes_no_panic() {
-    let dir = std::env::temp_dir().join("konoma_view_move_extremes_test");
+    let dir = unique_tmp("konoma_view_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.tab.git_view_entries = (0..4)
@@ -1099,7 +1092,7 @@ fn centered_fit_centers_and_downscales() {
 /// A test App with image state. Provides a source image (400x300=4:3), the image kind, a halfblocks picker
 /// (font 10x20, no terminal needed), and a dummy tx so that prepare_image can run.
 fn app_with_image() -> App {
-    let dir = std::env::temp_dir().join("konoma_img_state_test");
+    let dir = unique_tmp("konoma_img_state_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
@@ -1124,7 +1117,7 @@ fn inner(w: u16, h: u16) -> Rect {
 /// An App with a Picker forced to kitty graphics (no terminal needed). Used to verify, via the TestBackend buffer,
 /// that the GIF synchronous-encode render path actually emits image-transfer sequences.
 fn app_with_kitty() -> App {
-    let dir = std::env::temp_dir().join("konoma_gif_kitty_test");
+    let dir = unique_tmp("konoma_gif_kitty_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
     // Force kitty onto the halfblocks picker (no terminal needed) to verify generation of the
@@ -1209,7 +1202,7 @@ fn media_loading_renders_shared_spinner() {
 /// resets zoom to fit. Pure logic (no backend), so spawn_or_sync_media is a no-op here.
 #[test]
 fn pdf_page_navigation_clamps_and_indicates() {
-    let dir = std::env::temp_dir().join("konoma_pdf_nav_test");
+    let dir = unique_tmp("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
     app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
@@ -1452,13 +1445,20 @@ fn pan_noop_when_not_clipped_and_moves_when_clipped() {
 fn tabbar_appears_with_multiple_tabs() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_tabbar_test");
+    let dir = unique_tmp("konoma_tabbar_test");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("f.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // Expected label is derived from `dir`'s own basename, not a literal — `dir` is a
+    // `unique_tmp` fixture, so its basename carries a pid/counter suffix.
+    let label = dir.file_name().unwrap().to_string_lossy().to_string();
 
     let render = |app: &mut App| -> String {
-        let mut term = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        // Wide enough that both tab chips (each carrying `label`'s pid/counter suffix) are shown
+        // in full rather than dropped by the tab bar's overflow window — the chip text itself is
+        // never truncated (`visible_range` hides whole tabs, not partial chip text), so extra
+        // width just gives headroom against a long pid.
+        let mut term = Terminal::new(TestBackend::new(120, 6)).unwrap();
         term.draw(|f| crate::ui::render(f, app)).unwrap();
         term.backend()
             .buffer()
@@ -1468,12 +1468,12 @@ fn tabbar_appears_with_multiple_tabs() {
             .collect()
     };
     // Default tabbar=auto: no tabbar is shown with a single tab.
-    assert!(!render(&mut app).contains("1:konoma_tabbar_test"));
+    assert!(!render(&mut app).contains(&format!("1:{label}")));
     // With two tabs, 1:/2: appear on the tabbar.
     app.tab_new().unwrap();
     let s = render(&mut app);
-    assert!(s.contains("1:konoma_tabbar_test"), "タブ1が無い: {s:?}");
-    assert!(s.contains("2:konoma_tabbar_test"), "タブ2が無い: {s:?}");
+    assert!(s.contains(&format!("1:{label}")), "タブ1が無い: {s:?}");
+    assert!(s.contains(&format!("2:{label}")), "タブ2が無い: {s:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1482,7 +1482,7 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
     // Collect links (URLs) in the md preview, focus one, and open a local link inside konoma.
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_links_open_test");
+    let dir = unique_tmp("konoma_links_open_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("target.md"), b"# Target\n\nhi\n").unwrap();
@@ -1528,7 +1528,7 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
     // Tab's focus movement follows scroll based on **display rows**. Using logical rows instead
     // misjudges it as "still on screen" and never scrolls at all (regression reported by the
     // user on 2026-07-08).
-    let dir = std::env::temp_dir().join("konoma_md_focus_wrap_test");
+    let dir = unique_tmp("konoma_md_focus_wrap_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // A document with only a few logical lines, but whose first paragraph wraps heavily at
@@ -1582,7 +1582,7 @@ fn md_task_toggle_cycles_and_writes_file() {
     // Tab focuses a checkbox → toggling writes back only the single state character to the file.
     // Default cycle ' '⇄'x'; uppercase X is equivalent to x; other lines are unchanged (no byte
     // corruption even in CJK body text).
-    let dir = std::env::temp_dir().join("konoma_md_task_toggle_test");
+    let dir = unique_tmp("konoma_md_task_toggle_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1625,7 +1625,7 @@ fn md_task_toggle_cycles_and_writes_file() {
 fn md_task_toggle_star_and_plus_bullets() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_md_task_star_plus");
+    let dir = unique_tmp("konoma_md_task_star_plus");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1679,7 +1679,7 @@ fn md_task_toggle_custom_states_cycle() {
     use ratatui::Terminal;
     // ui.md_task_states = [" ", "/", "x"]: Space cycles through the array in order, and the
     // custom state [/] is also recognized as toggleable after re-rendering.
-    let dir = std::env::temp_dir().join("konoma_md_task_custom_test");
+    let dir = unique_tmp("konoma_md_task_custom_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1710,7 +1710,7 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
     use ratatui::Terminal;
     // Don't write if the displayed state and disk state disagree (flash + reload). Avoids
     // conflicting with an external agent's edits.
-    let dir = std::env::temp_dir().join("konoma_md_task_abort_test");
+    let dir = unique_tmp("konoma_md_task_abort_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1748,7 +1748,7 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
 fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_md_task_raw_test");
+    let dir = unique_tmp("konoma_md_task_raw_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1787,7 +1787,7 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
 fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_md_task_guard_test");
+    let dir = unique_tmp("konoma_md_task_guard_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -1823,14 +1823,7 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
 #[cfg(unix)]
 fn write_denied_by_permissions() -> bool {
     use std::os::unix::fs::PermissionsExt;
-    let probe = std::env::temp_dir().join(format!(
-        "konoma_perm_probe_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let probe = unique_tmp("konoma_perm_probe");
     std::fs::write(&probe, "x").unwrap();
     std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o444)).unwrap();
     let denied = std::fs::OpenOptions::new()
@@ -1861,7 +1854,7 @@ fn md_task_toggle_flashes_on_write_error() {
         );
         return;
     }
-    let dir = std::env::temp_dir().join("konoma_md_task_wrerr_test");
+    let dir = unique_tmp("konoma_md_task_wrerr_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
@@ -2103,7 +2096,7 @@ fn md_items_mix_links_and_tasks_in_document_order() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     // Links and checkboxes are loaded into a single Tab cycle in document order.
-    let dir = std::env::temp_dir().join("konoma_md_items_mix_test");
+    let dir = unique_tmp("konoma_md_items_mix_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2139,7 +2132,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
     use ratatui::Terminal;
     // Links, code blocks, and tasks are loaded into a single Tab cycle in document order, and
     // focusing a code block lets Enter copy its raw source (verified against focused_code_text).
-    let dir = std::env::temp_dir().join("konoma_md_code_focus_test");
+    let dir = unique_tmp("konoma_md_code_focus_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2353,7 +2346,7 @@ fn autolink_bare_urls_links_plain_text_not_code_and_keeps_order() {
 
 #[test]
 fn bare_url_becomes_a_focusable_md_item() {
-    let dir = std::env::temp_dir().join("konoma_autolink_item_test");
+    let dir = unique_tmp("konoma_autolink_item_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // A plain paragraph line with a bare URL (as tui-markdown emits: one raw span).
@@ -2371,7 +2364,7 @@ fn bare_url_becomes_a_focusable_md_item() {
 
 #[test]
 fn md_autolink_false_leaves_bare_urls_plain() {
-    let dir = std::env::temp_dir().join("konoma_autolink_off_test");
+    let dir = unique_tmp("konoma_autolink_off_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.ui.md_autolink = false;
@@ -2456,7 +2449,7 @@ fn substitute_emoji_skips_code_spans() {
 
 #[test]
 fn md_emoji_false_leaves_shortcodes() {
-    let dir = std::env::temp_dir().join("konoma_emoji_off_test");
+    let dir = unique_tmp("konoma_emoji_off_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.ui.md_emoji = false;
@@ -2508,7 +2501,7 @@ fn autolink_and_emoji_skip_code_without_background() {
 #[test]
 fn decorate_links_highlights_focused() {
     use ratatui::style::{Color, Modifier, Style};
-    let dir = std::env::temp_dir().join("konoma_links_hl_test");
+    let dir = unique_tmp("konoma_links_hl_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let link = |t: &str| {
@@ -2542,7 +2535,7 @@ fn code_file_decorates_with_colored_syntax() {
     // Opening a .rs file resolves to the Code kind, and decorated_lines returns colored
     // (Rgb foreground) lines.
     use ratatui::style::Color;
-    let dir = std::env::temp_dir().join("konoma_code_decorate_test");
+    let dir = unique_tmp("konoma_code_decorate_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.rs"), b"fn main() { let x = 1; }\n").unwrap();
@@ -2568,7 +2561,7 @@ fn code_file_decorates_with_colored_syntax() {
 fn tree_filter_finds_recursively_then_clears() {
     // `/` filter: recursively collects everything under root and narrows entries by a
     // case-insensitive substring match. Esc returns to normal.
-    let dir = std::env::temp_dir().join("konoma_tree_filter_test");
+    let dir = unique_tmp("konoma_tree_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src/ui")).unwrap();
     std::fs::write(dir.join("src/ui/tree.rs"), b"x").unwrap();
@@ -2706,22 +2699,40 @@ fn filter_fuzzy_is_case_insensitive_both_directions() {
     );
 }
 
-/// Speed guard (loose bound, debug build): fuzzy-filtering a 30,000-entry pool (the tree filter's
-/// realistic worst case — `collect_all`'s own cap is 50,000) must not visibly stall the UI thread
-/// on every keystroke. `Matcher` reuse (the thread-local in `bookmark_actions.rs`) is what keeps
-/// this fast — rebuilding one per call would add its own ~135KB allocation on top.
+// GUARDS: fuzzy-filtering a large pool (the tree filter's realistic worst case — `collect_all`'s
+// own cap is 50,000) must not visibly stall the UI thread on every keystroke. `Matcher` reuse (the
+// thread-local in `bookmark_actions.rs`) is what keeps this fast — rebuilding one per call would
+// add its own ~135KB allocation on top. Converted from a wall-clock bound to a **deterministic
+// allocation-scaling** check (same reasoning as `speed_tests::highlight_lang_large_source_is_bounded`):
+// doubling the pool size should roughly double the allocation, not quadruple it (measured: ~2.0x,
+// stable regardless of measurement order).
 #[test]
 fn filter_fuzzy_large_pool_is_bounded() {
-    let pool: Vec<Entry> = (0..30_000)
+    // Warm-up: the first `fuzzy_filter_pool` call anywhere in the process builds the thread-local
+    // `Matcher` (~135KB, one-time), which would otherwise land on whichever of the two measurements
+    // below runs first and skew the ratio (measured: without this, the first measurement absorbs
+    // the ~135KB and the ratio drifts to ~1.87 instead of ~2.0).
+    let warm_pool: Vec<Entry> = (0..10).map(|i| named_entry(&format!("w{i}.rs"))).collect();
+    let _ = fuzzy_filter_pool(&warm_pool, "w");
+
+    let pool_small: Vec<Entry> = (0..15_000)
         .map(|i| named_entry(&format!("module_{i}_helper_resolver.rs")))
         .collect();
-    let t = std::time::Instant::now();
-    let hits = fuzzy_filter_pool(&pool, "mhr");
-    let dt = t.elapsed();
-    assert!(!hits.is_empty(), "少なくとも一部は一致するはず");
+    // 2x entries
+    let pool_large: Vec<Entry> = (0..30_000)
+        .map(|i| named_entry(&format!("module_{i}_helper_resolver.rs")))
+        .collect();
+    let small_alloc = crate::mem_tests::allocated_by(|| {
+        let hits = fuzzy_filter_pool(&pool_small, "mhr");
+        assert!(!hits.is_empty(), "少なくとも一部は一致するはず");
+    });
+    let large_alloc = crate::mem_tests::allocated_by(|| {
+        let hits = fuzzy_filter_pool(&pool_large, "mhr");
+        assert!(!hits.is_empty(), "少なくとも一部は一致するはず");
+    });
     assert!(
-        dt < std::time::Duration::from_millis(500),
-        "30,000 件のファジー絞り込みが遅すぎる(回帰?): {dt:?}"
+        large_alloc < small_alloc.saturating_mul(3),
+        "2倍の件数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
     );
 }
 
@@ -2818,7 +2829,7 @@ fn text_filter_survives_fs_refresh() {
 fn small_code_file_is_also_windowed() {
     // #1: Code is windowed regardless of size (doesn't highlight every line) = instant even for
     // small files.
-    let dir = std::env::temp_dir().join("konoma_small_windowed_test");
+    let dir = unique_tmp("konoma_small_windowed_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.rs"), b"fn main() {}\n").unwrap();
@@ -2838,7 +2849,7 @@ fn line_numbers_gutter_tracks_position() {
     // #3: ui.line_numbers=true shows the line-number gutter. Start=1, and G gives the correct
     // line number at the end.
     use std::io::Write;
-    let dir = std::env::temp_dir().join("konoma_linenum_test");
+    let dir = unique_tmp("konoma_linenum_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("a.rs");
@@ -2903,7 +2914,7 @@ fn large_code_file_uses_windowed_reading() {
     // start/end windows without scanning the whole file.
     use ratatui::style::Color;
     use std::io::Write;
-    let dir = std::env::temp_dir().join("konoma_windowed_test");
+    let dir = unique_tmp("konoma_windowed_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("big.rs");
@@ -2955,13 +2966,16 @@ fn large_code_file_uses_windowed_reading() {
 #[test]
 fn tab_label_reflects_tree_root_or_preview_file() {
     // Tab name: the root's directory name while showing Tree, the file name while in Preview/an image.
-    let dir = std::env::temp_dir().join("konoma_tab_label_test");
+    let dir = unique_tmp("konoma_tab_label_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# hi\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    // Expected label is derived from `dir`'s own basename, not a literal — `dir` is a
+    // `unique_tmp` fixture, so its basename carries a pid/counter suffix.
+    let label = dir.file_name().unwrap().to_string_lossy().to_string();
     // While showing Tree, it's the root's directory name.
-    assert_eq!(app.tab_label(0), "konoma_tab_label_test");
+    assert_eq!(app.tab_label(0), label);
     // Preview doc.md → the tab name becomes the file name.
     let idx = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
     app.tab.selected = idx;
@@ -2971,11 +2985,7 @@ fn tab_label_reflects_tree_root_or_preview_file() {
     // A new tab (Tree) uses the root name. The now-inactive original tab keeps the snapshotted
     // file name.
     app.tab_new().unwrap();
-    assert_eq!(
-        app.tab_label(1),
-        "konoma_tab_label_test",
-        "新規タブはルート名"
-    );
+    assert_eq!(app.tab_label(1), label, "新規タブはルート名");
     assert_eq!(
         app.tab_label(0),
         "doc.md",
@@ -2988,7 +2998,7 @@ fn tab_label_reflects_tree_root_or_preview_file() {
 fn tab_switch_preserves_and_restores_preview() {
     // Each tab keeps its own preview state. Preview→new tab (Tree)→going back restores Preview
     // (it doesn't fall back to Tree).
-    let dir = std::env::temp_dir().join("konoma_tab_preview_restore_test");
+    let dir = unique_tmp("konoma_tab_preview_restore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# Hello\n\nbody\n").unwrap();
@@ -3020,7 +3030,7 @@ fn tab_switch_preserves_and_restores_preview() {
 #[test]
 fn tabs_create_switch_close_preserve_state() {
     // Verify that, in a tree with two child directories, each tab keeps its own selection position.
-    let dir = std::env::temp_dir().join("konoma_tabs_test");
+    let dir = unique_tmp("konoma_tabs_test");
     std::fs::create_dir_all(dir.join("a")).unwrap();
     std::fs::create_dir_all(dir.join("b")).unwrap();
     std::fs::write(dir.join("f.txt"), b"x").unwrap();
@@ -3064,7 +3074,7 @@ fn tabs_create_switch_close_preserve_state() {
 fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     // Core of #2/#6: the selection (BTreeSet<PathBuf>) is kept per tab without leaking, is
     // cleared on a root change, and the clipboard (Y/X/P) stays shared across the whole app.
-    let dir = std::env::temp_dir().join("konoma_tab_selection_perq_test");
+    let dir = unique_tmp("konoma_tab_selection_perq_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -3151,7 +3161,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
 #[test]
 fn refresh_rereads_directory_listing() {
     // Core of auto-refresh: refresh() re-reads the directory, and files added externally show up.
-    let dir = std::env::temp_dir().join("konoma_refresh_test");
+    let dir = unique_tmp("konoma_refresh_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -3172,7 +3182,7 @@ fn refresh_prunes_deleted_paths_from_selection() {
     // #12: refresh() prunes externally-deleted paths from the selection
     // (guards against a regression where a batch trash operation failed entirely if even one
     // item was gone).
-    let dir = std::env::temp_dir().join("konoma_refresh_prune_sel");
+    let dir = unique_tmp("konoma_refresh_prune_sel");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -3202,7 +3212,7 @@ fn refresh_reloads_active_preview() {
     // Known bug: refresh() during Preview mode reloads the current preview (reflecting external
     // edits). What we observe: the decoration cache (md_cache) that decorated_lines builds gets
     // invalidated by refresh.
-    let dir = std::env::temp_dir().join("konoma_refresh_reload_preview");
+    let dir = unique_tmp("konoma_refresh_reload_preview");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# v1\n").unwrap();
@@ -3234,7 +3244,7 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
     // never gets change events, so AI edits can't be detected. This verifies
     // out_of_root_watch_dir's contract: "an out-of-root preview returns its parent directory;
     // inside root / on the tree it's None".
-    let base = std::env::temp_dir().join("konoma_out_of_root_watch");
+    let base = unique_tmp("konoma_out_of_root_watch");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("root")).unwrap();
     std::fs::create_dir_all(base.join("outside")).unwrap();
@@ -3278,7 +3288,7 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
     // (Even if an expanded directory briefly becomes unreadable during an agent's batch
     // operation, the preview keeps following along.) What we observe: even when rebuild_tree
     // returns Err, reload_preview still runs and md_cache still gets invalidated.
-    let base = std::env::temp_dir().join("konoma_refresh_tree_fail");
+    let base = unique_tmp("konoma_refresh_tree_fail");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("root")).unwrap();
     let root = base.join("root").canonicalize().unwrap();
@@ -3321,7 +3331,7 @@ fn media_preview_reloads_only_when_file_changes() {
     // (Actual decoding requires a picker = a no-op in tests. We judge whether the reload path
     // ran by media_gen.)
     use image::RgbImage;
-    let dir = std::env::temp_dir().join("konoma_media_reload_test");
+    let dir = unique_tmp("konoma_media_reload_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let pic = dir.join("pic.png");
@@ -3372,7 +3382,7 @@ fn media_preview_reloads_only_when_file_changes() {
 
 #[test]
 fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
-    let dir = std::env::temp_dir().join("konoma_sort_test");
+    let dir = unique_tmp("konoma_sort_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("zdir")).unwrap(); // a directory
@@ -3421,7 +3431,7 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
 #[test]
 fn sort_config_sets_initial_order() {
     // [ui.sort] is reflected in the order at startup (key=size, dirs_first=false).
-    let dir = std::env::temp_dir().join("konoma_sort_config_test");
+    let dir = unique_tmp("konoma_sort_config_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("zdir")).unwrap();
@@ -3455,9 +3465,9 @@ fn sort_config_sets_initial_order() {
 
 #[test]
 fn bookmark_set_and_jump_via_marks() {
-    let base = std::env::temp_dir().join("konoma_bm_app_base");
+    let base = unique_tmp("konoma_bm_app_base");
     let _ = std::fs::remove_dir_all(&base);
-    let proj = std::env::temp_dir().join("konoma_bm_app_proj");
+    let proj = unique_tmp("konoma_bm_app_proj");
     let _ = std::fs::remove_dir_all(&proj);
     std::fs::create_dir_all(proj.join("sub")).unwrap();
     std::fs::write(proj.join("f.txt"), b"hello").unwrap();
@@ -3560,7 +3570,7 @@ fn bookmark_set_and_jump_via_marks() {
 
 #[test]
 fn tree_descend_sets_root_to_selected_dir() {
-    let dir = std::env::temp_dir().join("konoma_descend_test");
+    let dir = unique_tmp("konoma_descend_test");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub").join("f.txt"), b"x").unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -3592,7 +3602,7 @@ fn jump_to_dir_clears_selection_on_root_change() {
     // bug #2: changing root used to leave the old root's selection lingering by path, invisibly
     // targetable for a mis-operation since the marker isn't visible. jump_to_dir (a bookmark
     // jump) must also call clear_for_root_change so it isn't carried over.
-    let base = std::env::temp_dir().join("konoma_jump_clear_test");
+    let base = unique_tmp("konoma_jump_clear_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("subB")).unwrap();
     std::fs::write(base.join("a.txt"), b"x").unwrap();
@@ -3663,7 +3673,7 @@ fn copy_text_builds_each_kind() {
 fn copy_relative_matches_title_display() {
     // The copy string for `yr`/`cr` matches exactly the top-left title display
     // (format_path's Relative).
-    let work = std::env::temp_dir().join("konoma_copy_match_title");
+    let work = unique_tmp("konoma_copy_match_title");
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
     std::fs::create_dir_all(&a).unwrap();
@@ -3768,7 +3778,7 @@ fn open_code_file(dir: &std::path::Path, name: &str, cfg: Config) -> App {
 
 #[test]
 fn syntax_highlight_off_is_plain_and_not_pending() {
-    let dir = std::env::temp_dir().join("konoma_hl_off_test");
+    let dir = unique_tmp("konoma_hl_off_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
@@ -3789,7 +3799,7 @@ fn warm_grammar_opens_without_pending_and_colored() {
     // Warming the rs grammar beforehand means the Code preview colors immediately with no pending.
     let _ =
         crate::preview::code::highlight("fn x(){}\n", std::path::Path::new("warm.rs"), "TwoDark");
-    let dir = std::env::temp_dir().join("konoma_hl_warm_test");
+    let dir = unique_tmp("konoma_hl_warm_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = open_code_file(&dir, "b.rs", Config::default());
@@ -3804,7 +3814,7 @@ fn warm_grammar_opens_without_pending_and_colored() {
 
 #[test]
 fn loading_mode_follows_config() {
-    let dir = std::env::temp_dir().join("konoma_loading_mode_test");
+    let dir = unique_tmp("konoma_loading_mode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     assert!(app.loading_is_indicator(), "既定は indicator");
@@ -3814,7 +3824,7 @@ fn loading_mode_follows_config() {
 
 #[test]
 fn request_edit_targets_selected_file_or_warns_on_dir() {
-    let dir = std::env::temp_dir().join("konoma_edit_target_test");
+    let dir = unique_tmp("konoma_edit_target_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("a.rs"), b"x\n").unwrap();
@@ -3854,7 +3864,7 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
 
 #[test]
 fn request_edit_targets_preview_file() {
-    let dir = std::env::temp_dir().join("konoma_edit_preview_test");
+    let dir = unique_tmp("konoma_edit_preview_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("b.rs"), b"fn main() {}\n").unwrap();
@@ -3880,7 +3890,7 @@ fn request_edit_targets_preview_file() {
 
 #[test]
 fn spinner_cycles_and_has_no_emoji() {
-    let dir = std::env::temp_dir().join("konoma_spinner_test");
+    let dir = unique_tmp("konoma_spinner_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     // Advancing the frame gives a different glyph, and it cycles back after 10 frames (= spins).
@@ -3904,7 +3914,7 @@ fn spinner_cycles_and_has_no_emoji() {
 
 #[test]
 fn progressive_pending_renders_plain_text() {
-    let dir = std::env::temp_dir().join("konoma_prog_plain_test");
+    let dir = unique_tmp("konoma_prog_plain_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
@@ -3922,7 +3932,7 @@ fn progressive_pending_renders_plain_text() {
 #[test]
 fn preview_search_finds_highlights_and_navigates() {
     use std::io::Write;
-    let dir = std::env::temp_dir().join("konoma_preview_search_test");
+    let dir = unique_tmp("konoma_preview_search_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("a.rs");
@@ -4127,7 +4137,7 @@ fn added_texts(lines: &[crate::git::DiffLine]) -> Vec<String> {
 #[test]
 fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_follow_baseline_core");
+    let dir = unique_tmp("konoma_follow_baseline_core");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4190,7 +4200,7 @@ fn follow_baseline_hides_pre_follow_changes_and_toggles_to_full() {
 #[test]
 fn follow_baseline_clean_file_diffs_against_head() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_follow_baseline_clean");
+    let dir = unique_tmp("konoma_follow_baseline_clean");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4224,7 +4234,7 @@ fn follow_baseline_clean_file_diffs_against_head() {
 #[test]
 fn follow_baseline_oversized_dirty_file_falls_back_to_full() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_follow_baseline_big");
+    let dir = unique_tmp("konoma_follow_baseline_big");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4260,7 +4270,7 @@ fn follow_baseline_oversized_dirty_file_falls_back_to_full() {
 #[cfg(feature = "git")]
 #[test]
 fn follow_in_non_repo_falls_back_to_file_preview() {
-    let dir = std::env::temp_dir().join("konoma_follow_non_repo");
+    let dir = unique_tmp("konoma_follow_non_repo");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap(); // don't create .git = a non-repo
     let file = dir.join("note.txt");
@@ -4285,7 +4295,7 @@ fn follow_in_non_repo_falls_back_to_file_preview() {
 #[test]
 fn re_following_recaptures_baseline_and_drops_stale_diff() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_follow_recapture");
+    let dir = unique_tmp("konoma_follow_recapture");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4331,7 +4341,7 @@ fn re_following_recaptures_baseline_and_drops_stale_diff() {
 #[test]
 fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_graph_config_base");
+    let dir = unique_tmp("konoma_graph_config_base");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4402,7 +4412,7 @@ fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
 #[cfg(feature = "git")]
 #[test]
 fn descend_into_same_repo_subdir_reuses_ignored_set() {
-    let dir = std::env::temp_dir().join("konoma_ignored_reuse_same");
+    let dir = unique_tmp("konoma_ignored_reuse_same");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     init_git_repo(&dir);
@@ -4457,7 +4467,7 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
 #[test]
 fn returning_to_tree_re_syncs_stale_git_status() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_back_to_tree_resync");
+    let dir = unique_tmp("konoma_back_to_tree_resync");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4511,7 +4521,7 @@ fn returning_to_tree_re_syncs_stale_git_status() {
 #[cfg(feature = "git")]
 #[test]
 fn descend_into_nested_different_repo_recomputes_ignored_set() {
-    let dir = std::env::temp_dir().join("konoma_ignored_reuse_diff");
+    let dir = unique_tmp("konoma_ignored_reuse_diff");
     let _ = std::fs::remove_dir_all(&dir);
     // Nest an independent repoB (inner) inside outer repoA.
     std::fs::create_dir_all(dir.join("inner")).unwrap();
@@ -4558,7 +4568,7 @@ fn busy_indicator_reflects_background_jobs() {
     // busy_jobs is **derived** from each job's existing state (structurally prevents the
     // accident of a spinner getting stuck from a missed begin/end pairing). Idle = empty,
     // config off = hidden, multiple jobs = "+n" notation.
-    let dir = std::env::temp_dir().join("konoma_busy_indicator_test");
+    let dir = unique_tmp("konoma_busy_indicator_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.lang = crate::i18n::Lang::En;
@@ -4607,7 +4617,7 @@ fn busy_indicator_reflects_background_jobs() {
 fn busy_indicator_tracks_ignored_scan() {
     // git ignored scan: shows GitScan while pending is set, and clears once the current
     // generation is applied.
-    let dir = std::env::temp_dir().join("konoma_busy_gitscan_test");
+    let dir = unique_tmp("konoma_busy_gitscan_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.git_ignored_gen = 7;
@@ -4628,7 +4638,7 @@ fn busy_indicator_tracks_ignored_scan() {
 
 #[test]
 fn apply_ignored_reflects_current_gen_and_discards_stale() {
-    let dir = std::env::temp_dir().join("konoma_apply_ignored_gen");
+    let dir = unique_tmp("konoma_apply_ignored_gen");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -4672,7 +4682,7 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
 #[test]
 fn graph_legend_caps_branches_head_first_and_picker_toggles() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_graph_legend_cap_picker");
+    let dir = unique_tmp("konoma_graph_legend_cap_picker");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4746,7 +4756,7 @@ fn graph_legend_caps_branches_head_first_and_picker_toggles() {
 #[cfg(feature = "git")]
 #[test]
 fn open_git_view_lists_changes_and_stage_reloads() {
-    let dir = std::env::temp_dir().join("konoma_app_git_view");
+    let dir = unique_tmp("konoma_app_git_view");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4800,7 +4810,7 @@ fn open_git_view_lists_changes_and_stage_reloads() {
 fn refresh_in_git_view_refetches_entries() {
     // #4: refresh() while showing the Git view re-fetches the change list (git_view_entries)
     // (reflects changes that grew/shrank via returning from an external git tool or via FSEvents).
-    let dir = std::env::temp_dir().join("konoma_refresh_git_view_refetch");
+    let dir = unique_tmp("konoma_refresh_git_view_refetch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4836,7 +4846,7 @@ fn refresh_in_git_view_refetches_entries() {
 #[cfg(feature = "git")]
 #[test]
 fn git_view_stage_all_then_unstage_all() {
-    let dir = std::env::temp_dir().join("konoma_app_git_stage_all");
+    let dir = unique_tmp("konoma_app_git_stage_all");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4881,7 +4891,7 @@ fn git_view_stage_all_then_unstage_all() {
 #[cfg(feature = "git")]
 #[test]
 fn git_diff_opens_from_view_and_esc_returns_to_view() {
-    let dir = std::env::temp_dir().join("konoma_app_gitdiff_roundtrip");
+    let dir = unique_tmp("konoma_app_gitdiff_roundtrip");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4929,7 +4939,7 @@ fn git_diff_opens_from_view_and_esc_returns_to_view() {
 #[cfg(feature = "git")]
 #[test]
 fn git_diff_discard_confirm_reverts_and_returns_to_view() {
-    let dir = std::env::temp_dir().join("konoma_app_gitdiff_discard");
+    let dir = unique_tmp("konoma_app_gitdiff_discard");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -4971,7 +4981,7 @@ fn git_diff_discard_confirm_reverts_and_returns_to_view() {
 #[test]
 fn open_git_view_noop_when_not_a_repo() {
     // Doesn't open in a directory that's not a git repository (no-op + flash).
-    let dir = std::env::temp_dir().join("konoma_app_git_view_norepo");
+    let dir = unique_tmp("konoma_app_git_view_norepo");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -4985,7 +4995,7 @@ fn open_git_view_noop_when_not_a_repo() {
 #[test]
 fn git_branches_list_checkout_and_create() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_app_git_branch");
+    let dir = unique_tmp("konoma_app_git_branch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let git = |args: &[&str]| {
@@ -5365,7 +5375,7 @@ fn worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_o
 #[cfg(feature = "git")]
 #[test]
 fn git_commit_flow_creates_commit_with_message() {
-    let dir = std::env::temp_dir().join("konoma_app_git_commit_flow");
+    let dir = unique_tmp("konoma_app_git_commit_flow");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -5403,7 +5413,7 @@ fn git_commit_flow_creates_commit_with_message() {
 #[cfg(feature = "git")]
 #[test]
 fn git_commit_empty_message_is_rejected() {
-    let dir = std::env::temp_dir().join("konoma_app_git_commit_empty");
+    let dir = unique_tmp("konoma_app_git_commit_empty");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -5435,7 +5445,7 @@ fn git_commit_empty_message_is_rejected() {
 #[cfg(feature = "git")]
 #[test]
 fn git_log_lists_commits_and_detail_has_diff_lines() {
-    let dir = std::env::temp_dir().join("konoma_app_git_log_detail");
+    let dir = unique_tmp("konoma_app_git_log_detail");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -5497,7 +5507,7 @@ fn git_log_lists_commits_and_detail_has_diff_lines() {
 #[cfg(feature = "git")]
 #[test]
 fn open_git_log_noop_when_no_commits() {
-    let dir = std::env::temp_dir().join("konoma_app_git_log_unborn");
+    let dir = unique_tmp("konoma_app_git_log_unborn");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir); // no commits (unborn)
@@ -5527,7 +5537,7 @@ fn path_style_next_cycles_and_cycle_path_style_advances() {
     assert_eq!(PathStyle::Home.next(), PathStyle::Full);
     assert_eq!(PathStyle::Full.next(), PathStyle::Relative);
 
-    let dir = std::env::temp_dir().join("konoma_cycle_pathstyle_test");
+    let dir = unique_tmp("konoma_cycle_pathstyle_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5539,7 +5549,7 @@ fn path_style_next_cycles_and_cycle_path_style_advances() {
 
 #[test]
 fn toggle_hidden_reveals_and_hides_dotfiles() {
-    let dir = std::env::temp_dir().join("konoma_toggle_hidden_app_test");
+    let dir = unique_tmp("konoma_toggle_hidden_app_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("visible.txt"), b"x").unwrap();
@@ -5563,7 +5573,7 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
 
 #[test]
 fn sort_menu_open_and_close_toggles_flag() {
-    let dir = std::env::temp_dir().join("konoma_sortmenu_close_test");
+    let dir = unique_tmp("konoma_sortmenu_close_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5577,7 +5587,7 @@ fn sort_menu_open_and_close_toggles_flag() {
 
 #[test]
 fn looks_like_gif_uses_magic_not_extension() {
-    let dir = std::env::temp_dir().join("konoma_looks_like_gif_test");
+    let dir = unique_tmp("konoma_looks_like_gif_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.gif"), b"GIF89a\x00\x00").unwrap();
@@ -5605,7 +5615,7 @@ fn looks_like_gif_uses_magic_not_extension() {
 #[test]
 fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
     use crate::keymap::{ConflictKind, KeyConflict, KeyPress, Surface};
-    let dir = std::env::temp_dir().join("konoma_keymap_report_test");
+    let dir = unique_tmp("konoma_keymap_report_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5639,7 +5649,7 @@ fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
 
 #[test]
 fn take_warm_job_returns_once_then_none() {
-    let dir = std::env::temp_dir().join("konoma_take_warm_job_test");
+    let dir = unique_tmp("konoma_take_warm_job_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5657,7 +5667,7 @@ fn take_warm_job_returns_once_then_none() {
 
 #[test]
 fn launch_git_tool_sets_pending_flag_and_take_clears_it() {
-    let dir = std::env::temp_dir().join("konoma_launch_git_tool_test");
+    let dir = unique_tmp("konoma_launch_git_tool_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5670,7 +5680,7 @@ fn launch_git_tool_sets_pending_flag_and_take_clears_it() {
 
 #[test]
 fn preview_scroll_paging_and_to_top_non_windowed() {
-    let dir = std::env::temp_dir().join("konoma_preview_scroll_test");
+    let dir = unique_tmp("konoma_preview_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5972,7 +5982,7 @@ fn preview_page_non_windowed_decorated_markdown_is_unaffected() {
 
 #[test]
 fn preview_hscroll_moves_and_home_end() {
-    let dir = std::env::temp_dir().join("konoma_preview_hscroll_test");
+    let dir = unique_tmp("konoma_preview_hscroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -5993,7 +6003,7 @@ fn preview_hscroll_moves_and_home_end() {
 
 #[test]
 fn windowed_text_preview_reads_window_and_scrolls_lines() {
-    let dir = std::env::temp_dir().join("konoma_windowed_lines_test");
+    let dir = unique_tmp("konoma_windowed_lines_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut content = String::new();
@@ -6066,7 +6076,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
 fn request_edit_opens_at_windowed_caret_line() {
     // `e` opens the editor at the caret line for a windowed preview (text/code) (1-indexed).
     // Tree edits and non-windowed (decorated Markdown) get no line (opens at the top).
-    let dir = std::env::temp_dir().join("konoma_edit_line_test");
+    let dir = unique_tmp("konoma_edit_line_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut content = String::new();
@@ -6128,7 +6138,7 @@ fn request_edit_opens_at_windowed_caret_line() {
 
 #[test]
 fn preview_visual_selection_copies_logical_lines() {
-    let dir = std::env::temp_dir().join("konoma_preview_visual_test");
+    let dir = unique_tmp("konoma_preview_visual_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let content = (0..20)
@@ -6200,7 +6210,7 @@ fn preview_visual_selection_copies_logical_lines() {
 
 #[test]
 fn preview_charwise_selection_copies_character_range() {
-    let dir = std::env::temp_dir().join("konoma_preview_charwise_test");
+    let dir = unique_tmp("konoma_preview_charwise_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // 6 lines, each "abcdefghij".
@@ -6277,7 +6287,7 @@ fn preview_charwise_selection_copies_character_range() {
 
 #[test]
 fn markdown_raw_toggle_enables_windowed_selection() {
-    let dir = std::env::temp_dir().join("konoma_md_raw_test");
+    let dir = unique_tmp("konoma_md_raw_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -6327,7 +6337,7 @@ fn markdown_raw_toggle_enables_windowed_selection() {
 
 #[test]
 fn dialog_cursor_right_and_end_clamp() {
-    let dir = std::env::temp_dir().join("konoma_dialog_cursor_re_test");
+    let dir = unique_tmp("konoma_dialog_cursor_re_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -6578,7 +6588,7 @@ fn apply_image_resize_err_is_ignored() {
 
 #[test]
 fn attach_and_detach_image_backend_set_and_clear_state() {
-    let dir = std::env::temp_dir().join("konoma_attach_detach_img_test");
+    let dir = unique_tmp("konoma_attach_detach_img_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -6600,7 +6610,7 @@ fn attach_and_detach_image_backend_set_and_clear_state() {
 
 #[test]
 fn load_image_decodes_with_backend_and_noops_without() {
-    let dir = std::env::temp_dir().join("konoma_load_image_test");
+    let dir = unique_tmp("konoma_load_image_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("tiny.png");
@@ -6627,7 +6637,7 @@ fn load_image_decodes_with_backend_and_noops_without() {
 
 #[test]
 fn open_link_target_handles_anchor_missing_file_and_dir() {
-    let base = std::env::temp_dir().join("konoma_open_link_target_test");
+    let base = unique_tmp("konoma_open_link_target_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("sub")).unwrap();
     std::fs::write(base.join("a.md"), b"# doc").unwrap();
@@ -6693,7 +6703,7 @@ fn open_link_target_handles_anchor_missing_file_and_dir() {
 
 #[test]
 fn copy_target_follows_mode() {
-    let dir = std::env::temp_dir().join("konoma_copy_target_test");
+    let dir = unique_tmp("konoma_copy_target_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -6717,9 +6727,7 @@ fn copy_target_follows_mode() {
 
 #[test]
 fn tab_label_shows_root_dir_or_preview_file_name() {
-    let dir = std::env::temp_dir()
-        .join("konoma_tab_label_name_test")
-        .join("proj");
+    let dir = unique_tmp("konoma_tab_label_name_test").join("proj");
     let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -6759,7 +6767,7 @@ fn git_repo_with_commits(dir: &Path) {
 #[cfg(feature = "git")]
 #[test]
 fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
-    let dir = std::env::temp_dir().join("konoma_current_commit_meta_test");
+    let dir = unique_tmp("konoma_current_commit_meta_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -6809,7 +6817,7 @@ fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
 #[cfg(feature = "git")]
 #[test]
 fn git_copy_message_and_branch_name_set_flash() {
-    let dir = std::env::temp_dir().join("konoma_git_copy_flash_test");
+    let dir = unique_tmp("konoma_git_copy_flash_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -6847,7 +6855,7 @@ fn git_copy_message_and_branch_name_set_flash() {
 #[cfg(feature = "git")]
 #[test]
 fn git_copy_branch_name_copies_current_branch() {
-    let dir = std::env::temp_dir().join("konoma_git_copy_branch_test");
+    let dir = unique_tmp("konoma_git_copy_branch_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -6871,7 +6879,7 @@ fn git_copy_branch_name_copies_current_branch() {
 #[cfg(feature = "git")]
 #[test]
 fn git_view_unstage_single_file_reloads() {
-    let dir = std::env::temp_dir().join("konoma_git_view_unstage_test");
+    let dir = unique_tmp("konoma_git_view_unstage_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -6915,7 +6923,7 @@ fn git_view_unstage_single_file_reloads() {
 #[cfg(feature = "git")]
 #[test]
 fn git_view_start_discard_opens_confirm_without_destroying() {
-    let dir = std::env::temp_dir().join("konoma_git_view_start_discard_test");
+    let dir = unique_tmp("konoma_git_view_start_discard_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -6952,7 +6960,7 @@ fn git_view_start_discard_opens_confirm_without_destroying() {
 #[test]
 fn git_branch_filter_commit_and_backspace() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_branch_filter_commit_test");
+    let dir = unique_tmp("konoma_branch_filter_commit_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let git = |args: &[&str]| {
@@ -6993,7 +7001,7 @@ fn git_branch_filter_commit_and_backspace() {
 #[cfg(feature = "git")]
 #[test]
 fn graph_base_set_clear_and_detail_scroll_hscroll() {
-    let dir = std::env::temp_dir().join("konoma_graph_base_detail_scroll_test");
+    let dir = unique_tmp("konoma_graph_base_detail_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -7043,7 +7051,7 @@ fn graph_base_set_clear_and_detail_scroll_hscroll() {
 #[test]
 fn graph_picker_move_jump_toggle_current_only_and_cancel() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_graph_picker_ops_test");
+    let dir = unique_tmp("konoma_graph_picker_ops_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let git = |args: &[&str]| {
@@ -7119,7 +7127,7 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
 #[cfg(feature = "git")]
 #[test]
 fn close_git_graph_returns_to_git_view() {
-    let dir = std::env::temp_dir().join("konoma_close_git_graph_test");
+    let dir = unique_tmp("konoma_close_git_graph_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -7139,7 +7147,7 @@ fn close_git_graph_returns_to_git_view() {
 fn mark_set_state_and_cancel() {
     // Only `m`'s registration-pending state is the Mark surface (`'` opens the list immediately
     // and has no pending state).
-    let dir = std::env::temp_dir().join("konoma_mark_state_test");
+    let dir = unique_tmp("konoma_mark_state_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -7158,7 +7166,7 @@ fn mark_set_state_and_cancel() {
 #[test]
 fn bookmark_from_preview_registers_previewed_file() {
     // m while previewing registers "the file being displayed" (not the tree cursor).
-    let root = std::env::temp_dir().join("konoma_bm_preview_test");
+    let root = unique_tmp("konoma_bm_preview_test");
     let _ = std::fs::remove_dir_all(&root);
     let proj = root.join("proj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -7196,7 +7204,7 @@ fn bookmark_from_preview_registers_previewed_file() {
 #[test]
 fn global_bookmark_display_is_absolute() {
     // Global is displayed absolute (~ shortened), local uses the existing context-relative display.
-    let dir = std::env::temp_dir().join("konoma_bm_display_test");
+    let dir = unique_tmp("konoma_bm_display_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.path_style = PathStyle::Relative;
@@ -7226,7 +7234,7 @@ fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
     // Default (confirm_bookmark_overwrite=true): overwriting with a different path opens a
     // confirmation dialog and doesn't rewrite it immediately. y (dialog_confirm(true)) overwrites,
     // n (false) leaves it as-is.
-    let root = std::env::temp_dir().join("konoma_bm_overwrite_confirm");
+    let root = unique_tmp("konoma_bm_overwrite_confirm");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.txt"), b"a").unwrap();
@@ -7278,7 +7286,7 @@ fn bookmark_overwrite_confirm_opens_dialog_then_applies_or_cancels() {
 fn bookmark_overwrite_same_path_and_confirm_off_skip_dialog() {
     // Two cases where no confirmation appears: (1) re-registering the same path (not an
     // overwrite); (2) confirm_bookmark_overwrite=false.
-    let root = std::env::temp_dir().join("konoma_bm_overwrite_skip");
+    let root = unique_tmp("konoma_bm_overwrite_skip");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.txt"), b"a").unwrap();
@@ -7323,7 +7331,7 @@ fn tab_list_switch_close_and_guards() {
     // Tab list: opening with T sets the selection=active, j/k cycle, Enter switches (the list
     // closes); w closes the **selected tab** (correctly adjusting the active index); the last
     // remaining tab is rejected with a flash.
-    let dir = std::env::temp_dir().join("konoma_tab_list_test");
+    let dir = unique_tmp("konoma_tab_list_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.tab_new().unwrap();
@@ -7377,7 +7385,7 @@ fn tab_list_switch_close_and_guards() {
 #[test]
 fn bookmark_list_jump_delete_and_close() {
     // Use a test-only base for bookmarks so the real ~/.config isn't polluted.
-    let root = std::env::temp_dir().join("konoma_bm_list_ops_test");
+    let root = unique_tmp("konoma_bm_list_ops_test");
     let _ = std::fs::remove_dir_all(&root);
     let proj = root.join("proj");
     std::fs::create_dir_all(proj.join("sub")).unwrap();
@@ -7419,7 +7427,7 @@ fn bookmark_list_jump_delete_and_close() {
 
 #[test]
 fn attach_git_loader_stores_channel() {
-    let dir = std::env::temp_dir().join("konoma_attach_git_loader_test");
+    let dir = unique_tmp("konoma_attach_git_loader_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -7437,7 +7445,7 @@ fn attach_git_loader_stores_channel() {
 #[cfg(feature = "git")]
 #[test]
 fn refresh_git_status_only_updates_statuses_without_recompute() {
-    let dir = std::env::temp_dir().join("konoma_refresh_status_only_test");
+    let dir = unique_tmp("konoma_refresh_status_only_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -7468,7 +7476,7 @@ fn refresh_git_status_only_updates_statuses_without_recompute() {
 
 #[test]
 fn op_base_dir_for_file_dir_and_empty() {
-    let dir = std::env::temp_dir().join("konoma_op_base_dir_test");
+    let dir = unique_tmp("konoma_op_base_dir_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -7500,7 +7508,7 @@ fn op_base_dir_for_file_dir_and_empty() {
 
 #[test]
 fn duplicate_selection_copies_file_and_dir_in_place() {
-    let base = std::env::temp_dir().join("konoma_duplicate_test");
+    let base = unique_tmp("konoma_duplicate_test");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("sub")).unwrap();
     let root = base.canonicalize().unwrap();
@@ -8713,7 +8721,7 @@ fn should_defer_fs_events_tracks_file_op_in_flight() {
 
 #[test]
 fn dialog_preview_scroll_clamps_within_lines() {
-    let dir = std::env::temp_dir().join("konoma_dialog_preview_scroll_test");
+    let dir = unique_tmp("konoma_dialog_preview_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -8807,7 +8815,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
 fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_ui_preview_fallback_test");
+    let dir = unique_tmp("konoma_ui_preview_fallback_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -9197,7 +9205,7 @@ fn fetch_remote_image_malformed_url_fails_without_touching_the_network() {
 /// (prevents unbounded growth). `.part` (an in-progress temp file) is excluded.
 #[test]
 fn prune_remote_cache_keeps_newest_and_skips_part() {
-    let dir = std::env::temp_dir().join("konoma_prune_remote_test");
+    let dir = unique_tmp("konoma_prune_remote_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // Create 5 cache files with mtimes in ascending (oldest-first) order.
@@ -9235,7 +9243,7 @@ fn filetime_set(path: &std::path::Path, t: std::time::SystemTime) {
 
 #[test]
 fn md_image_dims_reads_raster_and_svg() {
-    let dir = std::env::temp_dir().join("konoma_md_dims_test");
+    let dir = unique_tmp("konoma_md_dims_test");
     let _ = std::fs::create_dir_all(&dir);
     // Raster PNG (extension present).
     let png = dir.join("p.png");
@@ -9260,7 +9268,7 @@ fn md_image_dims_reads_raster_and_svg() {
 
 #[test]
 fn md_decode_image_decodes_raster_and_rasterizes_svg() {
-    let dir = std::env::temp_dir().join("konoma_md_decode_test");
+    let dir = unique_tmp("konoma_md_decode_test");
     let _ = std::fs::create_dir_all(&dir);
     let png = dir.join("p.png");
     image::RgbaImage::from_pixel(3, 3, image::Rgba([9, 9, 9, 255]))
@@ -9282,7 +9290,7 @@ fn md_decode_image_decodes_raster_and_rasterizes_svg() {
 
 #[test]
 fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
-    let dir = std::env::temp_dir().join("konoma_apply_remote_test");
+    let dir = unique_tmp("konoma_apply_remote_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let url = "https://example.com/x.png".to_string();
@@ -9304,7 +9312,7 @@ fn preview_survives_target_file_overwrite_and_delete() {
     // removes it). This must never panic — the preview reloads / degrades gracefully. Covers both an
     // image preview and a text/Markdown preview (not just images).
     use image::RgbImage;
-    let dir = std::env::temp_dir().join("konoma_preview_file_vanish_test");
+    let dir = unique_tmp("konoma_preview_file_vanish_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -9847,7 +9855,7 @@ fn table_cell_popup_does_not_survive_tab_switch_or_new_tab() {
 
 #[test]
 fn at_ref_is_strictly_relative_to_open_dir() {
-    let work = std::env::temp_dir().join("konoma_at_ref_test");
+    let work = unique_tmp("konoma_at_ref_test");
     let _ = std::fs::remove_dir_all(&work);
     let a = work.join("A");
     std::fs::create_dir_all(&a).unwrap();
@@ -9863,7 +9871,7 @@ fn at_ref_is_strictly_relative_to_open_dir() {
 
 #[test]
 fn preview_selection_ref_formats_caret_and_ranges() {
-    let dir = std::env::temp_dir().join("konoma_sel_ref_test");
+    let dir = unique_tmp("konoma_sel_ref_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("notes.txt");
@@ -9902,7 +9910,7 @@ fn preview_selection_ref_formats_caret_and_ranges() {
 #[cfg(feature = "git")]
 #[test]
 fn changed_filter_lists_changed_files_flat_and_toggles_back() {
-    let dir = std::env::temp_dir().join("konoma_changed_filter_test");
+    let dir = unique_tmp("konoma_changed_filter_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir); // a.txt is already committed
@@ -9951,7 +9959,7 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
 #[cfg(feature = "git")]
 #[test]
 fn jump_changed_reveals_collapsed_targets_and_wraps() {
-    let dir = std::env::temp_dir().join("konoma_jump_changed_test");
+    let dir = unique_tmp("konoma_jump_changed_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir);
@@ -9985,14 +9993,14 @@ fn jump_changed_reveals_collapsed_targets_and_wraps() {
 
 #[test]
 fn follow_jump_reveals_and_previews_only_valid_targets() {
-    let dir = std::env::temp_dir().join("konoma_follow_test");
+    let dir = unique_tmp("konoma_follow_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::create_dir_all(dir.join(".hidden")).unwrap();
     std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
     std::fs::write(dir.join("sub").join("b.txt"), b"b\n").unwrap();
     std::fs::write(dir.join(".hidden").join("c.txt"), b"c\n").unwrap();
-    let outside = std::env::temp_dir().join("konoma_follow_outside.txt");
+    let outside = unique_tmp("konoma_follow_outside.txt");
     std::fs::write(&outside, b"x\n").unwrap();
 
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -10041,7 +10049,7 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     // changed line land within the window** (showing from the top would leave the change
     // off-screen = a regression guard for P1). 3 lines of context above; the caret is the
     // changed line.
-    let dir = std::env::temp_dir().join("konoma_follow_scroll_test");
+    let dir = unique_tmp("konoma_follow_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -10093,7 +10101,7 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
     // Untracked (can't produce a diff = all lines are new) falls back to a file preview.
     // The baseline diff shows changes "since F" (previously: dirty vs HEAD). So to get a diff,
     // the file must change after F (= real usage: press F, then the AI edits it).
-    let dir = std::env::temp_dir().join("konoma_follow_diff_test");
+    let dir = unique_tmp("konoma_follow_diff_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir); // a.txt is already committed
@@ -10167,7 +10175,7 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
     // n/N inside the diff view: switches to the next/previous changed file's diff without
     // leaving the view (wraps, shows position, syncs the tree cursor, and also saves q's
     // return target).
-    let dir = std::env::temp_dir().join("konoma_diff_nav_test");
+    let dir = unique_tmp("konoma_diff_nav_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir); // a.txt is already committed
@@ -10222,7 +10230,7 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     // n/N on a follow-originated diff cycles only through "files that changed during the
     // follow session" (not all uncommitted changes in the working tree). The position display
     // is also session-relative.
-    let dir = std::env::temp_dir().join("konoma_follow_session_test");
+    let dir = unique_tmp("konoma_follow_session_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git_repo_with_commits(&dir); // a.txt is already committed
@@ -10244,7 +10252,7 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     std::fs::write(canon.join("d.txt"), b"new d.txt\nAFTER-FOLLOW\n").unwrap();
 
     // Equivalent to draining: records into the session (only true for valid targets).
-    let outside = std::env::temp_dir().join("konoma_follow_session_outside.txt");
+    let outside = unique_tmp("konoma_follow_session_outside.txt");
     std::fs::write(&outside, b"x\n").unwrap();
     assert!(!app.follow_note_change(&outside), "root 外は記録しない");
     assert!(app.follow_note_change(&canon.join("b.txt")));
@@ -10588,7 +10596,7 @@ fn md_row_prefix_matches_full_document_reflow() {
     // full-document render would produce, so we pin it down with varied content.
     use ratatui::text::Text;
     use ratatui::widgets::{Paragraph, Wrap};
-    let dir = std::env::temp_dir().join("konoma_md_prefix_test");
+    let dir = unique_tmp("konoma_md_prefix_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut md = String::from("# Title\n\n");
@@ -10633,7 +10641,7 @@ fn md_slice_render_matches_full_document_render() {
     use ratatui::text::Text;
     use ratatui::widgets::{Paragraph, Wrap};
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_md_slice_equiv_test");
+    let dir = unique_tmp("konoma_md_slice_equiv_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut md = String::from("# Doc\n\n");
@@ -10717,7 +10725,7 @@ fn test_picker() -> ratatui_image::picker::Picker {
 
 #[test]
 fn standalone_mermaid_renders_as_image_with_vector_source() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_img_test");
+    let dir = unique_tmp("konoma_mermaid_img_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A[start] --> B[end]\n").unwrap();
@@ -10743,7 +10751,7 @@ fn standalone_mermaid_renders_as_image_with_vector_source() {
 
 #[test]
 fn mermaid_text_mode_keeps_legacy_rendering() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_txt_test");
+    let dir = unique_tmp("konoma_mermaid_txt_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A --> B\n").unwrap();
@@ -10762,7 +10770,7 @@ fn mermaid_text_mode_keeps_legacy_rendering() {
 #[test]
 fn vector_zoom_rerasters_sharper_without_moving_geometry() {
     use image::GenericImageView;
-    let dir = std::env::temp_dir().join("konoma_mermaid_zoom_test");
+    let dir = unique_tmp("konoma_mermaid_zoom_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n  B --> C\n").unwrap();
@@ -10791,7 +10799,7 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
 
 #[test]
 fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_fence_test");
+    let dir = unique_tmp("konoma_mermaid_fence_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -10849,7 +10857,7 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
 
 #[test]
 fn broken_fence_degrades_to_text_diagram() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_broken_test");
+    let dir = unique_tmp("konoma_mermaid_broken_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -10891,7 +10899,7 @@ fn fence_focus_inverts_caption_span_only() {
     use ratatui::style::Modifier;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_mermaid_focus_test");
+    let dir = unique_tmp("konoma_mermaid_focus_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -10953,7 +10961,7 @@ fn fence_focus_scrolls_block_and_draws_border() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_fence_scroll_test");
+    let dir = unique_tmp("konoma_fence_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11049,7 +11057,7 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
 /// documents without one are not rebuilt (user request 2026-07-17: "fit the display area at first").
 #[test]
 fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_fit_test");
+    let dir = unique_tmp("konoma_mermaid_fit_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11098,7 +11106,7 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_fence_wrap_align_test");
+    let dir = unique_tmp("konoma_fence_wrap_align_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11165,7 +11173,7 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
 fn fence_inplace_zoom_pans_and_keeps_layout() {
     use crate::keymap::Motion;
 
-    let dir = std::env::temp_dir().join("konoma_fence_zoom_test");
+    let dir = unique_tmp("konoma_fence_zoom_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11296,7 +11304,7 @@ fn md_image_cells_downscale_but_never_upscale() {
 fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     use crate::keymap::Motion;
 
-    let dir = std::env::temp_dir().join("konoma_fence_rows_test");
+    let dir = unique_tmp("konoma_fence_rows_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11385,7 +11393,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
     // ensure_md_fence_density re-rasterizes at higher density from the retained SVG
     // (synchronous fallback). The layout (reserved cells) is unchanged.
     use image::GenericImageView;
-    let dir = std::env::temp_dir().join("konoma_mermaid_density_test");
+    let dir = unique_tmp("konoma_mermaid_density_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11429,7 +11437,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
 /// far as the width allows).
 #[test]
 fn mermaid_rows_large_target_reaches_placement() {
-    let dir = std::env::temp_dir().join("konoma_probe_rows100");
+    let dir = unique_tmp("konoma_probe_rows100");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11461,7 +11469,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_overlay_move_test");
+    let dir = unique_tmp("konoma_overlay_move_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11546,7 +11554,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
 /// the graph). It is not carried over to a new tab, and is restored on returning.
 #[test]
 fn git_graph_decoration_state_is_per_tab() {
-    let dir = std::env::temp_dir().join("konoma_graph_pertab_test");
+    let dir = unique_tmp("konoma_graph_pertab_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
@@ -11598,7 +11606,7 @@ fn git_graph_decoration_state_is_per_tab() {
 /// when a different media was opened in the background).
 #[test]
 fn tab_switch_restores_mermaid_image_preview() {
-    let dir = std::env::temp_dir().join("konoma_mermaid_tab_restore_test");
+    let dir = unique_tmp("konoma_mermaid_tab_restore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A --> B\n").unwrap();
@@ -11624,7 +11632,7 @@ fn tab_switch_restores_mermaid_image_preview() {
 /// restored still as an image (the old code fell back to a false "cannot render" notice).
 #[test]
 fn tab_switch_restores_fullscreen_fence_view() {
-    let dir = std::env::temp_dir().join("konoma_fence_tab_restore_test");
+    let dir = unique_tmp("konoma_fence_tab_restore_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11665,7 +11673,7 @@ fn tab_switch_restores_fullscreen_fence_view() {
 /// diagram (usually the one that failed = a false error display) would open full-screen.
 #[test]
 fn fence_ordinal_survives_failed_upstream_fence() {
-    let dir = std::env::temp_dir().join("konoma_fence_ordinal_test");
+    let dir = unique_tmp("konoma_fence_ordinal_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11719,7 +11727,7 @@ fn fence_ordinal_survives_failed_upstream_fence() {
 /// growing monotonically until the file was switched.
 #[test]
 fn stale_fence_cache_entries_are_pruned_on_rebuild() {
-    let dir = std::env::temp_dir().join("konoma_fence_prune_test");
+    let dir = unique_tmp("konoma_fence_prune_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11760,7 +11768,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
 /// tabs, and are restored on return (on par with image_zoom being saved in PerTab).
 #[test]
 fn fence_focus_and_zoom_are_per_tab() {
-    let dir = std::env::temp_dir().join("konoma_fence_per_tab_test");
+    let dir = unique_tmp("konoma_fence_per_tab_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let a = dir.join("a.md");
@@ -11808,7 +11816,7 @@ fn fence_focus_and_zoom_are_per_tab() {
 /// the restored scroll/focus.
 #[test]
 fn fence_fullscreen_return_keeps_diagram_cache() {
-    let dir = std::env::temp_dir().join("konoma_fence_return_cache_test");
+    let dir = unique_tmp("konoma_fence_return_cache_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -11860,7 +11868,7 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
 /// permanently true (busy spinner + 16ms polling stuck on).
 #[test]
 fn failed_encode_clears_inflight_and_degrades_safely() {
-    let dir = std::env::temp_dir().join("konoma_encode_fail_test");
+    let dir = unique_tmp("konoma_encode_fail_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -11934,7 +11942,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     assert!(!is_synthetic_md_url("figure.png"));
     assert!(!is_synthetic_md_url("https://example.com/x.svg"));
 
-    let dir = std::env::temp_dir().join("konoma_math_encode_test");
+    let dir = unique_tmp("konoma_math_encode_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -11973,7 +11981,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
 #[test]
 fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     use image::GenericImageView;
-    let dir = std::env::temp_dir().join("konoma_vector_inflight_test");
+    let dir = unique_tmp("konoma_vector_inflight_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n").unwrap();
@@ -12007,7 +12015,7 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
 /// probe, so it picked up the probe response's Loading and showed "loading" forever.
 #[test]
 fn empty_mermaid_fence_does_not_stick_on_loading() {
-    let dir = std::env::temp_dir().join("konoma_empty_fence_test");
+    let dir = unique_tmp("konoma_empty_fence_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -12058,7 +12066,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_fence_pan_offscreen_test");
+    let dir = unique_tmp("konoma_fence_pan_offscreen_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -12105,7 +12113,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
 /// md_cache either.
 #[test]
 fn stale_md_image_result_is_dropped() {
-    let dir = std::env::temp_dir().join("konoma_stale_md_result_test");
+    let dir = unique_tmp("konoma_stale_md_result_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let md = dir.join("doc.md");
@@ -12412,7 +12420,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
 /// at the old size even after the resize (regression).
 #[test]
 fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
-    let dir = std::env::temp_dir().join("konoma_kitty_resize_test");
+    let dir = unique_tmp("konoma_kitty_resize_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir, Config::default()).unwrap();
     // A source **larger** than the viewport (4000x3000px = 400x150 cells @ font 10x20). It gets
@@ -12549,7 +12557,7 @@ fn table_search_hits_do_not_leak_across_tabs() {
 /// result arrives and swaps it in. Stale (an older generation) is discarded.
 #[test]
 fn kitty_zoom_builds_async_and_latest_wins() {
-    let dir = std::env::temp_dir().join("konoma_kitty_async_test");
+    let dir = unique_tmp("konoma_kitty_async_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
@@ -12614,7 +12622,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
 /// linger**. The kitty geometry must be invalidated on swap so a rebuild always happens.
 #[test]
 fn kitty_rebuilds_on_same_size_image_swap() {
-    let dir = std::env::temp_dir().join("konoma_kitty_swap_test");
+    let dir = unique_tmp("konoma_kitty_swap_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
@@ -12654,7 +12662,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
 /// would break (review LOW finding).
 #[test]
 fn kitty_failed_build_clears_pending() {
-    let dir = std::env::temp_dir().join("konoma_kitty_fail_test");
+    let dir = unique_tmp("konoma_kitty_fail_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
@@ -12698,7 +12706,7 @@ fn kitty_failed_build_clears_pending() {
 #[test]
 fn same_repo_navigation_reuses_status_without_recompute() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_status_workdir_cache");
+    let dir = unique_tmp("konoma_status_workdir_cache");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     init_git_repo(&dir);
@@ -12760,7 +12768,7 @@ fn same_repo_navigation_reuses_status_without_recompute() {
 #[cfg(feature = "git")]
 #[test]
 fn descend_into_nested_different_repo_recomputes_status() {
-    let dir = std::env::temp_dir().join("konoma_status_reuse_diff_repo");
+    let dir = unique_tmp("konoma_status_reuse_diff_repo");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("inner")).unwrap();
     init_git_repo(&dir); // outer repoA
@@ -12804,7 +12812,7 @@ fn descend_into_nested_different_repo_recomputes_status() {
 /// gen). Without discarding it, A's image would leak into B.
 #[test]
 fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
-    let dir = std::env::temp_dir().join("konoma_kitty_switch_race");
+    let dir = unique_tmp("konoma_kitty_switch_race");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
@@ -12847,7 +12855,7 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
 #[cfg(feature = "git")]
 #[test]
 fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
-    let dir = std::env::temp_dir().join("konoma_git_dir_watch");
+    let dir = unique_tmp("konoma_git_dir_watch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     init_git_repo(&dir);
@@ -12866,7 +12874,7 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
     );
 
     // Non-repo: None.
-    let plain = std::env::temp_dir().join("konoma_git_dir_watch_norepo");
+    let plain = unique_tmp("konoma_git_dir_watch_norepo");
     let _ = std::fs::remove_dir_all(&plain);
     std::fs::create_dir_all(&plain).unwrap();
     let app_plain = App::new(plain.canonicalize().unwrap(), Config::default()).unwrap();
@@ -12968,7 +12976,7 @@ fn git_dir_watch_targets_worktrees_git_dir_for_linked_worktree_root() {
 #[cfg(feature = "git")]
 #[test]
 fn tab_switch_re_verifies_git_status() {
-    let dir = std::env::temp_dir().join("konoma_tab_switch_status");
+    let dir = unique_tmp("konoma_tab_switch_status");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("subx")).unwrap();
     std::fs::create_dir_all(dir.join("suby")).unwrap();
@@ -13030,7 +13038,7 @@ fn tab_switch_re_verifies_git_status() {
 #[cfg(feature = "git")]
 #[test]
 fn git_status_scan_is_offloaded_to_a_worker_thread() {
-    let dir = std::env::temp_dir().join("konoma_status_async_offload");
+    let dir = unique_tmp("konoma_status_async_offload");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13077,7 +13085,7 @@ fn git_status_scan_is_offloaded_to_a_worker_thread() {
 #[cfg(feature = "git")]
 #[test]
 fn tab_switch_requests_git_status_without_blocking() {
-    let dir = std::env::temp_dir().join("konoma_status_async_tabswitch");
+    let dir = unique_tmp("konoma_status_async_tabswitch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13135,7 +13143,7 @@ fn tab_switch_requests_git_status_without_blocking() {
 #[cfg(feature = "git")]
 #[test]
 fn stale_git_status_result_is_discarded() {
-    let dir = std::env::temp_dir().join("konoma_status_async_stale");
+    let dir = unique_tmp("konoma_status_async_stale");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     init_git_repo(&dir);
@@ -13177,7 +13185,7 @@ fn stale_git_status_result_is_discarded() {
 #[cfg(feature = "git")]
 #[test]
 fn repeated_renders_dispatch_at_most_one_git_status_scan() {
-    let dir = std::env::temp_dir().join("konoma_status_async_norekick");
+    let dir = unique_tmp("konoma_status_async_norekick");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13225,7 +13233,7 @@ fn repeated_renders_dispatch_at_most_one_git_status_scan() {
 #[cfg(feature = "git")]
 #[test]
 fn concurrent_refresh_requests_are_coalesced_into_one_rescan() {
-    let dir = std::env::temp_dir().join("konoma_status_async_coalesce");
+    let dir = unique_tmp("konoma_status_async_coalesce");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13277,7 +13285,7 @@ fn concurrent_refresh_requests_are_coalesced_into_one_rescan() {
 #[cfg(feature = "git")]
 #[test]
 fn changed_filter_list_follows_async_status_results() {
-    let dir = std::env::temp_dir().join("konoma_status_async_changedfilter");
+    let dir = unique_tmp("konoma_status_async_changedfilter");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13436,14 +13444,18 @@ fn worktree_chip_re_verifies_across_tab_switch_into_preview() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    // Fixed (not `unique_tmp`) names, kept short: the origin-name assertions below check for the
-    // *exact* string, and `unique_tmp`'s pid+counter suffix would push the directory's basename
-    // past the chip's 20-char truncation budget (`truncate_display`) — same reasoning as
+    // The origin-name assertions below check for the *exact* string, and a `unique_tmp` suffix
+    // directly on these leaf names would push the directory's basename past the chip's 20-char
+    // truncation budget (`truncate_display`) — same reasoning as
     // `worktree_chip_shows_only_inside_a_linked_worktree` above, which does the same for the same
-    // reason. Distinct from that test's directory names, so the two don't collide.
-    let main_dir = std::env::temp_dir().join("konoma_wtsw_main");
-    let other_dir = std::env::temp_dir().join("konoma_wtsw_other");
-    let linked_dir = std::env::temp_dir().join("konoma_wtsw_linked");
+    // reason. So the leaf names stay short and fixed (`main`/`other`/`linked`), and only the
+    // *parent* segment is uniqued — that keeps the full path collision-free across concurrent
+    // test runs (a fixed leaf name under a unique parent never collides on disk) without touching
+    // the basename the chip actually renders.
+    let base = unique_tmp("konoma_wtsw");
+    let main_dir = base.join("main");
+    let other_dir = base.join("other");
+    let linked_dir = base.join("linked");
     for d in [&main_dir, &other_dir] {
         let _ = std::fs::remove_dir_all(d);
         std::fs::create_dir_all(d).unwrap();
@@ -13543,9 +13555,7 @@ fn worktree_chip_re_verifies_across_tab_switch_into_preview() {
         "linked worktree のタブへ戻ったら WT チップが復活するはず: {text}"
     );
 
-    std::fs::remove_dir_all(&linked_dir).ok();
-    std::fs::remove_dir_all(&other_dir).ok();
-    std::fs::remove_dir_all(&main_dir).ok();
+    std::fs::remove_dir_all(&base).ok();
 }
 
 /// Performance invariant for the new call site: `ui::render` now calls `refresh_git_if_needed`
@@ -13611,7 +13621,7 @@ fn repeated_ui_renders_of_the_changes_hub_do_not_rescan_git_status() {
 #[cfg(feature = "git")]
 #[test]
 fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
-    let dir = std::env::temp_dir().join("konoma_status_async_opendiff");
+    let dir = unique_tmp("konoma_status_async_opendiff");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
@@ -13657,7 +13667,7 @@ fn open_diff_command_waits_for_status_instead_of_reporting_no_changes() {
 #[test]
 fn landing_status_result_keeps_tracking_the_current_root() {
     use std::sync::atomic::Ordering;
-    let dir = std::env::temp_dir().join("konoma_status_async_rootrewind");
+    let dir = unique_tmp("konoma_status_async_rootrewind");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     init_git_repo(&dir);
@@ -13713,7 +13723,7 @@ fn landing_status_result_keeps_tracking_the_current_root() {
 /// the same work — a table tab re-parsed the whole CSV twice on every switch.
 #[test]
 fn tab_switch_parses_a_table_preview_only_once() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_tabswitch_single_parse"));
+    let dir = unique_tmp("konoma_tabswitch_single_parse");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut csv = String::from("a,b,c\n");
@@ -13759,7 +13769,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
 /// milliseconds). Reuse is keyed on `(path, mtime, page)`, so an externally edited file is still re-read.
 #[test]
 fn returning_to_a_media_tab_reuses_the_decoded_image() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache"));
+    let dir = unique_tmp("konoma_media_cache");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("pic.png");
@@ -13812,7 +13822,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
 /// pixel-count cap lets exactly the heaviest formats through.
 #[test]
 fn oversized_media_is_not_cached() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_cap"));
+    let dir = unique_tmp("konoma_media_cache_cap");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("huge.png");
@@ -13847,7 +13857,7 @@ fn oversized_media_is_not_cached() {
 /// document swap pictures on switch.
 #[test]
 fn media_cache_distinguishes_mermaid_fences_of_one_document() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_fence"));
+    let dir = unique_tmp("konoma_media_cache_fence");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let doc = dir.join("doc.md");
@@ -13891,7 +13901,7 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
 /// ever reuse (a silent resident buffer).
 #[test]
 fn closing_a_media_tab_releases_its_cached_image() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_close"));
+    let dir = unique_tmp("konoma_media_cache_close");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("pic.png");
@@ -13921,7 +13931,7 @@ fn closing_a_media_tab_releases_its_cached_image() {
 /// file size; otherwise switching back keeps showing the previous picture.
 #[test]
 fn media_cache_misses_when_size_changes_under_the_same_mtime() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_media_cache_mtime"));
+    let dir = unique_tmp("konoma_media_cache_mtime");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = dir.join("pic.png");
@@ -13964,7 +13974,7 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
 #[cfg(feature = "git")]
 #[test]
 fn changed_filter_survives_returning_from_another_repo() {
-    let base = std::env::temp_dir().join(unique_tmp("konoma_changed_filter_two_repos"));
+    let base = unique_tmp("konoma_changed_filter_two_repos");
     let _ = std::fs::remove_dir_all(&base);
     let (a, b) = (base.join("repo_a"), base.join("repo_b"));
     std::fs::create_dir_all(&a).unwrap();
@@ -14031,7 +14041,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_task_corpus_roundtrip"));
+    let dir = unique_tmp("konoma_task_corpus_roundtrip");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.canonicalize().unwrap();
@@ -14158,7 +14168,7 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
 fn md_task_toggle_skips_pseudo_tasks_inside_front_matter() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_task_front_matter"));
+    let dir = unique_tmp("konoma_md_task_front_matter");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.canonicalize().unwrap();
@@ -14217,7 +14227,7 @@ fn md_task_toggle_skips_pseudo_tasks_inside_front_matter() {
 fn md_task_toggle_works_beyond_the_preview_line_cap() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_task_beyond_cap"));
+    let dir = unique_tmp("konoma_md_task_beyond_cap");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.canonicalize().unwrap();
@@ -14289,7 +14299,7 @@ fn md_task_toggle_works_beyond_the_preview_line_cap() {
 fn md_code_block_copy_works_beyond_the_preview_line_cap() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_md_code_beyond_cap"));
+    let dir = unique_tmp("konoma_md_code_beyond_cap");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.canonicalize().unwrap();
@@ -14344,7 +14354,7 @@ fn md_code_block_copy_works_beyond_the_preview_line_cap() {
 #[cfg(feature = "git")]
 #[test]
 fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
-    let base = std::env::temp_dir().join(unique_tmp("konoma_ignored_leave_repo"));
+    let base = unique_tmp("konoma_ignored_leave_repo");
     let _ = std::fs::remove_dir_all(&base);
     let repo = base.join("repo");
     let plain = base.join("plain");
@@ -14435,7 +14445,7 @@ fn assert_focused_block_fully_visible(app: &App, msg: &str) {
 /// it; the block-scroll feature's own tests used short, non-wrapping lines.
 #[test]
 fn md_focus_reveals_a_wrapping_checkbox_in_full() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_wrap_task_reveal"));
+    let dir = unique_tmp("konoma_wrap_task_reveal");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
@@ -14462,7 +14472,7 @@ fn md_focus_reveals_a_wrapping_checkbox_in_full() {
 /// end is a logical line, and `md_visual_span` on it has to account for that line's own wrap.
 #[test]
 fn md_focus_reveals_a_wrapping_code_block_in_full() {
-    let dir = std::env::temp_dir().join(unique_tmp("konoma_wrap_code_reveal"));
+    let dir = unique_tmp("konoma_wrap_code_reveal");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();

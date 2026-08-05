@@ -392,6 +392,7 @@ fn to_style(st: SynStyle) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::path::PathBuf;
 
     #[test]
@@ -559,7 +560,7 @@ mod tests {
     #[test]
     fn warm_order_ranks_extensions_by_file_count() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("konoma_warm_order_test");
+        let dir = unique_tmp("konoma_warm_order_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let touch = |p: PathBuf| {
@@ -602,7 +603,7 @@ mod tests {
     // claims to.
     #[test]
     fn warm_dir_makes_subsequent_highlight_fast() {
-        let dir = crate::mem_tests::unique_tmp("konoma_code_warmdir");
+        let dir = crate::test_support::unique_tmp("konoma_code_warmdir");
         std::fs::create_dir_all(&dir).unwrap();
         let src = "-- a lua comment\nlocal function greet(name)\n  print('hello, ' .. name)\nend\n";
         let f = dir.join("a.lua");
@@ -697,7 +698,7 @@ mod tests {
 
     #[test]
     fn read_head_caps_bytes_and_errors_on_missing() {
-        let dir = std::env::temp_dir().join("konoma_read_head_test");
+        let dir = unique_tmp("konoma_read_head_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("data.txt");
@@ -715,7 +716,7 @@ mod tests {
 
     #[test]
     fn warm_file_marks_ext_warm_for_known_and_unknown() {
-        let dir = std::env::temp_dir().join("konoma_warm_file_test");
+        let dir = unique_tmp("konoma_warm_file_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Known syntax (rust): after warming, is_ext_warm is true.

@@ -31,6 +31,7 @@
 //! that a regression in any of these — a lost cache, an O(n²), re-parsing every frame — trips a guard.
 
 use crate::config::Config;
+use crate::test_support::unique_tmp;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -100,7 +101,7 @@ fn highlight_lang_large_source_is_bounded() {
 // warm step and the highlight finish under loose bounds.
 #[test]
 fn warm_then_highlight_is_fast() {
-    let dir = std::env::temp_dir().join("konoma_speed_warm_test");
+    let dir = unique_tmp("konoma_speed_warm_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("a.rs");
@@ -182,7 +183,7 @@ fn render_markdown_large_doc_is_bounded() {
 fn tree_build_and_visible_range_many_entries_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_tree_test");
+    let dir = unique_tmp("konoma_speed_tree_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..1000 {
@@ -247,7 +248,7 @@ fn decode_gif_sample_is_bounded() {
 #[test]
 fn same_repo_navigation_does_not_rescan_git_status() {
     use std::process::Command;
-    let dir = crate::mem_tests::unique_tmp("konoma_speed_status_cache");
+    let dir = crate::test_support::unique_tmp("konoma_speed_status_cache");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     for i in 0..20 {
         std::fs::write(dir.join(format!("f{i:04}.txt")), b"x\n").unwrap();
@@ -322,8 +323,8 @@ fn worktree_chip_is_not_recomputed_on_every_render() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let dir = std::env::temp_dir().join("konoma_speed_worktree_chip_main");
-    let linked = std::env::temp_dir().join("konoma_speed_worktree_chip_linked");
+    let dir = unique_tmp("konoma_speed_worktree_chip_main");
+    let linked = unique_tmp("konoma_speed_worktree_chip_linked");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&linked);
     std::fs::create_dir_all(&dir).unwrap();
@@ -431,7 +432,7 @@ fn feature_markdown(blocks: usize) -> String {
 fn preview_large_markdown_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = crate::mem_tests::unique_tmp("konoma_speed_md_preview");
+    let dir = crate::test_support::unique_tmp("konoma_speed_md_preview");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("big.md"), feature_markdown(30)).unwrap();
 
@@ -476,7 +477,7 @@ fn preview_large_markdown_is_bounded() {
 fn preview_large_csv_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_csv");
+    let dir = unique_tmp("konoma_speed_csv");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut body = String::from("c0,c1,c2,c3,c4,c5,c6,c7\n");
@@ -516,7 +517,7 @@ fn preview_large_csv_is_bounded() {
 fn preview_large_file_windowing_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_window");
+    let dir = unique_tmp("konoma_speed_window");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut body = String::new();
@@ -627,7 +628,7 @@ fn diff_body(n: usize, marker: &str) -> String {
 fn git_views_and_large_diff_render_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = crate::mem_tests::unique_tmp("konoma_speed_git_views");
+    let dir = crate::test_support::unique_tmp("konoma_speed_git_views");
     std::fs::create_dir_all(&dir).unwrap();
     let git = |a: &[&str]| {
         std::process::Command::new("git")
@@ -757,7 +758,7 @@ fn git_views_and_large_diff_render_is_bounded() {
 fn tab_switch_reloads_are_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = crate::mem_tests::unique_tmp("konoma_speed_tabswitch");
+    let dir = crate::test_support::unique_tmp("konoma_speed_tabswitch");
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..3000 {
         std::fs::write(dir.join(format!("f{i:05}.txt")), b"x").unwrap();

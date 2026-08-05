@@ -16,6 +16,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::Path;
 
+use crate::test_support::unique_tmp;
+
 thread_local! {
     /// Cumulative bytes allocated on the current thread (const-init so touching it never allocates,
     /// which would recurse through the allocator).
@@ -54,19 +56,6 @@ pub(crate) fn allocated_by(f: impl FnOnce()) -> u64 {
     THREAD_ALLOCATED.with(|c| c.get()).wrapping_sub(before)
 }
 
-/// A unique temp directory per call (pid + a process-global counter), so a test's fixture path
-/// never collides with another test's — or, critically, with the **same test running in a second,
-/// concurrently-invoked `cargo test` process** (two processes racing to `create_dir_all`/
-/// `remove_dir_all`/`git init` the same fixed path is a real flake source once a test is promoted
-/// out of `#[ignore]` into the always-run suite). `pub(crate)` so `speed_tests`/`preview::code` share
-/// it instead of duplicating the counter.
-pub(crate) fn unique_tmp(prefix: &str) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
-}
-
 // ---------------------------------------------------------------------------------------------
 // Calibration: prints sizes and allocation costs. Run with:
 //   cargo test --features git -- --ignored mem_calibration --nocapture
@@ -80,7 +69,7 @@ fn mem_calibration() {
     eprintln!("size_of Config     = {}", std::mem::size_of::<Config>());
 
     // md scroll's decoration cost vs re-scroll cost (to prove cache reuse).
-    let dir = std::env::temp_dir().join("konoma_mem_calib_md");
+    let dir = unique_tmp("konoma_mem_calib_md");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut md = String::from("# Top\n\n");
@@ -173,7 +162,7 @@ fn mem_preview(
 // make the per-scroll allocation ≈ the decoration (measured: decoration ~8.7MB, one scroll ~30KB).
 #[test]
 fn md_scroll_reuses_cache_not_redecorate() {
-    let dir = std::env::temp_dir().join("konoma_mem_md_reuse");
+    let dir = unique_tmp("konoma_mem_md_reuse");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut md = String::from("# Top\n\n");
@@ -215,7 +204,7 @@ fn md_scroll_reuses_cache_not_redecorate() {
 // syntect grammar / theme init (process-global) is not attributed to the measured opens.
 #[test]
 fn windowed_preview_does_not_scale_with_file_size() {
-    let dir = std::env::temp_dir().join("konoma_mem_window_scale");
+    let dir = unique_tmp("konoma_mem_window_scale");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let write_lines = |name: &str, n: usize| {
@@ -263,7 +252,7 @@ fn per_tab_and_app_structs_stay_small() {
 // (the rest is dropped and `truncated` is set). Complements the app-level table tests.
 #[test]
 fn table_rows_are_capped() {
-    let dir = std::env::temp_dir().join("konoma_mem_table_cap");
+    let dir = unique_tmp("konoma_mem_table_cap");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("huge.csv");

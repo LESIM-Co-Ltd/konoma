@@ -112,12 +112,13 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn write_read_round_trip_records_dir_and_tabs() {
-        let base = std::env::temp_dir().join("konoma_session_store_test_base");
+        let base = unique_tmp("konoma_session_store_test_base");
         let _ = std::fs::remove_dir_all(&base);
-        let proj = std::env::temp_dir().join("konoma_session_store_test_proj");
+        let proj = unique_tmp("konoma_session_store_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
         let store = SessionStore::with_base(base.clone(), &proj);
@@ -147,7 +148,7 @@ mod tests {
         assert_eq!(got.tabs, sess.tabs);
 
         // Invisible from a different start dir's store (one file per directory).
-        let proj2 = std::env::temp_dir().join("konoma_session_store_test_proj2");
+        let proj2 = unique_tmp("konoma_session_store_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
         assert!(SessionStore::with_base(base.clone(), &proj2)
             .read()
@@ -160,9 +161,9 @@ mod tests {
 
     #[test]
     fn missing_or_corrupt_file_reads_none() {
-        let base = std::env::temp_dir().join("konoma_session_corrupt_test_base");
+        let base = unique_tmp("konoma_session_corrupt_test_base");
         let _ = std::fs::remove_dir_all(&base);
-        let proj = std::env::temp_dir().join("konoma_session_corrupt_test_proj");
+        let proj = unique_tmp("konoma_session_corrupt_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
         let store = SessionStore::with_base(base.clone(), &proj);
@@ -179,9 +180,9 @@ mod tests {
 
     #[test]
     fn write_replaces_in_place_and_leaves_no_temp() {
-        let base = std::env::temp_dir().join("konoma_session_atomic_test_base");
+        let base = unique_tmp("konoma_session_atomic_test_base");
         let _ = std::fs::remove_dir_all(&base);
-        let proj = std::env::temp_dir().join("konoma_session_atomic_test_proj");
+        let proj = unique_tmp("konoma_session_atomic_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
         let store = SessionStore::with_base(base.clone(), &proj);
 

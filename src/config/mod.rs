@@ -897,11 +897,26 @@ mod parity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use std::io::Write;
 
     fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("konoma_cfg_test_{name}"));
+        // Preserve `name`'s extension (many of these tests exercise extension-based preview-rule
+        // matching, including uppercase/mixed-case extensions) — putting the uniqueness suffix
+        // straight after the whole `name` would swallow it (`"pic.svg"` → `"pic.svg_1234_5"`, no
+        // longer ending in `.svg`). Put the suffix on the stem instead, then re-append the
+        // extension via `with_extension` (a no-op when `name` has none).
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| name.to_string());
+        let ext = std::path::Path::new(name)
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned());
+        let mut p = unique_tmp(&format!("konoma_cfg_test_{stem}"));
+        if let Some(ext) = ext {
+            p = p.with_extension(ext);
+        }
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(bytes).unwrap();
         p

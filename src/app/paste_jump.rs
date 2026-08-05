@@ -337,6 +337,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn parses_local_absolute_with_colon_line() {
@@ -547,7 +548,7 @@ mod tests {
 
     #[test]
     fn canonical_existing_resolves_only_existing() {
-        let dir = std::env::temp_dir().join("konoma_paste_canon_test");
+        let dir = unique_tmp("konoma_paste_canon_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("real.txt");

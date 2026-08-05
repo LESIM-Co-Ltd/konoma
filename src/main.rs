@@ -23,6 +23,8 @@ mod preview;
 mod session;
 #[cfg(test)]
 mod speed_tests;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -1742,6 +1744,7 @@ fn resolve_key_result(app: &mut App, result: Result<bool>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
     use app::Mode;
     use config::Config;
 
@@ -1878,16 +1881,6 @@ mod tests {
         assert!(is_content_event(&EventKind::Other));
     }
 
-    /// A unique temp directory per call (pid + a process-global counter), matching
-    /// `app::tests::unique_tmp` — a real filesystem watcher below must not share a fixed path with
-    /// a parallel test run or the two watchers cross-contaminate each other's events.
-    fn watch_test_unique_tmp(prefix: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
-    }
-
     #[test]
     fn watcher_ignores_reads_but_reports_writes() {
         // An integration test that runs is_content_event through a real notify watcher in the same
@@ -1905,7 +1898,7 @@ mod tests {
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
 
-        let dir = watch_test_unique_tmp("konoma_watch_filter_test");
+        let dir = unique_tmp("konoma_watch_filter_test");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("f.txt");
         std::fs::write(&file, b"hello").unwrap();
@@ -1962,7 +1955,7 @@ mod tests {
         // toggle_follow) / a key while inside a text-input surface / a confirm modal / q
         // (PreviewBack leaves the follow view) (q/PreviewBack are verified in
         // e2e_follow_survives_scroll_and_cycle_breaks_only_on_q).
-        let dir = std::env::temp_dir().join("konoma_follow_break_test");
+        let dir = unique_tmp("konoma_follow_break_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         handle_key(
@@ -2014,7 +2007,7 @@ mod tests {
         // `'` alone opens the list (the invisible waiting state is gone), and a plain letter in the
         // list jumps directly as a bookmark name. The old e/d (edit/delete) moved to Ctrl
         // modifiers, so a plain e can also be used to jump.
-        let root = std::env::temp_dir().join("konoma_quote_list_test");
+        let root = unique_tmp("konoma_quote_list_test");
         let _ = std::fs::remove_dir_all(&root);
         let proj = root.join("proj");
         std::fs::create_dir_all(proj.join("sub")).unwrap();
@@ -2070,7 +2063,7 @@ mod tests {
     fn filter_input_captures_literal_keys() {
         // While filter input is active, `?`/`c`/digits are also captured as plain "characters,"
         // not help/copy/tab.
-        let dir = std::env::temp_dir().join("konoma_filter_input_test");
+        let dir = unique_tmp("konoma_filter_input_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         handle_key(&mut app, key('/')).unwrap(); // start filtering
@@ -2090,7 +2083,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn help_opens_in_git_view_and_shows_git_keys() {
-        let dir = std::env::temp_dir().join("konoma_git_help_test");
+        let dir = unique_tmp("konoma_git_help_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git2::Repository::init(&dir).unwrap();
@@ -2128,7 +2121,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn tab_keys_per_tab_git_mode_and_literal_in_filter() {
-        let dir = std::env::temp_dir().join("konoma_tab_gitview_test");
+        let dir = unique_tmp("konoma_tab_gitview_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         git2::Repository::init(&dir).unwrap();
@@ -2161,7 +2154,7 @@ mod tests {
     #[test]
     fn copy_leader_sets_then_clears_pending() {
         use keymap::LeaderId;
-        let dir = std::env::temp_dir().join("konoma_chord_test");
+        let dir = unique_tmp("konoma_chord_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         // `y` starts the copy leader → pending_leader.
@@ -2175,7 +2168,7 @@ mod tests {
     #[test]
     fn file_leader_opens_on_space() {
         use keymap::LeaderId;
-        let dir = std::env::temp_dir().join("konoma_fileleader_test");
+        let dir = unique_tmp("konoma_fileleader_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         // The default `c` is no longer a leader (the old copy prefix is gone).
@@ -2189,7 +2182,7 @@ mod tests {
     #[test]
     fn space_leader_n_opens_create_dialog() {
         // Space→n = create a file (the destination the old Tree `a` moved to).
-        let dir = std::env::temp_dir().join("konoma_space_create_test");
+        let dir = unique_tmp("konoma_space_create_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -2203,7 +2196,7 @@ mod tests {
     #[test]
     fn anchor_keys_a_and_shift_a_dispatch() {
         // `a` = SetAnchor (the old `:`), `A` = ResetAnchor (new). Right after startup, both flash "already the anchor."
-        let dir = std::env::temp_dir().join("konoma_anchor_dispatch_test");
+        let dir = unique_tmp("konoma_anchor_dispatch_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -2230,7 +2223,7 @@ mod tests {
     fn shift_q_opens_quit_confirm_then_qq_quits() {
         // Default (confirm_quit=ON): Q opens the confirmation dialog → doesn't quit yet. Confirmed
         // by q once more (qq).
-        let dir = std::env::temp_dir().join("konoma_quit_confirm_test");
+        let dir = unique_tmp("konoma_quit_confirm_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -2252,7 +2245,7 @@ mod tests {
 
     #[test]
     fn quit_confirm_cancel_with_esc_keeps_running() {
-        let dir = std::env::temp_dir().join("konoma_quit_cancel_test");
+        let dir = unique_tmp("konoma_quit_cancel_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -2267,7 +2260,7 @@ mod tests {
     #[test]
     fn quit_without_confirm_quits_immediately() {
         // confirm_quit=false: Q quits immediately (no dialog).
-        let dir = std::env::temp_dir().join("konoma_quit_immediate_test");
+        let dir = unique_tmp("konoma_quit_immediate_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
@@ -2287,7 +2280,7 @@ mod tests {
     fn shift_q_is_literal_while_filtering() {
         // While input (filtering) is active, Q is captured as a plain "character." Doesn't quit,
         // doesn't show the confirmation either.
-        let dir = std::env::temp_dir().join("konoma_quit_filter_literal_test");
+        let dir = unique_tmp("konoma_quit_filter_literal_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -2307,7 +2300,7 @@ mod tests {
     fn visual_space_d_commits_range_and_confirms_delete() {
         // The old direct `D` is gone → in Visual it's Space→d. Commit the range first, then go to
         // the delete confirmation.
-        let dir = std::env::temp_dir().join("konoma_visual_spaced_test");
+        let dir = unique_tmp("konoma_visual_spaced_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -2328,7 +2321,7 @@ mod tests {
     fn dnd_paste_ignored_while_dialog_or_overlay_open() {
         // #13: don't let a D&D paste interrupt while a dialog/modal/overlay is shown.
         // Only the basic full-screen surfaces (Tree/Preview) and text-input surfaces accept it.
-        let dir = std::env::temp_dir().join("konoma_dnd_guard_test");
+        let dir = unique_tmp("konoma_dnd_guard_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -2356,7 +2349,7 @@ mod tests {
 
     #[test]
     fn help_toggles_and_swallows_keys() {
-        let dir = std::env::temp_dir().join("konoma_help_key_test");
+        let dir = unique_tmp("konoma_help_key_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         assert!(!app.show_help);
@@ -2375,7 +2368,7 @@ mod tests {
     fn tab_keys_work_in_preview_and_preserve_mode() {
         // Bug fix: tab operations (t/w/[/]/1-9) also work while previewing, and each tab's mode
         // (Tree/Preview) is preserved. Switching doesn't drop it to Tree, and returning restores Preview.
-        let dir = std::env::temp_dir().join("konoma_tab_in_preview_test");
+        let dir = unique_tmp("konoma_tab_in_preview_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         // Put tab 0 into previewing.
@@ -2397,7 +2390,7 @@ mod tests {
 
     #[test]
     fn flash_is_cleared_on_next_key() {
-        let dir = std::env::temp_dir().join("konoma_flash_test");
+        let dir = unique_tmp("konoma_flash_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir, Config::default()).unwrap();
         app.flash = Some("x".into());
@@ -2410,7 +2403,7 @@ mod tests {
         // Design principle #3: don't bring down the TUI on a recoverable fs/git failure during key handling.
         // Even if handle_key returns Err, the run loop doesn't terminate (quit=false), and the
         // error is shown to the user via flash rather than swallowed.
-        let dir = std::env::temp_dir().join("konoma_recoverable_err_test");
+        let dir = unique_tmp("konoma_recoverable_err_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         let quit = resolve_key_result(&mut app, Err(anyhow::anyhow!("boom: refresh 失敗")));
@@ -2429,7 +2422,7 @@ mod tests {
     #[test]
     fn close_tab_or_quit_closes_tab_when_multiple_else_quits() {
         // Tree's q: with multiple tabs, closes the current one (doesn't quit); with the last one, requests quitting.
-        let dir = std::env::temp_dir().join("konoma_close_tab_or_quit_test");
+        let dir = unique_tmp("konoma_close_tab_or_quit_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
         cfg.ui.confirm_quit = false; // judge the last tab by quitting immediately (no dialog in between)
@@ -2452,7 +2445,7 @@ mod tests {
     fn resolve_key_result_passes_through_quit_and_continue() {
         // Ok(true) = a quit request passes straight through / Ok(false) = continuing passes
         // straight through, and doesn't touch flash either.
-        let dir = std::env::temp_dir().join("konoma_resolve_passthrough_test");
+        let dir = unique_tmp("konoma_resolve_passthrough_test");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
         assert!(

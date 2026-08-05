@@ -217,17 +217,18 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::session::SessionStore;
+    use crate::test_support::unique_tmp;
     use std::fs;
 
     /// Temp project (a.txt / b.txt / sub/c.txt) + temp session base.
     fn setup(name: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(name);
+        let dir = unique_tmp(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("a.txt"), "alpha\n").unwrap();
         fs::write(dir.join("b.txt"), "beta\n").unwrap();
         fs::write(dir.join("sub/c.txt"), "gamma\n").unwrap();
-        let base = std::env::temp_dir().join(format!("{name}_base"));
+        let base = unique_tmp(&format!("{name}_base"));
         let _ = fs::remove_dir_all(&base);
         (dir, base)
     }

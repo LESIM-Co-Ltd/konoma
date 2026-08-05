@@ -207,6 +207,7 @@ fn write_marks(path: &Path, mf: &MarksFile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn encode_path_is_reversible_and_safe() {
@@ -220,9 +221,9 @@ mod tests {
 
     #[test]
     fn set_get_scope_by_case_and_persist() {
-        let base = std::env::temp_dir().join("konoma_bm_test_base");
+        let base = unique_tmp("konoma_bm_test_base");
         let _ = std::fs::remove_dir_all(&base);
-        let proj = std::env::temp_dir().join("konoma_bm_test_proj");
+        let proj = unique_tmp("konoma_bm_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
         let mut bm = Bookmarks::with_base(base.clone(), &proj);
@@ -243,7 +244,7 @@ mod tests {
         assert_eq!(bm2.get('A'), Some(PathBuf::from("/tmp/global_A")));
 
         // From a different start dir, `a` (local) is invisible but `A` (global) is shared.
-        let proj2 = std::env::temp_dir().join("konoma_bm_test_proj2");
+        let proj2 = unique_tmp("konoma_bm_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
         let bm3 = Bookmarks::with_base(base.clone(), &proj2);
         assert_eq!(bm3.get('a'), None, "ローカルは起動dir 別");
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn write_marks_and_read_marks_round_trip() {
         // write_marks (parent creation included) → read_marks restores the same content.
-        let dir = std::env::temp_dir().join("konoma_write_marks_test");
+        let dir = unique_tmp("konoma_write_marks_test");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("nested").join("marks.toml"); // the parent (nested) doesn't exist yet = the create_dir_all path
         let mut mf = MarksFile {
@@ -305,9 +306,9 @@ mod tests {
 
     #[test]
     fn list_returns_local_then_global_sorted() {
-        let base = std::env::temp_dir().join("konoma_bm_list_test_base");
+        let base = unique_tmp("konoma_bm_list_test_base");
         let _ = std::fs::remove_dir_all(&base);
-        let proj = std::env::temp_dir().join("konoma_bm_list_test_proj");
+        let proj = unique_tmp("konoma_bm_list_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
         let mut bm = Bookmarks::with_base(base.clone(), &proj);
         bm.set('b', PathBuf::from("/tmp/b")).unwrap();

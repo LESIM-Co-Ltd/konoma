@@ -131,6 +131,7 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn decode_gif_real_sample_has_multiple_frames() {
@@ -171,7 +172,7 @@ mod tests {
         // that the frame count is kept, the dimensions match, and it stays within budget.
         use image::codecs::gif::GifEncoder;
         use image::{Delay, Frame, Rgba, RgbaImage};
-        let dir = std::env::temp_dir().join("konoma_gif_budget_test");
+        let dir = unique_tmp("konoma_gif_budget_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("big.gif");
@@ -213,7 +214,7 @@ mod tests {
 
     #[test]
     fn decode_static_reads_png_and_rejects_non_image() {
-        let dir = std::env::temp_dir().join("konoma_decode_static_test");
+        let dir = unique_tmp("konoma_decode_static_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Write out a real PNG and decode it (dimensions should match).

@@ -2140,6 +2140,7 @@ fn classify(s: git2::Status) -> FileStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     /// `diff_contents` (the diff engine for the follow baseline diff) emits only the changed hunks
     /// with correct line numbers (not the whole file); text never contains a newline; identical
@@ -2178,7 +2179,7 @@ mod tests {
     /// scanning status fails with "index.lock: File exists" (user report 2026-07-07).
     #[test]
     fn background_reads_never_write_the_index() {
-        let dir = std::env::temp_dir().join("konoma_no_optional_locks_test");
+        let dir = unique_tmp("konoma_no_optional_locks_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
@@ -2229,7 +2230,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn external_git_disabled_returns_empty_for_a_real_repo() {
-        let dir = std::env::temp_dir().join("konoma_git_external_disabled_test");
+        let dir = unique_tmp("konoma_git_external_disabled_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -2305,7 +2306,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn worktrees_parses_main_linked_detached_and_locked_records() {
-        let dir = std::env::temp_dir().join("konoma_git_worktrees_parse_test");
+        let dir = unique_tmp("konoma_git_worktrees_parse_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -2315,8 +2316,8 @@ mod tests {
         let main_root = dir.canonicalize().unwrap();
 
         // `git worktree add` creates the target directory itself, so pick paths that don't exist yet.
-        let linked = std::env::temp_dir().join("konoma_git_worktrees_parse_linked");
-        let detached = std::env::temp_dir().join("konoma_git_worktrees_parse_detached");
+        let linked = unique_tmp("konoma_git_worktrees_parse_linked");
+        let detached = unique_tmp("konoma_git_worktrees_parse_detached");
         let _ = std::fs::remove_dir_all(&linked);
         let _ = std::fs::remove_dir_all(&detached);
         let sh = |args: &[&str]| {
@@ -2454,10 +2455,10 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn worktrees_bare_main_worktree_has_no_checkout_and_gone_checkout_is_prunable() {
-        let dir = std::env::temp_dir().join("konoma_git_worktrees_bare_src");
-        let bare = std::env::temp_dir().join("konoma_git_worktrees_bare_repo.git");
-        let wt1 = std::env::temp_dir().join("konoma_git_worktrees_bare_wt1");
-        let wt2 = std::env::temp_dir().join("konoma_git_worktrees_bare_wt2");
+        let dir = unique_tmp("konoma_git_worktrees_bare_src");
+        let bare = unique_tmp("konoma_git_worktrees_bare_repo.git");
+        let wt1 = unique_tmp("konoma_git_worktrees_bare_wt1");
+        let wt2 = unique_tmp("konoma_git_worktrees_bare_wt2");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bare);
         let _ = std::fs::remove_dir_all(&wt1);
@@ -2700,7 +2701,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn diff_since_includes_both_committed_and_uncommitted_changes() {
-        let dir = std::env::temp_dir().join("konoma_git_diff_since_both_test");
+        let dir = unique_tmp("konoma_git_diff_since_both_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -2712,7 +2713,7 @@ mod tests {
         // A linked worktree branched off `main` (whatever the initial branch is named — read it
         // back rather than assuming "main", since git's default varies by user/global config).
         let base_name = branch(&main_root).expect("sanity: has a branch after the base commit");
-        let linked = std::env::temp_dir().join("konoma_git_diff_since_both_linked");
+        let linked = unique_tmp("konoma_git_diff_since_both_linked");
         let _ = std::fs::remove_dir_all(&linked);
         let sh = |args: &[&str]| {
             let out = std::process::Command::new("git")
@@ -2788,7 +2789,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn diff_since_returns_empty_for_a_nonexistent_base() {
-        let dir = std::env::temp_dir().join("konoma_git_diff_since_missing_base_test");
+        let dir = unique_tmp("konoma_git_diff_since_missing_base_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3059,7 +3060,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn untracked_file_and_dir_rollup_detected() {
-        let dir = std::env::temp_dir().join("konoma_git_status_test");
+        let dir = unique_tmp("konoma_git_status_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         git2::Repository::init(&dir).unwrap();
@@ -3082,7 +3083,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn rename_is_detected_on_new_path() {
-        let dir = std::env::temp_dir().join("konoma_git_status_rename");
+        let dir = unique_tmp("konoma_git_status_rename");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3120,21 +3121,10 @@ mod tests {
         cfg.set_str("commit.gpgsign", "false").ok();
     }
 
-    /// A unique temp directory per call (pid + a process-global counter), same pattern as
-    /// `app/tests.rs`'s helper of the same name: worktree tests create several sibling directories
-    /// per case, and a fixed path would collide across parallel test runs.
-    #[cfg(feature = "git")]
-    fn unique_tmp(prefix: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
-    }
-
     #[cfg(feature = "git")]
     #[test]
     fn ignored_collapses_dirs_and_excludes_tracked() {
-        let dir = std::env::temp_dir().join("konoma_git_ignored_set");
+        let dir = unique_tmp("konoma_git_ignored_set");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3187,7 +3177,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn file_diff_untracked_is_all_added() {
-        let dir = std::env::temp_dir().join("konoma_git_filediff_untracked");
+        let dir = unique_tmp("konoma_git_filediff_untracked");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3205,7 +3195,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn file_diff_modified_has_added_and_removed() {
-        let dir = std::env::temp_dir().join("konoma_git_filediff_modified");
+        let dir = unique_tmp("konoma_git_filediff_modified");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3241,7 +3231,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn changed_files_lists_staged_flag() {
-        let dir = std::env::temp_dir().join("konoma_git_changed_files");
+        let dir = unique_tmp("konoma_git_changed_files");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3267,7 +3257,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn stage_commit_then_log_and_commit_diff() {
-        let dir = std::env::temp_dir().join("konoma_git_stage_commit_log");
+        let dir = unique_tmp("konoma_git_stage_commit_log");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);
@@ -3293,7 +3283,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn unstage_and_discard_work() {
-        let dir = std::env::temp_dir().join("konoma_git_unstage_discard");
+        let dir = unique_tmp("konoma_git_unstage_discard");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_repo(&dir);

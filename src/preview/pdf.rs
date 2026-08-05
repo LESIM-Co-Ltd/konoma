@@ -410,6 +410,7 @@ fn next_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     /// Returns None for a missing/non-PDF file (does not crash; safe fallback), regardless of
     /// `allow_external`. page_count too.
@@ -477,7 +478,7 @@ mod tests {
     /// (principle #3). `catch_silent` is defense-in-depth on top of `hayro-syntax`'s own `Result`.
     #[test]
     fn page_count_handles_bad_input_without_panicking() {
-        let dir = std::env::temp_dir().join(format!("konoma-pdf-badinput-{}", std::process::id()));
+        let dir = unique_tmp("konoma-pdf-badinput");
         std::fs::create_dir_all(&dir).unwrap();
 
         // An empty file.

@@ -6,13 +6,26 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use super::*;
+use crate::test_support::unique_tmp;
 use std::collections::HashMap;
 use std::io::Write as _;
 
 /// Local copy of the `mod tests` temp-file helper (that one is private to the other module).
 fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("konoma_cfgparity_{name}"));
+    // Preserve `name`'s extension — see the identical comment on `config::tests::tmp`: these tests
+    // exercise extension-based preview-rule matching, so the uniqueness suffix must land before the
+    // extension, not swallow it.
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string());
+    let ext = std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned());
+    let mut p = unique_tmp(&format!("konoma_cfgparity_{stem}"));
+    if let Some(ext) = ext {
+        p = p.with_extension(ext);
+    }
     let mut f = std::fs::File::create(&p).unwrap();
     f.write_all(bytes).unwrap();
     p

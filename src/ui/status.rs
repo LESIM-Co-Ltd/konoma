@@ -475,12 +475,13 @@ pub fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn markdown_preview_footer_shows_link_keys() {
         // The Markdown preview footer shows link operations (Tab = focus / ↵ = open).
         // Plain text/code doesn't show them (there are no links).
-        let dir = std::env::temp_dir().join("konoma_md_hints_test");
+        let dir = unique_tmp("konoma_md_hints_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.md"), b"[x](https://e.com)\n").unwrap();
@@ -554,7 +555,7 @@ mod tests {
 
     #[test]
     fn footer_shows_whichkey_menu_while_leader_pending() {
-        let dir = std::env::temp_dir().join("konoma_whichkey_footer_test");
+        let dir = unique_tmp("konoma_whichkey_footer_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.clone(), Config::default()).unwrap();
@@ -593,10 +594,15 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn worktree_chip_shows_only_inside_a_linked_worktree() {
-        // Kept short (<= the chip's 20-char truncation budget) so this test asserts the *exact*
-        // origin name; `truncate_display_truncates_long_names` below covers the truncation itself.
-        let dir = std::env::temp_dir().join("konoma_wt_chip_main");
-        let linked = std::env::temp_dir().join("konoma_wt_chip_linked");
+        // The leaf names stay short and fixed (<= the chip's 20-char truncation budget) so this
+        // test asserts the *exact* origin name; `truncate_display_truncates_long_names` below
+        // covers the truncation itself. Only the *parent* segment is uniqued, keeping the full
+        // path collision-free across concurrent test runs without touching the basename the chip
+        // actually renders (same reasoning as `app::tests::worktree_chip_re_verifies_across_tab_
+        // switch_into_preview`, which does the same for the same reason).
+        let base = unique_tmp("konoma_wt_chip");
+        let dir = base.join("main");
+        let linked = base.join("linked");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&linked);
         std::fs::create_dir_all(&dir).unwrap();
@@ -676,7 +682,6 @@ mod tests {
             "元の repo 名 ({expected_origin}) が出ていない: {wt_text}"
         );
 
-        std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&base).ok();
     }
 }

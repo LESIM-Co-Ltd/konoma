@@ -677,6 +677,7 @@ pub fn move_into_with_progress(dir: &Path, src: &Path, p: &Progress) -> Result<P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unique_tmp;
 
     #[test]
     fn copy_into_self_subtree_is_rejected_not_infinite() {
@@ -684,7 +685,7 @@ mod tests {
         // self-containment guard, read_dir keeps picking up the growing copy destination and
         // generates `/parent/child/parent/child/…` forever. Confirm the guard makes this fail
         // immediately with "the copy destination is inside the copy source" (D1).
-        let root = std::env::temp_dir().join("konoma_selfcopy_test");
+        let root = unique_tmp("konoma_selfcopy_test");
         let _ = std::fs::remove_dir_all(&root);
         let parent = root.join("parent");
         let child = parent.join("child");
@@ -712,7 +713,7 @@ mod tests {
 
     #[test]
     fn create_and_rename_respect_existing() {
-        let dir = std::env::temp_dir().join("konoma_fileops_test");
+        let dir = unique_tmp("konoma_fileops_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -750,7 +751,7 @@ mod tests {
 
     #[test]
     fn delete_permanently_removes_file_and_dir() {
-        let dir = std::env::temp_dir().join("konoma_perm_delete_test");
+        let dir = unique_tmp("konoma_perm_delete_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Permanently delete a file and a directory (with contents).
@@ -795,7 +796,7 @@ mod tests {
 
     #[test]
     fn batch_rename_handles_swaps_via_two_phase() {
-        let dir = std::env::temp_dir().join("konoma_batch_rename_test");
+        let dir = unique_tmp("konoma_batch_rename_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.txt");
@@ -816,7 +817,7 @@ mod tests {
     fn batch_rename_rolls_back_on_failure() {
         // Force an abort at the second loop's dst.exists() check, and confirm everything done up
         // to that point is restored to its original state.
-        let dir = std::env::temp_dir().join("konoma_batch_rename_rollback_test");
+        let dir = unique_tmp("konoma_batch_rename_rollback_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.txt");
@@ -862,7 +863,7 @@ mod tests {
         // been committed. Rolling back directly with dst→src would corrupt a surviving file by
         // overwriting it, since each swap element occupies the other's src (a regression). Confirm
         // the two-phase approach (dst→tmp→src) fully restores it.
-        let dir = std::env::temp_dir().join("konoma_batch_rename_swap_rollback_test");
+        let dir = unique_tmp("konoma_batch_rename_swap_rollback_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let one = dir.join("1.txt");
@@ -907,7 +908,7 @@ mod tests {
 
     #[test]
     fn copy_into_duplicates_and_recurses() {
-        let dir = std::env::temp_dir().join("konoma_copy_into_test");
+        let dir = unique_tmp("konoma_copy_into_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"AAA").unwrap();
@@ -936,7 +937,7 @@ mod tests {
 
     #[test]
     fn move_into_moves_and_noop_same_dir() {
-        let dir = std::env::temp_dir().join("konoma_move_into_test");
+        let dir = unique_tmp("konoma_move_into_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
@@ -957,7 +958,7 @@ mod tests {
 
     #[test]
     fn copy_and_move_preserve_symlinks() {
-        let dir = std::env::temp_dir().join("konoma_symlink_test");
+        let dir = unique_tmp("konoma_symlink_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1039,7 +1040,7 @@ mod tests {
         assert_eq!(detail_column_width("bogus"), None);
 
         // Fetching a real file/directory.
-        let dir = std::env::temp_dir().join("konoma_fileinfo_test");
+        let dir = unique_tmp("konoma_fileinfo_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hello").unwrap();
@@ -1070,7 +1071,7 @@ mod tests {
     #[test]
     #[ignore] // not run normally since it dirties the real trash (run with cargo test -- --ignored)
     fn trash_moves_file_out_of_place() {
-        let dir = std::env::temp_dir().join("konoma_trash_test");
+        let dir = unique_tmp("konoma_trash_test");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("trashme.txt");
         std::fs::write(&f, b"x").unwrap();
@@ -1087,7 +1088,7 @@ mod tests {
     fn move_to_trash_removes_from_original_then_cleanup() {
         // Confirm it disappears from the original location, and best-effort clean up its trace
         // on the trash side.
-        let dir = std::env::temp_dir().join("konoma_trash_live_test");
+        let dir = unique_tmp("konoma_trash_live_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let name = "konoma_trash_probe_5f3a9.txt"; // a unique name unlikely to collide
@@ -1107,7 +1108,7 @@ mod tests {
     fn create_file_errors_when_parent_is_a_file() {
         // If the path standing in for the parent is an existing file, create_dir_all fails →
         // error (does not crash).
-        let dir = std::env::temp_dir().join("konoma_create_file_parent_err_test");
+        let dir = unique_tmp("konoma_create_file_parent_err_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("blocker"), b"x").unwrap();
@@ -1122,7 +1123,7 @@ mod tests {
     #[test]
     fn copy_and_move_into_error_on_missing_source() {
         // A nonexistent src fails at symlink_metadata → Err (not swallowed).
-        let dir = std::env::temp_dir().join("konoma_copy_move_missing_src_test");
+        let dir = unique_tmp("konoma_copy_move_missing_src_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dst = dir.join("dst");
@@ -1148,15 +1149,6 @@ mod tests {
         assert_eq!(human_size(1024u64.pow(5)), "1.0 PB");
         // Stays at the top unit (PB) even beyond PB.
         assert_eq!(human_size(2 * 1024u64.pow(5)), "2.0 PB");
-    }
-
-    /// A unique temp directory per call (pid + a process-global counter). A fixed shared name
-    /// collides between parallel runs and flakes — this repo has been bitten by that before.
-    fn unique_tmp(prefix: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
     }
 
     #[test]
