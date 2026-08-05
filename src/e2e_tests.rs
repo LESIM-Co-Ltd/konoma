@@ -2747,6 +2747,118 @@ fn e2e_markdown_code_span_examples_are_not_rewritten() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The same invariant as the test above, but for CommonMark's *other* kind of code block — a
+/// **fenced** block and an **indented** (4-column) block, in the same document, one right after
+/// the other — under the real app pipeline (key press → drawn screen), with the user's
+/// `code_bg = "none"` theme (2026-08: `literal_code_mask` folds `code_block_mask` into `fence_mask`
+/// so both kinds are protected the same way; this drives that union through `md_render.rs`, not
+/// just the string-rewriting passes in isolation).
+#[test]
+fn e2e_markdown_indented_and_fenced_code_blocks_protect_the_same_notations() {
+    let body = concat!(
+        "Fenced example:\n\n",
+        "```\n[^1] <kbd>K</kbd>\n```\n\n",
+        "Indented example:\n\n",
+        "    [^2] <kbd>J</kbd>\n\n",
+        "Outside: real[^1] and <kbd>Ctrl</kbd>, and another[^2].\n\n",
+        "[^1]: The note.\n[^2]: The other note.\n",
+    );
+    let (s, dir) = md_preview(cfg_code_bg_none(), "fence_and_indent_protect", body);
+    // Both blocks' examples survive verbatim — neither the reference nor the tag was converted.
+    s.see("[^1] <kbd>K</kbd>"); // fenced block
+    s.see("[^2] <kbd>J</kbd>"); // indented block
+                                // …while the identical notations outside either block still convert as usual.
+    s.dont_see("<kbd>Ctrl</kbd>"); // converted to a keycap, tag gone
+    s.see("¹"); // real[^1] outside → superscript 1
+    s.see("²"); // another[^2] outside → superscript 2
+    s.see("The note.");
+    s.see("The other note.");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `<br>` inside either kind of code block used to inject a real newline *into* the block, splitting
+/// it into two — the most visible way this class of bug breaks a document (a code block's header
+/// draws around only the first half, and the second half loses its gutter/fence entirely). This
+/// checks the on-screen row layout directly: the block's content stays on one row; the identical
+/// tag outside a block still becomes a real hard line break, landing "before"/"after" on two rows.
+#[test]
+fn e2e_markdown_br_inside_a_code_block_does_not_split_it() {
+    let body = concat!(
+        "Fenced example:\n\n",
+        "```\nleft<br>right\n```\n\n",
+        "Indented example:\n\n",
+        "    leftind<br>rightind\n\n",
+        "Outside: before<br>after.\n",
+    );
+    let (s, dir) = md_preview(cfg_code_bg_none(), "br_code_block_integrity", body);
+    // Inside either block, the tag and both halves of the line stay together — one screen row.
+    s.see("left<br>right");
+    s.see("leftind<br>rightind");
+    // Outside, the same tag becomes a real break: "before" and "after" land on different rows.
+    let (before_row, _) = s.find_text("before").expect("before is drawn");
+    let (after_row, _) = s.find_text("after.").expect("after is drawn");
+    assert!(
+        after_row > before_row,
+        "<br> outside a code block still injects a real line break: before_row={before_row}, \
+         after_row={after_row}\n{}",
+        s.screen()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `$…$` inside an indented code block must not be lifted out onto its own image row — the same
+/// "is this line literal code" question `process_footnotes`/`process_inline_html` ask, but for
+/// `split_math`, which has no string output to eyeball on screen the way the other two do. A picker
+/// is required: without one, `math` never enters image mode at all (`md_images()` would stay empty
+/// regardless of whether the indented block was protected), so this would pass vacuously.
+#[test]
+fn e2e_markdown_math_inside_an_indented_code_block_is_not_lifted_as_an_image() {
+    let body = concat!(
+        "Indented code with a dollar sign, not math:\n\n",
+        "    literal $x$ stays text\n\n",
+        "Outside this is real math: $y$ done.\n",
+    );
+    let dir = sandbox("math_indented_code");
+    std::fs::write(dir.join("d.md"), body).unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_code_bg_none()).with_picker();
+    s.select("d.md");
+    s.enter();
+    assert_eq!(
+        s.app.md_images().len(),
+        1,
+        "the only image placement must be the outside $y$ — the indented block's $x$ must not be \
+         lifted out as a second one"
+    );
+    s.see("literal $x$ stays text"); // the indented block's dollar sign stays literal, on screen
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The one case in `literal_code_mask`'s own doc comment where `fence_mask`, not `code_block_mask`,
+/// is the one doing the protecting: a fence with no blank line between it and a preceding
+/// `<summary>…</summary>` line, inside a `<details>` block. `md_details = "open"` forces the block
+/// visible (the default "auto" would collapse it, since there is no `open` attribute here — that
+/// collapse behavior is covered elsewhere; this test is only about what's inside once it's open).
+#[test]
+fn e2e_markdown_details_summary_then_a_fence_with_no_blank_line_stays_literal() {
+    let mut cfg = cfg_code_bg_none();
+    cfg.ui.md_details = "open".into();
+    let body = concat!(
+        "<details>\n",
+        "<summary>s</summary>\n",
+        "```rust\n[^1] <kbd>K</kbd>\n```\n",
+        "</details>\n\n",
+        "Outside: real[^1] and <kbd>Ctrl</kbd>.\n\n",
+        "[^1]: The note.\n",
+    );
+    let (s, dir) = md_preview(cfg, "details_fence_no_blank_e2e", body);
+    s.see("[^1] <kbd>K</kbd>"); // the fence right after <summary>, no blank line, stays literal
+    s.dont_see("<kbd>Ctrl</kbd>"); // the identical tag outside the details block still converts
+    s.see("¹");
+    s.see("The note.");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_markdown_footnotes_off_stays_literal() {
     let body = "A claim.[^src]\n\n[^src]: The evidence.\n";

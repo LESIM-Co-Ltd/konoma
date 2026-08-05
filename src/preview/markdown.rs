@@ -2594,9 +2594,10 @@ fn flush_math(out: &mut Vec<MathPart>, buf: &mut String, latex: &str, display: b
 
 /// Split a text run into literal text and math expressions, lifting each math onto its own part (the
 /// caller renders each as its own image line). Supports `$$…$$` / `\[…\]` (display, may span lines) and
-/// `$…$` / `\(…\)` (inline, same line). Fence- and inline-code-aware: a `$` inside a ``` fence or a
-/// `` `code span` `` is literal. Escaped `\$` is literal. A currency-style `$5 and $10` is not
-/// mistaken for math (an inline closing `$` may not be preceded by whitespace nor followed by a digit).
+/// `$…$` / `\(…\)` (inline, same line). Code- and inline-code-aware: a `$` inside a code block (fenced
+/// **or indented**) or a `` `code span` `` is literal. Escaped `\$` is literal. A currency-style
+/// `$5 and $10` is not mistaken for math (an inline closing `$` may not be preceded by whitespace nor
+/// followed by a digit).
 ///
 /// Structure-aware (`structure_mask`): a line inside a blockquote/alert, a `<details>` block, another
 /// HTML block, or a GFM table row is copied verbatim — its math (if any) is left as literal `$…$`
@@ -2616,23 +2617,12 @@ fn split_math(text: &str) -> Vec<MathPart> {
         .map(|l| l.strip_suffix('\n').unwrap_or(l))
         .collect();
     let structure = structure_mask(&bare_lines);
-    let mut in_fence: Option<(u8, usize)> = None;
+    let in_code = literal_code_mask(&bare_lines);
     let mut i = 0;
     while i < lines.len() {
         let raw = lines[i];
         let bare = raw.strip_suffix('\n').unwrap_or(raw);
-        if let Some((ch, len)) = in_fence {
-            buf.push_str(raw);
-            if let Some((f, info)) = parse_fence(bare) {
-                if f.ch == ch && f.len >= len && info.is_empty() {
-                    in_fence = None;
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if let Some((f, _info)) = parse_fence(bare) {
-            in_fence = Some((f.ch, f.len));
+        if in_code[i] {
             buf.push_str(raw);
             i += 1;
             continue;
@@ -2652,9 +2642,10 @@ fn split_math(text: &str) -> Vec<MathPart> {
             let mut j = i + 1;
             let mut found = false;
             while j < lines.len() {
-                // A structural line before the close: stop rather than swallow it into the math
-                // body (which would silently eat, e.g., a table row into an unrendered equation).
-                if structure[j] {
+                // A structural or code-block line before the close: stop rather than swallow it into
+                // the math body (which would silently eat, e.g., a table row or a fenced/indented code
+                // block into an unrendered equation).
+                if structure[j] || in_code[j] {
                     break;
                 }
                 let bj = lines[j].strip_suffix('\n').unwrap_or(lines[j]);
@@ -3083,6 +3074,171 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
         }
     }
     mask
+}
+
+/// For each of `lines`, whether it is part of a code block — fenced (```` ``` ```` / `~~~`) **or
+/// indented** (CommonMark's other code block kind: 4+ columns, measured relative to the enclosing
+/// container) — asking pulldown-cmark, the same parser tui-markdown renders through, rather than
+/// re-deriving the block rules by hand.
+///
+/// `fence_mask` above only ever recognizes fenced blocks: it exists to gate
+/// `split_tables`/`split_html_blocks`/`split_alerts`, which only need "is this a fence" to avoid
+/// slicing one in two. But `process_footnotes`, `process_inline_html` and `split_math` used
+/// `fence_mask` (or, until this change, their own hand-rolled copy of the same fence-only state
+/// machine) to decide which lines to leave untouched — and an indented code block is invisible to
+/// it. So `<kbd>` written inside one to *document* the tag became a real keycap, `<br>` injected a
+/// newline mid-block and split it in two, `[^1]` became a footnote reference, and `$x$` was lifted
+/// out onto its own line as a math image — inside a block that is supposed to be a literal,
+/// verbatim transcript on screen (2026-08). Confirmed by temporarily swapping this function's own
+/// callers back to `fence_mask`: `process_footnotes_leaves_indented_code_untouched`,
+/// `process_inline_html_leaves_indented_code_untouched` and the "inside an indented code block" case
+/// in `math_extraction_covers_delimiters_and_rejects_lookalikes` all fail exactly this way against
+/// `fence_mask` alone and pass once the mask covers indented blocks too.
+///
+/// This can't be patched onto `fence_mask` by hand the way the fenced half was: CommonMark measures
+/// the 4-column indent *relative to the enclosing container*, so a list item's marker shifts its
+/// content column right — the identical container-tracking problem `2c41192` hit for the
+/// copy-scanner's code-block count (`parser_code_blocks`'s doc comment has the worked example).
+/// Rather than grow a second copy of that tracking here, ask the parser directly, exactly as
+/// `parser_code_blocks` does.
+///
+/// Implementation: parse `lines` (rejoined with `\n`) via `Parser::new_ext` using
+/// `tui_markdown_parse_options()` — **the same option set the renderer itself parses with, reused
+/// rather than redeclared**, so this mask can never drift from what *that parser* would call a code
+/// block when it reads `lines` as one raw run — through `into_offset_iter()`, so each
+/// `Event::Start(Tag::CodeBlock(_))` carries the block's byte range in that text. A line is marked
+/// when its own byte range *overlaps* a code
+/// block's range, not when it's fully contained: pulldown-cmark's block range starts after a
+/// block's leading structural indentation/quote-marker bytes (measured directly — the range for
+/// `    indented` begins at the `i`, not the first space), so containment would silently miss the
+/// leading run of an indented block's first line. Each line's range is `[starts[i], starts[i] + 1 +
+/// lines[i].len())` — the `+1` for the `\n` the caller's line splitting removed — so two adjacent
+/// lines' ranges touch with no gap, and a blank line pulldown-cmark folds into an indented block's
+/// range (two chunks separated by one blank line, which CommonMark keeps as a single block) is
+/// still marked, matching what a fenced block's blank interior lines already are.
+///
+/// Both bounds are found by binary search rather than a linear scan per block: `starts` and `ends`
+/// are monotonically increasing (each line is at least 1 byte including its `\n`), so
+/// `partition_point` finds the first/last overlapping line directly, keeping this at
+/// O(lines + blocks·log(lines)) rather than O(lines·blocks) for a document with many blocks.
+///
+/// Unlike `parser_code_blocks`/`scan_code_run`, this does not special-case a code block nested
+/// inside a plain blockquote (which the renderer draws with no header) or exclude ```mermaid fences
+/// (diverted to diagram rendering): none of that distinction matters here — every line covered by a
+/// `CodeBlock` event, in this one-shot raw-document parse, is code as far as this function is
+/// concerned, regardless of what decoration (if any) the renderer eventually draws around it.
+///
+/// Two ways this can still disagree with what actually reaches the screen (neither reaches this
+/// function's own callers directly — see `literal_code_mask`, which is what `process_footnotes`,
+/// `process_inline_html` and `split_math` actually consult, and folds both of these in):
+///
+/// * Not a strict superset of `fence_mask`: a fenced block that pulldown-cmark parses as part of an
+///   *HTML block* instead (e.g. `~~~`/code/`~~~` sandwiched inside a raw `<div>…</div>`) is not a
+///   `CodeBlock` event at all — and konoma's own renderer agrees here, having already carved that
+///   span out as HTML before the parser ever sees it (`split_html_blocks`). `fence_mask` would have
+///   called those lines code; this function, correctly, does not.
+/// * Not a strict superset in the other direction either: a fence with no blank line between it and
+///   a preceding `<summary>…</summary>` line, inside a `<details>` block, is read by *this* function
+///   (which parses the whole raw document as one HTML-block-type-7 run — verified directly against
+///   pulldown-cmark) as HTML, not code — but konoma's own renderer draws it as a real code block,
+///   because `split_details` extracts the `<details>` body without requiring that blank line and
+///   hands it to `render_md_body_nested` in isolation, where the same fence, with no competing
+///   `<summary>` text around it, does produce a `CodeBlock` event. `fence_mask` gets this one right
+///   (it is blind to the surrounding `<details>`/`<summary>` context entirely), so union with it —
+///   `literal_code_mask` — is what recovers the renderer's actual answer.
+fn code_block_mask(lines: &[&str]) -> Vec<bool> {
+    use pulldown_cmark::{Event, Parser, Tag};
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let text = lines.join("\n");
+    // `starts[i]` = byte offset line `i` starts at in `text`; `starts[lines.len()]` is a sentinel
+    // one past where a line after the last one would start. Since every line contributes `len + 1`
+    // (the `+1` uniformly standing in for the `\n` rejoined between lines, including — harmlessly —
+    // after the very last line, which `join` does not actually add one after), `ends[i] ==
+    // starts[i + 1]` always holds, so a single array serves both.
+    let mut starts = Vec::with_capacity(lines.len() + 1);
+    let mut pos = 0usize;
+    for line in lines {
+        starts.push(pos);
+        pos += line.len() + 1;
+    }
+    starts.push(pos);
+
+    let mut mask = vec![false; lines.len()];
+    for (ev, range) in Parser::new_ext(&text, tui_markdown_parse_options()).into_offset_iter() {
+        let Event::Start(Tag::CodeBlock(_)) = ev else {
+            continue;
+        };
+        // Smallest `i` with `starts[i] < range.end` (condition `starts[i] < range.end`, upper bound
+        // on the overlapping range): `starts` restricted to real lines is what `hi` — the exclusive
+        // upper bound — is searched over.
+        let hi = starts[..lines.len()].partition_point(|&s| s < range.end);
+        // Smallest `j` with `starts[j] > range.start`; `ends[i] > range.start` is `starts[i + 1] >
+        // range.start`, so the smallest satisfying `i` is `j - 1` (searched over the full array,
+        // sentinel included, since `ends[lines.len() - 1]` is `starts[lines.len()]`).
+        let j = starts.partition_point(|&s| s <= range.start);
+        let lo = j.saturating_sub(1);
+        if lo < hi {
+            mask[lo..hi].fill(true);
+        }
+    }
+    mask
+}
+
+/// For each of `lines`, whether the text is literal code **on screen** — the mask `process_footnotes`,
+/// `process_inline_html` and `split_math` actually consult. It is the union (logical OR) of
+/// `code_block_mask` (what pulldown-cmark, parsing the raw document in one pass, calls a code block)
+/// and `fence_mask` (what a bare `` ``` ``/`~~~` delimiter line says, ignoring any surrounding
+/// construct entirely).
+///
+/// Neither mask alone matches what konoma draws, because konoma decides "is this a code block" two
+/// different ways depending on where the text sits, and this function's callers can't tell which way
+/// applies to a given line without redoing that routing:
+///
+/// * Text that reaches tui-markdown's own parser unmodified is exactly what `code_block_mask`
+///   describes — that *is* the parser's decision.
+/// * Text konoma peels off **before** the parser ever sees it — a `<details>` body (`split_details`,
+///   spanning blank lines) or an alert body (`split_alerts`, `>` stripped) — is re-parsed **in
+///   isolation** by `render_md_body_nested`, without the surrounding tag/quote-marker that could have
+///   changed how the parser reads it. Concretely: parsing the whole raw document, a fence with no
+///   blank line between it and a preceding `<summary>…</summary>` line is swallowed into one
+///   `Html_block` — no `CodeBlock` event at all — because CommonMark's HTML-block-type-7 rule keeps
+///   consuming lines until a blank one, whichever construct wrote them (verified directly against
+///   pulldown-cmark). But `split_details` doesn't require that blank line (`details_block_close`
+///   just looks for the literal `</details>` line), so it hands the fence to
+///   `render_md_body_nested` as an **isolated** two-line body with no `<details>`/`<summary>` text
+///   around it to compete for the parse — and there, with nothing else in the running, the exact
+///   same three lines *do* produce a `CodeBlock` event. `code_block_mask` alone, parsing the raw
+///   document once, cannot see this: it only ever gets the version *with* the swallowing context.
+///   `fence_mask`, being blind to any surrounding construct, gets this one right by accident — it
+///   would call those same three lines fenced regardless of what wraps them.
+///
+/// So a line either mask calls code really is drawn as code somewhere in konoma's own rendering, and
+/// the union is what "leave code alone" has to mean. The asymmetry this exists to protect is
+/// principle #3's: **over-protecting a line only costs one construct staying unrendered as literal
+/// text** (safe), while **under-protecting one corrupts a block that's genuinely on screen** — `<br>`
+/// injects a newline that splits a code block's header in two, `$x$` gets lifted out as a stray math
+/// image, `[^1]` gets renumbered as a real reference. A union can only ever mark *more* lines than
+/// either mask alone, so it can never fall on the unsafe side of that asymmetry, and it strictly
+/// includes `fence_mask` — which is what every one of these three passes used, unconditionally,
+/// before this mask existed — so no line that used to be protected can lose that protection here.
+///
+/// The cost carried over unchanged: `fence_mask`'s own pre-existing over-protection (an opening fence
+/// delimiter whose info string itself contains a backtick — CommonMark forbids that, so it isn't
+/// really a fence at all, but `fence_mask`'s hand-rolled matcher doesn't enforce the rule and reads
+/// everything after it as fenced through to the next line shaped like a closing delimiter, or to the
+/// end of the document if none comes) is inherited by the union exactly as before. That is pre-existing
+/// behavior, not something this mask introduces or could remove without dropping `fence_mask` from the
+/// union — which would reintroduce the `<details>`-without-a-blank-line gap above.
+fn literal_code_mask(lines: &[&str]) -> Vec<bool> {
+    let parser = code_block_mask(lines);
+    let fenced = fence_mask(lines);
+    parser
+        .into_iter()
+        .zip(fenced)
+        .map(|(a, b)| a || b)
+        .collect()
 }
 
 /// For each of `lines`, whether it sits inside a construct whose own parser requires line
@@ -3798,26 +3954,16 @@ fn replace_tag_pair(s: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
 
 /// Convert the common inline HTML that GitHub renders (but tui-markdown strips) into Markdown/Unicode
 /// it renders faithfully: `<del>/<s>/<strike>` → strikethrough, `<kbd>` → an inline-code keycap,
-/// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a hard line break. Fence-aware; a no-op
-/// per line without any of these tags. `<mark>`/`<ins>` have no faithful terminal form and are left
-/// to tui-markdown (their tags are stripped, text kept).
+/// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a hard line break. Code-aware (fenced
+/// **or indented**); a no-op per line without any of these tags. `<mark>`/`<ins>` have no faithful
+/// terminal form and are left to tui-markdown (their tags are stripped, text kept).
 pub fn process_inline_html(src: &str) -> String {
     let mut out = String::new();
-    let mut fence: Option<Fence> = None;
-    for line in src.lines() {
-        if let Some(f) = fence {
-            let closing = parse_fence(line)
-                .map(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
-                .unwrap_or(false);
-            if closing {
-                fence = None;
-            }
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        if let Some((f, _info)) = parse_fence(line) {
-            fence = Some(f);
+    let lines: Vec<&str> = src.lines().collect();
+    let in_code = literal_code_mask(&lines);
+    for (i, line) in lines.iter().enumerate() {
+        let line = *line;
+        if in_code[i] {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -3938,20 +4084,20 @@ fn replace_footnote_refs_outside_code(
 
 /// Rewrite `src` so GFM footnotes render: references `[^id]` become superscript numbers (ordered by
 /// first appearance), the `[^id]: …` definitions are pulled out of the body, and a numbered
-/// footnotes section is appended after a rule. Fence-aware — refs/defs inside a code fence are left
-/// verbatim. A no-op (returns `src` unchanged) when there are no definitions. Single-line
-/// definitions only.
+/// footnotes section is appended after a rule. Code-aware (fenced **or indented**) — refs/defs
+/// inside a code block are left verbatim. A no-op (returns `src` unchanged) when there are no
+/// definitions. Single-line definitions only.
 pub fn process_footnotes(src: &str) -> String {
     use std::collections::HashMap;
     let lines: Vec<&str> = src.lines().collect();
-    // Same "is this line part of a fence" mask `split_tables`/`split_html_blocks`/`split_alerts` use —
-    // all three passes below just need to know, per line, whether to skip/echo it verbatim.
-    let fenced = fence_mask(&lines);
-    // Pass 1: collect definitions (fence-aware) and mark their lines.
+    // Per-line "is this literal code on screen" mask (`literal_code_mask`) — all three passes below
+    // just need to know, per line, whether to skip/echo it verbatim.
+    let in_code = literal_code_mask(&lines);
+    // Pass 1: collect definitions (code-aware) and mark their lines.
     let mut defs: Vec<(String, String)> = Vec::new();
     let mut is_def = vec![false; lines.len()];
     for (i, line) in lines.iter().enumerate() {
-        if fenced[i] {
+        if in_code[i] {
             continue;
         }
         if let Some((id, text)) = parse_footnote_def(line) {
@@ -3963,11 +4109,11 @@ pub fn process_footnotes(src: &str) -> String {
         return src.to_string();
     }
     let def_ids: std::collections::HashSet<&str> = defs.iter().map(|(id, _)| id.as_str()).collect();
-    // Pass 2: number by first reference appearance (fence-aware, defs excluded).
+    // Pass 2: number by first reference appearance (code-aware, defs excluded).
     let mut num: HashMap<String, usize> = HashMap::new();
     let mut next = 1usize;
     for (i, line) in lines.iter().enumerate() {
-        if fenced[i] || is_def[i] {
+        if in_code[i] || is_def[i] {
             continue;
         }
         for id in find_footnote_refs(line) {
@@ -3980,10 +4126,10 @@ pub fn process_footnotes(src: &str) -> String {
     if num.is_empty() {
         return src.to_string(); // definitions present but never referenced → leave as-is
     }
-    // Pass 3: rebuild the body (drop def lines, replace refs; fences verbatim).
+    // Pass 3: rebuild the body (drop def lines, replace refs; code blocks verbatim).
     let mut out = String::new();
     for (i, line) in lines.iter().enumerate() {
-        if fenced[i] {
+        if in_code[i] {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -6547,6 +6693,53 @@ plain body
         );
     }
 
+    /// Regression (2026-08): `process_inline_html` used to gate on `fence_mask`, which only
+    /// recognizes *fenced* code — an indented code block was invisible to it, so `<kbd>x</kbd>`
+    /// written inside one purely to *document* the tag (e.g. "indent your snippet 4 columns like
+    /// this: `<kbd>x</kbd>`") was rewritten into a real keycap, indistinguishable on screen from an
+    /// actual one elsewhere in the document. `code_block_mask` (fenced or indented, via
+    /// pulldown-cmark) fixes this; an unindented tag right after the block still converts, proving
+    /// the pass isn't just refusing to run at all.
+    #[test]
+    fn process_inline_html_leaves_indented_code_untouched() {
+        let src = "before\n\n    <kbd>x</kbd> stays literal in the transcript\n\nafter <kbd>y</kbd> converts\n";
+        let out = process_inline_html(src);
+        assert!(
+            out.contains("    <kbd>x</kbd> stays literal in the transcript"),
+            "tag inside an indented code block stays literal, whole line unchanged: {out:?}"
+        );
+        assert!(
+            out.contains("after `y` converts"),
+            "an unindented tag right after the block still converts: {out:?}"
+        );
+    }
+
+    /// Regression (2026-08, found reviewing `code_block_mask`/`literal_code_mask`, not on real
+    /// registry content): a fence with **no blank line** between it and a preceding
+    /// `<summary>…</summary>` line, inside a `<details>` block, is what pulldown-cmark calls one HTML
+    /// block when parsing the raw document in one pass (verified directly against pulldown-cmark) —
+    /// so `code_block_mask` alone says it isn't code. But `split_details` extracts the block's body
+    /// without requiring that blank line (`details_block_close` just looks for the literal
+    /// `</details>` line) and hands it to `render_md_body_nested` in isolation, where the same three
+    /// lines, with nothing else competing for the parse, *do* produce a real code block on screen.
+    /// `fence_mask` — blind to the `<details>`/`<summary>` context entirely — gets this one right, so
+    /// `literal_code_mask` (the union) recovers it; `code_block_mask` alone would not (see
+    /// `literal_code_mask`'s doc comment for the full mechanism).
+    #[test]
+    fn process_inline_html_leaves_a_details_fence_without_a_blank_line_untouched() {
+        let src = "<details>\n<summary>s</summary>\n```rust\n[^1] <kbd>K</kbd> $x$\n```\n</details>\n\noutside [^1] and <kbd>K</kbd> and $x$\n\n[^1]: def\n";
+        let out = process_inline_html(src);
+        assert!(
+            out.contains("```rust\n[^1] <kbd>K</kbd> $x$\n```"),
+            "the tag inside the fence right after <summary>, no blank line between them, stays \
+             literal: {out:?}"
+        );
+        assert!(
+            out.contains("outside [^1] and `K` and $x$"),
+            "the identical tag outside the details block still converts: {out:?}"
+        );
+    }
+
     #[test]
     fn to_superscript_single_and_multi_digit() {
         assert_eq!(to_superscript(1), "¹");
@@ -6580,6 +6773,46 @@ plain body
         assert!(
             out.contains("code [^1] here"),
             "ref inside a fence untouched"
+        );
+    }
+
+    /// Regression (2026-08): same class of bug as `process_inline_html_leaves_indented_code_untouched`
+    /// — `process_footnotes` also gated on `fence_mask` alone, so `[^1]` written inside an indented
+    /// code block purely as a syntax example (e.g. a snippet showing readers how to write a
+    /// footnote reference) was itself numbered and superscripted, and a `[^id]: text` line indented
+    /// the same way was pulled out of the block as if it were a real definition.
+    #[test]
+    fn process_footnotes_leaves_indented_code_untouched() {
+        let src = "real[^1] reference\n\n\
+                    Example syntax:\n\n    write text[^1] like this\n\n[^1]: the definition\n";
+        let out = process_footnotes(src);
+        assert!(
+            out.contains("real¹ reference"),
+            "the real ref is numbered: {out:?}"
+        );
+        assert!(
+            out.contains("    write text[^1] like this"),
+            "the indented example ref stays literal, whole line unchanged: {out:?}"
+        );
+    }
+
+    /// Same regression and mechanism as
+    /// `process_inline_html_leaves_a_details_fence_without_a_blank_line_untouched` — see its doc
+    /// comment. The reference numbering pass also has to skip this line: were it counted, it would
+    /// still resolve to the same id (`1`) as the real outside reference, so the corruption here is
+    /// specifically that the ref text itself gets superscripted, not a renumbering.
+    #[test]
+    fn process_footnotes_leaves_a_details_fence_without_a_blank_line_untouched() {
+        let src = "<details>\n<summary>s</summary>\n```rust\n[^1] <kbd>K</kbd> $x$\n```\n</details>\n\noutside [^1] and <kbd>K</kbd> and $x$\n\n[^1]: def\n";
+        let out = process_footnotes(src);
+        assert!(
+            out.contains("```rust\n[^1] <kbd>K</kbd> $x$\n```"),
+            "the ref inside the fence right after <summary>, no blank line between them, stays \
+             literal: {out:?}"
+        );
+        assert!(
+            out.contains("outside ¹ and <kbd>K</kbd> and $x$"),
+            "the identical ref outside the details block still numbers: {out:?}"
         );
     }
 
@@ -7306,13 +7539,25 @@ pub(crate) mod code_span_corpus {
         }
     }
 
-    /// Documents pinning **the** invariant every source-rewriting pass shares: the contents of an
-    /// inline code span are a literal *example* of some syntax, never syntax to act on. Enumerated
-    /// from the specification's case splits — backtick run lengths, matched/unmatched delimiters,
-    /// where the span sits in the line, backslash escapes, multibyte boundaries — crossed with the
-    /// notations the passes rewrite. Deliberately *not* enumerated from the bugs already found: a
-    /// corpus grown from past bugs only ever prevents those exact bugs from recurring, which is how
-    /// this rule came to be re-derived (and to drift) once per pass in the first place.
+    /// Documents pinning **the** invariant every source-rewriting pass shares: the contents of a
+    /// literal code region — an inline `` `code span` ``, **or a code block, fenced or indented** —
+    /// are a literal *example* of some syntax, never syntax to act on. Enumerated from the
+    /// specification's case splits — backtick run lengths, matched/unmatched delimiters, where the
+    /// span sits in the line, backslash escapes, multibyte boundaries, and (for blocks) the kind of
+    /// indentation, its column count, and what construct can precede it without a blank line — crossed
+    /// with the notations the passes rewrite. Deliberately *not* enumerated from the bugs already
+    /// found: a corpus grown from past bugs only ever prevents those exact bugs from recurring, which
+    /// is how this rule came to be re-derived (and to drift) once per pass in the first place.
+    ///
+    /// The block half of this was missing until 2026-08: all three passes originally gated only on
+    /// `fence_mask`, which recognizes a fenced (```` ``` ````/`~~~`) block but has no notion of
+    /// indentation at all, so an *indented* code block — CommonMark's other kind — was invisible to
+    /// them. `[^1]`/`<kbd>x</kbd>`/`$x$` written inside one purely to *document* the syntax (e.g. "indent
+    /// your snippet 4 columns like this: ...") was rewritten as if it were real, indistinguishable on
+    /// screen from an actual reference/tag/expression elsewhere in the document. The fix folds
+    /// `code_block_mask` (which asks pulldown-cmark directly, so it agrees with the parser on indented
+    /// blocks in any container) into `fence_mask` via `literal_code_mask` — see that function's own
+    /// doc comment for why the union, not either mask alone, is what matches the renderer.
     pub fn cases() -> Vec<Case> {
         let mut v = vec![
             // --- Backtick run length: 1 / 2 / 3, and runs that do not pair up ---
@@ -7575,6 +7820,171 @@ pub(crate) mod code_span_corpus {
                 &[],
             ),
         ]);
+        // --- Indented code blocks: CommonMark's *other* kind of code block (fenced ``` / ~~~ is
+        // covered above). `literal_code_mask` only started covering these with the `code_block_mask`
+        // union (2026-08) — before that, all three passes gated on `fence_mask` alone, which is blind
+        // to indentation entirely, so `[^1]`/`<kbd>`/`$x$` written inside one purely to *document* the
+        // syntax (e.g. "indent your snippet 4 columns like this: ...") were rewritten as if they were
+        // real. Columns are built with `.repeat` rather than counted by eye in a string literal, since
+        // an off-by-one here would silently test the wrong boundary.
+        let ind3 = " ".repeat(3);
+        let ind4 = " ".repeat(4);
+        let ind5 = " ".repeat(5);
+        let ind6 = " ".repeat(6);
+        let ind8 = " ".repeat(8);
+        v.extend([
+            // The case explicitly requested: a 4-column indent at document start.
+            verbatim("indented code block", &format!("    {PAYLOAD}")),
+            // A tab is 4 columns (CommonMark's tab-stop rule, `leading_ws_width`'s own doc comment) —
+            // a different *kind* of indented block, not just a different width of the same one.
+            verbatim(
+                "tab-indented code block",
+                &format!("\t{PAYLOAD}"),
+            ),
+            // The boundary from the other side: one column short of 4 is still an ordinary paragraph,
+            // so the payload on it *is* rewritten, exactly like the control line — `no_span`, not
+            // `verbatim`.
+            no_span(
+                "indented three columns is not a code block (ordinary paragraph)",
+                &format!("{ind3}{PAYLOAD}"),
+                &format!("{ind3}{PAYLOAD_FN}"),
+                &format!("{ind3}{PAYLOAD_IH}"),
+            ),
+            // Past 4 columns, the extra indentation is literal *content* of the same one block, not a
+            // second, more-indented block.
+            verbatim(
+                "indented eight columns is still one literal code block",
+                &format!("{ind8}{PAYLOAD}"),
+            ),
+            // --- Position: what can precede an indented code block without a blank line ---
+            verbatim(
+                "indented code block after a paragraph",
+                &format!("para\n\n{ind4}{PAYLOAD}"),
+            ),
+            // A heading is not a paragraph, so — unlike the paragraph case just above, which *needs*
+            // the blank line — it cannot absorb a following indented line as a continuation. No blank
+            // line is needed for the indented line right after it to start a fresh code block.
+            verbatim(
+                "indented code block right after a heading, no blank line",
+                &format!("# H\n{ind4}{PAYLOAD}"),
+            ),
+            // Inside a list item the indentation is relative to the item's own content column: a
+            // "- " marker's content starts at column 2, so a code block inside it needs marker + 4 =
+            // six columns, and (like the top-level paragraph case) a blank line first — an indented
+            // line right after the item's opening text is just a continuation of that paragraph.
+            verbatim(
+                "indented code block inside a list item, six columns, blank line before it",
+                &format!("- item\n\n{ind6}{PAYLOAD}"),
+            ),
+            // The boundary from the other side: four columns under the same marker is short of the
+            // six the item needs, so it stays a (lazily-indented) continuation of "- item"'s paragraph
+            // — not a code block — and the payload on it is rewritten normally.
+            no_span(
+                "indented four columns inside a list item is not a code block (paragraph continuation)",
+                &format!("- item\n{ind4}{PAYLOAD}"),
+                &format!("- item\n{ind4}{PAYLOAD_FN}"),
+                &format!("- item\n{ind4}{PAYLOAD_IH}"),
+            ),
+            // Inside a blockquote the same rule applies relative to the quote's own content column
+            // (`>` plus one optional space = column 1): here the indented block is the very first
+            // line of the quote, so — like the document-start case — no blank line is needed first.
+            verbatim(
+                "indented code block inside a blockquote",
+                &format!(">{ind5}{PAYLOAD}"),
+            ),
+            // Two indented chunks separated by one blank line are a single block in CommonMark (the
+            // blank line is folded into the block's own range, not treated as ending it) — both
+            // chunks, and the blank line between them, must stay untouched.
+            verbatim(
+                "two indented chunks separated by a blank line stay one literal block",
+                &format!("{ind4}{PAYLOAD}\n\n{ind4}{PAYLOAD}"),
+            ),
+            // --- Notations besides PAYLOAD's own (footnote ref / <kbd> / inline math), each inside an
+            // indented block vs. outside one. None of these documents define a footnote, so
+            // `process_footnotes` short-circuits to a byte-identical no-op for all nine — that itself
+            // is part of what's being pinned (a stray indented block must never manufacture a
+            // reference/definition that was not there).
+            case(
+                "del inside an indented code block and outside",
+                "    <del>d</del>\n\n<del>d</del>\n",
+                "    <del>d</del>\n\n<del>d</del>\n",
+                "    <del>d</del>\n\n~~d~~\n",
+                &[],
+            ),
+            case(
+                "s inside an indented code block and outside",
+                "    <s>d</s>\n\n<s>d</s>\n",
+                "    <s>d</s>\n\n<s>d</s>\n",
+                "    <s>d</s>\n\n~~d~~\n",
+                &[],
+            ),
+            case(
+                "strike inside an indented code block and outside",
+                "    <strike>d</strike>\n\n<strike>d</strike>\n",
+                "    <strike>d</strike>\n\n<strike>d</strike>\n",
+                "    <strike>d</strike>\n\n~~d~~\n",
+                &[],
+            ),
+            case(
+                "sup inside an indented code block and outside",
+                "    <sup>2</sup>\n\n<sup>2</sup>\n",
+                "    <sup>2</sup>\n\n<sup>2</sup>\n",
+                "    <sup>2</sup>\n\n²\n",
+                &[],
+            ),
+            case(
+                "sub inside an indented code block and outside",
+                "    <sub>2</sub>\n\n<sub>2</sub>\n",
+                "    <sub>2</sub>\n\n<sub>2</sub>\n",
+                "    <sub>2</sub>\n\n₂\n",
+                &[],
+            ),
+            // `<br>` inside an indented block used to inject a newline *into* the block, splitting it
+            // in two (the same failure mode as the inline-code-span "br inside and outside" case
+            // above, for the other kind of code block).
+            case(
+                "br inside an indented code block and outside",
+                "    <br>\n\n<br> tail\n",
+                "    <br>\n\n<br> tail\n",
+                "    <br>\n\n  \n tail\n",
+                &[],
+            ),
+            case(
+                "display math ($$...$$) inside an indented code block and outside",
+                "    $$x$$\n\n$$y$$\n",
+                "    $$x$$\n\n$$y$$\n",
+                "    $$x$$\n\n$$y$$\n",
+                &[("y", true)],
+            ),
+            case(
+                "paren math (\\(...\\)) inside an indented code block and outside",
+                "    \\(x\\)\n\n\\(y\\)\n",
+                "    \\(x\\)\n\n\\(y\\)\n",
+                "    \\(x\\)\n\n\\(y\\)\n",
+                &[("y", false)],
+            ),
+            case(
+                "bracket math (\\[...\\]) inside an indented code block and outside",
+                "    \\[x\\]\n\n\\[y\\]\n",
+                "    \\[x\\]\n\n\\[y\\]\n",
+                "    \\[x\\]\n\n\\[y\\]\n",
+                &[("y", true)],
+            ),
+            // The other reason `literal_code_mask` exists at all (see its own doc comment): a fence
+            // with no blank line between it and a preceding `<summary>…</summary>` line is one thing
+            // `code_block_mask` alone gets *wrong* (it reads the whole thing as one HTML block) and
+            // `fence_mask` gets right by accident — so this is the one corpus case where the union's
+            // *other* half is doing the protecting, not `code_block_mask`. Already covered by two
+            // individual tests (`process_inline_html_leaves_a_details_fence_without_a_blank_line_untouched`,
+            // `process_footnotes_leaves_a_details_fence_without_a_blank_line_untouched`) and one
+            // hand-written math case below in `fence_and_math_extraction_tests` — added here too so it
+            // also runs through the corpus's two mechanically-derived tests (span survival, math
+            // opacity), which those individual tests don't exercise.
+            verbatim(
+                "details/summary immediately followed by a fenced code block, no blank line",
+                &format!("<details>\n<summary>s</summary>\n```rust\n{PAYLOAD}\n```\n</details>"),
+            ),
+        ]);
         v
     }
 }
@@ -7583,11 +7993,14 @@ mod code_span_parity_tests {
     use super::*;
 
     /// Every inline code span of `src`, as `(start_line_index, text_including_delimiters)`, skipping
-    /// lines inside a fence (there the backticks are the fence's own delimiters). Uses the shared
-    /// primitive, so it describes exactly the regions the passes promise to leave alone.
+    /// lines that are already literal code — fenced **or indented** (there the backticks, if any, are
+    /// the fence's own delimiters, or just literal text). Uses `literal_code_mask`, the exact mask the
+    /// three passes under test actually consult, so this describes precisely the regions they promise
+    /// to leave alone — not a narrower one (`fence_mask` alone would miss an indented block and this
+    /// helper would then go looking for "code spans" inside text that was never span-delimited).
     fn spans_of(src: &str) -> Vec<String> {
         let lines: Vec<&str> = src.lines().collect();
-        let fenced = fence_mask(&lines);
+        let fenced = literal_code_mask(&lines);
         let mut out = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             if fenced[i] {
@@ -7668,15 +8081,18 @@ mod code_span_parity_tests {
 
     /// The math pass has no string output to scan, so the same invariant is stated as opacity:
     /// rewriting every code span's *contents* to an inert `x` must not change which expressions are
-    /// extracted. If the scanner ever looked inside a span, the extracted list would move.
+    /// extracted. If the scanner ever looked inside a span, the extracted list would move. A line
+    /// that is already literal code — fenced **or indented** (`literal_code_mask`, not just
+    /// `fence_mask`) — is left untouched rather than scanned for spans, matching what `split_math`
+    /// itself does with such a line.
     #[test]
     fn math_extraction_treats_code_span_contents_as_opaque() {
         for c in code_span_corpus::cases() {
             let lines: Vec<&str> = c.src.lines().collect();
-            let fenced = fence_mask(&lines);
+            let literal = literal_code_mask(&lines);
             let mut blanked = String::new();
             for (i, line) in lines.iter().enumerate() {
-                if fenced[i] {
+                if literal[i] {
                     blanked.push_str(line);
                     blanked.push('\n');
                     continue;
@@ -9005,6 +9421,15 @@ mod fence_and_math_extraction_tests {
             ("escaped dollar", "\\$not math\\$\n", vec![]),
             ("inside inline code", "`$x$`\n", vec![]),
             ("inside a fence", "```\n$x$\n```\n", vec![]),
+            // Regression (2026-08): `split_math` used to track fences with its own hand-rolled
+            // state machine (fenced-only, like the old `fence_mask`), so a `$x$` example written
+            // inside an *indented* code block was lifted out as a math image — inside a block meant
+            // to be a literal transcript. `code_block_mask` (via pulldown-cmark) covers both kinds.
+            (
+                "inside an indented code block",
+                "para\n\n    $x$ stays literal\n\npara2\n",
+                vec![],
+            ),
             ("empty is not math", "$$\n", vec![]),
             // Structure-mask cases (see `structure_mask`): math inside a construct whose own
             // parser needs line continuity is left literal, never extracted/lifted.
@@ -9022,6 +9447,18 @@ mod fence_and_math_extraction_tests {
                 "inside details",
                 "<details>\n<summary>S</summary>\n\nhere is $x^2$ math\n\n</details>\n",
                 vec![],
+            ),
+            // Same class of document as `process_inline_html_leaves_a_details_fence_without_a_blank_line_untouched`
+            // (see its doc comment) — a fence right after `<summary>`, no blank line between them.
+            // For `split_math` specifically this is *not* the `code_block_mask`/`literal_code_mask`
+            // union doing the protecting: `structure_mask` (above) already masks the whole
+            // `<details>` … `</details>` span unconditionally, blank line or not, so this passed
+            // before that union existed too. Kept as a fixed case across all three passes (per the
+            // review that found the gap) rather than assumed from the other two tests passing.
+            (
+                "inside a details fence with no blank line before it",
+                "<details>\n<summary>s</summary>\n```rust\n[^1] <kbd>K</kbd> $x$\n```\n</details>\n\noutside [^1] and <kbd>K</kbd> and $x$\n\n[^1]: def\n",
+                vec![inline("x")],
             ),
             (
                 "inside a table row",
@@ -9272,5 +9709,263 @@ mod fence_and_math_extraction_tests {
             is_math_url(&imgs[0].url),
             "the one placement must be the top-level math expression: {imgs:?}"
         );
+    }
+}
+
+/// Ground truth for `fence_mask` / `code_block_mask` / `literal_code_mask` themselves, pinned line by
+/// line rather than through one of the three source-rewriting passes that consult them. The corpus
+/// above (`code_span_corpus`) exercises these masks *indirectly*, through what `process_footnotes` /
+/// `process_inline_html` / `collect_math_exprs` do with a document — which is the behavior that
+/// actually matters, but a failure there only shows "the pass disagreed with the expectation", not
+/// which of the three masks (or which line) was wrong. This module states the masks' own answers
+/// directly, so a boundary regression here points straight at the mask, not at three passes' worth of
+/// string-rewriting logic layered on top of it.
+///
+/// Every expected `(fence, code_block, literal)` triple below was checked against a throwaway probe
+/// (`fence_mask`/`code_block_mask`/`literal_code_mask` called directly and printed line by line against
+/// each of these same documents, then deleted once the values below were copied from its output) —
+/// not re-derived from CommonMark's prose or assumed from `literal_code_mask`'s own doc comment.
+#[cfg(test)]
+mod mask_boundary_tests {
+    use super::*;
+
+    /// One line's expected `(fence_mask, code_block_mask, literal_code_mask)`.
+    type Expect = (bool, bool, bool);
+
+    /// One document plus the expected mask triple for every one of its lines, in order.
+    struct Row {
+        name: &'static str,
+        doc: String,
+        expect: Vec<Expect>,
+    }
+
+    fn row(name: &'static str, doc: impl Into<String>, expect: Vec<Expect>) -> Row {
+        Row {
+            name,
+            doc: doc.into(),
+            expect,
+        }
+    }
+
+    fn rows() -> Vec<Row> {
+        let ind3 = " ".repeat(3);
+        let ind4 = " ".repeat(4);
+        let ind5 = " ".repeat(5);
+        let ind6 = " ".repeat(6);
+        let ind8 = " ".repeat(8);
+        const F: bool = false;
+        const T: bool = true;
+        vec![
+            // --- Column count, at document start (a line with no indented-block-disqualifying
+            // construct before it) ---
+            row(
+                "3 columns is not a code block (ordinary paragraph)",
+                format!("{ind3}TEXT"),
+                vec![(F, F, F)],
+            ),
+            row(
+                "4 columns is a code block",
+                format!("{ind4}TEXT"),
+                vec![(F, T, T)],
+            ),
+            row(
+                "8 columns is still one code block (the extra 4 are content)",
+                format!("{ind8}TEXT"),
+                vec![(F, T, T)],
+            ),
+            row(
+                "a tab is 4 columns, same as 4 spaces",
+                "\tTEXT",
+                vec![(F, T, T)],
+            ),
+            // --- Position: what can precede an indented block without a blank line ---
+            row(
+                "after a paragraph (blank line required; the blank line itself is not part of the block)",
+                format!("para\n\n{ind4}TEXT"),
+                vec![(F, F, F), (F, F, F), (F, T, T)],
+            ),
+            row(
+                "right after an ATX heading, no blank line needed (a heading cannot absorb a continuation line)",
+                format!("# H\n{ind4}TEXT"),
+                vec![(F, F, F), (F, T, T)],
+            ),
+            row(
+                "right after a setext heading underline, no blank line needed",
+                format!("Heading\n=====\n{ind4}TEXT"),
+                vec![(F, F, F), (F, F, F), (F, T, T)],
+            ),
+            // --- Inside containers: indentation is relative to the container's own content column ---
+            row(
+                "4 columns inside a list item ('- ' content column 2) is short of the 6 the item needs \
+                 — still a paragraph continuation, not a code block",
+                format!("- item\n{ind4}TEXT"),
+                vec![(F, F, F), (F, F, F)],
+            ),
+            row(
+                "6 columns inside a list item, blank line before it, is a code block",
+                format!("- item\n\n{ind6}TEXT"),
+                vec![(F, F, F), (F, F, F), (F, T, T)],
+            ),
+            row(
+                "6 columns inside a list item with NO blank line before it is still just a paragraph \
+                 continuation (extra indentation on a continuation line does not start a nested block)",
+                format!("- item\n{ind6}TEXT"),
+                vec![(F, F, F), (F, F, F)],
+            ),
+            row(
+                "indented code block as the very first line of a blockquote (quote's own content column, \
+                 '> ' = 1, plus 4 = 5)",
+                format!(">{ind5}TEXT"),
+                vec![(F, T, T)],
+            ),
+            row(
+                "indented code block inside a blockquote, after a blank quote line",
+                format!("> plain\n>\n>{ind5}TEXT"),
+                vec![(F, F, F), (F, F, F), (F, T, T)],
+            ),
+            row(
+                "no blank quote line first: still just a continuation of the quote's own paragraph",
+                format!("> plain\n>{ind5}TEXT"),
+                vec![(F, F, F), (F, F, F)],
+            ),
+            // --- Two chunks separated by one blank line are ONE block; the blank line is part of it ---
+            row(
+                "two indented chunks separated by a blank line — the blank line is part of the block too",
+                format!("{ind4}A\n\n{ind4}B"),
+                vec![(F, T, T), (F, T, T), (F, T, T)],
+            ),
+            // --- Fences: column count, nesting, and where the two masks disagree ---
+            row(
+                "a fence indented 2 columns at top level is still a fence",
+                "  ```\n  code\n  ```",
+                vec![(T, T, T), (T, T, T), (T, T, T)],
+            ),
+            row(
+                "a fence indented 4 absolute columns under a '1. ' item (content column 3, so only 1 \
+                 relative column) is a REAL fence — fence_mask's absolute-column check misses it \
+                 (leading_ws_width >= 4 rejects the opener outright), code_block_mask (container-aware, \
+                 via pulldown-cmark) catches it",
+                format!("1. item\n\n{ind4}```\n{ind4}code\n{ind4}```"),
+                vec![(F, F, F), (F, F, F), (F, T, T), (F, T, T), (F, T, T)],
+            ),
+            row(
+                "a nested longer fence (```` ```` ```` wrapping ``` ```) stays open the whole way through, \
+                 by both masks",
+                "````md\n```\ninner\n```\n````",
+                vec![(T, T, T), (T, T, T), (T, T, T), (T, T, T), (T, T, T)],
+            ),
+            row(
+                "an unclosed fence runs to end of file, by both masks",
+                "```\ncode",
+                vec![(T, T, T), (T, T, T)],
+            ),
+            // --- The two cases `literal_code_mask`'s own doc comment names as where it and
+            // `code_block_mask` alone diverge from each other ---
+            row(
+                "<details><summary>…</summary> immediately followed by a fence, no blank line: \
+                 code_block_mask says NOT code (pulldown-cmark reads the whole thing as one HTML block); \
+                 fence_mask says code (blind to the surrounding <details>/<summary> context); the union \
+                 (literal_code_mask) is what matches what the renderer actually draws — a real code block, \
+                 because split_details hands this body to an isolated re-parse where nothing competes",
+                "<details>\n<summary>s</summary>\n```rust\nCODE\n```\n</details>",
+                vec![
+                    (F, F, F), // <details>
+                    (F, F, F), // <summary>s</summary>
+                    (T, F, T), // ```rust  (fence_mask true, code_block_mask false)
+                    (T, F, T), // CODE
+                    (T, F, T), // ```
+                    (F, F, F), // </details>
+                ],
+            ),
+            row(
+                "<div>…</div> wrapping a fence, no blank line: code_block_mask says NOT code — \
+                 pulldown-cmark reads the whole <div>...</div> as one HTML block, and konoma's own \
+                 renderer agrees (split_html_blocks carves this out as HTML before the parser ever sees \
+                 it, not as a code block)",
+                "<div>\n```\ncode\n```\n</div>",
+                vec![
+                    (F, F, F), // <div>
+                    (T, F, T), // ```    (fence_mask still true; see the doc comment on this — a
+                    (T, F, T), // code   // pre-existing fence_mask over-protection this mask inherits
+                    (T, F, T), // ```    // unchanged, not something introduced by the union)
+                    (F, F, F), // </div>
+                ],
+            ),
+            // --- Non-regression: a document with no code block of either kind is all false, for every
+            // other construct these masks' callers have to coexist with ---
+            row(
+                "no code block anywhere: front matter, heading, paragraph, list, quote, table, HTML \
+                 block, footnote definition",
+                "---\ntitle: T\n---\n\n# Heading\n\npara text\n\n- list item\n\n> quote\n\n| a | b |\n\
+                 |---|---|\n| 1 | 2 |\n\n<div>html</div>\n\n[^1]: def",
+                vec![
+                    (F, F, F), // ---
+                    (F, F, F), // title: T
+                    (F, F, F), // ---
+                    (F, F, F), // (blank)
+                    (F, F, F), // # Heading
+                    (F, F, F), // (blank)
+                    (F, F, F), // para text
+                    (F, F, F), // (blank)
+                    (F, F, F), // - list item
+                    (F, F, F), // (blank)
+                    (F, F, F), // > quote
+                    (F, F, F), // (blank)
+                    (F, F, F), // | a | b |
+                    (F, F, F), // |---|---|
+                    (F, F, F), // | 1 | 2 |
+                    (F, F, F), // (blank)
+                    (F, F, F), // <div>html</div>
+                    (F, F, F), // (blank)
+                    (F, F, F), // [^1]: def
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn masks_agree_with_pulldown_cmark_line_by_line() {
+        for r in rows() {
+            let lines: Vec<&str> = r.doc.lines().collect();
+            assert_eq!(
+                lines.len(),
+                r.expect.len(),
+                "{}: doc has {} lines but {} expectations were given — doc={:?}",
+                r.name,
+                lines.len(),
+                r.expect.len(),
+                r.doc
+            );
+            let fm = fence_mask(&lines);
+            let cbm = code_block_mask(&lines);
+            let lcm = literal_code_mask(&lines);
+            for (i, &(ef, eb, el)) in r.expect.iter().enumerate() {
+                assert_eq!(
+                    fm[i], ef,
+                    "{}: line {i} {:?} — fence_mask expected {ef}, got {}",
+                    r.name, lines[i], fm[i]
+                );
+                assert_eq!(
+                    cbm[i], eb,
+                    "{}: line {i} {:?} — code_block_mask expected {eb}, got {}",
+                    r.name, lines[i], cbm[i]
+                );
+                assert_eq!(
+                    lcm[i], el,
+                    "{}: line {i} {:?} — literal_code_mask expected {el}, got {}",
+                    r.name, lines[i], lcm[i]
+                );
+                // literal_code_mask is defined as the OR of the other two — restate that as an
+                // assertion here too, so a future edit that breaks the union itself (not just one of
+                // its inputs) is caught by this table as well, not only by `literal_code_mask`'s own
+                // unit-level definition.
+                assert_eq!(
+                    lcm[i],
+                    fm[i] || cbm[i],
+                    "{}: line {i} literal_code_mask must equal fence_mask OR code_block_mask",
+                    r.name
+                );
+            }
+        }
     }
 }
