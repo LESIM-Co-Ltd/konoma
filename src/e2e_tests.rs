@@ -3471,6 +3471,84 @@ fn e2e_md_indented_code_after_heading_no_blank_keeps_fence_copyable() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Root cause (container-closed fences, 2026-08): a fence is closed by a delimiter line **or** by the
+/// end of the container it was opened in. The mask gating the block splitters knew only the first
+/// rule, so a fence in a list item whose "closing" line carries trailing text — `` ``` ([#2642](…)) ``,
+/// nix's CHANGELOG.md line 110 — was read as running to the end of the *document*, and every
+/// construct below it was skipped as "inside code". Drives real keys, and asserts on the drawn
+/// screen: the GFM table below renders with borders instead of one line of raw pipes, and the fence
+/// itself is still a copyable code block (its own extent unchanged).
+#[test]
+fn e2e_md_fence_closed_by_its_list_item_still_renders_the_table_below() {
+    let dir = sandbox("md_container_closed_fence");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        "- Removed `Eq`, for example:\n\n  ```\n  let h = 1;\n  ``` ([#2642](https://example.com/pull/2642))\n\n\
+         Implemented I/O safety:\n\n| Original Type | New Type |\n| ------------- | -------- |\n| AsRawFd | AsFd |\n\n\
+         ```sh\nafter\n```\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+
+    // The table below the fence is drawn by konoma's own table renderer (borders), not collapsed by
+    // tui-markdown into `| Original Type | New Type | | ---…` on one line.
+    // `┬` only ever comes from konoma's table renderer (the preview frame itself draws `┌`/`│`).
+    s.see("┬");
+    s.see("│ Original Type │ New Type │");
+    s.see("│ AsRawFd");
+    s.dont_see("| Original Type | New Type | |");
+
+    // The fence's own extent is unchanged: it is still the 1st focusable code block, and the real
+    // fence after the table is still the 2nd (the count guard covers the whole document, so a
+    // disagreement here would refuse `y c` everywhere in the file).
+    s.tab();
+    assert!(
+        s.app.md_focused_code(),
+        "1番目=リスト項目内のコードブロック"
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("let h = 1;\n``` ([#2642](https://example.com/pull/2642))\n"),
+        "末尾テキスト付きの行は閉じないので、その行もブロックの中身のまま"
+    );
+    s.tab();
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("after"),
+        "表の後ろの実フェンスが2番目として拾える"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "コピーが拒否されない");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other axis the same gate was blind to: an **indented** code block (4+ columns), whose contents
+/// are a literal transcript. A GFM table or a `> [!NOTE]` written inside one used to be carved out and
+/// drawn as a real table / callout, tearing the code block apart. Runs under the user's real
+/// `code_bg = "none"`, where a code block is only identifiable by its `▎` gutter.
+#[test]
+fn e2e_md_indented_code_block_keeps_table_and_alert_literal() {
+    let (s, dir) = md_preview(
+        cfg_code_bg_none(),
+        "md_indented_literal",
+        "Example table markup:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n\nExample alert markup:\n\n    > [!NOTE]\n    > body\n",
+    );
+    // Literal, verbatim — not carved into a bordered table or a colored callout box. `┬` is unique
+    // to the table renderer and `▌` to the alert box (the preview frame draws neither); `▎` is the
+    // code-block gutter, the only mark of a code block when `code_bg = "none"`.
+    s.see("| a | b |");
+    s.see("> [!NOTE]");
+    s.dont_see("┬");
+    s.dont_see("▌");
+    s.see("▎");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn e2e_md_wrapped_focus_follows_offscreen_item() {
     // When wrapped: moving with Tab to a link after a paragraph taller than the screen makes preview_scroll follow.

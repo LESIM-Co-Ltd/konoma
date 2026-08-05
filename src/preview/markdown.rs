@@ -1460,6 +1460,15 @@ fn parser_code_blocks(text: &str, out: &mut Vec<String>) {
 /// `in_alert_body` skips the `split_block_parts` step, because production never applies it to an
 /// alert's body: that runs on the raw source, where those lines still carry their `>` prefix and
 /// match neither an image nor a fence. Hence a diagram inside a `> [!NOTE]` really is drawn as code.
+///
+/// Because the splitters are shared rather than copied, this half of the scanner tracks any change
+/// to them for free. The half that does **not** is the alert / `<details>` peel in the caller
+/// (`code_block_source_locs_inner`), which decides where those two constructs start before any
+/// splitter runs — that is why it goes through the same [`splitter_code_mask`] the render side's
+/// `split_alerts`/`split_details` use, instead of tracking fences itself. When it did, moving the
+/// render side onto the parser silently desynced the two in both directions at once (a fence closed
+/// by its list item, which a fence toggle reads as running to EOF; an indented code block, which it
+/// cannot see at all), and every mismatch refuses `y c` for the whole document.
 fn scan_code_run(run: &mut Vec<&str>, in_alert_body: bool, out: &mut Vec<String>) {
     if run.is_empty() {
         return;
@@ -1518,17 +1527,16 @@ fn code_block_source_locs_inner(
     // Plain lines accumulated since the last alert/`<details>` block, flushed through the parser by
     // `scan_code_run`. Flushing *before* recursing keeps the results in document order.
     let mut run: Vec<&str> = Vec::new();
-    let mut fence: Option<Fence> = None;
+    // An alert header / `<details>` tag inside a code block is literal content, not a block start.
+    // This is `splitter_code_mask` — **the same gate `split_alerts`/`split_details` use on the
+    // render side**, over this same text — rather than a fence tracker written out again here: the
+    // two peel the same two constructs, so anything they disagree about is a count mismatch that
+    // refuses `y c` for the whole document. A hand-rolled fence toggle drifts from them in both
+    // directions (a fence in a list item closed by the item's end, which it reads as running to EOF;
+    // an indented code block, which it cannot see at all).
+    let in_code = splitter_code_mask(&lines);
     while i < lines.len() {
-        // An alert header / `<details>` tag inside a fenced code block is literal content, not a
-        // block start (`fence_mask` gates the renderer's own splitters the same way) — track fences
-        // here so the two peeled-off constructs below can never be triggered from inside one.
-        if let Some(f) = fence {
-            if parse_fence(lines[i])
-                .is_some_and(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
-            {
-                fence = None;
-            }
+        if in_code[i] {
             run.push(lines[i]);
             i += 1;
             continue;
@@ -1572,9 +1580,6 @@ fn code_block_source_locs_inner(
                 ));
             }
             continue;
-        }
-        if let Some((f, _)) = parse_fence(lines[i]) {
-            fence = Some(f);
         }
         run.push(lines[i]);
         i += 1;
@@ -1726,7 +1731,13 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
 pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool]) -> Vec<TaskLoc> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
-    let mut fence: Option<Fence> = None;
+    // Code blocks come from `splitter_code_mask` — the same gate `split_alerts`/`split_details` use
+    // on the render side — not a fence tracker written out again here, for the reason in that
+    // function's doc comment: the two must agree line for line about which alert/`<details>` starts
+    // are real, or the count guard refuses every toggle in the document. Nothing inside a code block
+    // is a checkbox either, so this doubles as the skip. Indented blocks the mask does *not* claim
+    // are still handled below by `skip_indented_code_block` (unchanged, deliberately conservative).
+    let in_code = splitter_code_mask(&lines);
     let mut details_idx = 0usize;
     let mut i = 0;
     // See `ListGuard` / `skip_indented_code_block` docs. `prev_not_paragraph` starts `true`: the very
@@ -1742,23 +1753,15 @@ pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool])
         let line = lines[i];
         let t = line.trim_start();
         let ws = leading_ws_width(line);
-        if let Some(f) = fence {
-            let closing = parse_fence(line)
-                .map(|(nf, info)| nf.ch == f.ch && nf.len >= f.len && info.is_empty())
-                .unwrap_or(false);
-            if closing {
-                fence = None;
+        if in_code[i] {
+            if i == 0 || !in_code[i - 1] {
+                // First line of the block: same bookkeeping the fence-opening line used to do.
+                // Verified against the renderer: a non-paragraph block
+                // (fence/alert/details/html/table) does not gate a following indented code block
+                // behind a blank line the way a paragraph does.
+                list.observe_special(ws);
             }
-            i += 1;
-            continue;
-        }
-        if let Some((f, _info)) = parse_fence(line) {
-            list.observe_special(ws);
-            // Verified against the renderer: a non-paragraph block (fence/alert/details/html/table)
-            // does not gate a following indented code block behind a blank line the way a paragraph
-            // does.
             prev_not_paragraph = true;
-            fence = Some(f);
             i += 1;
             continue;
         }
@@ -2616,8 +2619,11 @@ fn split_math(text: &str) -> Vec<MathPart> {
         .iter()
         .map(|l| l.strip_suffix('\n').unwrap_or(l))
         .collect();
-    let structure = structure_mask(&bare_lines);
-    let in_code = literal_code_mask(&bare_lines);
+    // One parse of this text run serves both masks: `structure_mask` gates on it directly (exactly
+    // like the block splitters it mirrors), and `literal_code_mask` unions it with `fence_mask`.
+    let parsed_code = splitter_code_mask(&bare_lines);
+    let structure = structure_mask(&bare_lines, &parsed_code);
+    let in_code = literal_code_mask_from(&parsed_code, &bare_lines);
     let mut i = 0;
     while i < lines.len() {
         let raw = lines[i];
@@ -3044,13 +3050,21 @@ enum MdPart {
 
 /// For each of `lines`, whether it is part of a fenced code block — the opening/closing marker
 /// lines and everything between (using the same fence-matching rules as `split_segments`/
-/// `parse_fence`: matching char, len ≥ opening len, empty info to close). `split_tables`,
-/// `split_html_blocks` and `split_alerts` gate their block-start detection on this: none of them
-/// otherwise know about code fences, so a fenced block whose *contents* happen to look like a GFM
-/// table, an HTML tag, or a `> [!NOTE]` alert header got sliced out of the fence and rendered as
-/// that construct instead of code — breaking the fence in two (each half growing its own code
-/// header) or leaking its closing marker into a stray HTML-block rescue. `split_details` has its
-/// own (simpler) fence toggle and is intentionally left alone here.
+/// `parse_fence`: matching char, len ≥ opening len, empty info to close).
+///
+/// Two remaining callers, both for reasons their own doc comments give:
+///
+/// * [`literal_code_mask`], which unions this with [`code_block_mask`] — this half is what recovers
+///   a fence konoma renders in isolation but the parser, reading the whole raw document, swallows
+///   into an HTML block.
+/// * [`split_html_blocks`], the one block splitter that deliberately keeps this narrower gate.
+///
+/// Everything else — the other three block splitters, `structure_mask`/`details_mask`, and the two
+/// source scanners — goes through [`splitter_code_mask`] instead. **This function knows nothing
+/// about containers**: CommonMark also closes a fence at the end of the list item or block quote it
+/// was opened in, so a fence whose closing line carries trailing text (not a close) is read here as
+/// running to the end of the document, when in fact its list item ends it a few lines later. That
+/// is the runaway `splitter_code_mask` exists to avoid; see its doc comment.
 fn fence_mask(lines: &[&str]) -> Vec<bool> {
     let mut mask = vec![false; lines.len()];
     let mut open: Option<Fence> = None;
@@ -3081,9 +3095,12 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
 /// container) — asking pulldown-cmark, the same parser tui-markdown renders through, rather than
 /// re-deriving the block rules by hand.
 ///
-/// `fence_mask` above only ever recognizes fenced blocks: it exists to gate
-/// `split_tables`/`split_html_blocks`/`split_alerts`, which only need "is this a fence" to avoid
-/// slicing one in two. But `process_footnotes`, `process_inline_html` and `split_math` used
+/// Reached two ways: directly, as [`splitter_code_mask`] — the gate every block splitter and source
+/// scanner uses (see that function for why the union below is *not* the right answer there) — and as
+/// the parser half of [`literal_code_mask`], the union the source pre-passes consult.
+///
+/// `fence_mask` above only ever recognizes fenced blocks, and only by their delimiters. But
+/// `process_footnotes`, `process_inline_html` and `split_math` used
 /// `fence_mask` (or, until this change, their own hand-rolled copy of the same fence-only state
 /// machine) to decide which lines to leave untouched — and an indented code block is invisible to
 /// it. So `<kbd>` written inside one to *document* the tag became a real keycap, `<br>` injected a
@@ -3145,7 +3162,9 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
 ///   hands it to `render_md_body_nested` in isolation, where the same fence, with no competing
 ///   `<summary>` text around it, does produce a `CodeBlock` event. `fence_mask` gets this one right
 ///   (it is blind to the surrounding `<details>`/`<summary>` context entirely), so union with it —
-///   `literal_code_mask` — is what recovers the renderer's actual answer.
+///   `literal_code_mask` — is what recovers the renderer's actual answer. Note that
+///   [`splitter_code_mask`] does **not** need the union for this: a splitter runs on the text it was
+///   handed, and by then `split_details` has already peeled those tags off.
 fn code_block_mask(lines: &[&str]) -> Vec<bool> {
     use pulldown_cmark::{Event, Parser, Tag};
     if lines.is_empty() {
@@ -3232,13 +3251,53 @@ fn code_block_mask(lines: &[&str]) -> Vec<bool> {
 /// behavior, not something this mask introduces or could remove without dropping `fence_mask` from the
 /// union — which would reintroduce the `<details>`-without-a-blank-line gap above.
 fn literal_code_mask(lines: &[&str]) -> Vec<bool> {
-    let parser = code_block_mask(lines);
+    literal_code_mask_from(&code_block_mask(lines), lines)
+}
+
+/// **The** gate every block splitter uses to decide "don't start a construct on this line, it is
+/// code": [`split_tables`], [`split_html_blocks`], [`split_alerts`], [`split_details`], the
+/// `structure_mask`/`details_mask` they feed, and the two source scanners that must count exactly
+/// what those splitters draw ([`code_block_source_locs`], [`task_source_locs`]). One named entry
+/// point so the rule has a single home — the drift this whole area keeps regressing on comes from
+/// the same rule living in several hand-written copies.
+///
+/// It is [`code_block_mask`] — the parser's answer — and deliberately **not** [`literal_code_mask`],
+/// even though that union is what the *source pre-passes* (`process_footnotes`,
+/// `process_inline_html`, `split_math`) consult. The two have opposite safety asymmetries:
+///
+/// * A pre-pass's mask means "leave this text alone". Over-marking costs one construct staying
+///   literal (safe); under-marking corrupts a code block that is genuinely on screen. So the union
+///   — mark if *either* mask says code — is right there.
+/// * A splitter's mask means "do not carve a block out here". Over-marking is **not** safe: the
+///   construct falls through to tui-markdown, which collapses a GFM table into one line of raw
+///   `| a | b |` text, drops an HTML block's contents entirely, and draws an alert as a plain
+///   quote. Under-marking splits a code block in two. Both directions cost something real, so the
+///   only defensible answer is the one the renderer itself will act on — and everything a splitter
+///   does *not* carve out goes to that same parser.
+///
+/// Concretely, the union cannot be used here because `fence_mask`'s half runs away: its hand-rolled
+/// state machine has no notion of a container, so a fence opened inside a list item whose closing
+/// line carries trailing text (`` ``` ([#2642](…)) `` — not a close per CommonMark, but the list
+/// item ends the block anyway) swallows every remaining line of the document. nix 0.31.3's
+/// CHANGELOG.md does exactly this at line 110, and the 617-line GFM table below it rendered as raw
+/// pipes (2026-08). pulldown-cmark closes the block at the list item, so `code_block_mask` does too.
+///
+/// The reason `literal_code_mask` needs `fence_mask` in its union — a fence with no blank line
+/// between it and a preceding `<summary>` line, which the parser reads as one HTML block when it
+/// sees the whole raw document — does not apply here, because each splitter computes this over
+/// **the text that splitter itself received**, and by the time one runs on a `<details>` body,
+/// `split_details` has already peeled the surrounding tags away, so the parser sees the fence in
+/// isolation and calls it code. That per-fragment evaluation is load-bearing, not incidental.
+fn splitter_code_mask(lines: &[&str]) -> Vec<bool> {
+    code_block_mask(lines)
+}
+
+/// [`literal_code_mask`] with the [`code_block_mask`] half already computed — for a caller that
+/// needs the parser's answer on its own as well (`split_math`, which also gates `structure_mask` on
+/// it), so the pulldown-cmark parse happens once per text run instead of twice.
+fn literal_code_mask_from(parsed: &[bool], lines: &[&str]) -> Vec<bool> {
     let fenced = fence_mask(lines);
-    parser
-        .into_iter()
-        .zip(fenced)
-        .map(|(a, b)| a || b)
-        .collect()
+    parsed.iter().zip(fenced).map(|(&a, b)| a || b).collect()
 }
 
 /// For each of `lines`, whether it sits inside a construct whose own parser requires line
@@ -3251,14 +3310,16 @@ fn literal_code_mask(lines: &[&str]) -> Vec<bool> {
 ///
 /// Reuses the same predicates the block splitters themselves use to decide where a block starts
 /// and ends, so this mask can never drift out of sync with what those splitters actually carve
-/// out. Gated by `fence_mask`, exactly like `split_tables`/`split_html_blocks`/`split_alerts`: a
-/// `>`/`|`/`<div>`-looking line inside a code fence is ordinary code, not structure.
-fn structure_mask(lines: &[&str]) -> Vec<bool> {
-    let fenced = fence_mask(lines);
+/// out. Gated by the caller's code mask ([`code_block_mask`]), exactly like
+/// `split_tables`/`split_html_blocks`/`split_alerts`: a `>`/`|`/`<div>`-looking line inside a code
+/// block is ordinary code, not structure. Taken as a parameter rather than recomputed here so
+/// `split_math` — which also needs `literal_code_mask`, itself built on `code_block_mask` — parses
+/// each text run exactly once.
+fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
     let mut mask = vec![false; lines.len()];
     let mut i = 0;
     while i < lines.len() {
-        if fenced[i] {
+        if in_code[i] {
             i += 1;
             continue;
         }
@@ -3290,13 +3351,13 @@ fn structure_mask(lines: &[&str]) -> Vec<bool> {
         }
         // GFM table: header row + delimiter row + consecutive data rows, mirroring `split_tables`.
         if i + 1 < lines.len()
-            && !fenced[i + 1]
+            && !in_code[i + 1]
             && looks_like_table_row(lines[i])
             && is_table_delimiter(lines[i + 1])
         {
             let start = i;
             let mut j = start + 2;
-            while j < lines.len() && !fenced[j] && looks_like_table_row(lines[j]) {
+            while j < lines.len() && !in_code[j] && looks_like_table_row(lines[j]) {
                 j += 1;
             }
             mask[start..j].fill(true);
@@ -3365,14 +3426,40 @@ fn is_html_block_start(line: &str) -> bool {
 /// Fence-aware (`fence_mask`): an HTML-looking line inside a code fence is left as ordinary text, or
 /// its tags would be stripped and — worse — the "block" scan (which just runs to the next blank
 /// line) would swallow the fence's own closing marker, leaking it into the rescued text.
+///
+/// **The one block splitter still on `fence_mask` rather than [`splitter_code_mask`]** (2026-08).
+/// Switching it costs more than it buys, and the reason is worth writing down because it looks like
+/// an oversight:
+///
+/// An indented (4+ column) code block whose first line starts with an HTML tag is ambiguous, and the
+/// two readings need *whole-document* context to tell apart — context this function no longer has,
+/// because `split_block_parts` has already cut block-level images out of the text by the time it
+/// runs:
+///
+/// * `para\n\n    <kbd>Ctrl</kbd>\n` — a genuine indented code block, documenting the tag. Rescuing
+///   it as HTML strips the tags and drops the code gutter. `splitter_code_mask` gets this right.
+/// * A centered `<div align="center">` badge banner — the shape at the top of a great many crate
+///   READMEs. Pulling its `<img>` lines out leaves fragments like `    </a>\n    <a href="…">\n`,
+///   which **open** with 4-column-indented content only because their `<div>` went into the previous
+///   fragment. Asked about that fragment alone, the parser correctly calls it an indented code
+///   block; asked about the original document, it correctly calls it HTML — and HTML is what konoma
+///   draws and what the copy scanner counts (see `scan_code_run`'s doc comment). `fence_mask`, blind
+///   to indentation entirely, gets this right by accident.
+///
+/// Measured over the 2,182 `.md` files in the crate registry, moving this one gate to
+/// `splitter_code_mask` produced **zero improvements and three regressions** (raw-window-metal,
+/// static_assertions and tinytemplate READMEs each grew several spurious code blocks full of
+/// `</a><a href="…">`), so it stays as it was. The known cost is the first bullet: an indented code
+/// block starting with an HTML tag is still drawn as tag-stripped HTML. Nothing is lost or
+/// mis-edited — the copy scanner shares this same splitter, so the two still agree.
 fn split_html_blocks(md: &str) -> Vec<HtmlPart> {
     let lines: Vec<&str> = md.lines().collect();
-    let fenced = fence_mask(&lines);
+    let in_code = fence_mask(&lines);
     let mut parts = Vec::new();
     let mut buf: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if !fenced[i] && is_html_block_start(lines[i]) {
+        if !in_code[i] && is_html_block_start(lines[i]) {
             if !buf.is_empty() {
                 parts.push(HtmlPart::Text(buf.join("\n") + "\n"));
                 buf.clear();
@@ -3521,8 +3608,9 @@ fn strip_blockquote(line: &str) -> String {
 }
 
 /// Partition Markdown into plain-text runs and GitHub alerts. An alert starts at a `> [!TYPE]`
-/// header and captures the following blockquote lines as its (marker-stripped) body. Fence-aware
-/// (`fence_mask`): a `> [!NOTE]`-looking line inside a code fence must stay literal code, not open
+/// header and captures the following blockquote lines as its (marker-stripped) body. Code-aware
+/// ([`code_block_mask`], computed over **this call's own `md`** — see that function's "splitter
+/// gate" note): a `> [!NOTE]`-looking line inside a code block must stay literal code, not open
 /// a callout box (whose body-capture loop then stops at the first non-`>` line — usually the very
 /// next line of code — leaving the rest of the fence, including its closing marker, to fall through
 /// to plain text and break the code block in two). Also gated by `details_mask`: an alert header
@@ -3536,11 +3624,11 @@ fn split_alerts(md: &str) -> Vec<AlertPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
     let lines: Vec<&str> = md.lines().collect();
-    let fenced = fence_mask(&lines);
-    let in_details = details_mask(&lines, &fenced);
+    let in_code = splitter_code_mask(&lines);
+    let in_details = details_mask(&lines, &in_code);
     let mut i = 0;
     while i < lines.len() {
-        let header = if fenced[i] || in_details[i] {
+        let header = if in_code[i] || in_details[i] {
             None
         } else {
             parse_alert_header(lines[i])
@@ -3680,16 +3768,17 @@ fn details_block_close(lines: &[&str], start: usize) -> Option<usize> {
 
 /// Split off `<details>` … `</details>` blocks (spanning blank lines) from a text run, extracting the
 /// `<summary>` and the body. Non-details text is returned verbatim for the normal pipeline.
-/// Fence-aware (a `<details>` inside a code fence is left as text) so the block count and order match
-/// `collect_details_open`, which seeds the per-ordinal open state.
+/// Code-aware ([`code_block_mask`], computed over **this call's own `md`** — see that function's
+/// "splitter gate" note): a `<details>` inside a code block is left as text, so the block count and
+/// order match `collect_details_open`, which seeds the per-ordinal open state.
 fn split_details(md: &str) -> Vec<DetailsPart> {
     let lines: Vec<&str> = md.lines().collect();
-    let fenced = fence_mask(&lines);
+    let in_code = splitter_code_mask(&lines);
     let mut parts = Vec::new();
     let mut text = String::new();
     let mut i = 0;
     while i < lines.len() {
-        if fenced[i] {
+        if in_code[i] {
             text.push_str(lines[i]);
             text.push('\n');
             i += 1;
@@ -3727,17 +3816,18 @@ fn split_details(md: &str) -> Vec<DetailsPart> {
 /// so it doesn't pull a `> [!TYPE]` alert header out of a `<details>` block that is still folded: an
 /// alert nested there used to render *outside* the fold unconditionally, leaking its body regardless
 /// of the block's open/closed state (a closed `<details>` wrapping an alert showed the alert's body
-/// — reported by the user). Gated by `fence_mask`, exactly like `split_details`/`structure_mask`.
+/// — reported by the user). Gated by the caller's code mask ([`code_block_mask`]), exactly like
+/// `split_details`/`structure_mask`; taken as a parameter so `split_alerts` computes it once.
 ///
 /// Deliberately narrower than `structure_mask` (which also masks every blockquote line, table row,
 /// and other HTML block): masking blockquote lines here would suppress `split_alerts` everywhere,
 /// since an alert header *is* a blockquote line — this mask exists purely to protect `<details>`
 /// blocks specifically.
-fn details_mask(lines: &[&str], fenced: &[bool]) -> Vec<bool> {
+fn details_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
     let mut mask = vec![false; lines.len()];
     let mut i = 0;
     while i < lines.len() {
-        if fenced[i] {
+        if in_code[i] {
             i += 1;
             continue;
         }
@@ -4245,20 +4335,21 @@ fn looks_like_table_row(line: &str) -> bool {
 
 /// Split md text into "normal text" and "table blocks".
 /// A table = header row (containing `|`) + the delimiter row right after (`|---|`) + the consecutive data rows.
-/// Fence-aware (`fence_mask`): pipe-delimited lines inside a code fence (e.g. a shell/markdown
-/// example) must stay code, not get carved out as a rendered table — which also splits the fence
+/// Code-aware ([`code_block_mask`], computed over **this call's own `md`** — see that function's
+/// "splitter gate" note): pipe-delimited lines inside a code block (e.g. a shell/markdown example)
+/// must stay code, not get carved out as a rendered table — which also splits the block
 /// into two pieces, each growing its own (broken) code-block header.
 fn split_tables(md: &str) -> Vec<MdPart> {
     let lines: Vec<&str> = md.lines().collect();
-    let fenced = fence_mask(&lines);
+    let in_code = splitter_code_mask(&lines);
     let mut parts = Vec::new();
     let mut text = String::new();
     let mut i = 0;
     while i < lines.len() {
-        // A table starts = the current line is a header candidate AND the next line is a delimiter row AND both are outside a fence.
-        if !fenced[i]
+        // A table starts = the current line is a header candidate AND the next line is a delimiter row AND both are outside a code block.
+        if !in_code[i]
             && i + 1 < lines.len()
-            && !fenced[i + 1]
+            && !in_code[i + 1]
             && looks_like_table_row(lines[i])
             && is_table_delimiter(lines[i + 1])
         {
@@ -4271,7 +4362,7 @@ fn split_tables(md: &str) -> Vec<MdPart> {
             raw.push_str(lines[i + 1]);
             raw.push('\n');
             let mut j = i + 2;
-            while j < lines.len() && !fenced[j] && looks_like_table_row(lines[j]) {
+            while j < lines.len() && !in_code[j] && looks_like_table_row(lines[j]) {
                 raw.push_str(lines[j]);
                 raw.push('\n');
                 j += 1;
@@ -4798,6 +4889,134 @@ mod tests {
         // The render is for one code block (only one marker line).
         let marker_lines = texts.iter().filter(|t| t.contains('→')).count();
         assert_eq!(marker_lines, 1, "マーカー行数が想定外: {marker_lines}");
+    }
+
+    /// Every line the render produced, as plain text (spans concatenated).
+    fn rendered_texts(md: &str) -> Vec<String> {
+        render_markdown(md, 100, BG, "TwoDark", false)
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// A fenced code block ends **either** at a closing delimiter **or** at the end of the container
+    /// it was opened in. The mask that gated the block splitters knew only the first rule, so a fence
+    /// opened inside a list item whose "closing" line carries trailing text — not a close per
+    /// CommonMark, but the list item ends the block anyway — was treated as running to the end of the
+    /// *document*, and every construct below it was skipped as "inside code".
+    ///
+    /// nix's CHANGELOG.md (all three versions vendored in the crate registry) does exactly this at
+    /// line 110: `` ``` ([#2642](https://github.com/nix-rust/nix/pull/2642)) ``. The GFM table 500
+    /// lines further down rendered as one line of raw `| Original Type | New Type | | ---…` text, and
+    /// the bullet list around it lost its markers — 1,316 lines of the file were affected.
+    ///
+    /// Pinned per construct, because each one is carved by a different splitter (`split_tables`,
+    /// `split_alerts`, `split_details`) that all shared the same broken gate, and per container,
+    /// because the container is the half the old mask had no concept of at all.
+    #[test]
+    fn a_fence_closed_by_its_container_does_not_swallow_the_rest_of_the_document() {
+        // (name, source, a needle that must appear once the block ends where it really ends)
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "table after a trailing-text close in a bullet item",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` ([#1](https://example.com/1))\n\n- next\n\nText.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+                "┌",
+            ),
+            (
+                "table after a trailing-text close in a nested bullet item",
+                "- outer\n  - inner\n\n    ```rust\n    let x = 1;\n    ``` (note)\n\nText.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+                "┌",
+            ),
+            (
+                "table after a trailing-text close in a block quote",
+                "> ```rust\n> let x = 1;\n> ``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+                "┌",
+            ),
+            (
+                "table after a trailing-text close in a list item in a block quote",
+                "> - item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+                "┌",
+            ),
+            (
+                "table after an entirely unclosed fence in a bullet item",
+                "- item\n\n  ```rust\n  let x = 1;\n\nText.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+                "┌",
+            ),
+            (
+                "alert after a trailing-text close in a bullet item",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\nText.\n\n> [!NOTE]\n> body\n",
+                "▌",
+            ),
+            (
+                "details after a trailing-text close in a bullet item",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\nText.\n\n<details open>\n<summary>Summary here</summary>\n\nbody\n\n</details>\n",
+                "Summary here",
+            ),
+        ];
+        for (name, src, needle) in cases {
+            set_details_open(Vec::new());
+            let texts = rendered_texts(src);
+            assert!(
+                texts.iter().any(|t| t.contains(needle)),
+                "{name}: コンテナで閉じたはずのコードブロックが以降を飲み込んでいる\
+                 ({needle:?} が描画に出ない)\n--- src ---\n{src}\n--- rendered ---\n{}",
+                texts.join("\n")
+            );
+        }
+        // The other direction: at the **top level** there is no container to end the block, so a
+        // trailing-text "close" really does run to the end of the document and the table below it
+        // really is code. Over-correcting into "always close at the next delimiter-ish line" would
+        // pass every case above while breaking this one.
+        set_details_open(Vec::new());
+        let texts =
+            rendered_texts("```rust\nlet x = 1;\n``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n");
+        assert!(
+            !texts.iter().any(|t| t.contains('┌')),
+            "トップレベルの未閉鎖フェンスは EOF まで続くのが正しい\n--- rendered ---\n{}",
+            texts.join("\n")
+        );
+    }
+
+    /// The mirror image of the case above, on the other axis the old gate was blind to: an
+    /// **indented** code block (CommonMark's other kind — 4+ columns, which a fence-only matcher
+    /// cannot see at all). Its contents are a literal transcript, so a GFM table or a `> [!NOTE]`
+    /// written inside one to *document* the notation must stay literal code — carving it out both
+    /// renders a construct that isn't there and tears the code block in half.
+    ///
+    /// Known gap, deliberately not asserted here: the same line starting with an HTML tag
+    /// (`    <kbd>Ctrl</kbd>`) is still lifted out and drawn as tag-stripped HTML, because
+    /// `split_html_blocks` keeps the fence-only gate on purpose — see its doc comment.
+    #[test]
+    fn an_indented_code_block_keeps_table_and_alert_content_literal() {
+        for (name, src, literal) in [
+            (
+                "table",
+                "para\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n",
+                "| a | b |",
+            ),
+            ("alert", "para\n\n    > [!NOTE]\n    > body\n", "> [!NOTE]"),
+        ] {
+            set_details_open(Vec::new());
+            let texts = rendered_texts(src);
+            let gutter = texts.iter().filter(|t| t.starts_with('▎')).count();
+            assert!(
+                gutter > 0,
+                "{name}: 字下げコードブロックがコードとして描かれていない\n--- rendered ---\n{}",
+                texts.join("\n")
+            );
+            assert!(
+                texts.iter().any(|t| t.contains(literal)),
+                "{name}: 字下げコードブロックの中身が逐語で出ていない ({literal:?})\
+                 \n--- rendered ---\n{}",
+                texts.join("\n")
+            );
+            assert!(
+                !texts.iter().any(|t| t.contains('┌') || t.contains('▌')),
+                "{name}: 字下げコードブロックの中身が構造として切り出されている\
+                 \n--- rendered ---\n{}",
+                texts.join("\n")
+            );
+        }
     }
 
     #[test]
@@ -7461,6 +7680,98 @@ pub(crate) mod code_corpus {
             (
                 "checkboxes around a fence indented inside an ordered item",
                 "- [ ] before\n\n1. Fork it:\n\n    ```sh\n    git clone x\n    ```\n\n- [x] after\n",
+            ),
+            // ---- Closing line × container (2026-08) ----
+            //
+            // Root cause: a fence is closed by a line of the same char, at least as long, **with
+            // nothing after it** — and, failing that, by the end of the container it opened in. The
+            // hand-written mask honored the first rule and had no concept of the second, so a fence
+            // whose closing line carries trailing text — `` ``` ([#2642](…)) ``, a shape that reads
+            // as perfectly natural when writing a changelog entry — ran to the end of the *document*
+            // instead of the end of its list item, and every construct below it was treated as being
+            // inside code. nix's CHANGELOG.md does this at line 110; the 617-line GFM table below
+            // rendered as one line of raw pipes (all three vendored nix versions in the registry).
+            //
+            // The axis being pinned is (does this line close? × what container is the fence in? ×
+            // what follows it?), written from the spec's case split rather than from the one shape
+            // that was reported — the closing-line half was missing from the corpus entirely, which
+            // is how it shipped.
+            (
+                "closing line with trailing text does not close, but the list item ends the block",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` ([#1](https://example.com/1))\n\n- next\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "closing line with trailing text inside a nested list item",
+                "- outer\n  - inner\n\n    ```rust\n    let x = 1;\n    ``` (note)\n\n- after\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "closing line with trailing text inside a block quote",
+                "> ```rust\n> let x = 1;\n> ``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "closing line with trailing text inside a list item inside a block quote",
+                "> - item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "closing line with trailing text at top level really does run to EOF",
+                "```rust\nlet x = 1;\n``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "unclosed fence in a list item ends with the item, not the document",
+                "- item\n\n  ```rust\n  let x = 1;\n\n- next\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (
+                "a longer closing line closes",
+                "- item\n\n  ```rust\n  let x = 1;\n  ````\n\n- next\n",
+            ),
+            (
+                "a tilde closing line does not close a backtick fence",
+                "- item\n\n  ```rust\n  let x = 1;\n  ~~~\n\n- next\n",
+            ),
+            (
+                "a shorter closing line does not close a longer fence",
+                "- item\n\n  ````rust\n  let x = 1;\n  ```\n\n- next\n",
+            ),
+            (
+                "an alert after a fence whose closing line has trailing text",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n- next\n\n> [!NOTE]\n> body\n",
+            ),
+            (
+                "a details block after a fence whose closing line has trailing text",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n- next\n\n<details open>\n<summary>S</summary>\n\nbody\n\n</details>\n",
+            ),
+            (
+                "a heading and a real fence after a fence whose closing line has trailing text",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n- next\n\n## H\n\n```sh\necho hi\n```\n",
+            ),
+            (
+                "a checkbox after a fence whose closing line has trailing text (list ended by a paragraph)",
+                "- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\nText.\n\n- [ ] a\n- [x] b\n",
+            ),
+            (
+                "a checkbox after a fence whose closing line has trailing text (tight list)",
+                "- item\n  ```rust\n  let x = 1;\n  ``` (note)\n- [ ] a\n- [x] b\n",
+            ),
+            // Deliberately **not** in this corpus: the same shape with the checkboxes as further
+            // items of the *same loose list* (`… ``` (note)\n\n- next\n\n- [ ] a\n`). tui-markdown
+            // panics outright on that document — the loose-list-with-a-task-item panic
+            // `render_text_block_safe` exists to survive (verified by calling
+            // `tui_markdown::from_str_with_options` on it directly: it unwinds) — so what reaches the
+            // screen is the bisected degradation, not a parse, and the renderer draws zero
+            // checkboxes while the scanner correctly finds two. That mismatch is upstream's, not
+            // this gate's: it only refuses the toggle (principle #3), and the two shapes above cover
+            // the same axis without conscripting an unrelated upstream bug into the assertion.
+            // The mirror direction: an indented code block whose *content* looks like a construct.
+            // `fence_mask` cannot see an indented block at all, so `split_tables`/`split_alerts` used
+            // to carve the construct out of it — the table's rows left the block as a rendered table
+            // and the `> [!NOTE]` opened a real callout, in both cases tearing the code block apart.
+            (
+                "indented block whose content is a GFM table stays literal code",
+                "para\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n",
+            ),
+            (
+                "indented block whose content is an alert header stays literal code",
+                "para\n\n    > [!NOTE]\n    > body\n",
             ),
         ]
     }
