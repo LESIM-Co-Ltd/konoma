@@ -108,6 +108,14 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 # default の highlight-code は syntect を既定(onig=oniguruma C)で引くため切る。
 # md フェンスコードのハイライトは konoma 側で純 Rust syntect(下記)に統一する＝配布容易性(PRD §5)。
 tui-markdown = { version = "0.3.7", default-features = false }
+# The very parser tui-markdown renders through, made a direct dependency so the write-back
+# scanners (`code_block_source_locs` / `task_source_locs`) can ask *it* where the code blocks are
+# instead of re-implementing CommonMark's block rules by hand. Hand-written re-implementations had
+# drifted from the renderer six times (bullet chars, alert bodies, `<details>` bodies, the size cap,
+# indented code, nested fences); the seventh was list-relative indentation, which is unfixable by
+# hand without reproducing container tracking. **No new crate is pulled in** — this resolves to the
+# same version tui-markdown already depends on (`cargo tree -i pulldown-cmark` must show exactly one).
+pulldown-cmark = { version = "0.13.4", default-features = false }
 mermaid-text = "0.56"
 # mermaid → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。ラスタライズは konoma 側の
 # resvg に統一するので default features(cli/png=clap/同梱resvg)は切る。fontdb/ttf-parser は

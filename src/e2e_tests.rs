@@ -3195,6 +3195,65 @@ fn e2e_md_indented_code_block_tab_focus_and_copy() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Root cause (container-relative indentation, 2026-08 — reported by a user on the released build):
+/// CommonMark measures a block's indentation from the container it sits in, so a fence indented 4
+/// columns under `1. ` is a real fence, while a paragraph indented 6 columns under `   4. ` is not
+/// code at all. The write-back scanner measured absolute columns and got both backwards, tripping
+/// the document-wide count guard — `y c` answered "cannot copy code block" for *every* block in the
+/// file. Both shapes are ordinary prose (a numbered install guide; the Apache license text), and 26
+/// of 2,182 real `.md` files in the crate registry hit one of them.
+///
+/// Drives real keystrokes through a document containing both, plus an unrelated top-level fence that
+/// used to be collaterally refused, and checks each block copies **its own** content.
+#[test]
+fn e2e_md_code_block_in_a_list_item_is_copyable() {
+    let dir = sandbox("md_list_indented_fence");
+    seed_files(&dir);
+    std::fs::write(
+        dir.join("snip.md"),
+        // 1. a fence indented 4 columns inside an ordered item (a real fence)
+        // 2. a 6-column continuation paragraph under `   4. ` (not code)
+        // 3. an unrelated top-level fence
+        "## Install\n\n1. Fork it:\n\n    ```sh\n    git clone x\n    ```\n\n\
+         2. Build it.\n\n\
+            4. Redistribution. You may reproduce and distribute copies of the\n\n\
+         \x20     (b) You must cause any modified files to carry prominent notices\n\n\
+         ```rust\nfn top_level() {}\n```\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("snip.md");
+    s.enter();
+
+    // 1st focusable code block: the one indented inside the ordered item. Its content comes back
+    // flush-left (the item's content column is stripped, exactly as the screen shows it).
+    s.tab();
+    assert!(
+        s.app.md_focused_code(),
+        "1番目=リスト項目内のフェンスにフォーカス"
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("git clone x"),
+        "リスト項目内のフェンスがコピーできる(以前は文書全体が拒否された)"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "コピー通知が出る");
+
+    // 2nd: the unrelated top-level fence — the continuation paragraph in between is not a code
+    // block, so it must not consume an ordinal or shift this one.
+    s.tab();
+    assert!(s.app.md_focused_code(), "2番目=トップレベルのフェンス");
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("fn top_level() {}"),
+        "ライセンス文体の字下げ段落をコードと数えず、序数がずれない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The same class of bug, but proven the other way around: an indented block that comes *before*
 /// several real fences in the document must not throw off every later block's ordinal.
 #[test]

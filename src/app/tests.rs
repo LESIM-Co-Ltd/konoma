@@ -14220,7 +14220,14 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     let root = dir.canonicalize().unwrap();
     let f = root.join("doc.md");
 
-    for (name, src) in crate::preview::markdown::task_corpus::cases() {
+    // Both corpora: `code_corpus` carries the container-context axis (a checkbox in a nested item
+    // written `*   [ ]`, one with nothing after the `]`, one with four spaces), where the state
+    // character no longer sits at a fixed offset from the bullet — exactly the case where a wrong
+    // `state_off` would silently corrupt a byte of the user's file rather than just refuse.
+    let corpus = crate::preview::markdown::task_corpus::cases()
+        .into_iter()
+        .chain(crate::preview::markdown::code_corpus::cases());
+    for (name, src) in corpus {
         // Count how many checkboxes appear on screen by opening the document once.
         std::fs::write(&f, src).unwrap();
         let mut app = App::new(root.clone(), Config::default()).unwrap();

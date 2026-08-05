@@ -1629,6 +1629,7 @@ dependencies = [
  "mermaid-text",
  "notify",
  "nucleo-matcher",
+ "pulldown-cmark",
  "ratatui",
  "ratatui-image",
  "ratex-layout",
