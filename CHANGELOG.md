@@ -30,6 +30,11 @@ All notable changes to konoma are documented in this file. The format is based o
   drawn as an image below it. Inline code and both kinds of code block are now left alone. (An
   indented block containing `<kbd>` or `<details>` still loses its formatting on screen; its contents
   are no longer altered.)
+- **A file with no newlines could take konoma to gigabytes of memory and freeze the interface.**
+  Minified JavaScript and one-line JSON logs were read a line at a time with no limit, so the entire
+  line was materialized at once, inside the draw call. Opening a 22 MB one-line JSON reached 2.1 GB
+  resident; it now stays under 30 MB. Each line is read up to 8 KiB — thousands of columns, far wider
+  than any screen — and the rest is skipped. Searching a line stops at the same point.
 - **Checkbox toggling was refused for documents using two spellings GFM allows**: a bullet followed
   by two to four spaces before the checkbox (`*   [ ] task`), and a checkbox with nothing after its
   closing bracket. Both appear in published crates.
