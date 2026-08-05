@@ -1,10 +1,24 @@
 //! Speed / performance smoke-regression guards (NOT microbenchmarks).
 //!
-//! Each test asserts a documented hot path completes under a **generous** bound (chosen ~5-10x
-//! typical so normal CI noise won't flake it). They catch gross regressions — accidental O(n²),
-//! a lost cache, re-highlighting every frame — not small deltas. The most timing-sensitive ones are
-//! `#[ignore]`d (run them with `cargo test -- --ignored`); a `//` note on each says what it guards.
-//! Bounds are deliberately loose because these run in an unoptimized debug build.
+//! Each test asserts a documented hot path completes under a **generous** bound. They catch gross
+//! regressions — accidental O(n²), a lost cache, re-highlighting every frame — not small deltas.
+//!
+//! Prefer a **deterministic byte-allocation count** (via `crate::mem_tests::allocated_by`) over
+//! `Instant`/`Duration` wherever the guard can be phrased that way: bytes allocated are a CPU/load
+//! -independent proxy for "how much work happened", so a scaling ratio (e.g. "2x input → <3x alloc")
+//! or a dispatch/channel count catches the same regressions a wall-clock bound would, without flaking
+//! under a busy shared CI runner — which is also what lets these run in the normal suite instead of
+//! behind `#[ignore]`. A few genuinely can't be phrased that way (a one-time, allocation-heavy
+//! grammar-compile *itself* being slow, not a lost cache around it) and stay `Instant`-based with a
+//! loose (~5-10x typical) bound as a smoke check.
+//!
+//! When the *ratio* a guard would need shrinks close to 1 (the ratio between the normal case and the
+//! regressed case), a relative-allocation bound stops being reliable — environment noise (allocator
+//! internals, path-length differences between platforms, ...) can eat the whole margin. When that
+//! happens, prefer asserting the underlying structural invariant directly (e.g. "this slot was moved
+//! out of, not cloned") over chasing a tighter ratio; see `tab_switch_reloads_are_bounded` below for a
+//! concrete case where both techniques are combined (a loose allocation ceiling as a coarse net, plus
+//! a per-cycle structural assertion as the precise one).
 //!
 //! ## Goal: guard the perf-critical surface, not the whole codebase
 //! These tests aim to cover the **perf-critical set** — the parse / render / diff / decode hot paths
@@ -51,18 +65,33 @@ fn rust_source(n: usize) -> String {
 }
 
 // GUARDS: preview::code::highlight_lang must stay roughly linear on big inputs (no per-line
-// re-compilation of the grammar). 5000 lines of Rust under a very loose 10s debug bound.
+// re-compilation of the grammar / no accidental O(n^2)). Converted from a wall-clock bound (which
+// flakes under shared-CI-runner load — see the top-of-file note and the module doc) to a
+// **deterministic allocation-scaling** check: 2x the lines should allocate roughly 2x, not ~4x
+// (quadratic) or worse. Bytes allocated are a CPU/load-independent proxy for "how much work
+// happened", so — unlike `Instant` — this doesn't need CI-noise headroom, which is what lets it run
+// in the normal suite instead of behind `#[ignore]`.
 #[test]
-#[ignore] // heavy (5000 lines of syntect in a debug build). Run with cargo test -- --ignored.
 fn highlight_lang_large_source_is_bounded() {
-    let src = rust_source(5000);
-    let t = Instant::now();
-    let lines = crate::preview::code::highlight_lang(&src, "rust", "TwoDark");
-    let dt = t.elapsed();
-    assert_eq!(lines.len(), 5000, "全行ハイライトされる");
+    // Warm the "rust" grammar once outside the measurement: the very first highlight of a language
+    // in the whole test binary compiles its regex patterns (a one-time, allocation-heavy cost —
+    // see `warm_dir_makes_subsequent_highlight_fast`'s doc in preview/code.rs), which would otherwise
+    // land on whichever of the two measurements below runs first and skew the ratio.
+    let _ = crate::preview::code::highlight_lang(&rust_source(10), "rust", "TwoDark");
+
+    let small = rust_source(1500);
+    let large = rust_source(3000); // 2x lines
+    let small_alloc = crate::mem_tests::allocated_by(|| {
+        let lines = crate::preview::code::highlight_lang(&small, "rust", "TwoDark");
+        assert_eq!(lines.len(), 1500, "全行ハイライトされる");
+    });
+    let large_alloc = crate::mem_tests::allocated_by(|| {
+        let lines = crate::preview::code::highlight_lang(&large, "rust", "TwoDark");
+        assert_eq!(lines.len(), 3000, "全行ハイライトされる");
+    });
     assert!(
-        dt < Duration::from_secs(10),
-        "5000 行ハイライトが遅すぎる(回帰?): {dt:?}"
+        large_alloc < small_alloc.saturating_mul(3),
+        "2倍の行数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
     );
 }
 
@@ -97,33 +126,52 @@ fn warm_then_highlight_is_fast() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// GUARDS: preview::markdown::render_markdown on a large document stays bounded (table/heading
-// post-processing and tui-markdown parse don't blow up). ~1000 mixed lines.
-#[test]
-#[ignore] // on the heavier side (a large md including code fences). Run with cargo test -- --ignored.
-fn render_markdown_large_doc_is_bounded() {
+/// `n` heading+body+link blocks of Markdown, plus a Rust fence sized proportionally to `n` (table/
+/// heading post-processing, tui-markdown parse, and code-fence highlighting all get exercised, and —
+/// since every part scales with `n` — doubling `n` should double the total work, keeping the
+/// allocation-scaling check below sensitive instead of being diluted by a fixed-size fence).
+fn md_doc(blocks: usize) -> String {
     let mut md = String::new();
-    for i in 0..400 {
+    for i in 0..blocks {
         md.push_str(&format!(
             "## Heading {i}\n\nSome *body* text with `code` and a [link](https://x/{i}).\n\n"
         ));
     }
     md.push_str("```rust\n");
-    md.push_str(&rust_source(200));
+    md.push_str(&rust_source(blocks));
     md.push_str("```\n");
-    let t = Instant::now();
-    let lines = crate::preview::markdown::render_markdown(
-        &md,
-        80,
-        crate::preview::markdown::CodeStyle::default(),
-        "TwoDark",
-        false,
-    );
-    let dt = t.elapsed();
-    assert!(!lines.is_empty());
+    md
+}
+
+// GUARDS: preview::markdown::render_markdown on a large document stays bounded (table/heading
+// post-processing and tui-markdown parse don't blow up). Converted from a wall-clock bound to a
+// **deterministic allocation-scaling** check (same reasoning as `highlight_lang_large_source_is_bounded`
+// above): doubling the block count should roughly double the allocation, not quadruple it.
+#[test]
+fn render_markdown_large_doc_is_bounded() {
+    let render = |src: &str| {
+        crate::preview::markdown::render_markdown(
+            src,
+            80,
+            crate::preview::markdown::CodeStyle::default(),
+            "TwoDark",
+            false,
+        )
+    };
+    // Warm the "rust" fence's grammar outside the measurement (same reasoning as the highlight_lang guard).
+    let _ = render(&md_doc(1));
+
+    let small = md_doc(100);
+    let large = md_doc(200); // 2x blocks
+    let small_alloc = crate::mem_tests::allocated_by(|| {
+        assert!(!render(&small).is_empty());
+    });
+    let large_alloc = crate::mem_tests::allocated_by(|| {
+        assert!(!render(&large).is_empty());
+    });
     assert!(
-        dt < Duration::from_secs(10),
-        "大きい md のレンダリングが遅すぎる: {dt:?}"
+        large_alloc < small_alloc.saturating_mul(3),
+        "2倍のブロック数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
     );
 }
 
@@ -187,20 +235,21 @@ fn decode_gif_sample_is_bounded() {
 }
 
 // GUARDS: refresh_git_if_needed must NOT re-run `git status` (a whole-worktree scan) on every
-// `h`/`l` root change within the same repo — the per-workdir cache reuses it. Asserted by counting
-// actual `git::statuses` calls (deterministic): a lost cache re-scans on every move, which measured
-// ~2.1s for 40 moves on this repo vs ~3ms reused. (A wall-clock-only bound flakes on git's warm/cold
-// timing, so the call count is the primary guard.)
+// `h`/`l` root change within the same repo — the per-workdir cache reuses it. Converted from
+// wall-clock timing + the process-shared `git::STATUS_CALLS` counter (heavy setup: 4000 files, so
+// `#[ignore]`d; also a process-shared `AtomicUsize` flakes if another test's `refresh_git_if_needed()`
+// runs concurrently — the same pitfall `worktree_chip_is_not_recomputed_on_every_render`'s doc
+// comment below warns about) to a **channel dispatch count**: attach a `Sender` and assert nothing
+// lands on it after the cache is established — deterministic, thread-local to this test's own
+// channel, and immune to both CI load and parallel-test interference. Since the guard no longer
+// needs a slow scan to be *measurable*, the fixture can shrink drastically (still real git activity).
 #[cfg(feature = "git")]
 #[test]
-#[ignore] // heavy (builds a git repo with many files). Run with cargo test -- --ignored.
 fn same_repo_navigation_does_not_rescan_git_status() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("konoma_speed_status_cache");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::mem_tests::unique_tmp("konoma_speed_status_cache");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
-    // Many files = a single `git status` scan takes a measurable amount of time.
-    for i in 0..4000 {
+    for i in 0..20 {
         std::fs::write(dir.join(format!("f{i:04}.txt")), b"x\n").unwrap();
     }
     let repo = git2::Repository::init(&dir).unwrap();
@@ -219,25 +268,25 @@ fn same_repo_navigation_does_not_rescan_git_status() {
     };
     git(&["add", "-A"]);
     git(&["commit", "-qm", "init"]);
-    for i in 0..200 {
-        std::fs::write(dir.join(format!("f{i:04}.txt")), b"y\n").unwrap(); // change = non-empty status
-    }
+    std::fs::write(dir.join("f0000.txt"), b"y\n").unwrap(); // change = non-empty status
 
     let root = dir.canonicalize().unwrap();
     let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
-    app.refresh_git_if_needed(); // establish the cache with an initial scan (outside the timer)
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed(); // dispatch the 1st (only) scan, establishing the workdir cache
+    let res = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("1本目の結果");
+    assert!(app.apply_statuses(res));
     assert!(
         app.git_has_changes(),
         "変更が status に反映(スキャンが走った)"
     );
 
     // **Deterministic** guard: bouncing root back and forth 40 times within the same repo must never
-    // re-call `git::statuses` (a whole-worktree scan) even once (the workdir cache is reused). A
-    // wall-clock comparison is noisy across git's warm/cold timing and would miss a regression
-    // (measured: ~2.1s for 40 scans when the cache is lost, vs ~3ms when reused), so we judge by
-    // the actual call count instead.
-    crate::git::STATUS_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-    let t = Instant::now();
+    // dispatch another scan (the workdir cache is reused) — checked by counting results landing on
+    // this test's own channel, not a process-shared counter.
     for i in 0..40 {
         app.tab.root = if i % 2 == 0 {
             root.join("sub")
@@ -246,17 +295,10 @@ fn same_repo_navigation_does_not_rescan_git_status() {
         };
         app.refresh_git_if_needed();
     }
-    let dt = t.elapsed();
-
     assert_eq!(
-        crate::git::STATUS_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        rx.try_iter().count(),
         0,
         "同一 repo の 40 往復で git status を再スキャンした(workdir キャッシュ喪失)"
-    );
-    // A loose bound as a sanity check (if 40 scans actually ran, it'd be second-scale = would definitely exceed this).
-    assert!(
-        dt < Duration::from_secs(1),
-        "同一 repo 往復が遅すぎる: {dt:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -371,39 +413,59 @@ fn feature_markdown(blocks: usize) -> String {
     s
 }
 
-// GUARDS: previewing a large feature-complete Markdown file (decoration cache build + first render)
-// stays responsive, and scrolling reuses the MdCache instead of re-decorating every frame. Covers
-// preview/markdown.rs + the app decorated path (ensure_md_cache / md_slice) + ui/preview.rs.
+// GUARDS: previewing a large feature-complete Markdown file builds the decoration cache once, and
+// scrolling reuses it instead of re-decorating every frame. Converted from a wall-clock bound to a
+// **deterministic allocation-ratio** check (same technique as `md_scroll_reuses_cache_not_redecorate`
+// in mem_tests.rs, whose simpler 300-heading fixture this complements — this one keeps
+// `feature_markdown`'s GFM-feature-complete surface, exercising more of preview/markdown.rs + the app
+// decorated path (ensure_md_cache / md_slice) + ui/preview.rs). A lost cache would make one scroll's
+// allocation approach the initial decoration's, instead of staying a small fraction of it.
+//
+// Measures **one** steady-state scroll (after a few unmeasured warm-up scrolls), not a sum over many
+// — summing N scrolls' *marginal* per-frame cost and comparing it against a single one-time build
+// cost isn't apples-to-apples (confirmed while calibrating: summing 60 scrolls made the "scroll" side
+// scale with N regardless of caching, eventually overtaking any fixed multiple of the one-time build
+// cost — that's arithmetic, not a caching regression). One scroll against one build mirrors what
+// `md_scroll_reuses_cache_not_redecorate` already checks.
 #[test]
-#[ignore] // heavy (building a large decorated md). Run with cargo test -- --ignored.
 fn preview_large_markdown_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_md_preview");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::mem_tests::unique_tmp("konoma_speed_md_preview");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("big.md"), feature_markdown(120)).unwrap();
+    std::fs::write(dir.join("big.md"), feature_markdown(30)).unwrap();
 
-    // The initial preview (building the decoration cache + 1 render) stays within a loose bound.
-    let t = Instant::now();
-    let mut app = preview_app(&dir, "big.md");
-    let build_dt = t.elapsed();
-    assert!(
-        build_dt < Duration::from_secs(10),
-        "大きな装飾 md の初回プレビューが遅すぎる: {build_dt:?}"
-    );
+    // Warm the "rust" grammar outside the measurement: `feature_markdown`'s embedded fence highlights
+    // via the same process-global, one-time-per-language syntect compile as the guards above. Without
+    // this, whether that first-time compile cost lands inside `build_alloc` below is a coin flip that
+    // depends on **test execution order** — parallel `cargo test` runs may have already warmed "rust"
+    // from another test's fixture, or not (confirmed while calibrating: `build_alloc` measured ~65MB
+    // running this test alone vs ~6.8MB inside the full suite, where an earlier test had already
+    // warmed it — the same pitfall documented for `STATUS_CALLS`, but for warm state rather than a
+    // counter).
+    let _ = crate::preview::code::highlight_lang(&rust_source(1), "rust", "TwoDark");
 
-    // 60 renders while scrolling: reusing the MdCache means we don't re-decorate every frame (slowness would suggest re-decoration).
+    // The initial preview (building the decoration cache + 1 render).
+    let mut app = None;
+    let build_alloc = crate::mem_tests::allocated_by(|| {
+        app = Some(preview_app(&dir, "big.md"));
+    });
+    let mut app = app.unwrap();
+
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
-    let t = Instant::now();
-    for i in 0..60 {
+    // A few unmeasured warm-up scrolls (in case the very first post-build scroll does extra one-time
+    // work), then measure a single steady-state scroll+render.
+    for i in 0..5 {
         app.preview_scroll((i % 7) + 1);
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     }
-    let scroll_dt = t.elapsed();
+    let one_scroll_alloc = crate::mem_tests::allocated_by(|| {
+        app.preview_scroll(3);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    });
     assert!(
-        scroll_dt < Duration::from_secs(3),
-        "装飾 md のスクロール 60 描画が遅すぎる(毎フレーム再装飾?): {scroll_dt:?}"
+        one_scroll_alloc.saturating_mul(20) < build_alloc,
+        "装飾 md の1スクロールがキャッシュを再利用していない(スクロール {one_scroll_alloc} が初回装飾 {build_alloc} に近い=毎フレーム再装飾?)"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -540,17 +602,32 @@ fn kitty_transmit_large_image_is_bounded() {
     );
 }
 
-// GUARDS: a large `git diff` (3000-line rewrite) and rendering each git view (hub / log / graph /
-// branches / diff) stay bounded. Covers git.rs (statuses / file_diff / log / graph / branches) +
-// preview/gitdiff.rs + ui/git.rs + the diff render in ui/preview.rs.
+/// `n` lines of `"{marker} {i}\n"` (a synthetic large-file body for diff generation).
+#[cfg(feature = "git")]
+fn diff_body(n: usize, marker: &str) -> String {
+    let mut s = String::with_capacity(n * (marker.len() + 8));
+    for i in 0..n {
+        s.push_str(&format!("{marker} {i}\n"));
+    }
+    s
+}
+
+// GUARDS: (1) `file_diff` + diff-line colorization (stacked/side-by-side) stay roughly linear in the
+// diff size, and (2) opening + rendering every git view (hub / log / graph / branches / a large
+// diff) stays within a generous, deterministic ceiling. Covers git.rs (statuses / file_diff / log /
+// graph / branches) + preview/gitdiff.rs + ui/git.rs + the diff render in ui/preview.rs. Converted
+// from wall-clock bounds to **deterministic allocation** checks — (1) an allocation-scaling ratio
+// (same technique as the markdown/highlight guards above: doubling the changed lines should roughly
+// double the allocation, not quadruple it), (2) a generous absolute allocation ceiling (bytes
+// allocated are CPU/load-independent, unlike `Instant`, so this doesn't need CI-noise headroom).
+// The fixture shrank (8 commits/3000 lines → 3 commits/2000 lines) since the guard no longer needs a
+// slow operation to be *measurable* — only correctness-of-scaling matters, not absolute size.
 #[cfg(feature = "git")]
 #[test]
-#[ignore] // heavy (builds a git repo with history + a large change). Run with cargo test -- --ignored.
 fn git_views_and_large_diff_render_is_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_git_views");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::mem_tests::unique_tmp("konoma_speed_git_views");
     std::fs::create_dir_all(&dir).unwrap();
     let git = |a: &[&str]| {
         std::process::Command::new("git")
@@ -563,101 +640,150 @@ fn git_views_and_large_diff_render_is_bounded() {
     git(&["config", "user.email", "t@t"]);
     git(&["config", "user.name", "t"]);
     git(&["config", "commit.gpgsign", "false"]);
-    // History (several commits for log / graph).
-    for c in 0..8 {
+    // A little history (log/graph exercise the DAG walk).
+    for c in 0..3 {
         std::fs::write(dir.join(format!("f{c}.txt")), format!("v{c}\n")).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", &format!("commit {c}")]);
     }
-    // Commit a large file → rewrite every line to create a large uncommitted diff.
-    let mut big = String::new();
-    for i in 0..3000 {
-        big.push_str(&format!("line {i}\n"));
-    }
-    std::fs::write(dir.join("big.txt"), &big).unwrap();
+    // Commit a **tiny** baseline for big.txt: `diff_alloc_for` below replaces its whole content, and
+    // if the committed baseline were itself large, the diff's removed-line count would stay ~fixed
+    // (dominated by the baseline) while only the added-line count grew with `n` — diluting the
+    // small-vs-large ratio below regardless of any real regression (confirmed while calibrating: with
+    // a 2000-line baseline, `n=500` vs `n=1000` produced diffs of 2500 vs 3000 total lines — only a
+    // 1.2x change, not 2x, because ~2000 of each diff was the constant removed baseline).
+    std::fs::write(dir.join("big.txt"), diff_body(5, "line")).unwrap();
     git(&["add", "big.txt"]);
     git(&["commit", "-qm", "add big"]);
-    let mut big2 = String::new();
-    for i in 0..3000 {
-        big2.push_str(&format!("LINE {i} changed\n"));
-    }
-    std::fs::write(dir.join("big.txt"), &big2).unwrap();
 
     let root = dir.canonicalize().unwrap();
+
+    // (1) file_diff + diff_lines + diff_lines_side_by_side scale near-linearly with the diff size.
+    let diff_alloc_for = |n: usize| -> u64 {
+        std::fs::write(dir.join("big.txt"), diff_body(n, "LINE changed")).unwrap();
+        crate::mem_tests::allocated_by(|| {
+            let dl = crate::git::file_diff(&root, &root.join("big.txt"));
+            assert!(!dl.is_empty(), "差分が取れる");
+            let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
+            assert!(!lines.is_empty(), "縦 diff 行を生成");
+            let _maxh = crate::preview::gitdiff::side_by_side_max_hscroll(&dl, 90);
+            let sbs =
+                crate::preview::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
+            assert!(!sbs.is_empty(), "横並び diff 行を生成");
+        })
+    };
+    let small_alloc = diff_alloc_for(500);
+    let large_alloc = diff_alloc_for(1000); // 2x changed lines
+    assert!(
+        large_alloc < small_alloc.saturating_mul(5) / 2, // 2.5x margin (measured ratio ~1.9x)
+        "2倍の差分行数で確保バイト数が2.5倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
+    );
+
+    // (2) Open and render each git view (hub / log / graph / branches / the large diff left by the
+    // last diff_alloc_for(1000) call above) within a generous absolute allocation ceiling. Each
+    // sub-view is **closed** (mirroring the real `q`/Esc navigation back to the hub) before the next
+    // is opened: the render dispatcher (ui/mod.rs) picks the view to draw by priority
+    // (detail > graph_picker > **graph** > log > branches > worktrees > hub > preview/tree) purely
+    // from which `tab.git_*` fields are `Some` — `open_git_branches`/`open_git_diff` don't clear
+    // `tab.git_graph`, so without closing first, `is_git_graph()` stays true and every subsequent
+    // render keeps drawing the graph instead of what was actually just opened (confirmed while
+    // calibrating: without the `close_git_*` calls, `git_diff_lines` — and so the diff render this
+    // guard is meant to exercise — was never even called).
     let mut app = crate::app::App::new(root.clone(), Config::default()).unwrap();
-
-    // A large file_diff stays within a loose bound (fetching a diff is a near-per-keystroke hot path).
-    let t = Instant::now();
-    let dl = crate::git::file_diff(&root, &root.join("big.txt"));
-    let diff_dt = t.elapsed();
-    assert!(!dl.is_empty(), "差分が取れる");
-    assert!(
-        diff_dt < Duration::from_secs(3),
-        "3000 行の file_diff が遅すぎる: {diff_dt:?}"
-    );
-
-    // preview/gitdiff.rs: hit the diff-lines → colored Line generation (stacked/side-by-side + horizontal-scroll cap) directly.
-    let t = Instant::now();
-    let lines = crate::preview::gitdiff::diff_lines(&dl, "txt", "TwoDark", 90);
-    assert!(!lines.is_empty(), "縦 diff 行を生成");
-    let _maxh = crate::preview::gitdiff::side_by_side_max_hscroll(&dl, 90);
-    let sbs = crate::preview::gitdiff::diff_lines_side_by_side(&dl, "txt", "TwoDark", 90, 40);
-    assert!(!sbs.is_empty(), "横並び diff 行を生成");
-    let gen_dt = t.elapsed();
-    assert!(
-        gen_dt < Duration::from_secs(2),
-        "3000 行の diff 着色生成が遅すぎる: {gen_dt:?}"
-    );
-
-    // Open and render each git view (hub / log / graph / branches / the large diff).
     let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
-    let t = Instant::now();
-    app.open_git_view();
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    app.open_git_log();
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    app.open_git_graph();
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    app.open_git_branches();
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    app.open_git_diff(&root.join("big.txt"));
-    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    let views_dt = t.elapsed();
+    let views_alloc = crate::mem_tests::allocated_by(|| {
+        app.open_git_view();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        app.open_git_log();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        app.close_git_log();
+        app.open_git_graph();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        app.close_git_graph();
+        app.open_git_branches();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        app.close_git_branches();
+        app.open_git_diff(&root.join("big.txt"));
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    });
     assert!(
-        views_dt < Duration::from_secs(3),
-        "git ビュー群 + 大きな diff の描画が遅すぎる: {views_dt:?}"
+        views_alloc < 60_000_000, // measured ~23MB (5 real git-view opens/closes + a 1005-line diff); ~2.6x headroom
+        "git ビュー群+大きな diff の描画の確保バイト数が上限を超えた(回帰?): {views_alloc}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// GUARDS: cycling through tabs (save_active + load_active + preview rebuild + render) stays bounded.
-// load_active uses mem::take (perf refactor C: measured 39ms → 6.6ms); a regression that deep-clones
-// the whole PerTab on every switch would blow this up. Diverse preview kinds so each switch rebuilds
-// a different cache (markdown decoration / table / windowed code).
+// GUARDS: cycling through tabs (save_active + load_active + preview rebuild + render) stays bounded,
+// and — the primary, stronger guard — `load_active` moves each tab's `PerTab` out of its slot via
+// `std::mem::take` rather than cloning it (a regression to `.clone()` would double the per-switch cost
+// and leave a stale copy sitting in `self.tabs`).
+//
+// Two checks, deliberately different in character:
+//   1. A **structural** per-cycle assertion (`active_tab_slot_is_vacated_for_test`): right after each
+//      `tab_cycle`, the active tab's own slot in `self.tabs` must equal `PerTab::default()` — the
+//      direct, byte-for-byte signature of `mem::take` having fired (a `.clone()` leaves the slot's
+//      prior, non-empty contents untouched). This is a plain boolean read of live state, not a byte
+//      count, so it's immune to allocator/platform/CI-load noise — it's the check this test actually
+//      relies on to catch a `.clone()` regression.
+//   2. A **loose** allocation ceiling (20 cycles < 2.0x the cost of 20 from-scratch tree rebuilds),
+//      kept as a coarse net for a *different* class of regression: some large allocation added to the
+//      per-cycle path that check 1 wouldn't notice (it only inspects one boolean, not overall cost).
+//
+// Why not a tight allocation ratio, as used elsewhere in this file? This guard used to assert
+// `cycle_alloc < rebuild_alloc * 1.45`, measured (byte-exact, deterministic) at 1.31x running this test
+// alone. But **inside the full suite** — other tests' allocations leaving the allocator/caches in a
+// different state, plus (measured on Linux CI vs. macOS) a shorter `/tmp/…` vs. `/var/folders/…/T/…`
+// temp path, which this fixture's 3000 entries × 20 cycles' worth of `PathBuf`s makes non-negligible —
+// the measured ratio drifted to 1.410–1.435 across repeated full-suite runs: within 1% of the 1.45
+// ceiling. A `.clone()` regression measures 1.60x. A *loose* bound wide enough to absorb that
+// full-suite drift (2.0x, check 2 above) can no longer tell "normal" from "regressed" by ratio alone
+// (1.60 < 2.0 — it would not catch it). Hence check 1: it asserts the invariant `load_active` is
+// actually supposed to uphold, directly, instead of inferring it from a byte count that also moves for
+// reasons unrelated to take-vs-clone. A test that only ever flakes with the environment — without
+// having caught the regression it was written for — is worse than no test.
+//
+// The fixture is still deliberately shaped so a `.clone()` regression is *visible* in check 2's loose
+// net too, and so both checks exercise real work: every switch already does real, unavoidable work
+// regardless of take-vs-clone (`refresh_fs_after_tab_switch` rebuilds `tab.entries` from disk every
+// time — see its doc comment — so a small fixture with only a handful of tree entries would bury a
+// clone regression's cost under that dominant, constant "reparse small files" work, as confirmed while
+// calibrating: with only 4 top-level files, doubling `load_active`'s `mem::take` into an *extra* clone
+// barely moved the total). Giving the directory **thousands of entries** (while keeping the previewed
+// files themselves small) makes `entries`/`filter_pool` the dominant cost carried in `PerTab`, so an
+// accidental extra clone of it shows up clearly in check 2: it's compared against `rebuild_tree`'s own
+// allocation on the same directory, measured directly as the reference for "how much a from-scratch
+// tree rebuild alone costs".
 #[test]
-#[ignore] // on the heavier side (multiple tabs + preview rebuilds). Run with cargo test -- --ignored.
 fn tab_switch_reloads_are_bounded() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let dir = std::env::temp_dir().join("konoma_speed_tabswitch");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::mem_tests::unique_tmp("konoma_speed_tabswitch");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut md = String::from("# T\n\n");
-    for i in 0..200 {
-        md.push_str(&format!("## H{i}\n\nbody [l](https://e/{i})\n\n"));
+    for i in 0..3000 {
+        std::fs::write(dir.join(format!("f{i:05}.txt")), b"x").unwrap();
     }
-    std::fs::write(dir.join("a.md"), &md).unwrap();
-    let mut csv = String::from("x,y,z\n");
-    for i in 0..2000 {
-        csv.push_str(&format!("{i},b,c\n"));
-    }
-    std::fs::write(dir.join("b.csv"), &csv).unwrap();
-    std::fs::write(dir.join("c.txt"), rust_source(3000)).unwrap();
-    std::fs::write(dir.join("d.rs"), rust_source(2000)).unwrap();
+    std::fs::write(dir.join("a.md"), "# T\n\nbody [l](https://e/1)\n").unwrap();
+    std::fs::write(dir.join("b.csv"), "x,y,z\n1,b,c\n2,b,c\n").unwrap();
+    std::fs::write(dir.join("c.txt"), rust_source(20)).unwrap();
+    std::fs::write(dir.join("d.rs"), rust_source(20)).unwrap();
+
+    // Warm the "rust" grammar outside the measurement: `d.rs`'s windowed preview highlights via the
+    // same process-global, one-time-per-language syntect compile as the guards above, whose cost
+    // would otherwise land unpredictably depending on **test execution order** (see
+    // `preview_large_markdown_is_bounded`'s doc comment for the concrete flake this caused there).
+    let _ = crate::preview::code::highlight_lang(&rust_source(1), "rust", "TwoDark");
 
     let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+
+    // Reference: the allocation of a from-scratch `rebuild_tree()` on this same 3000-entry directory
+    // — the "real work" every switch must pay regardless of take-vs-clone correctness.
+    let rebuild_alloc = crate::mem_tests::allocated_by(|| {
+        app.rebuild_tree().unwrap();
+    });
+    assert_eq!(app.tab.entries.len(), 3004, "全件ツリー化(3000+4ファイル)");
+
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
-    // Open each file in a separate tab (switching between them rebuilds a different preview cache each time).
+    // Open each small file in a separate tab (switching between them rebuilds a different preview cache each time).
     for name in ["a.md", "b.csv", "c.txt", "d.rs"] {
         app.tab.selected = app
             .tab
@@ -666,20 +792,48 @@ fn tab_switch_reloads_are_bounded() {
             .position(|e| e.path.ends_with(name))
             .unwrap();
         app.tab_new_from_selection().unwrap();
+        // `selection` (the multi-select set) is carried by take/clone but, unlike `entries`, is
+        // **not** touched by `refresh_fs_after_tab_switch` beyond a cheap `retain` (a stat() per
+        // still-selected path — see bookmark_actions.rs) — it is never rebuilt from scratch. Marking
+        // (almost) every entry selected in every tab makes it the dominant carried payload, so an
+        // accidental extra clone of it (instead of `mem::take`) isn't diluted by the also-real,
+        // also-unavoidable `entries` rebuild the way a plain "many tree entries" fixture alone would
+        // be (confirmed while calibrating: with only `entries` made large, doubling `load_active`'s
+        // `mem::take` into an extra clone moved the cycle/rebuild ratio only 1.18x → 1.34x — `entries`
+        // itself dominates via its own rebuild cost regardless of clone-vs-take, diluting the signal).
+        // This still matters even though check 1 (the structural assertion) is the primary regression
+        // signal now: it's what keeps check 2's loose allocation ceiling a meaningful secondary net
+        // rather than one so diluted by `entries`' own unavoidable rebuild cost that it couldn't catch
+        // *any* clone-shaped regression.
+        app.enter_visual();
+        app.visual_select_scope(true);
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     }
     assert!(app.tab_count() >= 4, "4 つ以上のタブ");
 
-    // Cycle through tabs 40 times: each switch = save_active + load_active (mem::take) + preview rebuild + render.
-    let t = Instant::now();
-    for _ in 0..40 {
-        app.tab_cycle(1);
-        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    }
-    let dt = t.elapsed();
+    // Cycle through tabs 20 times: each switch = save_active (1 PerTab clone) + load_active
+    // (mem::take) + tree rebuild + selection retain + small preview rebuild + render. Check 1 (see the
+    // GUARDS comment above the test): right after *every* `tab_cycle`, the active tab's own slot must
+    // already be back to `PerTab::default()` — the structural signature of `mem::take`, checked
+    // deterministically instead of inferred from a byte count.
+    let cycle_alloc = crate::mem_tests::allocated_by(|| {
+        for _ in 0..20 {
+            app.tab_cycle(1);
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            assert!(
+                app.active_tab_slot_is_vacated_for_test(),
+                "tab_cycle 直後、アクティブタブの self.tabs スロットが既定値(空)に戻っていない = load_active が mem::take でなく clone している疑い"
+            );
+        }
+    });
+    // Check 2: a loose net (see the GUARDS comment above the test for why 1.45x was too tight to
+    // survive full-suite noise, and why 2.0x is still narrow enough to catch a large unrelated
+    // allocation added to this path — it's just not narrow enough, alone, to distinguish a
+    // `mem::take`-vs-`.clone()` regression, which check 1 above is what actually catches).
     assert!(
-        dt < Duration::from_secs(3),
-        "40 回のタブ切替(再読込込み)が遅すぎる(全複製回帰?): {dt:?}"
+        cycle_alloc < rebuild_alloc.saturating_mul(40), // 20 * 2.0
+        "20 回のタブ切替の確保バイト数がツリー再構築だけの20倍換算の2.0倍を超えた(回帰: 想定外の大きな確保が追加された?): cycle={cycle_alloc} rebuild_x40={}",
+        rebuild_alloc.saturating_mul(40)
     );
     std::fs::remove_dir_all(&dir).ok();
 }

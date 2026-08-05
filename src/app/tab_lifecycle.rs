@@ -176,6 +176,20 @@ impl App {
         let _ = self.refresh_fs_after_tab_switch();
     }
 
+    /// Test-only: true when tab `active_tab`'s slot in `self.tabs` currently holds
+    /// `PerTab::default()` (empty `entries`, empty `root`). Right after `load_active` (above) runs,
+    /// this must be `true`: `load_active` moves the active tab's `PerTab` out of its slot via
+    /// `std::mem::take` rather than cloning it, so the vacated slot is left at the default. A
+    /// regression to `.clone()` would leave the slot still holding its previous (non-empty) contents
+    /// instead, so this would return `false`. Exposed for `tab_switch_reloads_are_bounded`'s
+    /// per-cycle structural assertion (see that test's doc comment for why the allocation-ratio bound
+    /// alone isn't a reliable enough signal by itself).
+    #[cfg(test)]
+    pub fn active_tab_slot_is_vacated_for_test(&self) -> bool {
+        let slot = &self.tabs[self.active_tab];
+        slot.entries.is_empty() && slot.root.as_os_str().is_empty()
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }

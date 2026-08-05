@@ -44,11 +44,27 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
-/// Bytes allocated on this thread while running `f`.
-fn allocated_by(f: impl FnOnce()) -> u64 {
+/// Bytes allocated on this thread while running `f`. `pub(crate)` so other `#[cfg(test)]` modules
+/// (`speed_tests`, `preview::code`'s tests) can replace a wall-clock bound with a deterministic
+/// byte-count one — allocation is a CPU/load-independent proxy for "how much work happened", so it
+/// doesn't flake under shared-CI-runner contention the way `Instant`-based bounds do.
+pub(crate) fn allocated_by(f: impl FnOnce()) -> u64 {
     let before = THREAD_ALLOCATED.with(|c| c.get());
     f();
     THREAD_ALLOCATED.with(|c| c.get()).wrapping_sub(before)
+}
+
+/// A unique temp directory per call (pid + a process-global counter), so a test's fixture path
+/// never collides with another test's — or, critically, with the **same test running in a second,
+/// concurrently-invoked `cargo test` process** (two processes racing to `create_dir_all`/
+/// `remove_dir_all`/`git init` the same fixed path is a real flake source once a test is promoted
+/// out of `#[ignore]` into the always-run suite). `pub(crate)` so `speed_tests`/`preview::code` share
+/// it instead of duplicating the counter.
+pub(crate) fn unique_tmp(prefix: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}_{}_{n}", std::process::id()))
 }
 
 // ---------------------------------------------------------------------------------------------
