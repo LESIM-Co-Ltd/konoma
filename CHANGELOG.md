@@ -30,6 +30,13 @@ All notable changes to konoma are documented in this file. The format is based o
   drawn as an image below it. Inline code and both kinds of code block are now left alone. (An
   indented block containing `<kbd>` or `<details>` still loses its formatting on screen; its contents
   are no longer altered.)
+- **Staging, committing, checking out a branch or creating a worktree froze the whole interface
+  until git finished.** A slow pre-commit hook, a lock held by another process, or a repository on a
+  stalled network mount left konoma unresponsive for the duration — with a 30 second hook, no key did
+  anything at all. Git writes now run on a worker: the tree stays scrollable, a spinner shows the
+  write is in flight, and quitting mid-write asks first. They are not killed on a timeout, since
+  interrupting a commit would leave `.git/index.lock` behind and a hook that lints a large repository
+  is legitimately slow.
 - **A file with no newlines could take konoma to gigabytes of memory and freeze the interface.**
   Minified JavaScript and one-line JSON logs were read a line at a time with no limit, so the entire
   line was materialized at once, inside the draw call. Opening a 22 MB one-line JSON reached 2.1 GB
