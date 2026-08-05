@@ -7,6 +7,19 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Copying a code block with `y c` was refused for the whole document whenever a fence sat inside a
+  list item** — the shape almost every contributing guide uses (`1. Fork it:` followed by an indented
+  fenced block). It also hit any document made of indented paragraphs under a numbered marker, which
+  is what the Apache license is: opening a vendored `LICENSE-APACHE.md` and trying to copy anything
+  from it failed. Measured against the 2182 Markdown files in a populated `~/.cargo/registry`, 26 of
+  them were affected, including the changelogs of crossterm, nix and itertools. The copy only runs
+  when the blocks found in the source match the blocks drawn on screen, and the scanner measured
+  indentation from the start of the line while Markdown measures it from the start of the enclosing
+  block — a list marker shifts everything inside its item to the right. Code blocks are now located
+  with the same parser the renderer uses, so the two cannot disagree about what a code block is.
+- **Checkbox toggling was refused for documents using two spellings GFM allows**: a bullet followed
+  by two to four spaces before the checkbox (`*   [ ] task`), and a checkbox with nothing after its
+  closing bracket. Both appear in published crates.
 - **A panic while highlighting a source file could take down the whole app.** Every other renderer
   — mermaid, LaTeX, PDF, SVG, GIF, archive, remote images — was already wrapped in a panic safety
   net, but syntect, the code path used by nearly every preview, had none. `highlight()` runs on the
