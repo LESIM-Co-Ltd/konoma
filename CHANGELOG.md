@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.5] - 2026-08-06
+
 ### Fixed
 - **Copying a code block with `y c` was refused for the whole document whenever a fence sat inside a
   list item** — the shape almost every contributing guide uses (`1. Fork it:` followed by an indented
@@ -1382,7 +1384,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...HEAD
+[0.23.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...v0.23.5
 [0.23.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.2...v0.23.3
 [0.23.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.1...v0.23.2
