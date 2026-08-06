@@ -16287,3 +16287,1184 @@ fn directory_walks_route_every_stat_through_the_counted_choke_point() {
         }
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════
+// Characterization of the UI-stack priority cascade (`surface()` / `internal_mode()`).
+//
+// Both functions answer the same question — "which layer of the UI stack is in front?" — and
+// used to be two hand-written cascades that had to be kept in the same order by hand. They
+// drifted once already (the `?` help overlay reached `surface()` but not `internal_mode()`, so
+// the chip and footer advertised keys that did nothing).
+//
+// These tests pin the exact observable behaviour of *every* arm of both functions, plus the
+// relative order of every adjacent pair of layers. They are written against the two hand-written
+// cascades and must keep passing, unchanged, after they are merged into one — that is what makes
+// them evidence that the merge changed no behaviour. Never regenerate the expectations from a
+// new implementation.
+// ═════════════════════════════════════════════════════════════════════════════════════════
+
+/// One characterized state of the UI stack: `setup` is applied to a freshly built App, and the
+/// resulting `(surface(), internal_mode())` pair must equal the recorded one.
+struct LayerCase {
+    /// `<surface() arm> / <internal_mode() arm>` — reported when an assertion fails.
+    name: &'static str,
+    /// Applied to a fresh App (Tree mode, nothing open). Must not capture (coerced to `fn`).
+    setup: LayerSetup,
+    surface: crate::keymap::Surface,
+    internal: Option<InternalMode>,
+}
+
+/// Puts a fresh App into the state a case describes.
+type LayerSetup = fn(&mut App);
+
+fn layer_fixture() -> PathBuf {
+    let dir = unique_tmp("konoma_layer_cascade");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dir.join("a.txt"), text).unwrap();
+    std::fs::write(dir.join("t.csv"), "h1,h2\n1,2\n").unwrap();
+    dir
+}
+
+fn layer_app(dir: &Path) -> App {
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app
+}
+
+// ---- setup building blocks -------------------------------------------------------------
+/// Windowed text preview (`preview_win` set → `is_windowed()`).
+fn lc_open_text(app: &mut App) {
+    let p = app.tab.root.join("a.txt");
+    app.enter_preview(&p);
+}
+/// Swap the preview kind to an image *without* going through `enter_preview`, so that whatever
+/// `preview_win` / visual anchor the case set up beforehand survives.
+fn lc_make_image(app: &mut App) {
+    app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4)));
+    app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
+    app.tab.mode = Mode::Preview;
+}
+/// Same idea for a parsed CSV table.
+fn lc_make_table(app: &mut App) {
+    let p = app.tab.root.join("t.csv");
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&p));
+    app.tab.preview_path = Some(p);
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+}
+fn lc_confirm(app: &mut App, op: PendingOp) {
+    app.dialog = Some(Dialog {
+        op,
+        kind: DialogKind::Confirm {
+            message: "message".into(),
+            allow_permanent: false,
+        },
+    });
+}
+fn lc_input(app: &mut App, op: PendingOp) {
+    app.dialog = Some(Dialog {
+        op,
+        kind: DialogKind::Input {
+            title: "title".into(),
+            buffer: String::new(),
+            cursor: 0,
+        },
+    });
+}
+
+fn layer_cases() -> Vec<LayerCase> {
+    use crate::keymap::Surface as S;
+    let mut v: Vec<LayerCase> = vec![
+        // ── The base full screens (nothing overlaying them) ───────────────────────────
+        LayerCase {
+            name: "Tree / (none)",
+            setup: |_| {},
+            surface: S::Tree,
+            internal: None,
+        },
+        LayerCase {
+            name: "Tree / ChangedFilter",
+            setup: |a| a.tab.changed_filter = true,
+            surface: S::Tree,
+            internal: Some(InternalMode::ChangedFilter),
+        },
+        LayerCase {
+            name: "PreviewText / (none)",
+            setup: lc_open_text,
+            surface: S::PreviewText,
+            internal: None,
+        },
+        LayerCase {
+            // `changed_filter` only reaches internal_mode in Tree mode.
+            name: "PreviewText / (none) — changed_filter is ignored outside Tree mode",
+            setup: |a| {
+                a.tab.changed_filter = true;
+                lc_open_text(a);
+            },
+            surface: S::PreviewText,
+            internal: None,
+        },
+        LayerCase {
+            name: "PreviewTextVisual / PreviewVisual",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+            },
+            surface: S::PreviewTextVisual,
+            internal: Some(InternalMode::PreviewVisual),
+        },
+        LayerCase {
+            name: "PreviewImage / (none)",
+            setup: lc_make_image,
+            surface: S::PreviewImage,
+            internal: None,
+        },
+        LayerCase {
+            name: "PreviewTable / (none)",
+            setup: lc_make_table,
+            surface: S::PreviewTable,
+            internal: None,
+        },
+        // The next three are states the UI cannot actually produce (a visual anchor survives only
+        // in a windowed preview). They are here because they pin the *exact* semantics of the two
+        // cascades where they disagree: `surface()` resolves the preview kind first and only looks
+        // at the visual anchor for text, while `internal_mode()` checks the anchor before it looks
+        // at the mode at all. A merged cascade must keep both readings.
+        LayerCase {
+            name: "PreviewImage / PreviewVisual (artificial: anchor + image kind)",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+                lc_make_image(a);
+            },
+            surface: S::PreviewImage,
+            internal: Some(InternalMode::PreviewVisual),
+        },
+        LayerCase {
+            name: "PreviewTable / PreviewVisual (artificial: anchor + table kind)",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+                lc_make_table(a);
+            },
+            surface: S::PreviewTable,
+            internal: Some(InternalMode::PreviewVisual),
+        },
+        LayerCase {
+            name: "Tree / PreviewVisual (artificial: anchor while back in Tree mode)",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+                a.tab.mode = Mode::Tree;
+            },
+            surface: S::Tree,
+            internal: Some(InternalMode::PreviewVisual),
+        },
+        // ── Overlays, back to front ───────────────────────────────────────────────────
+        LayerCase {
+            name: "Visual / Visual",
+            setup: |a| a.tab.visual_anchor = Some(0),
+            surface: S::Visual,
+            internal: Some(InternalMode::Visual),
+        },
+        LayerCase {
+            name: "TableCell / TableCell",
+            setup: |a| a.table_cell_open = true,
+            surface: S::TableCell,
+            internal: Some(InternalMode::TableCell),
+        },
+        LayerCase {
+            name: "Info / Info",
+            setup: |a| a.show_info = true,
+            surface: S::Info,
+            internal: Some(InternalMode::Info),
+        },
+        LayerCase {
+            name: "Outline / Outline",
+            setup: |a| a.outline_open = true,
+            surface: S::Outline,
+            internal: Some(InternalMode::Outline),
+        },
+        LayerCase {
+            name: "Tabs / Tabs",
+            setup: |a| a.tab_list = true,
+            surface: S::Tabs,
+            internal: Some(InternalMode::Tabs),
+        },
+        LayerCase {
+            name: "Bookmarks / Bookmarks",
+            setup: |a| a.bookmark_list = true,
+            surface: S::Bookmarks,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "Mark / Mark",
+            setup: |a| a.mark_set_pending = true,
+            surface: S::Mark,
+            internal: Some(InternalMode::Mark),
+        },
+        LayerCase {
+            name: "Sort / Sort",
+            setup: |a| a.sort_menu = true,
+            surface: S::Sort,
+            internal: Some(InternalMode::Sort),
+        },
+        LayerCase {
+            name: "Search / Search",
+            setup: |a| a.tab.search_input = Some(String::new()),
+            surface: S::Search,
+            internal: Some(InternalMode::Search),
+        },
+        LayerCase {
+            name: "Filter / Filter",
+            setup: |a| a.tab.filter_input = Some(String::new()),
+            surface: S::Filter,
+            internal: Some(InternalMode::Filter),
+        },
+        LayerCase {
+            name: "Help / Help",
+            setup: |a| a.show_help = true,
+            surface: S::Help,
+            internal: Some(InternalMode::Help),
+        },
+        // ── Dialogs (frontmost) ───────────────────────────────────────────────────────
+        LayerCase {
+            name: "DialogConfirmQuit / QuitConfirm",
+            setup: |a| lc_confirm(a, PendingOp::Quit),
+            surface: S::DialogConfirmQuit,
+            internal: Some(InternalMode::QuitConfirm),
+        },
+        LayerCase {
+            name: "DialogConfirmBookmark / BookmarkConfirm",
+            setup: |a| {
+                lc_confirm(
+                    a,
+                    PendingOp::BookmarkOverwrite {
+                        key: 'b',
+                        target: PathBuf::from("/tmp/x"),
+                    },
+                )
+            },
+            surface: S::DialogConfirmBookmark,
+            internal: Some(InternalMode::BookmarkConfirm),
+        },
+        LayerCase {
+            name: "DialogConfirmDrop / DropConfirm",
+            setup: |a| {
+                lc_confirm(
+                    a,
+                    PendingOp::DropTransfer {
+                        sources: vec![PathBuf::from("/tmp/x")],
+                        dir: PathBuf::from("/tmp"),
+                    },
+                )
+            },
+            surface: S::DialogConfirmDrop,
+            internal: Some(InternalMode::DropConfirm),
+        },
+        LayerCase {
+            name: "DialogConfirmDelete / DeleteConfirm (Delete op)",
+            setup: |a| {
+                lc_confirm(
+                    a,
+                    PendingOp::Delete {
+                        targets: vec![PathBuf::from("/tmp/x")],
+                    },
+                )
+            },
+            surface: S::DialogConfirmDelete,
+            internal: Some(InternalMode::DeleteConfirm),
+        },
+        LayerCase {
+            // The confirm catch-all: any op that is not quit/bookmark/drop lands here.
+            name: "DialogConfirmDelete / DeleteConfirm (GitDiscard op via the catch-all)",
+            setup: |a| {
+                lc_confirm(
+                    a,
+                    PendingOp::GitDiscard {
+                        path: PathBuf::from("/tmp/x"),
+                    },
+                )
+            },
+            surface: S::DialogConfirmDelete,
+            internal: Some(InternalMode::DeleteConfirm),
+        },
+        LayerCase {
+            name: "DialogRenamePreview / RenamePreview",
+            setup: |a| {
+                a.dialog = Some(Dialog {
+                    op: PendingOp::BatchRenameApply { plan: Vec::new() },
+                    kind: DialogKind::Preview {
+                        title: "t".into(),
+                        lines: Vec::new(),
+                        scroll: 0,
+                    },
+                })
+            },
+            surface: S::DialogRenamePreview,
+            internal: Some(InternalMode::RenamePreview),
+        },
+        LayerCase {
+            name: "DialogInput / Create",
+            setup: |a| {
+                lc_input(
+                    a,
+                    PendingOp::Create {
+                        dir: PathBuf::from("/tmp"),
+                    },
+                )
+            },
+            surface: S::DialogInput,
+            internal: Some(InternalMode::Create),
+        },
+        LayerCase {
+            name: "DialogInput / BatchRename",
+            setup: |a| {
+                lc_input(
+                    a,
+                    PendingOp::BatchRenameInput {
+                        targets: Vec::new(),
+                    },
+                )
+            },
+            surface: S::DialogInput,
+            internal: Some(InternalMode::BatchRename),
+        },
+        LayerCase {
+            name: "DialogInput / Commit",
+            setup: |a| lc_input(a, PendingOp::GitCommit),
+            surface: S::DialogInput,
+            internal: Some(InternalMode::Commit),
+        },
+        LayerCase {
+            name: "DialogInput / GitBranch",
+            setup: |a| lc_input(a, PendingOp::GitCreateBranch),
+            surface: S::DialogInput,
+            internal: Some(InternalMode::GitBranch),
+        },
+        LayerCase {
+            name: "DialogInput / GitWorktrees",
+            setup: |a| lc_input(a, PendingOp::WorktreeCreate),
+            surface: S::DialogInput,
+            internal: Some(InternalMode::GitWorktrees),
+        },
+        LayerCase {
+            // The input catch-all.
+            name: "DialogInput / Rename",
+            setup: |a| {
+                lc_input(
+                    a,
+                    PendingOp::Rename {
+                        target: PathBuf::from("/tmp/x"),
+                    },
+                )
+            },
+            surface: S::DialogInput,
+            internal: Some(InternalMode::Rename),
+        },
+        // ── Adjacent-pair ordering (this is what makes a reordering fail) ─────────────
+        LayerCase {
+            name: "order: a dialog beats help",
+            setup: |a| {
+                a.show_help = true;
+                lc_input(
+                    a,
+                    PendingOp::Rename {
+                        target: PathBuf::from("/tmp/x"),
+                    },
+                );
+            },
+            surface: S::DialogInput,
+            internal: Some(InternalMode::Rename),
+        },
+        LayerCase {
+            name: "order: help beats the filter input",
+            setup: |a| {
+                a.show_help = true;
+                a.tab.filter_input = Some(String::new());
+            },
+            surface: S::Help,
+            internal: Some(InternalMode::Help),
+        },
+        LayerCase {
+            name: "order: filter beats search",
+            setup: |a| {
+                a.tab.filter_input = Some(String::new());
+                a.tab.search_input = Some(String::new());
+            },
+            surface: S::Filter,
+            internal: Some(InternalMode::Filter),
+        },
+        LayerCase {
+            name: "order: search beats the sort menu",
+            setup: |a| {
+                a.tab.search_input = Some(String::new());
+                a.sort_menu = true;
+            },
+            surface: S::Search,
+            internal: Some(InternalMode::Search),
+        },
+        LayerCase {
+            name: "order: sort beats mark",
+            setup: |a| {
+                a.sort_menu = true;
+                a.mark_set_pending = true;
+            },
+            surface: S::Sort,
+            internal: Some(InternalMode::Sort),
+        },
+        LayerCase {
+            name: "order: mark beats the bookmark list",
+            setup: |a| {
+                a.mark_set_pending = true;
+                a.bookmark_list = true;
+            },
+            surface: S::Mark,
+            internal: Some(InternalMode::Mark),
+        },
+        LayerCase {
+            name: "order: bookmarks beats the tab list",
+            setup: |a| {
+                a.bookmark_list = true;
+                a.tab_list = true;
+            },
+            surface: S::Bookmarks,
+            internal: Some(InternalMode::Bookmarks),
+        },
+        LayerCase {
+            name: "order: tabs beats the outline",
+            setup: |a| {
+                a.tab_list = true;
+                a.outline_open = true;
+            },
+            surface: S::Tabs,
+            internal: Some(InternalMode::Tabs),
+        },
+        LayerCase {
+            name: "order: outline beats info",
+            setup: |a| {
+                a.outline_open = true;
+                a.show_info = true;
+            },
+            surface: S::Outline,
+            internal: Some(InternalMode::Outline),
+        },
+        LayerCase {
+            name: "order: info beats the table-cell popup",
+            setup: |a| {
+                a.show_info = true;
+                a.table_cell_open = true;
+            },
+            surface: S::Info,
+            internal: Some(InternalMode::Info),
+        },
+        LayerCase {
+            name: "order: the table-cell popup beats visual",
+            setup: |a| {
+                a.table_cell_open = true;
+                a.tab.visual_anchor = Some(0);
+            },
+            surface: S::TableCell,
+            internal: Some(InternalMode::TableCell),
+        },
+        LayerCase {
+            name: "order: visual beats the base layer",
+            setup: |a| {
+                a.tab.visual_anchor = Some(0);
+                a.tab.changed_filter = true;
+            },
+            surface: S::Visual,
+            internal: Some(InternalMode::Visual),
+        },
+        LayerCase {
+            name: "order: visual beats the preview visual selection",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+                a.tab.visual_anchor = Some(0);
+            },
+            surface: S::Visual,
+            internal: Some(InternalMode::Visual),
+        },
+        LayerCase {
+            name: "order: the preview visual selection beats the changed-files filter",
+            setup: |a| {
+                lc_open_text(a);
+                a.preview_enter_visual(false);
+                a.tab.mode = Mode::Tree;
+                a.tab.changed_filter = true;
+            },
+            surface: S::Tree,
+            internal: Some(InternalMode::PreviewVisual),
+        },
+    ];
+    v.extend(layer_cases_git());
+    v
+}
+
+/// The git layers. `surface()` gates its whole git block behind `#[cfg(feature = "git")]` while
+/// `internal_mode()` does not, so on a no-git build the very same state reports a git *chip* while
+/// the keys fall through to whatever is behind it. That asymmetry is characterized here too: it is
+/// unreachable through the UI (every opener bails out because the no-git `git.rs` stubs return
+/// empty/None), but a merged cascade must still reproduce it exactly.
+#[cfg(feature = "git")]
+fn layer_cases_git() -> Vec<LayerCase> {
+    use crate::keymap::Surface as S;
+    vec![
+        LayerCase {
+            name: "PreviewGitDiff / GitDiff",
+            setup: |a| {
+                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
+                a.tab.mode = Mode::Preview;
+            },
+            surface: S::PreviewGitDiff,
+            internal: Some(InternalMode::GitDiff),
+        },
+        LayerCase {
+            name: "GitChanges / GitChanges",
+            setup: |a| a.tab.git_view = true,
+            surface: S::GitChanges,
+            internal: Some(InternalMode::GitChanges),
+        },
+        LayerCase {
+            name: "GitWorktrees / GitWorktrees",
+            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
+            surface: S::GitWorktrees,
+            internal: Some(InternalMode::GitWorktrees),
+        },
+        LayerCase {
+            name: "WorktreeFilter / GitWorktrees",
+            setup: |a| {
+                a.tab.git_worktrees = Some(Vec::new());
+                a.tab.git_worktree_filtering = true;
+            },
+            surface: S::WorktreeFilter,
+            internal: Some(InternalMode::GitWorktrees),
+        },
+        LayerCase {
+            name: "GitBranches / GitBranch",
+            setup: |a| a.tab.git_branches = Some(Vec::new()),
+            surface: S::GitBranches,
+            internal: Some(InternalMode::GitBranch),
+        },
+        LayerCase {
+            name: "BranchFilter / GitBranch",
+            setup: |a| {
+                a.tab.git_branches = Some(Vec::new());
+                a.tab.git_branch_filtering = true;
+            },
+            surface: S::BranchFilter,
+            internal: Some(InternalMode::GitBranch),
+        },
+        LayerCase {
+            name: "GitGraph / GitGraph",
+            setup: |a| a.tab.git_graph = Some(Vec::new()),
+            surface: S::GitGraph,
+            internal: Some(InternalMode::GitGraph),
+        },
+        LayerCase {
+            name: "GitGraphPicker / GitGraphPicker (panel over the graph)",
+            setup: |a| {
+                a.tab.git_graph = Some(Vec::new());
+                a.git_graph_picker = true;
+            },
+            surface: S::GitGraphPicker,
+            internal: Some(InternalMode::GitGraphPicker),
+        },
+        LayerCase {
+            name: "GitGraphPicker / GitGraphPicker (panel without a graph)",
+            setup: |a| a.git_graph_picker = true,
+            surface: S::GitGraphPicker,
+            internal: Some(InternalMode::GitGraphPicker),
+        },
+        LayerCase {
+            name: "GitLog / GitLog",
+            setup: |a| a.tab.git_log = Some(Vec::new()),
+            surface: S::GitLog,
+            internal: Some(InternalMode::GitLog),
+        },
+        LayerCase {
+            name: "GitDetail / GitDetail",
+            setup: |a| a.tab.git_detail = Some(Vec::new()),
+            surface: S::GitDetail,
+            internal: Some(InternalMode::GitDetail),
+        },
+        // -- adjacent-pair ordering inside and around the git block --
+        LayerCase {
+            name: "order: help beats the git detail",
+            setup: |a| {
+                a.show_help = true;
+                a.tab.git_detail = Some(Vec::new());
+            },
+            surface: S::Help,
+            internal: Some(InternalMode::Help),
+        },
+        LayerCase {
+            name: "order: the git detail beats the log",
+            setup: |a| {
+                a.tab.git_detail = Some(Vec::new());
+                a.tab.git_log = Some(Vec::new());
+            },
+            surface: S::GitDetail,
+            internal: Some(InternalMode::GitDetail),
+        },
+        LayerCase {
+            name: "order: the log beats the graph picker",
+            setup: |a| {
+                a.tab.git_log = Some(Vec::new());
+                a.git_graph_picker = true;
+            },
+            surface: S::GitLog,
+            internal: Some(InternalMode::GitLog),
+        },
+        LayerCase {
+            name: "order: the graph picker beats the graph",
+            setup: |a| {
+                a.git_graph_picker = true;
+                a.tab.git_graph = Some(Vec::new());
+            },
+            surface: S::GitGraphPicker,
+            internal: Some(InternalMode::GitGraphPicker),
+        },
+        LayerCase {
+            name: "order: the graph beats the branch list",
+            setup: |a| {
+                a.tab.git_graph = Some(Vec::new());
+                a.tab.git_branches = Some(Vec::new());
+            },
+            surface: S::GitGraph,
+            internal: Some(InternalMode::GitGraph),
+        },
+        LayerCase {
+            name: "order: the branch list beats the worktree list",
+            setup: |a| {
+                a.tab.git_branches = Some(Vec::new());
+                a.tab.git_worktrees = Some(Vec::new());
+            },
+            surface: S::GitBranches,
+            internal: Some(InternalMode::GitBranch),
+        },
+        LayerCase {
+            name: "order: the worktree list beats the changes hub",
+            setup: |a| {
+                a.tab.git_worktrees = Some(Vec::new());
+                a.tab.git_view = true;
+            },
+            surface: S::GitWorktrees,
+            internal: Some(InternalMode::GitWorktrees),
+        },
+        LayerCase {
+            name: "order: the changes hub beats the diff preview",
+            setup: |a| {
+                a.tab.git_view = true;
+                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
+                a.tab.mode = Mode::Preview;
+            },
+            surface: S::GitChanges,
+            internal: Some(InternalMode::GitChanges),
+        },
+        LayerCase {
+            name: "order: the diff preview beats the filter input",
+            setup: |a| {
+                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
+                a.tab.mode = Mode::Preview;
+                a.tab.filter_input = Some(String::new());
+            },
+            surface: S::PreviewGitDiff,
+            internal: Some(InternalMode::GitDiff),
+        },
+    ]
+}
+
+/// On a no-git build `keymap::Surface` has no git variants, so `surface()` skips its whole git
+/// block and the keys land on whatever is behind the git state, while `internal_mode()` still
+/// reports the git chip. Characterized so the merge cannot quietly "fix" it.
+#[cfg(not(feature = "git"))]
+fn layer_cases_git() -> Vec<LayerCase> {
+    use crate::keymap::Surface as S;
+    vec![
+        LayerCase {
+            name: "Tree / GitChanges (no-git: the hub has no surface, keys fall through)",
+            setup: |a| a.tab.git_view = true,
+            surface: S::Tree,
+            internal: Some(InternalMode::GitChanges),
+        },
+        LayerCase {
+            name:
+                "Filter / GitChanges (no-git: falls through to the layer behind, not to the base)",
+            setup: |a| {
+                a.tab.git_view = true;
+                a.tab.filter_input = Some(String::new());
+            },
+            surface: S::Filter,
+            internal: Some(InternalMode::GitChanges),
+        },
+        LayerCase {
+            name: "Tree / GitDetail (no-git)",
+            setup: |a| a.tab.git_detail = Some(Vec::new()),
+            surface: S::Tree,
+            internal: Some(InternalMode::GitDetail),
+        },
+        LayerCase {
+            name:
+                "PreviewText / GitDiff (no-git: a GitDiff kind is not windowed, so it stays text)",
+            setup: |a| {
+                a.tab.preview_kind = Some(PreviewKind::GitDiff(PathBuf::from("/tmp/x")));
+                a.tab.mode = Mode::Preview;
+            },
+            surface: S::PreviewText,
+            internal: Some(InternalMode::GitDiff),
+        },
+        LayerCase {
+            name: "Tree / GitGraphPicker (no-git)",
+            setup: |a| a.git_graph_picker = true,
+            surface: S::Tree,
+            internal: Some(InternalMode::GitGraphPicker),
+        },
+        LayerCase {
+            name: "Tree / GitLog (no-git)",
+            setup: |a| a.tab.git_log = Some(Vec::new()),
+            surface: S::Tree,
+            internal: Some(InternalMode::GitLog),
+        },
+        LayerCase {
+            name: "Tree / GitGraph (no-git)",
+            setup: |a| a.tab.git_graph = Some(Vec::new()),
+            surface: S::Tree,
+            internal: Some(InternalMode::GitGraph),
+        },
+        LayerCase {
+            name: "Tree / GitBranch (no-git: the branch-list arm)",
+            setup: |a| a.tab.git_branches = Some(Vec::new()),
+            surface: S::Tree,
+            internal: Some(InternalMode::GitBranch),
+        },
+        LayerCase {
+            name: "Tree / GitWorktrees (no-git: the worktree-list arm)",
+            setup: |a| a.tab.git_worktrees = Some(Vec::new()),
+            surface: S::Tree,
+            internal: Some(InternalMode::GitWorktrees),
+        },
+        LayerCase {
+            name: "order: the git detail beats the log (no-git: still ordered for the chip)",
+            setup: |a| {
+                a.tab.git_detail = Some(Vec::new());
+                a.tab.git_log = Some(Vec::new());
+            },
+            surface: S::Tree,
+            internal: Some(InternalMode::GitDetail),
+        },
+    ]
+}
+
+/// **The** characterization: every arm of both cascades, and the order of every adjacent pair.
+#[test]
+fn ui_stack_priority_is_characterized() {
+    let dir = layer_fixture();
+    let mut failures: Vec<String> = Vec::new();
+    for c in layer_cases() {
+        let mut app = layer_app(&dir);
+        (c.setup)(&mut app);
+        let got = (app.surface(), app.internal_mode());
+        if got != (c.surface, c.internal) {
+            failures.push(format!(
+                "{}: expected (surface={:?}, internal={:?}) but got (surface={:?}, internal={:?})",
+                c.name, c.surface, c.internal, got.0, got.1
+            ));
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        failures.is_empty(),
+        "the UI-stack priority changed:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Coverage proof for the sweep above: every `InternalMode` variant, and every `Surface` variant
+/// the cascade can produce, is reached by at least one characterized case.
+#[test]
+fn ui_stack_characterization_covers_every_arm() {
+    let dir = layer_fixture();
+    let mut surfaces: Vec<crate::keymap::Surface> = Vec::new();
+    let mut internals: Vec<Option<InternalMode>> = Vec::new();
+    for c in layer_cases() {
+        let mut app = layer_app(&dir);
+        (c.setup)(&mut app);
+        let s = app.surface();
+        let i = app.internal_mode();
+        if !surfaces.contains(&s) {
+            surfaces.push(s);
+        }
+        if !internals.contains(&i) {
+            internals.push(i);
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+
+    let missing_i: Vec<_> = all_internal_modes()
+        .into_iter()
+        .filter(|m| !internals.contains(&Some(*m)))
+        .collect();
+    assert!(
+        missing_i.is_empty(),
+        "internal_mode() arms never reached by the characterization: {missing_i:?}"
+    );
+    assert!(
+        internals.contains(&None),
+        "the 'no overlay' arm of internal_mode() is never reached"
+    );
+    let missing_s: Vec<_> = all_surfaces()
+        .into_iter()
+        .filter(|s| !surfaces.contains(s))
+        .collect();
+    assert!(
+        missing_s.is_empty(),
+        "surface() arms never reached by the characterization: {missing_s:?}"
+    );
+}
+
+/// Every `InternalMode` variant. Adding a variant is a compile error in `internal_mode_name`
+/// below, which is what forces this list to be extended (and therefore characterized).
+fn all_internal_modes() -> Vec<InternalMode> {
+    use InternalMode as M;
+    let all = vec![
+        M::Help,
+        M::Visual,
+        M::PreviewVisual,
+        M::Filter,
+        M::ChangedFilter,
+        M::Search,
+        M::Sort,
+        M::Mark,
+        M::Bookmarks,
+        M::Tabs,
+        M::Outline,
+        M::Info,
+        M::TableCell,
+        M::Create,
+        M::Rename,
+        M::BatchRename,
+        M::RenamePreview,
+        M::DeleteConfirm,
+        M::DropConfirm,
+        M::QuitConfirm,
+        M::BookmarkConfirm,
+        M::GitChanges,
+        M::GitDiff,
+        M::Commit,
+        M::GitLog,
+        M::GitDetail,
+        M::GitBranch,
+        M::GitWorktrees,
+        M::GitGraph,
+        M::GitGraphPicker,
+    ];
+    // Exhaustive on purpose: a new variant does not compile until it is named here, and the
+    // duplicate/count check below then forces it into the list above.
+    let mut names: Vec<&'static str> = all.iter().map(|m| internal_mode_name(*m)).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        all.len(),
+        "all_internal_modes() has duplicates or is missing a variant"
+    );
+    all
+}
+
+/// Exhaustive on purpose (see `all_internal_modes`).
+fn internal_mode_name(m: InternalMode) -> &'static str {
+    use InternalMode as M;
+    match m {
+        M::Help => "Help",
+        M::Visual => "Visual",
+        M::PreviewVisual => "PreviewVisual",
+        M::Filter => "Filter",
+        M::ChangedFilter => "ChangedFilter",
+        M::Search => "Search",
+        M::Sort => "Sort",
+        M::Mark => "Mark",
+        M::Bookmarks => "Bookmarks",
+        M::Tabs => "Tabs",
+        M::Outline => "Outline",
+        M::Info => "Info",
+        M::TableCell => "TableCell",
+        M::Create => "Create",
+        M::Rename => "Rename",
+        M::BatchRename => "BatchRename",
+        M::RenamePreview => "RenamePreview",
+        M::DeleteConfirm => "DeleteConfirm",
+        M::DropConfirm => "DropConfirm",
+        M::QuitConfirm => "QuitConfirm",
+        M::BookmarkConfirm => "BookmarkConfirm",
+        M::GitChanges => "GitChanges",
+        M::GitDiff => "GitDiff",
+        M::Commit => "Commit",
+        M::GitLog => "GitLog",
+        M::GitDetail => "GitDetail",
+        M::GitBranch => "GitBranch",
+        M::GitWorktrees => "GitWorktrees",
+        M::GitGraph => "GitGraph",
+        M::GitGraphPicker => "GitGraphPicker",
+    }
+}
+
+/// Every `Surface` variant that exists on this build.
+fn all_surfaces() -> Vec<crate::keymap::Surface> {
+    use crate::keymap::Surface as S;
+    vec![
+        S::DialogInput,
+        S::Filter,
+        S::Search,
+        S::Mark,
+        #[cfg(feature = "git")]
+        S::BranchFilter,
+        #[cfg(feature = "git")]
+        S::WorktreeFilter,
+        S::DialogConfirmDelete,
+        S::DialogConfirmDrop,
+        S::DialogRenamePreview,
+        S::DialogConfirmQuit,
+        S::DialogConfirmBookmark,
+        S::Help,
+        S::Sort,
+        S::Bookmarks,
+        S::Tabs,
+        S::Outline,
+        S::Info,
+        S::TableCell,
+        #[cfg(feature = "git")]
+        S::GitDetail,
+        #[cfg(feature = "git")]
+        S::GitLog,
+        #[cfg(feature = "git")]
+        S::GitGraph,
+        #[cfg(feature = "git")]
+        S::GitGraphPicker,
+        #[cfg(feature = "git")]
+        S::GitBranches,
+        #[cfg(feature = "git")]
+        S::GitChanges,
+        #[cfg(feature = "git")]
+        S::GitWorktrees,
+        S::Visual,
+        S::Tree,
+        S::PreviewText,
+        S::PreviewTextVisual,
+        S::PreviewImage,
+        S::PreviewTable,
+        #[cfg(feature = "git")]
+        S::PreviewGitDiff,
+    ]
+}
+
+/// The runtime half of the compile-time guard: every `Surface` names the layer it belongs to
+/// (`Surface::layer`, an exhaustive match — a new variant does not compile until it is placed),
+/// and that layer really does project back to it. Without this, a new surface could be "placed"
+/// anywhere and nothing would notice.
+#[test]
+fn surface_round_trips_through_its_layer() {
+    for s in all_surfaces() {
+        assert_eq!(
+            s.layer().surface(),
+            Some(s),
+            "{s:?} does not come back from the layer it claims to belong to"
+        );
+    }
+}
+
+/// The general form of the `?` help bug: whatever is in front decides **both** what the chip and
+/// footer say and which keys work. Checked over every characterized state — the chip must be the
+/// frontmost layer's mode, and the keymap must be that same layer's surface whenever it has one.
+#[test]
+fn the_chip_and_the_keys_come_from_the_same_layer() {
+    let dir = layer_fixture();
+    let mut failures: Vec<String> = Vec::new();
+    for c in layer_cases() {
+        let mut app = layer_app(&dir);
+        (c.setup)(&mut app);
+        let front = app.frontmost_layer(|_| true);
+        if app.internal_mode() != front.internal_mode() {
+            failures.push(format!("{}: the chip does not follow {front:?}", c.name));
+        }
+        // The one documented exception is a git layer on a no-git build, which owns no surface at
+        // all; then — and only then — the keys legitimately belong to a layer further back.
+        match front.surface() {
+            Some(s) if app.surface() != s => {
+                failures.push(format!("{}: the keys do not follow {front:?}", c.name))
+            }
+            _ => {}
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The `?` help overlay is a centered popup that leaves the chip and footer visible, so it must win
+/// from *every* screen behind it — that is the shape the two cascades drifted on once before.
+#[test]
+fn help_wins_over_whatever_screen_is_behind_it() {
+    let dir = layer_fixture();
+    let behind: Vec<(&str, LayerSetup)> = vec![
+        ("tree", |_| {}),
+        ("text preview", lc_open_text),
+        ("image preview", lc_make_image),
+        ("table preview", lc_make_table),
+        ("tree visual", |a| a.tab.visual_anchor = Some(0)),
+        ("filter input", |a| a.tab.filter_input = Some(String::new())),
+        ("tab list", |a| a.tab_list = true),
+        #[cfg(feature = "git")]
+        ("git changes hub", |a| a.tab.git_view = true),
+        #[cfg(feature = "git")]
+        ("git commit detail", |a| a.tab.git_detail = Some(Vec::new())),
+        #[cfg(feature = "git")]
+        ("git log", |a| a.tab.git_log = Some(Vec::new())),
+        #[cfg(feature = "git")]
+        ("git graph picker", |a| {
+            a.tab.git_graph = Some(Vec::new());
+            a.git_graph_picker = true;
+        }),
+    ];
+    for (name, setup) in behind {
+        let mut app = layer_app(&dir);
+        setup(&mut app);
+        app.show_help = true;
+        assert_eq!(
+            app.surface(),
+            crate::keymap::Surface::Help,
+            "help over {name}: the keys must be help's"
+        );
+        assert_eq!(
+            app.internal_mode(),
+            Some(InternalMode::Help),
+            "help over {name}: the chip/footer must be help's"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The branch/worktree list `/` filter is deliberately **not** symmetric across the three consumers,
+/// and this pins why (see `UiLayer::internal_mode`): the keymap needs its own surface because typing
+/// must be captured instead of dispatched, the chip deliberately stays on the list (the list is
+/// still what you are looking at, cursor and all), and the footer swaps to the `/query` prompt
+/// through its own branch in `footer_spans`, not through the mode.
+#[cfg(feature = "git")]
+#[test]
+fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
+    let dir = layer_fixture();
+    for (name, list, filtering, surface, mode) in [
+        (
+            "branches",
+            (|a: &mut App| a.tab.git_branches = Some(Vec::new())) as fn(&mut App),
+            (|a: &mut App| a.tab.git_branch_filtering = true) as fn(&mut App),
+            crate::keymap::Surface::BranchFilter,
+            InternalMode::GitBranch,
+        ),
+        (
+            "worktrees",
+            (|a: &mut App| a.tab.git_worktrees = Some(Vec::new())) as fn(&mut App),
+            (|a: &mut App| a.tab.git_worktree_filtering = true) as fn(&mut App),
+            crate::keymap::Surface::WorktreeFilter,
+            InternalMode::GitWorktrees,
+        ),
+    ] {
+        let mut app = layer_app(&dir);
+        list(&mut app);
+        let footer_before: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(app.internal_mode(), Some(mode), "{name}: chip before");
+
+        filtering(&mut app);
+        assert_eq!(
+            app.surface(),
+            surface,
+            "{name}: the keymap must switch to the text-input surface"
+        );
+        assert!(
+            app.surface().is_text_input(),
+            "{name}: characters must be captured, not dispatched"
+        );
+        assert_eq!(
+            app.internal_mode(),
+            Some(mode),
+            "{name}: the chip must stay on the list — the filter is an input inside it, not a mode"
+        );
+        let footer_after: String = crate::ui::status::footer_spans(&app, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_after.starts_with('/') && footer_after != footer_before,
+            "{name}: the footer must show the /query prompt: {footer_after:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The priority order is written down once — as the order of `UiLayer`'s variants, which
+/// `App::frontmost_layer` walks. This checks the two really do agree, so the enum can be read as
+/// the order: turn on everything that can be on at once, then repeatedly ask for the frontmost
+/// layer while hiding the ones already seen, and require the sequence to climb the declaration
+/// order (`Ord` follows it) without ever going backwards.
+///
+/// The dialog layers are left out on purpose: a dialog has exactly one kind and one pending
+/// operation, so no two of them can be active together and their relative order is not observable
+/// (`ui_stack_priority_is_characterized` pins each of them individually, and that a dialog beats
+/// help).
+#[test]
+fn the_walk_visits_the_layers_in_their_declaration_order() {
+    let dir = layer_fixture();
+    let mut app = layer_app(&dir);
+    app.show_help = true;
+    #[cfg(feature = "git")]
+    {
+        app.tab.git_detail = Some(Vec::new());
+        app.tab.git_log = Some(Vec::new());
+        app.git_graph_picker = true;
+        app.tab.git_graph = Some(Vec::new());
+        app.tab.git_branches = Some(Vec::new());
+        app.tab.git_branch_filtering = true;
+        app.tab.git_worktrees = Some(Vec::new());
+        app.tab.git_worktree_filtering = true;
+        app.tab.git_view = true;
+    }
+    app.tab.filter_input = Some(String::new());
+    app.tab.search_input = Some(String::new());
+    app.sort_menu = true;
+    app.mark_set_pending = true;
+    app.bookmark_list = true;
+    app.tab_list = true;
+    app.outline_open = true;
+    app.show_info = true;
+    app.table_cell_open = true;
+    app.tab.visual_anchor = Some(0);
+
+    let mut seen: Vec<UiLayer> = Vec::new();
+    loop {
+        let next = app.frontmost_layer(|l| !seen.contains(&l));
+        seen.push(next);
+        if matches!(next, UiLayer::Base(_)) {
+            break;
+        }
+        assert!(seen.len() < 64, "the walk does not terminate: {seen:?}");
+    }
+    for w in seen.windows(2) {
+        assert!(
+            w[0] < w[1],
+            "the walk goes backwards through the declaration order: {:?} came before {:?}\nfull order: {seen:?}",
+            w[0],
+            w[1]
+        );
+    }
+    // Sanity: it really did walk a stack, not just fall straight through to the base.
+    assert!(
+        seen.len() >= 12,
+        "expected the walk to pass through many layers, got {seen:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

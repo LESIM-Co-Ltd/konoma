@@ -108,6 +108,314 @@ pub enum InternalMode {
     GitGraphPicker,
 }
 
+/// What the **bottom** of the UI stack is showing, once nothing is overlaying it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BaseKind {
+    Tree,
+    /// Any preview that is neither a renderable image nor a parsed table (text, code, Markdown,
+    /// a git diff, `[can not preview]`, …). They all answer to the same keymap surface.
+    PreviewText,
+    PreviewImage,
+    PreviewTable,
+}
+
+/// The bottom layer of the UI stack, plus the two facts that decorate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BaseLayer {
+    pub kind: BaseKind,
+    /// A visual selection is active in a **windowed** preview (`v`/`V`). Deliberately kept
+    /// independent of `kind` rather than folded into it: the chip reports the selection whatever
+    /// the preview is, while the keymap only turns it into `PreviewTextVisual` for a text preview
+    /// (an image/table resolves to its own surface first). Both readings are pinned by
+    /// `ui_stack_priority_is_characterized`.
+    pub preview_visual: bool,
+    /// The changed-files-only tree filter (`C`) is on.
+    pub changed_filter: bool,
+}
+
+/// One layer of the UI stack.
+///
+/// **The declaration order below is the priority order** — front (topmost, the layer that receives
+/// the keys) to back — and it is written down exactly once. [`App::frontmost_layer`] walks it in
+/// this sequence, and both [`App::surface`] and [`App::internal_mode`] are pure projections of the
+/// layer it returns ([`UiLayer::surface`] / [`UiLayer::internal_mode`]). Before this existed the two
+/// were separate hand-written cascades that had to be kept in step by hand, and they drifted: the
+/// `?` help overlay reached `surface()` but not `internal_mode()`, so the chip and footer
+/// advertised keys that did nothing.
+// `Ord` follows the declaration order, which lets
+// `the_walk_visits_the_layers_in_their_declaration_order` check mechanically that the walk really
+// does go front to back in the order written below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UiLayer {
+    // --- Dialogs (frontmost; the kinds below are mutually exclusive) ---
+    /// Confirm dialog: quit the app (non-destructive, so it gets its own chip/footer).
+    ConfirmQuit,
+    /// Confirm dialog: overwrite an existing bookmark (also non-destructive).
+    ConfirmBookmark,
+    /// Confirm dialog: a drag-and-drop transfer (`c`=copy / `m`=move).
+    ConfirmDrop,
+    /// Confirm dialog: everything else (delete, discard, delete-branch, …).
+    ConfirmDelete,
+    /// The batch-rename "old → new" preview dialog.
+    RenamePreview,
+    /// Input dialog, by pending operation. They all share one keymap surface (`DialogInput`) but
+    /// each gets its own chip/footer wording.
+    InputCreate,
+    InputBatchRename,
+    InputCommit,
+    InputCreateBranch,
+    InputCreateWorktree,
+    /// Input dialog: rename, and the catch-all for any other pending operation.
+    InputRename,
+
+    // --- The help overlay (above everything but the dialogs) ---
+    Help,
+
+    // --- The git views (detail sits over log; the branch panel sits over the graph) ---
+    GitDetail,
+    GitLog,
+    GitGraphPicker,
+    GitGraph,
+    /// The branch list with its `/` filter input active.
+    GitBranchFilter,
+    GitBranches,
+    /// The worktree list with its `/` filter input active.
+    GitWorktreeFilter,
+    GitWorktrees,
+    GitChanges,
+    GitDiff,
+
+    // --- Input surfaces / menus / lists / popups ---
+    Filter,
+    Search,
+    Sort,
+    Mark,
+    Bookmarks,
+    Tabs,
+    Outline,
+    Info,
+    TableCell,
+    Visual,
+
+    /// The base full screen. Always active, so the walk ends here.
+    Base(BaseLayer),
+}
+
+impl BaseLayer {
+    fn surface(self) -> crate::keymap::Surface {
+        use crate::keymap::Surface as S;
+        match self.kind {
+            BaseKind::Tree => S::Tree,
+            BaseKind::PreviewImage => S::PreviewImage,
+            BaseKind::PreviewTable => S::PreviewTable,
+            BaseKind::PreviewText => {
+                if self.preview_visual {
+                    S::PreviewTextVisual
+                } else {
+                    S::PreviewText
+                }
+            }
+        }
+    }
+
+    fn internal_mode(self) -> Option<InternalMode> {
+        if self.preview_visual {
+            return Some(InternalMode::PreviewVisual);
+        }
+        if self.changed_filter && matches!(self.kind, BaseKind::Tree) {
+            return Some(InternalMode::ChangedFilter);
+        }
+        None
+    }
+}
+
+impl UiLayer {
+    /// The keymap surface this layer owns.
+    ///
+    /// `None` means the layer has no surface **on this build** — only the git layers, and only when
+    /// the `git` feature is off, where `keymap::Surface` has no git variants at all. [`App::surface`]
+    /// then keeps walking to the layer behind it, which is exactly what the old hand-written cascade
+    /// did by wrapping its whole git block in `#[cfg(feature = "git")]`. (Such state is unreachable
+    /// through the UI on a no-git build — every git opener bails out because the `git.rs` stubs
+    /// return empty/None — but the fall-through is characterized so it cannot change by accident.)
+    pub fn surface(self) -> Option<crate::keymap::Surface> {
+        use crate::keymap::Surface as S;
+        Some(match self {
+            Self::ConfirmQuit => S::DialogConfirmQuit,
+            Self::ConfirmBookmark => S::DialogConfirmBookmark,
+            Self::ConfirmDrop => S::DialogConfirmDrop,
+            Self::ConfirmDelete => S::DialogConfirmDelete,
+            Self::RenamePreview => S::DialogRenamePreview,
+            Self::InputCreate
+            | Self::InputBatchRename
+            | Self::InputCommit
+            | Self::InputCreateBranch
+            | Self::InputCreateWorktree
+            | Self::InputRename => S::DialogInput,
+            Self::Help => S::Help,
+            #[cfg(feature = "git")]
+            Self::GitDetail => S::GitDetail,
+            #[cfg(feature = "git")]
+            Self::GitLog => S::GitLog,
+            #[cfg(feature = "git")]
+            Self::GitGraphPicker => S::GitGraphPicker,
+            #[cfg(feature = "git")]
+            Self::GitGraph => S::GitGraph,
+            #[cfg(feature = "git")]
+            Self::GitBranchFilter => S::BranchFilter,
+            #[cfg(feature = "git")]
+            Self::GitBranches => S::GitBranches,
+            #[cfg(feature = "git")]
+            Self::GitWorktreeFilter => S::WorktreeFilter,
+            #[cfg(feature = "git")]
+            Self::GitWorktrees => S::GitWorktrees,
+            #[cfg(feature = "git")]
+            Self::GitChanges => S::GitChanges,
+            #[cfg(feature = "git")]
+            Self::GitDiff => S::PreviewGitDiff,
+            #[cfg(not(feature = "git"))]
+            Self::GitDetail
+            | Self::GitLog
+            | Self::GitGraphPicker
+            | Self::GitGraph
+            | Self::GitBranchFilter
+            | Self::GitBranches
+            | Self::GitWorktreeFilter
+            | Self::GitWorktrees
+            | Self::GitChanges
+            | Self::GitDiff => return None,
+            Self::Filter => S::Filter,
+            Self::Search => S::Search,
+            Self::Sort => S::Sort,
+            Self::Mark => S::Mark,
+            Self::Bookmarks => S::Bookmarks,
+            Self::Tabs => S::Tabs,
+            Self::Outline => S::Outline,
+            Self::Info => S::Info,
+            Self::TableCell => S::TableCell,
+            Self::Visual => S::Visual,
+            Self::Base(b) => b.surface(),
+        })
+    }
+
+    /// The mode this layer shows in the inner chip / footer. `None` = nothing is being operated
+    /// (the plain base screen). Unlike [`UiLayer::surface`] this is never gated on the `git`
+    /// feature: `InternalMode` has its git variants on every build.
+    pub fn internal_mode(self) -> Option<InternalMode> {
+        Some(match self {
+            Self::ConfirmQuit => InternalMode::QuitConfirm,
+            Self::ConfirmBookmark => InternalMode::BookmarkConfirm,
+            Self::ConfirmDrop => InternalMode::DropConfirm,
+            Self::ConfirmDelete => InternalMode::DeleteConfirm,
+            Self::RenamePreview => InternalMode::RenamePreview,
+            Self::InputCreate => InternalMode::Create,
+            Self::InputBatchRename => InternalMode::BatchRename,
+            Self::InputCommit => InternalMode::Commit,
+            // The branch/worktree creation prompts reuse their list's chip rather than inventing a
+            // dedicated "creating a …" mode.
+            Self::InputCreateBranch => InternalMode::GitBranch,
+            Self::InputCreateWorktree => InternalMode::GitWorktrees,
+            Self::InputRename => InternalMode::Rename,
+            Self::Help => InternalMode::Help,
+            Self::GitDetail => InternalMode::GitDetail,
+            Self::GitLog => InternalMode::GitLog,
+            Self::GitGraphPicker => InternalMode::GitGraphPicker,
+            Self::GitGraph => InternalMode::GitGraph,
+            // A list's `/` filter deliberately keeps the list's own chip, so there is no
+            // `InternalMode::BranchFilter`/`WorktreeFilter` to map to. The three consumers each
+            // want something different and that is on purpose: the keymap needs a separate surface
+            // because typing has to be captured rather than dispatched (`Surface::is_text_input`),
+            // the chip must *not* change because the list is still what you are looking at (cursor
+            // and all), and the footer swaps to the `/query` prompt through its own branch in
+            // `ui::status::footer_spans`, ahead of the mode footer. Pinned by
+            // `a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip`.
+            Self::GitBranchFilter | Self::GitBranches => InternalMode::GitBranch,
+            Self::GitWorktreeFilter | Self::GitWorktrees => InternalMode::GitWorktrees,
+            Self::GitChanges => InternalMode::GitChanges,
+            Self::GitDiff => InternalMode::GitDiff,
+            Self::Filter => InternalMode::Filter,
+            Self::Search => InternalMode::Search,
+            Self::Sort => InternalMode::Sort,
+            Self::Mark => InternalMode::Mark,
+            Self::Bookmarks => InternalMode::Bookmarks,
+            Self::Tabs => InternalMode::Tabs,
+            Self::Outline => InternalMode::Outline,
+            Self::Info => InternalMode::Info,
+            Self::TableCell => InternalMode::TableCell,
+            Self::Visual => InternalMode::Visual,
+            Self::Base(b) => return b.internal_mode(),
+        })
+    }
+}
+
+impl crate::keymap::Surface {
+    /// Where this surface sits in the UI stack.
+    ///
+    /// **Exhaustive on purpose**: a new `Surface` variant does not compile until it is given a
+    /// place in [`UiLayer`]'s priority order, so a new full-screen/overlay surface cannot be added
+    /// without deciding what it sits in front of. `surface_round_trips_through_its_layer` then
+    /// checks that the placement really does produce this surface. Only `mod tests` needs it (hence
+    /// `#[cfg(test)]`), which means the guarantee holds on every `cargo test` run — the same
+    /// arrangement as `keymap::surface_config_name`.
+    #[cfg(test)]
+    pub fn layer(self) -> UiLayer {
+        use crate::keymap::Surface as S;
+        // A base surface names the base layer that produces it; `preview_visual` is the one bit the
+        // base needs to tell PreviewText from PreviewTextVisual.
+        let base = |kind: BaseKind, preview_visual: bool| {
+            UiLayer::Base(BaseLayer {
+                kind,
+                preview_visual,
+                changed_filter: false,
+            })
+        };
+        match self {
+            S::DialogInput => UiLayer::InputRename,
+            S::Filter => UiLayer::Filter,
+            S::Search => UiLayer::Search,
+            S::Mark => UiLayer::Mark,
+            #[cfg(feature = "git")]
+            S::BranchFilter => UiLayer::GitBranchFilter,
+            #[cfg(feature = "git")]
+            S::WorktreeFilter => UiLayer::GitWorktreeFilter,
+            S::DialogConfirmDelete => UiLayer::ConfirmDelete,
+            S::DialogConfirmDrop => UiLayer::ConfirmDrop,
+            S::DialogRenamePreview => UiLayer::RenamePreview,
+            S::DialogConfirmQuit => UiLayer::ConfirmQuit,
+            S::DialogConfirmBookmark => UiLayer::ConfirmBookmark,
+            S::Help => UiLayer::Help,
+            S::Sort => UiLayer::Sort,
+            S::Bookmarks => UiLayer::Bookmarks,
+            S::Tabs => UiLayer::Tabs,
+            S::Outline => UiLayer::Outline,
+            S::Info => UiLayer::Info,
+            S::TableCell => UiLayer::TableCell,
+            #[cfg(feature = "git")]
+            S::GitDetail => UiLayer::GitDetail,
+            #[cfg(feature = "git")]
+            S::GitLog => UiLayer::GitLog,
+            #[cfg(feature = "git")]
+            S::GitGraph => UiLayer::GitGraph,
+            #[cfg(feature = "git")]
+            S::GitGraphPicker => UiLayer::GitGraphPicker,
+            #[cfg(feature = "git")]
+            S::GitBranches => UiLayer::GitBranches,
+            #[cfg(feature = "git")]
+            S::GitChanges => UiLayer::GitChanges,
+            #[cfg(feature = "git")]
+            S::GitWorktrees => UiLayer::GitWorktrees,
+            #[cfg(feature = "git")]
+            S::PreviewGitDiff => UiLayer::GitDiff,
+            S::Visual => UiLayer::Visual,
+            S::Tree => base(BaseKind::Tree, false),
+            S::PreviewText => base(BaseKind::PreviewText, false),
+            S::PreviewTextVisual => base(BaseKind::PreviewText, true),
+            S::PreviewImage => base(BaseKind::PreviewImage, false),
+            S::PreviewTable => base(BaseKind::PreviewTable, false),
+        }
+    }
+}
+
 /// Preview paging key style. Specified via the `ui.keys` setting (default vim).
 /// Diffs use only the page/half-page keys. j/k line movement, arrows, and PageUp/Down are common to both styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1979,212 +2287,121 @@ impl App {
             }
         }
     }
-    /// Internal mode (for the inner chip and footer switching). None if nothing is being operated.
-    /// Priority: dialog > filter/search/sort/mark/bookmarks > visual.
-    pub fn internal_mode(&self) -> Option<InternalMode> {
-        if let Some(d) = &self.dialog {
-            return Some(match &d.kind {
-                // The app-quit confirmation is non-destructive. Give it a chip/footer distinct from delete/drop.
-                DialogKind::Confirm { .. } if self.confirm_is_quit() => InternalMode::QuitConfirm,
-                // The bookmark-overwrite confirmation is also non-destructive = a distinct chip/footer.
-                DialogKind::Confirm { .. } if self.confirm_is_bookmark() => {
-                    InternalMode::BookmarkConfirm
-                }
-                // A drag-and-drop transfer is not destructive, so give it a chip/footer distinct from the delete confirmation.
-                DialogKind::Confirm { .. } if self.confirm_is_drop() => InternalMode::DropConfirm,
-                DialogKind::Confirm { .. } => InternalMode::DeleteConfirm,
-                DialogKind::Preview { .. } => InternalMode::RenamePreview,
-                DialogKind::Input { .. } => match &d.op {
-                    PendingOp::Create { .. } => InternalMode::Create,
-                    PendingOp::BatchRenameInput { .. } => InternalMode::BatchRename,
-                    PendingOp::GitCommit => InternalMode::Commit,
-                    PendingOp::GitCreateBranch => InternalMode::GitBranch,
-                    // Same idiom as GitCreateBranch: reuse the list's own chip/footer rather than
-                    // inventing a dedicated "creating a worktree" mode.
-                    PendingOp::WorktreeCreate => InternalMode::GitWorktrees,
-                    _ => InternalMode::Rename,
-                },
-            });
+    /// The bottom of the UI stack: what is on screen once nothing is overlaying it.
+    fn base_layer(&self) -> BaseLayer {
+        BaseLayer {
+            kind: match self.tab.mode {
+                Mode::Preview if self.is_image_preview() => BaseKind::PreviewImage,
+                Mode::Preview if self.is_table_preview() => BaseKind::PreviewTable,
+                Mode::Preview => BaseKind::PreviewText,
+                Mode::Tree => BaseKind::Tree,
+            },
+            preview_visual: self.is_preview_visual(),
+            changed_filter: self.tab.changed_filter,
         }
-        // Help (above everything else; same priority as surface() = right after the dialog).
-        if self.show_help {
-            return Some(InternalMode::Help);
-        }
-        // Commit detail sits over log, so check it first.
-        if self.is_git_detail() {
-            return Some(InternalMode::GitDetail);
-        }
-        if self.is_git_log() {
-            return Some(InternalMode::GitLog);
-        }
-        // The panel sits over the graph (is_git_graph is also true, so check it first).
-        if self.is_git_graph_picker() {
-            return Some(InternalMode::GitGraphPicker);
-        }
-        if self.is_git_graph() {
-            return Some(InternalMode::GitGraph);
-        }
-        if self.is_git_branches() {
-            return Some(InternalMode::GitBranch);
-        }
-        if self.is_git_worktrees() {
-            return Some(InternalMode::GitWorktrees);
-        }
-        if self.is_git_view() {
-            return Some(InternalMode::GitChanges);
-        }
-        if self.is_git_diff_preview() {
-            return Some(InternalMode::GitDiff);
-        }
-        if self.is_filtering() {
-            return Some(InternalMode::Filter);
-        }
-        if self.is_searching() {
-            return Some(InternalMode::Search);
-        }
-        if self.is_sort_menu() {
-            return Some(InternalMode::Sort);
-        }
-        if self.is_marking() {
-            return Some(InternalMode::Mark);
-        }
-        if self.is_bookmark_list() {
-            return Some(InternalMode::Bookmarks);
-        }
-        if self.is_tab_list() {
-            return Some(InternalMode::Tabs);
-        }
-        if self.is_outline() {
-            return Some(InternalMode::Outline);
-        }
-        if self.is_info() {
-            return Some(InternalMode::Info);
-        }
-        if self.is_table_cell_open() {
-            return Some(InternalMode::TableCell);
-        }
-        if self.is_visual() {
-            return Some(InternalMode::Visual);
-        }
-        if self.is_preview_visual() {
-            return Some(InternalMode::PreviewVisual);
-        }
-        if self.tab.changed_filter && matches!(self.tab.mode, Mode::Tree) {
-            return Some(InternalMode::ChangedFilter);
-        }
-        None
     }
 
-    /// The **frontmost surface** that currently receives keys (the single source of truth for Run2 keymap dispatch).
-    /// Strictly follows the same priority as internal_mode, while also including the base full screens (Tree/Preview) and overlays (§4).
-    /// Off the render path; references only existing bool predicates (same cost as now).
+    /// Walk the **single priority order** ([`UiLayer`], front to back) and return the frontmost
+    /// layer that is active.
+    ///
+    /// `visible` lets a caller be blind to layers that mean nothing to it, in which case the walk
+    /// carries on to the layer behind. Its only real use is [`App::surface`] on a no-git build,
+    /// where `keymap::Surface` has no git variants; [`App::internal_mode`] sees every layer.
+    /// The base layer is always active, so the walk always terminates there.
+    ///
+    /// Off the render path in the sense that it only reads existing `bool` predicates — the same
+    /// work the two hand-written cascades did.
+    fn frontmost_layer(&self, visible: impl Fn(UiLayer) -> bool) -> UiLayer {
+        macro_rules! layer {
+            ($active:expr, $l:expr) => {
+                if $active && visible($l) {
+                    return $l;
+                }
+            };
+        }
+        // --- Dialogs (frontmost). The three dialog kinds are mutually exclusive; within a confirm,
+        // the non-destructive operations are split out so they get their own chip/footer wording. ---
+        let confirm = self.dialog_is_confirm();
+        layer!(confirm && self.confirm_is_quit(), UiLayer::ConfirmQuit);
+        layer!(
+            confirm && self.confirm_is_bookmark(),
+            UiLayer::ConfirmBookmark
+        );
+        layer!(confirm && self.confirm_is_drop(), UiLayer::ConfirmDrop);
+        layer!(confirm, UiLayer::ConfirmDelete);
+        layer!(self.dialog_is_preview(), UiLayer::RenamePreview);
+        let input = self.dialog_is_input();
+        layer!(input && self.pending_is_create(), UiLayer::InputCreate);
+        layer!(
+            input && self.pending_is_batch_rename_input(),
+            UiLayer::InputBatchRename
+        );
+        layer!(input && self.pending_is_git_commit(), UiLayer::InputCommit);
+        layer!(
+            input && self.pending_is_git_create_branch(),
+            UiLayer::InputCreateBranch
+        );
+        layer!(
+            input && self.pending_is_worktree_create(),
+            UiLayer::InputCreateWorktree
+        );
+        layer!(input, UiLayer::InputRename);
+
+        // --- Help, above everything but the dialogs ---
+        layer!(self.show_help, UiLayer::Help);
+
+        // --- The git views. The commit detail sits over the log, and the branch panel sits over
+        // the graph (`is_git_graph` is still true underneath it), so each goes before what it covers. ---
+        layer!(self.is_git_detail(), UiLayer::GitDetail);
+        layer!(self.is_git_log(), UiLayer::GitLog);
+        layer!(self.is_git_graph_picker(), UiLayer::GitGraphPicker);
+        layer!(self.is_git_graph(), UiLayer::GitGraph);
+        let branches = self.is_git_branches();
+        layer!(
+            branches && self.git_branch_filtering(),
+            UiLayer::GitBranchFilter
+        );
+        layer!(branches, UiLayer::GitBranches);
+        let worktrees = self.is_git_worktrees();
+        layer!(
+            worktrees && self.git_worktree_filtering(),
+            UiLayer::GitWorktreeFilter
+        );
+        layer!(worktrees, UiLayer::GitWorktrees);
+        layer!(self.is_git_view(), UiLayer::GitChanges);
+        layer!(self.is_git_diff_preview(), UiLayer::GitDiff);
+
+        // --- Input surfaces / menus / lists / popups ---
+        layer!(self.is_filtering(), UiLayer::Filter);
+        layer!(self.is_searching(), UiLayer::Search);
+        layer!(self.is_sort_menu(), UiLayer::Sort);
+        layer!(self.is_marking(), UiLayer::Mark);
+        layer!(self.is_bookmark_list(), UiLayer::Bookmarks);
+        layer!(self.is_tab_list(), UiLayer::Tabs);
+        layer!(self.is_outline(), UiLayer::Outline);
+        layer!(self.is_info(), UiLayer::Info);
+        layer!(self.is_table_cell_open(), UiLayer::TableCell);
+        layer!(self.is_visual(), UiLayer::Visual);
+
+        UiLayer::Base(self.base_layer())
+    }
+
+    /// Internal mode (for the inner chip and footer switching). None if nothing is being operated.
+    /// A projection of the frontmost layer — see [`UiLayer`] for the priority order.
+    pub fn internal_mode(&self) -> Option<InternalMode> {
+        self.frontmost_layer(|_| true).internal_mode()
+    }
+
+    /// The **frontmost surface** that currently receives keys (the single source of truth for Run2
+    /// keymap dispatch). A projection of the frontmost layer that has a surface on this build — see
+    /// [`UiLayer`] for the priority order and [`UiLayer::surface`] for the one case that has none.
     pub fn surface(&self) -> crate::keymap::Surface {
-        use crate::keymap::Surface as S;
-        // The dialog takes top priority (subdivided by kind: input / delete confirm / drop confirm / rename preview).
-        if self.is_dialog() {
-            if self.dialog_is_preview() {
-                return S::DialogRenamePreview;
-            }
-            if self.dialog_is_confirm() {
-                if self.confirm_is_quit() {
-                    return S::DialogConfirmQuit;
-                }
-                if self.confirm_is_bookmark() {
-                    return S::DialogConfirmBookmark;
-                }
-                if self.confirm_is_drop() {
-                    return S::DialogConfirmDrop;
-                }
-                return S::DialogConfirmDelete;
-            }
-            return S::DialogInput;
-        }
-        // Help (above everything else).
-        if self.show_help {
-            return S::Help;
-        }
-        // The Git overlay (detail > log > graph > branches > changes hub > diff). Unreachable when the feature is disabled.
-        #[cfg(feature = "git")]
-        {
-            if self.is_git_detail() {
-                return S::GitDetail;
-            }
-            if self.is_git_log() {
-                return S::GitLog;
-            }
-            // The panel sits over the graph (is_git_graph is also true, so check it first).
-            if self.is_git_graph_picker() {
-                return S::GitGraphPicker;
-            }
-            if self.is_git_graph() {
-                return S::GitGraph;
-            }
-            if self.is_git_branches() {
-                return if self.git_branch_filtering() {
-                    S::BranchFilter
-                } else {
-                    S::GitBranches
-                };
-            }
-            if self.is_git_worktrees() {
-                return if self.git_worktree_filtering() {
-                    S::WorktreeFilter
-                } else {
-                    S::GitWorktrees
-                };
-            }
-            if self.is_git_view() {
-                return S::GitChanges;
-            }
-            if self.is_git_diff_preview() {
-                return S::PreviewGitDiff;
-            }
-        }
-        // Input-type surfaces / menu / list / info / visual.
-        if self.is_filtering() {
-            return S::Filter;
-        }
-        if self.is_searching() {
-            return S::Search;
-        }
-        if self.is_sort_menu() {
-            return S::Sort;
-        }
-        if self.is_marking() {
-            return S::Mark;
-        }
-        if self.is_bookmark_list() {
-            return S::Bookmarks;
-        }
-        if self.is_tab_list() {
-            return S::Tabs;
-        }
-        if self.is_outline() {
-            return S::Outline;
-        }
-        if self.is_info() {
-            return S::Info;
-        }
-        if self.is_table_cell_open() {
-            return S::TableCell;
-        }
-        if self.is_visual() {
-            return S::Visual;
-        }
-        // The base full-screen surfaces (Preview branches into image/text).
-        match self.tab.mode {
-            Mode::Preview => {
-                if self.is_image_preview() {
-                    S::PreviewImage
-                } else if self.is_table_preview() {
-                    S::PreviewTable
-                } else if self.is_preview_visual() {
-                    S::PreviewTextVisual
-                } else {
-                    S::PreviewText
-                }
-            }
-            Mode::Tree => S::Tree,
+        let layer = self.frontmost_layer(|l| l.surface().is_some());
+        match layer.surface() {
+            Some(s) => s,
+            // Unreachable: `frontmost_layer` only returns layers that just answered `Some`, and the
+            // base layer always has a surface. Degrade rather than panic (design principle #3).
+            None => self.base_layer().surface(),
         }
     }
 

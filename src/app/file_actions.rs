@@ -139,6 +139,45 @@ impl App {
             Some(PendingOp::BookmarkOverwrite { .. })
         )
     }
+    /// Whether it is a text-input dialog (the third kind, alongside confirm and the rename preview).
+    pub fn dialog_is_input(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.kind),
+            Some(DialogKind::Input { .. })
+        )
+    }
+    /// The pending operations that give an input dialog its own chip/footer wording (see `UiLayer`);
+    /// any other operation behind an input dialog falls through to the rename wording.
+    pub fn pending_is_create(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::Create { .. })
+        )
+    }
+    pub fn pending_is_batch_rename_input(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::BatchRenameInput { .. })
+        )
+    }
+    pub fn pending_is_git_commit(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::GitCommit)
+        )
+    }
+    pub fn pending_is_git_create_branch(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::GitCreateBranch)
+        )
+    }
+    pub fn pending_is_worktree_create(&self) -> bool {
+        matches!(
+            self.dialog.as_ref().map(|d| &d.op),
+            Some(PendingOp::WorktreeCreate)
+        )
+    }
 
     /// Receive a paste from the terminal (including drag-and-drop). While input is active (dialog input / filter /
     /// search / branch filter), **insert text**; in Tree mode, if the dropped content is an existing path,
