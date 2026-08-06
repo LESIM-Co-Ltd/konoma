@@ -15940,3 +15940,350 @@ fn md_task_toggle_refuses_the_documented_corruption_shape() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// =============================================================================================
+// `collect_all` (the `/` filter's population scan) — syscall-count, behaviour and scaling guards.
+//
+// Why count syscalls rather than time: the walk's cost is dominated by *how many stat calls per
+// entry* it makes, and that is a structural property the code either has or doesn't. A wall-clock
+// bound on the same thing flakes on a shared CI runner (this repo removed all of its timing
+// bounds for exactly that reason), while "zero stats for an ordinary entry" is exact and stable.
+//
+// The counter is thread-local (`test_support::count_stat_calls`), so these exact-count assertions
+// stay valid when the suite runs in parallel.
+//
+// NOTE on what the counter can and cannot see: it counts the walk's *own* stat calls. On a
+// filesystem that does not fill in readdir's `d_type` (so `DirEntry::file_type()` has to lstat
+// internally), the kernel still does a syscall the counter cannot observe. Every filesystem
+// konoma targets in practice (APFS, HFS+, ext4, btrfs, xfs) fills `d_type` in, which is what makes
+// "0" the meaningful number here.
+
+/// Fixture: `n` plain files in one directory. Returns the directory.
+fn stat_fixture_flat(prefix: &str, n: usize) -> PathBuf {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..n {
+        std::fs::write(dir.join(format!("f{i}.rs")), b"x").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn collect_all_costs_no_stat_syscall_for_ordinary_entries() {
+    // The population scan must read the entry kind straight from readdir's d_type
+    // (`DirEntry::file_type`), the same rule `child_meta` already follows on `build_dir`'s side.
+    // Before this guard the scan stat'ed **twice per entry** (symlink_metadata + is_dir), which is
+    // what made pressing `/` on a large tree stall the UI thread.
+    let small = stat_fixture_flat("konoma_collect_stat_small", 20);
+    let large = stat_fixture_flat("konoma_collect_stat_large", 200);
+
+    let (v_small, stats_small) =
+        crate::test_support::count_stat_calls(|| collect_all(&small, false));
+    let (v_large, stats_large) =
+        crate::test_support::count_stat_calls(|| collect_all(&large, false));
+
+    assert_eq!(v_small.len(), 20, "全ファイルを集める");
+    assert_eq!(v_large.len(), 200, "全ファイルを集める");
+    assert_eq!(
+        stats_small, 0,
+        "symlink の無いツリーでは stat は 1 回も要らない"
+    );
+    // The point of the guard: the count must not grow with the tree.
+    assert_eq!(
+        stats_large, 0,
+        "エントリ数が 10 倍でも stat は 0 回のまま(件数に比例して増えてはいけない)"
+    );
+
+    std::fs::remove_dir_all(&small).ok();
+    std::fs::remove_dir_all(&large).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn collect_all_stats_only_symlinks_and_keeps_link_following_is_dir() {
+    // A symlink is the one case that still needs a stat, because `is_dir` must follow the link
+    // (a symlinked directory stays browsable) while descent must not (that's the loop guard).
+    use std::os::unix::fs::symlink;
+    let dir = unique_tmp("konoma_collect_stat_symlink");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("real_dir")).unwrap();
+    std::fs::write(dir.join("real_dir").join("inner.txt"), b"x").unwrap();
+    std::fs::write(dir.join("real_file.txt"), b"x").unwrap();
+    symlink(dir.join("real_dir"), dir.join("link_to_dir")).unwrap();
+    symlink(dir.join("real_file.txt"), dir.join("link_to_file")).unwrap();
+    symlink(dir.join("nope"), dir.join("link_broken")).unwrap();
+
+    let (v, stats) = crate::test_support::count_stat_calls(|| collect_all(&dir, false));
+
+    // Exactly one stat per symlink — and none for the four ordinary entries.
+    assert_eq!(
+        stats, 3,
+        "stat は symlink の本数(3)ぶんだけ: ordinary entry では 0 回"
+    );
+
+    let is_dir_of = |name: &str| {
+        v.iter()
+            .find(|e| e.path.file_name().unwrap() == name)
+            .unwrap_or_else(|| panic!("{name} が見つからない"))
+            .is_dir
+    };
+    // Behaviour must be identical to the old symlink_metadata + is_dir pair.
+    assert!(is_dir_of("real_dir"), "実ディレクトリは is_dir");
+    assert!(
+        is_dir_of("link_to_dir"),
+        "ディレクトリへの symlink はリンク先を追って is_dir=true(従来どおり)"
+    );
+    assert!(!is_dir_of("real_file.txt"), "ファイルは is_dir=false");
+    assert!(
+        !is_dir_of("link_to_file"),
+        "ファイルへの symlink は is_dir=false"
+    );
+    assert!(
+        !is_dir_of("link_broken"),
+        "壊れた symlink は is_dir=false(stat 失敗→false)"
+    );
+    // Descent stops at the symlink: inner.txt appears once (via real_dir), never via link_to_dir.
+    let inner: Vec<_> = v
+        .iter()
+        .filter(|e| e.path.file_name().unwrap() == "inner.txt")
+        .collect();
+    assert_eq!(
+        inner.len(),
+        1,
+        "symlink されたディレクトリには潜らない(ループ防止): inner.txt は real_dir 経由の1件のみ"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn collect_all_does_not_loop_on_a_symlink_cycle() {
+    // The classic reason the walk refuses to follow symlinked directories.
+    use std::os::unix::fs::symlink;
+    let dir = unique_tmp("konoma_collect_symlink_cycle");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a").join("b")).unwrap();
+    // a/b/loop -> a  (following it would recurse forever)
+    symlink(dir.join("a"), dir.join("a").join("b").join("loop")).unwrap();
+
+    let v = collect_all(&dir, false);
+
+    assert!(
+        v.len() < 10,
+        "循環 symlink に入り込まず有限で終わる: got {}",
+        v.len()
+    );
+    assert!(
+        v.iter().any(|e| e.path.file_name().unwrap() == "loop"),
+        "リンク自体は結果に現れる(辿らないだけ)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_all_honors_show_hidden_both_ways() {
+    let dir = unique_tmp("konoma_collect_hidden");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".hidden_dir")).unwrap();
+    std::fs::write(dir.join(".hidden_dir").join("deep.txt"), b"x").unwrap();
+    std::fs::write(dir.join(".dotfile"), b"x").unwrap();
+    std::fs::write(dir.join("visible.txt"), b"x").unwrap();
+
+    let shown = collect_all(&dir, false);
+    let names: Vec<_> = shown
+        .iter()
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["visible.txt"],
+        "隠しは除外し、その中にも潜らない"
+    );
+
+    let all = collect_all(&dir, true);
+    let names: Vec<String> = all
+        .iter()
+        .map(|e| e.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        names.contains(&".dotfile".to_string()),
+        "show_hidden で出る"
+    );
+    assert!(
+        names.contains(&"deep.txt".to_string()),
+        "show_hidden なら隠しディレクトリの中まで辿る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_all_truncates_at_the_cap() {
+    // The production cap is 50,000; the behaviour is exercised through the injected-cap seam so
+    // this doesn't need a 50,000-file fixture (see `collect_all_capped`).
+    assert_eq!(COLLECT_CAP, 50_000, "本番の打ち切り件数");
+    let dir = stat_fixture_flat("konoma_collect_cap", 25);
+
+    let capped = collect_all_capped(&dir, false, 10);
+    assert_eq!(capped.len(), 10, "cap ちょうどで打ち切る");
+    let uncapped = collect_all_capped(&dir, false, 1_000);
+    assert_eq!(uncapped.len(), 25, "cap 以下なら全部返る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_all_returns_ascending_path_order() {
+    let dir = unique_tmp("konoma_collect_order");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("b_dir")).unwrap();
+    std::fs::write(dir.join("b_dir").join("z.txt"), b"x").unwrap();
+    std::fs::write(dir.join("a.txt"), b"x").unwrap();
+    std::fs::write(dir.join("c.txt"), b"x").unwrap();
+
+    let v = collect_all(&dir, false);
+    let paths: Vec<_> = v.iter().map(|e| e.path.clone()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort();
+    assert_eq!(paths, sorted, "パス昇順で返る(表示順の前提)");
+    // Every entry is flat: depth 0, not expanded.
+    assert!(
+        v.iter().all(|e| e.depth == 0 && !e.expanded),
+        "フラット(depth=0/expanded=false)で返る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn collect_all_and_build_dir_agree_on_is_dir() {
+    // Two independent walks decide `is_dir` for the same entries. They must not drift — this is
+    // the guard against "fixed one, forgot the other" (both now share `child_meta`'s rule:
+    // d_type when available, a link-following stat only for symlinks).
+    use std::collections::HashSet;
+    use std::os::unix::fs::symlink;
+    let dir = unique_tmp("konoma_collect_vs_build_dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("plain.txt"), b"x").unwrap();
+    symlink(dir.join("sub"), dir.join("link_dir")).unwrap();
+    symlink(dir.join("plain.txt"), dir.join("link_file")).unwrap();
+    symlink(dir.join("missing"), dir.join("link_dead")).unwrap();
+
+    let mut built = Vec::new();
+    build_dir(&dir, 0, &HashSet::new(), false, Sort::default(), &mut built).unwrap();
+
+    let collected = collect_all(&dir, false);
+    let pick = |v: &[Entry]| -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = v
+            .iter()
+            // build_dir only lists direct children; compare like for like.
+            .filter(|e| e.path.parent() == Some(dir.as_path()))
+            .map(|e| {
+                (
+                    e.path.file_name().unwrap().to_string_lossy().to_string(),
+                    e.is_dir,
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    };
+
+    assert_eq!(
+        pick(&collected),
+        pick(&built),
+        "collect_all と build_dir の is_dir 判定が一致すること(二重実装のドリフト防止)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_all_allocation_scales_linearly() {
+    // Deterministic stand-in for "doesn't blow up": doubling the entry count should roughly double
+    // the allocation, not quadruple it. Same technique as `filter_fuzzy_large_pool_is_bounded`.
+    let small = stat_fixture_flat("konoma_collect_alloc_small", 1_000);
+    let large = stat_fixture_flat("konoma_collect_alloc_large", 2_000);
+    // Warm: first call in the process touches lazily-initialised bits we don't want in the ratio.
+    let _ = collect_all(&small, false);
+
+    let a_small = crate::mem_tests::allocated_by(|| {
+        assert_eq!(collect_all(&small, false).len(), 1_000);
+    });
+    let a_large = crate::mem_tests::allocated_by(|| {
+        assert_eq!(collect_all(&large, false).len(), 2_000);
+    });
+    assert!(
+        a_large < a_small.saturating_mul(3),
+        "2倍の件数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={a_small} large={a_large}"
+    );
+
+    std::fs::remove_dir_all(&small).ok();
+    std::fs::remove_dir_all(&large).ok();
+}
+
+/// Extract one `fn NAME` item's source text from `src/app.rs` (up to the closing brace in column 0).
+/// Panics if the function can't be found, so a rename fails the guard loudly instead of vacuously.
+fn app_rs_fn_source(name: &str) -> String {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("app.rs"),
+    )
+    .expect("src/app.rs を読めない");
+    let start = src
+        .find(&format!("\nfn {name}("))
+        .unwrap_or_else(|| panic!("fn {name} が src/app.rs に見つからない(改名された?)"));
+    let rest = &src[start + 1..];
+    let end = rest
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("fn {name} の終端が見つからない"));
+    rest[..end].to_string()
+}
+
+#[test]
+fn directory_walks_route_every_stat_through_the_counted_choke_point() {
+    // Companion to the count guards above. Those can only see stats that go through
+    // `stat_follow`; a reintroduced *raw* `fs::metadata` / `path.is_dir()` would do a syscall the
+    // counter never observes, so the count guards would pass while the regression was back. This
+    // reads the two walk functions' own source and forbids the raw forms outright, which is what
+    // makes "0 stat calls" a trustworthy statement rather than a bookkeeping artifact.
+    //
+    // `stat_follow` is the single sanctioned door (it bumps the counter, then calls fs::metadata).
+    const FORBIDDEN: &[(&str, &str)] = &[
+        ("fs::metadata(", "stat_follow を使う"),
+        ("fs::symlink_metadata(", "DirEntry::file_type() を使う"),
+        (
+            "path.is_dir()",
+            "内部で stat する: stat_follow か d_type を使う",
+        ),
+        ("path.is_file()", "内部で stat する"),
+        ("path.exists()", "内部で stat する"),
+        (".symlink_metadata()", "DirEntry::file_type() を使う"),
+    ];
+    // Safety valve: prove we actually read the real bodies before asserting absence.
+    for name in ["collect_all_capped", "child_meta", "build_dir"] {
+        let body = app_rs_fn_source(name);
+        assert!(
+            body.len() > 200,
+            "{name} の本文が短すぎる(抽出が壊れている): {} bytes",
+            body.len()
+        );
+        // Both walks must decide "is this a symlink" from the cheap FileType, not from a stat.
+        // (`child_meta` takes the FileType from its caller `build_dir`, so only the two that read
+        // a DirEntry call `file_type()` themselves.)
+        assert!(
+            body.contains("is_symlink") || body.contains("file_type()"),
+            "{name} が FileType ベースの symlink 判定を持っていない(抽出が壊れている?)"
+        );
+        for (bad, why) in FORBIDDEN {
+            assert!(
+                !body.contains(bad),
+                "{name} に生の stat 呼び出し `{bad}` がある({why})。\
+                 walk の stat は必ず stat_follow 経由にすること\
+                 ——さもないと stat 回数ガードが素通りする"
+            );
+        }
+    }
+}

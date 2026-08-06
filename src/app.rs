@@ -4701,12 +4701,21 @@ struct ChildMeta {
     mtime: Option<std::time::SystemTime>,
 }
 
+/// `fs::metadata` (**follows** symlinks), routed through one choke point so the directory walks
+/// below have a single place that can issue a stat — which is what lets the test-only counter in
+/// `test_support` assert "an ordinary entry costs zero stats".
+fn stat_follow(path: &Path) -> Option<std::fs::Metadata> {
+    #[cfg(test)]
+    crate::test_support::note_stat_call();
+    std::fs::metadata(path).ok()
+}
+
 fn child_meta(path: PathBuf, ft: Option<std::fs::FileType>, sort: Sort) -> ChildMeta {
     let need_stat = matches!(sort.key, SortKey::Size | SortKey::Modified);
     let is_symlink = ft.map(|t| t.is_symlink()).unwrap_or(true);
     let (is_dir, size, mtime) = if need_stat || is_symlink {
         // fs::metadata follows symlinks, so a symlink to a directory stays expandable.
-        let md = std::fs::metadata(&path).ok();
+        let md = stat_follow(&path);
         (
             md.as_ref().map(|m| m.is_dir()).unwrap_or(false),
             md.as_ref().map(|m| m.len()).unwrap_or(0),
@@ -4821,20 +4830,29 @@ fn build_dir(
 /// and symlink directories are not descended into (to prevent loops). The scan count is capped as a cost limit.
 /// The return value is in ascending path order (grouped per directory). Each Entry is flat with depth=0 and expanded=false.
 fn collect_all(root: &Path, show_hidden: bool) -> Vec<Entry> {
-    const CAP: usize = 50_000;
+    collect_all_capped(root, show_hidden, COLLECT_CAP)
+}
+
+/// Cost limit for one `collect_all` scan.
+const COLLECT_CAP: usize = 50_000;
+
+/// `collect_all`'s body with the cap injected, so the truncation behaviour can be exercised with a
+/// handful of files instead of a 50,000-entry fixture. Production always goes through `collect_all`.
+fn collect_all_capped(root: &Path, show_hidden: bool, cap: usize) -> Vec<Entry> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        if out.len() >= CAP {
+        if out.len() >= cap {
             break;
         }
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
-        for path in rd.filter_map(|r| r.ok()).map(|e| e.path()) {
-            if out.len() >= CAP {
+        for e in rd.filter_map(|r| r.ok()) {
+            if out.len() >= cap {
                 break;
             }
+            let path = e.path();
             let hidden = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -4843,20 +4861,29 @@ fn collect_all(root: &Path, show_hidden: bool) -> Vec<Entry> {
             if hidden && !show_hidden {
                 continue;
             }
+            // Same rule as `child_meta` on `build_dir`'s side: `DirEntry::file_type` comes from
+            // readdir's d_type, so an ordinary entry costs no stat at all; treat an unavailable
+            // file_type as "symlink", which is conservative because it routes to the stat below.
+            let ft = e.file_type().ok();
+            let is_symlink = ft.map(|t| t.is_symlink()).unwrap_or(true);
             // Don't descend into a symlinked dir (avoids cycles). is_dir follows the link target, so it's judged separately.
-            let is_symlink = std::fs::symlink_metadata(&path)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
-            let is_dir = path.is_dir();
+            let is_dir = if is_symlink {
+                // fs::metadata follows symlinks, so a symlink to a directory still reports is_dir.
+                stat_follow(&path).map(|m| m.is_dir()).unwrap_or(false)
+            } else {
+                ft.map(|t| t.is_dir()).unwrap_or(false)
+            };
+            // Clone only for the minority that gets walked (directories); the entry itself takes
+            // ownership. Cloning unconditionally cost one extra PathBuf allocation per file.
+            if is_dir && !is_symlink {
+                stack.push(path.clone());
+            }
             out.push(Entry {
-                path: path.clone(),
+                path,
                 is_dir,
                 depth: 0,
                 expanded: false,
             });
-            if is_dir && !is_symlink {
-                stack.push(path);
-            }
         }
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));

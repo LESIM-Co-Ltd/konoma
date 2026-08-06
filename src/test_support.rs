@@ -5,7 +5,34 @@
 //! near-identical) copies across `git.rs`, `fileops.rs`, `app/tests.rs`, `mem_tests.rs`,
 //! `main.rs` (as `watch_test_unique_tmp`), and `e2e_tests.rs` (inlined into `sandbox()`).
 
+use std::cell::Cell;
 use std::path::PathBuf;
+
+thread_local! {
+    /// How many stat syscalls the instrumented directory-walk helpers (`app::stat_follow`) issued
+    /// on **this thread**.
+    ///
+    /// Thread-local on purpose. A process-wide `AtomicUsize` would also count the calls made by
+    /// every other test running in parallel, so any assertion on an exact count would pass alone
+    /// and fail in a full run — the exact flake `git::STATUS_CALLS` produced before it was
+    /// switched to a per-run measurement. Each test runs on its own thread, so a thread-local
+    /// counter measures exactly the walk under test. Const-init so touching it never allocates.
+    static STAT_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by the walk helpers right before they issue a stat. Cheap enough to be unconditional in
+/// test builds; compiled out entirely otherwise (the call sites are `#[cfg(test)]`).
+pub(crate) fn note_stat_call() {
+    // `try_with` tolerates thread teardown, matching `mem_tests`' allocator counter.
+    let _ = STAT_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many stat syscalls the walk helpers made while it ran)`.
+pub(crate) fn count_stat_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = STAT_CALLS.with(|c| c.get());
+    let out = f();
+    (out, STAT_CALLS.with(|c| c.get()).saturating_sub(before))
+}
 
 /// A unique temp directory *path* per call (pid + a process-global counter). Tests that build a
 /// fixture under `std::env::temp_dir()` must never use a fixed name: two `cargo test` binaries
