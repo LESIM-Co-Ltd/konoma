@@ -6,6 +6,32 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **`y c` still refused to copy on documents whose code blocks were perfectly ordinary.** The
+  refusal covers the whole file, so one disagreement anywhere silences every code block in it. The
+  renderer does not parse the file — it parses the file after front matter is stripped, footnote
+  definitions are rewritten and inline HTML is mapped onto Markdown — while the scanners parsed the
+  file itself. A footnote definition spanning more than one line was the common trigger: only its
+  first line moved into the footnote section, and the continuation was left behind indented, where
+  it became a code block that exists nowhere in the file (and left the definition's link unclosed).
+  Four crates in a populated registry are affected, including rand_chacha.
+- **Pressing space on a checkbox could tick a different one, silently.** The toggle's guard compared
+  counts and state characters, and preprocessing can add one checkbox to each side at once — a
+  `<br>` conjuring one on screen, a stray footnote continuation exposing one in the source. Counts
+  balanced, states matched, and the write went to the wrong line — one displayed as code — with no
+  warning. Preprocessing now reports where each line came from and the toggle follows that trail to
+  the byte it is about to change, refusing when the trail breaks. No document that could toggle a
+  checkbox before has lost the ability.
+- **An indented code block starting with a tag was not drawn as a code block**, so `    <code>foo</code>`
+  lost its tags and its gutter, and could not be focused or copied at all. Whether a line is code is
+  now decided from the whole document rather than from a fragment that has already had block images
+  lifted out of it.
+- **`<br>` broke out of whatever contained it.** An alert's frame ended mid-box with the fenced block
+  below it leaking out as raw text, and a table row split in two with an empty cell. Across a
+  populated registry this corrects 29 files, including feature tables in `image` and
+  `portable-atomic` that had collapsed to a single row.
+
+
 ## [0.23.5] - 2026-08-06
 
 ### Fixed
