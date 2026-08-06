@@ -70,6 +70,12 @@ All notable changes to konoma are documented in this file. The format is based o
   line was materialized at once, inside the draw call. Opening a 22 MB one-line JSON reached 2.1 GB
   resident; it now stays under 30 MB. Each line is read up to 8 KiB — thousands of columns, far wider
   than any screen — and the rest is skipped. Searching a line stops at the same point.
+- **Pressing `/` on a large tree stalled the interface.** Collecting the pool asked the filesystem
+  about every entry twice; the directory listing already carries what was needed. On a repository
+  whose `target/` alone reaches the 50,000-entry cap this drops from 329ms to 101ms, with no
+  filesystem calls at all for ordinary entries. It is still above the 60ms the interface aims for,
+  which cannot be reached while the walk happens on the drawing thread — that remains open rather
+  than being papered over by lowering the cap.
 - **Checkbox toggling was refused for documents using two spellings GFM allows**: a bullet followed
   by two to four spaces before the checkbox (`*   [ ] task`), and a checkbox with nothing after its
   closing bracket. Both appear in published crates.
