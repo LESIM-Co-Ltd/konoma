@@ -1722,12 +1722,19 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
 /// with the Nth `TaskLoc`, so a toggle edits the right line. Pathological documents could still
 /// disagree — the caller cross-checks count and current state before writing.
 ///
-/// Known, deliberately unhandled gap: `process_inline_html` (run by the caller *before* this scan,
-/// on the same source) turns a `<br>` into a hard line break, which can make the text right after it
-/// *look* like a new task line to the renderer even though it is not one on disk. This scanner has no
-/// way to know that without re-running the same substitution, so it does not special-case it — the
-/// resulting count mismatch just makes the caller's cross-check fail and refuse the toggle (principle
-/// #3: refuse rather than write to the wrong place), it never mis-edits a line.
+/// This scanner knows nothing about the source pre-passes the caller may have run first
+/// (`process_footnotes`, `process_inline_html`), so **which text it is given decides what it means**.
+/// Given the file, it describes the file; given the preprocessed text, it describes the screen.
+///
+/// A previous version of this comment claimed that when the two disagree — a `<br>` making text look
+/// like a task line the file does not contain — "the resulting count mismatch just makes the caller's
+/// cross-check fail and refuse the toggle, it never mis-edits a line". **That was false**, and was
+/// verified false end to end against the released v0.23.5: a document can hide one task line from the
+/// screen and reveal a different one to a scan of the file at the same time, leaving both the count
+/// and the state characters equal while the ordinals refer to different checkboxes, and the toggle
+/// then wrote `x` into a line the reader was not looking at, silently. Counting is not a
+/// correspondence proof. `md_toggle_focused_task` now scans the *rendered* text here and maps each
+/// hit back to a real source line through `LineOrigin`, refusing when no such line exists.
 pub(crate) fn task_source_locs(src: &str, tasks: &[char], details_open: &[bool]) -> Vec<TaskLoc> {
     let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
@@ -3856,12 +3863,35 @@ fn extract_summary_body(inner: &str) -> (String, String) {
         if s < e {
             if let Some(gt) = inner[s..e].find('>') {
                 let sum = strip_inline_html_tags(inner[s + gt + 1..e].trim());
-                let body = inner[e + "</summary>".len()..].trim().to_string();
+                // Trim the blank lines around the body, **not** its indentation. `str::trim` also
+                // eats leading spaces, and when the body's first content is an indented code block
+                // those spaces *are* the block: the four columns disappeared and the code rendered as
+                // an ordinary paragraph, so the screen showed one code block fewer than the source
+                // had and `y c` was refused for the whole document (found while auditing this bug
+                // class, 2026-08; a `<details>` whose body starts with prose was unaffected, which is
+                // why it went unnoticed). A fenced block survives `trim` because its delimiter is not
+                // indentation-sensitive — only the indented kind is.
+                let body = trim_blank_lines(&inner[e + "</summary>".len()..]);
                 return (sum, body);
             }
         }
     }
     (String::new(), inner.trim().to_string())
+}
+
+/// Drop wholly blank lines from both ends of `s`, leaving the surviving lines' own indentation
+/// intact — `str::trim` for a block of Markdown, where leading spaces can be structural.
+fn trim_blank_lines(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty());
+    let Some(start) = start else {
+        return String::new();
+    };
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .unwrap_or(start);
+    lines[start..=end].join("\n")
 }
 
 /// Remove any inline HTML tags from `s`, keeping the text (for a `<summary>` label).
@@ -4047,20 +4077,59 @@ fn replace_tag_pair(s: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
 /// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a hard line break. Code-aware (fenced
 /// **or indented**); a no-op per line without any of these tags. `<mark>`/`<ins>` have no faithful
 /// terminal form and are left to tui-markdown (their tags are stripped, text kept).
+/// Convenience form without origin tracking. Production always goes through
+/// [`process_inline_html_traced`] (it needs the origins); this is the shorthand the tests use.
+#[cfg(test)]
 pub fn process_inline_html(src: &str) -> String {
+    process_inline_html_traced(src, &identity_origin(src)).0
+}
+
+/// For each line of a pre-pass's output, which line of the **body** (the text before any pre-pass
+/// ran) it came from. `None` marks a line no source line can be held responsible for: one a pre-pass
+/// invented outright (the appended footnotes section) or the tail of a line it split in two (the text
+/// after a `<br>`).
+///
+/// This exists so a write-back can prove *correspondence* rather than infer it. The checkbox toggle
+/// edits bytes of the file on disk, but the checkbox it must edit is identified by its position on
+/// screen — i.e. in the preprocessed text. Counting checkboxes on both sides and comparing the totals
+/// looks like a check but is not one: the released build's guards compared count and state character,
+/// and a document that simultaneously hid one checkbox from the screen and revealed a different one
+/// to the scanner satisfied both while the ordinals pointed at different lines, so `Space` silently
+/// wrote `x` into a line the reader was not looking at (verified end to end against v0.23.5). A
+/// per-line origin turns "the Nth of each happens to tally" into "this exact screen line came from
+/// that exact source line", and where no origin exists the toggle refuses instead of guessing.
+pub(crate) type LineOrigin = Vec<Option<usize>>;
+
+/// The identity mapping for a body that has not been through any pre-pass yet.
+pub(crate) fn identity_origin(src: &str) -> LineOrigin {
+    (0..src.lines().count()).map(Some).collect()
+}
+
+/// [`process_inline_html`] that also composes the line origins (see [`LineOrigin`]). A `<br>` is the
+/// only substitution that adds lines: the fragment before it keeps the origin, everything after it
+/// gets `None`, because that text was never a line of its own in the file and so has no line whose
+/// bytes a write-back could target.
+pub(crate) fn process_inline_html_traced(
+    src: &str,
+    origin_in: &[Option<usize>],
+) -> (String, LineOrigin) {
     let mut out = String::new();
+    let mut origin = LineOrigin::new();
     let lines: Vec<&str> = src.lines().collect();
     let in_code = literal_code_mask(&lines);
     for (i, line) in lines.iter().enumerate() {
         let line = *line;
+        let src_line = origin_in.get(i).copied().flatten();
         if in_code[i] {
             out.push_str(line);
             out.push('\n');
+            origin.push(src_line);
             continue;
         }
         if !line.contains('<') {
             out.push_str(line);
             out.push('\n');
+            origin.push(src_line);
             continue;
         }
         // Inline code spans are literal: `` `<kbd>x</kbd>` `` is documentation *of* the tag, not a
@@ -4081,8 +4150,12 @@ pub fn process_inline_html(src: &str) -> String {
         });
         out.push_str(&s);
         out.push('\n');
+        // Only the first fragment still starts where the source line started; a `<br>` tail is new
+        // text at a position no source line owns.
+        origin.push(src_line);
+        origin.extend(std::iter::repeat_n(None, s.matches('\n').count()));
     }
-    out
+    (out, origin)
 }
 
 // ---- Footnotes (`text[^1]` … `[^1]: definition`) ----
@@ -4094,6 +4167,135 @@ fn to_superscript(n: usize) -> String {
         .chars()
         .map(|c| SUP[c.to_digit(10).unwrap_or(0) as usize])
         .collect()
+}
+
+/// One footnote definition as the parser delimits it: the id, the definition's full text (label
+/// stripped, continuation lines kept and dedented to their own left margin), and the half-open range
+/// of source lines it occupies.
+struct FootnoteDef {
+    id: String,
+    text: String,
+    lines: std::ops::Range<usize>,
+}
+
+/// Parse options for locating footnote definitions. Deliberately a *separate* value from
+/// [`tui_markdown_parse_options`] — enabling `ENABLE_FOOTNOTES` there would change what the renderer
+/// itself parses, and the whole point of `process_footnotes` is that footnotes are rewritten into
+/// plain Markdown *before* the renderer ever sees them.
+fn footnote_parse_options() -> ParseOptions {
+    let mut o = tui_markdown_parse_options();
+    o.insert(ParseOptions::ENABLE_FOOTNOTES);
+    o
+}
+
+/// Every footnote definition in `lines`, **asking pulldown-cmark** rather than re-deriving GFM's
+/// continuation rules.
+///
+/// Root cause this replaced (2026-08, reported by a user on the released build): definitions were
+/// matched one line at a time, so only the *first* line of a multi-line definition was moved into
+/// the footnotes section. Everything after it stayed in the body — and since a continuation is
+/// indented, it landed there as a **phantom indented code block**, while the footnote itself was left
+/// truncated mid-syntax (rand_chacha's README ends up showing an unclosed `[label](` and a stray
+/// code block containing the URL). The count of code blocks on screen then disagreed with the source
+/// scanner's, so `y c` was refused for the whole document.
+///
+/// Getting this right by hand means implementing container-relative indentation, lazy continuation
+/// and blank-line-separated paragraphs inside a definition — i.e. re-implementing the block parser,
+/// which is exactly the drift this module keeps regressing on (see [`splitter_code_mask`]). So the
+/// definition's extent is the parser's answer, and only the parts the parser cannot tell us — which
+/// lines konoma itself will draw as literal code — stay local, via [`literal_code_mask`]: a
+/// definition the union mask calls code is dropped, so a `[^1]:` inside a fence that only konoma's
+/// own splitting makes literal (see that mask's doc comment) is still left verbatim.
+fn footnote_defs(lines: &[&str], in_code: &[bool]) -> Vec<FootnoteDef> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let text = lines.join("\n");
+    // `starts[i]` = byte offset of line `i` in `text`; the trailing sentinel is one past where a
+    // line after the last would start. Mirrors `code_block_mask`'s mapping exactly.
+    let mut starts = Vec::with_capacity(lines.len() + 1);
+    let mut pos = 0usize;
+    for line in lines {
+        starts.push(pos);
+        pos += line.len() + 1;
+    }
+    starts.push(pos);
+
+    let mut out: Vec<FootnoteDef> = Vec::new();
+    let mut depth = 0usize;
+    let mut open: Option<(String, usize)> = None;
+    for (ev, range) in Parser::new_ext(&text, footnote_parse_options()).into_offset_iter() {
+        match ev {
+            Event::Start(Tag::FootnoteDefinition(name)) => {
+                // Only the outermost definition matters: a definition nested inside another is part
+                // of that one's body and moves with it.
+                if depth == 0 {
+                    open = Some((name.to_string(), range.start));
+                }
+                depth += 1;
+            }
+            Event::End(TagEnd::FootnoteDefinition) => {
+                depth = depth.saturating_sub(1);
+                if depth > 0 {
+                    continue;
+                }
+                let Some((id, start)) = open.take() else {
+                    continue;
+                };
+                let lo = starts.partition_point(|&s| s <= start).saturating_sub(1);
+                let hi = starts[..lines.len()].partition_point(|&s| s < range.end);
+                if lo >= hi || hi > lines.len() {
+                    continue;
+                }
+                // The parser's range runs to the end of the blank lines that terminate the
+                // definition; those are not part of it.
+                let mut end = hi;
+                while end > lo + 1 && lines[end - 1].trim().is_empty() {
+                    end -= 1;
+                }
+                if in_code[lo..end].iter().any(|&c| c) {
+                    continue; // literal code as konoma draws it — leave the whole run alone
+                }
+                let Some(text) = footnote_def_text(&lines[lo..end]) else {
+                    continue;
+                };
+                out.push(FootnoteDef {
+                    id,
+                    text,
+                    lines: lo..end,
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The definition's own text: the `[^id]:` label stripped off the first line, and the continuation
+/// lines dedented by their common left margin so the text can be re-indented under a list marker
+/// when the footnotes section is emitted. Returns `None` if the first line is not a definition
+/// (defensive — the parser said it was).
+fn footnote_def_text(block: &[&str]) -> Option<String> {
+    let (_, first) = parse_footnote_def(block.first()?)?;
+    let rest = &block[1..];
+    // Common indent over the non-blank continuation lines. A lazy continuation (indent 0) makes this
+    // 0 and the lines are used as-is.
+    let indent = rest
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut text = first;
+    for l in rest {
+        text.push('\n');
+        if l.trim().is_empty() {
+            continue; // a blank line separating paragraphs inside the definition carries no indent
+        }
+        text.push_str(&l[indent.min(l.len() - l.trim_start().len())..]);
+    }
+    Some(text)
 }
 
 /// If the line is a footnote definition `[^id]: text`, return `(id, text)`.
@@ -4176,27 +4378,42 @@ fn replace_footnote_refs_outside_code(
 /// first appearance), the `[^id]: …` definitions are pulled out of the body, and a numbered
 /// footnotes section is appended after a rule. Code-aware (fenced **or indented**) — refs/defs
 /// inside a code block are left verbatim. A no-op (returns `src` unchanged) when there are no
-/// definitions. Single-line definitions only.
+/// definitions.
+///
+/// A definition may span several lines: its continuation lines (indented, lazy, or further
+/// paragraphs) are part of it and move into the section with it, so a reference-style link split
+/// across two lines stays a single working link. The extent of each definition comes from
+/// [`footnote_defs`] — the parser's answer — rather than a line-shaped guess here; see that
+/// function's doc comment for the bug that motivated it.
+/// Convenience form without origin tracking. Production always goes through
+/// [`process_footnotes_traced`] (it needs the origins); this is the shorthand the tests use.
+#[cfg(test)]
 pub fn process_footnotes(src: &str) -> String {
+    process_footnotes_traced(src, &identity_origin(src)).0
+}
+
+/// [`process_footnotes`] that also composes the line origins (see [`LineOrigin`]). Definition lines
+/// disappear from the body, so nothing maps to them; the appended footnotes section is new text and
+/// maps to nothing. Every other line keeps its origin, since reference rewriting is in place.
+pub(crate) fn process_footnotes_traced(
+    src: &str,
+    origin_in: &[Option<usize>],
+) -> (String, LineOrigin) {
     use std::collections::HashMap;
     let lines: Vec<&str> = src.lines().collect();
     // Per-line "is this literal code on screen" mask (`literal_code_mask`) — all three passes below
     // just need to know, per line, whether to skip/echo it verbatim.
     let in_code = literal_code_mask(&lines);
-    // Pass 1: collect definitions (code-aware) and mark their lines.
+    // Pass 1: collect definitions (code-aware) and mark **every** line each one occupies.
+    let found = footnote_defs(&lines, &in_code);
     let mut defs: Vec<(String, String)> = Vec::new();
     let mut is_def = vec![false; lines.len()];
-    for (i, line) in lines.iter().enumerate() {
-        if in_code[i] {
-            continue;
-        }
-        if let Some((id, text)) = parse_footnote_def(line) {
-            defs.push((id, text));
-            is_def[i] = true;
-        }
+    for d in &found {
+        defs.push((d.id.clone(), d.text.clone()));
+        is_def[d.lines.clone()].fill(true);
     }
     if defs.is_empty() {
-        return src.to_string();
+        return (src.to_string(), origin_in.to_vec());
     }
     let def_ids: std::collections::HashSet<&str> = defs.iter().map(|(id, _)| id.as_str()).collect();
     // Pass 2: number by first reference appearance (code-aware, defs excluded).
@@ -4214,21 +4431,25 @@ pub fn process_footnotes(src: &str) -> String {
         }
     }
     if num.is_empty() {
-        return src.to_string(); // definitions present but never referenced → leave as-is
+        // definitions present but never referenced → leave as-is
+        return (src.to_string(), origin_in.to_vec());
     }
     // Pass 3: rebuild the body (drop def lines, replace refs; code blocks verbatim).
     let mut out = String::new();
+    let mut origin = LineOrigin::new();
     for (i, line) in lines.iter().enumerate() {
         if in_code[i] {
             out.push_str(line);
             out.push('\n');
+            origin.push(origin_in.get(i).copied().flatten());
             continue;
         }
         if is_def[i] {
-            continue;
+            continue; // moved into the section below — no line of the output maps here
         }
         out.push_str(&replace_footnote_refs(line, &num));
         out.push('\n');
+        origin.push(origin_in.get(i).copied().flatten());
     }
     // Append the footnotes section, numbered by reference order.
     let mut items: Vec<(usize, &str)> = num
@@ -4243,11 +4464,32 @@ pub fn process_footnotes(src: &str) -> String {
         })
         .collect();
     items.sort_by_key(|(n, _)| *n);
+    // Everything from here on is text this pass invented: no line of the file corresponds to it, so
+    // a write-back must never be pointed at one (see `LineOrigin`).
+    let body_end = out.len();
     out.push_str("\n---\n\n");
     for (n, text) in items {
-        out.push_str(&format!("{n}. {text}\n"));
+        // A multi-line definition has to stay *inside* its numbered item. Leaving the continuation
+        // flush-left would work for the first item by lazy continuation, but the next item's marker
+        // (`2.`) cannot interrupt a paragraph in CommonMark — only a `1.` can — so item 2 onwards
+        // would be swallowed into item 1's text. Indenting to the marker's content column makes each
+        // continuation an unambiguous part of its own item, whatever the item's number is.
+        let marker = format!("{n}. ");
+        let pad = " ".repeat(marker.len());
+        out.push_str(&marker);
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+                if !line.is_empty() {
+                    out.push_str(&pad);
+                }
+            }
+            out.push_str(line);
+        }
+        out.push('\n');
     }
-    out
+    origin.extend(std::iter::repeat_n(None, out[body_end..].lines().count()));
+    (out, origin)
 }
 
 // ---- YAML front matter (leading `---` … `---`) ----
@@ -10275,6 +10517,428 @@ mod mask_boundary_tests {
                     fm[i] || cbm[i],
                     "{}: line {i} literal_code_mask must equal fence_mask OR code_block_mask",
                     r.name
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod preprocess_corpus {
+    /// Documents exercising the **source pre-passes** — `process_footnotes` and
+    /// `process_inline_html` — and their interaction with every construct the renderer treats
+    /// specially. Sibling of `task_corpus` / `code_corpus`, and built the same way: from the case
+    /// split the *specification* implies, not from the list of bugs already met.
+    ///
+    /// Why this axis needed its own corpus (2026-08, reported by a user on the released build): the
+    /// existing corpora hand one text to the renderer and the same text to the scanner, so they can
+    /// only ever catch the two disagreeing *about identical input*. Production does not do that. The
+    /// renderer draws the text these pre-passes produce while the scanners read the file, and every
+    /// disagreement about **which text** is being described is invisible to a same-text parity test
+    /// by construction. `rand_chacha`'s README — a footnote definition wrapped over two lines — was
+    /// refused by `y c` in the wild for exactly that reason, and no test could have seen it.
+    ///
+    /// The axes are: definition shape (single line / continued at 2, 4 and 6 columns / lazy / several
+    /// paragraphs / carrying a fence, a list or a checkbox), reference shape (defined, undefined,
+    /// duplicated, inside a code span), the tags `process_inline_html` rewrites (`<br>` and its
+    /// spellings — the only one that adds a line — plus `<kbd>`, `<del>`, `<s>`, `<strike>`, `<sup>`,
+    /// `<sub>`), where each sits relative to a code block or a checkbox, the containers (list, nested
+    /// list, quote, alert, `<details>` open and closed), and the text-level axes that have bitten
+    /// this module before: front matter, CRLF, a missing trailing newline, and CJK — including CJK
+    /// inside angle brackets, which is what the reporting user's own payload contained.
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            // ---- footnote definition shapes ----
+            ("def single line", "Ref[^a].\n\n[^a]: one line.\n"),
+            ("def continued 2 cols", "Ref[^a].\n\n[^a]: first\n  second\n"),
+            ("def continued 4 cols", "Ref[^a].\n\n[^a]: first\n    second\n"),
+            // The exact shape rand_chacha/rand_xorshift use: a link split across two lines, the
+            // continuation indented past the indented-code threshold.
+            (
+                "def continued 6 cols with a wrapped link",
+                "Ref[^a].\n\n[^a]: [label](\n      https://example.com/x)\n",
+            ),
+            ("def lazy continuation", "Ref[^a].\n\n[^a]: first\nsecond\n"),
+            (
+                "def with two paragraphs",
+                "Ref[^a].\n\n[^a]: first\n\n    second para\n",
+            ),
+            (
+                "def carrying a fence",
+                "Ref[^a].\n\n[^a]: see\n\n    ```rust\n    fn a() {}\n    ```\n",
+            ),
+            (
+                "def carrying a list",
+                "Ref[^a].\n\n[^a]: see\n\n    - one\n    - two\n",
+            ),
+            (
+                "def carrying a checkbox",
+                "Ref[^a].\n\n[^a]: see\n\n    - [ ] inside the note\n",
+            ),
+            (
+                "two defs both continued",
+                "A[^a] and B[^b].\n\n[^a]: first\n      more\n\n[^b]: second\n      more\n",
+            ),
+            ("def never referenced", "No reference here.\n\n[^a]: orphan\n"),
+            ("ref with no def", "Dangling[^zz] reference.\n"),
+            ("same ref twice", "One[^a] two[^a].\n\n[^a]: shared\n"),
+            (
+                "ref inside a code span stays literal",
+                "Text `[^a]` literal.\n\n[^a]: def\n",
+            ),
+            (
+                "def inside a fence stays literal",
+                "```\n[^a]: not a def\n```\n\nRef[^a].\n",
+            ),
+            (
+                "def inside indented code stays literal",
+                "para\n\n    [^a]: not a def\n\nRef[^a].\n",
+            ),
+            // ---- footnotes next to a code block ----
+            (
+                "continued def before a fence",
+                "Ref[^a].\n\n[^a]: first\n      more\n\n```\ncode\n```\n",
+            ),
+            (
+                "continued def after a fence",
+                "```\ncode\n```\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "continued def before indented code",
+                "Ref[^a].\n\n[^a]: first\n      more\n\npara\n\n    indented\n",
+            ),
+            (
+                "continued def between two fences",
+                "```\none\n```\n\nRef[^a].\n\n[^a]: first\n      more\n\n~~~\ntwo\n~~~\n",
+            ),
+            // ---- inline HTML: <br> (the only tag that adds a line) ----
+            ("br plain", "before<br>after\n"),
+            ("br slash", "before<br/>after\n"),
+            ("br spaced slash", "before<br />after\n"),
+            ("br uppercase", "before<BR>after\n"),
+            ("br making a list interrupt a paragraph", "prose<br>- [ ] injected\n"),
+            ("br before a fence", "prose<br>more\n\n```\ncode\n```\n"),
+            ("br after a fence", "```\ncode\n```\n\nprose<br>more\n"),
+            ("br inside a fence is literal", "```\na<br>b\n```\n"),
+            ("br inside indented code is literal", "para\n\n    a<br>b\n"),
+            ("br inside a code span is literal", "text `a<br>b` more\n"),
+            ("br on a checkbox line", "- [ ] task<br>tail\n"),
+            // ---- inline HTML: the paired tags ----
+            ("kbd", "Press <kbd>Ctrl</kbd> now.\n"),
+            ("kbd inside a code span is literal", "Write `<kbd>Ctrl</kbd>` so.\n"),
+            ("del", "This <del>was</del> that.\n"),
+            ("s tag", "This <s>was</s> that.\n"),
+            ("strike tag", "This <strike>was</strike> that.\n"),
+            ("sup", "x<sup>2</sup>\n"),
+            ("sub", "H<sub>2</sub>O\n"),
+            ("empty del makes tildes", "a<del></del>b\n"),
+            // `<del></del>` alone on a line rewrites to `~~~~`, which *is* a tilde fence opener: the
+            // preprocessed text has a code block the file does not. The mirror image of the footnote
+            // phantom, and the reason the copy scanner has to read the renderer's text rather than
+            // the file even once multi-line definitions are handled correctly.
+            ("empty del alone becomes a fence opener", "before\n\n<del></del>\n\nafter\n"),
+            // A `<br>` inside an alert injects a line with no `>` prefix, which ends the callout
+            // early: the fence below it is drawn as literal text, so the screen has *fewer* code
+            // blocks than the file does.
+            (
+                "br ending an alert early above a fence",
+                "> [!NOTE]\n> Some prose with <br> inline text.\n>\n> ```\n> code line one\n> ```\n",
+            ),
+            ("kbd on a checkbox line", "- [ ] press <kbd>x</kbd>\n"),
+            ("kbd before a fence", "<kbd>x</kbd>\n\n```\ncode\n```\n"),
+            ("paired tag inside a fence is literal", "```\n<kbd>x</kbd>\n```\n"),
+            // ---- footnote reference on a checkbox line (the tail gets rewritten) ----
+            ("checkbox carrying a ref", "- [ ] task[^a]\n\n[^a]: note\n"),
+            (
+                "checkbox carrying a ref and a continued def",
+                "- [ ] task[^a]\n\n[^a]: note\n      more\n",
+            ),
+            // ---- containers ----
+            (
+                "continued def inside a list item",
+                "- item\n\n  Ref[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "continued def inside a nested list item",
+                "- outer\n  - inner Ref[^a].\n\n[^a]: first\n      more\n",
+            ),
+            ("br inside a list item", "- item<br>tail\n"),
+            ("br inside a nested list item", "- outer\n  - inner<br>tail\n"),
+            ("br inside a quote", "> quoted<br>tail\n"),
+            ("br inside an alert", "> [!NOTE]\n> quoted<br>tail\n"),
+            (
+                "continued def inside a quote",
+                "> Ref[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "alert with a fence and a continued def after it",
+                "> [!NOTE]\n> ```\n> code\n> ```\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "open details with a fence and a continued def",
+                "<details open>\n<summary>S</summary>\n\n```\ncode\n```\n\n</details>\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "closed details with a fence and a continued def",
+                "<details>\n<summary>S</summary>\n\n```\ncode\n```\n\n</details>\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            ("br inside an open details", "<details open>\n<summary>S</summary>\n\nprose<br>tail\n\n</details>\n"),
+            // An indented code block as the *first* content of an open `<details>` body: the body is
+            // peeled out of the tags before being re-parsed, and trimming that fragment used to eat
+            // the four columns that make it code at all.
+            (
+                "open details whose body starts with indented code",
+                "<details open>\n<summary>S</summary>\n\n    indented line\n\n</details>\n",
+            ),
+            (
+                "open details with prose before indented code",
+                "<details open>\n<summary>S</summary>\n\nprose first.\n\n    indented line\n\n</details>\n",
+            ),
+            (
+                "checkbox in an alert plus a continued def",
+                "> [!NOTE]\n> - [ ] task\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            // ---- text-level axes ----
+            (
+                "front matter then a continued def",
+                "---\ntitle: t\n---\n\nRef[^a].\n\n[^a]: first\n      more\n",
+            ),
+            (
+                "front matter then br",
+                "---\ntitle: t\n---\n\nprose<br>tail\n",
+            ),
+            ("crlf with a continued def", "Ref[^a].\r\n\r\n[^a]: first\r\n      more\r\n"),
+            ("crlf with br", "prose<br>tail\r\n"),
+            ("no trailing newline continued def", "Ref[^a].\n\n[^a]: first\n      more"),
+            ("no trailing newline br", "prose<br>tail"),
+            // ---- CJK, including inside angle brackets (the reporting user's own payload) ----
+            ("cjk continued def", "参照[^a]。\n\n[^a]: 最初の行\n      続きの行\n"),
+            ("cjk br", "前<br>後\n"),
+            ("cjk checkbox with a ref", "- [ ] やること[^a]\n\n[^a]: 注記\n"),
+            (
+                "angle brackets holding cjk next to a fence",
+                "Use <仕様書> and <資料dir>.\n\n```\n/groundwork <仕様書> <NotionURL> <資料dir>\n```\n",
+            ),
+            (
+                "angle brackets holding cjk with a continued def",
+                "Use <仕様書>[^a].\n\n[^a]: <NotionURL> の説明\n      続き\n",
+            ),
+            (
+                "cjk fence plus br plus continued def",
+                "前<br>後\n\n```\n/groundwork <仕様書> <NotionURL> <資料dir>\n```\n\n参照[^a]。\n\n[^a]: 注記\n      続き\n",
+            ),
+            // ---- the four real registry files, reduced to their essence ----
+            (
+                "rand_chacha readme shape",
+                "ChaCha[^1], used as an RNG.\n\nselected by eSTREAM[^2].\n\nLinks:\n\n-   [API](https://docs.rs/rand_chacha)\n\n[rand]: https://crates.io/crates/rand\n[^1]: D. J. Bernstein, [*ChaCha*](\n      https://cr.yp.to/chacha.html)\n\n[^2]: [eSTREAM](\n      http://www.ecrypt.eu.org/stream/)\n\n\n## Crate Features\n",
+            ),
+            (
+                "shlex quoting_warning shape",
+                "Text[^1] with a fence.\n\n```sh\necho hi\n```\n\n[^1]: A note that wraps\n      onto a second line.\n",
+            ),
+            // A second corruption shape, and the one that survives the multi-line-footnote fix: the
+            // `~~~~` that `<del></del>` becomes swallows the checkbox below it into a code block, so
+            // the file has a checkbox the screen does not draw, while the `<br>` above gives the
+            // screen one the file does not have. The two cancel in any count, and both are unchecked,
+            // so a count-and-state guard writes to the swallowed line.
+            (
+                "br injected checkbox above a del-fence swallowed one",
+                "prose<br>- [ ] INJECTED\n\n<del></del>\n\n- [ ] SWALLOWED\n",
+            ),
+            // ---- the confirmed corruption document (see md_tasks.rs) ----
+            (
+                "footnote leftover plus br injected checkbox",
+                "[^1]: def text\n    - [ ] LEFTOVER\n\n- [ ] REAL\n\nprose<br>- [ ] INJECTED\n\nSee[^1].\n",
+            ),
+        ]
+    }
+}
+
+/// Parity between what the renderer draws and what the source scanners find, measured **the way the
+/// application actually wires them** — the renderer over the preprocessed text, each scanner over
+/// the text its production call site really reads.
+///
+/// This module exists because the older parity tests (`mod task_scan_parity_tests`) hand the *same*
+/// string to both sides. That pins a real and still-needed invariant — the renderer and the scanners
+/// must agree about identical input — but it is structurally blind to the failure this module
+/// covers, where the two sides are handed *different* strings and each is internally consistent. The
+/// released build refused `y c` on four real crate READMEs, and silently toggled the wrong checkbox
+/// on a constructed document, entirely inside that blind spot.
+#[cfg(test)]
+mod app_faithful_parity_tests {
+    use super::*;
+
+    /// The chain `App::build_decorated` applies before handing the text to the renderer, with the
+    /// per-line origins it keeps (default config: front matter, footnotes and inline HTML all on).
+    fn app_pre(raw: &str) -> (String, LineOrigin) {
+        let body = strip_front_matter(raw).1;
+        let origin = identity_origin(&body);
+        let (s, origin) = process_footnotes_traced(&body, &origin);
+        process_inline_html_traced(&s, &origin)
+    }
+
+    fn drawn_code(src: &str) -> usize {
+        set_details_open(Vec::new());
+        let (lines, _) = render_markdown_with_images(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_code_header_span(s))
+            .count()
+    }
+
+    fn drawn_tasks(src: &str) -> usize {
+        set_details_open(Vec::new());
+        let lines = render_markdown_tasks(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+        );
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_task_span(s))
+            .count()
+    }
+
+    /// Corpus cases where a pre-pass genuinely adds or removes a code block, so the preprocessed
+    /// text and the file legitimately describe different sets. Each one is a real, understood
+    /// rewrite — not a tolerance: this list is what keeps
+    /// `copying_from_the_preprocessed_text_yields_the_files_own_bytes` from quietly accepting the
+    /// next unnoticed instance of the same class.
+    const CHANGES_THE_BLOCK_SET: &[&str] = &[
+        // `<del></del>` alone on a line becomes `~~~~`, opening a fence the file has no trace of.
+        "empty del alone becomes a fence opener",
+        // Same rewrite, this time swallowing a checkbox into the fence it opens.
+        "br injected checkbox above a del-fence swallowed one",
+        // A `<br>` inside an alert emits a line with no `>` prefix, ending the callout early, so the
+        // fence beneath it stops being drawn as a code block at all.
+        "br ending an alert early above a fence",
+    ];
+
+    /// Every corpus this crate has, run through the app's real wiring.
+    fn all_cases() -> Vec<(&'static str, &'static str)> {
+        let mut v = preprocess_corpus::cases();
+        v.extend(code_corpus::cases());
+        v.extend(task_corpus::cases());
+        v
+    }
+
+    /// `y c`: the number of code blocks the copy scanner finds must equal the number of headers on
+    /// screen. Since `focused_code_source` now scans `md_cache.pre_src`, both sides are measured over
+    /// the preprocessed text — which is the point: the two can no longer be given different input.
+    #[test]
+    fn code_scanner_matches_the_render_through_the_app_pipeline() {
+        for (name, raw) in all_cases() {
+            let (pre, _) = app_pre(raw);
+            let drawn = drawn_code(&pre);
+            let scanned = code_block_source_locs(&pre, &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: アプリ経路で画面のコードブロック数とコピー用スキャナの数が食い違う\
+                 (この文書では `y c` が全部拒否される)\n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
+            );
+        }
+    }
+
+    /// The same for the checkbox toggle's screen-parity half.
+    #[test]
+    fn task_scanner_matches_the_render_through_the_app_pipeline() {
+        for (name, raw) in all_cases() {
+            let (pre, _) = app_pre(raw);
+            let drawn = drawn_tasks(&pre);
+            let scanned = task_source_locs(&pre, &[' ', 'x'], &[]).len();
+            assert_eq!(
+                drawn, scanned,
+                "{name}: アプリ経路で画面のチェックボックス数と書き戻しスキャナの数が食い違う\
+                 \n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
+            );
+        }
+    }
+
+    /// What `y c` puts on the clipboard must still be the file's own bytes. The pre-passes all gate
+    /// on `literal_code_mask`, so a code block's contents are left verbatim; scanning the
+    /// preprocessed text therefore yields the same strings as scanning the raw body — for every case
+    /// where the two texts describe the same set of blocks.
+    ///
+    /// The one case that legitimately differs is asserted explicitly rather than skipped: a fence
+    /// carried *inside* a footnote definition moves, with the definition, into the appended section,
+    /// so it exists on screen (and in `pre`) while the raw body's scan sees it at its old position —
+    /// same content, and that is what is checked.
+    #[test]
+    fn copying_from_the_preprocessed_text_yields_the_files_own_bytes() {
+        for (name, raw) in all_cases() {
+            let (pre, _) = app_pre(raw);
+            let body = strip_front_matter(raw).1;
+            let from_pre = code_block_source_locs(&pre, &[]);
+            let from_raw = code_block_source_locs(&body, &[]);
+            if from_pre.len() != from_raw.len() {
+                // A pre-pass may legitimately create or destroy a block, but only in ways we have
+                // identified and can name. Anything else changing the block set is a new instance of
+                // this bug class and must fail here rather than pass quietly.
+                assert!(
+                    CHANGES_THE_BLOCK_SET.contains(&name),
+                    "{name}: 前処理がコードブロックの集合を変えたが既知の理由が無い\
+                     (この類型の新しい実例の可能性)\n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
+                );
+                continue;
+            }
+            assert_eq!(
+                from_pre, from_raw,
+                "{name}: 前処理の有無でコピーされる中身がバイト単位で変わる\
+                 \n--- raw ---\n{raw}"
+            );
+        }
+    }
+
+    /// The invariant that makes a wrong write impossible: every checkbox on screen either resolves to
+    /// a real line of the file whose bytes up to and including the state character are identical, or
+    /// does not resolve at all — in which case `md_toggle_focused_task` refuses. There is no third
+    /// outcome, and in particular no outcome in which a resolved line is a *different* line than the
+    /// one drawn.
+    #[test]
+    fn every_drawn_checkbox_either_resolves_exactly_or_not_at_all() {
+        for (name, raw) in all_cases() {
+            let (pre, origin) = app_pre(raw);
+            let body = strip_front_matter(raw).1;
+            let body_lines: Vec<&str> = body.lines().collect();
+            let pre_lines: Vec<&str> = pre.lines().collect();
+            for l in task_source_locs(&pre, &[' ', 'x'], &[]) {
+                let Some(src_line) = origin.get(l.line).copied().flatten() else {
+                    continue; // invented by a pre-pass → the toggle refuses
+                };
+                let end = l.state_off + l.state.len_utf8();
+                let (Some(on_screen), Some(on_disk)) = (
+                    pre_lines.get(l.line).and_then(|x| x.get(..end)),
+                    body_lines.get(src_line).and_then(|x| x.get(..end)),
+                ) else {
+                    continue; // prefix not comparable → the toggle refuses
+                };
+                if on_screen != on_disk {
+                    continue; // prefix differs → the toggle refuses
+                }
+                // Resolved: the byte the toggle would replace really is a checkbox state character.
+                assert_eq!(
+                    body_lines[src_line][l.state_off..end].chars().next(),
+                    Some(l.state),
+                    "{name}: 解決した行の書き込み位置が状態文字ではない\
+                     \n--- raw ---\n{raw}"
                 );
             }
         }

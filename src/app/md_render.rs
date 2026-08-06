@@ -125,6 +125,8 @@ impl App {
             fence_rows,
             anchors,
             details_states: crate::preview::markdown::current_details_states(),
+            pre_src: decorated.pre_src,
+            pre_origin: decorated.pre_origin,
         });
     }
 
@@ -296,6 +298,8 @@ impl App {
                     mermaid_fences: Vec::new(),
                     math_exprs: Vec::new(),
                     src_lines: 0,
+                    pre_src: String::new(),
+                    pre_origin: Vec::new(),
                 }
             }
         };
@@ -326,17 +330,25 @@ impl App {
                 };
                 // Footnotes: rewrite `[^1]` refs to superscripts and pull `[^1]: …` defs into a
                 // section at the end (fence-aware; no-op without definitions).
-                let src = if self.cfg.ui.md_footnotes {
-                    crate::preview::markdown::process_footnotes(&src)
+                // Each pre-pass also reports, per output line, which body line it came from, so the
+                // checkbox toggle can prove the checkbox it is about to edit really is the one on
+                // screen instead of trusting that the two counts tally (see `markdown::LineOrigin`).
+                let origin = crate::preview::markdown::identity_origin(&src);
+                let (src, origin) = if self.cfg.ui.md_footnotes {
+                    crate::preview::markdown::process_footnotes_traced(&src, &origin)
                 } else {
-                    src
+                    (src, origin)
                 };
                 // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode tui-markdown renders.
-                let src = if self.cfg.ui.md_inline_html {
-                    crate::preview::markdown::process_inline_html(&src)
+                let (src, origin) = if self.cfg.ui.md_inline_html {
+                    crate::preview::markdown::process_inline_html_traced(&src, &origin)
                 } else {
-                    src
+                    (src, origin)
                 };
+                // Preprocessing is done: from here on `src` is exactly what the renderer parses.
+                // Keep it so the source scanners (`y c`, the checkbox toggle) can read the very same
+                // string instead of re-deriving this chain from the file — see `MdCache::pre_src`.
+                let pre_src = src.clone();
                 // Compute each `<details>` block's effective open/closed state and pass it to the
                 // renderer (thread-local) + stash it so ensure_md_cache can load it onto MdCache
                 // (the toggle's baseline value).
@@ -502,6 +514,8 @@ impl App {
                     mermaid_fences: fences,
                     math_exprs: math,
                     src_lines,
+                    pre_src,
+                    pre_origin: origin,
                 }
             }
             Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
@@ -511,6 +525,8 @@ impl App {
                 mermaid_fences: Vec::new(),
                 math_exprs: Vec::new(),
                 src_lines,
+                pre_src: String::new(),
+                pre_origin: Vec::new(),
             },
             // A standalone code file is syntax-highlighted via syntect.
             Some(PreviewKind::Code(_)) => DecoratedMarkdown {
@@ -520,6 +536,8 @@ impl App {
                 mermaid_fences: Vec::new(),
                 math_exprs: Vec::new(),
                 src_lines,
+                pre_src: String::new(),
+                pre_origin: Vec::new(),
             },
             _ => DecoratedMarkdown {
                 lines: Vec::new(),
@@ -528,6 +546,8 @@ impl App {
                 mermaid_fences: Vec::new(),
                 math_exprs: Vec::new(),
                 src_lines,
+                pre_src: String::new(),
+                pre_origin: Vec::new(),
             },
         }
     }

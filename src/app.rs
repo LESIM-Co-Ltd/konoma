@@ -1149,6 +1149,22 @@ struct MdCache {
     /// Effective open/closed state of each `<details>` block (document order) as rendered — the base
     /// a `Space`/`Enter` toggle flips.
     details_states: Vec<bool>,
+    /// The exact text the renderer parsed to produce `lines`: the file's body after front matter is
+    /// stripped and after `process_footnotes` / `process_inline_html` have run.
+    ///
+    /// Root cause this exists for (2026-08, reported by a user on the released build): the source
+    /// scanners behind `y c` and the checkbox toggle read the **raw file** while the renderer draws
+    /// this preprocessed text. Any pre-pass that changes block structure therefore desynchronizes
+    /// them, and the count guards then refuse the whole document (`y c`) — or, worse, cancel out and
+    /// let the toggle write to the wrong line. Keeping the string the renderer actually used, instead
+    /// of recomputing the same chain at each scan site, removes the class rather than one instance:
+    /// the two sides cannot disagree about text they no longer derive separately.
+    pre_src: String,
+    /// For each line of `pre_src`, the line of the on-disk body it originated from (`None` = a line
+    /// a pre-pass invented). This is what lets the checkbox toggle — which must edit bytes of the
+    /// real file, not of `pre_src` — prove that the checkbox it is about to write is the one the
+    /// reader is looking at. See `crate::preview::markdown::LineOrigin`.
+    pre_origin: crate::preview::markdown::LineOrigin,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -1397,6 +1413,12 @@ struct DecoratedMarkdown {
     mermaid_fences: Vec<String>,
     math_exprs: Vec<(String, bool)>,
     src_lines: usize,
+    /// Exactly the text handed to the renderer: front matter stripped, footnotes and inline HTML
+    /// already rewritten. Stored so the source scanners can read *this* string rather than
+    /// re-deriving the same chain from the file — see `MdCache::pre_src`.
+    pre_src: String,
+    /// Per line of `pre_src`, the body line it came from — see `MdCache::pre_origin`.
+    pre_origin: crate::preview::markdown::LineOrigin,
 }
 
 /// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load

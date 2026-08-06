@@ -1772,6 +1772,11 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
     // Switching back to the decorated view allows toggling, and CRLF / trailing bytes are
     // preserved (only a single character is replaced).
     app.toggle_md_raw();
+    // `toggle_md_raw` drops `md_cache`, and the toggle now resolves the checkbox through the text
+    // that cache holds (see `md_toggle_focused_task`). Draw once first, exactly as the run loop does
+    // between two keypresses — without a frame there is no rendered document to point at, and the
+    // app never puts a checkbox on screen without having drawn it.
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_toggle_focused_task();
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
@@ -15749,5 +15754,189 @@ fn video_thumbnail_skipped_when_external_video_disabled() {
         eprintln!("skip sanity: no video-thumbnail tool available (ffmpeg/ffmpegthumbnailer)");
     }
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The preprocessing corpus driven through the real preview pipeline, toggling **every** checkbox in
+/// every document. Sibling of `md_task_toggle_is_byte_exact_across_the_corpus`, with two differences
+/// that are the whole point of it.
+///
+/// First, **refusing is an allowed outcome here.** These documents deliberately include shapes where
+/// a pre-pass invents a checkbox (a `<br>` splitting a line) or moves one out of the body (a checkbox
+/// carried inside a footnote definition), and for those the honest answer is to write nothing.
+///
+/// Second, and decisively, **the ground truth is the state of the checkboxes on screen**, recovered
+/// by re-rendering the file afterwards — not by re-scanning the raw source. Scanning the raw source
+/// is exactly the assumption that failed: on the released build, toggling the first checkbox on
+/// screen wrote `x` into a line that the screen was drawing as *code*, and every guard and every
+/// raw-source assertion agreed with each other while doing it. Re-rendering asks the only question a
+/// reader can check: "did the box I pressed, and only that box, change?"
+#[test]
+fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpus() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_preprocess_corpus_roundtrip");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+
+    /// Open `doc.md` fresh and draw one frame, returning the app at the Markdown preview.
+    fn opened(root: &std::path::Path) -> App {
+        let mut app = App::new(root.to_path_buf(), Config::default()).unwrap();
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("doc.md"))
+            .unwrap();
+        app.tree_activate().unwrap();
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+        app
+    }
+    /// The state character of each checkbox **as drawn**, in document order.
+    fn drawn_states(app: &App) -> Vec<char> {
+        app.md_items
+            .iter()
+            .filter_map(|it| match it.kind {
+                MdItemKind::Task { state } => Some(state),
+                _ => None,
+            })
+            .collect()
+    }
+
+    for (name, src) in crate::preview::markdown::preprocess_corpus::cases() {
+        std::fs::write(&f, src).unwrap();
+        let app = opened(&root);
+        let before_states = drawn_states(&app);
+        let task_items: Vec<usize> = app
+            .md_items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
+            .map(|(i, _)| i)
+            .collect();
+
+        for (nth, &item_idx) in task_items.iter().enumerate() {
+            std::fs::write(&f, src).unwrap();
+            let mut app = opened(&root);
+            app.tab.focused_item = Some(item_idx);
+            app.flash = None;
+            app.md_toggle_focused_task();
+            let after = std::fs::read_to_string(&f).unwrap();
+
+            if app.flash.is_some() {
+                assert_eq!(
+                    after, src,
+                    "{name} #{nth}: 拒否したのにファイルが変わった\n--- after ---\n{after}"
+                );
+                continue;
+            }
+            // Wrote: exactly one character, and the file's shape is untouched.
+            assert_eq!(
+                src.chars().count(),
+                after.chars().count(),
+                "{name} #{nth}: 文字数が変わった(1文字置換のはず)\n--- after ---\n{after}"
+            );
+            let diff = src
+                .char_indices()
+                .zip(after.char_indices())
+                .filter(|((_, a), (_, b))| a != b)
+                .count();
+            assert_eq!(
+                diff, 1,
+                "{name} #{nth}: 変更が1文字でない\n--- after ---\n{after}"
+            );
+            assert_eq!(
+                src.matches("\r\n").count(),
+                after.matches("\r\n").count(),
+                "{name} #{nth}: CRLF が壊れた"
+            );
+            assert_eq!(
+                src.ends_with('\n'),
+                after.ends_with('\n'),
+                "{name} #{nth}: 末尾改行が変わった"
+            );
+            // The decisive check: re-render the written file and compare what a reader would see.
+            // Exactly the pressed checkbox changed state; every other one is untouched.
+            let reopened = opened(&root);
+            let after_states = drawn_states(&reopened);
+            assert_eq!(
+                after_states.len(),
+                before_states.len(),
+                "{name} #{nth}: 書き戻しで画面のチェックボックス数が変わった\n--- after ---\n{after}"
+            );
+            for (i, (b, a)) in before_states.iter().zip(after_states.iter()).enumerate() {
+                if i == nth {
+                    assert_ne!(b, a, "{name} #{nth}: 押した箱の状態が変わっていない");
+                } else {
+                    assert_eq!(
+                        b, a,
+                        "{name} #{nth}: 押していない箱 #{i} が書き換わった\n--- after ---\n{after}"
+                    );
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The document that made the released build corrupt a file, kept as its own regression case so the
+/// exact reported shape can never come back silently. On screen it draws two checkboxes (`REAL` and
+/// an `INJECTED` one a `<br>` created); the raw source contains two others (`LEFTOVER`, hidden inside
+/// what the screen draws as code, and `REAL`). Counts matched, states matched, both guards passed —
+/// and pressing the *first* box on screen wrote `x` into the `LEFTOVER` line, with no flash.
+#[test]
+fn md_task_toggle_refuses_the_documented_corruption_shape() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_task_corruption_regression");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+    let src =
+        "[^1]: def text\n    - [ ] LEFTOVER\n\n- [ ] REAL\n\nprose<br>- [ ] INJECTED\n\nSee[^1].\n";
+    std::fs::write(&f, src).unwrap();
+
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("doc.md"))
+        .unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    let first_task = app
+        .md_items
+        .iter()
+        .position(|it| matches!(it.kind, MdItemKind::Task { .. }))
+        .expect("画面にチェックボックスがある");
+    app.tab.focused_item = Some(first_task);
+    app.flash = None;
+    app.md_toggle_focused_task();
+
+    // The invariant is *not* "it refuses" — refusing and correctly toggling `REAL` are both fine
+    // answers, and which one comes out depends on how much of the document the pre-passes still
+    // disturb. The invariant is that the line the reader never touched is never written: the
+    // released build turned `- [ ] LEFTOVER` into `- [x] LEFTOVER` while leaving `REAL` unchecked.
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        after.contains("- [ ] LEFTOVER"),
+        "押していない LEFTOVER 行を書き換えた(公開版 v0.23.5 の挙動)\n--- after ---\n{after}"
+    );
+    assert!(
+        after == src || after.contains("- [x] REAL"),
+        "書いたのなら画面で押した REAL でなければならない\n--- after ---\n{after}"
+    );
+    if after == src {
+        assert!(app.flash.is_some(), "書かないなら黙らずに通知する");
+    }
     std::fs::remove_dir_all(&dir).ok();
 }

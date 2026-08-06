@@ -8620,3 +8620,116 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The reported bug, end to end through real key input: a document shaped like `rand_chacha`'s
+/// README — a footnote definition wrapped onto a second line — plus an ordinary fenced code block.
+/// On the released build `y c` was refused for the *whole* document, because the phantom code block
+/// the unclosed footnote left behind made the screen and the source scanner disagree about how many
+/// code blocks there were. The payload is the one the reporting user was actually trying to copy.
+#[test]
+fn e2e_yc_copies_code_in_a_document_with_a_multiline_footnote() {
+    let payload = "/groundwork <仕様書> <NotionURL> <資料dir>";
+    let doc = format!(
+        "Intro[^1] text.\n\n```sh\n{payload}\n```\n\n[^1]: [label](\n      https://example.com/x)\n"
+    );
+    let (mut s, dir) = md_preview(cfg_code_bg_none(), "fnote", &doc);
+
+    // Tab to the code block (the only focusable code item in the document).
+    let mut found = false;
+    for _ in 0..8 {
+        s.tab();
+        if s.app.md_focused_code() {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "コードブロックにフォーカスできる\n{}", s.screen());
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some(payload),
+        "`y c` が拒否されず、ファイルどおりの中身を返す"
+    );
+
+    // And through the copy leader exactly as a user types it: `y` then `c`.
+    s.key('y');
+    s.see("code block");
+    s.key('c');
+    assert!(
+        !s.app
+            .flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains("couldn't"),
+        "コピーが拒否されていない(flash={:?})",
+        s.app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other half of the same bug: the phantom code block itself. A wrapped footnote definition used
+/// to leave its continuation line behind in the body, where the indentation turned it into an
+/// indented code block on screen, and the footnote section showed a truncated, unclosed link. Both
+/// the stray block and the broken link must be gone — the continuation belongs to the footnote.
+#[test]
+fn e2e_multiline_footnote_leaves_no_phantom_code_block() {
+    let doc = "Intro[^1] text.\n\n[^1]: [label](\n      https://example.com/x)\n";
+    let (s, dir) = md_preview(cfg_code_bg_none(), "phantom", doc);
+    let screen = s.screen();
+    assert!(
+        !screen.contains('▎'),
+        "本文に幽霊コードブロックが出ていない\n{screen}"
+    );
+    // The definition is in the footnotes section as a *working* link. Links render label-only (the
+    // URL is collapsed out and recovered into the item), so the proof is the recovered target: on
+    // the released build the wrapped URL was stranded in the body and the link was left unclosed,
+    // so no target like this existed at all.
+    assert!(
+        screen.contains("label"),
+        "脚注の節に定義が入っている\n{screen}"
+    );
+    assert_eq!(
+        s.app.md_link_targets(),
+        vec!["https://example.com/x".to_string()],
+        "折り返された URL まで含めて1本のリンクとして復元される\n{screen}"
+    );
+    // Nothing focusable is a code block any more (there is no code in this document at all).
+    let mut s = s;
+    for _ in 0..6 {
+        s.tab();
+        assert!(
+            !s.app.md_focused_code(),
+            "コードブロックとして巡回対象になっていない\n{}",
+            s.screen()
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `y c` must keep working on a document the pre-passes give a code block the *file* does not have.
+/// `<del></del>` alone on a line rewrites to `~~~~`, a tilde fence opener — so the screen shows a
+/// code block that scanning the raw file cannot find. This is the same class as the reported
+/// multi-line-footnote bug but survives that fix, which is why the copy scanner reads the text the
+/// renderer parsed instead of re-reading the file.
+#[test]
+fn e2e_yc_copies_when_preprocessing_creates_the_code_block() {
+    let doc = "before\n\n<del></del>\n\nafter\n";
+    let (mut s, dir) = md_preview(cfg_code_bg_none(), "delfence", doc);
+    let mut found = false;
+    for _ in 0..6 {
+        s.tab();
+        if s.app.md_focused_code() {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "前処理が作ったコードブロックにフォーカスできる\n{}",
+        s.screen()
+    );
+    assert!(
+        s.app.focused_code_text().is_some(),
+        "`y c` が拒否されない(生ファイルを読むと 0 個に見えて全拒否になる)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

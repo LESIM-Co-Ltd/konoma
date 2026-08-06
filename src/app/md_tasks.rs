@@ -78,31 +78,75 @@ impl App {
         } else {
             0
         };
-        // Verify before writing: only write when the count and the target marker's current state
-        // match what's shown on screen. A `<details>` block's open/closed state is runtime state —
-        // without passing the same open/closed sequence used to render, the body of a closed block
-        // would also be counted and the count would disagree (the most recent render records it in
-        // md_cache).
-        let details_states: Vec<bool> = self
-            .md_cache
-            .as_ref()
-            .map(|c| c.details_states.clone())
-            .unwrap_or_default();
-        let mut locs = crate::preview::markdown::task_source_locs(&body, &states, &details_states);
-        for l in &mut locs {
-            l.line += line_offset;
-        }
-        let ok = locs.len() == total
-            && locs
-                .get(ordinal)
-                .is_some_and(|l| norm_state(l.state) == norm_state(expected));
-        if !ok {
+        // Verify before writing. The question that has to be answered is **not** "do the two sides
+        // count the same number of checkboxes" — that is what the released build asked, and it is
+        // satisfiable while the ordinals point at different checkboxes: a document that hides one
+        // checkbox from the screen and reveals a different one to the raw scanner keeps the totals
+        // (and, since most checkboxes are unchecked, the state characters) equal, and `Space` then
+        // wrote `x` into a line the reader was not looking at, with no flash at all. Verified end to
+        // end against v0.23.5.
+        //
+        // The question asked instead is "**is the Nth checkbox on screen the same object as the line
+        // I am about to edit**". It is answered in the renderer's own coordinate system:
+        //   1. scan `pre_src` — the exact text that produced what is on screen — so the Nth `TaskLoc`
+        //      really is the Nth drawn checkbox (that scanner/renderer agreement, over one shared
+        //      text, is what the corpus parity tests pin);
+        //   2. follow `pre_origin` back to the body line that line came from — a line a pre-pass
+        //      invented (the footnotes section, the tail of a `<br>` split) has no origin at all;
+        //   3. require that body line, as it is on disk right now, to be byte-identical to the line
+        //      on screen, which both proves the byte offset transfers verbatim and catches an
+        //      external edit since the render.
+        // Anything that cannot be matched refuses (principle #3) — refusing costs the reader one
+        // keypress, writing to the wrong line costs them their file.
+        let Some(cache) = self.md_cache.as_ref() else {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::TaskFileChanged).into());
             self.reload_preview();
             return;
-        }
-        let loc = &locs[ordinal];
-        let cur = loc.state;
+        };
+        let drawn = crate::preview::markdown::task_source_locs(
+            &cache.pre_src,
+            &states,
+            &cache.details_states,
+        );
+        let body_lines: Vec<&str> = body.lines().collect();
+        // Independently of correspondence, keep refusing when the file on disk no longer holds the
+        // same set of checkboxes the render read — an external editor or agent has moved on and the
+        // right answer is to reload, not to write into a document that has changed. This is the
+        // pre-existing staleness check; it is kept *in addition to* correspondence, not as a stand-in
+        // for it. Conflating the two is precisely what let the corruption through.
+        let on_disk =
+            crate::preview::markdown::task_source_locs(&body, &states, &cache.details_states);
+        let matched = (drawn.len() == total && on_disk.len() == total)
+            .then(|| drawn.get(ordinal))
+            .flatten()
+            .filter(|l| norm_state(l.state) == norm_state(expected))
+            .and_then(|l| {
+                let origin = cache.pre_origin.get(l.line).copied().flatten()?;
+                let on_screen = cache.pre_src.lines().nth(l.line)?;
+                let on_disk_line = body_lines.get(origin).copied()?;
+                // The write replaces exactly one character at `state_off`, so what has to hold is
+                // that the bytes up to and including it are the same in both texts — not that the
+                // whole line is. A pre-pass may legitimately rewrite the line's *tail* (`- [ ] a[^1]`
+                // is drawn as `- [ ] a¹`, `<kbd>x</kbd>` becomes a keycap), and demanding whole-line
+                // equality would refuse those perfectly ordinary checkboxes. Nothing can rewrite the
+                // part before the marker: a task line is indentation, a bullet, then the brackets, so
+                // there is no construct there to rewrite — and comparing the prefix explicitly means
+                // the write is safe even if that ever stopped being true.
+                let end = l.state_off + l.state.len_utf8();
+                let (a, b) = (on_screen.get(..end)?, on_disk_line.get(..end)?);
+                (a == b).then_some((origin + line_offset, l.state_off, l.state))
+            });
+        let Some((line_no, state_off, cur)) = matched else {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::TaskFileChanged).into());
+            self.reload_preview();
+            return;
+        };
+        let loc = crate::preview::markdown::TaskLoc {
+            line: line_no,
+            state_off,
+            state: cur,
+        };
+        let loc = &loc;
         let next = match states
             .iter()
             .position(|s| norm_state(*s) == norm_state(cur))

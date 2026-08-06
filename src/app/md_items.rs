@@ -284,11 +284,24 @@ impl App {
         self.tab.preview_kind = Some(kind);
     }
 
-    /// Raw source of the focused code block, matched by ordinal against the on-screen headers. The
-    /// block text is re-scanned from the file; `None` when the focused item is not a code block,
-    /// there is no path, the read fails, or the counts disagree (file changed / pathological doc) —
-    /// the caller then flashes instead of copying garbage (safe fallback, #3). Also used by tests
-    /// to assert the copied value without a clipboard round-trip.
+    /// Raw source of the focused code block, matched by ordinal against the on-screen headers.
+    /// `None` when the focused item is not a code block, there is no render cache, or the counts
+    /// disagree (pathological doc) — the caller then flashes instead of copying garbage (safe
+    /// fallback, #3). Also used by tests to assert the copied value without a clipboard round-trip.
+    ///
+    /// Scans `md_cache.pre_src` — **the exact text the renderer parsed** — not a fresh read of the
+    /// file. Root cause this fixed (2026-08, reported by a user on the released build): re-reading
+    /// the file here meant scanning text the pre-passes had not been applied to, so any document
+    /// whose structure those passes change (a multi-line footnote definition, a `<br>`) made the
+    /// scanner and the screen disagree about how many code blocks exist, and the count guard refused
+    /// `y c` for the *whole* document. Reading the renderer's own string removes the disagreement by
+    /// construction rather than by keeping a second derivation in sync.
+    ///
+    /// Copying the preprocessed text is safe because the pre-passes leave code verbatim (they all
+    /// gate on `literal_code_mask`): measured over 2,182 real `.md` files, the pre-passes changed
+    /// 2,105 of them, and the extracted block contents differed in only the four that this very bug
+    /// broke. There is no write-back here — only a copy — so, unlike `md_tasks.rs`, no byte offsets
+    /// into the on-disk file are needed.
     fn focused_code_source(&self) -> Option<String> {
         let f = self.tab.focused_item?;
         if !matches!(
@@ -311,30 +324,12 @@ impl App {
             .iter()
             .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
             .count();
-        let full_src = std::fs::read_to_string(self.tab.preview_path.as_ref()?).ok()?;
-        // Scan only the same range the renderer does: truncate at `preview::text::load`'s caps
-        // (MAX_BYTES/MAX_LINES), and strip front matter under the same rule when it's enabled.
-        // Looking at the full text would count fences beyond the truncation cutoff / inside front
-        // matter, disagreeing with the on-screen count (rendered) and causing **`y c` copy to be
-        // refused for the whole file** (reproduced on a Markdown doc over 5,000 lines).
-        // There's no write here (copy only), so it's fine to use the scanned prefix's content
-        // as-is (no separate full-text re-read for write-back is needed, unlike md_tasks.rs).
-        let (capped_lines, _) = crate::preview::text::cap_lines(full_src.as_bytes());
-        let capped = capped_lines.join("\n");
-        let src = if self.cfg.ui.md_frontmatter {
-            crate::preview::markdown::strip_front_matter(&capped).1
-        } else {
-            capped
-        };
-        // Whether each `<details>` is open/closed is the effective state at render time (held in
-        // md_cache). Without passing it, fences inside a closed block would be counted too and the
-        // count guard would trip.
-        let details_states: Vec<bool> = self
-            .md_cache
-            .as_ref()
-            .map(|c| c.details_states.clone())
-            .unwrap_or_default();
-        let blocks = crate::preview::markdown::code_block_source_locs(&src, &details_states);
+        // The renderer's own text (already capped by `preview::text::load` and front-matter-stripped
+        // upstream), plus the `<details>` open/closed states of that same render — without those,
+        // fences inside a collapsed block would be counted and the count guard would trip.
+        let cache = self.md_cache.as_ref()?;
+        let blocks =
+            crate::preview::markdown::code_block_source_locs(&cache.pre_src, &cache.details_states);
         // Only trust and copy it when the on-screen header count matches the source's block count.
         (blocks.len() == total)
             .then(|| blocks.get(ordinal).cloned())
