@@ -129,8 +129,18 @@ pub fn render_markdown_tasks(
     // Reset the per-render `<details>` state so tests are deterministic (production seeds it via
     // `set_details_open` before every draw). Empty = every block honors its own `open` attribute.
     set_details_open(Vec::new());
-    // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on.
-    render_markdown_tasks_opts(src, width, code, theme, icons, tasks, true)
+    // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on. `src` is a whole
+    // document here (production enters through `render_markdown_with_images`, which splits it into
+    // runs first), so `SourceRun::parse` is the right constructor — see that type's doc comment.
+    render_markdown_tasks_opts(
+        &SourceRun::parse(src.to_string()),
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        true,
+    )
 }
 
 /// Shared trailing render options threaded through the alert/details/text-block renderers
@@ -155,7 +165,7 @@ struct MdRenderCtx<'a> {
 /// Like [`render_markdown_tasks`], with the GitHub-alert (`> [!NOTE]` …) rendering gated by
 /// `alerts` (`ui.md_alerts`). When off, an alert blockquote renders as an ordinary blockquote.
 fn render_markdown_tasks_opts(
-    src: &str,
+    src: &SourceRun,
     width: u16,
     code: CodeStyle,
     theme: &str,
@@ -175,7 +185,7 @@ fn render_markdown_tasks_opts(
     for seg in split_segments(src) {
         match seg {
             Segment::Md(text) => {
-                if text.trim().is_empty() {
+                if text.text().trim().is_empty() {
                     continue;
                 }
                 if alerts {
@@ -206,7 +216,7 @@ fn render_markdown_tasks_opts(
 /// `<details>` discovered any other way (inside an alert's body, inside another `<details>`'s
 /// body) goes through [`render_md_body_nested`] instead, which renders it statically without
 /// touching that sequence. See `render_md_body_nested`'s doc comment for why.
-fn render_md_text(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+fn render_md_text(out: &mut Vec<Line<'static>>, text: &SourceRun, ctx: &MdRenderCtx) {
     for part in split_details(text) {
         match part {
             DetailsPart::Text(t) => render_md_text_inner(out, &t, ctx),
@@ -241,7 +251,7 @@ fn render_md_text(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
 /// `<details>` (recursively, for `<details>`-in-`<details>` or
 /// `<details>`-in-alert-in-`<details>` etc.), a closed one no longer always shows its body — the
 /// generic HTML-block fallback used before this existed had no concept of open vs. closed at all.
-fn render_md_body_nested(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+fn render_md_body_nested(out: &mut Vec<Line<'static>>, text: &SourceRun, ctx: &MdRenderCtx) {
     if ctx.alerts {
         for ap in split_alerts(text) {
             match ap {
@@ -260,7 +270,7 @@ fn render_md_body_nested(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRende
 /// and the `!ctx.alerts` branch there share it) — every `<details>` found here renders statically
 /// (see `render_md_body_nested`'s doc comment for why); the rest of the text goes to
 /// [`render_md_text_inner`].
-fn render_md_details_static(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+fn render_md_details_static(out: &mut Vec<Line<'static>>, text: &SourceRun, ctx: &MdRenderCtx) {
     for dp in split_details(text) {
         match dp {
             DetailsPart::Text(t2) => render_md_text_inner(out, &t2, ctx),
@@ -276,7 +286,7 @@ fn render_md_details_static(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRe
 }
 
 /// The tables → HTML-block → tui-markdown pipeline for one Markdown text run (no `<details>`).
-fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRenderCtx) {
+fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &SourceRun, ctx: &MdRenderCtx) {
     let opts = Options::new(KonomaStyles {
         code_bg: ctx.code.bg,
     });
@@ -285,7 +295,7 @@ fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRender
     for part in split_tables(text) {
         match part {
             MdPart::Text(t) => {
-                if t.trim().is_empty() {
+                if t.text().trim().is_empty() {
                     continue;
                 }
                 // An HTML block (`<details>` etc.) gets thrown away, contents and all, by
@@ -293,6 +303,7 @@ fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRender
                 for hp in split_html_blocks(&t) {
                     match hp {
                         HtmlPart::Text(t2) => {
+                            let t2 = t2.text();
                             if t2.trim().is_empty() {
                                 continue;
                             }
@@ -303,7 +314,10 @@ fn render_md_text_inner(out: &mut Vec<Line<'static>>, text: &str, ctx: &MdRender
                             // the smallest failing block** to plain text (degrading the whole thing
                             // would leave a real document entirely undecorated — reported by the
                             // user on 2026-07-07).
-                            render_text_block_safe(out, &t2, &opts, ctx, 0);
+                            // Plain `&str` from here on: `render_text_block_safe` hands the text
+                            // straight to tui-markdown and (on a panic) bisects it, running no
+                            // splitter of its own, so it needs no mask.
+                            render_text_block_safe(out, t2, &opts, ctx, 0);
                         }
                         HtmlPart::Html(h) => out.extend(render_html_block(&h)),
                     }
@@ -409,8 +423,95 @@ pub struct ImagePlacement {
     pub fence_ord: Option<usize>,
 }
 
+/// A run of Markdown source text plus, for each of its lines, whether the **document** placed that
+/// line inside a code block.
+///
+/// The mask travels with the text instead of each splitter re-deriving it, because by the time most
+/// of these splitters run, the text they hold is no longer a document that parses the way its lines
+/// did in the file. [`split_block_parts`] (block-level images, ```mermaid fences), [`split_segments`]
+/// and [`split_math`] all remove lines from *within* a block and pass the survivors on as one run —
+/// and a fragment cut out of the middle of a block reads differently from the same lines in place.
+///
+/// The shape that forced this is the centered `<div align="center">` badge banner at the top of a
+/// great many crate READMEs. Pulling its `<img>` lines out leaves fragments like
+/// `    </a>\n    <a href="…">\n`, which **open** with 4-column-indented content only because their
+/// `<div>` went into the previous fragment. Asked about that fragment alone, the parser correctly
+/// calls it an indented code block; asked about the original document, it correctly calls it the
+/// interior of an HTML block — and the second reading is the one konoma draws. Both answers are
+/// right for what the parser was shown, and the two inputs are byte-for-byte the same shape, so no
+/// amount of care *inside* a splitter can recover the document's answer once the surrounding block
+/// has been cut away. The only fix is not to destroy the context: compute the mask once, over the
+/// whole document, before any line is removed, and carry each run's slice of it.
+///
+/// The three splitters that peel a *container* — [`split_alerts`] (strips the `>` markers),
+/// [`split_details`] (strips the `<details>`/`<summary>` tags) and [`split_tables`] — are the
+/// deliberate exception, and the reason this type has two constructors. They remove the markers
+/// *along with* the block, so what they hand on genuinely is a standalone document; re-deriving the
+/// mask there is not merely allowed but required (see [`literal_code_mask`]'s doc comment for the
+/// fence that only parses as code once the `<summary>` line above it is gone). So a peeled body is
+/// built with [`SourceRun::parse`], while a verbatim text run gets a slice of the mask its splitter
+/// was handed, via [`SourceRun::new`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SourceRun {
+    text: String,
+    /// One entry per line of `text` (`text.lines().count()`).
+    code: Vec<bool>,
+}
+
+impl SourceRun {
+    /// Compute the code mask over `text` itself. The correct constructor for a **whole document**
+    /// and for a **peeled container body** — the two cases where the text really is a standalone
+    /// document (see the type's doc comment). Never for a fragment a splitter cut lines out of.
+    fn parse(text: String) -> Self {
+        let code = splitter_code_mask(&text.lines().collect::<Vec<_>>());
+        Self { text, code }
+    }
+
+    /// Pair `text` with an already-computed mask — how a splitter emits a verbatim run: it copies
+    /// the lines it did not consume and, alongside them, the entries those lines had in the mask it
+    /// was handed.
+    ///
+    /// The assertion is the reason every such emit is routed through here rather than building the
+    /// struct literally. A splitter that forgets to push an entry for a line it kept (or pushes one
+    /// for a line it dropped) shifts every later line's answer by one, and a mask that is merely
+    /// *offset* is far worse than one that is absent: it reports plausible answers for the wrong
+    /// lines, which is precisely the drift this type exists to end. As a debug assertion the slip
+    /// becomes a loud failure in the test suite instead of a quietly wrong render.
+    fn new(text: String, code: Vec<bool>) -> Self {
+        debug_assert_eq!(
+            code.len(),
+            text.lines().count(),
+            "SourceRun mask/line-count drift for {text:?}"
+        );
+        Self { text, code }
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The per-line code mask, positionally paired with [`lines`](Self::lines).
+    fn code(&self) -> &[bool] {
+        &self.code
+    }
+
+    /// The run's lines, positionally paired with [`code`](Self::code).
+    fn lines(&self) -> Vec<&str> {
+        self.text.lines().collect()
+    }
+}
+
+/// A whole document as a [`SourceRun`], for the tests that call a splitter or
+/// `render_markdown_tasks_opts` directly. Production reaches those through
+/// `render_markdown_with_images`, which splits the document into runs first; a test handing one a
+/// complete document is exactly the [`SourceRun::parse`] case (see that type's doc comment).
+#[cfg(test)]
+fn doc_run(src: &str) -> SourceRun {
+    SourceRun::parse(src.to_string())
+}
+
 enum BlockPart {
-    Text(String),
+    Text(SourceRun),
     Image {
         alt: String,
         url: String,
@@ -430,7 +531,7 @@ enum BlockPart {
 
 /// One piece of a text run after math extraction (used to lift inline `$…$` onto its own line).
 enum MathPart {
-    Text(String),
+    Text(SourceRun),
     Math { latex: String, display: bool },
 }
 
@@ -699,33 +800,82 @@ fn split_block_images(src: &str) -> Vec<BlockPart> {
 /// stance on purpose: it stays *inside* a `<details>`/blockquote/table/HTML block rather than being
 /// pulled out, because those blocks' own splitters need the run of lines intact to recognize the
 /// block at all (see `split_math`'s doc comment).
+///
+/// This is where the document-wide code mask is born: the whole source is still intact here, so
+/// [`splitter_code_mask`] is asked once, before a single line is removed, and every emitted
+/// [`BlockPart::Text`] carries its own slice of the answer (see [`SourceRun`] for why a later
+/// splitter cannot re-derive it). Image extraction is gated on that mask for the same reason it
+/// exists: the fence tracker in the loop below only recognizes *fenced* blocks, so an
+/// `![img](x)` line sitting inside an **indented** code block used to be lifted out as a real
+/// image — the block is a literal transcript on screen, and pulling a line out of its middle is
+/// exactly what manufactures the mid-block fragments this mask exists to protect the rest of the
+/// pipeline from. The ```mermaid branch is deliberately **not** gated: a mermaid fence's own lines
+/// are code as far as the parser is concerned, so gating it would disable fence extraction
+/// outright.
 fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
+    let doc = splitter_code_mask(&src.lines().collect::<Vec<_>>());
+    split_block_parts_masked(src, &doc, mermaid_fences)
+}
+
+/// [`split_block_parts`] for a caller that already holds the document's mask for this text — the
+/// copy scanner, whose `code_block_source_locs_inner` computed it over the same whole document
+/// before peeling alerts/`<details>` off. Reusing it (rather than letting `split_block_parts`
+/// re-derive one from the reassembled run) is what keeps the scanner and the renderer looking at
+/// the *same* answer, which is the property that stops `y c` being refused for a whole document
+/// over a single disagreement.
+fn split_block_parts_run(run: &SourceRun, mermaid_fences: bool) -> Vec<BlockPart> {
+    split_block_parts_masked(run.text(), run.code(), mermaid_fences)
+}
+
+/// The shared body of [`split_block_parts`] / [`split_block_parts_run`]. `doc` is positionally
+/// paired with `src.lines()`.
+fn split_block_parts_masked(src: &str, doc: &[bool], mermaid_fences: bool) -> Vec<BlockPart> {
+    debug_assert_eq!(
+        doc.len(),
+        src.lines().count(),
+        "split_block_parts mask/line-count drift"
+    );
     let mut parts = Vec::new();
     let mut text = String::new();
+    // Mask entries for the lines accumulated in `text`, kept in lockstep with it: every push to
+    // `text` pushes here too, so the run emitted below can hand on the document's own answer.
+    let mut mask: Vec<bool> = Vec::new();
     // Open code fence, as (fence char byte, fence length). `mermaid` = collecting a diagram body.
     let mut open: Option<(u8, usize)> = None;
     let mut mermaid: Option<String> = None;
-    for line in src.split_inclusive('\n') {
+    // `split_inclusive('\n')` yields exactly as many items as `lines()`, so `i` indexes `doc`.
+    for (i, line) in src.split_inclusive('\n').enumerate() {
         let bare = line.strip_suffix('\n').unwrap_or(line);
+        let in_code = doc.get(i).copied().unwrap_or(false);
         match open {
             None => {
                 if let Some((fence, info)) = parse_fence(bare) {
                     open = Some((fence.ch, fence.len));
                     if mermaid_fences && is_mermaid_info(&info) {
                         if !text.is_empty() {
-                            parts.push(BlockPart::Text(std::mem::take(&mut text)));
+                            parts.push(BlockPart::Text(SourceRun::new(
+                                std::mem::take(&mut text),
+                                std::mem::take(&mut mask),
+                            )));
                         }
                         mermaid = Some(String::new());
                     } else {
                         text.push_str(line);
+                        mask.push(in_code);
                     }
-                } else if let Some((alt, url)) = extract_block_image(bare) {
+                } else if let Some((alt, url)) =
+                    (!in_code).then(|| extract_block_image(bare)).flatten()
+                {
                     if !text.is_empty() {
-                        parts.push(BlockPart::Text(std::mem::take(&mut text)));
+                        parts.push(BlockPart::Text(SourceRun::new(
+                            std::mem::take(&mut text),
+                            std::mem::take(&mut mask),
+                        )));
                     }
                     parts.push(BlockPart::Image { alt, url });
                 } else {
                     text.push_str(line);
+                    mask.push(in_code);
                 }
             }
             Some((ch, len)) => {
@@ -740,7 +890,10 @@ fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
                         mermaid = None;
                     }
                     (Some(code), false) => code.push_str(line),
-                    (None, _) => text.push_str(line),
+                    (None, _) => {
+                        text.push_str(line);
+                        mask.push(in_code);
+                    }
                 }
                 if closing {
                     open = None;
@@ -749,12 +902,21 @@ fn split_block_parts(src: &str, mermaid_fences: bool) -> Vec<BlockPart> {
         }
     }
     // An unclosed mermaid fence: safely revert it to raw text (principle #3, never drop it).
+    let reverted_mermaid = mermaid.is_some();
     if let Some(code) = mermaid {
         text.push_str("```mermaid\n");
         text.push_str(&code);
     }
     if !text.is_empty() {
-        parts.push(BlockPart::Text(text));
+        // The reverted text is the one run that no longer corresponds line-for-line to the
+        // document — a synthesized ` ```mermaid ` opener plus the diagram body, which were never in
+        // `mask` — so its mask has to be computed from what it actually became. Everything else
+        // carries the document's own answer, collected above.
+        parts.push(BlockPart::Text(if reverted_mermaid {
+            SourceRun::parse(text)
+        } else {
+            SourceRun::new(text, mask)
+        }));
     }
     parts
 }
@@ -1453,9 +1615,13 @@ fn parser_code_blocks(text: &str, out: &mut Vec<String>) {
 ///
 /// The HTML step is what makes a 4-column-indented HTML line — `    <a href="…">` inside a `<div
 /// align="center">` banner, the shape at the top of many crate READMEs — agree: an HTML block on
-/// screen, not an indented code block. The image step matters for the same banners: pulling an
-/// `<img>` line out splits the `<div>` in two, and the `    |` separator left between the halves
-/// *does* become a real indented code block on screen (criterion's README).
+/// screen, not an indented code block. Both sides reach that answer the same way, and it is the
+/// reason `run` carries a mask entry per line rather than just the line: the caller's
+/// whole-document parse is what knows those lines are HTML-block interior, and the fragment left
+/// behind once `split_block_parts` lifts the `<img>` lines out no longer does (see [`SourceRun`]).
+/// The image step matters for the same banners in the other direction: pulling an `<img>` line out
+/// splits the `<div>` in two, and the `    |` separator left between the halves *does* become a
+/// real indented code block on screen (criterion's README).
 ///
 /// `in_alert_body` skips the `split_block_parts` step, because production never applies it to an
 /// alert's body: that runs on the raw source, where those lines still carry their `>` prefix and
@@ -1469,18 +1635,26 @@ fn parser_code_blocks(text: &str, out: &mut Vec<String>) {
 /// render side onto the parser silently desynced the two in both directions at once (a fence closed
 /// by its list item, which a fence toggle reads as running to EOF; an indented code block, which it
 /// cannot see at all), and every mismatch refuses `y c` for the whole document.
-fn scan_code_run(run: &mut Vec<&str>, in_alert_body: bool, out: &mut Vec<String>) {
+fn scan_code_run(run: &mut Vec<(&str, bool)>, in_alert_body: bool, out: &mut Vec<String>) {
     if run.is_empty() {
         return;
     }
-    let mut text = run.join("\n");
+    // Each accumulated line comes with the mask entry the **caller's** whole-document parse gave
+    // it, so the run handed on carries the same answer the renderer's `split_block_parts` computed
+    // over that same document — rather than one re-derived from these lines in isolation, which is
+    // exactly the fragment/document ambiguity `SourceRun` exists to keep out of this pipeline. The
+    // two sides agreeing line for line is what stops a single disagreement refusing `y c` for a
+    // whole document.
+    let mut text = run.iter().map(|(l, _)| *l).collect::<Vec<_>>().join("\n");
     text.push('\n');
+    let code: Vec<bool> = run.iter().map(|(_, c)| *c).collect();
     run.clear();
+    let text = SourceRun::new(text, code);
     if in_alert_body {
         scan_text_part(&text, out);
         return;
     }
-    for part in split_block_parts(&text, true) {
+    for part in split_block_parts_run(&text, true) {
         if let BlockPart::Text(t) = part {
             scan_text_part(&t, out);
         }
@@ -1488,14 +1662,14 @@ fn scan_code_run(run: &mut Vec<&str>, in_alert_body: bool, out: &mut Vec<String>
 }
 
 /// One `BlockPart::Text` run: mirrors `render_md_text_inner`'s tables → HTML-blocks → parser chain.
-fn scan_text_part(text: &str, out: &mut Vec<String>) {
+fn scan_text_part(text: &SourceRun, out: &mut Vec<String>) {
     for part in split_tables(text) {
         let MdPart::Text(t) = part else {
             continue; // a table block: drawn with konoma's borders, never as code
         };
         for hp in split_html_blocks(&t) {
             match hp {
-                HtmlPart::Text(t2) => parser_code_blocks(&t2, out),
+                HtmlPart::Text(t2) => parser_code_blocks(t2.text(), out),
                 HtmlPart::Html(_) => {} // drawn as tag-stripped text, never as code
             }
         }
@@ -1525,8 +1699,10 @@ fn code_block_source_locs_inner(
     let mut details_idx = 0usize;
     let mut i = 0;
     // Plain lines accumulated since the last alert/`<details>` block, flushed through the parser by
-    // `scan_code_run`. Flushing *before* recursing keeps the results in document order.
-    let mut run: Vec<&str> = Vec::new();
+    // `scan_code_run`. Flushing *before* recursing keeps the results in document order. Each line is
+    // carried with its `in_code` answer so `scan_code_run` can hand the splitters this
+    // whole-document mask instead of one re-derived from the reassembled run (see `SourceRun`).
+    let mut run: Vec<(&str, bool)> = Vec::new();
     // An alert header / `<details>` tag inside a code block is literal content, not a block start.
     // This is `splitter_code_mask` — **the same gate `split_alerts`/`split_details` use on the
     // render side**, over this same text — rather than a fence tracker written out again here: the
@@ -1537,7 +1713,7 @@ fn code_block_source_locs_inner(
     let in_code = splitter_code_mask(&lines);
     while i < lines.len() {
         if in_code[i] {
-            run.push(lines[i]);
+            run.push((lines[i], true));
             i += 1;
             continue;
         }
@@ -1581,7 +1757,7 @@ fn code_block_source_locs_inner(
             }
             continue;
         }
-        run.push(lines[i]);
+        run.push((lines[i], in_code[i]));
         i += 1;
     }
     scan_code_run(&mut run, in_alert_body, &mut out);
@@ -2592,9 +2768,31 @@ fn utf8_len(b: u8) -> usize {
 }
 
 /// Emit the accumulated text (if any) then one math part.
-fn flush_math(out: &mut Vec<MathPart>, buf: &mut String, latex: &str, display: bool) {
+///
+/// `mask` is the per-line code mask being accumulated alongside `buf` (see [`SourceRun`]). This can
+/// fire **mid-line**, from inside [`scan_inline_math`] — `text $x$ more` flushes with `buf` ending
+/// in `"text "`, no newline — so the partial trailing line it leaves behind needs an entry of its
+/// own. `false` is provably the right value: the scanning branch of [`split_math`] is only reached
+/// for a line that is neither code nor structure, and it is the only caller that can flush
+/// mid-line (the display-math branch in `split_math` always flushes at a line boundary, where
+/// `buf` is empty or newline-terminated and the condition below is false).
+fn flush_math(
+    out: &mut Vec<MathPart>,
+    buf: &mut String,
+    mask: &mut Vec<bool>,
+    latex: &str,
+    display: bool,
+) {
     if !buf.is_empty() {
-        out.push(MathPart::Text(std::mem::take(buf)));
+        if !buf.ends_with('\n') {
+            mask.push(false);
+        }
+        out.push(MathPart::Text(SourceRun::new(
+            std::mem::take(buf),
+            std::mem::take(mask),
+        )));
+    } else {
+        debug_assert!(mask.is_empty(), "flush_math: mask without text");
     }
     out.push(MathPart::Math {
         latex: latex.trim().to_string(),
@@ -2618,32 +2816,42 @@ fn flush_math(out: &mut Vec<MathPart>, buf: &mut String, latex: &str, display: b
 /// anything), and a table's remaining rows degrade to raw `| a | b |` text. Leaving the math literal
 /// there is a safe degradation (principle #3): the structure survives, only that one expression stays
 /// unrendered text instead of becoming an image.
-fn split_math(text: &str) -> Vec<MathPart> {
+fn split_math(run: &SourceRun) -> Vec<MathPart> {
+    let text = run.text();
     let mut out = Vec::new();
     let mut buf = String::new();
+    // Mask entries for the lines accumulated in `buf`, kept in lockstep with it. A single source
+    // line can contribute several entries here, in different runs: lifting the math out of
+    // `a $x$ b` leaves `"a "` ending one run and `" b"` opening the next.
+    let mut mask: Vec<bool> = Vec::new();
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let bare_lines: Vec<&str> = lines
         .iter()
         .map(|l| l.strip_suffix('\n').unwrap_or(l))
         .collect();
-    // One parse of this text run serves both masks: `structure_mask` gates on it directly (exactly
-    // like the block splitters it mirrors), and `literal_code_mask` unions it with `fence_mask`.
-    let parsed_code = splitter_code_mask(&bare_lines);
-    let structure = structure_mask(&bare_lines, &parsed_code);
-    let in_code = literal_code_mask_from(&parsed_code, &bare_lines);
+    // The document's answer, carried in rather than re-derived from this run (see `SourceRun`), and
+    // serving both masks: `structure_mask` gates on it directly (exactly like the block splitters it
+    // mirrors), and `literal_code_mask` unions it with `fence_mask`.
+    let parsed_code = run.code();
+    let structure = structure_mask(&bare_lines, parsed_code);
+    let in_code = literal_code_mask_from(parsed_code, &bare_lines);
     let mut i = 0;
     while i < lines.len() {
         let raw = lines[i];
         let bare = raw.strip_suffix('\n').unwrap_or(raw);
         if in_code[i] {
             buf.push_str(raw);
+            mask.push(parsed_code[i]);
             i += 1;
             continue;
         }
         // Inside a blockquote/alert, `<details>`, other HTML block, or table row: copy verbatim,
-        // never scanning it for math (see the doc comment above for why).
-        if structure[i] {
+        // never scanning it for math (see the doc comment above for why). Which construct it is
+        // makes no difference here — that distinction exists for `process_inline_html_traced`, the
+        // mask's other caller — so any non-`None` answer is treated the same.
+        if structure[i] != Structure::None {
             buf.push_str(raw);
+            mask.push(parsed_code[i]);
             i += 1;
             continue;
         }
@@ -2658,7 +2866,7 @@ fn split_math(text: &str) -> Vec<MathPart> {
                 // A structural or code-block line before the close: stop rather than swallow it into
                 // the math body (which would silently eat, e.g., a table row or a fenced/indented code
                 // block into an unrendered equation).
-                if structure[j] || in_code[j] {
+                if structure[j] != Structure::None || in_code[j] {
                     break;
                 }
                 let bj = lines[j].strip_suffix('\n').unwrap_or(lines[j]);
@@ -2670,18 +2878,21 @@ fn split_math(text: &str) -> Vec<MathPart> {
                 j += 1;
             }
             if found && !body.trim().is_empty() {
-                flush_math(&mut out, &mut buf, &body, true);
+                flush_math(&mut out, &mut buf, &mut mask, &body, true);
                 i = j + 1; // skip the closer line
                 continue;
             }
             // No close (or empty): fall through and treat the line as ordinary text.
         }
-        scan_inline_math(bare, &mut out, &mut buf);
+        scan_inline_math(bare, &mut out, &mut buf, &mut mask);
+        // Completes the (possibly empty) trailing fragment `scan_inline_math` left in `buf` — one
+        // line, and `false` because this branch is only reached for a non-code line.
         buf.push('\n');
+        mask.push(false);
         i += 1;
     }
     if !buf.is_empty() {
-        out.push(MathPart::Text(buf));
+        out.push(MathPart::Text(SourceRun::new(buf, mask)));
     }
     out
 }
@@ -2805,7 +3016,9 @@ fn rewrite_masking_code_spans(line: &str, edit: impl FnOnce(&str) -> String) -> 
 
 /// Scan one line for inline / single-line math, appending literal text to `buf` and lifting each math
 /// expression via `flush_math`. Skips `` `code spans` `` (their `$` is literal) and honors `\$` escapes.
-fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
+/// `mask` is passed straight through to [`flush_math`], which can fire mid-line here — see its doc
+/// comment for why the partial line that leaves behind is always non-code.
+fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String, mask: &mut Vec<bool>) {
     let bytes = line.as_bytes();
     let n = line.len();
     let mut i = 0;
@@ -2824,14 +3037,14 @@ fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
             match bytes[i + 1] {
                 b'(' => {
                     if let Some((content, end)) = find_close(line, i + 2, "\\)") {
-                        flush_math(out, buf, content, false);
+                        flush_math(out, buf, mask, content, false);
                         i = end;
                         continue;
                     }
                 }
                 b'[' => {
                     if let Some((content, end)) = find_close(line, i + 2, "\\]") {
-                        flush_math(out, buf, content, true);
+                        flush_math(out, buf, mask, content, true);
                         i = end;
                         continue;
                     }
@@ -2850,7 +3063,7 @@ fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
             if i + 1 < n && bytes[i + 1] == b'$' {
                 if let Some((content, end)) = find_close(line, i + 2, "$$") {
                     if !content.trim().is_empty() {
-                        flush_math(out, buf, content, true);
+                        flush_math(out, buf, mask, content, true);
                         i = end;
                         continue;
                     }
@@ -2860,7 +3073,7 @@ fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String) {
                 continue;
             }
             if let Some((content, end)) = find_inline_dollar(line, i + 1) {
-                flush_math(out, buf, content, false);
+                flush_math(out, buf, mask, content, false);
                 i = end;
                 continue;
             }
@@ -2941,7 +3154,7 @@ fn line_into_static(line: Line) -> Line<'static> {
 /// A segment of the md body split at ```mermaid fence boundaries.
 #[derive(Debug, PartialEq)]
 enum Segment {
-    Md(String),
+    Md(SourceRun),
     Mermaid(String),
 }
 
@@ -2986,31 +3199,44 @@ fn is_mermaid_info(info: &str) -> bool {
 
 /// Split md and mermaid using a single-pass fence tracker.
 /// A ```mermaid-like line that appears inside a normal code fence is not intercepted (since it is already inside a fence).
-fn split_segments(src: &str) -> Vec<Segment> {
+///
+/// A line-removing splitter (a diverted ```mermaid fence leaves the md runs entirely), so the code
+/// mask travels with the text rather than being re-derived downstream — see [`SourceRun`].
+fn split_segments(run: &SourceRun) -> Vec<Segment> {
+    let src = run.text();
+    let code = run.code();
     let mut segments = Vec::new();
     let mut md = String::new();
+    // Mask entries for the lines accumulated in `md`, kept in lockstep with it.
+    let mut md_mask: Vec<bool> = Vec::new();
     let mut mermaid = String::new();
     // The currently open fence. The bool is "is this a mermaid block".
     let mut open: Option<(Fence, bool)> = None;
 
-    for line in src.split_inclusive('\n') {
+    for (i, line) in src.split_inclusive('\n').enumerate() {
         let bare = line.strip_suffix('\n').unwrap_or(line);
+        let in_code = code.get(i).copied().unwrap_or(false);
         match &open {
             None => {
                 if let Some((fence, info)) = parse_fence(bare) {
                     if is_mermaid_info(&info) {
                         // A mermaid block starts: finalize the md accumulated so far, and drop the fence line itself.
                         if !md.is_empty() {
-                            segments.push(Segment::Md(std::mem::take(&mut md)));
+                            segments.push(Segment::Md(SourceRun::new(
+                                std::mem::take(&mut md),
+                                std::mem::take(&mut md_mask),
+                            )));
                         }
                         open = Some((fence, true));
                     } else {
                         // An ordinary code fence: append it to md as-is, to be passed on to tui-markdown.
                         md.push_str(line);
+                        md_mask.push(in_code);
                         open = Some((fence, false));
                     }
                 } else {
                     md.push_str(line);
+                    md_mask.push(in_code);
                 }
             }
             Some((fence, is_mermaid)) => {
@@ -3022,12 +3248,14 @@ fn split_segments(src: &str) -> Vec<Segment> {
                         segments.push(Segment::Mermaid(std::mem::take(&mut mermaid)));
                     } else {
                         md.push_str(line); // include the closing fence in md too
+                        md_mask.push(in_code);
                     }
                     open = None;
                 } else if *is_mermaid {
                     mermaid.push_str(line);
                 } else {
                     md.push_str(line);
+                    md_mask.push(in_code);
                 }
             }
         }
@@ -3035,7 +3263,7 @@ fn split_segments(src: &str) -> Vec<Segment> {
 
     // Finalize whatever's left at the end. An unclosed mermaid still attempts to render (falls back to raw display on failure).
     if !md.is_empty() {
-        segments.push(Segment::Md(md));
+        segments.push(Segment::Md(SourceRun::new(md, md_mask)));
     }
     if let Some((_, true)) = open {
         if !mermaid.is_empty() {
@@ -3051,7 +3279,7 @@ fn split_segments(src: &str) -> Vec<Segment> {
 // (┌┬┐ │ ├┼┤ └┴┘). When it overflows the width, cells wrap to fit.
 
 enum MdPart {
-    Text(String),
+    Text(SourceRun),
     Table(String),
 }
 
@@ -3059,19 +3287,20 @@ enum MdPart {
 /// lines and everything between (using the same fence-matching rules as `split_segments`/
 /// `parse_fence`: matching char, len ≥ opening len, empty info to close).
 ///
-/// Two remaining callers, both for reasons their own doc comments give:
+/// **One remaining production caller**: [`literal_code_mask`], which unions this with
+/// [`code_block_mask`] — this half is what recovers a fence konoma renders in isolation but the
+/// parser, reading the whole raw document, swallows into an HTML block. (That union is consulted
+/// only by the source pre-passes; see `literal_code_mask`'s own doc comment for why they need it
+/// and a block splitter must not.)
 ///
-/// * [`literal_code_mask`], which unions this with [`code_block_mask`] — this half is what recovers
-///   a fence konoma renders in isolation but the parser, reading the whole raw document, swallows
-///   into an HTML block.
-/// * [`split_html_blocks`], the one block splitter that deliberately keeps this narrower gate.
-///
-/// Everything else — the other three block splitters, `structure_mask`/`details_mask`, and the two
-/// source scanners — goes through [`splitter_code_mask`] instead. **This function knows nothing
-/// about containers**: CommonMark also closes a fence at the end of the list item or block quote it
-/// was opened in, so a fence whose closing line carries trailing text (not a close) is read here as
-/// running to the end of the document, when in fact its list item ends it a few lines later. That
-/// is the runaway `splitter_code_mask` exists to avoid; see its doc comment.
+/// Every block splitter — all four, including [`split_html_blocks`], which was the last holdout
+/// until the document mask started travelling on a [`SourceRun`] — plus
+/// `structure_mask`/`details_mask` and the two source scanners now go through
+/// [`splitter_code_mask`] instead. **This function knows nothing about containers**: CommonMark
+/// also closes a fence at the end of the list item or block quote it was opened in, so a fence
+/// whose closing line carries trailing text (not a close) is read here as running to the end of the
+/// document, when in fact its list item ends it a few lines later. That is the runaway
+/// `splitter_code_mask` exists to avoid; see its doc comment.
 fn fence_mask(lines: &[&str]) -> Vec<bool> {
     let mut mask = vec![false; lines.len()];
     let mut open: Option<Fence> = None;
@@ -3261,12 +3490,19 @@ fn literal_code_mask(lines: &[&str]) -> Vec<bool> {
     literal_code_mask_from(&code_block_mask(lines), lines)
 }
 
-/// **The** gate every block splitter uses to decide "don't start a construct on this line, it is
-/// code": [`split_tables`], [`split_html_blocks`], [`split_alerts`], [`split_details`], the
-/// `structure_mask`/`details_mask` they feed, and the two source scanners that must count exactly
-/// what those splitters draw ([`code_block_source_locs`], [`task_source_locs`]). One named entry
-/// point so the rule has a single home — the drift this whole area keeps regressing on comes from
-/// the same rule living in several hand-written copies.
+/// The one named home of the rule "don't start a construct on this line, it is code" — so that the
+/// rule cannot grow a second hand-written copy, which is the drift this whole area keeps regressing
+/// on.
+///
+/// It is asked **once per text run, by whoever owns that run's text**, and the answer then travels
+/// on a [`SourceRun`]. The block splitters ([`split_tables`], [`split_html_blocks`],
+/// [`split_alerts`], [`split_details`]) and the `structure_mask`/`details_mask` they feed no longer
+/// call this themselves: they read the slice they were handed, because the text in their hands may
+/// be a fragment that parses differently from the same lines in the file (see [`SourceRun`], and
+/// the last paragraph here). The callers that *do* ask are the ones holding a whole document or a
+/// peeled container body — [`SourceRun::parse`], [`split_block_parts`], and the two source scanners
+/// that must count exactly what those splitters draw ([`code_block_source_locs`],
+/// [`task_source_locs`]).
 ///
 /// It is [`code_block_mask`] — the parser's answer — and deliberately **not** [`literal_code_mask`],
 /// even though that union is what the *source pre-passes* (`process_footnotes`,
@@ -3291,10 +3527,19 @@ fn literal_code_mask(lines: &[&str]) -> Vec<bool> {
 ///
 /// The reason `literal_code_mask` needs `fence_mask` in its union — a fence with no blank line
 /// between it and a preceding `<summary>` line, which the parser reads as one HTML block when it
-/// sees the whole raw document — does not apply here, because each splitter computes this over
-/// **the text that splitter itself received**, and by the time one runs on a `<details>` body,
-/// `split_details` has already peeled the surrounding tags away, so the parser sees the fence in
-/// isolation and calls it code. That per-fragment evaluation is load-bearing, not incidental.
+/// sees the whole raw document — does not apply to a **peeled container body**: by the time a
+/// splitter runs on a `<details>` body, `split_details` has already taken the surrounding tags
+/// away, so the parser sees the fence in isolation and calls it code. Evaluating a peeled body on
+/// its own terms is load-bearing, not incidental, and that is what [`SourceRun::parse`] is for.
+///
+/// The distinction matters because the opposite is true for the other kind of text run. A splitter
+/// that removes lines from *within* a block — `split_block_parts`, `split_segments`, `split_math` —
+/// hands on a fragment that is not a document at all, and asking this function about one gets a
+/// confidently wrong answer: the interior of a `<div>` badge banner reads as an indented code block
+/// the moment the `<img>` lines between its `<a>` tags are gone. Those runs therefore carry a slice
+/// of the mask computed over the intact document instead of re-deriving one here; see [`SourceRun`],
+/// which exists entirely to keep the two cases apart, and [`split_html_blocks`], the gate whose
+/// misbehavior on exactly that shape forced the distinction into the open.
 fn splitter_code_mask(lines: &[&str]) -> Vec<bool> {
     code_block_mask(lines)
 }
@@ -3307,23 +3552,149 @@ fn literal_code_mask_from(parsed: &[bool], lines: &[&str]) -> Vec<bool> {
     parsed.iter().zip(fenced).map(|(&a, b)| a || b).collect()
 }
 
-/// For each of `lines`, whether it sits inside a construct whose own parser requires line
-/// continuity to work: a blockquote (a plain quote or a GitHub alert — both are `>`-prefixed),
-/// a `<details>` block, another HTML block, or a GFM table row. `split_math` consults this mask
-/// so it never lifts an inline math expression out onto its own line from inside one of these —
-/// doing so breaks the very line sequence those blocks' own splitters (`split_alerts`,
-/// `split_details`, `split_html_blocks`, `split_tables`) require, tearing the block apart (see
-/// `split_math`'s doc comment for the concrete failure modes this prevents).
+/// Which line-continuity-dependent construct a line belongs to, as reported by [`structure_mask`].
+///
+/// "Line-continuity-dependent" means the construct's own splitter recognizes it by an unbroken run
+/// of lines each matching a shape, so a pass that inserts, removes or reshapes a line in the middle
+/// of the run destroys the construct rather than editing it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Structure {
+    /// In none of the constructs below.
+    None,
+    /// A blockquote line — a plain quote or a GitHub alert body; both are `>`-prefixed, and
+    /// `split_alerts` captures a body by consuming consecutive `>`-prefixed lines.
+    Quote,
+    /// Inside a `<details>` … `</details>` block, its tag lines included.
+    Details,
+    /// A GFM table row: the header, the delimiter row, or one of the consecutive data rows.
+    Table,
+    /// The line that *opens* any other HTML block (`<p …>`, `<div …>`, `<!-- … -->`, …).
+    ///
+    /// Split from [`Structure::HtmlBody`] because the two answer differently for a caller that
+    /// rewrites the tags on the line. On this line no block is open yet — it is about to be — so a
+    /// rewrite here cannot destroy one; on a body line the block already exists and a rewrite can.
+    /// The distinction is load-bearing rather than pedantic because [`is_html_block_start`] accepts
+    /// *any* tag name, `br` included, where CommonMark's HTML-block rules do not (type 6 matches a
+    /// fixed list of block-level names that has no `br` in it, and type 7 needs the tag alone on the
+    /// line). So `<br>` and `<br> tail` open a konoma HTML block that exists **only** because of the
+    /// very tag a caller is there to rewrite — which is why the two must not be collapsed back into
+    /// one variant now that the body rule *removes* lines: applied to an opener it would delete the
+    /// break in the everyday `text` / `<br>` / `more` prose idiom, whose middle line is a block
+    /// opener by this over-broad rule alone. See [`process_inline_html_traced`].
+    HtmlOpen,
+    /// A line inside an HTML block that an earlier line opened.
+    ///
+    /// `quoted` records whether that block is itself nested inside a blockquote, which a caller
+    /// deciding "would rewriting this line leave it **blank**" has to know: inside a quote the
+    /// leading `>` marker is container, not content, so `">   "` is exactly as blank to the HTML
+    /// block within the quote as `"   "` is to one at top level, and ends it just the same. The flag
+    /// cannot be recovered from the line itself — a top-level `<div>` whose body text happens to
+    /// start with `>` is byte-for-byte the same shape and there the marker *is* content, so treating
+    /// it as a prefix would inject a spurious `>` into the rewritten line. See
+    /// [`process_inline_html_traced`].
+    HtmlBody { quoted: bool },
+}
+
+/// Label the HTML block opening at `view[start]` into `out` (positionally paired with `view`) and
+/// return the index one past its last line.
+///
+/// **The one place that decides an HTML block's extent for this mask** — the top-level pass in
+/// [`structure_mask`] and its nested rescan both call it — so the two cannot drift, which is the
+/// failure mode this module keeps regressing on (see [`splitter_code_mask`]). The extent is "up to
+/// the line before the next blank one", the same walk [`split_html_blocks`] performs.
+fn mark_html_block(view: &[&str], start: usize, quoted: bool, out: &mut [Structure]) -> usize {
+    let mut j = start + 1;
+    while j < view.len() && !view[j].trim().is_empty() {
+        j += 1;
+    }
+    // The opener is reported separately from the body it opens — see `Structure::HtmlOpen`.
+    out[start..j].fill(Structure::HtmlBody { quoted });
+    out[start] = Structure::HtmlOpen;
+    j
+}
+
+/// Re-label every HTML block found inside a container's body, overwriting the container's own label
+/// on just those lines. `view` is the body **as the renderer sees it** (a blockquote's lines with
+/// their `>` markers stripped, a `<details>` body as-is), positionally paired with `in_code` and
+/// with `out`.
+///
+/// Only ever *re-labels* lines that already carry the container's non-[`Structure::None`] label — it
+/// neither widens nor narrows the container's span — which is what keeps [`split_math`], whose only
+/// question is "is this line inside something at all", byte-for-byte unaffected.
+fn mark_nested_html_blocks(view: &[&str], in_code: &[bool], quoted: bool, out: &mut [Structure]) {
+    let mut k = 0;
+    while k < view.len() {
+        if !in_code[k] && is_html_block_start(view[k]) {
+            k = mark_html_block(view, k, quoted, out);
+            continue;
+        }
+        k += 1;
+    }
+}
+
+/// For each of `lines`, which construct whose own parser requires line continuity it sits inside:
+/// a blockquote (a plain quote or a GitHub alert — both are `>`-prefixed), a `<details>` block,
+/// another HTML block, or a GFM table row. [`Structure::None`] means none of them.
+///
+/// **Two callers ask this mask two different questions**, which is why it reports *which* construct
+/// rather than a bare yes/no:
+///
+/// * [`split_math`] only needs "is this line inside one of them at all" — i.e. anything but
+///   [`Structure::None`], which is exactly what this function meant when it returned `Vec<bool>`.
+///   It consults the mask so it never lifts an inline math expression out onto its own line from
+///   inside one of these; doing so breaks the very line sequence those blocks' own splitters
+///   (`split_alerts`, `split_details`, `split_html_blocks`, `split_tables`) require, tearing the
+///   block apart (see `split_math`'s doc comment for the concrete failure modes this prevents).
+/// * [`process_inline_html_traced`] needs the kind, because the three ways it can rewrite a `<br>`
+///   are not interchangeable. Inside the body of an HTML block a line the rewrite would leave blank
+///   has to be dropped outright — every *replacement* still leaves the line blank (and a
+///   whitespace-only line *is* blank to CommonMark), which terminates the block, and keeping the tag
+///   instead leaves a block opener for a later pass to relocate. Inside a table row it has to
+///   collapse to a space — a table
+///   row has no continuation form, so a second line can only ever be a second row. Everywhere else,
+///   the opening line of an HTML block included (see [`Structure::HtmlOpen`]), it may become a hard
+///   break, provided the injected line repeats the enclosing blockquote prefix. See that function's
+///   doc comment for the failures each case prevents.
 ///
 /// Reuses the same predicates the block splitters themselves use to decide where a block starts
-/// and ends, so this mask can never drift out of sync with what those splitters actually carve
-/// out. Gated by the caller's code mask ([`code_block_mask`]), exactly like
+/// and ends, so this mask can never drift out of sync with what those splitters actually carve out
+/// — and, now that there are two callers, so the second one does not become another hand-written
+/// copy of those rules. That drift is what this module keeps regressing on (see
+/// [`splitter_code_mask`]). Gated by the caller's code mask ([`code_block_mask`]), exactly like
 /// `split_tables`/`split_html_blocks`/`split_alerts`: a `>`/`|`/`<div>`-looking line inside a code
-/// block is ordinary code, not structure. Taken as a parameter rather than recomputed here so
-/// `split_math` — which also needs `literal_code_mask`, itself built on `code_block_mask` — parses
-/// each text run exactly once.
-fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
-    let mut mask = vec![false; lines.len()];
+/// block is ordinary code, not structure. Taken as a parameter rather than recomputed here so a
+/// caller that also needs `literal_code_mask` (both of them do, and it is built on
+/// `code_block_mask`) parses each text run exactly once.
+///
+/// # Nesting
+///
+/// A container's body is rescanned for **HTML blocks**, whose lines are relabelled
+/// [`Structure::HtmlOpen`]/[`Structure::HtmlBody`] over the container's own label: for a
+/// `<details>` block the body between its tag lines, for a blockquote the run of `>` lines with
+/// their markers stripped — in each case the text the renderer goes on to treat as its own
+/// document, and therefore the text whose blank lines decide where a block inside it ends.
+///
+/// Reporting only the outermost construct was not a neutral simplification, which is why this
+/// exists (2026-08). A badge banner nested one level deep came back as all-`Details` (or all-`Quote`),
+/// so its lone `    <br>` line took the default hard-break rewrite instead of the HTML-block one,
+/// `"    " + "  "` is a blank line to CommonMark, the inner `<p align="center">` ended there, the
+/// 4-column-indented lines below became a genuine indented code block — and the block splitter then
+/// faithfully honoured that, drawing the markup as `▎ …` and dropping one of the badges, because an
+/// `<img>` line the document calls code is no longer extracted. Both containers are affected and by
+/// different routes, so both are rescanned.
+///
+/// **The rescan only ever re-labels lines the container already claimed** — never widening nor
+/// narrowing a span — which is what keeps [`split_math`] byte-for-byte unaffected: its only question
+/// is whether a line is non-[`Structure::None`], and every line involved was, and stays, non-`None`.
+///
+/// **Still reported at the outermost construct only:** a **table** nested in either container, and a
+/// container nested in a container. Neither has been observed to cause damage — the `<br>` rules for
+/// `Quote`, `Details` and `None` all end up at the same hard break — and the rescan is deliberately
+/// limited to the one construct whose "runs to the next blank line" rule a rewritten line can
+/// actually destroy. The container tag lines themselves (`<details>` / `</details>`) are excluded
+/// too; see the call site for why relabelling those would delete breaks the document really has.
+fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<Structure> {
+    let mut mask = vec![Structure::None; lines.len()];
     let mut i = 0;
     while i < lines.len() {
         if in_code[i] {
@@ -3340,8 +3711,27 @@ fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
         // what already happens to a list item — the lazy line's tail moves below the lifted math —
         // with no marker leak, no broken callout box and no hidden content revealed.
         if is_blockquote_line(lines[i]) {
-            mask[i] = true;
-            i += 1;
+            let start = i;
+            let mut j = start + 1;
+            while j < lines.len() && !in_code[j] && is_blockquote_line(lines[j]) {
+                j += 1;
+            }
+            mask[start..j].fill(Structure::Quote);
+            // The run is gathered rather than marked one line at a time only so its interior can be
+            // rescanned; the set of lines it marks is identical either way (every continuation line
+            // re-tested true under the old per-line form, and a code line ends the run here exactly
+            // as it fell through to the code gate there).
+            //
+            // Rescan that interior for HTML blocks, on the `>`-stripped text — what
+            // `split_alerts`/tui-markdown hand down as the quote's body, and therefore the text
+            // whose blank lines decide where a block inside the quote ends.
+            let body: Vec<String> = lines[start..j]
+                .iter()
+                .map(|l| strip_blockquote(l))
+                .collect();
+            let body: Vec<&str> = body.iter().map(String::as_str).collect();
+            mark_nested_html_blocks(&body, &in_code[start..j], true, &mut mask[start..j]);
+            i = j;
             continue;
         }
         // `<details>` … `</details>`: mirrors `split_details`'s span (opening tag line through the
@@ -3352,7 +3742,20 @@ fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
             let start = i;
             let close = details_block_close(lines, start);
             let end = close.unwrap_or(lines.len() - 1);
-            mask[start..=end].fill(true);
+            mask[start..=end].fill(Structure::Details);
+            // Rescan the body — the lines between the container's own tag lines — for HTML blocks.
+            // The `<details>`/`</details>` lines themselves are deliberately left out: they are
+            // markers `split_details` consumes structurally, and an HTML block opened *on* the
+            // `<details>` line would swallow the body behind a label meant for lines that sit inside
+            // an already-open block, turning the everyday `text` / `<br>` / `more` idiom in a body
+            // into a deletion (the hazard `Structure::HtmlOpen` exists for).
+            let body = start + 1..close.unwrap_or(lines.len());
+            mark_nested_html_blocks(
+                &lines[body.clone()],
+                &in_code[body.clone()],
+                false,
+                &mut mask[body],
+            );
             i = close.map_or(lines.len(), |c| c + 1);
             continue;
         }
@@ -3367,20 +3770,14 @@ fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
             while j < lines.len() && !in_code[j] && looks_like_table_row(lines[j]) {
                 j += 1;
             }
-            mask[start..j].fill(true);
+            mask[start..j].fill(Structure::Table);
             i = j;
             continue;
         }
         // Any other HTML block: opening tag line through the line before the next blank line,
         // mirroring `split_html_blocks`.
         if is_html_block_start(lines[i]) {
-            let start = i;
-            let mut j = i + 1;
-            while j < lines.len() && !lines[j].trim().is_empty() {
-                j += 1;
-            }
-            mask[start..j].fill(true);
-            i = j;
+            i = mark_html_block(lines, i, false, &mut mask);
             continue;
         }
         i += 1;
@@ -3394,7 +3791,7 @@ fn structure_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
 // stripped (konoma doesn't render HTML = a safe degradation, principle #3). A `<!-- -->` comment is hidden entirely.
 
 enum HtmlPart {
-    Text(String),
+    Text(SourceRun),
     Html(String),
 }
 
@@ -3430,46 +3827,44 @@ fn is_html_block_start(line: &str) -> bool {
 }
 
 /// Split md text into normal text and HTML blocks (a line starting a block, up to the next blank line).
-/// Fence-aware (`fence_mask`): an HTML-looking line inside a code fence is left as ordinary text, or
-/// its tags would be stripped and — worse — the "block" scan (which just runs to the next blank
-/// line) would swallow the fence's own closing marker, leaking it into the rescued text.
+/// Code-aware: an HTML-looking line inside a code block is left as ordinary text, or its tags would
+/// be stripped and — worse — the "block" scan (which just runs to the next blank line) would swallow
+/// the fence's own closing marker, leaking it into the rescued text.
 ///
-/// **The one block splitter still on `fence_mask` rather than [`splitter_code_mask`]** (2026-08).
-/// Switching it costs more than it buys, and the reason is worth writing down because it looks like
-/// an oversight:
-///
-/// An indented (4+ column) code block whose first line starts with an HTML tag is ambiguous, and the
-/// two readings need *whole-document* context to tell apart — context this function no longer has,
-/// because `split_block_parts` has already cut block-level images out of the text by the time it
-/// runs:
+/// This gate is the one that made [`SourceRun`] necessary. An indented (4+ column) code block whose
+/// first line starts with an HTML tag is ambiguous, and the two readings can only be told apart with
+/// *whole-document* context:
 ///
 /// * `para\n\n    <kbd>Ctrl</kbd>\n` — a genuine indented code block, documenting the tag. Rescuing
-///   it as HTML strips the tags and drops the code gutter. `splitter_code_mask` gets this right.
+///   it as HTML strips the tags and drops the code gutter, and — because the block never reaches the
+///   renderer as code — it is not Tab-focusable and cannot be copied with `y c` either.
 /// * A centered `<div align="center">` badge banner — the shape at the top of a great many crate
 ///   READMEs. Pulling its `<img>` lines out leaves fragments like `    </a>\n    <a href="…">\n`,
 ///   which **open** with 4-column-indented content only because their `<div>` went into the previous
 ///   fragment. Asked about that fragment alone, the parser correctly calls it an indented code
 ///   block; asked about the original document, it correctly calls it HTML — and HTML is what konoma
-///   draws and what the copy scanner counts (see `scan_code_run`'s doc comment). `fence_mask`, blind
-///   to indentation entirely, gets this right by accident.
+///   draws and what the copy scanner counts (see `scan_code_run`'s doc comment).
 ///
-/// Measured over the 2,182 `.md` files in the crate registry, moving this one gate to
-/// `splitter_code_mask` produced **zero improvements and three regressions** (raw-window-metal,
-/// static_assertions and tinytemplate READMEs each grew several spurious code blocks full of
-/// `</a><a href="…">`), so it stays as it was. The known cost is the first bullet: an indented code
-/// block starting with an HTML tag is still drawn as tag-stripped HTML. Nothing is lost or
-/// mis-edited — the copy scanner shares this same splitter, so the two still agree.
-fn split_html_blocks(md: &str) -> Vec<HtmlPart> {
-    let lines: Vec<&str> = md.lines().collect();
-    let in_code = fence_mask(&lines);
+/// The two are byte-for-byte the same shape *as fragments*, which is why this function was for a
+/// while pinned to the narrower `fence_mask` (blind to indentation, so it got the banner right by
+/// accident and the `<kbd>` block wrong): measured over the 2,182 `.md` files in the crate registry,
+/// simply swapping in [`splitter_code_mask`] here produced zero improvements and three regressions
+/// (the raw-window-metal, static_assertions and tinytemplate READMEs each grew several spurious code
+/// blocks full of `</a><a href="…">`). The defect was never this gate's choice of mask, though — it
+/// was that the block-structure context had already been destroyed upstream. With the mask computed
+/// once over the intact document and carried here on the [`SourceRun`], the document's own answer is
+/// available again: it marks the `    <kbd>` line as code and does **not** mark any of the banner's
+/// `<div>`/`<a>`/`<img>`/`</a>` lines (they are HTML-block interior), so both cases come out right.
+fn split_html_blocks(run: &SourceRun) -> Vec<HtmlPart> {
+    let lines: Vec<&str> = run.lines();
+    let in_code = run.code();
     let mut parts = Vec::new();
-    let mut buf: Vec<&str> = Vec::new();
+    let mut buf: Vec<(&str, bool)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         if !in_code[i] && is_html_block_start(lines[i]) {
             if !buf.is_empty() {
-                parts.push(HtmlPart::Text(buf.join("\n") + "\n"));
-                buf.clear();
+                parts.push(HtmlPart::Text(html_text_run(&mut buf)));
             }
             let mut block: Vec<&str> = Vec::new();
             while i < lines.len() && !lines[i].trim().is_empty() {
@@ -3479,13 +3874,22 @@ fn split_html_blocks(md: &str) -> Vec<HtmlPart> {
             parts.push(HtmlPart::Html(block.join("\n")));
             continue;
         }
-        buf.push(lines[i]);
+        buf.push((lines[i], in_code[i]));
         i += 1;
     }
     if !buf.is_empty() {
-        parts.push(HtmlPart::Text(buf.join("\n") + "\n"));
+        parts.push(HtmlPart::Text(html_text_run(&mut buf)));
     }
     parts
+}
+
+/// Drain `buf` into one verbatim text run, keeping each line paired with the mask entry it was
+/// handed (`join("\n") + "\n"` yields exactly `buf.len()` lines, so the two stay aligned).
+fn html_text_run(buf: &mut Vec<(&str, bool)>) -> SourceRun {
+    let text = buf.iter().map(|(l, _)| *l).collect::<Vec<_>>().join("\n") + "\n";
+    let code = buf.iter().map(|(_, c)| *c).collect();
+    buf.clear();
+    SourceRun::new(text, code)
 }
 
 /// Render an HTML block as its tag-stripped text (entities decoded, comments dropped entirely).
@@ -3584,7 +3988,7 @@ impl AlertKind {
 }
 
 enum AlertPart {
-    Text(String),
+    Text(SourceRun),
     Alert {
         kind: AlertKind,
         title: String,
@@ -3615,9 +4019,11 @@ fn strip_blockquote(line: &str) -> String {
 }
 
 /// Partition Markdown into plain-text runs and GitHub alerts. An alert starts at a `> [!TYPE]`
-/// header and captures the following blockquote lines as its (marker-stripped) body. Code-aware
-/// ([`code_block_mask`], computed over **this call's own `md`** — see that function's "splitter
-/// gate" note): a `> [!NOTE]`-looking line inside a code block must stay literal code, not open
+/// header and captures the following blockquote lines as its (marker-stripped) body. Code-aware: it
+/// reads the mask off the [`SourceRun`] it is handed rather than deriving one, so the answer is the
+/// **document's** — which is the whole point of that type, since by the time this runs the text may
+/// be a fragment that no longer parses the way its lines did in the file. A `> [!NOTE]`-looking
+/// line inside a code block must stay literal code, not open
 /// a callout box (whose body-capture loop then stops at the first non-`>` line — usually the very
 /// next line of code — leaving the rest of the fence, including its closing marker, to fall through
 /// to plain text and break the code block in two). Also gated by `details_mask`: an alert header
@@ -3627,12 +4033,13 @@ fn strip_blockquote(line: &str) -> String {
 /// to `render_md_text`'s own `split_details` call, which correctly folds it away; from there,
 /// `render_details`/`render_md_body_nested` re-run `split_alerts` on just that block's body, where
 /// this same gate no longer applies (the surrounding `<details>` tags aren't part of the substring).
-fn split_alerts(md: &str) -> Vec<AlertPart> {
+fn split_alerts(run: &SourceRun) -> Vec<AlertPart> {
     let mut parts = Vec::new();
     let mut text = String::new();
-    let lines: Vec<&str> = md.lines().collect();
-    let in_code = splitter_code_mask(&lines);
-    let in_details = details_mask(&lines, &in_code);
+    let mut mask: Vec<bool> = Vec::new();
+    let lines: Vec<&str> = run.lines();
+    let in_code = run.code();
+    let in_details = details_mask(&lines, in_code);
     let mut i = 0;
     while i < lines.len() {
         let header = if in_code[i] || in_details[i] {
@@ -3642,7 +4049,10 @@ fn split_alerts(md: &str) -> Vec<AlertPart> {
         };
         if let Some((kind, title)) = header {
             if !text.is_empty() {
-                parts.push(AlertPart::Text(std::mem::take(&mut text)));
+                parts.push(AlertPart::Text(SourceRun::new(
+                    std::mem::take(&mut text),
+                    std::mem::take(&mut mask),
+                )));
             }
             i += 1;
             let mut body = String::new();
@@ -3655,11 +4065,12 @@ fn split_alerts(md: &str) -> Vec<AlertPart> {
         } else {
             text.push_str(lines[i]);
             text.push('\n');
+            mask.push(in_code[i]);
             i += 1;
         }
     }
     if !text.is_empty() {
-        parts.push(AlertPart::Text(text));
+        parts.push(AlertPart::Text(SourceRun::new(text, mask)));
     }
     parts
 }
@@ -3697,7 +4108,14 @@ fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> 
         ..*ctx
     };
     let mut body_lines = Vec::new();
-    render_md_body_nested(&mut body_lines, body, &inner_ctx);
+    // A peeled container body is a standalone document — the `>` markers / `<details>` tags
+    // are gone — so its mask is computed fresh here rather than sliced from the enclosing
+    // run (see `SourceRun`).
+    render_md_body_nested(
+        &mut body_lines,
+        &SourceRun::parse(body.to_string()),
+        &inner_ctx,
+    );
     for bl in body_lines {
         let style = bl.style;
         let mut spans = vec![bar()];
@@ -3740,7 +4158,7 @@ fn next_details_open(open_attr: bool) -> bool {
 }
 
 enum DetailsPart {
-    Text(String),
+    Text(SourceRun),
     Details {
         open_attr: bool,
         summary: String,
@@ -3775,25 +4193,39 @@ fn details_block_close(lines: &[&str], start: usize) -> Option<usize> {
 
 /// Split off `<details>` … `</details>` blocks (spanning blank lines) from a text run, extracting the
 /// `<summary>` and the body. Non-details text is returned verbatim for the normal pipeline.
-/// Code-aware ([`code_block_mask`], computed over **this call's own `md`** — see that function's
-/// "splitter gate" note): a `<details>` inside a code block is left as text, so the block count and
-/// order match `collect_details_open`, which seeds the per-ordinal open state.
-fn split_details(md: &str) -> Vec<DetailsPart> {
-    let lines: Vec<&str> = md.lines().collect();
-    let in_code = splitter_code_mask(&lines);
+/// Code-aware: it reads the mask off the [`SourceRun`] it is handed rather than deriving one, so a
+/// `<details>` inside a code block is left as text.
+///
+/// That gate is what makes this function's block count and order agree with
+/// [`collect_details_open`], which seeds the per-ordinal open state — and the agreement rests on the
+/// two asking about the *same text*, not on them running the same rule. `collect_details_open` is
+/// handed the whole preprocessed document and derives the document's mask from it; this runs on a
+/// run carved out of that document and is handed the matching slice of that same mask. The
+/// [`SourceRun`] is what carries it here, and it is load-bearing rather than an optimisation: a
+/// splitter that re-derived a mask from the fragment in its hands would answer for text the
+/// document never contained, and every `<details>` after the first disagreement would be seeded with
+/// another block's open state.
+fn split_details(run: &SourceRun) -> Vec<DetailsPart> {
+    let lines: Vec<&str> = run.lines();
+    let in_code = run.code();
     let mut parts = Vec::new();
     let mut text = String::new();
+    let mut mask: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         if in_code[i] {
             text.push_str(lines[i]);
             text.push('\n');
+            mask.push(in_code[i]);
             i += 1;
             continue;
         }
         if let Some(open_attr) = details_open_tag(lines[i]) {
             if !text.is_empty() {
-                parts.push(DetailsPart::Text(std::mem::take(&mut text)));
+                parts.push(DetailsPart::Text(SourceRun::new(
+                    std::mem::take(&mut text),
+                    std::mem::take(&mut mask),
+                )));
             }
             let start = i;
             let close = details_block_close(&lines, start);
@@ -3810,10 +4242,11 @@ fn split_details(md: &str) -> Vec<DetailsPart> {
         }
         text.push_str(lines[i]);
         text.push('\n');
+        mask.push(in_code[i]);
         i += 1;
     }
     if !text.is_empty() {
-        parts.push(DetailsPart::Text(text));
+        parts.push(DetailsPart::Text(SourceRun::new(text, mask)));
     }
     parts
 }
@@ -3983,7 +4416,14 @@ fn render_details(
             ..*ctx
         };
         let mut body_lines = Vec::new();
-        render_md_body_nested(&mut body_lines, body, &inner_ctx);
+        // A peeled container body is a standalone document — the `>` markers / `<details>` tags
+        // are gone — so its mask is computed fresh here rather than sliced from the enclosing
+        // run (see `SourceRun`).
+        render_md_body_nested(
+            &mut body_lines,
+            &SourceRun::parse(body.to_string()),
+            &inner_ctx,
+        );
         for bl in body_lines {
             let style = bl.style;
             let mut spans = vec![bar()];
@@ -4005,7 +4445,7 @@ fn render_details(
 /// still `>`-prefixed and so does not match `details_open_tag`. Fence-aware via `split_details`.
 /// Used by the app to seed the default open state.
 pub fn collect_details_open(src: &str) -> Vec<bool> {
-    split_details(src)
+    split_details(&SourceRun::parse(src.to_string()))
         .into_iter()
         .filter_map(|p| match p {
             DetailsPart::Details { open_attr, .. } => Some(open_attr),
@@ -4072,11 +4512,162 @@ fn replace_tag_pair(s: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
     out
 }
 
+/// The spellings of a line break tag that [`rewrite_br`] recognizes. None of the six is a prefix of
+/// another (they already differ at index 3), so at most one can match at a given position.
+const BR_TAGS: [&str; 6] = ["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<BR />"];
+
+/// The first line break tag in `s`, as `(byte offset, the spelling that matched)`.
+fn next_br(s: &str) -> Option<(usize, &'static str)> {
+    BR_TAGS
+        .iter()
+        .filter_map(|t| s.find(t).map(|i| (i, *t)))
+        .min_by_key(|(i, _)| *i)
+}
+
+/// How a `<br>` on one particular line may be rewritten. Which one applies is decided per line from
+/// [`structure_mask`]; see [`process_inline_html_traced`] for the failure each variant prevents.
+enum BrMode<'a> {
+    /// Inside the body of an HTML block: a hard break, with **every line it would leave blank
+    /// dropped instead of emitted** — including all of them, in which case the source line produces
+    /// no output line at all.
+    ///
+    /// Stated as the invariant rather than as a rule about where the tag sits, because the blank
+    /// line *is* the whole hazard: an HTML block runs to the next blank line, and a whitespace-only
+    /// line is blank to CommonMark. Splitting `x<br>y` inside a block yields two non-blank lines and
+    /// leaves the block intact, so there is nothing to protect against there — whereas a line that
+    /// is nothing but the tag (`    <br>`, the centered-banner idiom) becomes whitespace and kills
+    /// the block, and no substitution can save it, a single space least of all. Removing the line
+    /// does, and it costs no output: see [`process_inline_html_traced`] for why dropping is the only
+    /// safe way to keep the block whole, and what keeping the tag instead did to `shlex`.
+    ///
+    /// `prefix` is the enclosing blockquote marker, and empty for a block at top level or in a
+    /// `<details>` body. It makes "blank" mean *blank to the block* rather than blank to the file:
+    /// when the banner is quoted, the same lone-tag line reads `">     <br>"` and rewriting it
+    /// yields `">       "`, which `str::trim` calls non-empty while the quote's own body sees
+    /// nothing but whitespace — so without the prefix the block died exactly as it did unquoted.
+    /// It is carried here rather than read off the line because only [`structure_mask`] can tell a
+    /// quote marker from a `>` that is body text of a top-level block (see
+    /// [`Structure::HtmlBody`]).
+    HtmlBody { prefix: &'a str },
+    /// Replace it with a single space, keeping the text on one line.
+    Space,
+    /// Turn it into a Markdown hard break, starting the injected continuation line with `prefix`
+    /// (the enclosing blockquote marker, empty outside a quote).
+    Hard { prefix: &'a str },
+}
+
+/// The blockquote prefix of `line`: the leading run matching `^ {0,3}(>[ ]?)+`, returned **verbatim**
+/// so that nesting (`> > `) and the author's own spacing survive. Empty when the line is not a
+/// blockquote line, which is the common case and reproduces the pre-2026-08 behavior exactly.
+///
+/// Taken from the line rather than reconstructed from a nesting depth because a reconstruction would
+/// have to guess: `>text`, `> text` and `> > text` all need different prefixes, and normalizing them
+/// would rewrite lines that have nothing to do with the `<br>` being processed.
+fn blockquote_prefix(line: &str) -> &str {
+    let b = line.as_bytes();
+    // CommonMark allows a block marker up to 3 columns of indentation; at 4 it is code, and
+    // `structure_mask`'s own code gate has already excluded those lines from reaching here.
+    let mut i = 0;
+    while i < 3 && i < b.len() && b[i] == b' ' {
+        i += 1;
+    }
+    if b.get(i) != Some(&b'>') {
+        return "";
+    }
+    let mut end = i;
+    while b.get(end) == Some(&b'>') {
+        end += 1;
+        // One optional space after each marker — that space belongs to the marker, not the content.
+        if b.get(end) == Some(&b' ') {
+            end += 1;
+        }
+    }
+    &line[..end]
+}
+
+/// Rewrite every line break tag in `s` as a Markdown hard break, starting each line the break
+/// injects with `prefix`.
+fn br_hard(s: &str, prefix: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some((at, tag)) = next_br(rest) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + tag.len()..];
+        // Nothing but whitespace after the tag: the source line's own newline already supplies the
+        // break, so emit the two-space hard-break marker and stop there. Adding a newline as well
+        // would produce a *blank* line, which ends the paragraph — and, inside a container, the
+        // container with it. (An inline code span left behind by `mask_code_spans` is a NUL
+        // placeholder, not whitespace, so a span following the tag correctly counts as "not at the
+        // end".)
+        if rest.trim().is_empty() {
+            out.push_str("  ");
+        } else {
+            out.push_str("  \n");
+            out.push_str(prefix);
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `line` is blank **to the block that encloses it**: whitespace-only once `prefix` — the
+/// enclosing blockquote marker, empty outside a quote — is taken off the front. A quote marker is
+/// container, not content, so `">   "` ends an HTML block nested in a quote exactly as `"   "` ends
+/// one at top level. With an empty prefix this is `str::trim().is_empty()`, byte for byte.
+fn blank_within(line: &str, prefix: &str) -> bool {
+    line.strip_prefix(prefix).unwrap_or(line).trim().is_empty()
+}
+
+/// Replace every line break tag in `s` with a single space.
+fn br_space(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some((at, tag)) = next_br(rest) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + tag.len()..];
+        out.push(' ');
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Rewrite every line break tag in `s` according to `mode`.
+///
+/// Replaces a `s.replace("<br>", "  \n")` chain, which could not express the three distinctions
+/// that turned out to matter: whether the tag is the last thing on the line, what the line the
+/// break injects has to start with, and whether injecting it would leave a blank line where the
+/// enclosing block cannot survive one. See [`process_inline_html_traced`] for why each matters.
+///
+/// Returns the empty string when [`BrMode::HtmlBody`] drops every line it produced; the caller must
+/// then emit no line at all (and no `origin` entry for it).
+fn rewrite_br(s: &str, mode: &BrMode<'_>) -> String {
+    match mode {
+        BrMode::Hard { prefix } => br_hard(s, prefix),
+        BrMode::Space => br_space(s),
+        BrMode::HtmlBody { prefix } => {
+            let hard = br_hard(s, prefix);
+            // A blank line terminates the block, so emit none: drop each produced line that is
+            // whitespace-only rather than substituting something into it. Note this is per produced
+            // line, not all-or-nothing — `a<br><br>b` leaves a blank line *between* two non-blank
+            // ones, and dropping just that one keeps both halves and the block. Lines with no blank
+            // among them come back byte-identical to `hard`, so the common `x<br>y` is untouched.
+            // A masked code span is a NUL placeholder, not whitespace, so a line holding only a
+            // code span correctly counts as having content.
+            let kept: Vec<&str> = hard
+                .split('\n')
+                .filter(|l| !blank_within(l, prefix))
+                .collect();
+            kept.join("\n")
+        }
+    }
+}
+
 /// Convert the common inline HTML that GitHub renders (but tui-markdown strips) into Markdown/Unicode
 /// it renders faithfully: `<del>/<s>/<strike>` → strikethrough, `<kbd>` → an inline-code keycap,
-/// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a hard line break. Code-aware (fenced
-/// **or indented**); a no-op per line without any of these tags. `<mark>`/`<ins>` have no faithful
-/// terminal form and are left to tui-markdown (their tags are stripped, text kept).
+/// `<sup>/<sub>` → Unicode (when the content maps), `<br>` → a line break (in one of three forms —
+/// see [`process_inline_html_traced`]). Code-aware (fenced **or indented**); a no-op per line without
+/// any of these tags. `<mark>`/`<ins>` have no faithful terminal form and are left to tui-markdown
+/// (their tags are stripped, text kept).
 /// Convenience form without origin tracking. Production always goes through
 /// [`process_inline_html_traced`] (it needs the origins); this is the shorthand the tests use.
 #[cfg(test)]
@@ -4106,9 +4697,70 @@ pub(crate) fn identity_origin(src: &str) -> LineOrigin {
 }
 
 /// [`process_inline_html`] that also composes the line origins (see [`LineOrigin`]). A `<br>` is the
-/// only substitution that adds lines: the fragment before it keeps the origin, everything after it
-/// gets `None`, because that text was never a line of its own in the file and so has no line whose
-/// bytes a write-back could target.
+/// only substitution that can add a line: the fragment before it keeps the origin, everything after
+/// it gets `None`, because that text was never a line of its own in the file and so has no line
+/// whose bytes a write-back could target.
+///
+/// # How a `<br>` is rewritten, and why it is not one rule
+///
+/// Root cause (2026-08, found by rendering every README in the local crate registry): rewriting
+/// `<br>` unconditionally into `"  \n"` **injects a line that carries none of the prefix its
+/// enclosing block requires**, so the block it lives in is torn apart. `split_alerts` captures a
+/// callout body by consuming consecutive `>`-prefixed lines, so an injected unprefixed line ended
+/// the box mid-way; the rest of the alert — including a fenced code block inside it — then leaked
+/// out as literal `> ```rust` text. The same injection ended an HTML block, because the tag often
+/// sits alone on its own indented line (`    <br>` between two badge `<a>` blocks is the standard
+/// centered-banner idiom) and `"    " + "  "` is a whitespace-only line, which *is* a blank line to
+/// CommonMark: the block terminated there and every following indented line became a genuine
+/// indented code block. `raw-window-metal` and `static_assertions` both drew their badges as a
+/// `▎ …` code block for exactly that reason.
+///
+/// So the governing rule is: **a `<br>` may only become a hard break when the line it injects still
+/// belongs to the same block.** Three cases, decided per line from [`structure_mask`]:
+///
+/// * [`Structure::HtmlBody`] → a hard break, but **any line that would come out blank is dropped
+///   instead of emitted** ([`BrMode::HtmlBody`]) — so a line that is nothing but the tag produces no
+///   output line at all. No *substitution* is safe here, not even a single space, because the tag is
+///   frequently the whole line and any whitespace-only result still reads as blank and still ends
+///   the block; removing the line is the only rewrite that keeps the block whole. It costs no
+///   output either: konoma renders no HTML inside an HTML block anyway — `split_html_blocks` hands
+///   the block to `render_html_block`, which strips every tag and drops the lines that become empty
+///   — so the screen content is identical to what keeping the tag would have drawn.
+///
+///   **Keeping the tag was tried first and is wrong**, which is worth recording because the failure
+///   is not visible from here (found 2026-08 by rendering every `.md` in the local crate registry;
+///   `shlex`'s `quoting_warning.md` was the one file it damaged). A preserved tag is still a token
+///   *this* module treats as a block opener — [`is_html_block_start`] accepts any tag name — and a
+///   **later** pass may move the text somewhere the surrounding blank lines no longer exist.
+///   `process_footnotes` does exactly that: it relocates definition bodies into the section it
+///   appends at the end of the document. A footnote definition whose body held a lone `  <br>` line
+///   arrived there with the tag intact, at the head of an unbroken run of lines, where it opened an
+///   HTML block that ran to the end of the document — handing the *following* footnotes to
+///   `render_html_block`, which emits their text without parsing Markdown at all, so their inline
+///   code stopped rendering and drew as literal backticks. Dropping the line leaves nothing behind
+///   that a later pass can plant, which is why it is preferred over any rule that keeps the tag
+///   "only when it looks safe here".
+///
+///   The block's *opening* line is deliberately excluded and takes the default below; see
+///   [`Structure::HtmlOpen`] for why dropping it there would delete a break the document really has.
+/// * [`Structure::Table`] → **a single space** ([`BrMode::Space`]). There is no prefix that makes a
+///   second line a valid continuation of a table row, and `render_table` draws one screen row per
+///   source row, so any line injected into a row becomes a second, malformed row (`| x<br>y | z |`
+///   drew as `│ x │   │` + `│ y │ z │`). Keeping the text on one line is the only rendering that
+///   does not corrupt the table — an honest degradation (principle #3): the text is preserved and
+///   the markup does not leak. A table row always contains pipes, so it can never collapse to a
+///   blank line this way.
+/// * anything else → **a hard break** ([`BrMode::Hard`]), with the two corrections that make it
+///   correct rather than merely usual: the injected line repeats the current line's blockquote
+///   prefix ([`blockquote_prefix`], taken verbatim so `> > ` nesting survives), keeping a quote or
+///   alert body one contiguous run of `>` lines; and a `<br>` at the end of a line emits only the
+///   `"  "` marker and no newline, because the source already supplies the break and adding another
+///   makes a blank line that ends the paragraph — and with it the container. Outside a quote the
+///   prefix is empty and the output is byte-identical to the old behavior.
+///
+/// A `<br>` inside a list item, a `<details>` body or a plain paragraph needs no correction and gets
+/// none: CommonMark lazy continuation keeps an unprefixed line attached to the list/quote paragraph
+/// above it, and `split_details` spans blank lines, so those three were never broken.
 pub(crate) fn process_inline_html_traced(
     src: &str,
     origin_in: &[Option<usize>],
@@ -4116,7 +4768,15 @@ pub(crate) fn process_inline_html_traced(
     let mut out = String::new();
     let mut origin = LineOrigin::new();
     let lines: Vec<&str> = src.lines().collect();
-    let in_code = literal_code_mask(&lines);
+    // One pulldown-cmark parse serving both masks (see `literal_code_mask_from`): the union decides
+    // "leave this line alone entirely", while `structure_mask` — like every block splitter it
+    // mirrors — gates on the parser's answer on its own.
+    let parsed_code = code_block_mask(&lines);
+    let in_code = literal_code_mask_from(&parsed_code, &lines);
+    // Which block each line belongs to, from the one implementation of those rules. Deliberately not
+    // re-derived here: a fourth hand-written copy of "is this an HTML block / a table row" is exactly
+    // the drift this module keeps regressing on (see `splitter_code_mask`).
+    let structure = structure_mask(&lines, &parsed_code);
     for (i, line) in lines.iter().enumerate() {
         let line = *line;
         let src_line = origin_in.get(i).copied().flatten();
@@ -4136,6 +4796,40 @@ pub(crate) fn process_inline_html_traced(
         // tag to convert. Converting it also wrapped the content in a second pair of backticks
         // (`` ``x`` ``) and a `<br>` inside a span injected a newline, breaking the span outright.
         // The spans are masked rather than cut out, so a tag pair may still wrap one.
+        // Which of the three `<br>` rewrites this line gets (see the doc comment). The blockquote
+        // prefix is read off the raw line, not the code-span-masked one: a code span begins with a
+        // backtick, so it can never be part of a leading `>` run, and the two agree by construction.
+        let mode = match structure[i] {
+            // The prefix is empty unless the block is nested in a blockquote, and only
+            // `structure_mask` can say: a top-level `<div>` whose body text starts with `>` looks
+            // identical from here, and there the marker is content — repeating it would inject a
+            // `>` the document never had. See `Structure::HtmlBody`.
+            Structure::HtmlBody { quoted } => BrMode::HtmlBody {
+                prefix: if quoted { blockquote_prefix(line) } else { "" },
+            },
+            Structure::Table => BrMode::Space,
+            // `HtmlOpen` belongs with the default, not with `HtmlBody`: there is no already-open
+            // block to protect on an opening line, and konoma calls a line starting with `<br>` an
+            // opener at all only because `is_html_block_start` accepts any tag name (see
+            // `Structure::HtmlOpen`). Dropping the line there would delete a break the document
+            // really has: `text` / `<br>` / `more`, the ordinary way to force a gap in prose, is a
+            // *lone* `<br>` line and konoma classifies it as an opener, so `HtmlBody` treatment
+            // would rewrite it to nothing and silently join the two paragraphs. The default leaves
+            // the whitespace-only line it has always produced, which reads as the blank line the
+            // author asked for. Measured rather than assumed: routing `HtmlOpen` here too changes 5
+            // more of the 2182 registry `.md` files against the released rendering, and in each the
+            // damage is that deletion — `bit-set`/`bit-vec`'s README asks for a gap with two `<br />`
+            // lines and got its two badge rows run together into one.
+            //
+            // Includes `Structure::Details` and a nested quote inside one too: reading the prefix
+            // off the line itself means a `> quoted<br>tail` line in a `<details>` body still gets
+            // its marker repeated, without this needing to know it is nested.
+            Structure::None | Structure::Quote | Structure::Details | Structure::HtmlOpen => {
+                BrMode::Hard {
+                    prefix: blockquote_prefix(line),
+                }
+            }
+        };
         let s = rewrite_masking_code_spans(line, |masked| {
             let mut s = replace_tag_pair(masked, "kbd", |i| format!("`{i}`"));
             s = replace_tag_pair(&s, "del", |i| format!("~~{i}~~"));
@@ -4143,15 +4837,26 @@ pub(crate) fn process_inline_html_traced(
             s = replace_tag_pair(&s, "strike", |i| format!("~~{i}~~"));
             s = replace_tag_pair(&s, "sup", |i| map_all_or_keep(i, sup_char));
             s = replace_tag_pair(&s, "sub", |i| map_all_or_keep(i, sub_char));
-            for br in ["<br>", "<br/>", "<br />", "<BR>", "<BR/>", "<BR />"] {
-                s = s.replace(br, "  \n");
-            }
-            s
+            rewrite_br(&s, &mode)
         });
+        // `BrMode::HtmlBody` drops the blank lines it would have produced, so a line that was
+        // nothing but the tag comes back empty: emit nothing for it. Every line reaching here
+        // contains a `<`, so it was not empty to begin with, and an empty result can only be that
+        // drop. Gated on the mode so the other two keep emitting whatever they produce — outside an
+        // HTML block a blank line is meaningful (it ends a paragraph), and removing it would be a
+        // silent rendering change rather than a rescue.
+        if matches!(mode, BrMode::HtmlBody { .. }) && s.is_empty() {
+            continue;
+        }
         out.push_str(&s);
         out.push('\n');
         // Only the first fragment still starts where the source line started; a `<br>` tail is new
-        // text at a position no source line owns.
+        // text at a position no source line owns. The count is derived from the produced string, so
+        // it stays in step with whichever `BrMode` ran — including the cases that emit *no* newline
+        // (a trailing `<br>`, or `Space`) and the one that emits no line at all (a bare `<br>` line
+        // inside an HTML block, which `continue`d above without pushing an entry). A drift here is a
+        // correctness bug rather than a cosmetic one: `LineOrigin` is what proves the checkbox
+        // write-back edits the checkbox the reader is looking at.
         origin.push(src_line);
         origin.extend(std::iter::repeat_n(None, s.matches('\n').count()));
     }
@@ -4577,15 +5282,17 @@ fn looks_like_table_row(line: &str) -> bool {
 
 /// Split md text into "normal text" and "table blocks".
 /// A table = header row (containing `|`) + the delimiter row right after (`|---|`) + the consecutive data rows.
-/// Code-aware ([`code_block_mask`], computed over **this call's own `md`** — see that function's
-/// "splitter gate" note): pipe-delimited lines inside a code block (e.g. a shell/markdown example)
-/// must stay code, not get carved out as a rendered table — which also splits the block
-/// into two pieces, each growing its own (broken) code-block header.
-fn split_tables(md: &str) -> Vec<MdPart> {
-    let lines: Vec<&str> = md.lines().collect();
-    let in_code = splitter_code_mask(&lines);
+/// Code-aware: it reads the mask off the [`SourceRun`] it is handed rather than deriving one, so the
+/// answer is the **document's** even when this run is a fragment cut out of it (see that type).
+/// Pipe-delimited lines inside a code block (e.g. a shell/markdown example) must stay code, not get
+/// carved out as a rendered table — which also splits the block into two pieces, each growing its
+/// own (broken) code-block header.
+fn split_tables(run: &SourceRun) -> Vec<MdPart> {
+    let lines: Vec<&str> = run.lines();
+    let in_code = run.code();
     let mut parts = Vec::new();
     let mut text = String::new();
+    let mut mask: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         // A table starts = the current line is a header candidate AND the next line is a delimiter row AND both are outside a code block.
@@ -4596,7 +5303,10 @@ fn split_tables(md: &str) -> Vec<MdPart> {
             && is_table_delimiter(lines[i + 1])
         {
             if !text.is_empty() {
-                parts.push(MdPart::Text(std::mem::take(&mut text)));
+                parts.push(MdPart::Text(SourceRun::new(
+                    std::mem::take(&mut text),
+                    std::mem::take(&mut mask),
+                )));
             }
             let mut raw = String::new();
             raw.push_str(lines[i]);
@@ -4614,11 +5324,12 @@ fn split_tables(md: &str) -> Vec<MdPart> {
         } else {
             text.push_str(lines[i]);
             text.push('\n');
+            mask.push(in_code[i]);
             i += 1;
         }
     }
     if !text.is_empty() {
-        parts.push(MdPart::Text(text));
+        parts.push(MdPart::Text(SourceRun::new(text, mask)));
     }
     parts
 }
@@ -5225,9 +5936,12 @@ mod tests {
     /// written inside one to *document* the notation must stay literal code — carving it out both
     /// renders a construct that isn't there and tears the code block in half.
     ///
-    /// Known gap, deliberately not asserted here: the same line starting with an HTML tag
-    /// (`    <kbd>Ctrl</kbd>`) is still lifted out and drawn as tag-stripped HTML, because
-    /// `split_html_blocks` keeps the fence-only gate on purpose — see its doc comment.
+    /// The third axis — the same line starting with an HTML tag (`    <kbd>Ctrl</kbd>`) — was a
+    /// known gap here for as long as `split_html_blocks` was pinned to the fence-only gate. It no
+    /// longer is: now that the document's mask is carried in on a [`SourceRun`] rather than
+    /// re-derived from a fragment, such a block is drawn as code like the two cases below. It is
+    /// still not asserted here (this test is about *content* being carved out as a `┌` table or a
+    /// `▌` callout, which has no HTML analogue), and it is not yet pinned anywhere else either.
     #[test]
     fn an_indented_code_block_keeps_table_and_alert_content_literal() {
         for (name, src, literal) in [
@@ -5493,7 +6207,7 @@ mod tests {
         // Extract a block that spans a blank line; summary + body separated, tags stripped.
         let md =
             "intro\n\n<details open>\n<summary>Sum</summary>\n\nbody line\n\n</details>\n\ntail\n";
-        let parts = split_details(md);
+        let parts = split_details(&doc_run(md));
         assert_eq!(parts.len(), 3, "Text / Details / Text");
         match &parts[1] {
             DetailsPart::Details {
@@ -5509,7 +6223,7 @@ mod tests {
         }
         // Fence-aware: a <details> inside a code fence is left as text.
         let fenced = "```\n<details>\n<summary>x</summary>\n</details>\n```\n";
-        assert!(split_details(fenced)
+        assert!(split_details(&doc_run(fenced))
             .iter()
             .all(|p| matches!(p, DetailsPart::Text(_))));
     }
@@ -5521,8 +6235,15 @@ mod tests {
         let md = "<details>\n<summary>Sum</summary>\n\nthe body\n\n</details>\n";
         let shown = |states: Vec<bool>| -> bool {
             set_details_open(states);
-            let lines =
-                render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+            let lines = render_markdown_tasks_opts(
+                &doc_run(md),
+                60,
+                BG,
+                "TwoDark",
+                false,
+                DEFAULT_TASK_STATES,
+                true,
+            );
             let all: String = lines
                 .iter()
                 .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -5677,8 +6398,15 @@ mod tests {
         );
         // End-to-end: the C summary line renders expanded (▾), honoring its `open` attribute.
         set_details_open(collect_details_open(md));
-        let lines =
-            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines = render_markdown_tasks_opts(
+            &doc_run(md),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let c_arrow = lines.iter().find_map(|l| {
             let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
             joined
@@ -5709,8 +6437,15 @@ mod tests {
             vec![false],
             "one top-level (closed) details block"
         );
-        let lines =
-            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines = render_markdown_tasks_opts(
+            &doc_run(md),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -5745,8 +6480,15 @@ mod tests {
                   > SECRET-INSIDE-OPEN-DETAILS\n\n</details>\n";
         set_details_open(collect_details_open(md));
         assert_eq!(collect_details_open(md), vec![true]);
-        let lines =
-            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines = render_markdown_tasks_opts(
+            &doc_run(md),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -5791,8 +6533,15 @@ mod tests {
             "a <details> reachable only through an alert is not in the top-level count"
         );
         set_details_open(collect_details_open(closed));
-        let lines =
-            render_markdown_tasks_opts(closed, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines = render_markdown_tasks_opts(
+            &doc_run(closed),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -5818,8 +6567,15 @@ mod tests {
         let open = "> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n\
                      > SECRET-O\n>\n> </details>\n";
         set_details_open(collect_details_open(open));
-        let lines_open =
-            render_markdown_tasks_opts(open, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines_open = render_markdown_tasks_opts(
+            &doc_run(open),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined_open: String = lines_open
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -5859,7 +6615,7 @@ mod tests {
         );
         set_details_open(collect_details_open(&closed));
         let lines = render_markdown_tasks_opts(
-            &closed,
+            &doc_run(&closed),
             60,
             BG,
             "TwoDark",
@@ -5896,8 +6652,15 @@ mod tests {
             "top-level only: A(open) + C(open)"
         );
         set_details_open(collect_details_open(&open));
-        let lines_open =
-            render_markdown_tasks_opts(&open, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let lines_open = render_markdown_tasks_opts(
+            &doc_run(&open),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined_open: String = lines_open
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -6251,11 +7014,11 @@ mod tests {
     #[test]
     fn splits_mermaid_fence_out_of_markdown() {
         let src = "# Title\n\nbefore\n\n```mermaid\ngraph TD\n  A --> B\n```\n\nafter\n";
-        let segs = split_segments(src);
+        let segs = split_segments(&doc_run(src));
         assert_eq!(segs.len(), 3, "got {segs:?}");
-        assert!(matches!(&segs[0], Segment::Md(s) if s.contains("Title")));
+        assert!(matches!(&segs[0], Segment::Md(s) if s.text().contains("Title")));
         assert!(matches!(&segs[1], Segment::Mermaid(s) if s.contains("graph TD")));
-        assert!(matches!(&segs[2], Segment::Md(s) if s.contains("after")));
+        assert!(matches!(&segs[2], Segment::Md(s) if s.text().contains("after")));
         // The fence lines are not included in the mermaid section.
         assert!(matches!(&segs[1], Segment::Mermaid(s) if !s.contains("```")));
     }
@@ -6264,16 +7027,16 @@ mod tests {
     fn normal_code_fence_is_kept_in_markdown() {
         // A ```rust block is not intercepted and is left in md (tui-markdown highlights it).
         let src = "text\n\n```rust\nlet x = 1;\n```\n";
-        let segs = split_segments(src);
+        let segs = split_segments(&doc_run(src));
         assert_eq!(segs.len(), 1, "got {segs:?}");
-        assert!(matches!(&segs[0], Segment::Md(s) if s.contains("let x = 1;")));
+        assert!(matches!(&segs[0], Segment::Md(s) if s.text().contains("let x = 1;")));
     }
 
     #[test]
     fn mermaid_inside_normal_fence_is_not_intercepted() {
         // A ```mermaid-looking line inside a normal fence never becomes a diagram (it's already inside a fence).
         let src = "~~~\n```mermaid\nnot a diagram\n```\n~~~\n";
-        let segs = split_segments(src);
+        let segs = split_segments(&doc_run(src));
         assert!(
             segs.iter().all(|s| matches!(s, Segment::Md(_))),
             "got {segs:?}"
@@ -7072,9 +7835,9 @@ plain body
     #[test]
     fn split_alerts_captures_body_and_surrounding_text() {
         let md = "intro\n\n> [!TIP]\n> be **bold**\n> line two\n\nafter\n";
-        let parts = split_alerts(md);
+        let parts = split_alerts(&doc_run(md));
         assert_eq!(parts.len(), 3);
-        assert!(matches!(&parts[0], AlertPart::Text(t) if t.contains("intro")));
+        assert!(matches!(&parts[0], AlertPart::Text(t) if t.text().contains("intro")));
         match &parts[1] {
             AlertPart::Alert { kind, body, .. } => {
                 assert_eq!(*kind, AlertKind::Tip);
@@ -7083,15 +7846,22 @@ plain body
             }
             _ => panic!("expected an alert"),
         }
-        assert!(matches!(&parts[2], AlertPart::Text(t) if t.contains("after")));
+        assert!(matches!(&parts[2], AlertPart::Text(t) if t.text().contains("after")));
     }
 
     #[test]
     fn render_alert_makes_a_colored_callout_not_literal_marker() {
         let md = "> [!WARNING]\n> careful with [docs](./x.md)\n";
         // alerts on
-        let on =
-            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, true);
+        let on = render_markdown_tasks_opts(
+            &doc_run(md),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            true,
+        );
         let joined: String = on
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -7120,8 +7890,15 @@ plain body
         assert!(has_link_label, "alert body Markdown is rendered");
 
         // alerts off → ordinary blockquote, the marker stays literal.
-        let off =
-            render_markdown_tasks_opts(md, 60, BG, "TwoDark", false, DEFAULT_TASK_STATES, false);
+        let off = render_markdown_tasks_opts(
+            &doc_run(md),
+            60,
+            BG,
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            false,
+        );
         let joined_off: String = off
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -7143,6 +7920,693 @@ plain body
         assert!(process_inline_html("<sup>note</sup>\n").contains("note"));
         // <br> → a hard line break (two trailing spaces + newline).
         assert!(process_inline_html("a<br>b\n").contains("a  \nb"));
+    }
+
+    // ---- `<br>` must not tear the block it lives in (2026-08) --------------------------------
+    //
+    // Root cause these pin: rewriting `<br>` unconditionally into `"  \n"` injects a line carrying
+    // none of the prefix its enclosing block requires, so the block is destroyed rather than broken
+    // *into* two lines. None of this is visible to a count-based check — the renderer and the source
+    // scanner agree on the number of checkboxes and code blocks either way — so every assertion here
+    // is about the *structure* of the rendered lines.
+
+    /// One document through the production chain: the inline-HTML pre-pass, then
+    /// `render_markdown_with_images` — the entry point the app actually calls.
+    ///
+    /// Deliberately not the `render_markdown_tasks` shorthand: that one skips the block-level
+    /// extraction pass, and lifting an `<img>` line out of a banner is precisely what splits the
+    /// surrounding HTML block (see `rendered_code_blocks`' own note). A `<br>` test measured on the
+    /// shorthand would not see the failure the two banner READMEs actually showed.
+    fn br_pre_and_render(src: &str) -> (String, Vec<Line<'static>>) {
+        let pre = process_inline_html(src);
+        set_details_open(collect_details_open(&pre));
+        let (lines, _) = render_markdown_with_images(
+            &pre,
+            100,
+            NO_CODE,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        (pre, lines)
+    }
+
+    /// The rendered lines as plain text, and how many code-block headers were drawn.
+    fn br_texts(src: &str) -> (Vec<String>, usize) {
+        let (_, lines) = br_pre_and_render(src);
+        let headers = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_code_header_span(s))
+            .count();
+        let texts = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        (texts, headers)
+    }
+
+    /// [`br_texts`] with a backend that can actually show images, so the **placements** are
+    /// observable as well as the code-block headers.
+    ///
+    /// The distinction is not cosmetic. When a banner collapses into an indented code block, the
+    /// document-wide code mask stops calling its `<img>` lines HTML, `split_block_parts` no longer
+    /// lifts them out, and the image is *lost* — while a header-count assertion can still pass,
+    /// because the surviving markup may render through a path that draws no konoma code header at
+    /// all (that is exactly what the quoted form of this shape does). Losing a badge is the damage
+    /// a reader sees, so it is asserted directly.
+    fn banner_render(src: &str) -> (Vec<String>, usize, usize) {
+        let pre = process_inline_html(src);
+        set_details_open(collect_details_open(&pre));
+        let (lines, places) = render_markdown_with_images(
+            &pre,
+            70,
+            NO_CODE,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Inline { cols: 4, rows: 2 },
+            &|_: &str| MermaidSlot::Text,
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        let headers = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_code_header_span(s))
+            .count();
+        let texts = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        (texts, headers, places.len())
+    }
+
+    /// The centered badge banner of the three tests above, **one container deep** — the level at
+    /// which `structure_mask` used to stop looking.
+    ///
+    /// Root cause (2026-08): the mask reported only the outermost construct, so every line of a
+    /// banner nested in `<details>` came back `Structure::Details` (and in a quote, `Structure::Quote`).
+    /// The lone `    <br>` line therefore took the default hard-break rewrite instead of the
+    /// HTML-block one, and `"    " + "  "` is whitespace — a blank line to CommonMark. The inner
+    /// `<p align="center">` block ended there, the 4-column-indented lines below it became a genuine
+    /// indented code block, and the block splitter (correctly, by then) honoured that: the markup
+    /// drew as `▎ …` and the `<img>` line was no longer extracted, so **a badge disappeared**.
+    ///
+    /// Both containers are covered because they reach the bug by different routes — a `<details>`
+    /// span is filled whole, a quote is a run of `>`-prefixed lines whose body only looks like an
+    /// HTML block once the markers are stripped — and the quoted form additionally needs "blank"
+    /// to be judged *inside* the quote, since `">       "` is not whitespace to `str::trim`.
+    ///
+    /// Both link shapes are covered too. With the `<img>` on the `<a>`'s own line the whole line is
+    /// extracted and nothing is left behind; with it on a line of its own, `split_block_parts`
+    /// leaves the `    </a>` / `    <a …>` fragments that make this bug class hard in the first
+    /// place. The real READMEs use the second, and only it exercises the fragment path.
+    ///
+    /// Asserts the **placement count**, not just the header count: the quoted form loses its badge
+    /// while drawing zero konoma code headers, so a header-only assertion passes on the broken
+    /// build. Measured against the broken build, the four cases were 1/1, 1/1, 0/1, 0/1
+    /// (headers/images) where every one must be 0/2.
+    #[test]
+    fn banner_nested_in_a_container_keeps_both_badges_and_draws_no_code_block() {
+        let single = concat!(
+            "<p align=\"center\">\n",
+            "    <a href=\"u\"><img src=\"https://s.svg\" alt=\"BADGE-A\"></a>\n",
+            "    <br>\n",
+            "    <a href=\"v\"><img src=\"https://t.svg\" alt=\"BADGE-B\"></a>\n",
+            "</p>\n",
+        );
+        let multi = concat!(
+            "<p align=\"center\">\n",
+            "    <a href=\"u\">\n",
+            "      <img src=\"https://s.svg\" alt=\"BADGE-A\">\n",
+            "    </a>\n",
+            "    <br>\n",
+            "    <a href=\"v\">\n",
+            "      <img src=\"https://t.svg\" alt=\"BADGE-B\">\n",
+            "    </a>\n",
+            "</p>\n",
+        );
+        let quoted = |b: &str| {
+            b.lines()
+                .map(|l| format!("> {l}\n"))
+                .collect::<Vec<_>>()
+                .concat()
+        };
+        let folded =
+            |b: &str| format!("<details open>\n<summary>Badges</summary>\n\n{b}\n</details>\n");
+        for (name, src) in [
+            ("details/single-line", folded(single)),
+            ("details/multi-line", folded(multi)),
+            ("quote/single-line", quoted(single)),
+            ("quote/multi-line", quoted(multi)),
+        ] {
+            let (texts, headers, images) = banner_render(&src);
+            assert_eq!(
+                headers, 0,
+                "{name}: 入れ子のバナーが字下げコードブロックとして描かれている: {texts:#?}"
+            );
+            assert_eq!(
+                images, 2,
+                "{name}: バッジが失われている(片方だけ抽出された): {texts:#?}"
+            );
+            // The leftover `</a>` fragments are rescued as HTML rather than drawn as markup —
+            // except in a quote, where they still carry their `>` marker and so are invisible to
+            // `split_html_blocks`, which matches on the raw line. That gap predates both 2026-08
+            // fixes and is orthogonal to this one (it costs a stray fragment on screen, never an
+            // image); see `banner_quoted_multiline_still_leaks_its_leftover_fragments`.
+            if !name.starts_with("quote/multi") {
+                assert!(
+                    !texts.iter().any(|t| t.contains("</a>")),
+                    "{name}: 生の HTML タグが画面に漏れている: {texts:#?}"
+                );
+            }
+        }
+    }
+
+    /// The one shape the fix above does **not** clean up completely, pinned so it is a known
+    /// limitation rather than a surprise: a multi-line badge banner inside a **blockquote** keeps
+    /// both images, but the `    </a>` fragments `split_block_parts` leaves behind still draw as a
+    /// code block inside the quote.
+    ///
+    /// Different root cause, and pre-existing on both sides of the 2026-08 pair: `split_html_blocks`
+    /// asks `is_html_block_start` about the raw line, and a quoted fragment begins with `>`, not
+    /// `<` — so the rescue never fires and the 4-column-indented remains reach tui-markdown, which
+    /// correctly calls them indented code *within the quote*. Fixing it means teaching the HTML
+    /// splitter to peel quote markers, which is a far wider change than relabelling a mask.
+    #[test]
+    fn banner_quoted_multiline_still_leaks_its_leftover_fragments() {
+        let src = concat!(
+            "> <p align=\"center\">\n",
+            ">     <a href=\"u\">\n",
+            ">       <img src=\"https://s.svg\" alt=\"BADGE-A\">\n",
+            ">     </a>\n",
+            ">     <br>\n",
+            ">     <a href=\"v\">\n",
+            ">       <img src=\"https://t.svg\" alt=\"BADGE-B\">\n",
+            ">     </a>\n",
+            "> </p>\n",
+        );
+        let (texts, headers, images) = banner_render(src);
+        assert_eq!((headers, images), (0, 2), "画像は両方とも残る: {texts:#?}");
+        assert!(
+            texts.iter().any(|t| t.contains("</a>")),
+            "既知の残存(引用内の断片が救済されない)が消えていたらこのテストを畳んでよい: {texts:#?}"
+        );
+    }
+
+    /// The banner's `<br>` line is dropped inside a container exactly as it is at top level — but a
+    /// `<br>` that is *not* inside a nested HTML block must still become a break, at either depth.
+    ///
+    /// Pins the boundary the fix has to respect: the rescan re-labels only the lines a nested HTML
+    /// block actually covers, so the `text` / `<br>` / `more` idiom (whose middle line konoma calls
+    /// a block *opener*, never a body line) keeps producing the gap the author asked for. Without
+    /// this, "relabel the container's interior" is satisfiable by relabelling all of it — which
+    /// deletes those breaks, the damage measured on `bit-set`/`bit-vec` when `HtmlOpen` was routed
+    /// the other way.
+    ///
+    /// The `<details>` case with **no blank line after the opening tag** is the one that
+    /// discriminates, and it is here because the obvious over-broad implementation (rescan the whole
+    /// span, tag lines included) passes every other assertion in this module: only there does the
+    /// `<details>` line itself open a block that swallows the `<br>` below it into body position.
+    /// The blank-line-separated form and the quoted form are kept alongside it as the shapes real
+    /// documents actually use.
+    #[test]
+    fn a_lone_br_between_paragraphs_still_breaks_inside_a_container() {
+        for (name, src) in [
+            (
+                "details/no blank line",
+                "<details open>\nalpha\n<br>\nbeta\n</details>\n",
+            ),
+            (
+                "details/blank-separated",
+                "<details open>\n<summary>S</summary>\n\nalpha\n\n<br>\n\nbeta\n\n</details>\n",
+            ),
+            ("blockquote", "> alpha\n>\n> <br>\n>\n> beta\n"),
+        ] {
+            let pre = process_inline_html(src);
+            assert!(
+                !pre.contains("<br>"),
+                "{name}: <br> が書き換えられていない: {pre:?}"
+            );
+            // The break survives as the blank line it has always produced, rather than the line
+            // being dropped: dropping is for a `<br>` sitting *inside* an already-open HTML block,
+            // and none of these is.
+            assert_eq!(
+                pre.lines().count(),
+                src.lines().count(),
+                "{name}: <br> の行ごと落ちて段落の切れ目が消えている: {pre:?}"
+            );
+            let (texts, _, _) = banner_render(src);
+            for want in ["alpha", "beta"] {
+                assert!(
+                    texts.iter().any(|t| t.contains(want)),
+                    "{name}: {want:?} が失われている: {texts:#?}"
+                );
+            }
+        }
+    }
+
+    /// The one shape where a `<br>` inside a `<details>` body *is* dropped, recorded because it is a
+    /// deliberate consequence rather than an accident: with no blank line between them, the
+    /// `<summary>` line opens an HTML block (konoma's `is_html_block_start` accepts any tag and runs
+    /// the block to the next blank line) that reaches the `<br>` below it, so the tag sits in body
+    /// position and the body rule removes the line.
+    ///
+    /// It is the same answer CommonMark implies — the whole `<details>` block is one HTML block
+    /// here, so making that line blank would end it — and it costs a paragraph break, never
+    /// structure or content. Zero of the 2,182 `.md` files in the local crate registry contain the
+    /// shape.
+    #[test]
+    fn a_br_directly_under_an_unseparated_summary_is_dropped_as_block_body() {
+        let src = "<details open>\n<summary>S</summary>\nalpha\n<br>\nbeta\n</details>\n";
+        let pre = process_inline_html(src);
+        assert_eq!(
+            pre, "<details open>\n<summary>S</summary>\nalpha\nbeta\n</details>\n",
+            "想定どおりに <br> 行だけが落ちる: {pre:?}"
+        );
+    }
+
+    /// A `<br>` inside a GitHub alert, mid-line and at end of line. The injected line used to carry
+    /// no `>`, and `split_alerts` captures a body by consuming *consecutive* `>`-prefixed lines — so
+    /// the callout box ended there, the rest of the alert escaped it, and a fence written inside the
+    /// alert leaked as literal `> ```rust` text instead of being drawn as a code block.
+    #[test]
+    fn br_in_an_alert_keeps_the_callout_and_its_fence_whole() {
+        for (name, src) in [
+            (
+                "mid-line",
+                "> [!NOTE]\n> line one<br>line two\n>\n> ```rust\n> fn a(){}\n> ```\n",
+            ),
+            (
+                "trailing (the more common spelling)",
+                "> [!NOTE]\n> line one<br>\n> line two\n>\n> ```rust\n> fn a(){}\n> ```\n",
+            ),
+        ] {
+            let (texts, headers) = br_texts(src);
+            // Every drawn line belongs to the callout: the body bar is the alert's own decoration,
+            // so a line without it is a line that escaped the box.
+            for t in &texts {
+                assert!(
+                    t.starts_with('▌'),
+                    "{name}: この行が callout の外に逃げている: {t:?}\n全行: {texts:#?}"
+                );
+            }
+            assert!(
+                texts.iter().any(|t| t.contains("line one"))
+                    && texts.iter().any(|t| t.contains("line two")),
+                "{name}: 本文が両方とも残っていない: {texts:#?}"
+            );
+            // The fence inside the alert is a real code block, not leaked text.
+            assert_eq!(
+                headers, 1,
+                "{name}: alert 内の fence がコードブロックとして描かれていない: {texts:#?}"
+            );
+            assert!(
+                !texts.iter().any(|t| t.contains("> ")),
+                "{name}: 生の `> ` マーカーが漏れている: {texts:#?}"
+            );
+            // A line break, not a paragraph break. Without the "trailing `<br>` emits no newline"
+            // correction the prefix alone still saves the box, but the injected `> ` line becomes an
+            // empty body line and splits the callout's paragraph in two — a stray `▌ ` row on
+            // screen. Both documents carry exactly one genuinely empty quote line of their own (the
+            // `>` separating the prose from the fence), so the count, not the presence, is the test.
+            let blanks = texts.iter().filter(|t| t.trim() == "▌").count();
+            assert_eq!(
+                blanks, 1,
+                "{name}: callout 本文の空行数が想定外(<br> が段落区切りになっている): {texts:#?}"
+            );
+        }
+    }
+
+    /// `| x<br>y | z |` is the standard GitHub idiom for a line break inside a table cell. The
+    /// injected line has no continuation form — a table row can only be followed by another row —
+    /// so it used to draw as **two** rows (`│ x │   │` then `│ y │ z │`), the second one shifted.
+    #[test]
+    fn br_in_a_table_cell_keeps_one_row() {
+        let (texts, _) = br_texts("| a | b |\n| --- | --- |\n| x<br>y | z |\n");
+        let data: Vec<&String> = texts
+            .iter()
+            .filter(|t| t.starts_with('│') && !t.contains(" a ") && !t.contains('─'))
+            .collect();
+        assert_eq!(data.len(), 1, "データ行がちょうど1行であるべき: {texts:#?}");
+        assert!(
+            data[0].contains('x') && data[0].contains('y') && data[0].contains('z'),
+            "セルの両方の語と隣のセルが1行に残っていない: {:?}",
+            data[0]
+        );
+    }
+
+    /// The centered-banner idiom: a bare `    <br>` line between two badge blocks. Rewriting it left
+    /// a whitespace-only line, which *is* a blank line to CommonMark, so the `<p>` HTML block ended
+    /// there and every following 4-space-indented line became a genuine indented code block — the
+    /// badges of `raw-window-metal` and `static_assertions` drew as a `▎ …` block instead of images.
+    ///
+    /// The invariant under test (the block survives) is unchanged; how it is achieved is not. The
+    /// line is now **removed** rather than left verbatim — see `process_inline_html_traced` for the
+    /// leak a preserved tag caused once a later pass relocated it. Both halves are asserted, because
+    /// each alone is satisfiable the wrong way: "no `<br>` survives" by substituting whitespace
+    /// (which ends the block), "the block survives" by keeping the tag (which leaks).
+    #[test]
+    fn bare_br_line_in_an_html_block_does_not_end_it() {
+        let src = "<p align=\"center\">\n    <a href=\"https://ci\">\n      <img src=\"https://ci.svg\" alt=\"ci - ios\">\n    </a>\n    <br>\n    <a href=\"LICENSE-MIT\">\n      <img src=\"https://mit.svg\" alt=\"License - MIT\">\n    </a>\n</p>\n";
+        let (pre, _) = br_pre_and_render(src);
+        assert!(
+            !pre.contains("<br>"),
+            "HTML ブロック内の裸の <br> は行ごと落とすべき(タグを残すと後段の再配置でブロックを開く): {pre:?}"
+        );
+        assert!(
+            !pre.lines().any(|l| l.trim().is_empty()),
+            "空白だけの行が残っている(CommonMark では空行=ブロックの終端): {pre:?}"
+        );
+        assert_eq!(
+            pre.lines().count(),
+            src.lines().count() - 1,
+            "落ちた行はちょうど <br> の1行であるべき: {pre:?}"
+        );
+        let (texts, headers) = br_texts(src);
+        assert_eq!(
+            headers, 0,
+            "バナーが字下げコードブロックとして描かれている: {texts:#?}"
+        );
+        // Both badges survive as images (the harness stubs them, so they appear as `alt — url`).
+        assert!(
+            texts.iter().any(|t| t.contains("License - MIT")),
+            "<br> の後ろのバッジが失われている: {texts:#?}"
+        );
+    }
+
+    /// The refinement over "always leave the tag alone inside an HTML block": only a line the rewrite
+    /// would leave **blank** is treated specially. `x<br>y` inside a block splits into two non-blank
+    /// lines, which an HTML block tolerates (it runs to the next blank line), so it is rewritten
+    /// byte-for-byte as anywhere else — and that matters, because it is what keeps an `<img>` that
+    /// shares its line with a `<br>` on a line of its own where the block-image pass can lift it. The
+    /// all-contributors table in `flutter_rust_bridge`'s README is 130 avatars of exactly that shape;
+    /// keeping the tag there unconditionally dropped every one of them.
+    ///
+    /// The blank line is dropped **per produced line**, not all-or-nothing: `a<br><br>b` puts one
+    /// between two non-blank halves, and removing just it keeps both halves *and* the block.
+    #[test]
+    fn br_inside_an_html_block_still_breaks_when_no_blank_line_results() {
+        let pre = process_inline_html("<div align=\"center\">\n  before<br>after\n</div>\n");
+        assert!(
+            pre.contains("  before  \nafter"),
+            "行中の <br> はブロック内でも改行に変換されるべき: {pre:?}"
+        );
+        assert!(
+            !pre.contains("<br>"),
+            "行中の <br> がそのまま残っている: {pre:?}"
+        );
+        // Trailing `<br>` inside a block: no newline is added, so no blank line, so the block lives.
+        let pre = process_inline_html("<div align=\"center\">\n  one<br>\n  two\n</div>\n");
+        assert!(
+            pre.contains("  one  \n  two"),
+            "行末 <br> が空行を作らずに改行になっていない: {pre:?}"
+        );
+        // Two tags in a row *would* leave a blank line between them — drop that one line only.
+        let pre = process_inline_html("<div align=\"center\">\n  a<br><br>b\n</div>\n");
+        assert!(
+            pre.contains("  a  \nb"),
+            "空行を生む形は空行だけを落として両半分を残すべき: {pre:?}"
+        );
+        assert!(
+            !pre.contains("<br>"),
+            "空行を生む形でタグが残っている(後段の再配置でブロックを開く): {pre:?}"
+        );
+        assert!(
+            !pre.lines().any(|l| l.trim().is_empty()),
+            "空白だけの行が残っている: {pre:?}"
+        );
+    }
+
+    /// Why a `<br>` inside an HTML block is **dropped** rather than left verbatim (2026-08, found by
+    /// rendering every `.md` in the local crate registry — `shlex`'s `quoting_warning.md` was the one
+    /// file the verbatim rule damaged).
+    ///
+    /// A kept tag is still a token this module treats as a block opener ([`is_html_block_start`]
+    /// accepts any tag name), and this pass is not the last one to move text around: `process_footnotes`
+    /// relocates definition bodies into the section it appends at the end of the document, where the
+    /// blank lines that used to surround them are gone. The surviving tag then landed at the head of
+    /// an unbroken run of lines and opened an HTML block that ran to the end of the document, handing
+    /// the *following* footnotes to `render_html_block` — which emits their text without parsing
+    /// Markdown, so their inline code drew as literal backticks instead of a code span.
+    ///
+    /// Asserted at the level where it bites (the rendered output of the whole app chain), not just on
+    /// the preprocessed text, because the preprocessing looks harmless on its own — the damage is
+    /// entirely in what the renderer then does with the relocated tag.
+    #[test]
+    fn a_kept_br_in_a_relocated_footnote_would_swallow_the_footnotes_after_it() {
+        // Two consecutive bare `<br>` lines, as in `shlex`: the first opens the block (and is
+        // rewritten by the default rule), the second is *inside* it and is the one at issue.
+        let src = concat!(
+            "Body with a note[^one], another[^two] and a third[^three].\n",
+            "\n",
+            "[^one]: this can lead to tough choices\n",
+            "  <br>\n",
+            "  <br>\n",
+            "  we don't have the luxury of those choices\n",
+            "\n",
+            "[^two]: mentions `some_code()` in a span\n",
+            "\n",
+            "[^three]: and `another_span` too\n",
+        );
+        // The app's own order: footnotes relocate the bodies first, so the `<br>` rewrite only ever
+        // sees them already moved — which is exactly why a kept tag ends up somewhere new.
+        let (body, _) = process_footnotes_traced(src, &identity_origin(src));
+        let (pre, lines) = br_pre_and_render(&body);
+        assert!(
+            !pre.contains("<br>"),
+            "再配置された脚注に <br> が生き残っている(後続の脚注ごとブロックに飲まれる): {pre:?}"
+        );
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        // The decisive signal: swallowed text is emitted verbatim, so its backticks stay visible.
+        assert!(
+            !texts.iter().any(|t| t.contains('`')),
+            "後続の脚注のインラインコードが生のバッククォートで描かれている: {texts:#?}"
+        );
+        // …and the positive half: the spans really are drawn as code, not merely stripped of ticks.
+        let code: Vec<&str> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_inline_code_span(s))
+            .map(|s| s.content.as_ref())
+            .collect();
+        for want in ["some_code()", "another_span"] {
+            assert!(
+                code.iter().any(|c| c.contains(want)),
+                "{want} がコードスパンとして描かれていない: code={code:#?}\n{texts:#?}"
+            );
+        }
+        // The definition's own text survives the dropped line (the fix removes a line, not content).
+        assert!(
+            texts.iter().any(|t| t.contains("tough choices"))
+                && texts.iter().any(|t| t.contains("luxury")),
+            "脚注本文が失われている: {texts:#?}"
+        );
+    }
+
+    /// The constructs that were **already correct** and must stay that way — CommonMark lazy
+    /// continuation keeps an unprefixed line attached to the quote/list paragraph above it, and
+    /// `split_details` spans blank lines. Asserted explicitly so a future change to the `<br>` rules
+    /// cannot quietly break them.
+    #[test]
+    fn br_in_quote_list_and_details_still_renders_as_before() {
+        // Plain blockquote: both halves stay inside the quote.
+        let (texts, _) = br_texts("> line one<br>line two\n\ntail\n");
+        assert!(
+            texts.iter().any(|t| t.contains("line one"))
+                && texts.iter().any(|t| t.contains("line two")),
+            "引用の両行が残っていない: {texts:#?}"
+        );
+        // A nested quote keeps its `> > ` marker verbatim, so the deeper level survives.
+        let pre = process_inline_html("> > deep one<br>deep two\n");
+        assert!(
+            pre.contains("> > deep one  \n> > deep two"),
+            "入れ子引用のマーカーが継承されていない: {pre:?}"
+        );
+        // List item and nested list item: the marker stays attached to its first line.
+        for (name, src) in [
+            ("list item", "- item one<br>item two\n- second\n"),
+            ("nested list item", "- outer\n  - inner<br>tail\n"),
+        ] {
+            let (texts, _) = br_texts(src);
+            assert!(
+                !texts.iter().any(|t| t.trim() == "-"),
+                "{name}: リストマーカーが本文から切り離されている: {texts:#?}"
+            );
+        }
+        // `<details>` body: the fold survives and its contents are still drawn.
+        let (texts, _) = br_texts(
+            "<details open>\n<summary>S</summary>\n\nline one<br>line two\n\n</details>\n",
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("line one"))
+                && texts.iter().any(|t| t.contains("line two")),
+            "details 本文が失われている: {texts:#?}"
+        );
+    }
+
+    /// A `<br>` that is already literal code stays literal, in all three forms. Unchanged by the
+    /// new rules (the code mask short-circuits before any of them), pinned because the rules now
+    /// branch and a future branch could be added on the wrong side of that gate.
+    #[test]
+    fn br_stays_literal_in_code_spans_and_both_kinds_of_code_block() {
+        for (name, src) in [
+            ("code span", "text `a<br>b` more\n"),
+            ("fenced block", "```\na<br>b\n```\n"),
+            ("indented block", "para\n\n    a<br>b\n"),
+        ] {
+            let pre = process_inline_html(src);
+            assert_eq!(pre, src, "{name}: コード内の <br> が書き換えられている");
+        }
+    }
+
+    // ---- Where the two 2026-08 fixes meet: the three real README banners ----------------------
+    //
+    // These are the documents the whole `SourceRun` change was measured against, and they are kept
+    // as named tests (rather than only as corpus rows) because they are the only place both fixes
+    // are exercised at once, on the same lines, in the order production applies them: the `<br>`
+    // rewrite runs first and must not end the HTML block, and the block splitter must then still
+    // call the surviving 4-column-indented `<a>`/`</a>` lines HTML rather than indented code — even
+    // though `split_block_parts` has cut the `<img>` lines out from between them by that point.
+    // Either fix alone leaves these drawing a `▎ …` code block full of raw markup, which is what
+    // shipped.
+    //
+    // Minimised from the files themselves (do not read from disk: a test that depends on the local
+    // crate registry passes or fails for reasons that have nothing to do with konoma). Each keeps
+    // the structural detail that made it distinct; the URLs and crate names are stand-ins.
+
+    /// `raw-window-metal`: `<p align="center">`, `<a>` at 4 columns, `<img>` at 6, and a bare
+    /// `    <br>` in the middle of the banner. The `<br>` is the interesting part — it is what turns
+    /// the second half of the banner into a fragment whose first line is 4-column-indented markup.
+    #[test]
+    fn raw_window_metal_banner_shape_draws_badges_not_a_code_block() {
+        let src = concat!(
+            "\n",
+            "<h1 align=\"center\">rwm</h1>\n",
+            "<p align=\"center\">\n",
+            "    <a href=\"https://crates.io/crates/rwm\">\n",
+            "      <img src=\"https://img.example/v.svg\" alt=\"crates.io\">\n",
+            "    </a>\n",
+            "    <br>\n",
+            "    <a href=\"LICENSE-MIT\">\n",
+            "      <img src=\"https://img.example/mit.svg\" alt=\"License - MIT\">\n",
+            "    </a>\n",
+            "</p>\n",
+            "\ntail\n",
+        );
+        let (pre, _) = br_pre_and_render(src);
+        assert!(
+            !pre.contains("<br>") && !pre.lines().any(|l| l.trim().is_empty() && !l.is_empty()),
+            "バナー中の裸の <br> は行ごと落ちるべき(空白だけの行はブロックを終端させる): {pre:?}"
+        );
+        let (texts, headers) = br_texts(src);
+        assert_eq!(
+            headers, 0,
+            "バナーが字下げコードブロックとして描かれている: {texts:#?}"
+        );
+        // Both halves of the banner survive — the one before the `<br>` and the one after it, which
+        // is the half that used to be swallowed.
+        for alt in ["crates.io", "License - MIT"] {
+            assert!(
+                texts.iter().any(|t| t.contains(alt)),
+                "バッジ {alt:?} が失われている: {texts:#?}"
+            );
+        }
+        assert!(
+            !texts.iter().any(|t| t.contains("</a>")),
+            "生の HTML タグが画面に漏れている: {texts:#?}"
+        );
+    }
+
+    /// `static_assertions`: the same shape one level deeper (`<img>` at 8 columns, two `<img>` lines
+    /// inside one `<a>`, a bare `<img>` with no link around it) and — the detail that makes it worth
+    /// keeping separately — a **Markdown** block image on the very first line. That one is extracted
+    /// too, so the banner below it is not even the first cut `split_block_parts` makes.
+    #[test]
+    fn static_assertions_banner_shape_draws_badges_not_a_code_block() {
+        let src = concat!(
+            "[![Banner](https://img.example/banner.png)](https://example.com/repo)\n",
+            "\n",
+            "<div align=\"center\">\n",
+            "    <a href=\"https://crates.io/crates/sa\">\n",
+            "        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n",
+            "        <img src=\"https://img.example/d.svg\" alt=\"Downloads\">\n",
+            "    </a>\n",
+            "    <img src=\"https://img.example/rustc.svg\" alt=\"rustc\">\n",
+            "    <br>\n",
+            "    <a href=\"https://example.com/patron\">\n",
+            "        <img src=\"https://img.example/patron.png\" alt=\"Patron\">\n",
+            "    </a>\n",
+            "</div>\n",
+            "\ntail.\n",
+        );
+        let (texts, headers) = br_texts(src);
+        assert_eq!(
+            headers, 0,
+            "バナーが字下げコードブロックとして描かれている: {texts:#?}"
+        );
+        for alt in ["Banner", "Crates.io", "Downloads", "rustc", "Patron"] {
+            assert!(
+                texts.iter().any(|t| t.contains(alt)),
+                "画像 {alt:?} が失われている: {texts:#?}"
+            );
+        }
+        assert!(
+            texts.iter().any(|t| t.contains("tail.")),
+            "バナーの後ろの本文が飲み込まれている: {texts:#?}"
+        );
+    }
+
+    /// `tinytemplate`: a banner with **no `<br>` at all**, so it isolates the block-splitter half of
+    /// the pair — and the whole file is CRLF, an axis this module has been bitten on before (a `\r`
+    /// left on the end of a line changes what "the line is only tags" and "the line is blank" both
+    /// answer). Its first `<div>` holds a bare `    |` separator between two links, the shape that
+    /// really *does* become an indented code block once the `<img>` lines around it are gone
+    /// (criterion's README) — here there are none to remove, so it must not.
+    #[test]
+    fn tinytemplate_banner_shape_draws_links_not_a_code_block() {
+        let src = concat!(
+            "<h1 align=\"center\">TT</h1>\r\n",
+            "\r\n",
+            "<div align=\"center\">\r\n",
+            "    <a href=\"https://docs.rs/tt/\">API Documentation</a>\r\n",
+            "    |\r\n",
+            "    <a href=\"https://example.com/changelog\">Changelog</a>\r\n",
+            "</div>\r\n",
+            "\r\n",
+            "<div align=\"center\">\r\n",
+            "    <a href=\"https://example.com/actions\">\r\n",
+            "        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\r\n",
+            "    </a>\r\n",
+            "    <a href=\"https://crates.io/crates/tt\">\r\n",
+            "        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\r\n",
+            "    </a>\r\n",
+            "</div>\r\n",
+            "\r\ntail\r\n",
+        );
+        let (texts, headers) = br_texts(src);
+        assert_eq!(
+            headers, 0,
+            "バナーが字下げコードブロックとして描かれている: {texts:#?}"
+        );
+        for want in ["API Documentation", "Changelog", "CI", "Crates.io"] {
+            assert!(
+                texts.iter().any(|t| t.contains(want)),
+                "{want:?} が失われている: {texts:#?}"
+            );
+        }
     }
 
     #[test]
@@ -7303,7 +8767,7 @@ plain body
         // anchor text must drop the bar (else the slug gets a spurious leading "-").
         let md = "> [!NOTE]\n> ## Sub Heading\n> body\n";
         let lines = render_markdown_tasks_opts(
-            md,
+            &doc_run(md),
             60,
             NO_CODE,
             "TwoDark",
@@ -7354,7 +8818,7 @@ plain body
         // content (GitHub keeps it verbatim). Uses NO_CODE = the code_bg="none" scenario.
         let md = "> [!NOTE]\n> ```sh\n> curl https://x.example # :tada:\n> ```\n";
         let lines = render_markdown_tasks_opts(
-            md,
+            &doc_run(md),
             60,
             NO_CODE,
             "TwoDark",
@@ -8015,6 +9479,116 @@ pub(crate) mod code_corpus {
                 "indented block whose content is an alert header stays literal code",
                 "para\n\n    > [!NOTE]\n    > body\n",
             ),
+            // ---- Indented code whose content is tag-shaped × the context that decides it (2026-08)
+            //
+            // Root cause: the same "content decides the block" mistake as the two rows just above,
+            // for the third splitter — `split_html_blocks` asked `fence_mask`, which has no notion
+            // of indentation, so an indented block opening with anything `is_html_block_start`
+            // accepts was rescued as an HTML block: tags stripped, gutter gone, nothing left on
+            // screen for `    <code>`, and neither Tab-focusable nor copyable with `y c`.
+            //
+            // The axis is (**what shape is the block's first line**) × (**is this run a whole
+            // document, or a fragment `split_block_parts` cut an `<img>` line out of**), and the
+            // second half is the reason it is not enough to write the first. The two contexts
+            // produce byte-identical fragments — `    </a>\n    <a href="…">` reads as an indented
+            // code block on its own and as `<div>`-interior in place — so a gate can always satisfy
+            // one column of this table by getting the other wrong, and both single-column fixes
+            // were in fact tried. Only a mask taken over the intact document answers both.
+            //
+            // The first column is enumerated from what `is_html_block_start` accepts (any tag name,
+            // so: bare / attributes / closing / void / comment), plus the tags this module splits
+            // its own blocks on, plus the two angle-bracket forms that are not tags at all — not
+            // from the one tag a user reported.
+            //
+            // **What these rows can and cannot catch**, stated plainly because it is easy to assume
+            // more: this corpus measures the renderer and the scanner *agreeing*, and both of them
+            // reach their answer through the same `split_html_blocks`. Every wrong gate tried for
+            // this axis was wrong on both sides at once, so the counts stayed equal and these rows
+            // stayed green (measured: reverting the fix, in either of the two directions, fails none
+            // of them). They are non-regression pins for the failure mode this module keeps having —
+            // one side moving without the other, which refuses `y c` for the whole document — while
+            // the correctness of the answer itself is carried by
+            // `an_indented_code_block_is_code_whatever_its_content_looks_like` and
+            // `a_centered_banner_stays_html_even_though_its_cut_fragments_read_as_indented_code`,
+            // which assert what is drawn rather than that two counts match.
+            (
+                "indented block whose content is a bare tag",
+                "para\n\n    <code>\n",
+            ),
+            (
+                "indented block whose content is a tag with attributes",
+                "para\n\n    <a href=\"x\">\n",
+            ),
+            (
+                "indented block whose content is a closing tag",
+                "para\n\n    </a>\n",
+            ),
+            (
+                "indented block whose content is a void tag",
+                "para\n\n    <br>\n",
+            ),
+            (
+                "indented block whose content is an HTML comment",
+                "para\n\n    <!-- a comment -->\n",
+            ),
+            (
+                "indented block whose content is a <details> tag",
+                "para\n\n    <details>\n",
+            ),
+            (
+                "indented block whose content is a <summary> tag",
+                "para\n\n    <summary>S</summary>\n",
+            ),
+            (
+                "indented block whose content is a <kbd> pair",
+                "para\n\n    <kbd>Ctrl</kbd>\n",
+            ),
+            (
+                "indented block whose content is an autolink",
+                "para\n\n    <https://example.com>\n",
+            ),
+            // Not a tag name, so `is_html_block_start` always rejected it — this is the one row of
+            // the first column that was *correct* while every other row was broken. Pinned so a
+            // future change cannot quietly make it the only correct one again.
+            (
+                "indented block whose content is cjk in angle brackets",
+                "para\n\n    <仕様書>\n",
+            ),
+            // Only the block's *first* line is ever asked, so the two orderings are different cases.
+            (
+                "indented block whose first line is plain and a later line is tag-shaped",
+                "para\n\n    plain first\n    <div>\n",
+            ),
+            (
+                "indented block whose content is tag-shaped, followed by a real fence",
+                "para\n\n    <kbd>K</kbd>\n\n```rust\nfn a(){}\n```\n",
+            ),
+            // Both readings in one document: the `<div>` really is an HTML block, the indented
+            // `<div>` below it really is code. A gate that answers with the line alone cannot get
+            // both, whichever way it leans.
+            (
+                "a real HTML block and a tag-shaped indented block in one document",
+                "<div align=\"center\">\n  <b>hi</b>\n</div>\n\npara\n\n    <div>\n",
+            ),
+            // The second column: the `<img>` lines are what make this a *cut*, so they are not
+            // decoration — without them nothing is removed, the ambiguous fragment never forms, and
+            // the row degenerates into an ordinary HTML block.
+            (
+                "centered banner whose <img> lines are cut out of it stays HTML",
+                "<p align=\"center\">\n    <a href=\"https://example.com/y\">\n      <img src=\"https://img.example/a.svg\" alt=\"a\">\n    </a>\n    <a href=\"https://example.com/x\">\n      <img src=\"https://img.example/b.svg\" alt=\"b\">\n    </a>\n</p>\n\ntail\n",
+            ),
+            (
+                "centered banner with a bare <br> line in it (registry: raw-window-metal README.md)",
+                "<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"https://img.example/v.svg\" alt=\"crates.io\">\n    </a>\n    <br>\n    <a href=\"LICENSE-MIT\">\n      <img src=\"https://img.example/mit.svg\" alt=\"License - MIT\">\n    </a>\n</p>\n\ntail\n",
+            ),
+            (
+                "centered banner preceded by a markdown block image (registry: static_assertions README.md)",
+                "[![Banner](https://img.example/banner.png)](https://example.com/repo)\n\n<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n    </a>\n    <img src=\"https://img.example/rustc.svg\" alt=\"rustc\">\n    <br>\n    <a href=\"https://example.com/patron\">\n        <img src=\"https://img.example/patron.png\" alt=\"Patron\">\n    </a>\n</div>\n\ntail.\n",
+            ),
+            (
+                "crlf centered banner with no <br> (registry: tinytemplate README.md)",
+                "<h1 align=\"center\">TT</h1>\r\n\r\n<div align=\"center\">\r\n    <a href=\"https://docs.rs/tt/\">API Documentation</a>\r\n    |\r\n    <a href=\"https://example.com/changelog\">Changelog</a>\r\n</div>\r\n\r\n<div align=\"center\">\r\n    <a href=\"https://example.com/actions\">\r\n        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\r\n    </a>\r\n</div>\r\n\r\ntail\r\n",
+            ),
         ]
     }
 }
@@ -8536,6 +10110,66 @@ pub(crate) mod code_span_corpus {
             verbatim(
                 "details/summary immediately followed by a fenced code block, no blank line",
                 &format!("<details>\n<summary>s</summary>\n```rust\n{PAYLOAD}\n```\n</details>"),
+            ),
+        ]);
+        // --- What the block's *first line looks like* (2026-08). The enumeration above varies the
+        // indentation and what precedes the block; it never varies the block's own content, and the
+        // shape of the first line turned out to decide whether the block was treated as a code block
+        // at all: `split_html_blocks` asked `fence_mask`, which is blind to indentation, so an
+        // indented block opening with anything `is_html_block_start` accepts (any tag name) was
+        // rescued as an HTML block instead — tags stripped, gutter gone, and its contents no longer
+        // literal. That gate is the renderer's rather than these three passes', so what these rows
+        // pin is the half this corpus owns: whatever the opening line looks like, the *contents* of
+        // the block stay bytes. A future fix that leans on the first line's shape in a pass as well
+        // as in the splitter fails here.
+        v.extend([
+            verbatim(
+                "indented code block opening with a rewritable tag",
+                &format!("{ind4}<kbd>K</kbd>\n{ind4}{PAYLOAD}"),
+            ),
+            verbatim(
+                "indented code block opening with a closing tag",
+                &format!("{ind4}</a>\n{ind4}{PAYLOAD}"),
+            ),
+            verbatim(
+                "indented code block opening with an HTML comment",
+                &format!("{ind4}<!-- c -->\n{ind4}{PAYLOAD}"),
+            ),
+            verbatim(
+                "indented code block opening with a tag with attributes",
+                &format!("{ind4}<a href=\"x\">\n{ind4}{PAYLOAD}"),
+            ),
+            verbatim(
+                "indented code block opening with an autolink",
+                &format!("{ind4}<https://example.com>\n{ind4}{PAYLOAD}"),
+            ),
+            verbatim(
+                "indented code block opening with cjk in angle brackets",
+                &format!("{ind4}<仕様書>\n{ind4}{PAYLOAD}"),
+            ),
+            // The other 2026-08 fix, at the byte level nothing else measures it: inside an HTML
+            // block a `<br>` line that would come out blank is **removed**, because a blank line
+            // ends the block and no substitution — not even a single space — avoids that. The
+            // banner's other lines have to come back byte-identical, so this pins the removal is
+            // exactly one line wide, and `process_footnotes` (which runs first in production, and
+            // is what relocates a surviving tag somewhere it can do damage) is a no-op here.
+            case(
+                "bare br line inside a centered banner is removed, the rest byte-identical",
+                "<p align=\"center\">\n    <a href=\"https://a\">\n    <br>\n    <a href=\"https://b\">\n</p>\n",
+                "<p align=\"center\">\n    <a href=\"https://a\">\n    <br>\n    <a href=\"https://b\">\n</p>\n",
+                "<p align=\"center\">\n    <a href=\"https://a\">\n    <a href=\"https://b\">\n</p>\n",
+                &[],
+            ),
+            // The boundary from the other side, so "remove the line" cannot become "remove the tag
+            // everywhere": with text on both sides the rewrite leaves two non-blank lines, which an
+            // HTML block tolerates, so it is an ordinary hard break — which is also what keeps an
+            // `<img>` sharing a line with a `<br>` on a line of its own for the block-image pass.
+            case(
+                "mid-line br inside a centered banner is still a hard break",
+                "<div align=\"center\">\n  before<br>after\n</div>\n",
+                "<div align=\"center\">\n  before<br>after\n</div>\n",
+                "<div align=\"center\">\n  before  \nafter\n</div>\n",
+                &[],
             ),
         ]);
         v
@@ -9282,6 +10916,333 @@ mod task_scan_parity_tests {
         }
     }
 
+    // ---- The document-level code mask: an indented block's *content* must not decide what the
+    // block is (2026-08) ------------------------------------------------------------------------
+    //
+    // The two tests below are one statement split in half, and **both have to be green at the same
+    // time** — the shapes they describe are byte-for-byte identical as fragments, so a gate can
+    // always satisfy one of them by getting the other wrong, and each was in fact shipped that way
+    // at some point. `fence_mask` (blind to indentation) drew every banner correctly and every
+    // tag-shaped indented block wrong; swapping in `splitter_code_mask` at the same place traded one
+    // for the other exactly. Only a mask taken over the **intact document**, before
+    // `split_block_parts` lifts the `<img>` lines out, answers both — which is what `SourceRun` now
+    // carries. A future change that passes only one of these has not made progress.
+
+    /// The rendered lines as plain text — the renderer alone, with no source pre-pass, because the
+    /// question here is what `split_html_blocks` does with a line, not what `process_inline_html`
+    /// did to it first. (`mod tests`' `br_texts` is the with-pre-pass counterpart, used by the
+    /// README-shape tests that pin the two fixes' interaction.)
+    fn rendered_texts(src: &str) -> Vec<String> {
+        set_details_open(Vec::new());
+        let (lines, _) = render_markdown_with_images(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Inline { cols: 10, rows: 2 },
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// An indented (4+ column) code block is a code block whatever its content happens to look like.
+    ///
+    /// Root cause (2026-08, reported by a user): `split_html_blocks` asked `fence_mask`, which knows
+    /// only about ```` ``` ````/`~~~` fences and has no notion of indentation, so an indented block
+    /// whose first line was tag-shaped was rescued as an HTML block instead — tags stripped, gutter
+    /// gone, and (because the content never reached the renderer as code) not Tab-focusable and not
+    /// copyable with `y c`. `"para\n\n    <code>\n"` rendered as **nothing at all**: the tag was
+    /// stripped and the line that was left became empty.
+    ///
+    /// The axis is written from the case split HTML itself implies rather than from the one tag that
+    /// was reported — `is_html_block_start` accepts *any* tag name, so "what shape is the first
+    /// line" is the only variable, and every shape it accepts belongs here: a bare tag, a tag with
+    /// attributes, a closing tag, a void tag, a comment, the two tags this module splits its own
+    /// blocks on (`<details>`/`<summary>`), the keycap tag the doc comments name, an
+    /// autolink-looking `<https://…>`, and a non-tag angle form. The CJK one is here specifically
+    /// because it is the case that worked even while all the others were broken (`仕様書` is not a
+    /// tag name, so `is_html_block_start` rejected it): keeping it pinned means a future change
+    /// cannot quietly make it the *only* one that works again.
+    #[test]
+    fn an_indented_code_block_is_code_whatever_its_content_looks_like() {
+        for content in [
+            "<code>",
+            "<div>",
+            "<span>x</span>",
+            "<details>",
+            "<summary>S</summary>",
+            "<kbd>Ctrl</kbd>",
+            "<br>",
+            "<!-- a comment -->",
+            "</a>",
+            "<a href=\"x\">",
+            "<仕様書>",
+            "<https://example.com>",
+        ] {
+            let src = format!("para\n\n    {content}\n");
+            set_details_open(Vec::new());
+            assert_eq!(
+                rendered_code_blocks(&src),
+                1,
+                "{content:?}: 字下げコードブロックがコードとして描かれていない\
+                 (HTML ブロックとして救出され、タグが剥がれている)\n--- src ---\n{src}"
+            );
+            // Not just "a code block was drawn somewhere" — the block's own content is on screen,
+            // verbatim, behind the `▎` gutter. Stripping the tags would leave the row empty while
+            // still counting a header, which the assertion above alone cannot tell apart.
+            let texts = rendered_texts(&src);
+            assert!(
+                texts
+                    .iter()
+                    .any(|t| t.starts_with('▎') && t.contains(content)),
+                "{content:?}: ガター付きの行に本文が見当たらない: {texts:#?}"
+            );
+            // …and the copy scanner agrees, block for block and byte for byte. A disagreement here
+            // is not cosmetic: the count guard is document-wide, so it refuses `y c` for the whole
+            // file, every unrelated fence in it included.
+            set_details_open(Vec::new());
+            assert_eq!(
+                code_block_source_locs(&src, &[]),
+                vec![content.to_string()],
+                "{content:?}: コピー用スキャナが描画と一致しない\n--- src ---\n{src}"
+            );
+        }
+    }
+
+    /// The other half: the centered `<div align="center">`/`<p align="center">` badge banner at the
+    /// top of a great many crate READMEs is an HTML block, **not** an indented code block — even
+    /// though the fragments it is cut into read as one.
+    ///
+    /// This is the shape that makes the naive fix (just point `split_html_blocks` at
+    /// `splitter_code_mask`) wrong, and it is worth being precise about why. `split_block_parts`
+    /// lifts block-level `<img>` lines out of the text *before* any of these splitters run, so what
+    /// reaches them is `    </a>\n    <a href="…">\n` — a run that **opens** with 4-column-indented
+    /// content only because the `<div>` that explains it went into the previous fragment. Asked
+    /// about that fragment on its own, the parser is right to call it an indented code block; asked
+    /// about the document, it is right to call it HTML-block interior. The first assertion below
+    /// measures exactly that: the *same two lines* get opposite answers, so no amount of care inside
+    /// a splitter can recover the document's answer once the surrounding block has been cut away —
+    /// only computing the mask before the cut does, which is what `SourceRun` carries.
+    ///
+    /// The `<img>` lines are present on purpose: without them nothing is cut, the fragment never
+    /// forms, and the test would pass for a reason that has nothing to do with the defect.
+    #[test]
+    fn a_centered_banner_stays_html_even_though_its_cut_fragments_read_as_indented_code() {
+        // The ambiguity itself, stated as a measurement rather than as prose.
+        let fragment = "    </a>\n    <a href=\"https://example.com/x\">\n";
+        let frag_lines: Vec<&str> = fragment.lines().collect();
+        assert_eq!(
+            splitter_code_mask(&frag_lines),
+            vec![true, true],
+            "前提: この2行だけを渡せば(正しく)字下げコードブロックと判定される"
+        );
+        let banner = concat!(
+            "<p align=\"center\">\n",
+            "    <a href=\"https://example.com/y\">\n",
+            "      <img src=\"https://img.example/a.svg\" alt=\"badge a\">\n",
+            "    </a>\n",
+            "    <a href=\"https://example.com/x\">\n",
+            "      <img src=\"https://img.example/b.svg\" alt=\"badge b\">\n",
+            "    </a>\n",
+            "</p>\n",
+            "\ntail\n",
+        );
+        let doc_lines: Vec<&str> = banner.lines().collect();
+        assert!(
+            splitter_code_mask(&doc_lines).iter().all(|c| !c),
+            "前提: 同じ2行でも文書全体で見れば HTML ブロックの内側=コードではない\
+             (この非対称こそが、分割後の断片からマスクを引き直せない理由)"
+        );
+        // So: zero code blocks on screen, and zero found by the scanner.
+        set_details_open(Vec::new());
+        let drawn = rendered_code_blocks(banner);
+        let texts = rendered_texts(banner);
+        assert_eq!(
+            drawn, 0,
+            "バナーが字下げコードブロックとして描かれている: {texts:#?}"
+        );
+        set_details_open(Vec::new());
+        assert!(
+            code_block_source_locs(banner, &[]).is_empty(),
+            "コピー用スキャナがバナーをコードブロックとして数えている"
+        );
+        // The positive half: the badges really were extracted as images (so the cut this test
+        // depends on genuinely happened), and none of the surrounding markup leaked onto the screen.
+        for alt in ["badge a", "badge b"] {
+            assert!(
+                texts.iter().any(|t| t.contains(alt)),
+                "バッジ {alt:?} が失われている: {texts:#?}"
+            );
+        }
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("</a>") || t.contains("<p ")),
+            "生の HTML タグが画面に漏れている: {texts:#?}"
+        );
+    }
+
+    /// Three consequences of computing the mask over the whole document that are easy to break
+    /// while fixing the two cases above, each pinned in the direction it can fail.
+    ///
+    /// * Image extraction is now gated on that mask. `split_block_parts`' own fence tracker only
+    ///   recognizes *fenced* blocks, so an `![img](x)` line inside an **indented** block used to be
+    ///   lifted out as a real image — turning a literal transcript into a picture, and cutting the
+    ///   block in half in exactly the way that manufactures the ambiguous fragments above.
+    /// * The ```` ```mermaid ```` branch is deliberately **not** gated: a mermaid fence's own lines
+    ///   *are* code to the parser, so gating it would disable diagram extraction outright. This is
+    ///   the one place where "it is code, leave it alone" is the wrong answer.
+    /// * A peeled `<details>` body is re-parsed on its own terms (`SourceRun::parse`), not sliced
+    ///   from the enclosing run — a fence directly under a `<summary>` line only reads as code once
+    ///   the tags around it are gone, so a body that inherited the document's mask would lose it.
+    #[test]
+    fn the_document_mask_gates_image_extraction_but_not_mermaid_or_a_peeled_details_body() {
+        // A Markdown image inside an indented block stays literal text of the block.
+        for (name, content) in [
+            ("markdown image", "![img](x.png)"),
+            ("html image", "<img src=\"x.png\" alt=\"i\">"),
+        ] {
+            let src = format!("para\n\n    {content}\n\ntail\n");
+            set_details_open(Vec::new());
+            assert_eq!(
+                rendered_code_blocks(&src),
+                1,
+                "{name}: 字下げブロックがコードとして描かれていない\n--- src ---\n{src}"
+            );
+            let texts = rendered_texts(&src);
+            assert!(
+                texts
+                    .iter()
+                    .any(|t| t.starts_with('▎') && t.contains(content)),
+                "{name}: 画像として抜き出されてしまい、本文が残っていない: {texts:#?}"
+            );
+        }
+        // A real mermaid fence is still diverted to a diagram (one placement, ordinal 0).
+        let (_, places) = {
+            set_details_open(Vec::new());
+            render_markdown_with_images(
+                "para\n\n```mermaid\nflowchart TD\nA-->B\n```\n\ntail\n",
+                100,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &|_: &str| ImageSlot::Inline { cols: 10, rows: 2 },
+                &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+                "mermaid",
+                true,
+                &|_: &str, _: bool| MathSlot::Raw,
+                false,
+            )
+        };
+        assert_eq!(
+            places.len(),
+            1,
+            "mermaid フェンスが図として抜き出されていない(コードマスクで塞いでしまった)"
+        );
+        assert_eq!(places[0].fence_ord, Some(0), "フェンス序数は 0");
+        // A fence inside an open `<details>` body is still drawn as a code block.
+        let details =
+            "<details open>\n<summary>S</summary>\n\n```rust\nfn a(){}\n```\n\n</details>\n";
+        set_details_open(collect_details_open(details));
+        assert_eq!(
+            rendered_code_blocks(details),
+            1,
+            "剥がした details 本文の中のフェンスがコードとして描かれていない\
+             (本文は独立した文書として parse し直す必要がある)"
+        );
+    }
+
+    /// A **non-regression pin, not a regression test** — like
+    /// `br_stays_literal_in_code_spans_and_both_kinds_of_code_block`, no revert of either 2026-08
+    /// fix makes it fail, because what it describes is upstream's behavior and not konoma's.
+    ///
+    /// An upstream quirk that surfaces the moment an indented code block is drawn as code at all,
+    /// pinned here because it changes what is on screen and nothing else records it: **tui-markdown
+    /// runs the consecutive lines of an *indented* code block together into a single line**, while
+    /// keeping one line per source line for a *fenced* block. `    one` / `    two` comes back as
+    /// `"onetwo"`.
+    ///
+    /// Not caused by anything in konoma, and not by the 2026-08 document-mask change either — the
+    /// call below goes straight to `tui_markdown::from_str_with_options`, with no konoma splitter
+    /// between the source and the answer. Found while writing the screen-level assertions for
+    /// `an_indented_code_block_is_code_whatever_its_content_looks_like`: an indented block was
+    /// correctly gaining its gutter and its content, on one row instead of two.
+    ///
+    /// Pinned rather than worked around because konoma's own scanners deliberately report the source
+    /// text (`code_block_source_locs` returns `"one\ntwo"`, which is what `y c` copies and what the
+    /// file holds), so screen rows and copied lines legitimately differ *only* because of this. If
+    /// upstream starts emitting one line per source line, this test fails, and whoever is looking at
+    /// it learns immediately that the discrepancy is gone rather than discovering it as a surprise
+    /// somewhere downstream. The blank-separated case is included because it is the boundary: two
+    /// chunks separated by a blank line are one code block in CommonMark, yet they come back as two
+    /// lines, so the joining is about *adjacency*, not about the block.
+    #[test]
+    fn tui_markdown_runs_an_indented_blocks_adjacent_lines_together() {
+        fn upstream(src: &str) -> Vec<(String, bool)> {
+            let opts = Options::new(KonomaStyles { code_bg: None });
+            tui_markdown::from_str_with_options(src, &opts)
+                .lines
+                .iter()
+                .map(|l| (l.to_string(), is_code_block_line(l)))
+                .collect()
+        }
+        assert_eq!(
+            upstream("para\n\n    one\n    two\n"),
+            vec![
+                ("para".to_string(), false),
+                (String::new(), false),
+                ("```".to_string(), true),
+                ("onetwo".to_string(), true),
+                ("```".to_string(), true),
+            ],
+            "字下げコードブロックの連続行は tui-markdown 側で1行に連結される\
+             (konoma の処理ではない)"
+        );
+        // The fenced counterpart, as the control: same content, one line per source line.
+        assert_eq!(
+            upstream("para\n\n```\none\ntwo\n```\n"),
+            vec![
+                ("para".to_string(), false),
+                (String::new(), false),
+                ("```".to_string(), true),
+                ("one".to_string(), true),
+                ("two".to_string(), true),
+                ("```".to_string(), true),
+            ],
+            "フェンスは1ソース行=1行のまま(連結は字下げブロック固有)"
+        );
+        // The boundary: a blank line between two indented chunks is one block, but two lines.
+        assert_eq!(
+            upstream("para\n\n    one\n\n    two\n"),
+            vec![
+                ("para".to_string(), false),
+                (String::new(), false),
+                ("```".to_string(), true),
+                ("one".to_string(), true),
+                ("two".to_string(), true),
+                ("```".to_string(), true),
+            ],
+            "空行で区切られた2チャンクは(1ブロックだが)連結されない=連結は隣接行の話"
+        );
+        // What konoma's own scanner reports for the joined case: the file's lines, unjoined. The
+        // divergence is real and intended — `y c` must put the file's bytes on the clipboard.
+        assert_eq!(
+            code_block_source_locs("para\n\n    one\n    two\n", &[]),
+            vec!["one\ntwo".to_string()],
+            "コピー対象はファイルの行のまま(画面の連結に引きずられない)"
+        );
+    }
+
     /// Root cause (fence unification, 2026-08): the *count* matching the renderer (pinned above via
     /// `code_corpus`) is not enough on its own — the old per-function toggles (`starts_with("```") ||
     /// starts_with("~~~")`, closing on the first line that merely starts with 3 of the same char, with
@@ -9503,14 +11464,14 @@ mod task_scan_parity_tests {
     #[test]
     fn split_details_ignores_a_details_lookalike_inside_a_nested_shorter_fence() {
         let src = "````md\n```mermaid\n<details>lookalike</details>\n```\n````\n";
-        let parts = split_details(src);
+        let parts = split_details(&doc_run(src));
         assert_eq!(
             parts.len(),
             1,
             "文書全体が1つの Text パートのまま(details として切り出されない)"
         );
         match &parts[0] {
-            DetailsPart::Text(t) => assert_eq!(t, src),
+            DetailsPart::Text(t) => assert_eq!(t.text(), src),
             DetailsPart::Details { .. } => {
                 panic!("フェンス内の <details> 風の行を本物の details として切り出してしまった")
             }
@@ -9858,7 +11819,7 @@ mod task_scan_parity_tests {
         set_details_open(Vec::new());
         let src = "```text\n> [!NOTE]\nlooks like an alert\n```\n";
         let lines = render_markdown_tasks_opts(
-            src,
+            &doc_run(src),
             100,
             CodeStyle::default(),
             "TwoDark",
@@ -9999,6 +11960,23 @@ mod fence_and_math_extraction_tests {
             (
                 "inside details",
                 "<details>\n<summary>S</summary>\n\nhere is $x^2$ math\n\n</details>\n",
+                vec![],
+            ),
+            // One level deeper, where `structure_mask` now relabels the container's own answer to
+            // `HtmlOpen`/`HtmlBody` (2026-08). `split_math`'s question is only "is this line inside
+            // *something*", so a relabel must be invisible to it — and it stays invisible precisely
+            // because the rescan never adds or removes a non-`None` line, only renames one. These
+            // two are the cheap behavioral pin on that invariant; it was also measured directly, by
+            // rendering all 2,182 registry `.md` files with math extraction on and diffing both the
+            // output and the per-line non-`None` bitmap (identical).
+            (
+                "inside an HTML block nested in details",
+                "<details>\n<summary>S</summary>\n\n<p align=\"center\">\n    $x^2$ stays put\n    <br>\n    tail\n</p>\n\n</details>\n",
+                vec![],
+            ),
+            (
+                "inside an HTML block nested in a blockquote",
+                "> <p align=\"center\">\n>     $x^2$ stays put\n>     <br>\n>     tail\n> </p>\n",
                 vec![],
             ),
             // Same class of document as `process_inline_html_leaves_a_details_fence_without_a_blank_line_untouched`
@@ -10666,6 +12644,25 @@ pub(crate) mod preprocess_corpus {
             ("br inside a nested list item", "- outer\n  - inner<br>tail\n"),
             ("br inside a quote", "> quoted<br>tail\n"),
             ("br inside an alert", "> [!NOTE]\n> quoted<br>tail\n"),
+            // A table row has no continuation form, so the injected line became a second, shifted
+            // row. `| x<br>y | z |` is GitHub's own idiom for a line break in a cell.
+            (
+                "br inside a table cell",
+                "| a | b |\n| --- | --- |\n| x<br>y | z |\n",
+            ),
+            // The centered-banner idiom: a bare `<br>` line between two badge blocks. Rewritten, it
+            // left a whitespace-only line — a blank line to CommonMark — which ended the HTML block
+            // and turned every following indented line into a real indented code block.
+            (
+                "bare br line inside an html block",
+                "<p align=\"center\">\n  <a href=\"https://a\">\n    <img src=\"https://a.svg\" alt=\"a\">\n  </a>\n  <br>\n  <a href=\"https://b\">\n    <img src=\"https://b.svg\" alt=\"b\">\n  </a>\n</p>\n",
+            ),
+            // The other half of the same axis: a `<br>` with text on both sides inside an HTML
+            // block leaves two non-blank lines, which the block tolerates, so it is still rewritten.
+            (
+                "mid-line br inside an html block",
+                "<div align=\"center\">\n  before<br>after\n</div>\n",
+            ),
             (
                 "continued def inside a quote",
                 "> Ref[^a].\n\n[^a]: first\n      more\n",
@@ -10749,6 +12746,62 @@ pub(crate) mod preprocess_corpus {
             (
                 "footnote leftover plus br injected checkbox",
                 "[^1]: def text\n    - [ ] LEFTOVER\n\n- [ ] REAL\n\nprose<br>- [ ] INJECTED\n\nSee[^1].\n",
+            ),
+            // ---- A pre-pass rewrite and the block splitters, over the same lines (2026-08) ----
+            //
+            // The axis the rows above stop just short of: what a pre-pass does to a line *and* what
+            // the block splitters then make of the line it leaves behind. Both 2026-08 fixes live
+            // here and they pull in opposite directions on the same document — the `<br>` rule has
+            // to keep an HTML block from ending, and the block splitter then has to keep calling
+            // the 4-column-indented markup inside it HTML rather than indented code. A row that
+            // exercises only one of them can be satisfied by a change that breaks the other, which
+            // is how each of the two single-sided fixes came to look correct.
+            //
+            // Cheap to state, and the reason these belong in *this* corpus rather than only in
+            // `code_corpus`: `code_corpus` hands the raw text to both sides, so it never sees a
+            // line the pre-pass removed. Only the app-faithful runners over this corpus do.
+            (
+                "centered banner with a bare br line (registry: raw-window-metal README.md)",
+                "<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"https://img.example/v.svg\" alt=\"crates.io\">\n    </a>\n    <br>\n    <a href=\"LICENSE-MIT\">\n      <img src=\"https://img.example/mit.svg\" alt=\"License - MIT\">\n    </a>\n</p>\n\ntail\n",
+            ),
+            (
+                "markdown block image above a centered banner (registry: static_assertions README.md)",
+                "[![Banner](https://img.example/banner.png)](https://example.com/repo)\n\n<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n    </a>\n    <img src=\"https://img.example/rustc.svg\" alt=\"rustc\">\n    <br>\n    <a href=\"https://example.com/patron\">\n        <img src=\"https://img.example/patron.png\" alt=\"Patron\">\n    </a>\n</div>\n\ntail.\n",
+            ),
+            // No `<br>` anywhere, and CRLF throughout: isolates the block-splitter half of the pair
+            // on the axis (`\r` left on a line's end) that changes what "only tags" and "blank" both
+            // answer.
+            (
+                "crlf centered banner with no br (registry: tinytemplate README.md)",
+                "<h1 align=\"center\">TT</h1>\r\n\r\n<div align=\"center\">\r\n    <a href=\"https://example.com/actions\">\r\n        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\r\n    </a>\r\n    <a href=\"https://crates.io/crates/tt\">\r\n        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\r\n    </a>\r\n</div>\r\n\r\ntail\r\n",
+            ),
+            // The mirror direction, and the shape a user reported: the pre-pass must leave a
+            // tag-shaped indented code line alone *and* the renderer must still draw it as code —
+            // with the identical tag outside the block, which the pre-pass must still rewrite. One
+            // row per angle-bracket form the two sides disagreed about.
+            (
+                "tag-shaped indented code beside the same tag outside it",
+                "para\n\n    <kbd>Ctrl</kbd>\n\nPress <kbd>Ctrl</kbd> now.\n",
+            ),
+            (
+                "closing-tag indented code beside a real html block",
+                "<div align=\"center\">\n  <b>hi</b>\n</div>\n\npara\n\n    </a>\n",
+            ),
+            (
+                "comment-shaped indented code beside a real comment block",
+                "<!-- real block -->\n\npara\n\n    <!-- a comment -->\n",
+            ),
+            (
+                "autolink-shaped indented code beside a real autolink",
+                "para\n\n    <https://example.com>\n\nSee <https://example.com> too.\n",
+            ),
+            (
+                "cjk angle brackets inside indented code and outside it",
+                "para\n\n    <仕様書>\n\n本文で <仕様書> に触れる。\n",
+            ),
+            (
+                "void-tag indented code beside a real br",
+                "para\n\n    <br>\n\nprose<br>tail\n",
             ),
         ]
     }
@@ -10903,6 +12956,31 @@ mod app_faithful_parity_tests {
                 from_pre, from_raw,
                 "{name}: 前処理の有無でコピーされる中身がバイト単位で変わる\
                  \n--- raw ---\n{raw}"
+            );
+        }
+    }
+
+    /// The mechanical precondition for every origin lookup: the map has **exactly one entry per line
+    /// of the text it describes**. `origin.get(n)` is indexed by a line number of the preprocessed
+    /// text, so a map one entry short or long silently shifts every lookup past the drift onto the
+    /// wrong source line.
+    ///
+    /// Worth pinning on its own rather than leaving to
+    /// `every_drawn_checkbox_either_resolves_exactly_or_not_at_all` below, which can only *notice* a
+    /// drift when the shifted line happens to compare unequal — a drift that lands on a
+    /// coincidentally similar line passes it. The pre-passes derive their `None` padding from the
+    /// number of newlines they produced, and `<br>` is the one substitution whose newline count
+    /// varies with its context (2026-08: none at all inside an HTML block or a table row, none for a
+    /// trailing tag, one otherwise), so the derivation has to stay tied to the produced string.
+    #[test]
+    fn line_origins_have_exactly_one_entry_per_preprocessed_line() {
+        for (name, raw) in all_cases() {
+            let (pre, origin) = app_pre(raw);
+            assert_eq!(
+                origin.len(),
+                pre.lines().count(),
+                "{name}: origin の要素数が前処理後の行数と一致しない\
+                 (以降の行の書き戻し先が全てずれる)\n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
             );
         }
     }

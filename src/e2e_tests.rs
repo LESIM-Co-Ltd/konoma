@@ -2918,6 +2918,89 @@ fn e2e_markdown_br_inside_a_code_block_does_not_split_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Root cause (2026-08): rewriting `<br>` unconditionally into `"  \n"` injects a line that carries
+/// none of the prefix its enclosing block requires. `split_alerts` captures a callout body by
+/// consuming *consecutive* `>`-prefixed lines, so the box ended at the injected line, everything
+/// after it escaped, and a fence written inside the alert leaked onto the screen as literal
+/// `` > ```rust `` text instead of being drawn as a code block.
+///
+/// The unit tests for this measure the renderer's `Line`s. This drives the same document through the
+/// app — key press → `md_render.rs` preprocessing → drawn screen — and asserts on the screen rows,
+/// under the user's real `code_bg = "none"` theme. Both spellings are present because they take
+/// different branches: a mid-line `<br>` injects a prefixed continuation, while a trailing one must
+/// emit the `"  "` marker and **no** newline (a newline there would make an empty quote line, which
+/// splits the callout's paragraph instead of breaking a line).
+#[test]
+fn e2e_markdown_br_in_an_alert_keeps_the_callout_and_its_fence_whole() {
+    let body = concat!(
+        "> [!NOTE]\n",
+        "> line one<br>line two\n",
+        "> tail line<br>\n",
+        "> after the break\n",
+        ">\n",
+        "> ```rust\n",
+        "> fn inside_the_note() {}\n",
+        "> ```\n",
+        "\nAfter the note.\n",
+    );
+    let (mut s, dir) = md_preview(cfg_code_bg_none(), "br_alert_callout", body);
+
+    // The row holding each piece of the body also carries the callout's own bar — i.e. the text is
+    // still *inside* the box, not text that escaped it.
+    for needle in [
+        "line one",
+        "line two",
+        "tail line",
+        "after the break",
+        "fn inside_the_note",
+    ] {
+        let (row, _) = s
+            .find_text(needle)
+            .unwrap_or_else(|| panic!("「{needle}」が画面にない:\n{}", s.screen()));
+        let screen = s.screen();
+        let text = screen.lines().nth(row as usize).unwrap_or_default();
+        assert!(
+            text.contains('▌'),
+            "「{needle}」の行が callout の外に逃げている: {text:?}\n{screen}"
+        );
+    }
+    // The fence inside the alert is drawn as a code block (gutter present), and its raw markers
+    // never reach the screen — leaked markup is exactly what the bug produced.
+    s.see("▎");
+    s.dont_see("```");
+    s.dont_see("> fn inside_the_note");
+    // …and it is a real, copyable code block: the count guard passed, so `Tab` reaches it and the
+    // copy resolves to the fence's own source with the `>` markers stripped, as drawn.
+    s.tab();
+    assert!(
+        s.app.md_focused_code(),
+        "alert 内の fence に Tab でフォーカスできない:\n{}",
+        s.screen()
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("fn inside_the_note() {}"),
+        "alert 内 fence のコピー内容"
+    );
+    // A line break, not a paragraph break. The trailing `<br>` must emit only the `"  "` marker:
+    // adding a newline as well would inject an empty `> ` line, which reads as a blank quote line
+    // and splits the callout's paragraph — a stray `▌` row on screen. The document has exactly one
+    // genuinely empty quote line of its own (the `>` between the prose and the fence), so the count
+    // is the test, not the presence.
+    let screen = s.screen();
+    let blank_callout_rows = screen
+        .lines()
+        .filter(|r| r.trim_matches(|c| c == '│' || c == ' ') == "▌")
+        .count();
+    assert_eq!(
+        blank_callout_rows, 1,
+        "callout 本文の空行数が想定外(行末 <br> が段落区切りになっている):\n{screen}"
+    );
+    // The document continues normally below the callout.
+    s.see("After the note.");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `$…$` inside an indented code block must not be lifted out onto its own image row — the same
 /// "is this line literal code" question `process_footnotes`/`process_inline_html` ask, but for
 /// `split_math`, which has no string output to eyeball on screen the way the other two do. A picker
@@ -3448,6 +3531,178 @@ fn e2e_md_indented_code_block_tab_focus_and_copy() {
     assert!(s.app.flash.is_some(), "字下げ側のコピー通知が出る");
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Root cause (the document-level code mask, 2026-08 — reported by a user): an indented code block
+/// whose **first line looked like an HTML tag** was not drawn as a code block at all.
+/// `split_html_blocks` asked `fence_mask`, which has no notion of indentation, so the block was
+/// rescued as an HTML block instead: its tags were stripped, its gutter was gone, and
+/// `"para\n\n    <code>\n"` rendered as *nothing*. Because it never reached the renderer as code it
+/// was also not Tab-focusable and not copyable — so the whole reason a reader indents a snippet (to
+/// show markup literally, then copy it) failed silently.
+///
+/// The unit tests for this measure the renderer directly. This drives the shape a user actually hits
+/// — key press → `md_render.rs` preprocessing → drawn screen → `Tab` → `y` `c` — under **both**
+/// themes, because `code_bg = "none"` (the reporting user's real setting) removes the background
+/// that some of this module's code detection has leaned on before, and a bg-only answer must not be
+/// able to regress unnoticed again.
+#[test]
+fn e2e_md_indented_code_block_whose_content_is_a_tag_is_focusable_and_copyable() {
+    for (label, cfg) in [
+        ("default", Config::default()),
+        ("code_bg=none", cfg_code_bg_none()),
+    ] {
+        let body = concat!(
+            "Intro paragraph.\n\n",
+            "    <code>\n",
+            "    still code\n\n",
+            "Tail with a real <kbd>Ctrl</kbd> outside.\n",
+        );
+        let (mut s, dir) = md_preview(cfg, "indented_tag_code", body);
+        // Drawn as a code block: the content is on screen verbatim, behind the `▎` gutter. Under
+        // the bug the tag was stripped and this row was empty.
+        //
+        // Both content lines land on the *same* row (`▎ <code>still code`) — tui-markdown runs an
+        // indented block's adjacent lines together, unlike a fenced one. That is upstream behavior
+        // rather than anything this fix does, and it is pinned directly in
+        // `markdown.rs::tui_markdown_runs_an_indented_blocks_adjacent_lines_together`; asserted here
+        // only as "both are present", so this test fails for the reason it is about.
+        s.see("▎ <code>");
+        s.see("still code");
+        // …and the pass that would have rewritten it is demonstrably still running elsewhere, so
+        // this is not "conversion stopped everywhere".
+        s.dont_see("<kbd>Ctrl</kbd>");
+
+        // Tab reaches it, and `y` `c` copies its exact raw source (not the screen's decorated form).
+        s.tab();
+        assert!(
+            s.app.md_focused_code(),
+            "{label}: 字下げコードブロックに Tab でフォーカスできない"
+        );
+        assert_eq!(
+            s.app.focused_code_text().as_deref(),
+            Some("<code>\nstill code"),
+            "{label}: コピー対象が生ソースと一致しない"
+        );
+        s.key('y');
+        assert_eq!(
+            s.app.pending_leader,
+            Some(crate::keymap::LeaderId::Copy),
+            "{label}: y はコピーリーダーを開く"
+        );
+        s.see("code block");
+        s.key('c');
+        assert!(
+            s.app.pending_leader.is_none(),
+            "{label}: c で確定=リーダーが閉じる"
+        );
+        assert!(s.app.flash.is_some(), "{label}: y c でコピー通知が出る");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// The other half of the same pair, through the app pipeline: a centered `<div align="center">`
+/// badge banner — the shape at the top of a great many crate READMEs — must draw **no** code gutter.
+///
+/// This is what makes the fix above hard rather than obvious. `split_block_parts` lifts the `<img>`
+/// lines out before the block splitters run, and what is left (`    </a>` / `    <a href="…">`) is
+/// byte-for-byte an indented code block when read on its own. The naive fix — point
+/// `split_html_blocks` at the indentation-aware mask — turns every banner like this into a `▎ …`
+/// block full of raw markup, which is exactly what three registry READMEs did while it was tried.
+/// So this test and the one above have to pass **together**; either alone is satisfiable by a wrong
+/// answer.
+#[test]
+fn e2e_md_centered_banner_draws_no_code_gutter() {
+    let body = concat!(
+        "<p align=\"center\">\n",
+        "    <a href=\"https://crates.io/crates/demo\">\n",
+        "      <img src=\"https://img.example/v.svg\" alt=\"crates.io badge\">\n",
+        "    </a>\n",
+        "    <br>\n",
+        "    <a href=\"LICENSE-MIT\">\n",
+        "      <img src=\"https://img.example/mit.svg\" alt=\"MIT badge\">\n",
+        "    </a>\n",
+        "</p>\n",
+        "\nOrdinary prose after the banner.\n",
+    );
+    let (s, dir) = md_preview(cfg_code_bg_none(), "banner_no_gutter", body);
+    // No code block anywhere on screen, and no raw markup leaked into one.
+    s.dont_see("▎");
+    s.dont_see("</a>");
+    // The badges survived as images (so the `<img>` extraction that creates the ambiguity really
+    // happened) and the prose below the banner was not swallowed.
+    s.see("crates.io badge");
+    s.see("MIT badge");
+    s.see("Ordinary prose after the banner.");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same banner **one container deep**, through the app pipeline.
+///
+/// Root cause (2026-08): `structure_mask` reported only the outermost construct, so inside
+/// `<details>` (or a blockquote) every line of the banner came back as the container rather than as
+/// HTML-block body. The lone `    <br>` therefore took the hard-break rewrite, `"    " + "  "` is a
+/// blank line to CommonMark, the inner `<p align="center">` ended there, and the 4-column-indented
+/// lines below it became a real indented code block — so the markup drew as `▎ …` **and the second
+/// badge stopped being extracted at all**.
+///
+/// The top-level form above is exercised by three tests; this is the level none of them reached, and
+/// the measurement that caught it needed both containers: `<details>` shows the `▎` gutter, while
+/// the quoted form loses its badge while drawing no konoma code gutter whatsoever.
+///
+/// The `<details>` case keeps the real README shape (`<img>` on its own line, so `split_block_parts`
+/// leaves `    </a>` fragments behind); the quoted case puts the `<img>` inside the `<a>` line so
+/// nothing is left over, because a *quoted* leftover fragment still draws as markup for an unrelated,
+/// pre-existing reason — see `banner_quoted_multiline_still_leaks_its_leftover_fragments`. Both
+/// shapes lost a badge before the fix, which is what this asserts.
+#[test]
+fn e2e_md_banner_nested_in_a_container_draws_no_code_gutter() {
+    for (label, body) in [
+        (
+            "details",
+            concat!(
+                "<details open>\n",
+                "<summary>Badges</summary>\n",
+                "\n",
+                "<p align=\"center\">\n",
+                "    <a href=\"https://crates.io/crates/demo\">\n",
+                "      <img src=\"https://img.example/v.svg\" alt=\"crates.io badge\">\n",
+                "    </a>\n",
+                "    <br>\n",
+                "    <a href=\"LICENSE-MIT\">\n",
+                "      <img src=\"https://img.example/mit.svg\" alt=\"MIT badge\">\n",
+                "    </a>\n",
+                "</p>\n",
+                "\n",
+                "</details>\n",
+                "\nOrdinary prose after the banner.\n",
+            ),
+        ),
+        (
+            "blockquote",
+            concat!(
+                "> <p align=\"center\">\n",
+                ">     <a href=\"https://crates.io/crates/demo\"><img src=\"https://img.example/v.svg\" alt=\"crates.io badge\"></a>\n",
+                ">     <br>\n",
+                ">     <a href=\"LICENSE-MIT\"><img src=\"https://img.example/mit.svg\" alt=\"MIT badge\"></a>\n",
+                "> </p>\n",
+                "\nOrdinary prose after the banner.\n",
+            ),
+        ),
+    ] {
+        let (s, dir) = md_preview(cfg_code_bg_none(), "banner_nested_no_gutter", body);
+        s.dont_see("▎");
+        s.dont_see("</a>");
+        // Both badges survived the nesting — the second one is the one that used to vanish.
+        s.see("crates.io badge");
+        s.see("MIT badge");
+        s.see("Ordinary prose after the banner.");
+        assert!(
+            !s.screen().contains("```"),
+            "{label}: 生のフェンスが漏れている"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// Root cause (container-relative indentation, 2026-08 — reported by a user on the released build):
