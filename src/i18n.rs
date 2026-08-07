@@ -268,6 +268,10 @@ pub enum Msg {
     Keymap,
     GitLayout,
     LineStartEnd,
+    /// The tree listing could not be rebuilt on a path that cannot propagate the error (the
+    /// fs-watch refresh / a tab switch), so what is on screen may be out of date. See
+    /// `App::note_refresh_failure`. Followed by the underlying error text.
+    ListingStale,
     Loading,
     Local,
     GitLogGraph,
@@ -775,6 +779,7 @@ fn en(msg: Msg) -> &'static str {
         Keymap => "keymap",
         GitLayout => "layout: unified / split / auto",
         LineStartEnd => "line start / line end (horizontal)",
+        ListingStale => "listing may be out of date (refresh failed): ",
         Loading => "loading…",
         Local => "local",
         GitLogGraph => "log / graph",
@@ -1231,6 +1236,7 @@ fn jp(msg: Msg) -> &'static str {
         Keymap => "キーマップ",
         GitLayout => "並び: 縦 / 横 / Auto",
         LineStartEnd => "行頭 / 行末へ(横)",
+        ListingStale => "一覧が古いままの可能性 (更新に失敗): ",
         Loading => "読み込み中…",
         Local => "ローカル",
         GitLogGraph => "ログ / グラフ",
@@ -1757,6 +1763,7 @@ mod tests {
         Msg::Keymap,
         Msg::GitLayout,
         Msg::LineStartEnd,
+        Msg::ListingStale,
         Msg::Loading,
         Msg::Local,
         Msg::GitLogGraph,

@@ -726,7 +726,7 @@ fn run(
             // active derived view
             // (in Preview mode, reload the current preview → fixes the known bug where the preview
             //  stayed stale after an external-editor edit. In the Git view, update the change listing).
-            let _ = app.refresh_fs_changed(ignore_rules_changed, &changed_paths);
+            app.refresh_fs_watched(ignore_rules_changed, &changed_paths);
             needs_redraw = true;
         }
         // Follow's switch judgment (outside the drain = every loop). A target arriving during

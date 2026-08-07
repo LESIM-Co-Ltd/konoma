@@ -178,7 +178,7 @@ impl App {
         // The preview itself has already been rebuilt from disk above, so **don't reload it again**
         // here (previously refresh_fs → reload_preview repeated the same work, running the
         // full-row CSV parse twice for a CSV tab).
-        let _ = self.refresh_fs_after_tab_switch();
+        self.refresh_fs_after_tab_switch();
     }
 
     /// Test-only: true when tab `active_tab`'s slot in `self.tabs` currently holds

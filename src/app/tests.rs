@@ -2807,8 +2807,11 @@ fn text_filter_survives_fs_refresh() {
     );
 
     // Directly hit the path a tab switch actually goes through (refresh_fs_after_tab_switch) =
-    // the tightest way to reproduce it.
-    app.refresh_fs_after_tab_switch().unwrap();
+    // the tightest way to reproduce it. It reports a rebuild failure itself rather than returning
+    // one (see `App::note_refresh_failure`), so "it succeeded" is asserted as "it had nothing to
+    // report" instead of the `.unwrap()` this used to be.
+    app.refresh_fs_after_tab_switch();
+    assert_eq!(app.flash, None, "refresh 自体は成功している");
 
     assert_eq!(
         app.filter_query(),
@@ -3326,6 +3329,178 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
         "rebuild_tree 失敗でもプレビュー再読込は走る(md_cache 無効化)"
     );
     std::fs::remove_dir_all(&base).ok();
+}
+
+/// Regression: a tree rebuild that fails on the **fs-watch driven refresh** used to be dropped with
+/// `let _ = …`, so the user was shown a stale listing with no hint that it had stopped updating.
+/// `rebuild_tree` keeps the last good state instead of crashing, which makes silence the worst
+/// possible outcome — the tree looks perfectly healthy while being out of date.
+///
+/// The notification is edge-triggered on purpose (see `App::note_refresh_failure`): the watcher
+/// fires on every burst, so reporting each failure would overwrite the flash line continuously.
+/// This pins both halves — it *is* announced once, and it does *not* repeat — plus the success
+/// cases, so that neither "never notify" (the old bug) nor "always notify" can pass.
+///
+/// No permission juggling, so no root guard is needed: a removed directory makes `read_dir` fail
+/// for every user including root, and it is the realistic trigger anyway (an agent deleting a
+/// directory konoma happens to be showing).
+#[test]
+fn fs_watch_refresh_failure_is_announced_once_per_outage() {
+    let base = unique_tmp("konoma_stale_listing_watch_test");
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"x").unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let stale = crate::i18n::tr(app.lang, crate::i18n::Msg::ListingStale);
+
+    // A healthy refresh stays silent (paired with the failure assertions below so an
+    // "always flash" implementation cannot pass either).
+    app.refresh_fs_watched(false, &[]);
+    assert_eq!(app.flash, None, "成功時に余計な flash を出さない");
+
+    // The root disappears from under us.
+    std::fs::remove_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    let first = app.flash.clone().expect("失敗が伝わる");
+    assert!(first.contains(stale), "一覧が古い旨の文言が出る: {first:?}");
+    assert!(
+        !app.tab.entries.is_empty(),
+        "クラッシュせず最後に成功した一覧を保持する(=だからこそ黙ってはいけない)"
+    );
+    assert!(app.tree_stale_notified_for_test(), "通知済みラッチが立つ");
+
+    // Repeated failures must not keep re-flashing: once the user dismisses it (a keypress clears
+    // flash), the same outage stays quiet instead of burying every later message.
+    app.flash = None;
+    for _ in 0..5 {
+        app.refresh_fs_watched(false, &[]);
+    }
+    assert_eq!(app.flash, None, "同じ障害の間は繰り返し通知しない");
+
+    // An unrelated flash set in the meantime is not clobbered either.
+    app.flash = Some("unrelated".into());
+    app.refresh_fs_watched(false, &[]);
+    assert_eq!(
+        app.flash.as_deref(),
+        Some("unrelated"),
+        "他の flash を上書きしない"
+    );
+
+    // Recovery re-arms the notification, so a *new* outage is announced again.
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("b.txt"), b"y").unwrap();
+    app.flash = None;
+    app.refresh_fs_watched(false, &[]);
+    assert_eq!(app.flash, None, "復旧時も余計な通知は出さない");
+    assert!(
+        !app.tree_stale_notified_for_test(),
+        "復旧でラッチが解除される"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    let second = app.flash.clone().expect("再発は改めて伝わる");
+    assert!(second.contains(stale), "再発時も同じ文言: {second:?}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The other path that cannot propagate a rebuild failure: **switching to a tab** whose root became
+/// unreadable while it sat in the background. `load_active` returns nothing, so the error used to
+/// be dropped with `let _ = self.refresh_fs_after_tab_switch();` and the tab silently showed its
+/// old snapshot. Also pins the negative: switching to a healthy tab flashes nothing.
+#[test]
+fn tab_switch_announces_a_failed_rebuild() {
+    let base = unique_tmp("konoma_stale_listing_tab_test");
+    let _ = std::fs::remove_dir_all(&base);
+    let a = base.join("a");
+    let b = base.join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("in-a.txt"), b"x").unwrap();
+    std::fs::write(b.join("in-b.txt"), b"y").unwrap();
+
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    // Tab 2 on a different root.
+    app.tab_new().unwrap();
+    app.tab.root = b.clone();
+    app.tab.entries.clear();
+    app.tab.selected = 0;
+    app.rebuild_tree().unwrap();
+
+    // Healthy round trip: no flash in either direction.
+    app.tab_goto(0);
+    assert_eq!(app.flash, None, "健全なタブ切替では通知しない");
+    app.tab_goto(1);
+    assert_eq!(app.flash, None, "健全なタブ切替では通知しない(往路も)");
+
+    // Tab 1's root vanishes while tab 2 is in front, then we switch back to it.
+    std::fs::remove_dir_all(&a).unwrap();
+    app.tab_goto(0);
+    let msg = app.flash.clone().expect("タブ切替でも失敗が伝わる");
+    assert!(
+        msg.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::ListingStale)),
+        "一覧が古い旨の文言が出る: {msg:?}"
+    );
+
+    // Sitting on the broken tab, the watcher keeps firing — that is the flood source, and it stays
+    // quiet.
+    app.flash = None;
+    for _ in 0..5 {
+        app.refresh_fs_watched(false, &[]);
+    }
+    assert_eq!(app.flash, None, "同じ障害の間は繰り返し通知しない");
+
+    // Deliberate: a round trip through a *healthy* tab rebuilds successfully, which re-arms the
+    // latch, so deliberately visiting the broken tab again says so again. That is one flash per
+    // explicit user action (konoma's normal flash cadence), not the unattended repetition the edge
+    // trigger exists to stop — and the user just asked to look at that listing, so telling them it
+    // is out of date is the point.
+    app.flash = None;
+    app.tab_goto(1);
+    assert_eq!(app.flash, None, "健全なタブ側では黙っている");
+    app.tab_goto(0);
+    assert!(
+        app.flash.is_some(),
+        "壊れたタブを開き直したら改めて伝える(ユーザー操作 1 回につき 1 回)"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The edge trigger is re-armed by `rebuild_tree` itself (the one choke point), not by the notify
+/// helper, so a recovery that happens on a *different* path — one that propagates its error with
+/// `?` and never consults the latch — still lets the next outage be announced. Without that, a
+/// successful `refresh()` between two outages would leave the latch stuck and the second outage
+/// silent.
+#[test]
+fn stale_listing_latch_is_rearmed_by_any_successful_rebuild() {
+    let base = unique_tmp("konoma_stale_listing_rearm_test");
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    assert!(app.flash.is_some(), "1回目の障害は伝わる");
+
+    // Recover, and let a `?`-style caller be the one that succeeds.
+    std::fs::create_dir_all(&root).unwrap();
+    app.refresh().expect("復旧後は成功する");
+    assert!(
+        !app.tree_stale_notified_for_test(),
+        "notify を経由しない成功でもラッチが解除される"
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+    app.flash = None;
+    app.refresh_fs_watched(false, &[]);
+    assert!(app.flash.is_some(), "2回目の障害も改めて伝わる");
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]

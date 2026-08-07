@@ -1260,6 +1260,15 @@ pub struct App {
     /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
     /// on every keypress.
     detail_cells_cache: std::collections::HashMap<PathBuf, Vec<String>>,
+    /// Whether the user has already been told about the *current* tree-rebuild outage.
+    ///
+    /// Edge trigger for `note_refresh_failure`: the paths that cannot propagate a failure (the
+    /// fs-watch driven refresh and the tab switch) report the **first** failure of an outage and
+    /// then stay quiet, so a root that stays unreadable — which re-fires on every single watcher
+    /// burst — does not bury every other flash. `rebuild_tree` clears it again on success, so a
+    /// *new* outage is reported afresh. It lives here rather than in the notify helper because
+    /// re-arming has to happen no matter which caller succeeded (including the `?` paths).
+    tree_stale_notified: bool,
     /// Sender that offloads inline-image decoding to a background thread.
     md_img_tx: Option<std::sync::mpsc::Sender<MdImageResult>>,
     /// Remote inline-image URLs whose background download is in flight (deduplicates fetches).
@@ -2083,6 +2092,7 @@ impl App {
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             detail_cells_cache: std::collections::HashMap::new(),
+            tree_stale_notified: false,
             md_img_tx: None,
             md_remote_inflight: std::collections::HashSet::new(),
             md_remote_failed: std::collections::HashSet::new(),
@@ -2207,6 +2217,10 @@ impl App {
         self.tab.visual_anchor = None;
         // The detail-cells cache also changes generation (a checkpoint where fs may have changed = always discard it here).
         self.detail_cells_cache.clear();
+        // Re-arm the stale-listing notification. Doing it *here*, at the one choke point every
+        // rebuild goes through, means the next outage is reported again no matter which caller
+        // recovered — including the `?` paths that never consult the flag themselves.
+        self.tree_stale_notified = false;
         Ok(())
     }
 
@@ -2251,6 +2265,42 @@ impl App {
         } else {
             true
         }
+    }
+
+    /// Report a refresh failure on the paths that **cannot** propagate it: the fs-watch driven
+    /// refresh (`main`'s run loop has no user action to attribute an error to) and the tab switch
+    /// (`load_active` returns nothing). Both used to drop it with `let _ = …`.
+    ///
+    /// `rebuild_tree` keeps the last good listing instead of crashing, so a swallowed failure is
+    /// not visible as breakage — it is **silently stale**, which is the worst outcome: the user
+    /// reads an out-of-date tree believing it is current.
+    ///
+    /// It is deliberately **edge-triggered** rather than reported every time. These two paths fire
+    /// on every watcher burst and every tab switch, so a persistent outage (an unreadable root)
+    /// would otherwise overwrite the flash line continuously and drown out everything else. So:
+    /// announce the first failure of an outage, then stay quiet until a rebuild succeeds
+    /// (`rebuild_tree` re-arms), at which point a later outage is announced again.
+    ///
+    /// Known limit, accepted: flash is cleared by the next keypress, so a *persistent* outage is
+    /// announced once and not repeated while it lasts. Making staleness permanently visible would
+    /// need an indicator in the status bar rather than a flash; that is a bigger UI change than
+    /// this fix, and one notification already beats the previous silence.
+    fn note_refresh_failure(&mut self, res: Result<()>) {
+        let Err(e) = res else { return };
+        if self.tree_stale_notified {
+            return;
+        }
+        self.tree_stale_notified = true;
+        self.flash = Some(format!(
+            "{}{e}",
+            crate::i18n::tr(self.lang, crate::i18n::Msg::ListingStale)
+        ));
+    }
+
+    /// Test-only view of the edge-trigger latch (see `note_refresh_failure`).
+    #[cfg(test)]
+    pub fn tree_stale_notified_for_test(&self) -> bool {
+        self.tree_stale_notified
     }
 
     // --- Sort (FR, M7 helper) -------------------------------------------------
