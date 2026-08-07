@@ -6,6 +6,17 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **The cursor could come to rest on a different file than the one it was on.** Both the `/` filter
+  and the changed-files view (`C`) rebuild their list and re-sort it — by fuzzy score and by path
+  respectively — but only clamped the cursor's index into range, and an index that stays in range
+  simply means something else afterwards. A file appearing above the cursor was enough: the next
+  `Enter`, `y`, `d` or `Space→d` then acted on a file you had not selected. `C` is the view for
+  watching an agent work, and an agent writing a file is what triggers the re-sort. The cursor now
+  carries the file's path across a rebuild and finds it again.
+- **`.` while filtering showed an unfiltered list under a header that said otherwise**, and hidden
+  files could not be found by the filter afterwards. The same gap existed in `C`.
+
 ### Changed
 - **Pressing `/` on a very large tree no longer blocks.** The walk starts on the keypress and hands
   off whatever is left after 20ms, so a directory that finishes inside that budget behaves exactly as
