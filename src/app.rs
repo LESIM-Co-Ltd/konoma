@@ -1356,10 +1356,16 @@ pub struct App {
     git_ignored_dirty: bool,
     /// Sender that returns results to the worker computing `ignored` in the background. If not attached (tests, etc.), a synchronous fallback is used.
     ignored_tx: Option<std::sync::mpsc::Sender<IgnoredResult>>,
-    /// The root a filter-pool scan (`/`'s population walk) is running for on a separate thread.
-    /// `None` = nothing in flight. Keyed by **root** (never `None` while running), so the
+    /// The generation and root of a filter-pool scan (`/`'s population walk) running on a separate
+    /// thread. `None` = nothing in flight. Keyed by **root** (never `None` while running), so the
     /// `pending == target` comparison can't be satisfied by two `None`s.
-    filter_pool_pending: Option<PathBuf>,
+    ///
+    /// The generation is carried alongside so the slot is released by **the result of the scan that
+    /// took it** and by nothing else. Two things depend on that: (a) a walk superseded mid-flight
+    /// (`filter_pool_gen` bumped without a new dispatch — every tab switch does this) still frees
+    /// the slot when it lands, instead of latching it forever; (b) a superseded result must *not*
+    /// free the slot of a **newer** walk that is genuinely still running.
+    filter_pool_pending: Option<(u64, PathBuf)>,
     /// Generation of the filter-pool scan. Bumped on every dispatch **and on a tab switch**; a
     /// result is applied only if it still matches, so a walk that finishes after the user moved
     /// root, left the filter or switched tabs is discarded instead of landing in the wrong pool.
@@ -2864,7 +2870,20 @@ impl App {
 
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.tab.show_hidden = !self.tab.show_hidden;
-        self.rebuild_tree()
+        // Which file the cursor is on, captured **before** the rebuild below replaces `entries` with
+        // the unfiltered listing — same hazard, and same ordering, as `refresh_fs_inner`.
+        let anchor = self.filter_anchor();
+        // Keep the tree's Err (a rebuild can fail transiently) but don't let it skip the filter
+        // work below, which depends on the pool rather than on the new tree — same reasoning as
+        // `refresh_fs_inner`.
+        let tree = self.rebuild_tree();
+        // `rebuild_tree` puts the *whole* tree back into `entries`, so while a filter is up the
+        // screen would go from filtered results to a plain directory listing under a heading that
+        // still says it is filtering. Re-apply it. The pool also has to be collected again: it was
+        // walked with the previous `show_hidden`, so without this `.` could reveal dotfiles in the
+        // tree that `/` still refused to find.
+        self.refilter_after_visibility_change(anchor);
+        tree
     }
 
     /// The diff lines for a GitDiff preview of `path`. `follow` = this is a follow-opened diff, so
@@ -3085,7 +3104,13 @@ impl App {
         // The `/` filter's population walk. Unlike the git scans this one is visible in the results
         // themselves (the list keeps filling in as the user types), so the label exists to explain
         // *why* — without it a partially-populated pool just looks like missing files.
-        if self.filter_pool_pending.is_some() {
+        //
+        // Only a walk whose result will actually land in the pool on screen (generation still
+        // current) counts. A superseded one is still burning a thread, but announcing it here would
+        // put "scanning files" on a tab that is not filtering at all and whose list will never
+        // change because of it — which is exactly what `t` used to do (`tab_new` left the previous
+        // tab's walk marked in flight).
+        if self.filter_pool_scanning_current() {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
         if self.media_loading {
@@ -5235,6 +5260,24 @@ pub(crate) fn set_filter_scan_budget(b: Option<Option<std::time::Duration>>) {
     SCAN_BUDGET_OVERRIDE.with(|c| c.set(b));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: make the next `collect_scan` on this thread panic. Same reasoning as
+    /// `SCAN_BUDGET_OVERRIDE` — the walk's panic-safety net has to be reachable on demand, and a
+    /// real `read_dir` walk cannot be made to panic to order. Thread-local so it cannot leak into
+    /// tests running in parallel, and so the *worker* thread never sees it: what this exists to
+    /// cover is the two walks that run on the **UI thread** (`kick_filter_pool_start`'s budgeted
+    /// head start and `spawn_or_sync_pool`'s no-channel fallback), where an unwind would take the
+    /// whole TUI down rather than just one background job.
+    static SCAN_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm/disarm the test-only scan panic for this thread (tests only). See [`SCAN_PANIC`].
+#[cfg(test)]
+pub(crate) fn set_filter_scan_panic(on: bool) {
+    SCAN_PANIC.with(|c| c.set(on));
+}
+
 /// Walk `stack` (LIFO of directories still to read) collecting entries until it is exhausted, the
 /// `cap` is hit, or `deadline` passes.
 ///
@@ -5252,6 +5295,10 @@ fn collect_scan(
     cap: usize,
     deadline: Option<std::time::Instant>,
 ) -> (Vec<Entry>, Vec<PathBuf>) {
+    #[cfg(test)]
+    if SCAN_PANIC.with(|c| c.get()) {
+        panic!("injected scan panic");
+    }
     let mut out: Vec<Entry> = Vec::new();
     let over_budget = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
     // Directories read on this call. The deadline is only consulted once at least one is done, so

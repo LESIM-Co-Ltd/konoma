@@ -571,6 +571,99 @@ fn e2e_filter_over_budget_stays_usable_and_fills_in_from_the_worker() {
 }
 
 #[test]
+fn e2e_filter_cursor_keeps_its_file_when_the_worker_result_reorders_the_list() {
+    // The window this closes, driven by real keys: `/` on a big tree hands the tail to a worker and
+    // the user is *expected* to be picking a target out of the partial list while it finishes.
+    // `filter_mode = "fuzzy"` (the default) ranks by score, so the arrival renumbers the list — and
+    // a cursor that was only range-clamped then pointed at a different file, silently retargeting
+    // the very next `Enter` / `y` / `Space→d`. Every step below goes through `handle_key`.
+    crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+    let dir = sandbox("filter_reorder");
+    for i in 0..3 {
+        std::fs::write(dir.join(format!("x_a_b_c_{i}.txt")), b"weak\n").unwrap();
+    }
+    // In a subdirectory, so the zero budget leaves it for the worker: a far better match for "abc"
+    // than anything the synchronous half collected, which is what makes the arrival reorder.
+    std::fs::create_dir_all(dir.join("pkg")).unwrap();
+    std::fs::write(dir.join("pkg/abc.txt"), b"strong\n").unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::new(&root);
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.app.attach_filter_pool_loader(tx);
+
+    s.key('/');
+    s.keys("abc");
+    s.enter(); // commit the query — from here the results are navigated normally
+    s.key('j'); // move off the first row, so "reset to 0" would fail too
+    let before = s.app.tab.selected;
+    assert_eq!(before, 1, "土台: カーソルは 2 行目");
+    let target = s.app.tab.entries[before].path.clone();
+    let target_name = target.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(target_name.starts_with("x_a_b_c_"), "土台: {target_name}");
+
+    // The run loop applying the worker's result, then redrawing.
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(s.app.apply_filter_pool(res), "ワーカーの結果が適用される");
+    s.draw();
+
+    s.see("abc.txt");
+    let now = s
+        .app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == target)
+        .expect("対象は今も一致する");
+    assert_ne!(
+        now, before,
+        "土台: 到着で順位が入れ替わっていないとこのテストは何も検出しない"
+    );
+    assert_eq!(
+        s.app.tab.entries[s.app.tab.selected].path, target,
+        "カーソルは同じファイルを指し続ける"
+    );
+
+    // 1) Enter previews the file the user was looking at, not whatever took its row.
+    s.enter();
+    assert_eq!(s.app.tab.mode, Mode::Preview);
+    assert_eq!(
+        s.app.tab.preview_path.as_deref(),
+        Some(target.as_path()),
+        "Enter が開くのはカーソル下のファイル"
+    );
+    s.see("weak");
+    s.key('q');
+    assert_eq!(
+        s.app.tab.entries[s.app.tab.selected].path, target,
+        "戻ってもカーソルは同じファイル"
+    );
+
+    // 2) `y` → `f` copies that file's path.
+    s.key('y');
+    s.key('f');
+    let flash = s.app.flash.clone().unwrap_or_default();
+    assert!(
+        flash.contains(&target_name),
+        "y f がコピーするのはカーソル下のファイル: {flash}"
+    );
+    assert!(!flash.contains("abc.txt"), "先頭を奪った別ファイルではない");
+
+    // 3) `Space` → `d` → `!` deletes that file and no other. The decisive one: an off-by-one here
+    //    is unrecoverable.
+    s.key(' ');
+    s.key('d');
+    s.key('!');
+    assert!(!target.exists(), "消えたのはカーソル下のファイル");
+    assert!(
+        dir.join("pkg/abc.txt").exists(),
+        "順位を奪った別ファイルは無傷"
+    );
+
+    crate::app::set_filter_scan_budget(None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_tree_hidden_toggle() {
     let dir = sandbox("tree_hidden");
     seed_files(&dir);

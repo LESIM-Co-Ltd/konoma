@@ -18154,7 +18154,7 @@ fn start_filter_over_budget_hands_off_and_the_pool_completes_on_arrival() {
         full.len()
     );
     assert_eq!(
-        app.filter_pool_pending.as_deref(),
+        app.filter_pool_pending.as_ref().map(|(_, p)| p.as_path()),
         Some(dir.as_path()),
         "残りは裏で走っている"
     );
@@ -18517,7 +18517,7 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
     assert!(pool > 0 && shown > 0, "土台: プールも表示も埋まっている");
 
     // What the worker sends when `catch_silent` caught a panic.
-    app.filter_pool_pending = Some(dir.clone());
+    app.filter_pool_pending = Some((app.filter_pool_gen, dir.clone()));
     let failed = crate::app::FilterPoolResult {
         gen: app.filter_pool_gen,
         root: dir.clone(),
@@ -18533,5 +18533,575 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
         "走査中フラグは解ける(スピナーが回りっぱなしにならない)"
     );
     assert!(!app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// A: the filter cursor must follow the *file*, not the index.
+//
+// `reapply_filter` rebuilds `entries` from the pool, and the default `filter_mode = "fuzzy"` orders
+// by score — so anything that grows the pool (the budgeted hand-off from `/` landing, an FS-driven
+// re-scan) reshuffles the list under a cursor that was only ever range-clamped. The index stayed in
+// range and pointed at a different file, silently retargeting the next `Enter` / `y` / `Space→d`.
+// ---------------------------------------------------------------------------------------------
+
+/// Fixture built so the fuzzy ranking is *guaranteed* to reshuffle when the pool grows: `abcd.txt`
+/// is a far better match for "abc" than `x_a_b_c_N.txt`, so once it arrives it sorts to the front
+/// and pushes everything already on screen down by one.
+fn reorder_fixture(prefix: &str) -> PathBuf {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..3 {
+        std::fs::write(dir.join(format!("x_a_b_c_{i}.txt")), b"x").unwrap();
+    }
+    dir
+}
+
+/// The result the worker sends when the handed-off tail of a `/` walk finishes.
+fn tail_result(app: &App, root: &Path, entries: Vec<Entry>) -> crate::app::FilterPoolResult {
+    crate::app::FilterPoolResult {
+        gen: app.filter_pool_gen,
+        root: root.to_path_buf(),
+        entries: Some(entries),
+        append: true,
+    }
+}
+
+#[test]
+fn filter_cursor_follows_its_file_when_a_late_scan_reorders_the_results() {
+    // The window is real: `/` on a big tree hands the tail to a worker, and the user is *expected*
+    // to be picking a target out of the partial list while it finishes. If the arrival renumbers
+    // the list under the cursor, the next key acts on a file the user never looked at.
+    let _g = BudgetGuard::always_sync();
+    let dir = reorder_fixture("konoma_filter_reorder");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    for c in "abc".chars() {
+        app.filter_input_push(c);
+    }
+    // Park the cursor on a specific file (not the first — so a plain "reset to 0" would also fail).
+    app.tab.selected = 1;
+    let target = app.tab.entries[1].path.clone();
+    assert!(target.ends_with("x_a_b_c_1.txt"), "土台: {target:?}");
+
+    // The handed-off tail lands, carrying a much better match for the same query.
+    std::fs::write(dir.join("abcd.txt"), b"x").unwrap();
+    let late = collect_all(&dir, false)
+        .into_iter()
+        .filter(|e| e.path.ends_with("abcd.txt"))
+        .collect::<Vec<_>>();
+    assert_eq!(late.len(), 1, "土台: 到着するのは 1 件");
+    let res = tail_result(&app, &dir, late);
+    assert!(app.apply_filter_pool(res), "到着した結果は適用される");
+
+    let moved = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == target)
+        .expect("対象は今も一致する");
+    assert_ne!(
+        moved, 1,
+        "土台: 到着で順位が入れ替わっていないとこのテストは何も検出しない"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "カーソルは同じファイルを指し続ける(index ではなくファイルを追う)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn filter_cursor_falls_back_to_clamping_when_its_file_is_no_longer_a_match() {
+    // The other half of the contract: "follow the file" must not become "refuse to move". When the
+    // selected entry is gone (deleted, or no longer matching the query the user just extended),
+    // there is nothing to follow and the old positional clamp is exactly right.
+    let _g = BudgetGuard::always_sync();
+    let dir = reorder_fixture("konoma_filter_gone");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    for c in "abc".chars() {
+        app.filter_input_push(c);
+    }
+    app.tab.selected = app.tab.entries.len() - 1;
+    let target = app.tab.entries[app.tab.selected].path.clone();
+
+    // Typing one more character narrows the results so the selected file drops out entirely.
+    app.filter_input_push('d');
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path == target),
+        "土台: 選択中のファイルは新しい結果に居ない"
+    );
+    assert!(
+        app.tab.selected < app.tab.entries.len().max(1),
+        "範囲内にクランプされる"
+    );
+    // And with nothing matching at all it must not go out of range either.
+    for c in "zzz".chars() {
+        app.filter_input_push(c);
+    }
+    assert!(app.tab.entries.is_empty(), "土台: 一致なし");
+    assert_eq!(app.tab.selected, 0, "空でも範囲外にならない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Fixture for the **FS-event / rebuild** path, where the trap is a different one: `rebuild_tree`
+/// puts the *whole listing* back into `entries` before the re-filter runs, so anything reading
+/// "the entry at `selected`" after that point is reading the unfiltered tree by a filtered index.
+///
+/// Laid out so those two orderings genuinely disagree **and** the file the wrong index lands on is
+/// itself a match — otherwise the mistake is invisible (a non-matching anchor is simply not found,
+/// and the fallback clamp quietly does the right thing):
+///
+/// ```text
+/// whole listing      aaa_other_0  aaa_other_1  abc_new_0..4  x_a_b_c_0  x_a_b_c_1  x_a_b_c_2
+/// filtered ("abc")                             abc_new_0..4  x_a_b_c_0  x_a_b_c_1  x_a_b_c_2
+///                                                        ^                    ^
+///                                             read at index 6            cursor at 6
+/// ```
+fn rebuild_reorder_fixture(prefix: &str) -> PathBuf {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Sort before "abc" and do NOT match it: present in the listing, absent from the results, so
+    // the two indexings drift apart by exactly two.
+    for i in 0..2 {
+        std::fs::write(dir.join(format!("aaa_other_{i}.txt")), b"x").unwrap();
+    }
+    for i in 0..3 {
+        std::fs::write(dir.join(format!("x_a_b_c_{i}.txt")), b"weak").unwrap();
+    }
+    dir
+}
+
+#[test]
+fn an_fs_driven_rescan_keeps_the_cursor_on_the_same_file() {
+    // Driven through **`refresh_fs_watched`** — the entry point `main`'s watcher actually calls —
+    // because the bug lives in what that path does *before* re-filtering, and a test that calls the
+    // re-filter directly cannot see it. An agent writing a burst of files is the live case.
+    let _g = BudgetGuard::always_sync();
+    let dir = rebuild_reorder_fixture("konoma_filter_fsreorder");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    for c in "abc".chars() {
+        app.filter_input_push(c);
+    }
+    app.tab.selected = 1;
+    let target = app.tab.entries[1].path.clone();
+    assert!(target.ends_with("x_a_b_c_1.txt"), "土台: {target:?}");
+
+    // First burst: five much better matches for the same query appear.
+    for i in 0..5 {
+        std::fs::write(dir.join(format!("abc_new_{i}.txt")), b"strong").unwrap();
+    }
+    app.refresh_fs_watched(false, &[]);
+    assert_ne!(
+        app.tab.entries.iter().position(|e| e.path == target),
+        Some(1),
+        "土台: 順位が入れ替わっていないとこのテストは何も検出しない"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "1回目のイベントでカーソル下のファイルがすり替わらない"
+    );
+
+    // Second burst. By now the pool already holds the new matches, so an anchor mistakenly read
+    // out of the rebuilt (unfiltered) listing is *found* — and the cursor is actively dragged onto
+    // the wrong file rather than merely staying put.
+    for i in 5..10 {
+        std::fs::write(dir.join(format!("abc_new_{i}.txt")), b"strong").unwrap();
+    }
+    app.refresh_fs_watched(false, &[]);
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "2回目のイベントでもカーソル下のファイルがすり替わらない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn toggling_hidden_while_filtering_keeps_the_cursor_on_the_same_file() {
+    // `.` reaches the re-filter through the same "rebuild first" shape as an FS event, so it has
+    // the same trap — and here the pool is re-collected *before* the anchor is looked up, so a
+    // wrong anchor is found on the very first press.
+    let _g = BudgetGuard::always_sync();
+    let dir = rebuild_reorder_fixture("konoma_filter_hiddenreorder");
+    // Hidden, sort first, and match "abc" strongly: revealed by `.`, they take over the top of the
+    // results and the head of the listing at the same time.
+    for i in 0..5 {
+        std::fs::write(dir.join(format!(".abc_hidden_{i}.txt")), b"strong").unwrap();
+    }
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    for c in "abc".chars() {
+        app.filter_input_push(c);
+    }
+    app.tab.selected = 1;
+    let target = app.tab.entries[1].path.clone();
+    assert!(target.ends_with("x_a_b_c_1.txt"), "土台: {target:?}");
+
+    app.toggle_hidden().unwrap();
+    assert_ne!(
+        app.tab.entries.iter().position(|e| e.path == target),
+        Some(1),
+        "土台: 順位が入れ替わっていないとこのテストは何も検出しない"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "`.` でカーソル下のファイルがすり替わらない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// B/C: the in-flight mark is what makes scans coalesce, so retiring a scan must not fake its
+// disappearance. `invalidate_filter_pool_scan` used to clear `filter_pool_pending`, which meant
+// `kick_filter_pool_refresh`'s guard could never hold on the tab-switch path — the one path that
+// calls it on *every* switch.
+// ---------------------------------------------------------------------------------------------
+
+/// Two tabs on the same root, both filtering, with a filter-pool channel attached. Returns the
+/// receiver so a test can count the walks that actually ran.
+/// Each `/` is settled before the next step, so setup leaves **nothing** walking and the channel
+/// empty: a walk left running here would land in the middle of the measurement that follows.
+fn two_filtering_tabs(
+    dir: &Path,
+) -> (App, std::sync::mpsc::Receiver<crate::app::FilterPoolResult>) {
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    app.filter_input_push('f');
+    settle_pool(&mut app, &rx);
+    app.tab_new().unwrap();
+    app.start_filter();
+    app.filter_input_push('f');
+    settle_pool(&mut app, &rx);
+    (app, rx)
+}
+
+/// Wait until nothing is walking any more, applying every result on the way. Setup dispatches walks
+/// of its own, and *draining* the channel is not enough to be rid of them — a walk that has not
+/// finished yet has nothing in the channel to drain, and would otherwise land in the middle of the
+/// measurement and be counted as part of it. The in-flight mark is the thing to wait on.
+fn settle_pool(app: &mut App, rx: &std::sync::mpsc::Receiver<crate::app::FilterPoolResult>) {
+    for _ in 0..64 {
+        if app.filter_pool_pending.is_none() {
+            return;
+        }
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("走査中なら必ず結果が届く");
+        app.apply_filter_pool(res);
+    }
+    panic!("走査が収束しない");
+}
+
+#[test]
+fn repeated_tab_switches_coalesce_into_a_single_filter_pool_scan() {
+    // Holding `]` down is the failure: `main` drains the whole key burst in one iteration, so every
+    // press ran `load_active` → `refresh_fs_after_tab_switch` → `kick_filter_pool_refresh`, and with
+    // the guard structurally dead each one spawned its own whole-tree walk (~55ms of `readdir` on a
+    // 50,000-entry tree). Counted by results reaching the channel = "how many walks ran".
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_tabswitch", 4, 3);
+    let (mut app, rx) = two_filtering_tabs(&dir);
+
+    for _ in 0..8 {
+        app.tab_cycle(1);
+    }
+    // Nothing is applied during the burst, so the mark stays taken throughout: exactly one switch
+    // may dispatch, and the other seven must coalesce onto it into one further walk.
+    let mut ran = 0;
+    while let Ok(res) = rx.recv_timeout(std::time::Duration::from_millis(600)) {
+        ran += 1;
+        app.apply_filter_pool(res);
+        assert!(ran <= 2, "タブ切替 8 回で走査が積み上がっている: {ran} 本");
+    }
+    assert_eq!(
+        ran, 2,
+        "8 回の切替から走ったのは 1 本 + 合体した 1 本だけ: {ran} 本"
+    );
+    assert!(
+        !app.filter_pool_dirty,
+        "合体した要求は取りこぼされず消化される"
+    );
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "走査中フラグは latch しない(スピナーが回りっぱなしにならない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_tab_switch_to_a_different_root_still_dispatches_its_own_scan() {
+    // Coalescing keys off the root, so it must not swallow the case it is *not* about: the newly
+    // active tab is looking at a different directory, and the walk in flight cannot answer for it.
+    let _g = BudgetGuard::always_async();
+    let a = nested_fixture("konoma_pool_roota", 4, 3);
+    let b = nested_fixture("konoma_pool_rootb", 4, 3);
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    app.filter_input_push('f');
+    settle_pool(&mut app, &rx);
+    app.tab_new().unwrap();
+    app.jump_to_dir(b.clone());
+    app.start_filter();
+    app.filter_input_push('f');
+    settle_pool(&mut app, &rx);
+
+    app.tab_cycle(1); // back to the tab rooted at `a`
+    assert_eq!(
+        app.filter_pool_pending.as_ref().map(|(_, p)| p.as_path()),
+        Some(a.as_path()),
+        "別 root へ移ったら合体せず、その root の走査を新たに飛ばす"
+    );
+    settle_pool(&mut app, &rx);
+    assert!(
+        app.tab.filter_pool.iter().all(|e| e.path.starts_with(&a)),
+        "着地したのは移った先の root の内容"
+    );
+    std::fs::remove_dir_all(&a).ok();
+    std::fs::remove_dir_all(&b).ok();
+}
+
+#[test]
+fn a_superseded_scan_releases_the_slot_and_honours_the_coalesced_request() {
+    // The hazard introduced by keeping `filter_pool_pending` across an invalidation: the walk's
+    // result is now discarded by generation *before* anything cleared the slot it holds. If the
+    // release is not done first, the mark latches — a spinner that never stops and, worse, a
+    // coalescing guard that from then on rejects every future scan forever.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_supersede", 4, 3);
+    let (mut app, rx) = two_filtering_tabs(&dir);
+
+    // A walk is in flight for this root; a tab switch supersedes it (same root, so the switch's own
+    // refresh coalesces onto it rather than dispatching).
+    app.refresh_fs_changed(false, &[]).unwrap();
+    let inflight = app.filter_pool_pending.clone().expect("走査中");
+    app.tab_cycle(1);
+    assert!(
+        app.filter_pool_pending.is_some(),
+        "走査は止まらない = 走査中の事実も消さない"
+    );
+    assert!(app.filter_pool_dirty, "切替の要求は合体して保留される");
+    assert!(
+        inflight.0 != app.filter_pool_gen,
+        "土台: この結果はもう陳腐化している"
+    );
+
+    let stale = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(stale.gen, inflight.0, "土台: 届いたのは陳腐化した結果");
+    assert!(!app.apply_filter_pool(stale), "陳腐化した結果は適用しない");
+    let after = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("合体していた要求が着地後に実行される");
+    assert!(app.apply_filter_pool(after));
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "陳腐化した結果でも走査中フラグは解ける(latch しない)"
+    );
+    assert!(!app.filter_pool_dirty);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_superseded_result_does_not_free_a_newer_scans_slot() {
+    // The other direction of the same rule. If releasing the slot ignored the generation, a walk
+    // superseded by a *newer dispatch* would clear the newer one's mark on arrival — and the next
+    // FS event would then stack a second whole-tree walk on top of one still running.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_twowalks", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    app.filter_input_push('f');
+    settle_pool(&mut app, &rx);
+    let old_gen = app.filter_pool_gen;
+
+    // Move to a different root and back, so the next kick dispatches rather than coalescing.
+    let other = nested_fixture("konoma_pool_twowalks_other", 2, 1);
+    app.jump_to_dir(other.clone());
+    app.start_filter();
+    app.filter_input_push('f');
+    let newer = app.filter_pool_pending.clone().expect("新しい走査が在る");
+    assert_ne!(newer.0, old_gen, "土台: 世代が違う");
+
+    // The first root's walk lands late.
+    let stale = crate::app::FilterPoolResult {
+        gen: old_gen,
+        root: dir.clone(),
+        entries: Some(Vec::new()),
+        append: false,
+    };
+    assert!(!app.apply_filter_pool(stale));
+    assert_eq!(
+        app.filter_pool_pending,
+        Some(newer),
+        "まだ走っている新しい走査の枠を横取りしない"
+    );
+    while rx.try_recv().is_ok() {}
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&other).ok();
+}
+
+#[test]
+fn a_new_tab_does_not_inherit_the_previous_tabs_scan() {
+    // `t` is the one way the active tab changes without going through `load_active`, so it never
+    // retired the scan bookkeeping. The previous tab's walk stayed marked at the *current*
+    // generation, which put "scanning files" on a brand-new tab that is not filtering at all, and
+    // left the discard resting on `apply_filter_pool`'s "not filtering" check alone — no
+    // generation, and no root either, since `t` opens at the same root.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_newtab", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    app.filter_input_push('f');
+    let inflight = app.filter_pool_pending.clone().expect("土台: 走査中");
+    assert!(
+        app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan),
+        "土台: 元のタブではスピナーが出ている"
+    );
+
+    app.tab_new().unwrap();
+
+    assert!(
+        !app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan),
+        "走査していない新しいタブにスピナーを出さない"
+    );
+    assert_ne!(
+        inflight.0, app.filter_pool_gen,
+        "前のタブの走査は世代で無効化される(絞り込みの有無に頼らない)"
+    );
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(!app.apply_filter_pool(res), "前のタブの結果は捨てられる");
+    assert!(app.tab.filter_pool.is_empty(), "新しいタブのプールは無傷");
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "走査中フラグは latch しない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// D: `.` (toggle_hidden) while a filter is up.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn toggling_hidden_while_filtering_keeps_the_filter_and_re_collects_the_pool() {
+    // `toggle_hidden` only rebuilt the tree, and `rebuild_tree` puts the *whole* directory back
+    // into `entries` — so the heading still said "filtering" while the list underneath was a plain
+    // listing full of non-matching entries. And because the pool had been walked with the previous
+    // `show_hidden`, revealing dotfiles in the tree still left `/` unable to find any of them.
+    let _g = BudgetGuard::always_sync();
+    let dir = unique_tmp("konoma_hidden_filter");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("visible_target.txt"), b"x").unwrap();
+    std::fs::write(dir.join(".hidden_target.txt"), b"x").unwrap();
+    std::fs::write(dir.join("unrelated.md"), b"x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    for c in "target".chars() {
+        app.filter_input_push(c);
+    }
+    let names = |app: &App| -> Vec<String> {
+        app.tab
+            .entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(
+        names(&app),
+        vec!["visible_target.txt"],
+        "土台: 隠しは出ない"
+    );
+
+    app.toggle_hidden().unwrap();
+    assert_eq!(
+        app.tab.tree_filter.as_deref(),
+        Some("target"),
+        "絞り込みは維持される"
+    );
+    let shown = names(&app);
+    assert!(
+        shown.iter().any(|n| n == ".hidden_target.txt"),
+        "`.` で隠しファイルが絞り込み結果に入る: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|n| n == "unrelated.md"),
+        "一致しないものが混ざらない(素の一覧に戻っていない): {shown:?}"
+    );
+
+    app.toggle_hidden().unwrap();
+    let shown = names(&app);
+    assert_eq!(shown, vec!["visible_target.txt"], "もう一度で元に戻る");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// E: the walk's panic net has to cover the halves that run on the UI thread too, not just the
+// worker — an unwind there takes the whole TUI down mid-keystroke rather than one background job.
+// ---------------------------------------------------------------------------------------------
+
+/// Arm the injected scan panic for this thread and disarm it on drop (so a failing assertion can
+/// never leave it armed for the next test on this thread). See `set_filter_scan_panic`.
+struct ScanPanicGuard;
+impl ScanPanicGuard {
+    fn armed() -> Self {
+        crate::app::set_filter_scan_panic(true);
+        Self
+    }
+}
+impl Drop for ScanPanicGuard {
+    fn drop(&mut self) {
+        crate::app::set_filter_scan_panic(false);
+    }
+}
+
+#[test]
+fn a_panicking_walk_on_the_ui_thread_degrades_instead_of_taking_the_tui_down() {
+    // Both UI-thread walks: `/`'s budgeted head start, and `spawn_or_sync_pool`'s no-channel
+    // fallback (which every test and any run without a loader attached goes through).
+    let _g = BudgetGuard::always_sync();
+    let dir = nested_fixture("konoma_pool_syncpanic", 3, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    {
+        let _p = ScanPanicGuard::armed();
+        app.start_filter(); // must return, not unwind
+    }
+    assert!(
+        app.tab.filter_pool.is_empty(),
+        "失敗した走査は空プールになる"
+    );
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "受け渡しもしないので走査中フラグは立たない"
+    );
+    assert!(!app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan));
+    for c in "f0".chars() {
+        app.filter_input_push(c); // still usable: an empty pool just matches nothing
+    }
+    assert!(app.tab.entries.is_empty());
+
+    // Recovering: with the injection disarmed the next scan repopulates normally.
+    app.refresh_fs_changed(false, &[]).unwrap();
+    assert!(!app.tab.filter_pool.is_empty(), "次の走査で復帰する");
+
+    // The no-channel fallback (`spawn_or_sync_pool`), reached by forcing the hand-off with no
+    // loader attached. Its degraded value is the same `None` the worker sends, which
+    // `apply_filter_pool` already keeps the pool for.
+    let pool = app.tab.filter_pool.len();
+    {
+        let _b = BudgetGuard::always_async();
+        let _p = ScanPanicGuard::armed();
+        app.refresh_fs_changed(false, &[]).unwrap(); // must return, not unwind
+    }
+    assert_eq!(app.tab.filter_pool.len(), pool, "失敗でプールは消されない");
+    assert!(app.filter_pool_pending.is_none());
     std::fs::remove_dir_all(&dir).ok();
 }

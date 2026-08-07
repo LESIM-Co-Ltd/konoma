@@ -327,6 +327,13 @@ impl App {
         self.tab.selection.clear();
         self.tab.visual_anchor = None;
         self.clear_filter_state();
+        // `tab_new` is the one way the active tab changes without going through `load_active`, so
+        // the filter-pool scan bookkeeping has to be retired here explicitly. Without it a walk
+        // started by the tab we just left kept its *current* generation, and the only thing keeping
+        // its result out of this brand-new tab's pool was `apply_filter_pool`'s "not filtering
+        // any more" check — no generation, no root (`t` opens at the same root, so they match).
+        // Bumping the generation makes the discard structural, the way every other switch does it.
+        self.invalidate_filter_pool_scan();
         self.search_clear();
         self.tabs.push(self.snapshot_tab());
         self.active_tab = self.tabs.len() - 1;

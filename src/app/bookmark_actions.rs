@@ -282,7 +282,31 @@ impl App {
         self.tab.tree_filter = Some(String::new());
         self.tab.selected = 0;
         self.kick_filter_pool_start();
-        self.reapply_filter();
+        // `None`: the cursor is being reset to the top of a brand-new result set, so there is
+        // nothing to follow — and `entries` is still the unfiltered tree at this point, which is
+        // precisely the value that must not be mistaken for a filtered selection.
+        self.reapply_filter(None);
+    }
+
+    /// Re-establish whichever tree filter is up after something changed *what the tree contains*
+    /// (currently `.` = `toggle_hidden`). A no-op when nothing is filtering.
+    ///
+    /// The pool is re-collected rather than re-filtered, because `show_hidden` is baked into the
+    /// walk that produced it — re-running the query over the old pool would keep the filter's idea
+    /// of "every file under here" from before the toggle.
+    ///
+    /// `anchor` must be taken by the caller **before** it rebuilds the tree — by the time this runs,
+    /// `entries` is the unfiltered listing again (see `filter_anchor`).
+    pub(super) fn refilter_after_visibility_change(&mut self, anchor: Option<PathBuf>) {
+        if self.tab.tree_filter.is_some() {
+            self.kick_filter_pool_start();
+            self.reapply_filter(anchor);
+        } else if self.tab.changed_filter {
+            // The changed-files list is derived from git status, not from a pool, so it only needs
+            // rebuilding — but it needs it for the same reason: `rebuild_tree` just replaced it
+            // with the ordinary listing.
+            self.reapply_changed_filter();
+        }
     }
 
     /// Add one character to the filter input (live filtering).
@@ -291,7 +315,8 @@ impl App {
             q.push(c);
         }
         self.tab.tree_filter = self.tab.filter_input.clone();
-        self.reapply_filter();
+        let anchor = self.filter_anchor(); // `entries` is still the filtered result list here
+        self.reapply_filter(anchor);
     }
 
     /// Delete one character from the filter input.
@@ -300,7 +325,8 @@ impl App {
             q.pop();
         }
         self.tab.tree_filter = self.tab.filter_input.clone();
-        self.reapply_filter();
+        let anchor = self.filter_anchor(); // `entries` is still the filtered result list here
+        self.reapply_filter(anchor);
     }
 
     /// Commit input (Enter): leave editing but keep the filtered results (navigate normally afterwards).
@@ -343,10 +369,35 @@ impl App {
     /// so without this a scan started in one tab would land in whichever tab happens to be active
     /// when it finishes. The abandoned tab re-kicks its own scan when it comes back
     /// (`refresh_fs_inner` re-collects while a filter is active).
+    ///
+    /// **`filter_pool_pending` is deliberately left alone.** Bumping the generation discards the
+    /// *result*; it does not stop the thread, which keeps walking the tree either way. Clearing the
+    /// in-flight mark here would therefore be a lie, and one with a cost: `kick_filter_pool_refresh`
+    /// coalesces against exactly this mark, so with it cleared its guard could never hold on the tab
+    /// switch path — every switch of a filtering tab dispatched another whole-tree walk, and holding
+    /// `]` down dispatched one per keypress (`main` drains the whole key burst before drawing).
+    /// Which is the pile-up that guard exists to prevent, arriving through the one door it wasn't
+    /// watching. The mark is released by the walk's own result — see `filter_pool_pending`.
     pub(super) fn invalidate_filter_pool_scan(&mut self) {
         self.filter_pool_gen = self.filter_pool_gen.wrapping_add(1);
-        self.filter_pool_pending = None;
         self.filter_pool_dirty = false;
+    }
+
+    /// Whether a walk is in flight whose result will still be applied to the pool on screen.
+    /// Drives the busy label only — the coalescing guard deliberately looks at the raw mark instead
+    /// (a superseded walk still occupies the thread, so piling another one on top of it is exactly
+    /// what must not happen).
+    pub(super) fn filter_pool_scanning_current(&self) -> bool {
+        matches!(self.filter_pool_pending, Some((g, _)) if g == self.filter_pool_gen)
+    }
+
+    /// Whether any filter-pool walk is in flight (superseded or not), so `main`'s run loop can poll
+    /// often enough to apply the result promptly instead of sitting out the full idle timeout — the
+    /// same reason the media/kitty workers shorten it. The point of the budgeted hand-off is that
+    /// the list fills in *while you type*; a 100ms wait for a result already sitting in the channel
+    /// works against it.
+    pub fn filter_pool_scan_in_flight(&self) -> bool {
+        self.filter_pool_pending.is_some()
     }
 
     /// `/` pressed: populate the pool **now**, handing off only what doesn't fit in the budget.
@@ -363,18 +414,25 @@ impl App {
         let gen = self.filter_pool_gen;
         let root = self.tab.root.clone();
         let show_hidden = self.tab.show_hidden;
-        let (entries, rest) = crate::app::collect_scan(
-            vec![root.clone()],
-            show_hidden,
-            crate::app::COLLECT_CAP,
-            filter_scan_deadline(),
-        );
+        // Same safety net the worker gets (`spawn_or_sync_pool`), for the same walk — this half just
+        // happens to run on the UI thread, which is precisely why it needs it more: a panic here
+        // takes the whole TUI down mid-keystroke. On a caught panic the pool comes back empty and
+        // nothing is handed off, so `/` finds nothing instead of crashing (principle #3).
+        let (entries, rest) = crate::preview::markdown::catch_silent(|| {
+            crate::app::collect_scan(
+                vec![root.clone()],
+                show_hidden,
+                crate::app::COLLECT_CAP,
+                filter_scan_deadline(),
+            )
+        })
+        .unwrap_or_default();
         let done = entries.len();
         self.tab.filter_pool = entries;
         if rest.is_empty() {
             return; // finished within budget: identical to the old fully-synchronous behaviour
         }
-        self.filter_pool_pending = Some(root.clone());
+        self.filter_pool_pending = Some((gen, root.clone()));
         self.spawn_or_sync_pool(
             root,
             show_hidden,
@@ -395,7 +453,7 @@ impl App {
         // Without this, an agent writing a burst of files would stack up one whole-tree walk per
         // event — the same pile-up `kick_status_refresh` guards against, and for the same reason
         // (going async removed the self-rate-limiting the synchronous version had).
-        if self.filter_pool_pending.as_deref() == Some(self.tab.root.as_path()) {
+        if matches!(&self.filter_pool_pending, Some((_, p)) if p == &self.tab.root) {
             self.filter_pool_dirty = true;
             return;
         }
@@ -404,7 +462,7 @@ impl App {
         let gen = self.filter_pool_gen;
         let root = self.tab.root.clone();
         let show_hidden = self.tab.show_hidden;
-        self.filter_pool_pending = Some(root.clone());
+        self.filter_pool_pending = Some((gen, root.clone()));
         self.spawn_or_sync_pool(
             root.clone(),
             show_hidden,
@@ -429,7 +487,12 @@ impl App {
         append: bool,
     ) {
         let Some(tx) = self.pool_tx.clone() else {
-            let entries = Some(crate::app::collect_scan(stack, show_hidden, cap, None).0);
+            // The synchronous fallback runs the *same walk* as the worker below, so it gets the
+            // same net — and produces the same `None` the worker sends on a panic, which
+            // `apply_filter_pool` already knows how to degrade (pool kept, slot freed).
+            let entries = crate::preview::markdown::catch_silent(|| {
+                crate::app::collect_scan(stack, show_hidden, cap, None).0
+            });
             self.apply_filter_pool(crate::app::FilterPoolResult {
                 gen,
                 root,
@@ -462,10 +525,29 @@ impl App {
     /// Discards results whose generation is stale (superseded by a newer scan, or by a tab switch),
     /// as well as ones that finished after the user left the filter or moved to a different root.
     pub fn apply_filter_pool(&mut self, res: crate::app::FilterPoolResult) -> bool {
-        if res.gen != self.filter_pool_gen {
-            return false; // superseded: a newer scan (or a tab switch) owns the pool now
+        // Free the slot **before** judging staleness, but only for the walk that took it. Doing it
+        // first is what keeps `filter_pool_pending` from latching now that a tab switch supersedes
+        // a walk without stopping it (see `invalidate_filter_pool_scan`); matching on the generation
+        // is what stops a superseded result from freeing the slot of a *newer* walk that is still
+        // running, which would let the next FS event stack a second walk on top of it.
+        let was_pending = matches!(self.filter_pool_pending, Some((g, _)) if g == res.gen);
+        if was_pending {
+            self.filter_pool_pending = None;
         }
-        self.filter_pool_pending = None;
+        if res.gen != self.filter_pool_gen {
+            // Superseded: a newer scan (or a tab switch) owns the pool now. If this was the walk
+            // holding the slot, whoever coalesced against it is still waiting to be honoured — the
+            // slot is free now, so run it (this is the tab-switch path: the switch coalesces onto
+            // the abandoned tab's walk, and its landing is what finally scans for the new tab).
+            if was_pending && self.filter_pool_dirty {
+                if self.tab.tree_filter.is_some() {
+                    self.kick_filter_pool_refresh();
+                } else {
+                    self.filter_pool_dirty = false; // nobody is filtering any more: drop the request
+                }
+            }
+            return false;
+        }
         if self.tab.tree_filter.is_none() || self.tab.root != res.root {
             // Left the filter / moved root while this was walking. Dropping the coalesced request
             // too: it was for the view that no longer exists.
@@ -488,7 +570,10 @@ impl App {
         // Both halves arrive sorted, so this is a merge of two runs (Rust's sort detects them), not
         // a fresh sort of the whole pool.
         self.tab.filter_pool.sort_by(|a, b| a.path.cmp(&b.path));
-        self.reapply_filter();
+        // Nothing rebuilt the tree on the way here (the run loop applies this straight from the
+        // channel), so `entries` still holds the filtered results and the anchor reads correctly.
+        let anchor = self.filter_anchor();
+        self.reapply_filter(anchor);
         // Honour the coalesced re-scan request exactly once, now that the slot is free.
         if self.filter_pool_dirty {
             self.kick_filter_pool_refresh();
@@ -506,13 +591,40 @@ impl App {
         self.tab.tree_filter.as_deref()
     }
 
+    /// The file the cursor is on, as an identity rather than a position.
+    ///
+    /// **Only meaningful while `entries` still holds filter results.** After `rebuild_tree` it is the
+    /// whole listing again, and the filtered index then names a completely different file — so a
+    /// caller that rebuilds must take this *first* and carry it across (see `reapply_filter`).
+    pub(super) fn filter_anchor(&self) -> Option<PathBuf> {
+        self.tab
+            .entries
+            .get(self.tab.selected)
+            .map(|e| e.path.clone())
+    }
+
     /// Filter the pool by the current query to build entries.
     /// `[ui] filter_mode` (see `UiConfig::filter_mode`): `"fuzzy"` (default) = ranked fuzzy
     /// subsequence match via `fuzzy_filter_pool`; `"substring"` = the legacy plain
     /// case-insensitive substring match, kept in the pool's original order (no ranking).
     /// When the query is empty (= right after pressing `/`, before typing any character), **show nothing**
     /// (avoiding a flat display of everything, which would look like "expand all").
-    fn reapply_filter(&mut self) {
+    ///
+    /// `anchor` = the file to keep the cursor on: what the cursor was *on*, not where it was.
+    /// Re-filtering rebuilds `entries` from scratch and the default `filter_mode = "fuzzy"` orders by
+    /// score, so a pool that grew (the budgeted hand-off from `/` landing, an FS-driven re-scan)
+    /// reshuffles the list — and a bare index would then point at a **different file**, silently
+    /// retargeting the very next `Enter` / `y` / `Space→d`. Range-clamping cannot protect against
+    /// that: the index stays in range, it just means something else.
+    ///
+    /// Passed in rather than read from `entries` here, because **half the callers reach this after
+    /// `rebuild_tree` has already replaced `entries` with the unfiltered listing** — reading it here
+    /// looked right and silently anchored to whatever file happened to sit at that index in the
+    /// *whole tree*, which is worse than not following at all (once the pool contains that file it
+    /// is found, and the cursor is actively dragged onto it). Making it a parameter is what forces
+    /// each caller to answer "do I still have the filtered list?" instead of inheriting an answer.
+    /// `None` = don't follow anything (the cursor is being reset anyway).
+    fn reapply_filter(&mut self, anchor: Option<PathBuf>) {
         let q = self.tab.tree_filter.clone().unwrap_or_default();
         self.tab.entries = if q.is_empty() {
             Vec::new()
@@ -533,10 +645,21 @@ impl App {
         } else {
             fuzzy_filter_pool(&self.tab.filter_pool, &q)
         };
+        // Follow the file the cursor was on to wherever the new ranking put it. If it is no longer a
+        // match (the query changed, or it was deleted), there is nothing to follow, so fall back to
+        // the positional behaviour — keep the index and clamp it, exactly as before.
+        if let Some(p) = anchor {
+            if let Some(i) = self.tab.entries.iter().position(|e| e.path == p) {
+                self.tab.selected = i;
+            }
+        }
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
         // The filtered result is a different entries set, so visual_anchor (an index) is stale. Invalidate it.
+        // Deliberately **not** rescued the way `selected` is above: an anchor marks one end of a
+        // range whose other end is a *different* entry, and a reshuffle can reorder the two
+        // independently — there is no "same selection" to restore, only a plausible-looking wrong one.
         self.tab.visual_anchor = None;
     }
 
@@ -1155,6 +1278,16 @@ impl App {
         changed: &[std::path::PathBuf],
         reload_preview: bool,
     ) -> Result<()> {
+        // Which file the cursor is on, taken **before** the `rebuild_tree` below replaces `entries`
+        // with the unfiltered listing. After that point the filtered index names a different file
+        // entirely, so reading it later doesn't just lose the cursor — once the pool catches up, the
+        // wrong file is *found* and the cursor is dragged onto it (an agent's write burst reliably
+        // walked the cursor onto files the user never looked at). Only meaningful while filtering.
+        let filter_anchor = if self.tab.tree_filter.is_some() {
+            self.filter_anchor()
+        } else {
+            None
+        };
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render
             self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
@@ -1185,7 +1318,7 @@ impl App {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
             // everything, so re-filter **immediately** with the pool we already have (fixing the
             // inconsistency where the query is restored but the list shows everything).
-            self.reapply_filter();
+            self.reapply_filter(filter_anchor);
             // Then refresh the pool itself in the background, so it follows external
             // additions/deletions. This is the hot path for konoma's headline use: an agent
             // touching files fires an FS event per write, and re-walking the whole tree

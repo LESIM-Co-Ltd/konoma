@@ -373,6 +373,34 @@ struct WorkerRx {
     pool: std::sync::mpsc::Receiver<FilterPoolResult>,
 }
 
+/// How long the run loop may block waiting for input before it comes back round to apply worker
+/// results and advance animations.
+///
+/// A separate function so the rule is testable: "does a background job shorten the wait" is a
+/// structural property, and asserting it by timing the loop would be a flaky way to ask a question
+/// that has an exact answer.
+///
+/// While anything is running on another thread the loop wakes often, so its result is applied as
+/// soon as it lands rather than up to a whole idle timeout later. The filter-pool walk belongs in
+/// that list for the reason it exists at all — the results are supposed to fill in *while the user
+/// types*, and a 100ms wait on a result already sitting in the channel works against exactly that.
+/// Otherwise: by the next GIF frame's deadline if one is playing (whichever of the full-screen and
+/// the Markdown-inline animations is sooner), and by a plain idle timeout when nothing is going on.
+fn poll_timeout(app: &App) -> Duration {
+    if app.is_media_loading()
+        || app.md_images_loading()
+        || app.kitty_build_pending()
+        || app.filter_pool_scan_in_flight()
+    {
+        return Duration::from_millis(16);
+    }
+    app.gif_poll_timeout()
+        .into_iter()
+        .chain(app.md_gif_poll_timeout())
+        .min()
+        .unwrap_or(Duration::from_millis(100))
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -473,24 +501,7 @@ fn run(
         // A guard against holding a key down: with 1 event = 1 draw, if drawing is heavy, input
         // piles up and "it keeps scrolling even after you release the key." **Process all pending
         // events in a batch, then draw exactly once** (converge to the final state).
-        // While a GIF is playing, wake up by the next frame's deadline (≤100ms) and advance the
-        // frame smoothly (whichever is sooner between the full-screen and Markdown-inline next
-        // frame deadlines).
-        // While waiting on a separate thread's media load too, wake up frequently so the result
-        // can be applied right away.
-        let poll_timeout =
-            if app.is_media_loading() || app.md_images_loading() || app.kitty_build_pending() {
-                // While waiting on a separate thread (media/kitty build), wake up frequently and
-                // apply the result right away.
-                Duration::from_millis(16)
-            } else {
-                app.gif_poll_timeout()
-                    .into_iter()
-                    .chain(app.md_gif_poll_timeout())
-                    .min()
-                    .unwrap_or(Duration::from_millis(100))
-            };
-        if event::poll(poll_timeout)? {
+        if event::poll(poll_timeout(app))? {
             let mut quit = false;
             loop {
                 let ev = event::read()?;
@@ -2486,6 +2497,46 @@ mod tests {
         assert_eq!(app.flash, None, "終了要求では flash を立てない");
         assert!(!resolve_key_result(&mut app, Ok(false)), "Ok(false) は継続");
         assert_eq!(app.flash, None, "継続では flash を立てない");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// F: a filter-pool walk running on another thread must shorten the loop's wait, like every
+    /// other background job — otherwise a result already sitting in the channel can wait up to a
+    /// whole idle timeout before it reaches the screen, which is the opposite of what the budgeted
+    /// hand-off is for (the list is meant to fill in while the user is still typing).
+    ///
+    /// Asserted on the predicate the loop actually branches on. Timing the loop would be a flaky
+    /// way to ask a question with an exact answer.
+    #[test]
+    fn poll_is_fast_while_a_filter_pool_walk_is_in_flight() {
+        let dir = unique_tmp("konoma_poll_pool");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/f.txt"), b"x").unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let idle = poll_timeout(&app);
+        assert!(
+            idle > Duration::from_millis(16),
+            "土台: 何も走っていなければ待ちは長い ({idle:?})"
+        );
+
+        // Force the hand-off, and attach a loader so `/` really does leave a walk running.
+        app::set_filter_scan_budget(Some(Some(Duration::ZERO)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_filter_pool_loader(tx);
+        app.start_filter();
+        assert!(app.filter_pool_scan_in_flight(), "土台: 受け渡しが起きた");
+        assert_eq!(
+            poll_timeout(&app),
+            Duration::from_millis(16),
+            "走査中は速く poll する"
+        );
+
+        let res = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        app.apply_filter_pool(res);
+        assert!(!app.filter_pool_scan_in_flight());
+        assert_eq!(poll_timeout(&app), idle, "着地したら元の待ちに戻る");
+        app::set_filter_scan_budget(None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
