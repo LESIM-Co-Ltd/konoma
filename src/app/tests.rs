@@ -19105,3 +19105,294 @@ fn a_panicking_walk_on_the_ui_thread_degrades_instead_of_taking_the_tui_down() {
     assert!(app.filter_pool_pending.is_none());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------------------------
+// The `C` (changed-files-only) cursor must follow the *file*, not the index.
+//
+// `changed_paths` is sorted by path, so a change appearing anywhere above the cursor shifts every
+// entry below it. The list was only ever range-clamped, so the index stayed in range and pointed at
+// a different file — silently retargeting the next `Enter` / `d` / `y` / `Space→D`. This is the
+// headline Agent Watch path: the list is rebuilt on every write the agent makes, i.e. exactly while
+// the user is reading it.
+// ---------------------------------------------------------------------------------------------
+
+/// A repo shaped so that these tests **can** fail. Three things are deliberate:
+///
+/// - Everything committed stays unmodified, so it shows in the tree and never in `C`: the two lists
+///   are genuinely different, and reading the cursor out of a rebuilt tree returns something
+///   recognisably wrong rather than a plausible path by luck.
+/// - The changed files live in a **collapsed subdirectory**, which is what an agent editing
+///   `src/…` actually produces. The flat `C` list is then *longer than the tree*, so `rebuild_tree`
+///   does not merely renumber the cursor, it clamps it — and a fixture without this passes against a
+///   broken synchronous call site purely because the index happened to survive.
+/// - The one the cursor parks on (`m_two.txt`) sorts **last**, so `aaa_new.txt` arriving in front of
+///   it shifts it; without that shift the tests assert nothing.
+#[cfg(feature = "git")]
+fn changed_cursor_repo(prefix: &str) -> PathBuf {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    std::fs::write(dir.join("committed_a.txt"), b"c\n").unwrap();
+    std::fs::write(dir.join("committed_z.txt"), b"c\n").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("committed_s.txt"), b"c\n").unwrap();
+    for args in [["add", "-A"], ["commit", "-m"]] {
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&dir).arg(args[0]).arg(args[1]);
+        if args[0] == "commit" {
+            cmd.arg("base");
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+    for n in ["m_one.txt", "m_two.txt", "m_three.txt"] {
+        std::fs::write(dir.join("sub").join(n), b"x\n").unwrap();
+    }
+    dir.canonicalize().unwrap()
+}
+
+/// A new change that sorts to the **front** of the list, the way an agent adding a file does.
+#[cfg(feature = "git")]
+fn add_change_above(dir: &Path) -> PathBuf {
+    let p = dir.join("sub").join("aaa_new.txt");
+    std::fs::write(&p, b"y\n").unwrap();
+    p
+}
+
+/// Park the cursor on the **last** changed file (index 2 — never 0, which a broken "keep the index"
+/// would match by accident) and return its path. Also pins the shape the tests rely on: the flat
+/// changed list is longer than the collapsed tree, so a rebuild clamps rather than renumbers.
+#[cfg(feature = "git")]
+fn park_on_last_change(app: &mut App) -> PathBuf {
+    assert_eq!(app.tab.entries.len(), 3, "土台: 変更3件から始まる");
+    app.tab.selected = 2;
+    let target = app.tab.entries[2].path.clone();
+    assert!(target.ends_with("m_two.txt"), "土台: {target:?}");
+    target
+}
+
+/// The synchronous half: the FS event's own refresh rebuilds the list, and `rebuild_tree` has
+/// already replaced `entries` with the whole tree by the time it does.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_sync");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app);
+
+    // An agent creates a file whose name sorts to the **front** of the list.
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, &[newfile]).unwrap();
+
+    let moved = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == target)
+        .expect("対象は今も変更ファイル");
+    assert_eq!(
+        moved, 3,
+        "土台: 先頭に入って index がずれていないとこのテストは何も検出しない"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "カーソルは同じファイルを指し続ける(index ではなくファイルを追う)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The asynchronous half — **the path the real app takes**. `refresh_fs` only *kicks* the scan, so
+/// the rebuild is deferred to `apply_statuses`, by which time `entries` is the whole tree. Fixing
+/// only the synchronous call site leaves this one broken while the test above goes green.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_async");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter(); // `C` has a synchronous contract, so the list is up right here
+    let target = park_on_last_change(&mut app);
+
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, &[newfile]).unwrap();
+
+    // Ground truth for what makes this the harder half: the rebuild really was deferred, and what
+    // is in `entries` right now is the *tree* — so the cursor's identity cannot be recovered from it.
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 走査中なので一覧の作り直しは apply_statuses に先送りされる"
+    );
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("committed_a.txt")),
+        "土台: この時点の entries は変更一覧ではなく通常ツリー"
+    );
+    assert!(
+        !app.tab.entries[app.tab.selected]
+            .path
+            .ends_with("m_two.txt"),
+        "土台: ここで entries から読むと別のファイルになる(だから呼び出し元が持ち越す)"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res); // what main's run loop does with the channel
+
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("aaa_new.txt")),
+        "土台: 到着で一覧が作り直されている"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "先送りされた作り直しでもカーソルは同じファイルに残る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other half of the contract: "follow the file" must not turn into "refuse to move". When the
+/// selected file leaves the list (committed, reverted, deleted) there is nothing to follow, and the
+/// old positional clamp is exactly right.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_falls_back_to_clamping_when_its_file_leaves_the_list() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_gone");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app);
+
+    // The agent reverts that one file: it is no longer changed, so it drops out of the list.
+    std::fs::remove_file(&target).unwrap();
+    app.refresh_fs_changed(false, std::slice::from_ref(&target))
+        .unwrap();
+
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path == target),
+        "土台: 対象は一覧から消えた"
+    );
+    assert_eq!(app.tab.entries.len(), 2, "土台: 残りは2件");
+    assert!(
+        app.tab.selected < app.tab.entries.len(),
+        "追えない時は従来どおり範囲内にクランプされる(選択が範囲外で固まらない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `.` (toggle_hidden) while the `C` view is up rebuilds the tree and then re-derives the list. The
+/// changed set does not depend on `show_hidden`, so the list comes back identical — but it is
+/// re-derived *through* a tree that is shorter than it, so the cursor is clamped on the way and has
+/// to be put back by identity. The anchor for this one is taken by `toggle_hidden`, ahead of its
+/// rebuild.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_survives_toggling_hidden_files() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_hidden");
+    // Two more changes in the same collapsed directory, so the flat list (5) is strictly longer than
+    // the tree it is rebuilt through (`committed_a.txt`, `committed_z.txt`, `sub` = 3). Without that
+    // the clamp has nothing to do and the cursor survives by luck rather than by design.
+    for n in ["m_four.txt", "m_five.txt"] {
+        std::fs::write(dir.join("sub").join(n), b"x\n").unwrap();
+    }
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    assert_eq!(app.tab.entries.len(), 5, "土台: 変更5件");
+    app.tab.selected = 4;
+    let target = app.tab.entries[4].path.clone();
+    assert!(target.ends_with("m_two.txt"), "土台: {target:?}");
+
+    app.toggle_hidden().unwrap();
+
+    assert_eq!(app.tab.entries.len(), 5, "変更一覧は `.` で変わらない");
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "`.` を挟んでもカーソルは同じファイルに残る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A deferred anchor is a **path** left on `App` for a scan that has not landed yet, so it must not
+/// be able to reach a different tab's list — on two tabs of the same repo the path exists in both,
+/// so a leak would be found and acted on rather than harmlessly ignored.
+///
+/// Asserted on the published anchor itself rather than on the resulting cursor: an end-to-end
+/// version of this is **vacuous**, because entering `C` on the second tab goes through
+/// `ensure_git_status_now`, which bumps the generation and makes `apply_statuses` discard the first
+/// tab's result before it can reach the list at all. The invariant that actually carries the weight
+/// is the one below — a refresh always republishes, so nothing is ever inherited.
+#[cfg(feature = "git")]
+#[test]
+fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_tabs");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter();
+    let parked = park_on_last_change(&mut app); // tab 1 sits on m_two.txt
+
+    // Tab 1 defers a rebuild, publishing m_two.txt for whenever the scan lands.
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, &[newfile]).unwrap();
+    assert!(app.git_status_pending.is_some(), "土台: 先送りされている");
+    assert_eq!(
+        app.changed_anchor_pending.as_deref(),
+        Some(parked.as_path()),
+        "土台: 先送り分のアンカーが公開されている"
+    );
+
+    // `tab_new` is the one way the active tab changes **without** going through `load_active` (and
+    // therefore without the refresh that would republish), so this assertion is what gives the
+    // retirement in `save_active` its teeth.
+    app.tab_new().unwrap();
+    assert!(!app.tab.changed_filter, "土台: 新しいタブは通常ツリー");
+    assert!(
+        app.changed_anchor_pending.is_none(),
+        "新しいタブに先送りアンカーが引き継がれない"
+    );
+
+    // And the ordinary switch, which is protected twice over (retired on the way out, republished on
+    // the way in) — asserted for the contract, not for detection power.
+    app.tab_goto(0);
+    assert!(app.tab.changed_filter, "土台: 1枚目は C 表示のまま");
+    app.tab_cycle(1);
+    assert!(
+        app.changed_anchor_pending.is_none(),
+        "タブ切替でも先送りアンカーは引き継がれない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression: following the file must not pin the cursor against the moves that are *supposed*
+/// to move it. `n`/`N` walk the changed files, and `C` off/on resets to the top.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_anchoring_does_not_block_deliberate_moves() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_moves");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let first = app.tab.entries[0].path.clone();
+    app.jump_changed(1);
+    assert_eq!(app.tab.selected, 1, "n は次の変更ファイルへ進む");
+    app.jump_changed(-1);
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, first,
+        "N は前へ戻る"
+    );
+
+    app.tab.selected = 2;
+    app.toggle_changed_filter(); // off
+    assert!(!app.tab.changed_filter);
+    app.toggle_changed_filter(); // on again
+    assert_eq!(
+        app.tab.selected, 0,
+        "入り直しは先頭から(カーソルは固定されない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

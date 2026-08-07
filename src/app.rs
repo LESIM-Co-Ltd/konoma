@@ -1337,6 +1337,19 @@ pub struct App {
     /// dispatch). None = not computing. Keyed by **root** (never None while in flight), so the
     /// `pending == target` comparison can't be satisfied by two `None`s the way `git_ignored_pending` can.
     git_status_pending: Option<PathBuf>,
+    /// The file the `C` cursor was on, for a changed-list rebuild that had to be **deferred** until
+    /// the in-flight `git status` lands (`refresh_fs_inner` hands it to `apply_statuses`).
+    ///
+    /// The identity has to travel with the deferred work because `rebuild_tree` has already replaced
+    /// `entries` with the ordinary listing by the time the scan arrives — `apply_statuses` reading
+    /// the cursor for itself there gets a file from the *whole tree* (measured: a cursor on the third
+    /// changed file read back as an unchanged, committed one). See `reapply_changed_filter`.
+    ///
+    /// Assigned unconditionally at the top of `refresh_fs_inner` and retired by `save_active`, so
+    /// one tab's anchor can never be left lying around for another tab's rebuild to act on — on two
+    /// tabs of the same repo the path exists in both lists, so it would be *found* and the cursor
+    /// dragged onto it, not harmlessly ignored.
+    changed_anchor_pending: Option<PathBuf>,
     /// Generation of the `statuses` computation. Incremented on dispatch; a result is applied only if it
     /// still matches (discards scans superseded by a newer root/tab change).
     git_status_gen: u64,
@@ -2131,6 +2144,7 @@ impl App {
             git_status_workdir: None,
             git_status_dirty: false,
             git_status_pending: None,
+            changed_anchor_pending: None,
             git_status_gen: 0,
             status_tx: None,
             git_ignored_for: None,

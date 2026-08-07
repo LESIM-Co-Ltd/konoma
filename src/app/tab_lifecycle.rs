@@ -13,6 +13,13 @@ impl App {
         // This tab's media is about to be discarded by clear_image. Stash the one slot so that
         // when we return, decoding/rasterizing/launching external tools doesn't need to be redone.
         self.stash_media_cache();
+        // A changed-list rebuild this tab deferred to its in-flight `git status` was anchored on
+        // *this* tab's cursor. Retire it here — the one point every way of leaving the active tab
+        // passes through (`tab_new` deliberately does not go via `load_active`, which is why the
+        // filter-pool scan has to be retired explicitly there too). Left behind, the path would be
+        // found in the next tab's list on the same repo and drag its cursor onto a file the user
+        // never selected. Whoever ends up active republishes its own in `refresh_fs_inner`.
+        self.changed_anchor_pending = None;
         let snap = self.snapshot_tab();
         self.tabs[self.active_tab] = snap;
     }

@@ -182,7 +182,11 @@ impl App {
         self.flash = None;
         if self.tab.changed_filter {
             // Refresh the changed-file list before selecting the target (it should be in the list — it came from a change event).
-            self.reapply_changed_filter();
+            // `None`: the cursor is moved onto `path` on the very next line, so there is nothing to
+            // follow — and `entries` here may already be the ordinary tree (the refresh that brought
+            // us here defers the list rebuild whenever a status scan is in flight), which is exactly
+            // the value that must not be mistaken for a selection in the changed list.
+            self.reapply_changed_filter(None);
             if let Some(i) = self.tab.entries.iter().position(|e| e.path == path) {
                 self.tab.selected = i;
             }

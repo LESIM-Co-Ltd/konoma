@@ -304,8 +304,9 @@ impl App {
         } else if self.tab.changed_filter {
             // The changed-files list is derived from git status, not from a pool, so it only needs
             // rebuilding — but it needs it for the same reason: `rebuild_tree` just replaced it
-            // with the ordinary listing.
-            self.reapply_changed_filter();
+            // with the ordinary listing. Which is also why the anchor is the caller's: it was taken
+            // before that rebuild.
+            self.reapply_changed_filter(anchor);
         }
     }
 
@@ -593,9 +594,10 @@ impl App {
 
     /// The file the cursor is on, as an identity rather than a position.
     ///
-    /// **Only meaningful while `entries` still holds filter results.** After `rebuild_tree` it is the
-    /// whole listing again, and the filtered index then names a completely different file — so a
-    /// caller that rebuilds must take this *first* and carry it across (see `reapply_filter`).
+    /// **Only meaningful while `entries` still holds a filtered list** — the `/` results or the `C`
+    /// changed-files list. After `rebuild_tree` it is the whole listing again, and the filtered index
+    /// then names a completely different file — so a caller that rebuilds must take this *first* and
+    /// carry it across (see `reapply_filter` / `reapply_changed_filter`).
     pub(super) fn filter_anchor(&self) -> Option<PathBuf> {
         self.tab
             .entries
@@ -700,13 +702,32 @@ impl App {
         self.clear_filter_state(); // mutually exclusive with the name filter (`/`)
         self.tab.changed_filter = true;
         self.tab.selected = 0;
-        self.reapply_changed_filter();
+        // `None`: the cursor is being reset to the top of a brand-new list, so there is nothing to
+        // follow — and `entries` is still the ordinary tree here, which is precisely the value that
+        // must not be mistaken for a selection in the changed list.
+        self.reapply_changed_filter(None);
     }
 
     /// Rebuild entries as the flat changed-files list. Called on toggle and by `refresh_fs` while active
     /// (an agent committing/reverting updates the list live). Auto-exits to the tree when the last change
     /// disappears (e.g. everything was committed) instead of leaving an empty list.
-    pub(super) fn reapply_changed_filter(&mut self) {
+    ///
+    /// `anchor` = the file to keep the cursor on: what the cursor was *on*, not where it was.
+    /// `changed_paths` is sorted by path, so a change appearing anywhere above the cursor shifts every
+    /// entry below it — and a bare index then points at a **different file**, silently retargeting the
+    /// very next `Enter` / `d` / `y` / `Space→D`. This is the headline Agent Watch path: the list is
+    /// rebuilt on every write the agent makes, which is to say *while the user is reading it*.
+    /// Range-clamping cannot protect against this: the index stays in range, it just stops meaning
+    /// what it meant.
+    ///
+    /// Passed in rather than read from `entries` here, for the same reason as `reapply_filter`:
+    /// **callers reach this after `rebuild_tree` has already replaced `entries` with the unfiltered
+    /// listing**, where reading it looks right and silently anchors to whatever file happens to sit
+    /// at that index in the *whole tree* (measured: an unchanged, committed file — one that isn't
+    /// even in the changed list). Making it a parameter is what forces each caller to answer "do I
+    /// still have the changed list?" instead of inheriting an answer. `None` = don't follow anything
+    /// (the cursor is being reset or retargeted anyway).
+    pub(super) fn reapply_changed_filter(&mut self, anchor: Option<PathBuf>) {
         let entries: Vec<super::Entry> = self
             .changed_paths()
             .into_iter()
@@ -725,9 +746,21 @@ impl App {
             return;
         }
         self.tab.entries = entries;
+        // Follow the file the cursor was on to wherever the re-sorted list put it. If it is no longer
+        // listed (committed, reverted, deleted) there is nothing to follow, so fall back to the
+        // positional clamp below — exactly the old behaviour.
+        if let Some(p) = anchor {
+            if let Some(i) = self.tab.entries.iter().position(|e| e.path == p) {
+                self.tab.selected = i;
+            }
+        }
         if self.tab.selected >= self.tab.entries.len() {
             self.tab.selected = self.tab.entries.len().saturating_sub(1);
         }
+        // Rebuilt entries = `visual_anchor` (an index) is stale. Deliberately **not** rescued the way
+        // `selected` is above: an anchor marks one end of a range whose other end is a *different*
+        // entry, and a re-sort can move the two independently — there is no "same selection" to
+        // restore, only a plausible-looking wrong one.
         self.tab.visual_anchor = None;
     }
 
@@ -828,7 +861,9 @@ impl App {
         }
         // Sync the tree cursor too (so returning with `q` lands on the file that was just being viewed).
         if self.tab.changed_filter {
-            self.reapply_changed_filter();
+            // `None`: the cursor is moved onto `target` on the very next line, so there is nothing
+            // to follow — an anchor here would only fight the move it exists to make.
+            self.reapply_changed_filter(None);
             if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
                 self.tab.selected = i;
             }
@@ -1121,7 +1156,17 @@ impl App {
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
         // re-render alone won't fix it. Rebuild it the moment the new status arrives (live follow-along for an agent's edits).
         if self.tab.changed_filter {
-            self.reapply_changed_filter();
+            // Whoever rebuilt the tree out from under the list and left the rebuild to us also left
+            // the cursor's identity (`changed_anchor_pending`) — `entries` is the whole tree by now,
+            // so it cannot be recovered here. When nobody did, `entries` still *is* the list (this
+            // lands straight from the channel, or from a synchronous scan before any rebuild) and
+            // reading it live is right — and necessary, because this is the path an agent's writes
+            // take: without it the list re-sorts under a cursor that never moved.
+            let anchor = self
+                .changed_anchor_pending
+                .take()
+                .or_else(|| self.filter_anchor());
+            self.reapply_changed_filter(anchor);
         }
         true
     }
@@ -1288,6 +1333,17 @@ impl App {
         } else {
             None
         };
+        // The same value for the `C` list, and taken here for the same reason. It is *also* published
+        // on `App`, because the rebuild is frequently deferred to whenever the status scan lands
+        // (below) — by then this stack frame is long gone, and `entries` is the whole tree, so
+        // `apply_statuses` has no way to work it out for itself. Assigned unconditionally so a
+        // previous refresh's anchor can never be inherited by a later one.
+        let changed_anchor = if self.tab.changed_filter {
+            self.filter_anchor()
+        } else {
+            None
+        };
+        self.changed_anchor_pending = changed_anchor.clone();
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render
             self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
@@ -1312,7 +1368,11 @@ impl App {
             // **silently turn itself off, even showing a false "no changed files"**. Wait instead —
             // `apply_statuses` rebuilds it once the result arrives.
             if self.git_status_pending.is_none() {
-                self.reapply_changed_filter();
+                // Rebuilding here and now, so nothing is deferred: drop the published copy rather
+                // than leave it for an unrelated later scan to pick up. The local is the same value
+                // (a synchronous scan above may already have taken the published one).
+                self.changed_anchor_pending = None;
+                self.reapply_changed_filter(changed_anchor);
             }
         } else if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
