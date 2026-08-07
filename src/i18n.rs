@@ -573,6 +573,10 @@ pub enum Msg {
     /// `fileops::FileOpError::RenameCommitFailed`: batch rename's `rename()` call itself failed
     /// while committing a temp name to its final destination.
     RenameCommitFailed,
+    /// `fileops::RollbackIncomplete`: a failed batch rename could not undo itself either, so
+    /// entries are left under `.konoma-rename-tmp-*` (or under their new name) and need cleaning
+    /// up by hand. Followed by the list of those paths.
+    RollbackIncomplete,
     /// `build_rename_plan`: the rendered name is empty (e.g. an all-`{ext}` template on a file
     /// with no extension).
     RenameEmptyName,
@@ -1041,6 +1045,7 @@ fn en(msg: Msg) -> &'static str {
         NameUnavailable => "could not determine a name: ",
         RenameStageFailed => "staging rename: ",
         RenameCommitFailed => "committing rename: ",
+        RollbackIncomplete => "rollback also failed, clean up by hand: ",
         RenameEmptyName => "the rendered name is empty",
         RenameSlashInName => "name cannot contain /: ",
         RenameDestDuplicate => "duplicate rename destination: ",
@@ -1491,6 +1496,7 @@ fn jp(msg: Msg) -> &'static str {
         NameUnavailable => "名前の取得に失敗: ",
         RenameStageFailed => "一括リネーム(一時退避): ",
         RenameCommitFailed => "一括リネーム(確定): ",
+        RollbackIncomplete => "巻き戻しにも失敗、手で片付けてください: ",
         RenameEmptyName => "空の名前になります",
         RenameSlashInName => "名前に / は使えません: ",
         RenameDestDuplicate => "リネーム先が重複: ",
@@ -2012,6 +2018,7 @@ mod tests {
         Msg::NameUnavailable,
         Msg::RenameStageFailed,
         Msg::RenameCommitFailed,
+        Msg::RollbackIncomplete,
         Msg::RenameEmptyName,
         Msg::RenameSlashInName,
         Msg::RenameDestDuplicate,

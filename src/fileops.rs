@@ -73,6 +73,40 @@ impl std::fmt::Display for FileOpError {
 
 impl std::error::Error for FileOpError {}
 
+/// Attached by `rollback_batch_rename` as **anyhow context** when the automatic rollback could not
+/// put everything back, so entries are left sitting under their staging name
+/// (`.konoma-rename-tmp-N`) or under their new name.
+///
+/// It is a distinct type rather than another `FileOpError` variant on purpose: the UI resolves the
+/// *reason* the rename failed with `downcast_ref::<FileOpError>()`, and folding this into that enum
+/// would make the outermost context win that lookup and hide the reason. As its own type, the two
+/// downcasts are independent, so `describe_file_op_error` can report both — the reason **and** the
+/// fact that files were left behind (which the user has to clean up by hand, so silently dropping
+/// it is the one thing we must not do).
+#[derive(Debug)]
+pub struct RollbackIncomplete {
+    /// Where the entries that could not be restored actually are right now (staging names, or the
+    /// new name for one that was already committed). Never empty.
+    pub leftovers: Vec<PathBuf>,
+}
+
+/// English only, same as `FileOpError` — the UI-facing localized text is built by
+/// `describe_file_op_error`.
+impl std::fmt::Display for RollbackIncomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rollback incomplete, left behind: ")?;
+        for (i, p) in self.leftovers.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", p.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RollbackIncomplete {}
+
 /// File information (for the `i` popup). For a symlink, holds the link's own info plus its target.
 pub struct FileInfo {
     pub is_dir: bool,
@@ -529,6 +563,36 @@ fn rollback_batch_rename(
             ));
         }
     }
+    // 3) Report what is actually left behind. **Observed from the filesystem** rather than inferred
+    //    from which rename calls failed (same approach as `trash_partial_outcome`): the two phases
+    //    interact — an entry whose phase-1 `dst→tmp` failed then also fails phase 2, which would
+    //    otherwise be counted twice and name a `tmp` path that does not exist. Asking the disk
+    //    where each entry ended up cannot get that wrong.
+    //    The string contexts above stay for logs; this typed one is what the UI reads, because a
+    //    string context is invisible to `describe_file_op_error`'s downcast (that is the bug this
+    //    fixes: the user was told *why* the rename failed but not that `.konoma-rename-tmp-*`
+    //    files were still lying around).
+    //    A staging name still existing is unambiguous — `.konoma-rename-tmp-N` is ours and nothing
+    //    else creates it. Otherwise the entry counts as stranded only if its original name is gone
+    //    *and* the new name is occupied, i.e. phase 1 could not unstage it. Deliberately not
+    //    "src is missing" on its own: something else may legitimately occupy `src` (the very thing
+    //    that can block the restore), and an entry whose staged file was deleted out from under us
+    //    has genuinely left nothing behind to clean up.
+    let leftovers: Vec<PathBuf> = staged
+        .iter()
+        .filter_map(|(tmp, src, dst)| {
+            if tmp.symlink_metadata().is_ok() {
+                Some(tmp.clone())
+            } else if src.symlink_metadata().is_err() && dst.symlink_metadata().is_ok() {
+                Some(dst.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !leftovers.is_empty() {
+        err = err.context(RollbackIncomplete { leftovers });
+    }
     err
 }
 
@@ -902,6 +966,166 @@ mod tests {
             orphans.is_empty(),
             "孤立した一時ファイルが残らない: {orphans:?}"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// When the rollback itself cannot finish, the leftovers have to be *reported*, not just
+    /// logged: the user has to delete `.konoma-rename-tmp-*` by hand and has no way to know unless
+    /// told. That news is attached as a typed `RollbackIncomplete` context precisely so the UI can
+    /// find it with a downcast (a plain string context is invisible to `describe_file_op_error`,
+    /// which is exactly how it used to get thrown away).
+    ///
+    /// `batch_rename`'s own two-phase rollback is robust enough that no *plan* can make it fail
+    /// (the sibling tests above cover collisions and swaps), so the failure is injected at the
+    /// level below: `rollback_batch_rename` is called directly with a staging state whose `src`
+    /// slot has been taken over by a non-empty directory. `rename(file, non-empty dir)` fails for
+    /// every user including root, so this needs no permission juggling and no root guard — and it
+    /// is a real scenario, an agent creating a directory at the old name mid-rename.
+    #[test]
+    fn rollback_failure_reports_the_files_it_left_behind() {
+        let dir = unique_tmp("konoma_rollback_incomplete_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Entry 0: staged aside, and its original name is now occupied by a non-empty directory,
+        // so restoring it is impossible.
+        let stuck_tmp = dir.join(".konoma-rename-tmp-0");
+        let stuck_src = dir.join("a.txt");
+        let stuck_dst = dir.join("x.txt");
+        std::fs::write(&stuck_tmp, b"AAA").unwrap();
+        std::fs::create_dir_all(&stuck_src).unwrap();
+        std::fs::write(stuck_src.join("blocker"), b"in the way").unwrap();
+
+        // Entry 1: staged aside with nothing in its way, so it rolls back cleanly and must **not**
+        // be reported as a leftover.
+        let ok_tmp = dir.join(".konoma-rename-tmp-1");
+        let ok_src = dir.join("b.txt");
+        let ok_dst = dir.join("y.txt");
+        std::fs::write(&ok_tmp, b"BBB").unwrap();
+
+        let staged = vec![
+            (stuck_tmp.clone(), stuck_src.clone(), stuck_dst),
+            (ok_tmp.clone(), ok_src.clone(), ok_dst),
+        ];
+        let original = anyhow::Error::new(FileOpError::RenameCommitFailed(dir.join("boom")));
+        let err = rollback_batch_rename(original, &staged, 0);
+
+        // The reason the rename failed is still reachable (the leftover news is *added*, not
+        // substituted).
+        assert!(
+            matches!(
+                err.downcast_ref::<FileOpError>(),
+                Some(FileOpError::RenameCommitFailed(_))
+            ),
+            "元の失敗理由が失われていない: {err:#}"
+        );
+        let rb = err
+            .downcast_ref::<RollbackIncomplete>()
+            .expect("巻き戻し失敗が型付きで伝わる");
+        assert_eq!(
+            rb.leftovers,
+            vec![stuck_tmp.clone()],
+            "戻せなかった一時ファイルだけを報告する"
+        );
+        // Ground truth on disk: the blocked one is still staged, the clean one is restored.
+        assert!(stuck_tmp.is_file(), "戻せなかった一時ファイルは実在する");
+        assert_eq!(std::fs::read(&ok_src).unwrap(), b"BBB", "b.txt は原状復帰");
+        assert!(!ok_tmp.exists(), "戻せた方の一時ファイルは残らない");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Probe for the sibling test below: whether this process is actually stopped by a read-only
+    /// directory. Running as root (a container, CI as root) it is not, and the test would go red
+    /// for environmental reasons while the product is fine — the same situation
+    /// `write_denied_by_permissions` in `app/tests.rs` exists for.
+    #[cfg(unix)]
+    fn rename_denied_by_directory_permissions() -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = unique_tmp("konoma_ro_dir_probe");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f"), b"x").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let denied = std::fs::rename(dir.join("f"), dir.join("g")).is_err();
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&dir);
+        denied
+    }
+
+    /// The other way an entry can be stranded: its rename was already **committed**, and unstaging
+    /// it back fails, so the file is sitting under its *new* name rather than under a staging name.
+    /// Reported as that new name, since that is where the user will find it.
+    ///
+    /// Needs a genuinely denied rename (a read-only directory), hence the root guard.
+    #[cfg(unix)]
+    #[test]
+    fn rollback_failure_reports_a_committed_entry_under_its_new_name() {
+        use std::os::unix::fs::PermissionsExt;
+        if !rename_denied_by_directory_permissions() {
+            eprintln!(
+                "rollback_failure_reports_a_committed_entry_under_its_new_name: このプロセスはディレクトリのパーミッションで rename を拒否されない(root 等)ためスキップ"
+            );
+            return;
+        }
+        let dir = unique_tmp("konoma_rollback_committed_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The entry has already been committed: the content lives at `dst`, `tmp` and `src` are
+        // both free. Freezing the directory makes both rollback phases fail.
+        let tmp = dir.join(".konoma-rename-tmp-0");
+        let src = dir.join("a.txt");
+        let dst = dir.join("x.txt");
+        std::fs::write(&dst, b"AAA").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let staged = vec![(tmp, src, dst.clone())];
+        let original = anyhow::Error::new(FileOpError::RenameDestExists(dir.join("boom")));
+        let err = rollback_batch_rename(original, &staged, 1);
+
+        let rb = err
+            .downcast_ref::<RollbackIncomplete>()
+            .expect("巻き戻し失敗が型付きで伝わる");
+        assert_eq!(
+            rb.leftovers,
+            vec![dst.clone()],
+            "戻せなかった分は新しい名前で報告する"
+        );
+        assert!(
+            matches!(
+                err.downcast_ref::<FileOpError>(),
+                Some(FileOpError::RenameDestExists(_))
+            ),
+            "元の失敗理由も残る: {err:#}"
+        );
+
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rollback that fully succeeds must not claim anything was left behind (the pair to the test
+    /// above — without this, "always attach RollbackIncomplete" would pass).
+    #[test]
+    fn successful_rollback_reports_nothing_left_behind() {
+        let dir = unique_tmp("konoma_rollback_complete_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        let c = dir.join("c.txt");
+        let d = dir.join("d.txt");
+        std::fs::write(&a, b"AAA").unwrap();
+        std::fs::write(&b, b"BBB").unwrap();
+        std::fs::write(&d, b"DDD").unwrap(); // rig the collision so the commit phase bails
+
+        let err = batch_rename(&[(a.clone(), c), (b.clone(), d.clone())])
+            .expect_err("既存 d.txt への衝突で失敗する");
+        assert!(
+            err.downcast_ref::<RollbackIncomplete>().is_none(),
+            "巻き戻しが成功したなら残骸を主張しない: {err:#}"
+        );
+        assert_eq!(std::fs::read(&a).unwrap(), b"AAA", "a は原状復帰");
 
         std::fs::remove_dir_all(&dir).ok();
     }

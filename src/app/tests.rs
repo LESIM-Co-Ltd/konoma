@@ -8034,6 +8034,96 @@ fn describe_error_translates_file_op_errors_to_the_ui_language() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression: when a batch rename failed **and could not undo itself**, the user was shown only
+/// the inner reason. `describe_error` matched on `FileOpError` with a `downcast_ref`, and anyhow's
+/// downcast reaches straight through the outer context to find it — so the "rollback also failed"
+/// news attached on top was dropped without trace, and nothing said that `.konoma-rename-tmp-*`
+/// files were still lying around waiting to be cleaned up by hand.
+///
+/// Both halves must survive, in both languages: the reason **and** the leftovers.
+#[test]
+fn describe_error_keeps_the_rollback_context_around_the_reason() {
+    use crate::fileops::{FileOpError, RollbackIncomplete};
+    use crate::i18n::{tr, Lang, Msg};
+
+    let dir = unique_tmp("konoma_rollback_describe_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let failed_at = dir.join("b.txt");
+    let left_a = dir.join(".konoma-rename-tmp-0");
+    let left_b = dir.join(".konoma-rename-tmp-1");
+    // Exactly the shape `batch_rename` produces: the reason, with the rollback news layered on top.
+    let err = anyhow::Error::new(FileOpError::RenameCommitFailed(failed_at.clone())).context(
+        RollbackIncomplete {
+            leftovers: vec![left_a.clone(), left_b.clone()],
+        },
+    );
+
+    for lang in [Lang::En, Lang::Jp] {
+        app.lang = lang;
+        let msg = app.describe_error(&err);
+        assert!(
+            msg.contains(tr(lang, Msg::RenameCommitFailed)),
+            "内側の理由が残る({lang:?}): {msg:?}"
+        );
+        assert!(
+            msg.contains(&failed_at.display().to_string()),
+            "理由が指すパスも残る({lang:?}): {msg:?}"
+        );
+        assert!(
+            msg.contains(tr(lang, Msg::RollbackIncomplete)),
+            "巻き戻し失敗が伝わる({lang:?}): {msg:?}"
+        );
+        assert!(
+            msg.contains(&left_a.display().to_string())
+                && msg.contains(&left_b.display().to_string()),
+            "残ったファイルが全部わかる({lang:?}): {msg:?}"
+        );
+    }
+
+    // Literal wording, so this can't pass on a catalog that is itself wrong.
+    app.lang = Lang::En;
+    assert_eq!(
+        app.describe_error(&err),
+        format!(
+            "committing rename: {} / rollback also failed, clean up by hand: {}, {}",
+            failed_at.display(),
+            left_a.display(),
+            left_b.display()
+        )
+    );
+    app.lang = Lang::Jp;
+    assert_eq!(
+        app.describe_error(&err),
+        format!(
+            "一括リネーム(確定): {} / 巻き戻しにも失敗、手で片付けてください: {}, {}",
+            failed_at.display(),
+            left_a.display(),
+            left_b.display()
+        )
+    );
+
+    // The pair: a failure whose rollback *did* succeed says nothing about leftovers, so this can't
+    // be passed by unconditionally appending the warning.
+    let clean = anyhow::Error::new(FileOpError::RenameCommitFailed(failed_at.clone()));
+    for lang in [Lang::En, Lang::Jp] {
+        app.lang = lang;
+        assert_eq!(
+            app.describe_error(&clean),
+            format!(
+                "{}{}",
+                tr(lang, Msg::RenameCommitFailed),
+                failed_at.display()
+            ),
+            "巻き戻しが成功した場合は従来どおりの文言({lang:?})"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // The regression in `copy_into_with_progress`'s leaf-file counter is verified on the
 // `src/fileops.rs` side by `file_op_progress_counts_leaf_files` (fileops can be hit directly
 // from there without going through `App`).

@@ -15,6 +15,32 @@ use super::*;
 /// `self.lang` once, before dispatch, and threads it through (same idea as `err_self_paste`/
 /// `err_failed` below, which are pre-translated for the same reason).
 fn describe_file_op_error(lang: crate::i18n::Lang, e: &anyhow::Error) -> String {
+    use crate::i18n::{tr, Msg};
+    let mut msg = describe_file_op_reason(lang, e);
+    // A batch rename that failed **and could not roll itself back** carries a second, independent
+    // piece of news: files are still sitting under `.konoma-rename-tmp-*` (or under their new
+    // name) and the user has to clean them up by hand. `downcast_ref` walks the chain, so the
+    // reason above (the innermost `FileOpError`) and this (a context attached on top of it) are
+    // both reachable — before this, matching only on `FileOpError` threw the outer context away
+    // and the leftovers were never mentioned.
+    if let Some(rb) = e.downcast_ref::<crate::fileops::RollbackIncomplete>() {
+        let paths: Vec<String> = rb
+            .leftovers
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        msg = format!(
+            "{msg} / {}{}",
+            tr(lang, Msg::RollbackIncomplete),
+            paths.join(", ")
+        );
+    }
+    msg
+}
+
+/// The *reason* half of `describe_file_op_error`: translate our own `FileOpError`, or fall through
+/// to the error's own text when it isn't one of ours.
+fn describe_file_op_reason(lang: crate::i18n::Lang, e: &anyhow::Error) -> String {
     use crate::fileops::FileOpError;
     use crate::i18n::{tr, Msg};
     match e.downcast_ref::<FileOpError>() {
@@ -37,6 +63,9 @@ fn describe_file_op_error(lang: crate::i18n::Lang, e: &anyhow::Error) -> String 
         Some(FileOpError::RenameCommitFailed(p)) => {
             format!("{}{}", tr(lang, Msg::RenameCommitFailed), p.display())
         }
+        // Not one of ours. Note that every `batch_rename` failure — the only producer of
+        // `RollbackIncomplete` — carries a `FileOpError`, so this arm is never the one that runs
+        // for a rollback error; it does not need to filter that context out of `e.to_string()`.
         None => e.to_string(),
     }
 }
