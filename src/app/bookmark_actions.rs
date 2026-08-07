@@ -1136,10 +1136,9 @@ impl App {
     /// same work — a second full CSV parse for a table tab, a second window open for a text tab.
     /// Returns nothing on purpose: the caller (`load_active`) has nowhere to propagate a failure
     /// to, so reporting is done **here** instead of leaving a `let _ = …` for a future edit to
-    /// forget. See `note_refresh_failure` for why it is edge-triggered.
+    /// forget. See `refresh_reporting_staleness` for why the flash is edge-triggered.
     pub(super) fn refresh_fs_after_tab_switch(&mut self) {
-        let res = self.refresh_fs_inner(false, &[], false);
-        self.note_refresh_failure(res);
+        self.refresh_reporting_staleness(|app| app.refresh_fs_inner(false, &[], false));
     }
 
     /// The fs-watch driven refresh, for `main`'s run loop. Same reason as
@@ -1147,8 +1146,7 @@ impl App {
     /// so there is no `?` to ride and no `resolve_key_result` to reach — a swallowed error here
     /// leaves the tree silently stale.
     pub fn refresh_fs_watched(&mut self, recompute_ignored: bool, changed: &[std::path::PathBuf]) {
-        let res = self.refresh_fs_changed(recompute_ignored, changed);
-        self.note_refresh_failure(res);
+        self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
     }
 
     fn refresh_fs_inner(

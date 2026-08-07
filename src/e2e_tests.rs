@@ -4283,6 +4283,198 @@ fn e2e_busy_indicator_absent_when_idle() {
 }
 
 // =============================================================================
+// Stale-listing indicator (the context bar's STALE chip)
+// =============================================================================
+
+/// English wording for the chip regardless of the machine's locale (`lang = "auto"` follows the OS,
+/// and these tests match on "STALE").
+fn cfg_en() -> Config {
+    let mut cfg = Config::default();
+    cfg.ui.lang = "en".into();
+    cfg
+}
+
+/// A failed tree rebuild deliberately keeps the last good listing, so a stale tree looks exactly
+/// like a healthy one — files that no longer exist sit there with nothing to doubt them by. The
+/// flash that announces the moment it happens is wiped by the very next keypress, which is the
+/// whole reason the *level* needs a chip: it has to still be there ten keys later.
+///
+/// Pins all three halves — it appears, it survives keypresses (while the flash does not), and it
+/// disappears once a rebuild succeeds — plus the negative (nothing at all while healthy), so an
+/// "always show the chip" implementation cannot pass either.
+#[test]
+fn e2e_stale_listing_chip_stays_up_until_the_listing_recovers() {
+    let dir = sandbox("stale_chip_level");
+    seed_files(&dir);
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en());
+
+    // Healthy: no chip at all.
+    s.see("notes.txt");
+    s.dont_see("STALE");
+    assert!(!s.app.tree_stale());
+
+    // The root disappears out from under us (an agent removing a directory konoma happens to be
+    // showing). This is the fs-watch path the run loop drives, which cannot propagate a failure.
+    std::fs::remove_dir_all(&root).unwrap();
+    s.app.refresh_fs_watched(false, &[]);
+    s.draw();
+    s.see("STALE");
+    s.see_styled(
+        "STALE",
+        |st| st.bg == Some(ratatui::style::Color::Yellow),
+        "警告色(黄)の背景",
+    );
+    // The listing itself is still there — which is exactly why the chip has to be.
+    s.see("notes.txt");
+    // …and the one-shot announcement fired for this frame.
+    let flash = s.app.flash.clone().expect("立ち上がりで一度は伝える");
+    assert!(flash.contains("out of date"), "{flash}");
+
+    // Keypresses clear the flash. The chip must outlive every one of them — that is the difference
+    // this test exists to pin.
+    for k in ['j', 'k', 'g', 'G', 'j', 'j', 'k'] {
+        s.key(k);
+        assert_eq!(s.app.flash, None, "flash はキー入力で消える");
+        s.see("STALE");
+    }
+
+    // Recovery takes it down again (nothing keeps announcing "stale" over a healthy listing).
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("back.txt"), b"y").unwrap();
+    s.app.refresh_fs_watched(false, &[]);
+    s.draw();
+    assert!(!s.app.tree_stale());
+    s.dont_see("STALE");
+    s.see("back.txt");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// The chip states something about **the listing you are looking at**, so a broken tab sitting in
+/// the background must not put it on screen while a healthy tab is in front. Every tab activation
+/// ends in a rebuild (`load_active` → `refresh_fs_after_tab_switch`), which is what keeps the
+/// app-wide flag describing the visible tab; this pins that, in both directions and repeatedly.
+#[test]
+fn e2e_stale_listing_chip_follows_the_tab_you_are_looking_at() {
+    let dir = sandbox("stale_chip_tabs");
+    let base = canon(&dir);
+    for sub in ["alpha", "beta"] {
+        std::fs::create_dir_all(base.join(sub)).unwrap();
+    }
+    std::fs::write(base.join("alpha/in-alpha.txt"), b"a\n").unwrap();
+    std::fs::write(base.join("beta/in-beta.txt"), b"b\n").unwrap();
+    let mut s = Sim::with_config(&base, cfg_en());
+
+    // tab2 = alpha, tab3 = beta (Ctrl-t on a directory roots a new tab there).
+    s.select("alpha");
+    s.ctrl('t');
+    s.key('['); // back to tab1 to pick the other directory
+    s.select("beta");
+    s.ctrl('t');
+    assert_eq!(s.app.tab_count(), 3);
+    s.see("in-beta.txt");
+    s.dont_see("STALE");
+
+    // tab2's root vanishes while tab3 is in front. Nothing is on screen about it yet — correct,
+    // that tab is not the one being shown.
+    std::fs::remove_dir_all(base.join("alpha")).unwrap();
+    s.dont_see("STALE");
+
+    // Switching to it says so, and keeps saying so.
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 1);
+    s.see("STALE");
+    s.see("in-alpha.txt"); // the stale listing it is warning about
+
+    // Switching to the healthy tab takes it back down…
+    s.key(']');
+    assert_eq!(s.app.active_tab_index(), 2);
+    s.dont_see("STALE");
+    // …and coming back brings it up again (not a one-shot that got used up).
+    s.key('[');
+    s.see("STALE");
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// The context bar is drawn in every mode, so the chip must be too: a stale listing does not stop
+/// being stale because you are looking at a file. (The Git view is covered by
+/// `stale_listing_chip_shows_in_the_git_view` in `app/tests.rs`, which needs a real repository.)
+#[test]
+fn e2e_stale_listing_chip_shows_in_tree_and_preview() {
+    let dir = sandbox("stale_chip_modes");
+    seed_files(&dir);
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en());
+
+    // Open a preview first, so the root can then be pulled out from under an open file.
+    s.select("notes.txt");
+    s.enter();
+    assert!(matches!(s.app.tab.mode, Mode::Preview));
+    s.dont_see("STALE");
+
+    std::fs::remove_dir_all(&root).unwrap();
+    s.app.refresh_fs_watched(false, &[]);
+    s.draw();
+    assert!(matches!(s.app.tab.mode, Mode::Preview), "プレビューのまま");
+    s.see("STALE");
+
+    // Back to the tree: still stale, still shown (the same flag, a shared context bar).
+    s.key('q');
+    assert!(matches!(s.app.tab.mode, Mode::Tree));
+    s.see("STALE");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// The tab bar shares its row with the context bar and is sized by subtracting
+/// `status::context_width` (v0.9.0 shipped a bug where it planned across the full width and got
+/// painted under the right-hand side). One more chip widens that subtraction, so this pins that the
+/// tab bar still behaves with the chip up: the active tab and the overflow markers stay visible,
+/// and the chip sits entirely inside the reserved right-hand region rather than on top of a tab.
+#[test]
+fn e2e_stale_listing_chip_does_not_break_the_tab_bar() {
+    let dir = sandbox("stale_chip_tabbar");
+    seed_files(&dir);
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en());
+
+    s.keys("tttttttt"); // 9 tabs → the bar overflows at width 90
+    assert_eq!(s.app.tab_count(), 9);
+    s.key('5');
+    assert_eq!(s.app.active_tab_index(), 4);
+
+    std::fs::remove_dir_all(&root).unwrap();
+    s.app.refresh_fs_watched(false, &[]);
+    s.draw();
+
+    s.see("STALE");
+    // The overflow window still works: markers on both sides, active tab still visible.
+    s.see("‹");
+    s.see("›");
+    let label = s.app.tab_label(4);
+    s.see(&format!("5:{label}"));
+
+    // Both live on the top row, and the chip is inside the region the tab bar was told to keep
+    // clear — if the tab bar had planned across the full width, a tab chip would be sitting where
+    // the context bar then painted over it.
+    let width = s.term.backend().buffer().area.width as usize;
+    let ctx = crate::ui::status::context_width(&s.app) as usize;
+    let (chip_row, chip_col) = s.find_text("STALE").expect("チップが描かれている");
+    assert_eq!(chip_row, 0, "チップは上段(タブバーと同じ行)");
+    assert!(
+        chip_col as usize >= width - ctx,
+        "チップがタブバー側にはみ出している (col={chip_col}, 予約境界={})",
+        width - ctx
+    );
+    let (tab_row, tab_col) = s.find_text(&format!("5:{label}")).expect("アクティブタブ");
+    assert_eq!(tab_row, 0);
+    assert!(
+        (tab_col as usize) < width - ctx,
+        "タブがコンテキスト側に食い込んでいる (col={tab_col})"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+// =============================================================================
 // Paste-jump (P): clipboard path/GitHub link → jumps to that location
 // =============================================================================
 

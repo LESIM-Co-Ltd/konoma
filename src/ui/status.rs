@@ -200,6 +200,19 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::from(" "));
         spans.push(ic);
     }
+    // The listing on screen is out of date (the last rebuild failed and the previous snapshot is
+    // still being shown). Like FOLLOW below, this coexists with every mode, so it gets its own
+    // chip — and unlike the flash that announces the moment it happens, a chip stays up for as
+    // long as it is true. That is the whole point here: `rebuild_tree` deliberately keeps the last
+    // good listing, so a stale tree is indistinguishable from a healthy one, and a message that
+    // the next keypress wipes leaves nothing behind to doubt it by. Placed ahead of FOLLOW/WT so a
+    // warning about what you are reading sits next to the mode chips instead of being pushed
+    // around by unrelated indicators. Yellow = the warning family (the same as the
+    // overwrite/quit confirmations); red stays reserved for destructive actions.
+    if app.tree_stale() {
+        spans.push(Span::from(" "));
+        spans.push(chip(app.lang, Msg::StListingStale, Color::Yellow, false));
+    }
     // Follow mode (`F`) coexists with other states, so it always shows as its own chip (so ON is
     // obvious at a glance).
     if app.follow_enabled() {

@@ -3369,7 +3369,7 @@ fn fs_watch_refresh_failure_is_announced_once_per_outage() {
         !app.tab.entries.is_empty(),
         "クラッシュせず最後に成功した一覧を保持する(=だからこそ黙ってはいけない)"
     );
-    assert!(app.tree_stale_notified_for_test(), "通知済みラッチが立つ");
+    assert!(app.tree_stale(), "一覧が古いという事実が立つ");
 
     // Repeated failures must not keep re-flashing: once the user dismisses it (a keypress clears
     // flash), the same outage stays quiet instead of burying every later message.
@@ -3394,10 +3394,7 @@ fn fs_watch_refresh_failure_is_announced_once_per_outage() {
     app.flash = None;
     app.refresh_fs_watched(false, &[]);
     assert_eq!(app.flash, None, "復旧時も余計な通知は出さない");
-    assert!(
-        !app.tree_stale_notified_for_test(),
-        "復旧でラッチが解除される"
-    );
+    assert!(!app.tree_stale(), "復旧で「古い」が解除される");
     std::fs::remove_dir_all(&root).unwrap();
     app.refresh_fs_watched(false, &[]);
     let second = app.flash.clone().expect("再発は改めて伝わる");
@@ -3470,13 +3467,13 @@ fn tab_switch_announces_a_failed_rebuild() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The edge trigger is re-armed by `rebuild_tree` itself (the one choke point), not by the notify
-/// helper, so a recovery that happens on a *different* path — one that propagates its error with
-/// `?` and never consults the latch — still lets the next outage be announced. Without that, a
-/// successful `refresh()` between two outages would leave the latch stuck and the second outage
-/// silent.
+/// The staleness level is maintained by `rebuild_tree` itself (the one choke point), not by the
+/// reporting helper, so a recovery that happens on a *different* path — one that propagates its
+/// error with `?` and never goes near the reporting helper — clears it too, and the next outage is
+/// announced again. Without that, a successful `refresh()` between two outages would leave the
+/// flag stuck and the second outage silent (and the chip stuck on over a healthy listing).
 #[test]
-fn stale_listing_latch_is_rearmed_by_any_successful_rebuild() {
+fn stale_listing_flag_is_cleared_by_any_successful_rebuild() {
     let base = unique_tmp("konoma_stale_listing_rearm_test");
     let _ = std::fs::remove_dir_all(&base);
     let root = base.join("root");
@@ -3491,14 +3488,125 @@ fn stale_listing_latch_is_rearmed_by_any_successful_rebuild() {
     std::fs::create_dir_all(&root).unwrap();
     app.refresh().expect("復旧後は成功する");
     assert!(
-        !app.tree_stale_notified_for_test(),
-        "notify を経由しない成功でもラッチが解除される"
+        !app.tree_stale(),
+        "報告ヘルパーを経由しない成功でも「古い」が解除される"
     );
 
     std::fs::remove_dir_all(&root).unwrap();
     app.flash = None;
     app.refresh_fs_watched(false, &[]);
     assert!(app.flash.is_some(), "2回目の障害も改めて伝わる");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The persistent chip is wired for both languages and — paired with that — appears **only** while
+/// the listing really is out of date. Without the negative half, "always show the chip" would pass
+/// every other assertion here.
+///
+/// The chip is a plain word rather than a warning glyph on purpose: `⚠` and friends are
+/// East-Asian-Ambiguous width, so a CJK fallback font draws them two cells wide and shifts the
+/// whole right-aligned bar (the trap `☐`/`☑` hit, and why the worktree chip is `WT`).
+#[test]
+fn stale_listing_chip_is_localized_and_only_shown_when_stale() {
+    let base = unique_tmp("konoma_stale_chip_i18n_test");
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"x").unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    let bar = |app: &App| -> String {
+        crate::ui::status::context_spans(app)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    };
+
+    // Healthy: nothing, in either language.
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        app.lang = lang;
+        let text = bar(&app);
+        assert!(
+            !text.contains("STALE"),
+            "健全な一覧でチップは出ない: {text}"
+        );
+        assert!(
+            !text.contains("古い一覧"),
+            "健全な一覧でチップは出ない: {text}"
+        );
+    }
+
+    std::fs::remove_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    assert!(app.tree_stale());
+
+    app.lang = crate::i18n::Lang::En;
+    let en = bar(&app);
+    assert!(en.contains("STALE"), "en のチップ文言: {en}");
+    app.lang = crate::i18n::Lang::Jp;
+    let jp = bar(&app);
+    assert!(jp.contains("古い一覧"), "jp のチップ文言: {jp}");
+    assert!(!jp.contains("STALE"), "jp では英語のまま出ない: {jp}");
+
+    // Recovery takes it down in both languages too.
+    std::fs::create_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        app.lang = lang;
+        let text = bar(&app);
+        assert!(!text.contains("STALE"), "復旧後は消える: {text}");
+        assert!(!text.contains("古い一覧"), "復旧後は消える: {text}");
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The Git full-screen views bypass `ui/tree.rs` entirely, so an indicator that only reached the
+/// tree would silently stop existing there. The chip is drawn by `context_spans`, which every mode
+/// shares — pinned here through a real full-screen draw of the Git view, since "it is in the shared
+/// helper" is exactly the kind of assumption that quietly stops being true.
+#[cfg(feature = "git")]
+#[test]
+fn stale_listing_chip_shows_in_the_git_view() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let base = unique_tmp("konoma_stale_chip_git_test");
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    init_git_repo(&root);
+    std::fs::write(root.join("tracked.txt"), b"one\n").unwrap();
+
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.lang = crate::i18n::Lang::En;
+    app.refresh_git_if_needed();
+    app.open_git_view();
+    assert!(app.in_git_view(), "Git ビューに入れている");
+
+    let screen = |app: &mut App| -> String {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+    assert!(
+        !screen(&mut app).contains("STALE"),
+        "健全なうちは Git ビューにも出ない"
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+    app.refresh_fs_watched(false, &[]);
+    assert!(app.tree_stale());
+    let text = screen(&mut app);
+    assert!(
+        text.contains("STALE"),
+        "Git ビューでもチップが出る:\n{text}"
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }

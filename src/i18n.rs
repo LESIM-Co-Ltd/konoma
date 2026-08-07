@@ -270,8 +270,14 @@ pub enum Msg {
     LineStartEnd,
     /// The tree listing could not be rebuilt on a path that cannot propagate the error (the
     /// fs-watch refresh / a tab switch), so what is on screen may be out of date. See
-    /// `App::note_refresh_failure`. Followed by the underlying error text.
+    /// `App::refresh_reporting_staleness`. Followed by the underlying error text. One-shot, on the
+    /// moment it goes stale; `StListingStale` is the chip that stays up while it *is* stale.
     ListingStale,
+    /// Context-bar chip shown for as long as the listing is out of date (`App::tree_stale`).
+    /// Deliberately a plain word, not a symbol: warning glyphs like `⚠` are East-Asian-Ambiguous
+    /// width, so a CJK fallback font renders them two cells wide and pushes the whole bar over
+    /// (the same trap `☐`/`☑` hit, and why the worktree chip is `WT`).
+    StListingStale,
     Loading,
     Local,
     GitLogGraph,
@@ -784,6 +790,7 @@ fn en(msg: Msg) -> &'static str {
         GitLayout => "layout: unified / split / auto",
         LineStartEnd => "line start / line end (horizontal)",
         ListingStale => "listing may be out of date (refresh failed): ",
+        StListingStale => "STALE",
         Loading => "loading…",
         Local => "local",
         GitLogGraph => "log / graph",
@@ -1242,6 +1249,7 @@ fn jp(msg: Msg) -> &'static str {
         GitLayout => "並び: 縦 / 横 / Auto",
         LineStartEnd => "行頭 / 行末へ(横)",
         ListingStale => "一覧が古いままの可能性 (更新に失敗): ",
+        StListingStale => "古い一覧",
         Loading => "読み込み中…",
         Local => "ローカル",
         GitLogGraph => "ログ / グラフ",
@@ -1770,6 +1778,7 @@ mod tests {
         Msg::GitLayout,
         Msg::LineStartEnd,
         Msg::ListingStale,
+        Msg::StListingStale,
         Msg::Loading,
         Msg::Local,
         Msg::GitLogGraph,
