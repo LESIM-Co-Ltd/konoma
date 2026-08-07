@@ -8209,6 +8209,82 @@ fn file_op_result_does_not_disturb_another_tab() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+/// The other side of the root guard above, pinned **as intended behaviour**: the reveal that was
+/// skipped because another tab was in front is *not* replayed when the originating tab comes back.
+/// There is no pending-reveal queue and there should not be one — the reveal is immediate feedback,
+/// and a tab switch promises to put the cursor back where the user left it (see the comment in
+/// `apply_file_op`). What must not be lost is the *content*: the copied entry is in the listing
+/// when the tab returns, because the switch runs a full rebuild.
+///
+/// Written so that adding a deferred reveal later fails here loudly rather than silently changing
+/// behaviour nobody remembered deciding on.
+#[test]
+fn file_op_reveal_is_not_replayed_on_returning_to_the_tab() {
+    let base = unique_tmp("konoma_fileop_no_deferred_reveal_test");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = base.canonicalize().unwrap();
+    let a = base.join("a");
+    let b = base.join("b");
+    let src = a.join("src.txt");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(&src, b"x").unwrap();
+    // Something in tab 1 for the cursor to sit on (and, being a file, it makes the paste land in
+    // the root itself, so the copy is visible without expanding anything).
+    std::fs::write(a.join("aaa.txt"), b"x").unwrap();
+    std::fs::write(b.join("in-b.txt"), b"x").unwrap();
+
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_fileop_runner(tx);
+
+    let idx =
+        |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
+    app.tab.selected = idx(&app, &src);
+    app.toggle_select();
+    app.copy_selection();
+    // Park the cursor somewhere deliberate (also the paste destination = the root), then leave for
+    // another tab while the copy runs. `aaa.txt` sorts first on purpose: a tab switch restores the
+    // saved cursor *index*, so parking on an entry the new file cannot shift keeps this test about
+    // the reveal rather than about index arithmetic.
+    app.tab.selected = idx(&app, &a.join("aaa.txt"));
+    let parked = app.tab.entries[app.tab.selected].path.clone();
+    app.paste().unwrap();
+    assert!(app.fileop_pending.is_some(), "実行中");
+    app.tab_new().unwrap();
+    app.tab.root = b.clone();
+    app.tab.entries.clear();
+    app.tab.selected = 0;
+    app.rebuild_tree().unwrap();
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ワーカーが結果を返す");
+    let copied = a.join("src copy.txt"); // same directory → collision-avoiding name
+    assert!(app.apply_file_op(res), "現世代の結果は適用される");
+    assert!(copied.is_file(), "コピー自体は完了している");
+    // The completion is still reported, so nothing about the outcome is lost by not revealing.
+    assert!(app.flash.is_some(), "完了は flash で伝わる");
+
+    // Back to the originating tab.
+    app.tab_goto(0);
+    assert_eq!(app.tab.root, a, "タブ1に戻っている");
+    assert_eq!(
+        app.tab.entries.get(app.tab.selected).map(|e| &e.path),
+        Some(&parked),
+        "戻ってきてもカーソルは離れた場所のまま(遅れて動かさない)"
+    );
+    // …and the listing itself did catch up on its own.
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == copied),
+        "コピーされたものは一覧に出ている(内容は自力で追いつく)"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+}
+
 /// A delete/trash that finishes while a *different* tab is active must not clear that tab's
 /// committed selection. `clear_selection` used to run unconditionally — unlike `reveal_and_select`
 /// a few lines above it in the very same function, which already carries a root guard for exactly

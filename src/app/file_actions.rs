@@ -555,6 +555,20 @@ impl App {
         // would collapse its filter (`/`) or changed view (`C`) and even move that tab's cursor.
         // Compare by root, not tab number (tabs can be closed or reordered mid-operation, so a
         // number is not grounds for identity).
+        //
+        // Missing the reveal is **deliberately not made up for later** — there is no "pending
+        // reveal" replayed when the originating tab comes back, and there should not be:
+        //   - The reveal is *immediate feedback* ("here is the thing you just made"). Replayed
+        //     minutes later it is not feedback any more, it is the cursor jumping on its own.
+        //   - A tab switch promises to put you back where you were (`load_active` restores the
+        //     saved cursor, and session restore persists it). A deferred reveal would silently
+        //     override that promise.
+        //   - Nothing is actually lost: the completion flash below is set regardless of which tab
+        //     is active, so the user is still told the operation finished, and the originating
+        //     tab's *listing* catches up by itself — switching to it runs
+        //     `refresh_fs_after_tab_switch` → `rebuild_tree`, so the new entries are there. Only
+        //     the cursor position differs, and `n`/`N`, `/` and `C` are there to find them.
+        // Pinned by `file_op_reveal_is_not_replayed_on_returning_to_the_tab`.
         if post.is_ok() && res.root == self.tab.root {
             if let Some(p) = &res.last {
                 post = self.reveal_and_select(p);
