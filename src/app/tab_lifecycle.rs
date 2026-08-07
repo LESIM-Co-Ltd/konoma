@@ -71,6 +71,11 @@ impl App {
         };
         // The decoration cache isn't carried over (decorated_lines regenerates it).
         self.md_cache = None;
+        // A filter-pool scan started by the tab we are leaving must not land in this one:
+        // `filter_pool` is per-tab but the scan's bookkeeping is on `App`. The abandoned tab
+        // re-kicks its own scan when it becomes active again (the `refresh_fs_after_tab_switch`
+        // at the end of this function re-collects while a filter is active).
+        self.invalidate_filter_pool_scan();
         // A restored diff preview doesn't carry over the follow-origin mark: `diff_follow_scope`
         // lives on `App` (not `PerTab`), so switching tabs always shows a restored GitDiff view in
         // the ordinary full-diff scope, even if it happens to be the same file a follow jump opened

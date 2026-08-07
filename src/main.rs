@@ -41,8 +41,8 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, FileOpResult, GitOpResult, IgnoredResult, KittyResult, MdEncodeRequest, MdEncodeResult,
-    MdImageResult, MediaResult, RemoteFetch, SortKey, StatusResult,
+    App, FileOpResult, FilterPoolResult, GitOpResult, IgnoredResult, KittyResult, MdEncodeRequest,
+    MdEncodeResult, MdImageResult, MediaResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -137,6 +137,10 @@ fn main() -> Result<()> {
     // `.git/index.lock` can each stall it — and running one on the UI thread froze konoma
     // (design principle #4). The read side (status/ignored) was already off-thread above.
     let (gitop_tx, gitop_rx) = std::sync::mpsc::channel::<GitOpResult>();
+    // The `/` filter's population walk too. 50,000 entries cost ~45ms in `readdir` alone, so a big
+    // tree cannot be walked inside the <60ms draw budget; the scan starts synchronously and hands
+    // over only what didn't fit (see `App::start_filter`).
+    let (pool_tx, pool_rx) = std::sync::mpsc::channel::<FilterPoolResult>();
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
@@ -148,6 +152,7 @@ fn main() -> Result<()> {
     app.attach_status_loader(status_tx);
     app.attach_fileop_runner(fileop_tx);
     app.attach_gitop_runner(gitop_tx);
+    app.attach_filter_pool_loader(pool_tx);
     // Report a config load error + keymap conflicts/ignored settings via a startup message
     // (silently falling back to the default would go unnoticed). If both are present, combine
     // them into one line.
@@ -191,6 +196,7 @@ fn main() -> Result<()> {
             status: status_rx,
             fileop: fileop_rx,
             gitop: gitop_rx,
+            pool: pool_rx,
         },
     );
 
@@ -364,6 +370,7 @@ struct WorkerRx {
     status: std::sync::mpsc::Receiver<StatusResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
     gitop: std::sync::mpsc::Receiver<GitOpResult>,
+    pool: std::sync::mpsc::Receiver<FilterPoolResult>,
 }
 
 fn run(
@@ -636,6 +643,15 @@ fn run(
         // Apply the separate thread's git write (stage/commit/checkout/...) completion.
         while let Ok(result) = rx.gitop.try_recv() {
             if app.apply_git_op(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // Apply the separate thread's filter-pool scan completion(s) (discard stale generations).
+        // Re-render because applying it re-runs the current query over the now-larger pool = the
+        // result list fills in while the user is still typing.
+        while let Ok(result) = rx.pool.try_recv() {
+            if app.apply_filter_pool(result) {
                 needs_redraw = true;
             }
         }

@@ -16263,7 +16263,10 @@ fn directory_walks_route_every_stat_through_the_counted_choke_point() {
         (".symlink_metadata()", "DirEntry::file_type() を使う"),
     ];
     // Safety valve: prove we actually read the real bodies before asserting absence.
-    for name in ["collect_all_capped", "child_meta", "build_dir"] {
+    // `collect_scan` is where the filter-pool walk's body lives (`collect_all`/`collect_all_capped`
+    // are test-only wrappers over it), so that is the one that has to stay stat-free in the shipped
+    // binary.
+    for name in ["collect_scan", "child_meta", "build_dir"] {
         let body = app_rs_fn_source(name);
         assert!(
             body.len() > 200,
@@ -17466,5 +17469,620 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
         seen.len() >= 12,
         "expected the walk to pass through many layers, got {seen:?}"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================================
+// The `/` filter's population scan: budgeted synchronous start + background hand-off.
+//
+// Why this exists at all: 50,000 entries cost ~45ms in `readdir` alone on this machine, so no
+// implementation can walk a large tree inside the <60ms draw budget. The scan therefore starts
+// synchronously with a deadline and hands the remainder to a worker. Two code paths follow from
+// that, and **both have to be exercised deliberately** — a test fixture is far too small to ever
+// exhaust the real budget, so without forcing it the hand-off would never run in the suite at all
+// (the same shape of hole that let a broken image path ship once: "the test never went down that
+// branch"). `set_filter_scan_budget` is that seam.
+//
+// Nothing here asserts on wall-clock time. This repo replaced every timing bound with
+// count/allocation/structure guards because a shared CI runner's clock is not reliable; the
+// properties that actually matter (does it finish inline? does the split lose entries? does one
+// scan run at a time?) are all exactly measurable.
+
+/// Fixture: a nested tree — several directories, each with files — so a walk has more than one
+/// directory to pop and can therefore be split at a boundary.
+fn nested_fixture(prefix: &str, dirs: usize, files_per_dir: usize) -> PathBuf {
+    let dir = unique_tmp(prefix);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for d in 0..dirs {
+        let sub = dir.join(format!("d{d:02}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        for f in 0..files_per_dir {
+            std::fs::write(sub.join(format!("f{f:02}.txt")), b"x").unwrap();
+        }
+    }
+    dir
+}
+
+/// Set the scan budget for this thread and restore it when dropped, so one test forcing a budget
+/// can never leak into another that runs on the same thread afterwards.
+struct BudgetGuard;
+impl BudgetGuard {
+    fn always_async() -> Self {
+        crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+        Self
+    }
+    fn always_sync() -> Self {
+        crate::app::set_filter_scan_budget(Some(None));
+        Self
+    }
+}
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        crate::app::set_filter_scan_budget(None);
+    }
+}
+
+#[test]
+fn collect_scan_split_at_every_boundary_matches_one_uninterrupted_walk() {
+    // The correctness question the whole design rests on: does splitting a walk lose anything?
+    // An exhausted deadline stops the walk after exactly one directory (the "always make progress"
+    // rule), so stepping with `Some(Instant::now())` walks the tree one directory per call and
+    // splits it at *every* boundary in turn — a deterministic stand-in for "the budget ran out
+    // here", with no clock sensitivity at all.
+    let dir = nested_fixture("konoma_scan_split", 6, 4);
+    let whole = collect_all(&dir, false);
+    assert_eq!(whole.len(), 6 + 6 * 4, "土台: 全部で 30 エントリ");
+
+    let mut pieces: Vec<Entry> = Vec::new();
+    let mut stack = vec![dir.clone()];
+    let mut calls = 0;
+    while !stack.is_empty() {
+        let (part, rest) = collect_scan(
+            std::mem::take(&mut stack),
+            false,
+            COLLECT_CAP - pieces.len(),
+            Some(std::time::Instant::now()), // already elapsed = stop after one directory
+        );
+        assert!(
+            !part.is_empty() || calls > 0,
+            "予算切れでも 1 ディレクトリは必ず読む(前進しない受け渡しは無限ループになる)"
+        );
+        pieces.extend(part);
+        stack = rest;
+        calls += 1;
+        assert!(calls < 100, "分割が前進していない(無限ループ)");
+    }
+    assert!(
+        calls >= 7,
+        "土台: ディレクトリごとに分割されている(実際 {calls} 回)"
+    );
+    pieces.sort_by(|a, b| a.path.cmp(&b.path));
+    let paths: Vec<_> = pieces.iter().map(|e| e.path.clone()).collect();
+    let whole_paths: Vec<_> = whole.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(
+        paths, whole_paths,
+        "どこで分割しても、繋ぎ直した結果は一気に歩いた結果と完全に一致すること"
+    );
+    for (a, b) in pieces.iter().zip(whole.iter()) {
+        assert_eq!(a.is_dir, b.is_dir, "is_dir も一致する: {:?}", a.path);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_scan_without_a_deadline_finishes_in_one_call() {
+    // The worker's own contract: handed a stack and no deadline, it must run the walk to the end
+    // (an empty leftover stack) — otherwise the hand-off would drop entries on the floor.
+    let dir = nested_fixture("konoma_scan_nodeadline", 4, 3);
+    let (out, rest) = collect_scan(vec![dir.clone()], false, COLLECT_CAP, None);
+    assert!(rest.is_empty(), "期限なしなら歩き残しは無い");
+    assert_eq!(out.len(), 4 + 4 * 3);
+    assert!(
+        out.windows(2).all(|w| w[0].path <= w[1].path),
+        "各回の返り値はソート済み(呼び出し側の sort_by がラン結合で済む前提)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn collect_scan_treats_the_cap_as_complete_not_as_an_interruption() {
+    // Truncation by the cost limit must come back with an **empty** leftover stack: it is a
+    // deliberate stop, and reporting it as "unfinished" would have the worker walk the rest of a
+    // huge tree only to have it thrown away past the cap.
+    let dir = nested_fixture("konoma_scan_cap", 5, 5);
+    let (out, rest) = collect_scan(vec![dir.clone()], false, 7, None);
+    assert_eq!(out.len(), 7, "cap ちょうどで打ち切る");
+    assert!(rest.is_empty(), "cap 到達は「完了」= 続きを渡さない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Attach a filter-pool channel and return the receiving end (the run loop's role, in a test).
+fn with_pool_channel(app: &mut App) -> std::sync::mpsc::Receiver<crate::app::FilterPoolResult> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_filter_pool_loader(tx);
+    rx
+}
+
+#[test]
+fn start_filter_within_budget_fills_the_pool_before_returning() {
+    // Condition 1 of the design: on a tree small enough to finish inside the budget — that is,
+    // nearly every directory anyone opens — pressing `/` must behave *exactly* as it did before
+    // this was made interruptible. The pool is complete when `start_filter` returns, so the very
+    // first frame after `/` already has everything; nothing arrives later.
+    let _g = BudgetGuard::always_sync();
+    let dir = nested_fixture("konoma_pool_sync", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+
+    app.start_filter();
+
+    assert_eq!(
+        app.tab.filter_pool.len(),
+        4 + 4 * 3,
+        "`/` から戻った時点でプールは全件揃っている"
+    );
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "同期で終わったので裏の走査は残らない"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "ワーカーに投げていない(=一瞬でも空リストが出ることはない)"
+    );
+    assert!(
+        !app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan),
+        "走査中インジケータも出ない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_shipped_budget_is_a_real_one() {
+    // The test above forces the budget, so on its own it would still pass if production shipped a
+    // zero budget — i.e. if every `/` press, on every tree, went through the hand-off and showed a
+    // momentarily empty list. Structural rather than timed: assert the shipped constant is a
+    // meaningful slice of the 60ms draw budget, and that nothing overrides it by default.
+    assert!(
+        crate::app::COLLECT_BUDGET >= std::time::Duration::from_millis(5),
+        "同期で歩く予算が実質ゼロ = 小さなツリーでも受け渡しになる(条件1の破壊)"
+    );
+    assert!(
+        crate::app::COLLECT_BUDGET < std::time::Duration::from_millis(60),
+        "予算が描画バジェット(60ms)以上 = 予算内に収まっても遅延の原因になる"
+    );
+    assert_eq!(
+        crate::app::filter_scan_budget(),
+        Some(crate::app::COLLECT_BUDGET),
+        "上書きなしなら本番の予算がそのまま使われる"
+    );
+}
+
+#[test]
+fn collect_scan_carries_the_cap_across_a_split() {
+    // The cap is a whole-scan limit, so a split walk has to hand over how much of it is left. If
+    // the second half were given the full cap again, a large tree would collect past the cost
+    // limit the cap exists to enforce.
+    let dir = nested_fixture("konoma_scan_cap_split", 6, 4);
+    const CAP: usize = 11;
+    let mut got: Vec<Entry> = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while !stack.is_empty() && got.len() < CAP {
+        let (part, rest) = collect_scan(
+            std::mem::take(&mut stack),
+            false,
+            CAP - got.len(),
+            Some(std::time::Instant::now()),
+        );
+        got.extend(part);
+        stack = rest;
+    }
+    assert_eq!(
+        got.len(),
+        CAP,
+        "分割しても打ち切りは cap ちょうど(残量を引き継いでいる)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn start_filter_over_budget_hands_off_and_the_pool_completes_on_arrival() {
+    // Condition 2: when the budget runs out, `/` still returns (with a partial pool and a
+    // background scan running), and the result that arrives later completes the pool to **exactly**
+    // what an uninterrupted walk would have produced.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_async", 6, 4);
+    let full = collect_all(&dir, false);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+
+    app.start_filter();
+
+    let partial = app.tab.filter_pool.len();
+    assert!(
+        partial < full.len(),
+        "予算切れなので `/` の時点では部分的: {partial} / {}",
+        full.len()
+    );
+    assert_eq!(
+        app.filter_pool_pending.as_deref(),
+        Some(dir.as_path()),
+        "残りは裏で走っている"
+    );
+    assert!(
+        app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan),
+        "裏で走っていることがユーザーに見える"
+    );
+
+    // The user keeps typing while the scan runs — the partial pool must filter without breaking.
+    app.filter_input_push('f');
+    app.filter_input_push('0');
+    let mid = app.tab.entries.len();
+    assert!(
+        app.tab.entries.iter().all(|e| e.path.starts_with(&dir)),
+        "部分プールでも絞り込みは破綻しない"
+    );
+
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(res), "到着した結果は適用される");
+
+    let got: Vec<_> = app.tab.filter_pool.iter().map(|e| &e.path).collect();
+    let want: Vec<_> = full.iter().map(|e| &e.path).collect();
+    assert_eq!(got, want, "最終的なプールは一気に歩いた結果と完全に一致");
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "完了したので走査中フラグは解ける"
+    );
+    assert!(!app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan));
+    // Re-applied with the query the user has typed *by now*, not the empty one `/` started with.
+    assert!(
+        app.tab.entries.len() > mid,
+        "到着後は現在の入力(f0)で再適用される: {mid} → {}",
+        app.tab.entries.len()
+    );
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .all(|e| e.path.to_string_lossy().contains("f0")),
+        "再適用は現在の絞り込み条件で行われる(空クエリに戻したりしない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_scan_that_lands_after_the_root_changed_is_discarded() {
+    // Staleness by root: the walk was collecting somewhere else, and dropping it into the current
+    // pool would show another directory's files under this one's filter.
+    //
+    // Driven directly rather than through a key sequence, and deliberately so: every path that
+    // moves the root today *also* bumps the generation (they all either clear the filter or kick a
+    // fresh scan), so a scenario test would be satisfied by the generation check alone and prove
+    // nothing about this guard — a test with no detection power, which is worse than no test. What
+    // is asserted here is the guard's own contract: **generation matching is not sufficient; the
+    // result must also belong to the root that is on screen.**
+    let _g = BudgetGuard::always_async();
+    let a = nested_fixture("konoma_pool_stale_a", 3, 3);
+    let b = nested_fixture("konoma_pool_stale_b", 3, 3);
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(res.gen, app.filter_pool_gen, "土台: 世代はまだ一致している");
+    assert_eq!(res.root, a, "土台: この結果は a の走査");
+
+    // The root moves under the running scan, with the filter still active.
+    app.tab.root = b.clone();
+    app.tab.filter_pool.clear();
+
+    assert!(
+        !app.apply_filter_pool(res),
+        "root が変わった結果は適用しない"
+    );
+    assert!(
+        app.tab.filter_pool.is_empty(),
+        "前の root のパスがプールに流れ込まない"
+    );
+
+    // And the realistic sequence (move away, filter there) rejects it too — belt and braces.
+    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let old = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    app.jump_to_dir(b.clone());
+    app.start_filter();
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let before: Vec<_> = app.tab.filter_pool.iter().map(|e| e.path.clone()).collect();
+    assert!(!app.apply_filter_pool(old));
+    let after: Vec<_> = app.tab.filter_pool.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(before, after, "プールは汚染されない");
+    assert!(
+        !after.iter().any(|p| p.starts_with(&a)),
+        "前の root のパスが混ざらない"
+    );
+    std::fs::remove_dir_all(&a).ok();
+    std::fs::remove_dir_all(&b).ok();
+}
+
+#[test]
+fn a_scan_that_lands_after_leaving_the_filter_is_discarded() {
+    // Staleness by mode: `Esc` cleared the filter, so there is no pool for the result to belong to.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_left", 3, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+
+    app.filter_clear();
+    assert!(
+        !app.apply_filter_pool(res),
+        "絞り込みを抜けた後の結果は適用しない"
+    );
+    assert!(
+        app.tab.filter_pool.is_empty(),
+        "捨てたプールが復活してはいけない"
+    );
+    assert!(app.tab.tree_filter.is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_scan_that_lands_after_a_tab_switch_is_discarded() {
+    // Staleness by tab: `filter_pool` is per-tab but the scan's bookkeeping is on `App`, so without
+    // invalidating on switch one tab's walk lands in whichever tab happens to be active when it
+    // finishes.
+    //
+    // Neither the generation nor the root guard covers this on its own, which is why the scenario
+    // is built the way it is: both tabs filter the **same root** (so the root check passes) and the
+    // switch hits the coalescing branch rather than dispatching a new scan (so the generation would
+    // still match). What distinguishes them is `show_hidden` — tab 2 shows dotfiles, tab 1 does
+    // not — so tab 1's result landing in tab 2 is directly visible as tab 2's dotfiles vanishing.
+    let dir = nested_fixture("konoma_pool_tab", 3, 3);
+    std::fs::write(dir.join(".dotfile.txt"), b"x").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    {
+        let _g = BudgetGuard::always_sync();
+        app.start_filter(); // tab 1: filtering, hidden excluded
+        app.tab_new().unwrap(); // tab 2 (same root; tab_new clears the filter)
+        app.tab.show_hidden = true;
+        app.start_filter(); // tab 2: filtering, dotfiles included
+    }
+    assert!(
+        app.tab
+            .filter_pool
+            .iter()
+            .any(|e| e.path.ends_with(".dotfile.txt")),
+        "土台: タブ2のプールにはドットファイルが入っている"
+    );
+
+    // Back to tab 1: the switch re-collects (async, hidden excluded) for tab 1's root.
+    app.tab_goto(0);
+    let tab1_scan = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(
+        !tab1_scan
+            .entries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|e| e.path.ends_with(".dotfile.txt")),
+        "土台: これはタブ1(隠しファイル非表示)の走査結果"
+    );
+
+    // ...and away again before it lands.
+    app.tab_goto(1);
+    assert!(
+        !app.apply_filter_pool(tab1_scan),
+        "タブを切り替えた後に届いた結果は適用しない"
+    );
+    assert!(
+        app.tab
+            .filter_pool
+            .iter()
+            .any(|e| e.path.ends_with(".dotfile.txt")),
+        "タブ1の走査結果がタブ2のプールを上書きしていない"
+    );
+    while rx.try_recv().is_ok() {} // drain whatever the switches themselves kicked off
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn concurrent_fs_events_coalesce_into_a_single_rescan() {
+    // The failure this prevents: an agent writing files fires an FS event per write, and each one
+    // used to trigger a synchronous whole-tree walk. Going async removes the natural rate-limit
+    // that a synchronous walk's own duration provided, so without coalescing the scans would pile
+    // up — worse the larger the tree, which is precisely the case this change exists for.
+    //
+    // Counted by how many results reach the channel, which is exactly "how many scans ran".
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_coalesce", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(first));
+
+    // Ten FS bursts arrive back to back while the first re-scan is still running.
+    for _ in 0..10 {
+        app.refresh_fs_changed(false, &[]).unwrap();
+    }
+    assert!(app.filter_pool_dirty, "走行中の要求は合体して保留される");
+
+    let a = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(a), "1本目が着地");
+    // Exactly one more (the coalesced request), then nothing.
+    let b = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(b), "合体した要求が1回だけ実行される");
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "10 個のイベントから走ったのは合計 2 本(実行中の1本 + 合体した1本)だけ"
+    );
+    assert!(!app.filter_pool_dirty, "保留は解消済み");
+    assert!(app.filter_pool_pending.is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_fs_refresh_keeps_showing_the_current_pool_until_the_new_one_lands() {
+    // Nobody is waiting on the FS-driven re-scan, so it has no synchronous part at all — but the
+    // list must not blink empty while it runs. `rebuild_tree` resets `entries` to the whole tree on
+    // every refresh, so the filter is re-applied immediately from the pool already in hand.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_keep", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(res));
+    app.filter_input_push('f');
+    let pool_before = app.tab.filter_pool.len();
+    let shown_before = app.tab.entries.len();
+    assert!(shown_before > 0, "土台: 何か表示されている");
+
+    app.refresh_fs_changed(false, &[]).unwrap();
+
+    assert_eq!(
+        app.tab.filter_pool.len(),
+        pool_before,
+        "走査中も今のプールを持ち続ける"
+    );
+    assert_eq!(
+        app.tab.entries.len(),
+        shown_before,
+        "fs 更新の瞬間にリストが空にならない(rebuild_tree の全件表示にも戻らない)"
+    );
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(res));
+    assert_eq!(app.tab.filter_pool.len(), pool_before, "件数は変わらない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_fs_refresh_picks_up_files_created_while_filtering() {
+    // The point of re-scanning at all: konoma's headline use is watching an agent write files, so
+    // a file that appears while `/` is open has to show up in the results.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_newfile", 3, 2);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let rx = with_pool_channel(&mut app);
+    app.start_filter();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(res));
+    app.filter_input_push('z');
+    app.filter_input_push('z');
+    assert!(app.tab.entries.is_empty(), "土台: まだ一致は無い");
+
+    std::fs::write(dir.join("d00").join("zzz_agent.txt"), b"x").unwrap();
+    app.refresh_fs_changed(false, &[]).unwrap();
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(app.apply_filter_pool(res));
+
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("zzz_agent.txt")),
+        "走査中に増えたファイルが、今の入力のまま結果に現れる"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_async_and_synchronous_paths_produce_the_same_pool() {
+    // The single most important equivalence: whichever path a tree happens to take, the user must
+    // end up with the same set of files. (Also the guard that would catch a cap accounted for twice
+    // across the hand-off, or a leftover stack handed over wrong.)
+    let dir = nested_fixture("konoma_pool_equal", 5, 4);
+
+    let sync_pool = {
+        let _g = BudgetGuard::always_sync();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.start_filter();
+        app.tab
+            .filter_pool
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>()
+    };
+    let async_pool = {
+        let _g = BudgetGuard::always_async();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let rx = with_pool_channel(&mut app);
+        app.start_filter();
+        let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(app.apply_filter_pool(res));
+        app.tab
+            .filter_pool
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        sync_pool, async_pool,
+        "同期経路と非同期経路の結果が一致する"
+    );
+    assert!(
+        async_pool.windows(2).all(|w| w[0] <= w[1]),
+        "連結後もソート順は保たれる(fuzzy_filter_pool は順序を前提にしている)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn without_a_channel_every_scan_still_completes_synchronously() {
+    // The compatibility contract that lets the whole existing suite stay untouched: with no Sender
+    // attached, even a scan that blows the budget is finished on the spot, so a test that never
+    // drives a run loop sees the same complete pool it always did.
+    let _g = BudgetGuard::always_async();
+    let dir = nested_fixture("konoma_pool_nochannel", 4, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // deliberately no attach_filter_pool_loader
+
+    app.start_filter();
+
+    assert_eq!(
+        app.tab.filter_pool.len(),
+        4 + 4 * 3,
+        "チャネル未接続なら同期で完走する"
+    );
+    assert!(app.filter_pool_pending.is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
+    // A worker that panics must not look like "the directory is empty": for the FS refresh the
+    // result *replaces* the pool, so flattening a crash into an empty Vec would leave `/` matching
+    // nothing at all. It must also not latch `filter_pool_pending`, which would spin the busy
+    // indicator forever and swallow the coalesced re-scan request.
+    let _g = BudgetGuard::always_sync();
+    let dir = nested_fixture("konoma_pool_panic", 3, 3);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.start_filter();
+    app.filter_input_push('f');
+    let pool = app.tab.filter_pool.len();
+    let shown = app.tab.entries.len();
+    assert!(pool > 0 && shown > 0, "土台: プールも表示も埋まっている");
+
+    // What the worker sends when `catch_silent` caught a panic.
+    app.filter_pool_pending = Some(dir.clone());
+    let failed = crate::app::FilterPoolResult {
+        gen: app.filter_pool_gen,
+        root: dir.clone(),
+        entries: None,
+        append: false,
+    };
+    assert!(!app.apply_filter_pool(failed), "失敗結果は「変化なし」");
+
+    assert_eq!(app.tab.filter_pool.len(), pool, "プールは維持される");
+    assert_eq!(app.tab.entries.len(), shown, "表示も維持される");
+    assert!(
+        app.filter_pool_pending.is_none(),
+        "走査中フラグは解ける(スピナーが回りっぱなしにならない)"
+    );
+    assert!(!app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan));
     std::fs::remove_dir_all(&dir).ok();
 }

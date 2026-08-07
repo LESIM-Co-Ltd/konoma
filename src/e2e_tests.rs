@@ -524,6 +524,53 @@ fn e2e_tree_filter_narrows_and_esc_clears() {
 }
 
 #[test]
+fn e2e_filter_over_budget_stays_usable_and_fills_in_from_the_worker() {
+    // The same journey as `e2e_tree_filter_narrows_and_esc_clears`, but through the **hand-off**
+    // path: the scan's budget is forced to zero, so `/` returns with only part of the tree
+    // collected and the rest arrives from a worker while the user is already typing.
+    //
+    // Driven entirely by real key input through `handle_key`, which is what makes it worth having
+    // on top of the unit tests: it proves the budgeted start, the worker result and the redraw
+    // compose end to end, not just that each piece behaves in isolation.
+    crate::app::set_filter_scan_budget(Some(Some(std::time::Duration::ZERO)));
+    let dir = sandbox("filter_budget");
+    seed_files(&dir);
+    // Enough directories that a one-directory-at-a-time walk really does get interrupted.
+    for i in 0..6 {
+        let sub = dir.join(format!("pkg{i}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(format!("deep{i}.csv")), "a,b\n").unwrap();
+    }
+    let root = canon(&dir);
+    let mut s = Sim::new(&root);
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.app.attach_filter_pool_loader(tx);
+
+    s.key('/');
+    s.keys("deep");
+    // The key press returned and the UI is live even though the tree is not fully collected yet.
+    s.see("/deep");
+
+    // Drain the worker the way the run loop does, then redraw.
+    let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(s.app.apply_filter_pool(res), "ワーカーの結果が適用される");
+    assert!(
+        rx.try_recv().is_err(),
+        "受け渡しは1回で完結する(残りは期限なしで完走するので追加の往復は起きない)"
+    );
+    s.draw();
+
+    for i in 0..6 {
+        s.see(&format!("deep{i}.csv"));
+    }
+    s.dont_see("readme.md");
+    s.esc();
+    s.see("readme.md");
+    crate::app::set_filter_scan_budget(None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_tree_hidden_toggle() {
     let dir = sandbox("tree_hidden");
     seed_files(&dir);

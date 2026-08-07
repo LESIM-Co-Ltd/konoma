@@ -834,6 +834,31 @@ pub struct IgnoredResult {
     set: std::collections::HashSet<PathBuf>,
 }
 
+/// Result of a **filter-pool scan** (`/`'s recursive population walk) finished on a separate thread.
+///
+/// A whole-tree walk cannot fit in the <60ms draw budget once the tree is big — 50,000 entries cost
+/// ~45ms in `readdir` alone — so the scan starts synchronously with a time budget and, only if that
+/// runs out, hands the unfinished part here (see `collect_scan`). Staleness is judged by `gen` just
+/// like [`IgnoredResult`]/[`StatusResult`]; `root` is re-checked on apply so a walk that finishes
+/// after the user moved elsewhere is discarded rather than dropped into another directory's pool.
+pub struct FilterPoolResult {
+    gen: u64,
+    /// The root this scan was collecting for.
+    root: PathBuf,
+    /// Already sorted by path, so the caller's `sort_by` over pool+this is a run merge.
+    ///
+    /// `None` = the walk panicked. It is deliberately **not** flattened to an empty Vec: an empty
+    /// result is a legitimate answer ("the directory really is empty"), and for a `append == false`
+    /// refresh that would *replace* a good pool with nothing — turning a crashed worker into a
+    /// filter that silently matches no files. `None` instead leaves the pool alone and only
+    /// releases the in-flight bookkeeping.
+    entries: Option<Vec<Entry>>,
+    /// `true` = the tail of a walk whose head is already in the pool (the budgeted hand-off from
+    /// `/`), so it is appended. `false` = a complete re-walk that replaces the pool wholesale (the
+    /// FS-event refresh, which keeps showing the previous pool until this lands).
+    append: bool,
+}
+
 /// One decoded media payload kept across a tab switch (see `App::media_cache`).
 struct MediaCache {
     path: PathBuf,
@@ -1315,6 +1340,24 @@ pub struct App {
     git_ignored_dirty: bool,
     /// Sender that returns results to the worker computing `ignored` in the background. If not attached (tests, etc.), a synchronous fallback is used.
     ignored_tx: Option<std::sync::mpsc::Sender<IgnoredResult>>,
+    /// The root a filter-pool scan (`/`'s population walk) is running for on a separate thread.
+    /// `None` = nothing in flight. Keyed by **root** (never `None` while running), so the
+    /// `pending == target` comparison can't be satisfied by two `None`s.
+    filter_pool_pending: Option<PathBuf>,
+    /// Generation of the filter-pool scan. Bumped on every dispatch **and on a tab switch**; a
+    /// result is applied only if it still matches, so a walk that finishes after the user moved
+    /// root, left the filter or switched tabs is discarded instead of landing in the wrong pool.
+    filter_pool_gen: u64,
+    /// A re-scan was requested while one was in flight. Rather than piling scans up (an agent
+    /// writing files produces a burst of FS events), the requests **coalesce** into this flag and
+    /// are honoured exactly once when the running scan lands — the same shape `git_status_dirty`
+    /// uses, and for the same reason: async removes the natural rate-limit the synchronous version
+    /// got from its own duration.
+    filter_pool_dirty: bool,
+    /// Sender returning results from the worker finishing a filter-pool scan. If not attached
+    /// (tests / no channel), `spawn_or_sync_pool` falls back to computing synchronously, so the
+    /// whole feature degrades to exactly the old blocking behaviour.
+    pool_tx: Option<std::sync::mpsc::Sender<FilterPoolResult>>,
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
@@ -2072,6 +2115,10 @@ impl App {
             git_ignored_gen: 0,
             git_ignored_dirty: false,
             ignored_tx: None,
+            filter_pool_pending: None,
+            filter_pool_gen: 0,
+            filter_pool_dirty: false,
+            pool_tx: None,
             diff_layout,
             git_branch: None,
             git_worktree_origin: None,
@@ -2970,6 +3017,12 @@ impl App {
         // Both the ignored set and status are "git scan in progress" = represented by the same label (shown if either is running).
         if self.git_ignored_pending.is_some() || self.git_status_pending.is_some() {
             v.push(crate::i18n::Msg::BusyGitScan);
+        }
+        // The `/` filter's population walk. Unlike the git scans this one is visible in the results
+        // themselves (the list keeps filling in as the user types), so the label exists to explain
+        // *why* — without it a partially-populated pool just looks like missing files.
+        if self.filter_pool_pending.is_some() {
+            v.push(crate::i18n::Msg::BusyFilterScan);
         }
         if self.media_loading {
             v.push(crate::i18n::Msg::BusyMedia);
@@ -5043,9 +5096,16 @@ fn build_dir(
     Ok(())
 }
 
-/// Recursively collect files/directories under `root` (the population for filtering). Hidden ones are excluded via `show_hidden`,
-/// and symlink directories are not descended into (to prevent loops). The scan count is capped as a cost limit.
+/// Recursively collect files/directories under `root` (the population for filtering), **in one
+/// uninterrupted pass**. Hidden ones are excluded via `show_hidden`, and symlink directories are not
+/// descended into (to prevent loops). The scan count is capped as a cost limit.
 /// The return value is in ascending path order (grouped per directory). Each Entry is flat with depth=0 and expanded=false.
+///
+/// Production no longer calls this: a `/` scan goes through `collect_scan` with a time budget so a
+/// large tree can be finished on a worker instead of freezing the UI. It stays as the reference
+/// "walk it all in one go" definition the tests measure the budgeted/split version against — if the
+/// two ever disagree, splitting a walk has started losing entries.
+#[cfg(test)]
 fn collect_all(root: &Path, show_hidden: bool) -> Vec<Entry> {
     collect_all_capped(root, show_hidden, COLLECT_CAP)
 }
@@ -5054,14 +5114,99 @@ fn collect_all(root: &Path, show_hidden: bool) -> Vec<Entry> {
 const COLLECT_CAP: usize = 50_000;
 
 /// `collect_all`'s body with the cap injected, so the truncation behaviour can be exercised with a
-/// handful of files instead of a 50,000-entry fixture. Production always goes through `collect_all`.
+/// handful of files instead of a 50,000-entry fixture.
+#[cfg(test)]
 fn collect_all_capped(root: &Path, show_hidden: bool, cap: usize) -> Vec<Entry> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
+    // No deadline = walk to completion, so the leftover stack is always empty.
+    collect_scan(vec![root.to_path_buf()], show_hidden, cap, None).0
+}
+
+/// How long the **synchronous** part of a `/` scan may run before it hands the rest to a worker.
+///
+/// Not a tuning knob so much as a floor: a whole-tree walk of 50,000 entries costs ~45ms in
+/// `readdir` alone on this machine, so no implementation can finish one inside the <60ms draw
+/// budget. Anything smaller than the budget finishes synchronously and behaves exactly as it
+/// always did (the overwhelming majority of directories); only a tree big enough to blow the
+/// budget pays for the hand-off, and it pays with a partial pool that fills in rather than a
+/// frozen UI.
+const COLLECT_BUDGET: std::time::Duration = std::time::Duration::from_millis(20);
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only override for [`filter_scan_budget`]. `None` = production default;
+    /// `Some(None)` = unlimited (always finishes synchronously); `Some(Some(d))` = that budget
+    /// (`Duration::ZERO` = hand everything to the worker).
+    ///
+    /// Thread-local, like `test_support::STAT_CALLS`: a process-wide switch would leak into every
+    /// other test running in parallel. Only the *calling* thread consults it, and the worker
+    /// thread never does (it runs without a deadline by construction).
+    static SCAN_BUDGET_OVERRIDE: std::cell::Cell<Option<Option<std::time::Duration>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The budget the next synchronous scan gets. `None` = no deadline at all.
+fn filter_scan_budget() -> Option<std::time::Duration> {
+    #[cfg(test)]
+    if let Some(o) = SCAN_BUDGET_OVERRIDE.with(|c| c.get()) {
+        return o;
+    }
+    Some(COLLECT_BUDGET)
+}
+
+/// The deadline the next synchronous scan must stop by, or `None` for "no deadline".
+fn filter_scan_deadline() -> Option<std::time::Instant> {
+    // `checked_add` rather than `+`: an unbounded budget is expressed as a very large Duration in
+    // tests, and Instant addition panics on overflow. Overflow means "effectively never", which is
+    // exactly `None`.
+    filter_scan_budget().and_then(|b| std::time::Instant::now().checked_add(b))
+}
+
+/// Force the synchronous scan budget for this thread (tests only).
+///
+/// Both code paths have to be reachable on demand: with the real budget a test fixture is far too
+/// small to ever exhaust it, so the hand-off would never be exercised — the exact shape of hole
+/// that let a broken image path ship once already ("the test never went down that branch").
+#[cfg(test)]
+pub(crate) fn set_filter_scan_budget(b: Option<Option<std::time::Duration>>) {
+    SCAN_BUDGET_OVERRIDE.with(|c| c.set(b));
+}
+
+/// Walk `stack` (LIFO of directories still to read) collecting entries until it is exhausted, the
+/// `cap` is hit, or `deadline` passes.
+///
+/// Returns `(entries collected here — sorted, directories still unread)`. **An empty leftover
+/// stack means the walk is complete**; hitting the cap counts as complete (it is a deliberate
+/// truncation, not an interruption), so the stack is cleared in that case.
+///
+/// Splitting a walk in two and concatenating the halves yields exactly the same multiset as
+/// walking it in one go: the stack is handed over verbatim, and the cap is carried across as a
+/// remaining count. Both halves come back sorted, so the caller's `sort_by` over the concatenation
+/// is a run merge rather than a fresh sort.
+fn collect_scan(
+    mut stack: Vec<PathBuf>,
+    show_hidden: bool,
+    cap: usize,
+    deadline: Option<std::time::Instant>,
+) -> (Vec<Entry>, Vec<PathBuf>) {
+    let mut out: Vec<Entry> = Vec::new();
+    let over_budget = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+    // Directories read on this call. The deadline is only consulted once at least one is done, so
+    // **every call makes progress**: a hand-off can never bounce a walk back and forth without
+    // advancing it, however small the budget.
+    let mut read = 0usize;
     while let Some(dir) = stack.pop() {
         if out.len() >= cap {
+            // Truncated by the cost limit: this is as complete as the scan is ever going to get.
+            stack.clear();
             break;
         }
+        if read > 0 && over_budget() {
+            // Out of time: put the directory back so the worker resumes exactly here.
+            stack.push(dir);
+            out.sort_by(|a, b| a.path.cmp(&b.path));
+            return (out, stack);
+        }
+        read += 1;
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -5102,9 +5247,15 @@ fn collect_all_capped(root: &Path, show_hidden: bool, cap: usize) -> Vec<Entry> 
                 expanded: false,
             });
         }
+        // The deadline is checked once per directory (at the top), never inside the loop above:
+        // `read_dir`'s iterator cannot be resumed, so stopping mid-directory would mean re-reading
+        // it and emitting duplicates. Reading the clock once per `read_dir` is free by comparison
+        // (~20ns against microseconds). The synchronous part can therefore overshoot by however
+        // long the one directory it is in the middle of takes — bounded by `cap`, since the loop
+        // stops emitting past it regardless.
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    out
+    (out, stack)
 }
 
 #[cfg(test)]

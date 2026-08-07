@@ -273,11 +273,15 @@ impl App {
     }
 
     /// Start filtering (`/`). Recursively collects everything under root into a pool and enters input mode.
+    ///
+    /// The filter state is entered **before** the scan starts, because a synchronous scan (the
+    /// small-tree case, and every test) applies its result inline — `apply_filter_pool` refuses to
+    /// touch a pool the user is no longer filtering, and would otherwise throw its own result away.
     pub fn start_filter(&mut self) {
-        self.tab.filter_pool = collect_all(&self.tab.root, self.tab.show_hidden);
         self.tab.filter_input = Some(String::new());
         self.tab.tree_filter = Some(String::new());
         self.tab.selected = 0;
+        self.kick_filter_pool_start();
         self.reapply_filter();
     }
 
@@ -312,11 +316,184 @@ impl App {
     }
 
     /// Discard the filter state (input/query/pool and the changed-files filter) (does not rebuild the tree).
+    ///
+    /// A scan still running in the background is deliberately **not** cancelled here (there is no
+    /// way to interrupt a `read_dir` walk mid-flight anyway): `apply_filter_pool` sees that the
+    /// filter is gone and drops the result instead.
     pub(super) fn clear_filter_state(&mut self) {
         self.tab.filter_input = None;
         self.tab.tree_filter = None;
         self.tab.filter_pool = Vec::new();
         self.tab.changed_filter = false;
+    }
+
+    /// Attach the Sender of the worker that finishes filter-pool scans in the background (called by
+    /// main at startup). Without it every scan runs to completion synchronously — see
+    /// `spawn_or_sync_pool`.
+    pub fn attach_filter_pool_loader(
+        &mut self,
+        tx: std::sync::mpsc::Sender<crate::app::FilterPoolResult>,
+    ) {
+        self.pool_tx = Some(tx);
+    }
+
+    /// Invalidate any filter-pool scan in flight (its result will be discarded on arrival).
+    ///
+    /// Called on a tab switch: `filter_pool` lives in `PerTab` while the generation lives on `App`,
+    /// so without this a scan started in one tab would land in whichever tab happens to be active
+    /// when it finishes. The abandoned tab re-kicks its own scan when it comes back
+    /// (`refresh_fs_inner` re-collects while a filter is active).
+    pub(super) fn invalidate_filter_pool_scan(&mut self) {
+        self.filter_pool_gen = self.filter_pool_gen.wrapping_add(1);
+        self.filter_pool_pending = None;
+        self.filter_pool_dirty = false;
+    }
+
+    /// `/` pressed: populate the pool **now**, handing off only what doesn't fit in the budget.
+    ///
+    /// The walk starts synchronously with a deadline (`filter_scan_budget`). Any tree small enough
+    /// to finish inside it — the overwhelming majority — behaves exactly as it always did: by the
+    /// time this returns the pool is complete and the first frame after `/` already has everything.
+    /// Only when the deadline runs out does the rest go to a worker, and even then the entries
+    /// collected so far are usable immediately: filtering a partial pool is not wrong, just
+    /// incomplete, and it fills in while the user is still typing.
+    fn kick_filter_pool_start(&mut self) {
+        // Supersede anything in flight (an FS-driven refresh from the previous filter session).
+        self.invalidate_filter_pool_scan();
+        let gen = self.filter_pool_gen;
+        let root = self.tab.root.clone();
+        let show_hidden = self.tab.show_hidden;
+        let (entries, rest) = crate::app::collect_scan(
+            vec![root.clone()],
+            show_hidden,
+            crate::app::COLLECT_CAP,
+            filter_scan_deadline(),
+        );
+        let done = entries.len();
+        self.tab.filter_pool = entries;
+        if rest.is_empty() {
+            return; // finished within budget: identical to the old fully-synchronous behaviour
+        }
+        self.filter_pool_pending = Some(root.clone());
+        self.spawn_or_sync_pool(
+            root,
+            show_hidden,
+            rest,
+            crate::app::COLLECT_CAP.saturating_sub(done),
+            gen,
+            true,
+        );
+    }
+
+    /// An FS event arrived while `/` is active: refresh the pool **without blocking**.
+    ///
+    /// Nobody is waiting on this one (the user is looking at results built from the pool we already
+    /// have), so there is no synchronous part at all — the current pool keeps showing until the new
+    /// one lands, exactly the way `kick_status_refresh` keeps the previous statuses on screen.
+    fn kick_filter_pool_refresh(&mut self) {
+        // Already scanning this very root: record the request and honour it once, on arrival.
+        // Without this, an agent writing a burst of files would stack up one whole-tree walk per
+        // event — the same pile-up `kick_status_refresh` guards against, and for the same reason
+        // (going async removed the self-rate-limiting the synchronous version had).
+        if self.filter_pool_pending.as_deref() == Some(self.tab.root.as_path()) {
+            self.filter_pool_dirty = true;
+            return;
+        }
+        self.filter_pool_gen = self.filter_pool_gen.wrapping_add(1);
+        self.filter_pool_dirty = false;
+        let gen = self.filter_pool_gen;
+        let root = self.tab.root.clone();
+        let show_hidden = self.tab.show_hidden;
+        self.filter_pool_pending = Some(root.clone());
+        self.spawn_or_sync_pool(
+            root.clone(),
+            show_hidden,
+            vec![root],
+            crate::app::COLLECT_CAP,
+            gen,
+            false,
+        );
+    }
+
+    /// Finish a walk on a separate thread and return the result via the Sender. With no Sender
+    /// attached (tests / no channel), fall back to **synchronous** computation and application, so
+    /// unit tests that don't drive a run loop still observe a complete pool immediately (the same
+    /// contract as `spawn_or_sync_statuses`/`spawn_or_sync_ignored`).
+    fn spawn_or_sync_pool(
+        &mut self,
+        root: PathBuf,
+        show_hidden: bool,
+        stack: Vec<PathBuf>,
+        cap: usize,
+        gen: u64,
+        append: bool,
+    ) {
+        let Some(tx) = self.pool_tx.clone() else {
+            let entries = Some(crate::app::collect_scan(stack, show_hidden, cap, None).0);
+            self.apply_filter_pool(crate::app::FilterPoolResult {
+                gen,
+                root,
+                entries,
+                append,
+            });
+            return;
+        };
+        std::thread::spawn(move || {
+            // Same safety net as the other workers (principle #3): the send below is
+            // unconditional, so a panicking walk degrades to "no more entries arrive" instead of
+            // latching `filter_pool_pending` forever (a spinner that never stops, and a `dirty`
+            // request that is never honoured). `catch_silent` (rather than a fallback value)
+            // because "the walk failed" and "the walk found nothing" must not look alike here —
+            // see `FilterPoolResult::entries`.
+            let entries = crate::preview::markdown::catch_silent(|| {
+                crate::app::collect_scan(stack, show_hidden, cap, None).0
+            });
+            let _ = tx.send(crate::app::FilterPoolResult {
+                gen,
+                root,
+                entries,
+                append,
+            });
+        });
+    }
+
+    /// Apply a finished filter-pool scan. Returns true if the state changed (the caller redraws).
+    ///
+    /// Discards results whose generation is stale (superseded by a newer scan, or by a tab switch),
+    /// as well as ones that finished after the user left the filter or moved to a different root.
+    pub fn apply_filter_pool(&mut self, res: crate::app::FilterPoolResult) -> bool {
+        if res.gen != self.filter_pool_gen {
+            return false; // superseded: a newer scan (or a tab switch) owns the pool now
+        }
+        self.filter_pool_pending = None;
+        if self.tab.tree_filter.is_none() || self.tab.root != res.root {
+            // Left the filter / moved root while this was walking. Dropping the coalesced request
+            // too: it was for the view that no longer exists.
+            self.filter_pool_dirty = false;
+            return false;
+        }
+        let Some(entries) = res.entries else {
+            // The walk panicked. Leave the pool as it is (see `FilterPoolResult::entries`) and just
+            // free the slot, so the coalesced request below can still run.
+            if self.filter_pool_dirty {
+                self.kick_filter_pool_refresh();
+            }
+            return false;
+        };
+        if res.append {
+            self.tab.filter_pool.extend(entries);
+        } else {
+            self.tab.filter_pool = entries;
+        }
+        // Both halves arrive sorted, so this is a merge of two runs (Rust's sort detects them), not
+        // a fresh sort of the whole pool.
+        self.tab.filter_pool.sort_by(|a, b| a.path.cmp(&b.path));
+        self.reapply_filter();
+        // Honour the coalesced re-scan request exactly once, now that the slot is free.
+        if self.filter_pool_dirty {
+            self.kick_filter_pool_refresh();
+        }
+        true
     }
 
     /// Whether input mode (key interception) is active.
@@ -995,11 +1172,14 @@ impl App {
             }
         } else if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
-            // everything. Re-collect the pool from the current tree (follows external
-            // additions/deletions), then re-filter with the saved/restored query (fixing the
+            // everything, so re-filter **immediately** with the pool we already have (fixing the
             // inconsistency where the query is restored but the list shows everything).
-            self.tab.filter_pool = collect_all(&self.tab.root, self.tab.show_hidden);
             self.reapply_filter();
+            // Then refresh the pool itself in the background, so it follows external
+            // additions/deletions. This is the hot path for konoma's headline use: an agent
+            // touching files fires an FS event per write, and re-walking the whole tree
+            // synchronously on each one is what an agent's build churn turns into a freeze.
+            self.kick_filter_pool_refresh();
         }
         // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
