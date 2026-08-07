@@ -638,15 +638,31 @@ fn e2e_filter_cursor_keeps_its_file_when_the_worker_result_reorders_the_list() {
         "戻ってもカーソルは同じファイル"
     );
 
-    // 2) `y` → `f` copies that file's path.
+    // 2) `y` → `f` copies that file's path. Assert the *value* via the clipboard-independent
+    // getter (copy_string_for = what copy_path would write) — headless CI has no clipboard, so
+    // reading `flash` (which reports the round-trip's success/failure) is flaky there. The key
+    // wiring itself (leader opens, then is consumed) is still exercised via real keys below.
     s.key('y');
-    s.key('f');
-    let flash = s.app.flash.clone().unwrap_or_default();
-    assert!(
-        flash.contains(&target_name),
-        "y f がコピーするのはカーソル下のファイル: {flash}"
+    assert_eq!(
+        s.app.pending_leader,
+        Some(crate::keymap::LeaderId::Copy),
+        "y でコピーリーダーが開く"
     );
-    assert!(!flash.contains("abc.txt"), "先頭を奪った別ファイルではない");
+    let copied = s
+        .app
+        .copy_string_for(crate::app::CopyKind::Full)
+        .expect("コピー対象が存在する");
+    s.key('f');
+    assert_eq!(s.app.pending_leader, None, "y f でリーダーが消費される");
+    assert_eq!(
+        copied,
+        target.display().to_string(),
+        "y f がコピーするのはカーソル下のファイル"
+    );
+    assert!(
+        !copied.contains("abc.txt"),
+        "先頭を奪った別ファイルではない: {copied}"
+    );
 
     // 3) `Space` → `d` → `!` deletes that file and no other. The decisive one: an off-by-one here
     //    is unrecoverable.
