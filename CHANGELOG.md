@@ -6,6 +6,15 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Pressing `/` on a very large tree no longer blocks.** The walk starts on the keypress and hands
+  off whatever is left after 20ms, so a directory that finishes inside that budget behaves exactly as
+  before — the pool is complete on the first frame — while a repository whose `target/` alone reaches
+  the 50,000-entry cap now returns in 29ms instead of 101ms and fills in while you type. The rescan
+  that happens on every filesystem event while a filter is open, which is every time an agent touches
+  a file, no longer has a synchronous part at all.
+
+
 ## [0.23.6] - 2026-08-07
 
 ### Fixed
