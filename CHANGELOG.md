@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.6] - 2026-08-07
+
 ### Fixed
 - **`y c` still refused to copy on documents whose code blocks were perfectly ordinary.** The
   refusal covers the whole file, so one disagreement anywhere silences every code block in it. The
@@ -1416,7 +1418,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...HEAD
+[0.23.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...v0.23.6
 [0.23.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...v0.23.5
 [0.23.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...v0.23.4
 [0.23.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.2...v0.23.3
