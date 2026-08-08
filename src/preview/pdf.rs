@@ -296,8 +296,8 @@ fn run_pdftoppm(path: &Path, out: &Path, page: u32) -> bool {
 fn run_poppler(tool: &str, path: &Path, out: &Path, page: u32) -> bool {
     let prefix = out.with_extension("");
     let page = page.to_string();
-    let status = Command::new(tool)
-        .arg("-png")
+    let mut cmd = Command::new(tool);
+    cmd.arg("-png")
         .arg("-f")
         .arg(&page)
         .arg("-l")
@@ -307,10 +307,11 @@ fn run_poppler(tool: &str, path: &Path, out: &Path, page: u32) -> bool {
         .arg(PAGE_MAX_PX.to_string())
         .arg(path)
         .arg(&prefix)
+        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    matches!(status, Ok(s) if s.success()) && out_is_nonempty(out)
+        .stderr(Stdio::null());
+    matches!(spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT), Some(s) if s.success())
+        && out_is_nonempty(out)
 }
 
 /// macOS `qlmanage -t` (Quick Look thumbnail). It writes `<outdir>/<filename>.png`, so we render into a
@@ -320,18 +321,27 @@ fn run_qlmanage(path: &Path, out: &Path) -> bool {
     if std::fs::create_dir_all(&dir).is_err() {
         return false;
     }
-    let status = Command::new("qlmanage")
-        .arg("-t")
+    #[cfg(unix)]
+    {
+        // Defense-in-depth on top of `private_temp_dir`'s already-`0700` parent (an ancestor
+        // directory's search permission is what actually gates access — see `private_temp_dir`'s
+        // doc comment — but restricting this nested dir too costs nothing).
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let mut cmd = Command::new("qlmanage");
+    cmd.arg("-t")
         .arg("-s")
         .arg(PAGE_MAX_PX.to_string())
         .arg("-o")
         .arg(&dir)
         .arg(path)
+        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    let status = spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT);
     let mut ok = false;
-    if matches!(status, Ok(s) if s.success()) {
+    if matches!(status, Some(s) if s.success()) {
         if let Some(name) = path.file_name() {
             let produced = dir.join(format!("{}.png", name.to_string_lossy()));
             ok = out_is_nonempty(&produced) && std::fs::copy(&produced, out).is_ok();
@@ -343,8 +353,8 @@ fn run_qlmanage(path: &Path, out: &Path) -> bool {
 
 /// macOS `sips` (renders the first page of a PDF to PNG). Writes directly to `out`. Last-resort fallback.
 fn run_sips(path: &Path, out: &Path) -> bool {
-    let status = Command::new("sips")
-        .arg("-s")
+    let mut cmd = Command::new("sips");
+    cmd.arg("-s")
         .arg("format")
         .arg("png")
         .arg("--resampleHeightWidthMax")
@@ -352,10 +362,54 @@ fn run_sips(path: &Path, out: &Path) -> bool {
         .arg(path)
         .arg("--out")
         .arg(out)
+        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    matches!(status, Ok(s) if s.success()) && out_is_nonempty(out)
+        .stderr(Stdio::null());
+    matches!(spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT), Some(s) if s.success())
+        && out_is_nonempty(out)
+}
+
+/// How long an external rendering tool (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`) is allowed to
+/// run before being killed and treated as a failure. Generous on purpose — a large/complex page
+/// can legitimately take a while — this exists only to turn "never returns" into "eventually gives
+/// up," not to police normal runtimes. Without this, a hung tool blocked `Command::status()`
+/// indefinitely: since these run on the media worker thread (see the module doc comment above),
+/// that leaked the worker thread *and* the child process forever, and left the busy-indicator
+/// spinner stuck spinning. (`hayro`, the pure-Rust primary renderer above, is unaffected — it never
+/// spawns a process at all; this only guards the external-tool fallback chain.)
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often [`spawn_and_wait_with_timeout`]'s poll loop re-checks the child. Small enough to
+/// notice the deadline promptly without busy-polling.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Spawns `cmd` and waits for it to exit, **polling** rather than blocking indefinitely
+/// (`Command::status()`'s behavior) — past `timeout` the child is killed and this returns `None`,
+/// exactly like "the tool failed" to every caller here (principle #3: this degrades to `[can not
+/// preview]`, it never hangs the app). `timeout` is a parameter (not a call to the `TOOL_TIMEOUT`
+/// constant baked in here) purely for testability: production call sites above always pass
+/// `TOOL_TIMEOUT`; tests pass something short so a deliberately-hanging fixture command doesn't
+/// make the test suite itself slow.
+fn spawn_and_wait_with_timeout(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let mut child = cmd.spawn().ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait(); // reap; the (now-meaningless, killed) status is discarded
+                    return None;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Number of pages in the PDF at `path`, parsed **natively** — no external process at all (replaces
@@ -371,7 +425,32 @@ fn run_sips(path: &Path, out: &Path) -> bool {
 /// ("unsupported degrades safely") means we don't want a single crash-inducing PDF to take down the
 /// whole preview instead of just showing `[can not preview: pdf]`.
 pub fn page_count(path: &Path) -> Option<u32> {
+    page_count_impl(path, PAGE_COUNT_MAX_BYTES)
+}
+
+/// Above this size, `page_count` treats the PDF as "page count unknown" instead of reading the
+/// whole file into memory synchronously. `page_count` runs on the UI thread (it's called from
+/// `enter_preview`/`reload_media_if_changed`, per the module doc comment above), and — unlike
+/// `render_page_native`, which is only ever called from the media worker thread — had no size
+/// limit at all here: a multi-hundred-MB PDF would pull the entire file into memory and block the
+/// UI while `hayro_syntax::Pdf::new` parses it. 64 MiB comfortably covers the overwhelming
+/// majority of real-world PDFs (even fairly long text/photo documents) while keeping the worst
+/// case for this synchronous call bounded. The caller already has a graceful degrade for "page
+/// count unknown" (documented on `page_count` below: unknown total ⟹ single-page treatment,
+/// navigation disabled) — that's exactly the intended behavior here too, matching principle #3.
+const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// `page_count`'s real body, parameterized on the size cap purely for testability — production
+/// (`page_count` above) always passes `PAGE_COUNT_MAX_BYTES`; tests pass an artificially small cap
+/// against the small, real, bundled sample PDF (see `page_count_treats_oversized_files_as_unknown_
+/// rather_than_reading_them` below) rather than needing to construct or store an actual multi-MB
+/// fixture file.
+fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
     if !path.is_file() {
+        return None;
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > max_bytes {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
@@ -388,18 +467,49 @@ fn out_is_nonempty(out: &Path) -> bool {
     std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false)
 }
 
+/// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
+/// subdirectory under the system temp dir for this module's rasterized-page PNGs (and qlmanage's
+/// scratch directory). `std::env::temp_dir()` is world-writable/world-readable on Linux (`/tmp` is
+/// mode `1777`) — a rasterized page would otherwise briefly sit at a pid-and-counter-predictable
+/// path readable by any other local user on a shared box, since the PNG (in the external-tool
+/// fallback path) is written by `pdftocairo`/`pdftoppm`/`qlmanage`/`sips` — processes we don't
+/// control — under whatever mode their own default umask picks (typically `0644`). Restricting the
+/// *directory* (rather than trying to `chmod` a file after an external tool writes it, which we
+/// have no reliable hook for anyway) is what actually closes this: POSIX requires execute/search
+/// permission on every ancestor directory to open a file by path, so `0700` here blocks other users
+/// regardless of the mode the external tool used for the file itself.
+fn private_temp_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("konoma-pdf-{}", std::process::id()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
+            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
+            // where a wider-permission window briefly exists.
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+            // Defense-in-depth for the unlikely case the directory already existed with looser
+            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::create_dir(&dir);
+        }
+        dir
+    })
+    .clone()
+}
+
 /// A temp PNG path that does not collide within the process (pid + atomic counter; no randomness/time dependency).
 fn temp_png_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "konoma-pdf-{}-{}.png",
-        std::process::id(),
-        next_id()
-    ))
+    private_temp_dir().join(format!("page-{}.png", next_id()))
 }
 
 /// A temp directory path for qlmanage output (same uniqueness scheme).
 fn temp_dir_path() -> PathBuf {
-    std::env::temp_dir().join(format!("konoma-pdf-{}-{}.d", std::process::id(), next_id()))
+    private_temp_dir().join(format!("ql-{}.d", next_id()))
 }
 
 fn next_id() -> u64 {
@@ -584,5 +694,115 @@ mod tests {
             }
             None => eprintln!("skip: このマシンに CJK フォントが見つからない"),
         }
+    }
+
+    /// Root cause: `temp_png_path`/`temp_dir_path` built their paths directly under `std::env::
+    /// temp_dir()`, which is world-writable/world-readable on Linux (`/tmp` is mode `1777`) — the
+    /// rasterized page briefly sits at a pid-and-counter-predictable path readable by any other
+    /// local user on a shared box, since the PNG (in the external-tool fallback path) is written by
+    /// `pdftocairo`/`pdftoppm`/`qlmanage`/`sips` — processes we don't control — under whatever mode
+    /// their own default umask picks (typically `0644`). Restricting the **directory** is what
+    /// actually closes this — POSIX requires execute/search permission on every ancestor directory
+    /// to open a file by path, so `0700` blocks other users regardless of the mode the external
+    /// tool used for the file itself.
+    #[cfg(unix)]
+    #[test]
+    fn temp_paths_live_in_an_owner_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for path in [temp_png_path(), temp_dir_path()] {
+            let dir = path.parent().expect("temp path has a parent dir");
+            // The discriminating check: this must be *our own* dedicated subdirectory, not the
+            // shared system temp dir directly. Checking only the resulting mode below isn't enough
+            // to prove our own code sets it — on macOS, `std::env::temp_dir()` itself already
+            // happens to be `0700` (a per-user `/var/folders/.../T/`), which would make a mode-only
+            // assertion pass by coincidence even without this fix. Linux's `/tmp` (mode `1777`,
+            // world-writable) has no such luck, which is exactly the platform this bug targets.
+            assert_ne!(
+                dir,
+                std::env::temp_dir(),
+                "システム共有の一時ディレクトリ直下に出力している(専用サブディレクトリを持っていない): {path:?}"
+            );
+            let meta = std::fs::metadata(dir).expect("private temp dir should exist by now");
+            assert!(meta.is_dir());
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o700,
+                "ラスタライズ結果の置き場が owner-only(0700) になっていない: {dir:?} mode={mode:#o}"
+            );
+        }
+    }
+
+    /// Root cause: `page_count` read the *entire* PDF into memory unconditionally
+    /// (`std::fs::read(path)`), with no size limit at all, and runs synchronously on the UI thread
+    /// (per the module doc comment: "the caller ... `enter_preview`/`reload_media_if_changed`").
+    /// A very large PDF would pull the whole file into memory and block the UI while doing so.
+    ///
+    /// Proven without needing to construct or store an actual multi-MB fixture file: the size
+    /// guard is exercised directly (`page_count_impl`) with an artificially small cap against the
+    /// real, small, known-valid bundled `samples/sample.pdf` — the same file
+    /// `page_count_is_pure_rust_and_always_available` proves parses to `Some(3)` under the real
+    /// (64 MiB) cap. Capping just *below* that file's actual size must turn the identical valid
+    /// content into `None` — this isolates "too large" from "not a valid PDF": a garbage-bytes
+    /// fixture couldn't distinguish the two, since it would return `None` either way regardless of
+    /// whether a size guard exists at all.
+    #[test]
+    fn page_count_treats_oversized_files_as_unknown_rather_than_reading_them() {
+        let p = Path::new("samples/sample.pdf");
+        if !p.exists() {
+            return; // skip when samples are excluded from the build environment
+        }
+        let real_size = std::fs::metadata(p).unwrap().len();
+        assert_eq!(
+            page_count_impl(p, real_size + 1),
+            Some(3),
+            "cap がファイルサイズより大きければ通常どおり数えられる"
+        );
+        assert_eq!(
+            page_count_impl(p, real_size - 1),
+            None,
+            "cap をファイルサイズ未満にすると(内容は妥当なままなのに)数えない=サイズガードが機能していない"
+        );
+    }
+
+    /// Root cause: `run_poppler`/`run_qlmanage`/`run_sips` used a blocking `Command::status()`
+    /// with no upper bound at all — a hung external tool (a pathological/crafted PDF that makes it
+    /// loop forever, say) blocked the media worker thread permanently, leaking both the thread and
+    /// the child process, and left the busy-indicator spinner stuck spinning. (`hayro`, the primary
+    /// pure-Rust renderer, is unaffected — it never spawns a process at all.)
+    ///
+    /// Confirmed for real before this fix existed (pasted into the PR/commit description, not kept
+    /// as a permanent test): `Command::new("tail").arg("-f").arg("/dev/null").stdout(Stdio::null())
+    /// .stderr(Stdio::null()).status()` — the exact shape every function in this module's external
+    /// fallback chain used before this fix — was still blocked after 3 real seconds waiting on a
+    /// `recv_timeout`.
+    ///
+    /// This permanent test instead proves it deterministically and fast, via `spawn_and_wait_
+    /// with_timeout` directly with a short injected timeout (production always uses the real,
+    /// generous `TOOL_TIMEOUT`). The fixture (`tail -f /dev/null`) genuinely never exits on its
+    /// own — unlike e.g. `sleep N`, which eventually completes regardless of whether the timeout
+    /// mechanism works, and so wouldn't actually prove anything. This project avoids asserting
+    /// *exact* wall-clock durations (a prior CI break — see `docs/STATUS.md`), so the bound below
+    /// is a large, deliberately loose multiple of the injected timeout: it exists only so a real
+    /// regression (no timeout at all) fails this test instead of hanging the whole test run.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_and_wait_with_timeout_kills_a_command_that_never_exits() {
+        let mut cmd = Command::new("tail");
+        cmd.arg("-f")
+            .arg("/dev/null")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let started = std::time::Instant::now();
+        let status = spawn_and_wait_with_timeout(&mut cmd, std::time::Duration::from_millis(200));
+        let elapsed = started.elapsed();
+        assert!(
+            status.is_none(),
+            "ハングするコマンドが None(タイムアウト)を返さなかった: {status:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
+        );
     }
 }

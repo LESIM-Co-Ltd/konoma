@@ -21,7 +21,9 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -83,6 +85,41 @@ pub(crate) fn calls_for_test() -> u64 {
     CALLS.with(|c| c.get())
 }
 
+/// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
+/// subdirectory under the system temp dir for delegated commands' `{out}` files.
+/// `std::env::temp_dir()` is world-writable/world-readable on Linux (`/tmp` is mode `1777`) — a
+/// delegated command's output would otherwise briefly sit at a pid-and-counter-predictable path
+/// readable by any other local user on a shared box, regardless of whether *konoma itself* wrote
+/// the file (the `uses_out=false` capture path, below — see also `write_private`) or an
+/// arbitrary user-configured external command wrote `{out}` itself under whatever mode it happens
+/// to pick (the `uses_out=true` path). Restricting the *directory* is what closes this uniformly
+/// for both cases: POSIX requires execute/search permission on every ancestor directory to open a
+/// file by path, so `0700` here blocks other users regardless of who created the file or what mode
+/// they used for it.
+fn private_temp_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("konoma-cmd-{}", std::process::id()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
+            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
+            // where a wider-permission window briefly exists.
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+            // Defense-in-depth for the unlikely case the directory already existed with looser
+            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::create_dir(&dir);
+        }
+        dir
+    })
+    .clone()
+}
+
 /// A fresh temp path for a delegated command's `{out}`, unique within this process (pid + an
 /// atomic counter — no dependence on randomness/time, matching `preview::video::temp_png_path`'s
 /// convention). Deliberately has **no extension**: a template that needs one appends it itself in
@@ -95,7 +132,32 @@ pub fn temp_out_path() -> PathBuf {
     CALLS.with(|c| c.set(c.get() + 1));
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("konoma-cmd-{}-{}", std::process::id(), n))
+    private_temp_dir().join(format!("out-{n}"))
+}
+
+/// Writes `data` to `path`, creating it with owner-only (`0600`) permissions **at creation time**
+/// (not via a separate `set_permissions` afterward, which would leave — however briefly — a window
+/// where the file exists at a wider mode). This is the one case in this module where konoma itself
+/// creates the output file (`run_capture`'s `uses_out=false` branch, capturing a delegated
+/// command's stdout) — unlike the `uses_out=true` case where an external command writes `{out}`
+/// itself and we don't control its `open()` call at all, here we do, so this is defense-in-depth on
+/// top of `private_temp_dir`'s already-`0700` parent directory.
+#[cfg(unix)]
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(data)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, data)
 }
 
 /// Spawns `argv` and does not wait for it — `detached = true` (a video player, etc.). stdio is
@@ -131,11 +193,40 @@ pub fn run_detached(argv: &[String]) -> Result<()> {
 /// windowed text reader, so a delegated command's output and what actually ends up on screen never
 /// disagree on how much is usable) — this is what stops a runaway/infinite-output command (`yes`,
 /// a `command="cat {path}"` misconfiguration reading a device file, ...) from growing this buffer
-/// without bound: once the cap is hit we stop reading and kill the child rather than waiting for a
-/// natural exit that may never come. Both streams are drained on separate threads (stdout on the
-/// caller's, stderr on a helper thread) so a child that interleaves writes to both can't deadlock us
-/// by filling one pipe's small OS buffer while we only drain the other.
+/// without bound: once the cap is hit the child is killed rather than waiting for a natural exit
+/// that may never come. Both streams are drained on background threads (this thread instead polls
+/// `try_wait`, below) so a child that interleaves writes to both can't deadlock this by filling one
+/// pipe's small OS buffer while only the other is drained.
+///
+/// Separately, the whole run is bounded by `RUN_TIMEOUT`: a command that produces *no* output at
+/// all (so the cap above never triggers) and never exits on its own used to block this function —
+/// and the media worker thread that calls it — forever. Past the deadline the child is killed and
+/// this returns an `Err` describing the timeout, exactly like any other failure (principle #3: this
+/// degrades to `[can not preview]`, it never hangs the app).
 pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBuf> {
+    run_capture_impl(argv, out, uses_out, RUN_TIMEOUT)
+}
+
+/// How long a delegated command is allowed to run before being killed and treated as a failure.
+/// Generous on purpose — some legitimate conversions genuinely take several seconds — this exists
+/// only to turn "never returns" into "eventually gives up," not to police normal runtimes.
+const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often the poll loop in `run_capture_impl` re-checks the child and the reader threads'
+/// progress. Small enough that both a timeout and an output-cap kill are noticed promptly, without
+/// busy-polling.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// `run_capture`'s real body, parameterized on the timeout purely for testability: `run_capture`
+/// itself always passes the real, generous `RUN_TIMEOUT`; tests pass something short so a
+/// deliberately-hanging fixture command doesn't make the test suite itself slow (see
+/// `run_capture_returns_promptly_for_a_hanging_command` below).
+fn run_capture_impl(
+    argv: &[String],
+    out: &Path,
+    uses_out: bool,
+    timeout: Duration,
+) -> Result<PathBuf> {
     let (prog, rest) = argv.split_first().context("empty command template")?;
     let mut child = Command::new(prog)
         .args(rest)
@@ -149,19 +240,60 @@ pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBu
     let mut stderr = child.stderr.take().expect("stderr was piped above");
     let cap = crate::preview::text::MAX_BYTES;
 
+    // Draining stdout was previously synchronous on this thread; it now runs on a background
+    // thread (matching stderr) so this thread is free to poll `try_wait` below with a deadline —
+    // a blocking synchronous read can't be interrupted by a timeout on the same thread. The shared
+    // flag lets this thread notice a cap-triggered truncation and kill the child immediately
+    // (rather than only discovering it once the deadline arrives), preserving the prior fast-kill
+    // behavior for a runaway-output command like `yes`.
+    let stdout_capped = Arc::new(AtomicBool::new(false));
+    let stdout_capped_writer = Arc::clone(&stdout_capped);
+    let stdout_handle = std::thread::spawn(move || {
+        let (buf, truncated) = capped_read(&mut stdout, cap);
+        if truncated {
+            stdout_capped_writer.store(true, Ordering::Release);
+        }
+        (buf, truncated)
+    });
     let stderr_handle = std::thread::spawn(move || capped_read(&mut stderr, cap));
-    let (stdout_buf, stdout_truncated) = capped_read(&mut stdout, cap);
-    if stdout_truncated {
-        // A runaway/infinite-output command: stop waiting for a natural exit and reap it instead.
-        let _ = child.kill();
-    }
-    let status = child
-        .wait()
-        .with_context(|| format!("failed to wait for `{prog}`"))?;
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if stdout_capped.load(Ordering::Acquire) {
+                    // A runaway/infinite-output command: stop waiting for a natural exit and reap
+                    // it instead (same trigger the old synchronous-read version killed on).
+                    let _ = child.kill();
+                    break child
+                        .wait()
+                        .with_context(|| format!("failed to wait for `{prog}`"))?;
+                }
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child
+                        .wait()
+                        .with_context(|| format!("failed to wait for `{prog}`"))?;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(e) => return Err(e).context(format!("failed to wait for `{prog}`")),
+        }
+    };
+
+    let (stdout_buf, stdout_truncated) =
+        stdout_handle.join().unwrap_or_else(|_| (Vec::new(), false));
     let (stderr_buf, _) = stderr_handle.join().unwrap_or_else(|_| (Vec::new(), false));
 
-    // A capped run's exit status is meaningless (we killed it mid-flight rather than let it finish
-    // naturally) — only judge success/failure when we read it to a real EOF.
+    if timed_out {
+        bail!("timed out after {}s without exiting", timeout.as_secs());
+    }
+
+    // A capped run's exit status is meaningless (the child was killed mid-flight rather than
+    // allowed to finish naturally) — only judge success/failure when it ran to a real EOF.
     if !stdout_truncated && !status.success() {
         let msg = first_nonempty_line(&stderr_buf).unwrap_or_else(|| status.to_string());
         bail!(msg);
@@ -170,7 +302,7 @@ pub fn run_capture(argv: &[String], out: &Path, uses_out: bool) -> Result<PathBu
     if uses_out {
         resolve_produced_out(out).with_context(|| format!("{} was not produced", out.display()))
     } else {
-        std::fs::write(out, &stdout_buf)
+        write_private(out, &stdout_buf)
             .with_context(|| format!("failed to write {}", out.display()))?;
         Ok(out.to_path_buf())
     }
@@ -662,5 +794,109 @@ mod tests {
             "上限を超えて書き出された: {len}"
         );
         std::fs::remove_file(&out).ok();
+    }
+
+    /// Root cause: `temp_out_path` built its path directly under `std::env::temp_dir()`, which is
+    /// world-writable/world-readable on Linux (`/tmp` is mode `1777`) — a delegated command's
+    /// output briefly sits at a pid-and-counter-predictable path, readable by any other local user
+    /// on a shared box. Restricting the **directory** is what closes this uniformly regardless of
+    /// who wrote the file: POSIX requires execute/search permission on every ancestor directory to
+    /// open a file by path, so a `0700` directory blocks other users even for the `uses_out=true`
+    /// case where an arbitrary user-configured external command (not konoma) writes `{out}` itself
+    /// under whatever mode it picks.
+    #[cfg(unix)]
+    #[test]
+    fn temp_out_path_lives_in_an_owner_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_out_path();
+        let dir = path.parent().expect("temp_out_path has a parent dir");
+        // The discriminating check: this must be *our own* dedicated subdirectory, not the shared
+        // system temp dir directly. Checking only the resulting mode below isn't enough to prove
+        // our own code sets it — on macOS, `std::env::temp_dir()` itself already happens to be
+        // `0700` (a per-user `/var/folders/.../T/`), which would make a mode-only assertion pass
+        // by coincidence even without this fix. Linux's `/tmp` (mode `1777`, world-writable) has no
+        // such luck, which is exactly the platform this bug targets.
+        assert_ne!(
+            dir,
+            std::env::temp_dir(),
+            "システム共有の一時ディレクトリ直下に出力している(専用サブディレクトリを持っていない)"
+        );
+        let meta = std::fs::metadata(dir).expect("private temp dir should exist by now");
+        assert!(meta.is_dir());
+        let mode = meta.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "委譲コマンドの一時出力先が owner-only(0700) になっていない: {dir:?} mode={mode:#o}"
+        );
+    }
+
+    /// The `uses_out=false` branch is the one case in this module where **konoma itself** creates
+    /// the output file (`std::fs::write`, capturing the child's stdout) — unlike the `uses_out=true`
+    /// case above where an external command writes `{out}`, here we fully control the `open()` call
+    /// and so can (and should, defense-in-depth on top of the private directory) give the file
+    /// itself owner-only (`0600`) permissions at creation time, not via a separate `chmod` after
+    /// (which would leave a — however brief — window where the file exists at a wider mode).
+    #[cfg(unix)]
+    #[test]
+    fn captured_stdout_output_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let out = tmp("stdout_perm_dst.txt");
+        let _ = std::fs::remove_file(&out);
+        let argv = vec!["echo".to_string(), "hi".to_string()];
+        run_capture(&argv, &out, false).expect("echo should succeed");
+
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "captured stdout の書き出し先が owner-only(0600) になっていない: mode={mode:#o}"
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Root cause: `run_capture` used a synchronous stdout read followed by a plain, unbounded
+    /// `Child::wait()` — a command that produces *no* output at all (so the existing output cap
+    /// never triggers) and never exits on its own blocked this function, and the media worker
+    /// thread that calls it, forever: `App::media_loading` never cleared, and the busy-indicator
+    /// spinner spun forever too.
+    ///
+    /// Confirmed for real before this fix existed (pasted into the PR/commit description, not kept
+    /// as a permanent test): calling the pre-fix `run_capture` with `argv = ["tail", "-f",
+    /// "/dev/null"]` on a background thread, then waiting on `mpsc::Receiver::recv_timeout(3s)` for
+    /// a result, timed out — it was still blocked after 3 real seconds.
+    ///
+    /// This permanent test instead proves it deterministically and fast, via `run_capture_impl`
+    /// directly with a short injected timeout (production `run_capture` always uses the real,
+    /// generous `RUN_TIMEOUT`). The fixture (`tail -f /dev/null`) genuinely never exits on its
+    /// own — unlike e.g. `sleep N`, which eventually completes regardless of whether the timeout
+    /// mechanism works, and so wouldn't actually prove anything. This project avoids asserting
+    /// *exact* wall-clock durations (a prior CI break — see `docs/STATUS.md`), so the bound below
+    /// is a large, deliberately loose multiple of the injected timeout: it exists only so a real
+    /// regression (no timeout at all) fails this test instead of hanging the whole test run.
+    #[cfg(unix)]
+    #[test]
+    fn run_capture_returns_promptly_for_a_hanging_command() {
+        let out = tmp("hang_dst.txt");
+        let _ = std::fs::remove_file(&out);
+        let argv = vec![
+            "tail".to_string(),
+            "-f".to_string(),
+            "/dev/null".to_string(),
+        ];
+
+        let started = std::time::Instant::now();
+        let result = run_capture_impl(&argv, &out, false, Duration::from_millis(200));
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_err(),
+            "ハングするコマンドは失敗として返るべき: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
+        );
+        let _ = std::fs::remove_file(&out);
     }
 }
