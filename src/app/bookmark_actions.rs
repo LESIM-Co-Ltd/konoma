@@ -278,6 +278,14 @@ impl App {
     /// small-tree case, and every test) applies its result inline — `apply_filter_pool` refuses to
     /// touch a pool the user is no longer filtering, and would otherwise throw its own result away.
     pub fn start_filter(&mut self) {
+        // Mutually exclusive with `C` — the reverse direction (`toggle_changed_filter`'s ON branch)
+        // already drops `/`'s state via `clear_filter_state()` before turning itself on; without
+        // the same guard here, `/` layered on top of an active `C` leaves *both* filters set, and
+        // `refresh_fs_inner`'s `if changed_filter { .. } else if tree_filter.is_some() { .. }`
+        // always takes the changed branch — so `/`'s own filter-pool refresh never runs, and a
+        // later FS event rebuilds the changed list over the `/` results the user is typing into.
+        // `clear_filter_state()` also retires `changed_anchor_pending` (see its doc comment).
+        self.clear_filter_state();
         self.tab.filter_input = Some(String::new());
         self.tab.tree_filter = Some(String::new());
         self.tab.selected = 0;
@@ -306,7 +314,20 @@ impl App {
             // rebuilding — but it needs it for the same reason: `rebuild_tree` just replaced it
             // with the ordinary listing. Which is also why the anchor is the caller's: it was taken
             // before that rebuild.
-            self.reapply_changed_filter(anchor);
+            //
+            // Must not rebuild synchronously while a status scan is still in flight — the same
+            // hazard `refresh_fs_inner` already guards against: switching to a different repo's
+            // tab and back can leave `git_status` empty for the moment between the kick and its
+            // landing (the workdir changed, so the kick clears it), and rebuilding against it here
+            // would make the filter judge "zero changes" and silently turn itself off, even
+            // showing a false "no changed files". Publish the anchor instead and let
+            // `apply_statuses` do the rebuild once the real result lands.
+            if self.git_status_pending.is_none() {
+                self.changed_anchor_pending = None;
+                self.reapply_changed_filter(anchor);
+            } else {
+                self.changed_anchor_pending = anchor;
+            }
         }
     }
 
@@ -352,6 +373,14 @@ impl App {
         self.tab.tree_filter = None;
         self.tab.filter_pool = Vec::new();
         self.tab.changed_filter = false;
+        // A still-unconsumed anchor from a deferred `C` rebuild is meaningless once `C` itself is
+        // being discarded here — dormant while `changed_filter` is false (every reader is gated on
+        // it), but a stale value left behind would be wrongly *honored* by `changed_filter_anchor`
+        // the moment `C` turns back on and a refresh runs before `toggle_changed_filter`'s own
+        // explicit `reapply_changed_filter(None)` gets there — `toggle_changed_filter`'s ON branch
+        // always calls this right before setting `changed_filter = true`, so clearing it here closes
+        // that window at its one entry point rather than at every place `changed_filter` goes false.
+        self.changed_anchor_pending = None;
     }
 
     /// Attach the Sender of the worker that finishes filter-pool scans in the background (called by
@@ -603,6 +632,41 @@ impl App {
             .entries
             .get(self.tab.selected)
             .map(|e| e.path.clone())
+    }
+
+    /// The anchor for a `C` (changed-files) rebuild, shared by every call site that needs one
+    /// (`refresh_fs_inner`, `toggle_hidden`, `sort_menu_key`, …) — this is the one place that gets
+    /// to read `entries` for it, so the rule lives in exactly one spot instead of being
+    /// reimplemented (and re-broken) at each call site.
+    ///
+    /// **Honors an already-published, not-yet-consumed `changed_anchor_pending` instead of
+    /// re-reading `entries`.** Once a refresh captures an anchor and defers the rebuild (a status
+    /// scan is in flight), `entries` stops being the changed list until that rebuild actually runs
+    /// — it is the *whole tree* left behind by `rebuild_tree` in the meantime. A caller that reads
+    /// `entries` again in that window (a second FS event before the first scan lands, or a sort/
+    /// hidden-file toggle pressed in the same window) would silently anchor to whatever sits at
+    /// `selected` in the wrong structure and clobber the correct, still-pending identity.
+    /// `None` when `C` isn't the active filter, so callers can call this unconditionally.
+    pub(super) fn changed_filter_anchor(&self) -> Option<PathBuf> {
+        if !self.tab.changed_filter {
+            return None;
+        }
+        self.changed_anchor_pending
+            .clone()
+            .or_else(|| self.filter_anchor())
+    }
+
+    /// The anchor to capture right before a caller's own `rebuild_tree()`, for whichever of the two
+    /// mutually-exclusive tree filters (`/` or `C`) is currently active — feeds
+    /// `refilter_after_visibility_change`. `/`'s anchor is always a fresh `entries` read (its pool
+    /// isn't touched by a caller's rebuild the way `C`'s status-driven list is); `C`'s goes through
+    /// `changed_filter_anchor` for the reason documented there.
+    pub(super) fn visibility_change_anchor(&self) -> Option<PathBuf> {
+        if self.tab.changed_filter {
+            self.changed_filter_anchor()
+        } else {
+            self.filter_anchor()
+        }
     }
 
     /// Filter the pool by the current query to build entries.
@@ -1336,13 +1400,17 @@ impl App {
         // The same value for the `C` list, and taken here for the same reason. It is *also* published
         // on `App`, because the rebuild is frequently deferred to whenever the status scan lands
         // (below) — by then this stack frame is long gone, and `entries` is the whole tree, so
-        // `apply_statuses` has no way to work it out for itself. Assigned unconditionally so a
-        // previous refresh's anchor can never be inherited by a later one.
-        let changed_anchor = if self.tab.changed_filter {
-            self.filter_anchor()
-        } else {
-            None
-        };
+        // `apply_statuses` has no way to work it out for itself.
+        //
+        // Captured via `changed_filter_anchor`, which honors a previous refresh's still-unconsumed
+        // anchor instead of re-reading `entries` (see that method's doc comment). Re-reading it
+        // unconditionally here was the bug: once one refresh defers its rebuild, `entries` stays the
+        // *whole tree* (left behind by `rebuild_tree` below) until that deferred rebuild actually
+        // runs — a second refresh landing in that window (an agent writing files back-to-back,
+        // faster than one `git status` scan) would read `selected`'s position in the wrong
+        // structure and overwrite the correct pending identity with it, so the eventual landing
+        // dragged the cursor onto a file the user was never on.
+        let changed_anchor = self.changed_filter_anchor();
         self.changed_anchor_pending = changed_anchor.clone();
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render

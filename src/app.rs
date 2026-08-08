@@ -2385,7 +2385,17 @@ impl App {
         };
         // While filtering, don't change the result order (it takes effect on tree rebuild after clearing).
         if self.tab.tree_filter.is_none() {
+            // Anchor captured before the rebuild below — same hazard as `toggle_hidden`/
+            // `refresh_fs_inner`: once `rebuild_tree` replaces `entries` with the ordinary listing,
+            // reading it again would name a different file (or, while `C` is up, a plain-tree
+            // directory that was never in the changed list).
+            let anchor = self.visibility_change_anchor();
             self.rebuild_tree()?;
+            // `rebuild_tree` always produces the plain tree, so while `C` is up it must be
+            // reapplied here too, the same way `toggle_hidden` does — otherwise the header keeps
+            // claiming CHANGED while the list underneath silently becomes the ordinary tree (the
+            // sort order itself never applies to `C`'s list, which stays a fixed path order).
+            self.refilter_after_visibility_change(anchor);
         }
         self.sort_menu = keep_open;
         Ok(())
@@ -2885,8 +2895,12 @@ impl App {
     pub fn toggle_hidden(&mut self) -> Result<()> {
         self.tab.show_hidden = !self.tab.show_hidden;
         // Which file the cursor is on, captured **before** the rebuild below replaces `entries` with
-        // the unfiltered listing — same hazard, and same ordering, as `refresh_fs_inner`.
-        let anchor = self.filter_anchor();
+        // the unfiltered listing — same hazard, and same ordering, as `refresh_fs_inner`. Goes
+        // through `visibility_change_anchor` (not a plain `filter_anchor` read) so that, while `C`
+        // is up, an already-published still-pending anchor from a deferred rebuild is honored
+        // rather than clobbered by a read of `entries` in the wrong (whole-tree) state — see
+        // `changed_filter_anchor`.
+        let anchor = self.visibility_change_anchor();
         // Keep the tree's Err (a rebuild can fail transiently) but don't let it skip the filter
         // work below, which depends on the pool rather than on the new tree — same reasoning as
         // `refresh_fs_inner`.

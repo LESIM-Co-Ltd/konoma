@@ -19562,3 +19562,222 @@ fn changed_cursor_anchoring_does_not_block_deliberate_moves() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Bug 1/2/3/4 (2026-08-08): "every place that rebuilds `entries` or takes a `C` anchor must
+// stay in sync with `changed_filter`" is one shape, not four unrelated bugs — see each test's
+// doc comment for the specific hazard it pins down.
+// ---------------------------------------------------------------------------------------------
+
+/// **Bug 1**: `changed_anchor_pending` was overwritten *unconditionally* on every
+/// `refresh_fs_changed` call, even while a previous refresh's anchor was still waiting for
+/// `apply_statuses` to consume it. By the time a **second** FS event lands before the first status
+/// scan finishes, `entries` is already the whole tree (the first call's `rebuild_tree` replaced
+/// it), so re-reading `filter_anchor()` here reads the wrong structure and clobbers the correct
+/// pending identity with whatever happens to sit at `selected` in the full tree — the very next
+/// scan landing then drags the cursor onto that wrong file. This is the headline Agent Watch
+/// scenario: an agent writing files back-to-back, faster than one `git status` scan.
+#[cfg(feature = "git")]
+#[test]
+fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
+    let dir = changed_cursor_repo("konoma_changed_cursor_async_x2");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app);
+
+    // First FS event: the rebuild is deferred to `apply_statuses` (a scan is now in flight).
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, &[newfile]).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 1回目のスキャンがまだ走行中"
+    );
+    assert_eq!(
+        app.changed_anchor_pending.as_deref(),
+        Some(target.as_path()),
+        "土台: 1回目の先送りアンカーは正しい"
+    );
+
+    // A second FS event arrives **before that scan lands** (back-to-back agent writes). `entries`
+    // is already the whole tree at this point (the first call's rebuild replaced it), so this
+    // call's own `filter_anchor()` would read the wrong structure if it were consulted again.
+    let newfile2 = dir.join("sub").join("bbb_second.txt");
+    std::fs::write(&newfile2, b"z\n").unwrap();
+    app.refresh_fs_changed(false, &[newfile2]).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 2回目の要求もコアレスされ、まだ同じスキャンが走行中"
+    );
+    assert_eq!(
+        app.changed_anchor_pending.as_deref(),
+        Some(target.as_path()),
+        "2回目の refresh で先送りアンカーが汚染されない(正しいアンカーが保持される)"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res);
+
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "2回連続の先送りでもカーソルは同じファイルに残る"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `refilter_after_visibility_change`) rebuilt the
+/// changed list *unconditionally*, without the same "a scan is in flight" guard `refresh_fs_inner`
+/// already has. Switching to a different repo's tab and back leaves `git_status` briefly empty
+/// (the kick clears it because the workdir changed) while the real result is still on its way —
+/// pressing `.` in that exact window used to rebuild against the empty status, judge "zero
+/// changes", and silently turn `C` off with a false "no changed files".
+#[cfg(feature = "git")]
+#[test]
+fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan() {
+    let dir_a = changed_cursor_repo("konoma_changed_hidden_race_a");
+    let dir_b = changed_cursor_repo("konoma_changed_hidden_race_b");
+    let mut app = App::new(dir_a.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app);
+
+    // Visit repo B's tab and actually land its status, so `git_status_workdir` genuinely becomes
+    // B's (not just B's root sitting unrefreshed).
+    app.tab_new().unwrap();
+    app.jump_to_dir(dir_b.clone());
+    app.refresh_git_if_needed();
+    let res_b = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("B のスキャン結果");
+    app.apply_statuses(res_b);
+    assert_eq!(
+        app.git_status_workdir,
+        crate::git::workdir(&dir_b),
+        "土台: workdir は今 B"
+    );
+
+    // Switch back to tab A: `load_active` marks status dirty, and the resulting refresh's own
+    // `kick_status_refresh` sees the workdir changed (B -> A) and clears `git_status` while the
+    // real result for A is still on its way.
+    app.tab_goto(0);
+    assert!(app.tab.changed_filter, "土台: A は C 表示のまま復元される");
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 復帰で A の再検証スキャンが走行中"
+    );
+    assert!(
+        app.git_status.is_empty(),
+        "土台: workdir 切替の瞬間、status は空になっている"
+    );
+
+    // `.` pressed right in that window.
+    app.toggle_hidden().unwrap();
+
+    assert!(
+        app.tab.changed_filter,
+        "スキャン走行中の `.` で C が偽の「変更なし」判定を起こして OFF にならない"
+    );
+
+    // Drain until the deferred rebuild actually lands.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while app.git_status_pending.is_some() && std::time::Instant::now() < deadline {
+        if let Ok(res) = rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            app.apply_statuses(res);
+        } else {
+            break;
+        }
+    }
+    assert!(
+        app.git_status_pending.is_none(),
+        "土台: 最終的にはスキャンが着地する"
+    );
+    assert!(app.tab.changed_filter, "着地後も C は ON のまま");
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "着地後カーソルは同じファイルに残る"
+    );
+    std::fs::remove_dir_all(&dir_a).ok();
+    std::fs::remove_dir_all(&dir_b).ok();
+}
+
+/// **Bug 3**: `sort_menu_key` rebuilt the tree on `n`/`s`/`m`/`e`/`r`/`.` without ever reapplying
+/// `C` (unlike `toggle_hidden`, which does via `refilter_after_visibility_change`) — so pressing a
+/// sort key while the changed-files view was up silently replaced the flat changed list with the
+/// ordinary tree, while the header/chip kept claiming CHANGED (`changed_filter` itself was never
+/// touched, so nothing else noticed the mismatch).
+#[cfg(feature = "git")]
+#[test]
+fn sort_menu_key_keeps_the_changed_filter_active() {
+    let dir = changed_cursor_repo("konoma_changed_sort_test");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let changed_before: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(changed_before.len(), 3, "土台: 変更3件");
+
+    app.open_sort_menu();
+    app.sort_menu_key('s').unwrap(); // switch sort key to Size
+
+    assert!(
+        app.changed_filter(),
+        "s の後も CHANGED フィルタは解除されない(見出しと一覧の食い違いが起きない)"
+    );
+    let after: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(
+        after, changed_before,
+        "s の後も一覧は変更ファイルのまま(通常ツリーに戻っていない・C の並びはソート設定を無視した固定の path 順)"
+    );
+    assert!(
+        app.tab.entries.iter().all(|e| !e.is_dir),
+        "一覧に通常ツリーのディレクトリ(sub 等)が混ざっていない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Bug 4**: `start_filter` (`/`) didn't clear `changed_filter`, so pressing `/` while `C` was
+/// active left *both* filters set. `refresh_fs_inner`'s `if self.tab.changed_filter { .. } else if
+/// self.tab.tree_filter.is_some() { .. }` then always takes the changed branch, so `/`'s own
+/// filter-pool refresh (`kick_filter_pool_refresh`) is never dispatched, and a later FS event
+/// rebuilds the *changed* list over the `/` results the user is typing into instead.
+#[cfg(feature = "git")]
+#[test]
+fn start_filter_turns_off_the_changed_filter() {
+    let dir = changed_cursor_repo("konoma_changed_slash_test");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    assert!(app.changed_filter(), "土台: C が ON");
+    assert_eq!(app.tab.entries.len(), 3, "土台: 変更3件が見えている");
+
+    app.start_filter();
+    assert!(
+        !app.changed_filter(),
+        "`/` を開始すると C は解除される(相互排他・`toggle_changed_filter` の逆方向と対称)"
+    );
+    assert!(app.is_filtering(), "土台: `/` の入力モードに入っている");
+    assert!(
+        app.tab.entries.is_empty(),
+        "`/` はクエリが空の間は何も出さない(C の一覧が残っていない)"
+    );
+
+    // Consequence check: without the fix, `changed_filter` stays on and wins the if/else-if
+    // ordering in `refresh_fs_inner`, so a later FS event rebuilds the *changed* list (3 entries)
+    // over the `/` session instead of refreshing its filter pool.
+    let touched = dir.join("sub").join("m_one.txt");
+    app.refresh_fs_changed(false, std::slice::from_ref(&touched))
+        .unwrap();
+    assert!(
+        app.tab.entries.is_empty(),
+        "FS イベントの後も `/` セッションのまま(件数0を維持・変更一覧に上書きされない)"
+    );
+    assert!(
+        app.tab.tree_filter.is_some(),
+        "`/` セッション自体は継続している"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
