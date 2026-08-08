@@ -10711,6 +10711,106 @@ fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression: once a remote Markdown image's download failed, `md_remote_failed` remembered it for
+/// the rest of the process — nothing in the codebase ever called `.remove()` / `.clear()` /
+/// `.retain()` on it (grep confirms `insert()` is the only mutation) — so it was never retried even
+/// after the network came back, short of restarting konoma. An explicit reload (`refresh()`, called
+/// from the `r` key / after a paste / after an external git tool / after a confirm dialog — see
+/// `bookmark_actions.rs::refresh`'s callers) is exactly the moment a user expects another chance, so
+/// it now clears the negative cache too. The **FS-watch** path must NOT do this — see the sibling
+/// `refresh_fs_watched_does_not_retry_a_previously_failed_remote_image` test below: an agent
+/// rewriting nearby files fires an fs event per write, and retrying a doomed download on every single
+/// one is exactly what `md_remote_failed` exists to prevent (see that field's own doc comment).
+///
+/// Exercises the real production round trip end to end (attach a channel, `ensure_remote_md_fetch`
+/// spawns a background thread, the thread reports back, `apply_remote_fetch` re-records it) instead
+/// of only asserting on the private field, so this also proves the retry is not short-circuited by
+/// some other guard (`resolve_md_image_path` / `md_remote_inflight`). The URL is deliberately
+/// malformed — `"http://"` has no host, so `ureq` rejects it (`InvalidUri(Empty)`) inside its own
+/// request-construction step, before any DNS lookup or socket is opened — confirmed against this
+/// crate's exact `ureq` version with a standalone probe (~90µs, vs. milliseconds-plus for even a
+/// loopback connect attempt). This matches the "no test reaches the network" rule the sibling
+/// `fetch_remote_image_malformed_url_fails_without_touching_the_network` test already documents; that
+/// test can't reuse this exact shape because it calls the lower-level `fetch_remote_image` directly,
+/// bypassing `is_remote_image_url`'s `http://`/`https://`-prefix gate that `ensure_remote_md_fetch`
+/// requires to even attempt a fetch.
+#[test]
+fn refresh_retries_a_previously_failed_remote_image() {
+    let dir = unique_tmp("konoma_remote_retry_refresh_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let url = "http://".to_string(); // malformed (no host) — see the doc comment above
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_remote_md_loader(tx);
+
+    // Record a failure through the same completion path a real failed download takes.
+    app.md_remote_inflight.insert(url.clone());
+    app.apply_remote_fetch(RemoteFetch {
+        url: url.clone(),
+        ok: false,
+    });
+    assert!(app.md_remote_failed.contains(&url), "前提: 失敗を記録済み");
+
+    // Still marked failed → short-circuits before ever spawning a fetch thread.
+    assert!(
+        !app.ensure_remote_md_fetch(&url),
+        "失敗記録中は再試行しない"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "再試行していないので結果はまだ来ないはず"
+    );
+
+    app.refresh().unwrap();
+    assert!(
+        !app.md_remote_failed.contains(&url),
+        "refresh() は失敗記録をクリアし再試行対象に戻す必要がある"
+    );
+
+    // Now it actually retries: a real background thread runs `fetch_remote_image`, fails fast (no
+    // network reached — see the URL's doc comment above) and reports back through the channel.
+    app.ensure_remote_md_fetch(&url);
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("refresh() の後は再試行が走り結果が返ってくるはず");
+    assert_eq!(res.url, url);
+    assert!(!res.ok, "ホストのない URL は失敗するはず");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The sibling non-regression: the **FS-watch** entry point (`refresh_fs_watched` — what `main`'s run
+/// loop calls on every filesystem event, `main.rs:868`) must NOT clear `md_remote_failed`. Only
+/// `refresh()` (the explicit-reload path, see the test above) does. Locks in the fix's scope so a
+/// future edit that moves the `.clear()` into the shared `refresh_fs_inner` (the tempting place,
+/// since both `refresh()` and `refresh_fs_watched` funnel through it) doesn't silently turn every fs
+/// event into a retry storm against a permanently-broken URL.
+#[test]
+fn refresh_fs_watched_does_not_retry_a_previously_failed_remote_image() {
+    let dir = unique_tmp("konoma_remote_no_retry_fswatch_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+    let url = "http://".to_string();
+    app.md_remote_inflight.insert(url.clone());
+    app.apply_remote_fetch(RemoteFetch {
+        url: url.clone(),
+        ok: false,
+    });
+    assert!(app.md_remote_failed.contains(&url), "前提: 失敗を記録済み");
+
+    // The exact call `main`'s run loop makes on every filesystem event.
+    app.refresh_fs_watched(false, &[]);
+
+    assert!(
+        app.md_remote_failed.contains(&url),
+        "refresh_fs_watched（FS イベント経路）は失敗記録をクリアしてはいけない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn preview_survives_target_file_overwrite_and_delete() {
     // A previewed file can be overwritten or deleted out from under konoma (a script re-plots or

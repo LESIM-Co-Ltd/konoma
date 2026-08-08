@@ -1328,14 +1328,25 @@ impl App {
         !self.git_status.is_empty()
     }
 
-    /// Reload: refetch the directory listing and git status (`r` key, FSEvents, returning from an external tool).
+    /// Reload: refetch the directory listing and git status. This is the **explicit-reload** entry
+    /// point — the `r` key (`Action::Refresh`), returning from an external tool, and after a file
+    /// operation / confirm dialog (see this function's callers) — as opposed to `refresh_fs_watched`,
+    /// which is what `main`'s run loop calls on every FS-watch event and never calls this function.
     /// Keeps derived state in sync **in one place** to prevent the display from diverging from reality:
     /// - **Prune selection to existing paths only** (prevents one externally-deleted item from making a batch trash operation fail entirely #12).
     ///   A broken symlink itself is kept as existing (judged via `symlink_metadata` without following → don't wrongly drop it from operation targets).
     /// - **Recompute only the active derived views** (don't touch inactive ones, to avoid over-recomputation;
     ///   same spirit as the root guard in `refresh_git_if_needed`): in the Git view, the change list; in Preview mode,
     ///   refetch the current preview (reflecting git_view_entries staleness on return from an external git tool #4 / preview staleness on external edit).
+    /// - **Retry any remote Markdown image that previously failed** (`md_remote_failed`): an explicit
+    ///   reload is exactly the moment a user expects another chance (the network may be back, a proxy
+    ///   may now be configured, etc.), so the negative cache is cleared here. Deliberately **not**
+    ///   done in the FS-watch path (`refresh_fs`/`refresh_fs_inner`, shared by both this function and
+    ///   `refresh_fs_watched`) — an agent rewriting nearby files fires an fs event per write, and
+    ///   retrying a doomed download on every single one is exactly what `md_remote_failed` exists to
+    ///   prevent (see that field's own doc comment on `App`).
     pub fn refresh(&mut self) -> Result<()> {
+        self.md_remote_failed.clear();
         // An explicit reload (`r` / fileops / returning from an external tool) also rebuilds the ignore set (full recompute).
         self.refresh_fs(true)
     }

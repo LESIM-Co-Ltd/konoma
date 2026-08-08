@@ -1280,7 +1280,10 @@ pub struct App {
     md_img_tx: Option<std::sync::mpsc::Sender<MdImageResult>>,
     /// Remote inline-image URLs whose background download is in flight (deduplicates fetches).
     md_remote_inflight: std::collections::HashSet<String>,
-    /// Remote inline-image URLs whose download failed — do not retry; they show a text placeholder.
+    /// Remote inline-image URLs whose download failed — show a text placeholder instead of retrying
+    /// on every subsequent frame / FS-watch event (see `ensure_remote_md_fetch`'s early-return guard).
+    /// Cleared by an explicit `refresh()` (the `r` key etc.), which gives a failed URL another
+    /// chance — see `refresh`'s doc comment for why the FS-watch path deliberately does not.
     md_remote_failed: std::collections::HashSet<String>,
     /// Sender that reports the completion of a background remote-image download to the run loop.
     md_remote_tx: Option<std::sync::mpsc::Sender<RemoteFetch>>,
