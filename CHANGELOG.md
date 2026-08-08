@@ -6,6 +6,71 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Two crashes.** A footnote whose continuation lines mixed ASCII-space indentation with a
+  full-width space (U+3000) or a no-break space took the app down the moment the file was previewed:
+  the common indent was measured in bytes on one line and applied to another, landing inside a
+  multi-byte character. Indenting with a full-width space is ordinary in Japanese Markdown and
+  footnotes are on by default. Separately, opening a table cell's full-text popup in a terminal 21
+  columns wide or 7 rows tall aborted — including in release builds — because the popup sized itself
+  with `clamp`, whose upper bound comes from the terminal and can fall below its fixed lower bound.
+- **Toggling a tab-indented checkbox inside an alert or an open `<details>` edited the wrong
+  character**, silently: `- [ ] task` became `- [ ] xask`, the checkbox stayed unchecked, and nothing
+  was reported. The nested scan located the state character in display columns, which round a tab up
+  to four, while the position it wrote to is a byte offset.
+- **An empty `command` in a preview rule ran the file being previewed.** A typo, or an empty string
+  meant to disable the rule, produced an argument vector consisting of the previewed file and nothing
+  else — which is the program konoma launches. It now fails the rule instead, degrading to
+  `[can not preview]`.
+- **Opening a named pipe or a device froze konoma completely** — not just the drawing but the key
+  loop, so `q` and Ctrl-C did nothing. Reading from a FIFO blocks until a writer appears, and only
+  directories were being distinguished from files. `konoma /dev` did it too.
+- **Passing a path that does not exist left the terminal in raw mode**, so in `sh`, in a script, or
+  anywhere the shell does not reset the terminal at each prompt, the user had to run `reset`. The
+  path is now checked before the terminal is taken over, and the error names the path instead of
+  reporting a bare errno.
+- **The changed-files view (`C`) could move the cursor onto a different file, silently drop itself,
+  or show an ordinary listing under its own header.** Rebuilding the list resorts it, so the cursor
+  has to carry the file's path across the rebuild — three places that rebuild the tree never learned
+  to. It takes two filesystem events landing inside one status scan, which is what an agent writing
+  files in a row produces. `.` during a scan concluded there were no changes and turned the filter
+  off with a message saying so; `s` rebuilt without re-applying the filter; and `/` did not turn `C`
+  off, though `C` turns `/` off.
+- **Saving a bookmark could lose every other bookmark.** The file was truncated and then written, and
+  an unreadable file reads back as no bookmarks at all, so one `m` after an interrupted write left a
+  single entry where the whole set had been. It is now written through a temp file and renamed, the
+  way sessions already were.
+- **Helper processes stole keystrokes, left world-readable files, and could hang forever.** ffmpeg
+  and the PDF renderers inherited the terminal's stdin, and ffmpeg reads commands from it. Their
+  output went into the shared temp directory, which on Linux is world-readable, so a rendered PDF
+  page or a video thumbnail could be read by anyone else on the machine. And none of them had a
+  timeout: one that hung kept its worker thread and child process for the rest of the session, and
+  every further preview added another.
+- **The config and cache directories are resolved consistently.** Only the cache honoured
+  `XDG_CACHE_HOME`, so a desktop that sets `XDG_CONFIG_HOME` found konoma alone still using
+  `~/.config`. With `HOME` unset the bookmarks path fell back to a *relative* one, so konoma wrote
+  its bookmarks and sessions into whatever directory it had been opened on. A config error also
+  reported only its location; it now says what was wrong.
+- **A remote image in Markdown stayed at "loading" forever** when there was no cache directory to
+  download it to: the fetch returned before starting, so it never reached the failure path that
+  degrades the placeholder.
+- **On Linux: the clipboard now works under Wayland** — the backend was behind a feature that had
+  never been enabled, so every copy failed in a session without XWayland. **A failed filesystem watch
+  is now reported once** instead of silently stopping follow mode, the changed-files view and the git
+  markers — and it is no longer retried ten times a second. **Opening a link no longer prints
+  `xdg-open`'s warnings onto the screen** or leaves a zombie process behind.
+- **`tab_width` is bounded.** It was used directly as an allocation size and a loop count, so a
+  mistyped `tab_width = 1000000000` allocated about a gigabyte for a single tab character, and a
+  value near the maximum aborted the process outright.
+
+### Changed
+- **An inline GIF no longer animates after you leave the preview.** The frame cache was only cleared
+  when a *different* file was previewed, so returning to the tree left konoma waking every 10ms to
+  redraw a tree where nothing was moving, holding the frames the whole time.
+- **A document full of `$…$` no longer starts one thread per expression.** Six hundred of them took
+  911ms to reach the first frame against a 60ms budget, and enough of them make thread creation fail,
+  which panics. At most sixteen render at a time now; the rest follow as those land.
+
 ## [0.23.8] - 2026-08-08
 
 ### Added
