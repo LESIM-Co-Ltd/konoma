@@ -400,14 +400,18 @@ impl App {
     /// when it finishes. The abandoned tab re-kicks its own scan when it comes back
     /// (`refresh_fs_inner` re-collects while a filter is active).
     ///
-    /// **`filter_pool_pending` is deliberately left alone.** Bumping the generation discards the
-    /// *result*; it does not stop the thread, which keeps walking the tree either way. Clearing the
-    /// in-flight mark here would therefore be a lie, and one with a cost: `kick_filter_pool_refresh`
+    /// **`filter_pool_pending` is deliberately left alone here.** Bumping the generation discards
+    /// the *result*; it does not stop the thread, which keeps walking the tree either way. Clearing
+    /// the in-flight mark here would therefore be a lie, and one with a cost: `kick_filter_pool_refresh`
     /// coalesces against exactly this mark, so with it cleared its guard could never hold on the tab
     /// switch path — every switch of a filtering tab dispatched another whole-tree walk, and holding
     /// `]` down dispatched one per keypress (`main` drains the whole key burst before drawing).
     /// Which is the pile-up that guard exists to prevent, arriving through the one door it wasn't
-    /// watching. The mark is released by the walk's own result — see `filter_pool_pending`.
+    /// watching. The mark is released by the walk's own result — see `filter_pool_pending` — **or**,
+    /// once every call site that is reached only once per filter *session* rather than once per
+    /// switch (currently just `kick_filter_pool_start`'s early-return branch) has independently
+    /// established that its own scan is a complete, current replacement for whatever the mark used
+    /// to point at.
     pub(super) fn invalidate_filter_pool_scan(&mut self) {
         self.filter_pool_gen = self.filter_pool_gen.wrapping_add(1);
         self.filter_pool_dirty = false;
@@ -460,6 +464,29 @@ impl App {
         let done = entries.len();
         self.tab.filter_pool = entries;
         if rest.is_empty() {
+            // Finished within budget: the pool above is now this session's complete, current
+            // picture of the tree. `invalidate_filter_pool_scan` just above deliberately left
+            // `filter_pool_pending` untouched (see its doc comment), so if it is still `Some` here
+            // it can only be naming a generation this call already superseded — a walk dispatched
+            // by an *earlier* session (the previous `/` press, or the tab we last left this root
+            // on) that either finished before this ran (and its result is sitting undrained) or is
+            // still genuinely crawling the tree on its own.
+            //
+            // Retire that mark **here**, not by loosening `kick_filter_pool_refresh`'s coalescing
+            // guard: this call site is reached once per filter session (a `/` press, or a `.`
+            // hidden-files toggle), never as part of a rapid burst the way a held-down `]` calls
+            // `kick_filter_pool_refresh` once per tab switch — so clearing it here cannot reproduce
+            // the "one walk per keypress" pile-up that guard's root-only match exists to prevent
+            // (measured: with an exact generation match added to *that* guard instead, cycling
+            // through same-root filtering tabs with `]` held dispatched one fresh whole-tree walk
+            // per switch — 20 walks for 20 held cycles).
+            //
+            // With the mark cleared, the next FS-event-driven `kick_filter_pool_refresh` sees
+            // `filter_pool_pending == None` and dispatches immediately instead of coalescing
+            // against a walk nobody is ever going to act on again — its own eventual landing (if
+            // it is in fact still running) is already a harmless no-op, since `apply_filter_pool`
+            // only reacts to a result whose generation still owns this mark.
+            self.filter_pool_pending = None;
             return; // finished within budget: identical to the old fully-synchronous behaviour
         }
         self.filter_pool_pending = Some((gen, root.clone()));
@@ -483,6 +510,20 @@ impl App {
         // Without this, an agent writing a burst of files would stack up one whole-tree walk per
         // event — the same pile-up `kick_status_refresh` guards against, and for the same reason
         // (going async removed the self-rate-limiting the synchronous version had).
+        //
+        // Deliberately matches on **root alone**, not generation — this guard has to keep
+        // coalescing across a tab switch too (`refresh_fs_after_tab_switch` calls this
+        // unconditionally whenever the tab landed on is filtering, and every switch also runs
+        // `invalidate_filter_pool_scan`, which bumps the generation *without* touching this mark —
+        // see its own doc comment). Requiring an exact generation match here was tried and measured:
+        // it dispatches one fresh whole-tree walk **per switch** while cycling through same-root
+        // filtering tabs with `]` held down (main drains the whole buffered key burst before it
+        // ever drains `rx.pool`, so nothing lands to bring the generations back in sync between
+        // switches) — 20 held-down cycles measured 20 dispatched walks, exactly the "one whole-tree
+        // walk per keypress" pile-up this guard exists to prevent. The generation *does* still need
+        // to matter somewhere, just not here — see `kick_filter_pool_start`'s early-return branch,
+        // which is what actually retires a mark left behind by a session that has since been
+        // superseded, at the one call site that isn't itself part of a rapid-switch burst.
         if matches!(&self.filter_pool_pending, Some((_, p)) if p == &self.tab.root) {
             self.filter_pool_dirty = true;
             return;
@@ -1566,4 +1607,127 @@ pub(super) fn fuzzy_filter_pool(pool: &[Entry], query: &str) -> Vec<Entry> {
         scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
         scored.into_iter().map(|(_, i)| pool[i].clone()).collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::test_support::unique_tmp;
+    use std::fs;
+
+    /// A one-file temp project (`alpha.txt`), the smallest tree that still lets `start_filter`'s
+    /// budgeted walk finish synchronously and land the pool inline (no thread — `pool_tx` is never
+    /// attached in tests, see `spawn_or_sync_pool`'s doc comment).
+    fn setup(name: &str) -> PathBuf {
+        let dir = unique_tmp(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha.txt"), "a\n").unwrap();
+        dir
+    }
+
+    fn pool_names(app: &App) -> Vec<String> {
+        app.tab
+            .filter_pool
+            .iter()
+            .filter_map(|e| e.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    /// Root cause: `kick_filter_pool_start`'s early-return branch (the sync scan finished inside
+    /// `COLLECT_BUDGET`) left `filter_pool_pending` completely untouched. But
+    /// `invalidate_filter_pool_scan`, called at the very top of the same function, deliberately
+    /// bumps `filter_pool_gen` **without** touching that mark (see its own doc comment: clearing
+    /// it there would be a lie, since the walk it names keeps running regardless). So whenever an
+    /// *earlier* session's walk had missed the budget and gone to a background thread, and a
+    /// *later* session's own scan of the same root then finished inside budget (real-world timing:
+    /// the tree's directory entries are warm in the page cache the second time), the earlier
+    /// session's now-meaningless mark survived — `filter_pool_pending` kept naming a generation
+    /// `filter_pool_gen` had already moved past. `kick_filter_pool_refresh`'s coalescing guard
+    /// (matching on root alone, by design — see its own doc comment) couldn't tell that mark apart
+    /// from a genuinely current one, so the next FS event (an agent creating a file) just set
+    /// `filter_pool_dirty = true` and returned — the pool stayed stale until the *abandoned* walk
+    /// eventually finished crawling the tree on its own and landed, anywhere from instant to
+    /// several seconds later on a large tree.
+    ///
+    /// Reproduced here without racing real timing: manufacture the exact mark an abandoned walk
+    /// leaves behind, then drive a second `/` press whose own scan (a one-file dir) is guaranteed
+    /// to finish inside budget, and confirm both that the mark is retired and that a subsequent
+    /// FS-event-driven refresh actually dispatches instead of coalescing against it.
+    #[test]
+    fn start_clears_a_stale_pending_mark_left_by_an_earlier_session() {
+        let dir = setup("konoma_filter_pool_start_clears_stale_pending_test");
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.start_filter(); // first `/`
+        assert_eq!(pool_names(&app), vec!["alpha.txt".to_string()]);
+
+        let root = app.tab.root.clone();
+        let stale_gen = app.filter_pool_gen;
+        app.filter_pool_pending = Some((stale_gen, root));
+
+        app.start_filter(); // second `/`: this session's own scan finishes within budget
+        assert!(
+            app.filter_pool_pending.is_none(),
+            "budget 内で完了した新セッションは、前セッションの残留 pending マークを持ち越すべきでない"
+        );
+
+        // A subsequent FS-event-driven refresh must actually dispatch, not coalesce against the
+        // now-retired mark.
+        fs::write(dir.join("brandnew.txt"), "b\n").unwrap();
+        app.kick_filter_pool_refresh();
+        let names = pool_names(&app);
+        assert!(
+            names.iter().any(|n| n == "brandnew.txt"),
+            "残留していた pending マークのせいで refresh が coalesce に飲まれてはいけない: {names:?}"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression guard for a pile-up a broader version of this fix (giving
+    /// `kick_filter_pool_refresh`'s coalescing guard an exact generation match, instead of the
+    /// root-only match it keeps) was measured to cause: cycling through same-root **filtering**
+    /// tabs with `]` held down dispatched one fresh whole-tree walk **per switch**, because every
+    /// switch's `invalidate_filter_pool_scan` bumps the generation without anything landing to
+    /// bring it back in sync — `main` drains the whole buffered key burst before it ever drains
+    /// `rx.pool` (see `main.rs`'s inner `loop { let ev = event::read()?; ... }`), so nothing
+    /// resolves the mismatch mid-burst. Measured against that rejected approach: 20 held-down
+    /// cycles dispatched 20 walks — exactly the "one whole-tree walk per keypress" pile-up
+    /// `kick_filter_pool_refresh`'s own doc comment says the guard exists to prevent.
+    ///
+    /// The fix that actually shipped only touches `kick_filter_pool_start` (reached once per
+    /// filter *session*, never once per tab switch), so this asserts the fix in place does not
+    /// reproduce that: the number of walks dispatched by a burst of tab switches must not scale
+    /// with the burst length. Uses a real channel (`attach_filter_pool_loader`) and does not drain
+    /// it mid-burst, so the walks really do run as background threads racing the switches, matching
+    /// what `main`'s run loop does.
+    #[test]
+    fn tab_cycle_burst_does_not_dispatch_a_walk_per_switch() {
+        let dir = setup("konoma_filter_pool_burst_regression_test");
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_filter_pool_loader(tx);
+
+        app.start_filter();
+        app.tab_new().unwrap();
+        app.start_filter(); // tab 2: same root as tab 1 (tab_new doesn't change root), also filtering
+
+        let n = 20;
+        for _ in 0..n {
+            app.tab_cycle(1);
+        }
+        // Let every spawned thread finish (the fixture is trivially small) before counting.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut dispatched = 0;
+        while rx.try_recv().is_ok() {
+            dispatched += 1;
+        }
+        assert!(
+            dispatched < n,
+            "held-down `]` burst dispatched {dispatched} walks for {n} switches — must not scale 1:1 with the burst (measured pile-up in the rejected approach: {n} for {n})"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

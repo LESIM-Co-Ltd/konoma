@@ -119,6 +119,19 @@ fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
 
 /// `hayro`'s `Pixmap` is premultiplied-alpha RGBA8; `image::DynamicImage` expects straight alpha
 /// (same reason `preview::svg::rasterize_bytes` demultiplies tiny-skia's output).
+///
+/// **Also the point where a technically-successful-but-empty render is caught.** `hayro::render`
+/// returns a `Pixmap`, never a `Result` — there is no separate "I actually failed" signal from
+/// this call. A page whose content stream draws nothing (a genuinely blank page, or — measured
+/// separately — a truncated/corrupted stream that hayro didn't notice was broken) produces a
+/// `Pixmap` that is valid in every structural sense but **fully transparent everywhere**, since
+/// the render background is `TRANSPARENT` (see the caller) and nothing painted over it. Treating
+/// that the same as every other hayro failure (`None`, not `Some(blank image)`) is what lets
+/// `render_page` fall through to the external-tool chain, which can still recover real content a
+/// damaged stream hid from hayro (measured on a damage-location sweep of the bundled sample:
+/// poppler never failed at an offset where hayro produced this signature) — and, for the rare
+/// case of a page that is legitimately blank, degrades to the same blank result at the cost of
+/// one extra external-tool call for just that page.
 fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
     if w == 0 || h == 0 {
@@ -128,6 +141,14 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let mut rgba = Vec::with_capacity(straight.len() * 4);
     for px in straight {
         rgba.extend_from_slice(&px.to_u8_array());
+    }
+    // Checked on the raw bytes (before `RgbaImage::from_raw` below), so a normal, ink-bearing page
+    // pays nothing extra: `.all()` short-circuits at the first non-transparent pixel, which real
+    // content reaches almost immediately. Only a genuinely all-transparent buffer forces the full
+    // scan — and that is exactly the case that is about to pay for an external-tool process spawn
+    // anyway, so one extra linear pass over already-resident memory is noise beside it.
+    if rgba.chunks_exact(4).all(|px| px[3] == 0) {
+        return None;
     }
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
     Some(DynamicImage::ImageRgba8(buf))
@@ -788,6 +809,115 @@ mod tests {
             None,
             "cap をファイルサイズ未満にすると(内容は妥当なままなのに)数えない=サイズガードが機能していない"
         );
+    }
+
+    /// Root cause: `hayro::render` returns a `Pixmap`, not a `Result` — so a technically
+    /// successful render that drew **nothing at all** (a genuinely empty content stream, and,
+    /// measured separately via a damage-location sweep of the bundled sample: ~8% of truncation
+    /// points that corrupt the content stream without hayro noticing) was indistinguishable from
+    /// "hayro legitimately drew a blank page", and `render_page_native_inner` returned
+    /// `Some(blank image)` for both. That silently skipped the external-tool fallback chain
+    /// (poppler/qlmanage/sips) even with `[external] pdf = true`, hiding real content poppler
+    /// could still recover (measured on the same sweep: poppler never failed at a byte offset
+    /// where hayro produced this technically-successful-but-blank signature).
+    ///
+    /// This fixture is a **valid, well-formed, single-page PDF with a zero-length content
+    /// stream** — the PDF-syntax-level shape of "genuinely nothing to draw", as opposed to a
+    /// corrupted/truncated one (`page_count_handles_bad_input_without_panicking` above covers the
+    /// corrupt-bytes case; this one is deliberately parseable). `render_page_native_inner` must
+    /// treat "hayro drew nothing" the same way it already treats every other hayro failure:
+    /// return `None`, so `render_page` falls through to the external chain instead of showing a
+    /// blank page as if it were confirmed real content.
+    #[test]
+    fn native_render_returns_none_when_hayro_draws_nothing() {
+        let dir = unique_tmp("konoma-pdf-blank-content-stream");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("blank.pdf");
+        std::fs::write(&p, minimal_blank_pdf_bytes()).unwrap();
+
+        assert!(
+            render_page_native_inner(&p, 1).is_none(),
+            "hayro が何も描かなかった Pixmap は None を返し、外部ツールへ降格すべき"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The public entry point degrades all the way through: with the native renderer declining
+    /// (the case above) and `allow_external: true`, `render_page` still produces *something* via
+    /// the poppler/qlmanage/sips chain — it never silently loses the page. With
+    /// `allow_external: false` (`[external] pdf = false`) it correctly reports "can't preview"
+    /// (`None`) instead of ever showing a blank image as if it were confirmed real content.
+    ///
+    /// Cost measured (release build, this fixture, this machine): hayro's own (declined) attempt
+    /// takes ~9ms; falling through to `pdftocairo` for the same page adds ~170ms. That extra cost
+    /// is paid **once per view of a page that renders as fully blank** — the same call sites
+    /// (`enter_preview`/tab-switch-without-a-cache-hit/an actual file change) already pay this
+    /// exact cost today for any encrypted/corrupt PDF, so this doesn't introduce a new class of
+    /// hot-loop cost, only extends the existing fallback trigger to one more (measured: rare —
+    /// ~3% of a 120-document real-world corpus) case.
+    #[test]
+    fn render_page_falls_back_to_external_tools_when_hayro_draws_nothing() {
+        let dir = unique_tmp("konoma-pdf-blank-content-stream-fallback");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("blank.pdf");
+        std::fs::write(&p, minimal_blank_pdf_bytes()).unwrap();
+
+        // Best-effort, matching this module's other external-tool tests: only proves something on
+        // a machine that actually has pdftocairo/pdftoppm/qlmanage/sips on PATH — skip (not fail)
+        // otherwise, rather than reporting a false regression on a stripped-down CI runner.
+        if render_page_external(&p, 1).is_none() {
+            eprintln!(
+                "skip: このマシンに外部 PDF レンダラが無い(pdftocairo/pdftoppm/qlmanage/sips)"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        assert!(
+            render_page(&p, 1, true).is_some(),
+            "hayro が blank を返しても allow_external=true なら外部ツールへ降格して何かを描く"
+        );
+        assert!(
+            render_page(&p, 1, false).is_none(),
+            "allow_external=false は blank を real content として見せず None のまま"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A minimal, valid, single-page PDF whose page has an **empty content stream** (`/Length 0`,
+    /// no operators at all) — this is what a genuinely blank page looks like at the PDF-syntax
+    /// level, as opposed to a corrupted/truncated file. Hand-built (not via an external tool) so
+    /// this test needs nothing beyond the Rust toolchain.
+    fn minimal_blank_pdf_bytes() -> Vec<u8> {
+        let objs: [&[u8]; 4] = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>",
+            b"<< /Length 0 >>\nstream\n\nendstream",
+        ];
+        let mut out = Vec::new();
+        out.extend_from_slice(b"%PDF-1.4\n");
+        let mut offsets = vec![0usize];
+        for (i, body) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref_offset = out.len();
+        let n = objs.len() + 1;
+        out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for off in &offsets[1..] {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+                .as_bytes(),
+        );
+        out
     }
 
     /// Root cause: `run_poppler`/`run_qlmanage`/`run_sips` used a blocking `Command::status()`
