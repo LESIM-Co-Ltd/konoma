@@ -49,21 +49,142 @@ use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 /// Re-encode result sent from the worker to the UI.
 type ResizeResult = Result<ResizeResponse, Errors>;
 
+/// What process arguments say `main` should do — parsed by a pure function so it's testable
+/// without touching the environment. Mirrors `std::env::args()`, `argv[0]` included at index 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedArgs {
+    /// `--version` / `-V`.
+    Version,
+    /// `--help` / `-h`.
+    Help,
+    /// The raw path argument, exactly as given (unresolved, uncanonicalized). `None` = no
+    /// argument was given, which falls back to the current directory.
+    Open(Option<PathBuf>),
+}
+
+/// Parse process arguments into a `ParsedArgs`. Only the first argument is inspected — extra
+/// arguments are ignored, matching the pre-existing `konoma [DIR]` contract of one optional
+/// positional argument (no subcommands).
+///
+/// Only `--version`/`-V` and `--help`/`-h` are recognized as flags. Anything else — including an
+/// unrecognized `--foo`-shaped argument or an empty string — is treated as a directory path and
+/// never rejected: a real directory that happens to be named like a flag still opens, and this
+/// keeps parsing dependency-free (no `clap`) rather than growing an "unknown flag" error surface
+/// for what has always been a single positional argument.
+fn parse_args(args: &[String]) -> ParsedArgs {
+    match args.get(1).map(String::as_str) {
+        Some("--version") | Some("-V") => ParsedArgs::Version,
+        Some("--help") | Some("-h") => ParsedArgs::Help,
+        Some(arg) => ParsedArgs::Open(Some(PathBuf::from(arg))),
+        None => ParsedArgs::Open(None),
+    }
+}
+
+/// What `main` does once `resolve_startup` has run: print-and-exit, or the validated directory to
+/// browse.
+#[derive(Debug)]
+enum Startup {
+    Version,
+    Help,
+    Open(PathBuf),
+}
+
+/// Resolve process arguments into a `Startup`, **validating that an `Open` target is actually an
+/// openable directory** before returning it. Called from `main` before `ratatui::init()` touches
+/// the terminal (raw mode + the alternate screen) — see `validate_root`'s doc for why that order
+/// matters. The `?` here is what makes the order load-bearing: a bad path returns `Err` straight
+/// out of this function, so `main` never reaches the line that initializes the terminal.
+fn resolve_startup(args: &[String]) -> Result<Startup> {
+    Ok(match parse_args(args) {
+        ParsedArgs::Version => Startup::Version,
+        ParsedArgs::Help => Startup::Help,
+        ParsedArgs::Open(path_arg) => {
+            let dir = match path_arg {
+                Some(p) => p,
+                None => std::env::current_dir().context("could not get the current directory")?,
+            };
+            // Normalize so path-copy still produces a correct absolute path even for a relative
+            // argument (e.g. `konoma samples`). On canonicalize failure (the common case: the path
+            // doesn't exist), fall back to joining it with cwd so validate_root below still reports
+            // a sensible (if unresolved) path instead of losing it.
+            let dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(&dir))
+                    .unwrap_or(dir)
+            });
+            validate_root(&dir)?;
+            Startup::Open(dir)
+        }
+    })
+}
+
+/// Whether `path` is a directory konoma can actually open — checked by `resolve_startup`, before
+/// `ratatui::init()` ever runs. This used to only surface once `App::new()` failed, which was
+/// *after* `ratatui::init()` had already put the terminal into raw mode + the alternate screen: on
+/// a non-interactive shell (a script, plain `sh`, etc. — anything that doesn't re-initialize the
+/// tty per prompt the way an interactive zsh/bash does) that left the terminal stuck — no echo, no
+/// newline translation — until the user manually ran `reset`.
+///
+/// Distinguishes not-found / not-a-directory / unreadable rather than one blanket message: a plain
+/// `std::fs::metadata` check alone would miss a directory that exists and passes `is_dir()` but
+/// can't actually be listed (e.g. `chmod 000`), so `read_dir` is checked too.
+fn validate_root(path: &Path) -> Result<()> {
+    let meta =
+        std::fs::metadata(path).with_context(|| format!("cannot open {}", path.display()))?;
+    if !meta.is_dir() {
+        anyhow::bail!("cannot open {}: not a directory", path.display());
+    }
+    // metadata() alone doesn't catch a directory that exists and is_dir()=true but can't actually
+    // be listed (e.g. chmod 000) — read_dir() opens it for real.
+    std::fs::read_dir(path).with_context(|| format!("cannot open {}", path.display()))?;
+    Ok(())
+}
+
+/// The `--version`/`-V` output (a plain function, not printed directly, so it's testable and its
+/// content is guaranteed to match what actually prints).
+fn version_text() -> String {
+    format!("konoma {}\n", env!("CARGO_PKG_VERSION"))
+}
+
+/// The `--help`/`-h` output. Kept in sync with the README's "Usage" section by hand (both are short).
+fn help_text() -> String {
+    format!(
+        "konoma {version} — a full-screen preview-focused terminal file browser\n\
+         \n\
+         Usage: konoma [DIR]\n\
+         \n\
+         Opens DIR in the tree view (defaults to the current directory).\n\
+         \n\
+         Options:\n\
+         \x20\x20-h, --help      Print this help and exit\n\
+         \x20\x20-V, --version   Print version and exit\n\
+         \n\
+         Press ? inside konoma for the full, context-sensitive key reference.\n\
+         Documentation: https://lesim-co-ltd.github.io/konoma/\n",
+        version = env!("CARGO_PKG_VERSION"),
+    )
+}
+
 fn main() -> Result<()> {
-    // Argument: konoma [DIR]. Falls back to the current directory. On cwd-lookup failure, don't
-    // panic — return gracefully via ?.
-    let dir = match std::env::args().nth(1) {
-        Some(arg) => PathBuf::from(arg),
-        None => std::env::current_dir().context("could not get the current directory")?,
+    let args: Vec<String> = std::env::args().collect();
+    // Resolved — and, for `Open`, validated — **before any terminal initialization** below (see
+    // `resolve_startup`/`validate_root`). `--version`/`--help` print and exit here without ever
+    // touching the terminal, and a bad directory fails here too: entering raw mode + the alternate
+    // screen further down used to run *before* `App::new()` discovered a bad path — too late,
+    // since a non-interactive shell (a script, plain `sh`, etc.) doesn't reset terminal modes per
+    // prompt the way an interactive zsh/bash does, leaving the terminal stuck (no echo, no newline
+    // translation) until the user manually ran `reset`.
+    let dir = match resolve_startup(&args)? {
+        Startup::Version => {
+            print!("{}", version_text());
+            return Ok(());
+        }
+        Startup::Help => {
+            print!("{}", help_text());
+            return Ok(());
+        }
+        Startup::Open(dir) => dir,
     };
-    // Normalize so path-copy still produces a correct absolute path even for a relative argument
-    // (e.g. `konoma samples`).
-    // On canonicalize failure, fall back by joining it with cwd.
-    let dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&dir))
-            .unwrap_or(dir)
-    });
 
     let (cfg, cfg_err) = config::Config::load_reporting();
 
@@ -1792,6 +1913,244 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    // --- parse_args -----------------------------------------------------------------------
+
+    fn argv(rest: &[&str]) -> Vec<String> {
+        let mut v = vec!["konoma".to_string()];
+        v.extend(rest.iter().map(|s| s.to_string()));
+        v
+    }
+
+    #[test]
+    fn parse_args_recognizes_version_flags() {
+        assert_eq!(parse_args(&argv(&["--version"])), ParsedArgs::Version);
+        assert_eq!(parse_args(&argv(&["-V"])), ParsedArgs::Version);
+    }
+
+    #[test]
+    fn parse_args_recognizes_help_flags() {
+        assert_eq!(parse_args(&argv(&["--help"])), ParsedArgs::Help);
+        assert_eq!(parse_args(&argv(&["-h"])), ParsedArgs::Help);
+    }
+
+    #[test]
+    fn parse_args_with_no_argument_falls_back_to_none() {
+        assert_eq!(parse_args(&argv(&[])), ParsedArgs::Open(None));
+    }
+
+    #[test]
+    fn parse_args_treats_a_plain_path_as_open() {
+        assert_eq!(
+            parse_args(&argv(&["/some/dir"])),
+            ParsedArgs::Open(Some(PathBuf::from("/some/dir")))
+        );
+        assert_eq!(
+            parse_args(&argv(&["samples"])),
+            ParsedArgs::Open(Some(PathBuf::from("samples")))
+        );
+    }
+
+    /// An unrecognized `--foo`-shaped argument is **not** rejected as an unknown flag — it's
+    /// treated as a directory path (the pre-existing `konoma [DIR]` contract, preserved on
+    /// purpose: no `clap`, no "unknown flag" error surface for a single positional argument).
+    #[test]
+    fn parse_args_treats_an_unknown_flag_as_a_path() {
+        assert_eq!(
+            parse_args(&argv(&["--not-a-real-flag"])),
+            ParsedArgs::Open(Some(PathBuf::from("--not-a-real-flag")))
+        );
+    }
+
+    #[test]
+    fn parse_args_treats_an_empty_string_as_a_path() {
+        assert_eq!(
+            parse_args(&argv(&[""])),
+            ParsedArgs::Open(Some(PathBuf::from("")))
+        );
+    }
+
+    #[test]
+    fn parse_args_ignores_extra_arguments_after_the_first() {
+        // Matches the pre-existing behavior (`args().nth(1)`): only the first argument mattered.
+        assert_eq!(
+            parse_args(&argv(&["/some/dir", "extra", "--version"])),
+            ParsedArgs::Open(Some(PathBuf::from("/some/dir")))
+        );
+    }
+
+    // --- validate_root ----------------------------------------------------------------------
+
+    #[test]
+    fn validate_root_rejects_a_nonexistent_path_and_names_it() {
+        let missing = unique_tmp("konoma_validate_root_missing_test");
+        let err = validate_root(&missing).expect_err("存在しないパスは Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&missing.display().to_string()),
+            "エラーにパスが含まれる: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("no such file") || msg.to_lowercase().contains("not found"),
+            "「見つからない」旨が含まれる: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_root_rejects_a_file_as_not_a_directory() {
+        let dir = unique_tmp("konoma_validate_root_file_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plain.txt");
+        std::fs::write(&file, b"hi").unwrap();
+        let err = validate_root(&file).expect_err("ファイルは Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&file.display().to_string()),
+            "エラーにパスが含まれる: {msg}"
+        );
+        assert!(
+            msg.contains("not a directory"),
+            "「ディレクトリでない」旨が含まれる: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_root_accepts_a_real_readable_directory() {
+        let dir = unique_tmp("konoma_validate_root_ok_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(validate_root(&dir).is_ok(), "実在し読めるディレクトリは Ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory that exists and passes a plain `is_dir()` check but can't actually be listed
+    /// (permissions denied) must also be rejected — this is exactly the gap a bare
+    /// `std::fs::metadata` check would miss, which is why `validate_root` also tries `read_dir`.
+    /// Skipped under root (root ignores directory permission bits and can read it anyway — the
+    /// same root guard used elsewhere in this codebase, e.g. `session_actions`'s
+    /// `session_restore_rolls_back_unreadable_root`).
+    #[cfg(unix)]
+    #[test]
+    fn validate_root_rejects_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = unique_tmp("konoma_validate_root_unreadable_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable_as_root = std::fs::read_dir(&dir).is_ok();
+        if !readable_as_root {
+            let err = validate_root(&dir).expect_err("読めないディレクトリは Err");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&dir.display().to_string()),
+                "エラーにパスが含まれる: {msg}"
+            );
+        } else {
+            eprintln!(
+                "validate_root_rejects_an_unreadable_directory: root で実行中のためパーミッション検証をスキップ"
+            );
+        }
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- resolve_startup (composition, still no terminal touched) -------------------------
+
+    #[test]
+    fn resolve_startup_reports_version_and_help_without_touching_the_filesystem() {
+        assert!(matches!(
+            resolve_startup(&argv(&["--version"])).unwrap(),
+            Startup::Version
+        ));
+        assert!(matches!(
+            resolve_startup(&argv(&["--help"])).unwrap(),
+            Startup::Help
+        ));
+    }
+
+    #[test]
+    fn resolve_startup_fails_with_the_path_for_a_bad_directory() {
+        let missing = unique_tmp("konoma_resolve_startup_missing_test");
+        let err = resolve_startup(&argv(&[missing.to_str().unwrap()])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(&missing.display().to_string()),
+            "エラーにパスが含まれる: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_startup_opens_a_real_directory() {
+        let dir = unique_tmp("konoma_resolve_startup_ok_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        match resolve_startup(&argv(&[dir.to_str().unwrap()])).unwrap() {
+            Startup::Open(got) => assert_eq!(got, std::fs::canonicalize(&dir).unwrap()),
+            other => panic!("Open を期待したが: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- --version / --help text -----------------------------------------------------------
+
+    #[test]
+    fn version_text_contains_the_crate_version() {
+        let t = version_text();
+        assert!(t.contains(env!("CARGO_PKG_VERSION")));
+        assert!(t.starts_with("konoma "));
+    }
+
+    #[test]
+    fn help_text_documents_usage_and_points_at_the_docs_site() {
+        let t = help_text();
+        assert!(
+            t.contains("konoma [DIR]"),
+            "README の Usage 節と表記を揃える: {t}"
+        );
+        assert!(t.contains("--help"));
+        assert!(t.contains("--version"));
+        assert!(t.contains('?'), "アプリ内ヘルプキー ? への言及: {t}");
+        assert!(t.contains("https://lesim-co-ltd.github.io/konoma/"));
+    }
+
+    // --- structural guard: validation must run before ratatui::init() touches the terminal --
+
+    /// The property this whole fix exists for: `main`'s body must resolve+validate the startup
+    /// target **before** `ratatui::init()` grabs the terminal (raw mode + the alternate screen).
+    /// That can't be asserted by actually running `main` — doing so would enable raw mode / grab
+    /// the alternate screen for real, inside `cargo test`, which is unsafe to do from a unit test
+    /// (no real tty, parallel test threads sharing the process's stdio). See the project's
+    /// tmux-based real-terminal verification (`stty -g` before/after) for the live proof instead.
+    ///
+    /// What this test *can* pin, honestly: the **code order** inside `fn main`, via a self-scan of
+    /// `main.rs`'s own source — the same technique `test_support::guard` and
+    /// `e2e_tests::extract_ui_config_field_names` already use elsewhere in this codebase. It fails
+    /// if `main` stops calling `resolve_startup` at all, or if that call is ever moved below
+    /// `ratatui::init()`.
+    #[test]
+    fn resolve_startup_runs_before_terminal_init_in_main() {
+        let src = include_str!("main.rs");
+        let main_start = src
+            .find("\nfn main() -> Result<()> {")
+            .expect("fn main が見つからない(自己スキャンが壊れている)");
+        // Bounded to `fn main`'s own body (up to the next top-level `fn`, `resize_worker`) so a
+        // mention of either name in a comment/doc *after* main() (e.g. in the test below, or in a
+        // later helper) can never be mistaken for the real call site.
+        let main_end = src[main_start..]
+            .find("\nfn resize_worker(")
+            .map(|off| main_start + off)
+            .expect("main の直後の fn resize_worker が見つからない(自己スキャンが壊れている)");
+        let body = &src[main_start..main_end];
+        let resolve_at = body
+            .find("resolve_startup(")
+            .expect("main の本体が resolve_startup を呼んでいない");
+        let init_at = body
+            .find("let mut terminal = ratatui::init();")
+            .expect("main の本体が ratatui::init を呼んでいない");
+        assert!(
+            resolve_at < init_at,
+            "resolve_startup の呼び出しは ratatui::init() より前でなければならない\
+             (不正なパスで端末(raw mode + alt screen)を触る前に落とすため)"
+        );
     }
 
     #[test]
