@@ -3220,25 +3220,45 @@ fn e2e_markdown_footnotes_off_stays_literal() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Shared by the on/off front-matter pair below so the two configs render **the same source** —
+/// otherwise a needle that merely differs between two unrelated documents proves nothing about the
+/// config flag itself.
+const FRONT_MATTER_BODY: &str = concat!(
+    "---\n",
+    "title: My Doc\n",
+    "author: Me\n",
+    "---\n",
+    "[to section](#real-heading)\n\n",
+    "# Real Heading\n\n",
+    "body text\n",
+);
+
 #[test]
 fn e2e_markdown_front_matter_renders_as_metadata() {
     // Leading `---`…`---` is shown as a metadata block; the body (and its heading anchors) render
     // normally after it. Anchor jump on a heading defined below the front matter still resolves.
-    let body = concat!(
-        "---\n",
-        "title: My Doc\n",
-        "author: Me\n",
-        "---\n",
-        "[to section](#real-heading)\n\n",
-        "# Real Heading\n\n",
-        "body text\n",
-    );
-    let (mut s, dir) = md_preview(Config::default(), "frontmatter", body);
+    let (mut s, dir) = md_preview(Config::default(), "frontmatter", FRONT_MATTER_BODY);
     s.see("title"); // metadata key
     s.see("My Doc"); // metadata value
     s.see("author");
     s.see("Real Heading"); // body heading still renders
-                           // The anchor (computed from the body heading, past the front matter offset) resolves.
+                           // The needle above ("title" as plain text) is not enough by itself: with `md_frontmatter =
+                           // false` the exact same source still shows the literal word "title" on screen too (tui-markdown
+                           // renders the un-stripped `---`...`---` block itself — see the `off` test below), so the two
+                           // configs are indistinguishable by text alone. What differs is *how* it's styled: konoma's own
+                           // `render_front_matter` colors the key Cyan+DIM, closing the block with a rule. Dumped and
+                           // confirmed by hand (`cargo test -- --nocapture`) before picking this needle.
+    s.see_styled(
+        "title",
+        |st| {
+            st.fg == Some(ratatui::style::Color::Cyan)
+                && st.add_modifier.contains(ratatui::style::Modifier::DIM)
+        },
+        "konoma 自身のフロントマター key 色(Cyan+DIM) — off でも「title」というテキスト自体は\
+         画面に出る(tui-markdown 自身が生の---ブロックを描く)ので、テキストだけでは on/off を\
+         区別できない",
+    );
+    // The anchor (computed from the body heading, past the front matter offset) resolves.
     assert_eq!(
         s.app.md_link_targets(),
         vec!["#real-heading".to_string()],
@@ -3255,13 +3275,29 @@ fn e2e_markdown_front_matter_renders_as_metadata() {
 
 #[test]
 fn e2e_markdown_front_matter_off_leaves_body_intact() {
-    let body = "---\ntitle: My Doc\n---\n# H\n\nbody\n";
+    // Same source as the `on` test above — only the config flag differs, so any on/off difference
+    // in what follows is attributable to `md_frontmatter` and nothing else.
     let mut cfg = Config::default();
     cfg.ui.md_frontmatter = false;
-    let (s, dir) = md_preview(cfg, "frontmatter_off", body);
-    // Recognition off: the title line and body both still render (no crash, old behavior).
+    let (s, dir) = md_preview(cfg, "frontmatter_off", FRONT_MATTER_BODY);
+    // Recognition off: the title line and body both still render (no crash, old behavior). This much
+    // is true in *both* configs (see the comment on the `on` test), so on its own it does not prove
+    // recognition is off.
     s.see("title");
-    s.see("body");
+    s.see("body text");
+    // What actually proves it's off: konoma's own pre-pass never ran, so the raw `---`...`---` block
+    // reaches tui-markdown unstripped. tui-markdown's parser unconditionally recognizes YAML-style
+    // metadata blocks (`ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS`, always on — see
+    // `tui_markdown_parse_options` in preview/markdown.rs) and renders the *whole* block with its own
+    // `metadata_block()` style — plain LightYellow, no separate key/value coloring. Confirmed by hand
+    // (`cargo test -- --nocapture`, dumping `style_of("title")`) that this is exactly the opposite of
+    // the `on` test's Cyan+DIM key style, so the two needles are mutually exclusive.
+    s.see_styled(
+        "title",
+        |st| st.fg == Some(ratatui::style::Color::LightYellow),
+        "tui-markdown 自身のネイティブ YAML front-matter 色(LightYellow) — konoma 側の\
+         Cyan+DIM key 色にはならない(pre-pass が走っていない証拠)",
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -7084,12 +7120,40 @@ fn e2e_task_toggle_works_with_a_collapsed_details_block() {
     s.select("todo.md");
     s.enter();
     let read = || std::fs::read_to_string(dir.join("todo.md")).unwrap();
-    s.tab(); // either the collapsed heading or the visible task
+
+    // Advance focus onto the visible checkbox. Tab cycles links/tasks/details in document order;
+    // a closed `<details>` renders only its summary as a focusable item (the hidden checkbox inside
+    // never becomes one), so with this document the only two Tab stops are the visible task and the
+    // details heading. Bounded to a couple of full cycles (2 items ⇒ 2 tabs is enough) so that if a
+    // future change ever drops the task item entirely, this fails loudly with a clear message
+    // instead of degrading into the old "either" assertion that passed even when nothing moved.
+    let mut on_task = false;
+    for _ in 0..4 {
+        s.tab();
+        if s.app.md_focused_task() {
+            on_task = true;
+            break;
+        }
+    }
+    assert!(
+        on_task,
+        "Tab で可視タスクへフォーカスできるはず(focused_item={:?}, md_focused_details={:?})",
+        s.app.focused_item(),
+        s.app.md_focused_details()
+    );
+
     s.key(' ');
     let out = read();
+    // Both assertions matter: the visible task must actually flip (not "either this or that stayed
+    // the same" — that OR let a no-op write-back pass), and the hidden one must be left alone (it's
+    // not even visible, so Space must never have reached it).
     assert!(
-        out.contains("- [x] visible") || out.contains("- [ ] collapsed"),
-        "可視タスクがトグルできる(全キャンセルされない): {out}"
+        out.contains("- [x] visible"),
+        "可視タスクが実際にトグルされる(全キャンセルされない): {out}"
+    );
+    assert!(
+        out.contains("- [ ] collapsed"),
+        "隠れたタスクは変化しない: {out}"
     );
     s.dont_see("couldn't toggle checkbox");
     std::fs::remove_dir_all(&dir).ok();

@@ -399,6 +399,122 @@ fn batch_rename_collision_reopens_input() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `build_rename_plan`'s pre-validation (`src/app.rs`) has a real gap: its duplicate-name check is a
+/// `BTreeSet<PathBuf>` (byte-exact — `X.txt` and `x.txt` are "different"), and its existing-file check
+/// runs *before* any rename has executed, when neither of two case-variant destinations exists on disk
+/// yet. Both pass silently, and a plain `mv a.txt X.txt; mv b.txt x.txt` on a case-insensitive
+/// filesystem (verified independently in a shell: the second `mv` silently overwrites the first,
+/// leaving one file) is exactly the shape that gap lets through unvalidated.
+///
+/// **What this test found, going through the real entry point** (`App::start_batch_rename` →
+/// `dialog_submit` → `dialog_preview_apply` → `fileops::batch_rename`), **is that konoma does not
+/// reproduce that data loss** — not because the gap above isn't real, but because
+/// `fileops::batch_rename`'s two-phase commit independently re-checks `dst.exists()` at *commit* time,
+/// after every source has already been staged aside. By the time the second of two colliding
+/// destinations is about to commit, the first has already landed, so this second, later check catches
+/// the collision `build_rename_plan` missed and the whole batch rolls back — both original files come
+/// back intact. Verified for both commit orders and for two sequential single-file renames
+/// (`fileops::rename` has the identical before-rename `dst.exists()` guard). This is a genuine,
+/// separate safety net, not a fix to the validation gap above — a future change to
+/// `fileops::batch_rename` that drops or weakens its own `dst.exists()` check would reopen the data
+/// loss with nothing left to catch it, which is what this test guards against.
+///
+/// The template mechanism (`{n}`/`{n:0W}`/`{name}`/`{ext}`, no case transform) can't turn one selected
+/// file into an uppercase variant of another directly, so the case collision here is produced the way
+/// a real template realistically would hit it: a literal template with no extension token, applied to
+/// two files whose original extensions differ only in case — automatic extension-preservation then
+/// proposes `dup.txt` and `dup.TXT`, which collide on a case-insensitive filesystem exactly as `X.txt`/
+/// `x.txt` would.
+#[test]
+fn batch_rename_case_insensitive_destination_collision_does_not_lose_data() {
+    let dir = unique_tmp("konoma_batchrename_case_collision_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Detect at runtime whether this filesystem folds case (never assume by `cfg(target_os)`):
+    // write "CI_PROBE", then ask whether "ci_probe" resolves to the same entry.
+    std::fs::write(dir.join("CI_PROBE"), b"probe").unwrap();
+    let case_insensitive = dir.join("ci_probe").exists();
+    std::fs::remove_file(dir.join("CI_PROBE")).ok();
+
+    std::fs::write(dir.join("a.txt"), b"AAA").unwrap();
+    std::fs::write(dir.join("b.TXT"), b"BBB").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.visual_select_scope(true);
+    assert_eq!(app.marked_count(), 2, "両方選択されている前提");
+
+    // A literal template (no {n}/{ext}) → extension auto-preservation proposes "dup.txt" and
+    // "dup.TXT" — a case-insensitive collision `build_rename_plan` does not reject (this is the gap
+    // described above: neither destination exists yet at validation time, and the byte-exact
+    // duplicate-name `BTreeSet` treats them as distinct names).
+    app.start_batch_rename();
+    for c in "dup".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+    assert!(
+        app.dialog_is_preview(),
+        "検証を通り抜けてプレビューへ進む(=事前検証の穴そのもの): {:?}",
+        app.dialog_view()
+    );
+    let (_, pairs, _) = app.dialog_preview_view().unwrap();
+    assert_eq!(pairs, vec!["a.txt  →  dup.txt", "b.TXT  →  dup.TXT"]);
+
+    // Apply through the real production entry point. `dialog_preview_apply`'s `Result` is not the
+    // rename outcome (it stays `Ok(())` even when the underlying `fileops::batch_rename` fails and
+    // only sets `self.flash`) — the actual outcome has to be read from the filesystem and the flash.
+    app.dialog_preview_apply().unwrap();
+
+    let names_after: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let contents_after: std::collections::BTreeSet<Vec<u8>> = names_after
+        .iter()
+        .map(|n| std::fs::read(dir.join(n)).unwrap_or_default())
+        .collect();
+
+    if case_insensitive {
+        // The collision IS let through by validation, but `fileops::batch_rename`'s own commit-time
+        // check catches it and rolls the whole batch back. Both files remain, as two files, with
+        // their original bytes intact — nothing is silently overwritten.
+        assert_eq!(
+            names_after.len(),
+            2,
+            "大小非区別fs: 2ファイルが2ファイルのまま残るはず — 消えた: {names_after:?}"
+        );
+        assert_eq!(
+            contents_after,
+            [b"AAA".to_vec(), b"BBB".to_vec()].into_iter().collect(),
+            "大小非区別fs: 両方の内容が失われずに残っているはず(名前は元に戻る) — 実際: {names_after:?}"
+        );
+        assert!(
+            app.flash.is_some(),
+            "衝突は失敗として通知されるはず(黙って何も言わないのはそれ自体バグ)"
+        );
+    } else {
+        // A case-sensitive filesystem never sees this as a collision at all — "dup.txt" and
+        // "dup.TXT" are simply two different, unrelated names, and the rename succeeds normally.
+        assert_eq!(
+            names_after,
+            ["dup.txt".to_string(), "dup.TXT".to_string()]
+                .into_iter()
+                .collect(),
+            "大小区別fs(Linux): 通常どおり両方の新しい名前に変わって残るはず"
+        );
+        assert_eq!(
+            contents_after,
+            [b"AAA".to_vec(), b"BBB".to_vec()].into_iter().collect(),
+            "大小区別fs: 内容も保持されているはず"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn parse_dropped_paths_unescapes_splits_and_filters() {
     let tmp = unique_tmp("konoma_parse_drop_test");
@@ -16220,10 +16336,39 @@ fn video_thumbnail_skipped_when_external_video_disabled() {
 /// screen wrote `x` into a line that the screen was drawing as *code*, and every guard and every
 /// raw-source assertion agreed with each other while doing it. Re-rendering asks the only question a
 /// reader can check: "did the box I pressed, and only that box, change?"
+///
+/// Third — and this is the guard the test has to keep on *itself* — "refusing is an allowed outcome"
+/// is exactly the structural hole that shipped as a real regression three times (v0.18.1, v0.23.5,
+/// v0.23.6): a whole document, or every document, silently refusing to toggle *anything* still makes
+/// every assertion in the loop below vacuously true (the loop over `task_items` just runs zero times,
+/// or every iteration takes the early "refused, file unchanged" branch). `DOCS_WITH_TASKS` pins,
+/// document by document, that a checkbox is actually drawn where the corpus means one to be — a
+/// document dropping to zero rendered checkboxes is not silently skipped, it fails loudly. `wrote_ok`
+/// pins the same thing at the level of the whole corpus: at least one toggle across all of it has to
+/// actually write, or the test fails — it does not accept "every single toggle everywhere refused" as
+/// a pass.
 #[test]
 fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpus() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    // Corpus document names known — by actually rendering the whole corpus once and counting what
+    // lands in `md_items` — to draw at least one checkbox on screen. Declared explicitly rather than
+    // just letting documents with zero rendered tasks fall through the loop below unnoticed: the
+    // rest of the corpus (a plain footnote, a bare `<kbd>`, front matter alone, ...) legitimately
+    // never produces a checkbox at all, and lumping "legitimately none" together with "regressed to
+    // none" is what would let the next occurrence of this exact failure back in unnoticed.
+    const DOCS_WITH_TASKS: &[&str] = &[
+        "br making a list interrupt a paragraph",
+        "br on a checkbox line",
+        "kbd on a checkbox line",
+        "checkbox carrying a ref",
+        "checkbox carrying a ref and a continued def",
+        "checkbox in an alert plus a continued def",
+        "cjk checkbox with a ref",
+        "br injected checkbox above a del-fence swallowed one",
+        "footnote leftover plus br injected checkbox",
+    ];
 
     let dir = unique_tmp("konoma_preprocess_corpus_roundtrip");
     let _ = std::fs::remove_dir_all(&dir);
@@ -16256,6 +16401,11 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
             .collect()
     }
 
+    // Toggles that actually wrote, across the entire corpus (not per document — a single document
+    // is allowed to refuse every one of its checkboxes, e.g. because they're all `<br>`-injected
+    // phantoms; the corpus as a whole is not).
+    let mut wrote_ok = 0usize;
+
     for (name, src) in crate::preview::markdown::preprocess_corpus::cases() {
         std::fs::write(&f, src).unwrap();
         let app = opened(&root);
@@ -16267,6 +16417,15 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
             .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
             .map(|(i, _)| i)
             .collect();
+
+        if DOCS_WITH_TASKS.contains(&name) {
+            assert!(
+                !task_items.is_empty(),
+                "{name}: この文書は画面に少なくとも1個チェックボックスを描くはずが0個だった \
+                 (v0.18.1/v0.23.5/v0.23.6 で3回出荷した「トグルが文書全体を拒否する」症状の兆候 — \
+                 このアサート自体が守っているもの)"
+            );
+        }
 
         for (nth, &item_idx) in task_items.iter().enumerate() {
             std::fs::write(&f, src).unwrap();
@@ -16283,6 +16442,7 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
                 );
                 continue;
             }
+            wrote_ok += 1;
             // Wrote: exactly one character, and the file's shape is untouched.
             assert_eq!(
                 src.chars().count(),
@@ -16329,6 +16489,12 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
             }
         }
     }
+    assert!(
+        wrote_ok > 0,
+        "コーパス全体で1回もトグルが書き込みに成功しなかった \
+         (「拒否は正当」を口実に文書全体/コーパス全体を黙って拒否しても緑になっていた抜け穴 — \
+         v0.18.1/v0.23.5/v0.23.6 で3回出荷した症状そのもの。このアサート自体が守っているもの)"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

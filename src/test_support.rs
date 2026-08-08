@@ -95,23 +95,132 @@ mod guard {
         }
     }
 
-    /// A line "targets a specific path" (as opposed to using `temp_dir()` bare — e.g. as a
-    /// `Command`'s `current_dir` when the actual target path is built and uniqued elsewhere, as
-    /// `git.rs`/`e2e_tests.rs` do for a `git clone --bare`'s cwd) if it chains `.join(` or
-    /// `.push(` onto it. Only those need to prove per-call uniqueness.
-    fn targets_a_path(line: &str) -> bool {
-        line.contains("temp_dir().join(") || line.contains(".push(")
+    /// Turning a bare *reference* to a temp path into a *specific, collidable* one: chaining
+    /// `.join(`/`.push(` onto it (appends a fixed sub-path — the original form this guard checked),
+    /// or handing it straight to a call that actually touches the filesystem at that exact name (no
+    /// `.join` needed for a literal fixed name like `"/tmp/konoma_fixed"` to collide).
+    const PATH_BUILDERS: [&str; 2] = [".join(", ".push("];
+    const FS_MUTATORS: [&str; 8] = [
+        "create_dir_all(",
+        "create_dir(",
+        "remove_dir_all(",
+        "remove_file(",
+        "File::create(",
+        "fs::write(",
+        "OpenOptions::new(",
+        "set_current_dir(",
+    ];
+
+    fn contains_any(line: &str, needles: &[&str]) -> bool {
+        needles.iter().any(|n| line.contains(n))
     }
+
+    fn is_ident_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    /// `word` occurs in `line` as a whole identifier — not merely as a substring of a longer one
+    /// (so an identifier `d` doesn't match inside `id` or `mkdir`).
+    fn contains_word(line: &str, word: &str) -> bool {
+        if word.is_empty() {
+            return false;
+        }
+        let bytes = line.as_bytes();
+        let mut start = 0;
+        while let Some(rel) = line[start..].find(word) {
+            let at = start + rel;
+            let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
+            let after = at + word.len();
+            let after_ok = after >= bytes.len() || !is_ident_byte(bytes[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = at + 1;
+        }
+        false
+    }
+
+    /// A line "targets a specific path" (as opposed to a bare reference — e.g. a `Command`'s
+    /// `current_dir` when the actual target path is built and uniqued elsewhere, as
+    /// `git.rs`/`e2e_tests.rs` do for a `git clone --bare`'s cwd) if it chains a path-builder or a
+    /// filesystem mutator onto whatever risky base is on it.
+    fn line_targets_a_path(line: &str) -> bool {
+        contains_any(line, &PATH_BUILDERS) || contains_any(line, &FS_MUTATORS)
+    }
+
+    /// Given an identifier bound to a risky base a few lines up, does `line` use it to build or
+    /// touch a specific path — either chaining `.join(`/`.push(` straight onto it, or passing it (as
+    /// a whole word) to a filesystem-mutating call? Covers the case split across two statements:
+    /// `let base = std::env::temp_dir(); ... base.join("fixed")` / `... base.push("fixed")` / `...
+    /// std::fs::create_dir_all(&base)`.
+    fn line_uses_ident_as_path(line: &str, ident: &str) -> bool {
+        PATH_BUILDERS
+            .iter()
+            .any(|m| line.contains(&format!("{ident}{m}")))
+            || (contains_any(line, &FS_MUTATORS) && contains_word(line, ident))
+    }
+
+    /// If `line` is a `let [mut] IDENT = ...` binding, return `IDENT`. Best-effort: an unrecognised
+    /// binding form just means the walk below doesn't try to trace that identifier forward, which
+    /// degrades to "unproven bare reference" (a miss), never to a false accusation.
+    fn let_binding_ident(line: &str) -> Option<&str> {
+        let after_let = line.find("let ")?;
+        let mut rest = line[after_let + 4..].trim_start();
+        rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if end == 0 {
+            None
+        } else {
+            Some(&rest[..end])
+        }
+    }
+
+    /// Best-effort function-boundary heuristic: bounds how far a bound identifier is traced forward,
+    /// so a same-named variable in the *next*, unrelated test isn't blamed for this one's binding.
+    fn is_fn_start(line: &str) -> bool {
+        let mut t = line.trim_start();
+        for prefix in ["pub(crate) ", "pub ", "async ", "unsafe "] {
+            if let Some(s) = t.strip_prefix(prefix) {
+                t = s;
+            }
+        }
+        t.starts_with("fn ")
+    }
+
+    /// How far past a `let` binding of a risky base the scan traces the bound identifier, capped
+    /// (whichever comes first) by hitting the next function signature.
+    const IDENT_TRACE_WINDOW: usize = 200;
 
     /// Proof of per-call uniqueness for a production temp-file path: `std::process::id()`
     /// somewhere in the call (the same signal `unique_tmp` itself relies on, plus a counter). The
-    /// scan allows this a few-line window after the `temp_dir()` line, not just the same line,
+    /// scan allows this a few-line window after the risky-base line, not just the same line,
     /// since `format!(...)` args are commonly wrapped onto their own lines.
     const UNIQUENESS_PROOF: &str = "process::id()";
     const PROOF_WINDOW: usize = 6;
 
-    /// Scan result: every `temp_dir()` occurrence outside `EXEMPT_FILES` that neither is a bare
-    /// (non-path-targeting) reference nor has a nearby uniqueness proof.
+    fn has_nearby_proof(lines: &[&str], at: usize) -> bool {
+        let end = (at + PROOF_WINDOW).min(lines.len());
+        lines[at..end].iter().any(|l| l.contains(UNIQUENESS_PROOF))
+    }
+
+    /// Everything this guard treats as naming a filesystem temp directory without per-call
+    /// uniqueness baked in at the call site: `temp_dir()` / `env::temp_dir()`, the `TMPDIR`
+    /// environment variable, or a literal `"/tmp/...` path.
+    fn line_has_risky_base(line: &str) -> bool {
+        line.contains("temp_dir()") || line.contains("TMPDIR") || line.contains("\"/tmp/")
+    }
+
+    /// Scan result: every risky-base occurrence outside `EXEMPT_FILES` that is used to build or
+    /// touch a specific path — either right there on the same line, or a few lines later via a
+    /// `let`-bound identifier — without a nearby uniqueness proof.
+    ///
+    /// Deliberately not a full parser (a plain text scan, like the project's other self-scanning
+    /// meta tests): it can miss a disguised violation, but it must never *falsely* accuse existing
+    /// source, which is why every heuristic here (word-boundary identifier matching, an explicit
+    /// path-builder/mutator vocabulary, a function-boundary trace cutoff) errs toward under- rather
+    /// than over-detection.
     fn find_offenders(src_dir: &Path) -> (usize, Vec<String>) {
         let mut rs_files = Vec::new();
         collect_rs_files(src_dir, &mut rs_files);
@@ -132,18 +241,41 @@ mod guard {
             };
             let lines: Vec<&str> = text.lines().collect();
             for (i, line) in lines.iter().enumerate() {
-                if !line.contains("temp_dir()") {
+                if !line_has_risky_base(line) {
                     continue;
                 }
-                if !targets_a_path(line) {
-                    continue; // bare reference (e.g. a Command's cwd) — nothing to collide on
+                // Form 1: used to build/touch a path right here on this line (the original check,
+                // now also covering a literal "/tmp/..." or TMPDIR combined with a mutator).
+                if line_targets_a_path(line) {
+                    if !has_nearby_proof(&lines, i) {
+                        offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                    }
+                    continue; // already flagged this line; no need to also trace it as a binding
                 }
-                let window_end = (i + PROOF_WINDOW).min(lines.len());
-                let proven = lines[i..window_end]
-                    .iter()
-                    .any(|l| l.contains(UNIQUENESS_PROOF));
-                if !proven {
-                    offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                // Form 2: bound to a variable, used a few lines later — the risky base and its use
+                // split across statements (`let base = temp_dir(); ... base.join(...)`, or the same
+                // shape for a literal `"/tmp/..."` path).
+                let Some(ident) = let_binding_ident(line) else {
+                    continue;
+                };
+                let mut trace_end = (i + 1 + IDENT_TRACE_WINDOW).min(lines.len());
+                for (j, l) in lines.iter().enumerate().take(trace_end).skip(i + 1) {
+                    if is_fn_start(l) {
+                        trace_end = j;
+                        break;
+                    }
+                }
+                for (j, l) in lines.iter().enumerate().take(trace_end).skip(i + 1) {
+                    if line_uses_ident_as_path(l, ident) && !has_nearby_proof(&lines, j) {
+                        offenders.push(format!(
+                            "{rel}:{}: {} (bound at {}: {})",
+                            j + 1,
+                            l.trim(),
+                            i + 1,
+                            line.trim()
+                        ));
+                        break; // one report per binding is enough
+                    }
                 }
             }
         }
