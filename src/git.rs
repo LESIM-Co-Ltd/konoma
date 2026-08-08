@@ -152,6 +152,52 @@ impl FileStatus {
     }
 }
 
+/// Resolves `path` to the form the filesystem actually has on disk, so a status-map key matches
+/// the tree side (`build_dir` reads paths straight off `readdir`, never normalized).
+///
+/// **Why this is needed only on macOS**: APFS is normalization-*preserving* but lookup is
+/// normalization-*insensitive* — a file can be *found* by either the NFC or NFD spelling of its
+/// name, but the bytes actually *stored* on disk are whatever the file was created with (verified
+/// empirically: creating a name from raw NFC bytes leaves NFC on disk — this is not a blanket
+/// "APFS always stores NFD" rule). Decomposed (NFD) names are still common in practice, though,
+/// because git on macOS defaults `core.precomposeunicode` to true: it **writes worktree files in
+/// NFD** and then **recomposes to NFC when reporting** `git status` paths — so a single file's
+/// on-disk name (NFD) and its `git status --porcelain` name (NFC, the input to this function) can
+/// disagree.
+///
+/// `fs::canonicalize` resolves through the filesystem (a `realpath(3)` call) and returns whatever
+/// form is actually stored on disk, regardless of which form was used to query it — that is
+/// exactly the value the tree side already has, making this the *correct* fix rather than a
+/// convenient one: a fixed NFC→NFD string conversion would be wrong for a file that (as
+/// demonstrated above) is genuinely stored in NFC.
+///
+/// A deleted path no longer exists, so canonicalize fails there; falling back to the original path
+/// is harmless because there is no tree entry to match it against anyway.
+///
+/// Linux filesystems don't do any of this (byte sequences round-trip exactly, and
+/// `core.precomposeunicode` defaults to false there), so the extra `realpath` syscall per changed
+/// file would be pure overhead with no correctness benefit — gated to macOS only.
+///
+/// Also skips the syscall for an all-ASCII path: NFC and NFD normalization are the identity
+/// transform on ASCII text (there is nothing to (de)compose), so canonicalizing one can never
+/// change it, only cost a `realpath` call — worth avoiding on a repository with a large changed
+/// set, which is exactly where this function's per-file cost matters. The check is on the whole
+/// (already workdir-joined) path, not just the changed file's own leaf name, so a plain-ASCII file
+/// inside a non-ASCII-named ancestor directory still falls through to canonicalize — its rollup
+/// entries need resolving too.
+#[cfg(all(feature = "git", target_os = "macos"))]
+fn normalize_status_path(path: PathBuf) -> PathBuf {
+    match path.to_str() {
+        Some(s) if s.is_ascii() => path,
+        _ => path.canonicalize().unwrap_or(path),
+    }
+}
+
+#[cfg(all(feature = "git", not(target_os = "macos")))]
+fn normalize_status_path(path: PathBuf) -> PathBuf {
+    path
+}
+
 /// Returns the repository status as (absolute path -> kind). Discovers the repo containing `root`.
 /// Returns an empty map (= no markers) when not a repo / on failure / when the feature is disabled.
 ///
@@ -219,6 +265,7 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
         }
         let rel = PathBuf::from(std::ffi::OsStr::from_bytes(&rec[3..]));
         let abs = workdir.join(rel);
+        let abs = normalize_status_path(abs);
         rollup(&mut map, &workdir, &abs, classify_porcelain(x, y));
     }
     map
@@ -824,6 +871,66 @@ pub fn legend_from_rows(
     Vec::new()
 }
 
+/// Resolves the macOS-precomposed (NFC) relative pathspec `git2::DiffOptions::pathspec` needs for
+/// `rel`, which (per `normalize_status_path`'s doc comment above) may be spelled NFD when it came
+/// from a tree-selected (`canonicalize`/`read_dir`-sourced) path.
+///
+/// **Why this can't reuse `normalize_status_path`'s canonicalize-based approach**: that function
+/// resolves *through the filesystem* to get the on-disk (NFD) spelling; here we need the opposite
+/// — the spelling libgit2's diff pathspec matcher itself expects, which is **not** the on-disk
+/// form. Confirmed empirically with a probe: the git **CLI** transparently accepts either an
+/// NFD- or NFC-spelled pathspec argument (the same `core.precomposeunicode`-aware argv handling
+/// that makes `statuses()`'s porcelain output always NFC regardless of what's on disk), but
+/// `git2::DiffOptions::pathspec` requires an *exact* match against the tree/workdir iterator's own
+/// precomposed candidate names: an NFD-spelled pathspec against a real NFD-named modified file
+/// matched 0 deltas; the same string precomposed to NFC matched 1.
+///
+/// Resolved via a single **file-scoped** `git status --porcelain` call (the same machinery
+/// `statuses()` already uses, just narrowed to one pathspec — not a whole-tree scan) — asking git
+/// itself for the spelling it uses internally, rather than reimplementing Unicode NFC composition
+/// (which would need a real Unicode database, not just a Hiragana/Katakana special case). Skips
+/// the call entirely when `rel` is ASCII (the overwhelming common case, and NFC/NFD is a
+/// non-issue for ASCII), and falls back to `rel` unchanged if the CLI call fails or reports
+/// nothing for it (e.g. a path with no changes to report) — the subsequent pathspec-filtered diff
+/// then correctly comes back empty rather than panicking or scanning the whole tree.
+///
+/// Gated to macOS for the same reason as `normalize_status_path`: Linux's `core.precomposeunicode`
+/// defaults to false and filesystem names round-trip byte-for-byte, so there is no NFC/NFD
+/// distinction to resolve there, and this would be a pure-overhead extra process spawn.
+#[cfg(all(feature = "git", target_os = "macos"))]
+fn precomposed_pathspec(workdir: &Path, rel: &str) -> String {
+    if rel.is_ascii() {
+        return rel.to_string();
+    }
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "--no-optional-locks", // read-only background call (same etiquette as statuses())
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "-uall",
+            "--",
+            rel,
+        ])
+        .output();
+    let Ok(out) = out else {
+        return rel.to_string();
+    };
+    if !out.status.success() {
+        return rel.to_string();
+    }
+    let Some(rec) = out.stdout.split(|&b| b == 0).find(|r| r.len() >= 4) else {
+        return rel.to_string();
+    };
+    String::from_utf8_lossy(&rec[3..]).to_string()
+}
+
+#[cfg(all(feature = "git", not(target_os = "macos")))]
+fn precomposed_pathspec(_workdir: &Path, rel: &str) -> String {
+    rel.to_string()
+}
+
 /// Returns the working-tree diff of `file` (HEAD tree -> workdir, including the index) line by line.
 /// Untracked files are treated as all-Added lines, as is the no-HEAD (unborn) case.
 /// Returns an empty Vec when not a repo / on failure / when the feature is disabled. Never panics.
@@ -849,6 +956,7 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
         .unwrap_or(&file_abs)
         .to_path_buf();
     let rel_str = rel.to_string_lossy().to_string();
+    let rel_str = precomposed_pathspec(&workdir, &rel_str);
 
     // The HEAD tree (None = treated as an empty tree if unborn).
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
@@ -3147,6 +3255,133 @@ mod tests {
         cfg.set_str("commit.gpgsign", "false").ok();
     }
 
+    /// macOS-only regression (`normalize_status_path`): `git init` sets `core.precomposeunicode
+    /// = true` by default on macOS, which makes `git status --porcelain` report a changed file's
+    /// name **precomposed (NFC)** even though the bytes macOS actually wrote to disk for that name
+    /// are **decomposed (NFD)** — confirmed with a byte-level probe (see that function's doc
+    /// comment). Before the fix, `statuses()`'s map key stayed NFC, so a `HashMap::get` keyed by
+    /// the tree side's `read_dir`-sourced (on-disk, NFD) path never matched: the file showed no
+    /// `M` marker in the tree, and (see `app/tests.rs`'s
+    /// `nfd_named_file_status_and_diff_are_reachable_from_the_tree_path`) pressing `d` to open its
+    /// diff was rejected with "no changes" even though it really was modified.
+    #[cfg(all(feature = "git", target_os = "macos"))]
+    #[test]
+    fn nfd_named_file_status_is_found_via_the_tree_path() {
+        let dir = unique_tmp("konoma_nfd_status_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+
+        // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — a decomposed が.
+        let nfd_name = "\u{304B}\u{3099}_nfd.txt";
+        let canon = dir.canonicalize().unwrap();
+        let nfd_path = canon.join(nfd_name);
+        std::fs::write(&nfd_path, b"original\n").unwrap();
+        stage(&dir, &nfd_path).unwrap();
+        commit(&dir, "init").unwrap();
+
+        // Modify it — porcelain now reports it as changed, spelled NFC.
+        std::fs::write(&nfd_path, b"original\nchanged\n").unwrap();
+
+        // Guard against this test silently becoming a no-op if some future git/macOS combination
+        // stops precomposing: confirm porcelain really does report NFC bytes here, not NFD.
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["status", "--porcelain=v1", "-z"])
+            .output()
+            .unwrap();
+        let porcelain = String::from_utf8_lossy(&out.stdout);
+        let nfc_name = "\u{304C}_nfd.txt"; // が, precomposed: one codepoint, 3 UTF-8 bytes.
+        assert!(
+            porcelain.contains(nfc_name),
+            "テストの前提(core.precomposeunicode): git status は NFC で報告するはず: {porcelain:?}"
+        );
+        assert!(
+            !porcelain.contains(nfd_name),
+            "テストの前提: porcelain 出力に NFD 表記は含まれないはず: {porcelain:?}"
+        );
+
+        let map = statuses(&dir);
+        // The tree side always looks up with the on-disk (NFD) path — exactly `nfd_path` here,
+        // since that is the byte sequence the file was created with and still has on disk.
+        assert!(
+            map.contains_key(&nfd_path),
+            "ツリー側の NFD パスで status が引ける必要がある: {map:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Non-regression: an ASCII-named and a precomposed(NFC)-named file next to the NFD one above
+    /// still resolve correctly — `normalize_status_path`'s canonicalize round-trip is a no-op for
+    /// paths whose porcelain spelling already matches the on-disk spelling.
+    #[cfg(all(feature = "git", target_os = "macos"))]
+    #[test]
+    fn ascii_and_nfc_named_files_are_unaffected_by_nfd_normalization() {
+        let dir = unique_tmp("konoma_nfd_status_siblings_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+
+        let ascii_path = canon.join("ascii.txt");
+        // が, precomposed (NFC) — created directly with NFC bytes, which APFS preserves as given
+        // (it does not force NFD on write; see `normalize_status_path`'s doc comment).
+        let nfc_path = canon.join("\u{304C}_nfc.txt");
+        std::fs::write(&ascii_path, b"one\n").unwrap();
+        std::fs::write(&nfc_path, b"two\n").unwrap();
+        stage(&dir, &ascii_path).unwrap();
+        stage(&dir, &nfc_path).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::write(&ascii_path, b"one\nmodified\n").unwrap();
+        std::fs::write(&nfc_path, b"two\nmodified\n").unwrap();
+
+        let map = statuses(&dir);
+        assert_eq!(
+            map.get(&ascii_path),
+            Some(&FileStatus::Modified),
+            "ASCII 名は非退行: {map:?}"
+        );
+        assert_eq!(
+            map.get(&nfc_path),
+            Some(&FileStatus::Modified),
+            "NFC 名は非退行: {map:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A deleted file's `abs` path no longer exists on disk, so `canonicalize()` inside
+    /// `normalize_status_path` fails there — the fallback must keep the original (NFC-spelled,
+    /// straight off porcelain) path rather than dropping the entry or panicking. There is no tree
+    /// entry to match a deleted file against anyway, so this is harmless either way, but it must
+    /// not regress the status map itself (e.g. by silently losing the `Deleted` entry).
+    #[cfg(all(feature = "git", target_os = "macos"))]
+    #[test]
+    fn deleted_nfd_originated_file_falls_back_to_the_porcelain_path() {
+        let dir = unique_tmp("konoma_nfd_status_deleted_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+
+        let nfd_name = "\u{304B}\u{3099}_nfd.txt";
+        let nfd_path = canon.join(nfd_name);
+        std::fs::write(&nfd_path, b"original\n").unwrap();
+        stage(&dir, &nfd_path).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::remove_file(&nfd_path).unwrap();
+
+        let map = statuses(&dir);
+        // The path no longer exists, so canonicalize() fails inside normalize_status_path and the
+        // fallback keeps porcelain's own (NFC) spelling.
+        let nfc_path = canon.join("\u{304C}_nfd.txt");
+        assert_eq!(
+            map.get(&nfc_path),
+            Some(&FileStatus::Deleted),
+            "canonicalize 失敗時は元の(NFC)パスにフォールバックし、Deleted のまま残る必要がある: {map:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[cfg(feature = "git")]
     #[test]
     fn ignored_collapses_dirs_and_excludes_tracked() {
@@ -3250,6 +3485,40 @@ mod tests {
         assert!(
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い: {diff:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// macOS-only regression (`precomposed_pathspec`): calling `file_diff` with the tree's on-disk
+    /// (NFD) path for a modified file whose macOS-precomposed spelling differs must return actual
+    /// diff lines, not an empty Vec. Before the fix, `git2::DiffOptions::pathspec` was given the
+    /// NFD spelling verbatim, which does not match libgit2's own precomposed (NFC) tree/workdir
+    /// candidate names — the diff silently came back empty (`d` opened a diff view with nothing in
+    /// it, distinct from — and just as broken as — the "no changes" rejection
+    /// `normalize_status_path` fixes for `git_status_of`/`tree_open_git_diff`).
+    #[cfg(all(feature = "git", target_os = "macos"))]
+    #[test]
+    fn file_diff_finds_changes_for_an_nfd_named_file() {
+        let dir = unique_tmp("konoma_git_filediff_nfd");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — decomposed が.
+        let nfd_path = canon.join("\u{304B}\u{3099}_nfd.txt");
+        std::fs::write(&nfd_path, b"alpha\nbeta\n").unwrap();
+        stage(&dir, &nfd_path).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::write(&nfd_path, b"alpha\ngamma\n").unwrap();
+
+        let diff = file_diff(&dir, &nfd_path);
+        assert!(
+            diff.iter().any(|l| l.kind == DiffLineKind::Added),
+            "Added 行が無い(NFD パスの diff が空): {diff:?}"
+        );
+        assert!(
+            diff.iter().any(|l| l.kind == DiffLineKind::Removed),
+            "Removed 行が無い(NFD パスの diff が空): {diff:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

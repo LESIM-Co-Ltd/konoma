@@ -894,6 +894,65 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// macOS-only end-to-end regression for the NFC/NFD status-key mismatch (see `git.rs`'s
+/// `nfd_named_file_status_is_found_via_the_tree_path` for the lower-level `statuses()` version of
+/// this). `git init` sets `core.precomposeunicode=true` on macOS by default, so `git status
+/// --porcelain` reports a changed file's name **precomposed (NFC)** while the bytes macOS actually
+/// wrote to disk for that name are **decomposed (NFD)**. Before `git::normalize_status_path`,
+/// `git_status_of` — an exact `HashMap::get` keyed by the tree's `read_dir`-sourced (on-disk, NFD)
+/// path — never matched: the file showed no `M` marker in the tree, and pressing `d` to open its
+/// diff (`tree_open_git_diff`) was rejected with "no changes" even though it really was modified.
+#[cfg(all(feature = "git", target_os = "macos"))]
+#[test]
+fn nfd_named_file_status_and_diff_are_reachable_from_the_tree_path() {
+    let dir = unique_tmp("konoma_nfd_status_app_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+
+    let canon = dir.canonicalize().unwrap();
+    // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — decomposed が.
+    let nfd_name = "\u{304B}\u{3099}_nfd.txt";
+    let nfd_path = canon.join(nfd_name);
+    std::fs::write(&nfd_path, b"original\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    // Modify it — porcelain now reports it as changed, spelled NFC.
+    std::fs::write(&nfd_path, b"original\nchanged\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.refresh_git_if_needed();
+
+    assert!(
+        app.git_status_of(&nfd_path).is_some(),
+        "ツリー側の NFD パスで M が引ける必要がある(git_status_of)"
+    );
+
+    let idx = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path == nfd_path)
+        .expect("NFD 名のファイルがツリーに無い");
+    app.tab.selected = idx;
+    app.tree_open_git_diff();
+    assert!(
+        app.is_git_diff_preview(),
+        "d は「変更なし」で拒否されず diff が開く必要がある(tree_open_git_diff)"
+    );
+    assert!(!app.git_diff_lines().is_empty(), "diff 行がある");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn diff_horizontal_scroll_reveals_long_line() {
