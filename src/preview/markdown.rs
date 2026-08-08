@@ -4984,12 +4984,18 @@ fn footnote_defs(lines: &[&str], in_code: &[bool]) -> Vec<FootnoteDef> {
 fn footnote_def_text(block: &[&str]) -> Option<String> {
     let (_, first) = parse_footnote_def(block.first()?)?;
     let rest = &block[1..];
-    // Common indent over the non-blank continuation lines. A lazy continuation (indent 0) makes this
-    // 0 and the lines are used as-is.
+    // Common indent over the non-blank continuation lines, measured in *whitespace characters*
+    // (not bytes). `trim_start()`/`trim()` strip any Unicode-whitespace character (U+3000
+    // ideographic space, U+00A0 no-break space, ...), so a byte length measured on one line is not
+    // a valid offset on another: a byte count from a line that starts with an ASCII space can point
+    // inside a multi-byte whitespace character on a different line. A character count doesn't have
+    // that problem — stripping it below walks characters (`strip_leading_ws_chars`), so it can only
+    // ever land on a char boundary, on any line. A lazy continuation (indent 0) makes this 0 and the
+    // lines are used as-is.
     let indent = rest
         .iter()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.len() - l.trim_start().len())
+        .map(|l| l.chars().count() - l.trim_start().chars().count())
         .min()
         .unwrap_or(0);
     let mut text = first;
@@ -4998,9 +5004,24 @@ fn footnote_def_text(block: &[&str]) -> Option<String> {
         if l.trim().is_empty() {
             continue; // a blank line separating paragraphs inside the definition carries no indent
         }
-        text.push_str(&l[indent.min(l.len() - l.trim_start().len())..]);
+        let line_indent = l.chars().count() - l.trim_start().chars().count();
+        text.push_str(strip_leading_ws_chars(l, indent.min(line_indent)));
     }
     Some(text)
+}
+
+/// Strip the first `n` *characters* (not bytes) of whitespace from the front of `line`, returning
+/// the rest verbatim. Used by `footnote_def_text` to dedent by a character count derived from
+/// `trim_start()`: walking characters (via `char_indices`) keeps the resulting slice on a char
+/// boundary even when `n` is less than the line's own leading-whitespace run and that run mixes
+/// ASCII and multi-byte Unicode whitespace. Callers only ever pass `n <= line_indent` for a line
+/// whose `trim()` is non-empty, so `n` always lands inside (or right at the end of) the leading
+/// whitespace run, never past the end of the line.
+fn strip_leading_ws_chars(line: &str, n: usize) -> &str {
+    match line.char_indices().nth(n) {
+        Some((idx, _)) => &line[idx..],
+        None => "",
+    }
 }
 
 /// If the line is a footnote definition `[^id]: text`, return `(id, text)`.
@@ -8745,6 +8766,103 @@ plain body
     fn process_footnotes_no_definitions_is_noop() {
         let src = "just [^1] with no definition\n";
         assert_eq!(process_footnotes(src), src);
+    }
+
+    // Regression corpus (2026-08). Before the fix, `footnote_def_text`'s dedent step computed `indent` as the
+    // **byte length** of the shortest continuation line's leading whitespace
+    // (`l.len() - l.trim_start().len()`), then slices every other continuation line at
+    // `indent.min(own_indent)`. `str::trim_start()` strips any Unicode `White_Space` codepoint, not
+    // just ASCII space/tab, so a footnote definition with one continuation line indented by ASCII
+    // spaces and another indented by a multi-byte whitespace character (U+3000 IDEOGRAPHIC SPACE,
+    // U+00A0 NO-BREAK SPACE, …) computes an `indent` that lands *inside* the multi-byte character on
+    // the wide line, and `&l[indent..]` panics with "byte index N is not a char boundary". This runs
+    // on every Markdown preview (`md_footnotes` defaults to `true`) with no `catch_silent` around it,
+    // so it took the whole app down. These tests call `process_footnotes` itself — the same entry
+    // point production uses via `process_footnotes_traced` — rather than a hand-copy of the indent
+    // math, so a fix that changes the algorithm still has to satisfy them.
+
+    /// ASCII(2 bytes) then ideographic(3 bytes): `indent = min(2, 3) = 2`; slicing the wide line at
+    /// byte 2 lands inside the 3-byte U+3000 sequence (bytes 0..3).
+    #[test]
+    fn footnote_def_text_panics_on_ascii_then_ideographic_indent() {
+        let src = "ref[^a]\n\n[^a]: first line\n  second line\n\u{3000}third line\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("third line"), "out = {out:?}");
+    }
+
+    /// Same computation with the continuation lines swapped: the wide line is now first in the
+    /// block, so the panic fires on the loop's very first iteration instead of the second — this
+    /// isn't an artifact of which line happens to come second.
+    #[test]
+    fn footnote_def_text_panics_on_ideographic_then_ascii_indent() {
+        let src = "ref[^a]\n\n[^a]: first line\n\u{3000}second line\n  third line\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("third line"), "out = {out:?}");
+    }
+
+    /// U+00A0 NO-BREAK SPACE is 2 bytes and, like U+3000, is Unicode whitespace for
+    /// `trim_start()`. ASCII(1 byte) then NBSP(2 bytes): `indent = 1`; slicing the NBSP line at
+    /// byte 1 lands inside its 2-byte sequence (bytes 0..2).
+    #[test]
+    fn footnote_def_text_panics_on_ascii_then_nbsp_indent() {
+        let src = "ref[^a]\n\n[^a]: first line\n second line\n\u{a0}third line\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("third line"), "out = {out:?}");
+    }
+
+    /// `footnote_defs` asks pulldown-cmark to recognize `[^a]: …` as a definition regardless of
+    /// whether `[^a]` is referenced anywhere in the body, so an orphaned (unreferenced) definition
+    /// hits the exact same dedent bug.
+    #[test]
+    fn footnote_def_text_panics_even_when_the_definition_has_no_reference() {
+        let src = "[^a]: first line\n  second line\n\u{3000}third line\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("third line"), "out = {out:?}");
+    }
+
+    /// A continuation line consisting of a single U+3000 is **not** blank by CommonMark's blank-line
+    /// rule (only ASCII space/tab count there), so the parser keeps it inside the definition — but it
+    /// **is** blank by Rust's `str::trim()`, so `footnote_def_text`'s own
+    /// `if l.trim().is_empty() { continue }` branch fires and skips it safely (verified: this alone
+    /// does not panic). The next continuation line is still wide-indented, though, so the loop panics
+    /// right after — skipping the blank-per-trim line does not protect the rest of the loop.
+    #[test]
+    fn footnote_def_text_panics_even_past_a_trim_blank_continuation_line() {
+        let src = "ref[^a]\n\n[^a]: first line\n  second line\n\u{3000}\n\u{3000}fourth line\n";
+        let out = process_footnotes(src);
+        assert!(out.contains("fourth line"), "out = {out:?}");
+    }
+
+    /// Non-regression: continuation lines indented 4 and 2 ASCII spaces. `indent = min(4, 2) = 2`,
+    /// and every byte offset of an all-ASCII string is a valid char boundary, so this never panics.
+    /// Output captured from the current implementation (byte-for-byte) so a fix to the Unicode cases
+    /// above cannot silently change this one too.
+    #[test]
+    fn footnote_def_text_non_regression_all_ascii_mixed_widths() {
+        let src = "ref[^a]\n\n[^a]: first line\n    second line\n  third line\n";
+        assert_eq!(
+            process_footnotes(src),
+            "ref¹\n\n\n---\n\n1. first line\n     second line\n   third line\n"
+        );
+    }
+
+    /// Non-regression: a document with no footnote syntax at all takes `process_footnotes`'s
+    /// no-definitions-found fast path and is returned unchanged.
+    #[test]
+    fn footnote_def_text_non_regression_no_footnote_syntax_at_all() {
+        let src = "Just some ordinary text with no footnotes at all.\n";
+        assert_eq!(process_footnotes(src), src);
+    }
+
+    /// Non-regression: tab-indented continuation lines. A tab is one byte, so the same indent-clamp
+    /// math never lands mid-character. Output captured from the current implementation.
+    #[test]
+    fn footnote_def_text_non_regression_tab_indented_continuation() {
+        let src = "ref[^a]\n\n[^a]: first line\n\tsecond line\n\tthird line\n";
+        assert_eq!(
+            process_footnotes(src),
+            "ref¹\n\n\n---\n\n1. first line\n   second line\n   third line\n"
+        );
     }
 
     #[test]
