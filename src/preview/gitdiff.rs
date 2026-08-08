@@ -181,6 +181,55 @@ fn overlay_intra_bg(
     out
 }
 
+// Test-only counter of how many rows actually got syntax-highlighted (`highlight_line_by_ext`,
+// called from `diff_line_to_line` for the unified layout and `render_half` for side-by-side).
+// `highlight_line_by_ext` itself lives in `preview/code.rs` and can't be instrumented from here,
+// but every call to it from this module goes through exactly these two spots, so counting at the
+// call site measures the same thing: whether a render pass highlighted the whole diff or only the
+// rows it actually drew. See `diff_lines_range`'s doc comment for why this matters (measured
+// ~60µs/row — the dominant cost of rendering a large diff).
+#[cfg(test)]
+thread_local! {
+    static HIGHLIGHT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_highlight_calls() {
+    HIGHLIGHT_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn highlight_calls() -> usize {
+    HIGHLIGHT_CALLS.with(|c| c.get())
+}
+
+// `pub(crate)` re-exports of the two accessors above, for `e2e_tests.rs` (a sibling module, not a
+// descendant of this one, so the module-private `fn`s above aren't reachable from it). Kept as
+// thin wrappers rather than widening the originals' visibility so the unit tests in this file
+// (which call the module-private names directly) don't have to change. Still `#[cfg(test)]`-gated
+// — this thread-local counter must never exist in a release binary. Their only callers are the
+// `#[cfg(feature = "git")]` e2e tests (opening a git diff needs the `git` feature), so under
+// `--no-default-features` they'd otherwise be flagged dead code.
+#[cfg(test)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn reset_highlight_calls_for_test() {
+    reset_highlight_calls();
+}
+
+#[cfg(test)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn highlight_calls_for_test() -> usize {
+    highlight_calls()
+}
+
+#[cfg(test)]
+fn record_highlight_call() {
+    HIGHLIGHT_CALLS.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(not(test))]
+fn record_highlight_call() {}
+
 /// Turn a single DiffLine into a `Line` of gutter + change bar + colored body.
 /// `ext`/`theme` are for syntect coloring of the body. The background is overlaid on all spans by line kind.
 pub fn diff_line_to_line(
@@ -235,6 +284,7 @@ pub fn diff_line_to_line(
     let content = if dl.text.is_empty() {
         vec![Span::raw(String::new())]
     } else {
+        record_highlight_call();
         crate::preview::code::highlight_line_by_ext(&dl.text, ext, theme)
     };
     match (row_bg, strong_bg) {
@@ -245,29 +295,110 @@ pub fn diff_line_to_line(
     Line::from(spans)
 }
 
-/// Turn the whole diff (a sequence of DiffLines) into decorated lines. `default_ext` = syntax detection for a single file,
-/// `theme` = color scheme, `width` = inner width to make framed headers full width. File boundary headers are drawn framed, and
-/// **subsequent lines are syntax-highlighted with that file's extension** (per-file coloring in multi-file diffs).
-/// From pairs of changed lines, compute the "range of changed characters" and brighten the background only for those characters.
-pub fn diff_lines(
+/// The file extension in effect at diff row `at` — i.e., from the nearest file-header row
+/// strictly before `at`, or `default_ext` if there is none. Pure string/bool work (no
+/// highlighting), so a linear scan back to the start of the diff on every render call is cheap
+/// (measured ~50µs for 6,500 rows) next to the highlighting cost it lets `diff_lines_range` skip
+/// for everything before the visible window.
+fn ext_at(diff: &[DiffLine], default_ext: &str, at: usize) -> String {
+    diff[..at.min(diff.len())]
+        .iter()
+        .rev()
+        .find(|dl| is_file_header(dl))
+        .map(|dl| ext_from_path(&dl.text))
+        .unwrap_or_else(|| default_ext.to_string())
+}
+
+/// Render only the visible window `[start, start+count)` of the unified diff. A `DiffLine` always
+/// maps to exactly one output row (file headers included — see
+/// `unified_total_rows_is_diff_len_with_headers`), so `diff.len()` is already the total row count
+/// and this is a plain index slice; unlike side-by-side, no separate layout pass is needed first
+/// to find how many rows there are.
+///
+/// Syntax highlighting (`highlight_line_by_ext`, via `diff_line_to_line`) is the expensive part —
+/// measured ~60µs/row, ~400–760ms for a real 6,500-row diff when it ran over the whole document on
+/// every keypress (a keypress's render budget is ~60ms) — so it must run only for the rows
+/// actually returned. `intra_ranges` is still computed over the **whole** diff regardless of the
+/// window: the word-level highlight for a changed line depends on how many Removed/Added lines
+/// precede it *within its change block*, and that block can start above `start` — a window that
+/// starts mid-block would pair the wrong lines if `intra_ranges` only saw the slice (verified by
+/// `diff_lines_range_preserves_intra_pairing_when_window_splits_a_change_block`, which fails if
+/// this switches to slice-local pairing). That's fine: `intra_ranges` never highlights anything
+/// (no syntect), measured ~110µs for 6,500 rows — negligible next to what it lets us skip.
+pub fn diff_lines_range(
     diff: &[DiffLine],
     default_ext: &str,
     theme: &str,
     width: usize,
+    start: usize,
+    count: usize,
 ) -> Vec<Line<'static>> {
+    let start = start.min(diff.len());
+    let end = start.saturating_add(count).min(diff.len());
+    if start >= end {
+        return Vec::new();
+    }
     let ranges = intra_ranges(diff);
-    let mut cur_ext = default_ext.to_string();
-    diff.iter()
+    let mut cur_ext = ext_at(diff, default_ext, start);
+    diff[start..end]
+        .iter()
         .enumerate()
-        .map(|(i, dl)| {
+        .map(|(off, dl)| {
+            let i = start + off;
             if is_file_header(dl) {
-                cur_ext = ext_from_path(&dl.text); // subsequent lines are colored with this file's extension
+                cur_ext = ext_from_path(&dl.text); // subsequent lines in-window are colored with this file's extension
                 file_header_line(&dl.text, width)
             } else {
                 diff_line_to_line(dl, ranges[i], &cur_ext, theme)
             }
         })
         .collect()
+}
+
+/// Turn the whole diff (a sequence of DiffLines) into decorated lines — every row, highlighted.
+/// Used by the commit-detail view (an unwindowed, bounded diff) and by tests; the GitDiff preview
+/// itself uses `diff_lines_range` so it only highlights what's on screen. `default_ext` = syntax
+/// detection for a single file, `theme` = color scheme, `width` = inner width to make framed
+/// headers full width. File boundary headers are drawn framed, and **subsequent lines are
+/// syntax-highlighted with that file's extension** (per-file coloring in multi-file diffs). From
+/// pairs of changed lines, compute the "range of changed characters" and brighten the background
+/// only for those characters.
+pub fn diff_lines(
+    diff: &[DiffLine],
+    default_ext: &str,
+    theme: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    diff_lines_range(diff, default_ext, theme, width, 0, diff.len())
+}
+
+/// Maximum columns the **unified** body can be horizontally scrolled at display width `width`,
+/// without highlighting any row (mirrors `side_by_side_max_hscroll`, which is likewise
+/// highlight-free). A content row's rendered width is exactly the fixed gutter prefix (1
+/// change-bar column + 2×`GUTTER_W`-wide line numbers + 2 separating spaces) plus the raw text's
+/// display width — highlighting (`highlight_line_by_ext`) only re-styles substrings of `dl.text`,
+/// it never adds, removes, or reflows characters, so this needs no highlighting to match what
+/// `diff_line_to_line` actually renders (checked directly against `diff_lines`' built widths in
+/// `unified_max_hscroll_matches_the_widest_built_line`). A file-header row can be wider than
+/// `width` when the path itself doesn't fit (`file_header_line` still emits the whole label) — its
+/// width is computed with the same math `file_header_line` uses.
+pub fn unified_max_hscroll(diff: &[DiffLine], width: usize) -> usize {
+    const PREFIX_W: usize = 1 + GUTTER_W + 1 + GUTTER_W + 1; // bar + old + sp + new + sp
+    let max_content = diff
+        .iter()
+        .map(|dl| {
+            if is_file_header(dl) {
+                // Mirrors file_header_line's width math: "┌─" (2) + label + "┐" (1), padded to
+                // `width` with "─" fill when the label is narrower than that.
+                let label_w = UnicodeWidthStr::width(format!(" {} ", dl.text).as_str());
+                (2 + label_w + 1).max(width)
+            } else {
+                PREFIX_W + UnicodeWidthStr::width(dl.text.as_str())
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    max_content.saturating_sub(width)
 }
 
 // ---- side-by-side -------------------------------------------------
@@ -291,9 +422,57 @@ enum SideRow {
     Pair(Option<Half>, Option<Half>),
 }
 
-/// Turn the diff into **side-by-side (Zed-style)** lines. `width` = column count of the body area.
-/// Left = old (deletions in red), right = new (additions in green). Context appears identically on both sides (line numbers per side). Change blocks
-/// pair deletions/additions top-down and fill the remainder with empty cells. Each column has a fixed width, with a `│` separator in the middle.
+/// Total row count for the side-by-side layout at `default_ext`. Needed to clamp vertical scroll
+/// **before** slicing which rows to render — unlike the unified layout, a side-by-side row doesn't
+/// correspond 1:1 to a `DiffLine` (an unequal Removed/Added block folds several `DiffLine`s into
+/// fewer rows via `flush_block`, since a row is `max(removed_in_block, added_in_block)`, not the
+/// sum — see `diff_lines_side_by_side_range_matches_full_render_across_scroll_positions`, which
+/// checks `total < diff.len()` for a fixture built with an unequal block), so the total can't be
+/// read off `diff.len()`. Delegates to `build_side_rows`, which does the block-folding +
+/// `intra_ranges` but never calls `highlight_line_by_ext` (that only happens in
+/// `render_side_row`/`render_half`) — measured ~1.8ms for 6,500 rows (mostly the `Half` string
+/// clones), negligible next to the highlighting cost it lets the renderer skip.
+pub fn side_by_side_row_count(diff: &[DiffLine], default_ext: &str) -> usize {
+    build_side_rows(diff, default_ext).len()
+}
+
+/// Render only the visible window `[start, start+count)` of the side-by-side row layout (see
+/// `side_by_side_row_count` for why a row index isn't a `DiffLine` index). Highlighting
+/// (`highlight_line_by_ext`, via `render_side_row` → `render_half`) only runs for the rows in the
+/// window — the same windowing `diff_lines_range` does for the unified layout, and for the same
+/// reason (measured ~60µs/row × up to 2 halves/row).
+///
+/// `build_side_rows` (block-folding + `intra_ranges`, both highlight-free) still runs over the
+/// **whole** diff on every call, for the same correctness reason `diff_lines_range` keeps
+/// `intra_ranges` whole: a change block's Removed/Added pairing — and, here, its **row-folding**
+/// too — can start above `start`, so a partial view of the diff would produce a different (wrong)
+/// layout, not just a differently-highlighted one.
+pub fn diff_lines_side_by_side_range(
+    diff: &[DiffLine],
+    default_ext: &str,
+    theme: &str,
+    width: usize,
+    hscroll: usize,
+    start: usize,
+    count: usize,
+) -> Vec<Line<'static>> {
+    let sep_w = 1usize;
+    let left_w = width.saturating_sub(sep_w) / 2;
+    let right_w = width.saturating_sub(left_w + sep_w);
+    build_side_rows(diff, default_ext)
+        .into_iter()
+        .skip(start)
+        .take(count)
+        .map(|row| render_side_row(row, theme, left_w, right_w, hscroll))
+        .collect()
+}
+
+/// Turn the diff into **side-by-side (Zed-style)** lines — every row, highlighted. Used by the
+/// commit-detail view and tests; the GitDiff preview itself uses `diff_lines_side_by_side_range`
+/// so it only highlights what's on screen. `width` = column count of the body area. Left = old
+/// (deletions in red), right = new (additions in green). Context appears identically on both sides
+/// (line numbers per side). Change blocks pair deletions/additions top-down and fill the remainder
+/// with empty cells. Each column has a fixed width, with a `│` separator in the middle.
 pub fn diff_lines_side_by_side(
     diff: &[DiffLine],
     default_ext: &str,
@@ -301,13 +480,7 @@ pub fn diff_lines_side_by_side(
     width: usize,
     hscroll: usize,
 ) -> Vec<Line<'static>> {
-    let sep_w = 1usize;
-    let left_w = width.saturating_sub(sep_w) / 2;
-    let right_w = width.saturating_sub(left_w + sep_w);
-    build_side_rows(diff, default_ext)
-        .into_iter()
-        .map(|row| render_side_row(row, theme, left_w, right_w, hscroll))
-        .collect()
+    diff_lines_side_by_side_range(diff, default_ext, theme, width, hscroll, 0, diff.len())
 }
 
 /// Maximum columns the body can be horizontally scrolled in side-by-side view (= longest body display width − one column's body budget). For clamping on the render side.
@@ -456,6 +629,7 @@ fn render_half(
     let content = if h.text.is_empty() {
         Vec::new()
     } else {
+        record_highlight_call();
         crate::preview::code::highlight_line_by_ext(&h.text, &h.ext, theme)
     };
     let content = if let Some(base) = bg {
@@ -848,5 +1022,334 @@ mod tests {
                 "横スクロール後も幅 60 以内: {s}"
             );
         }
+    }
+
+    // ---- windowed (visible-range) rendering: the perf fix ---------------------------------
+    //
+    // `diff_lines`/`diff_lines_side_by_side` highlight (syntect, via `highlight_line_by_ext`)
+    // *every* row regardless of what's actually on screen — measured ~60µs/row, ~400–760ms for a
+    // real 6,500-row diff, opened every keypress (the frame budget is 60ms). `diff_lines_range` /
+    // `diff_lines_side_by_side_range` below must highlight only the rows they actually return.
+
+    /// A synthetic diff spanning `files` file headers, each with `lines_per_file` iterations
+    /// producing a mix of context / paired Removed+Added (word-level changes) / lone Added rows —
+    /// enough variety in one fixture to exercise file-header extension threading, intra-line
+    /// highlight pairing, and unequal remove/add block folding (side-by-side row count ≠
+    /// `diff.len()`) all at once.
+    fn synthetic_diff(files: usize, lines_per_file: usize) -> Vec<DiffLine> {
+        use DiffLineKind::*;
+        let exts = ["rs", "py"];
+        let mut diff = Vec::new();
+        for f in 0..files {
+            let ext = exts[f % exts.len()];
+            diff.push(DiffLine {
+                kind: Context,
+                old_no: None,
+                new_no: None,
+                text: format!("src/file{f}.{ext}"),
+            });
+            let mut old_no = 1u32;
+            let mut new_no = 1u32;
+            for i in 0..lines_per_file {
+                match i % 5 {
+                    0 | 1 => {
+                        diff.push(DiffLine {
+                            kind: Context,
+                            old_no: Some(old_no),
+                            new_no: Some(new_no),
+                            text: format!("    ctx line {i} in file {f}"),
+                        });
+                        old_no += 1;
+                        new_no += 1;
+                    }
+                    2 | 3 => {
+                        diff.push(DiffLine {
+                            kind: Removed,
+                            old_no: Some(old_no),
+                            new_no: None,
+                            text: format!("    let value = {i}; // old file {f}"),
+                        });
+                        old_no += 1;
+                        diff.push(DiffLine {
+                            kind: Added,
+                            old_no: None,
+                            new_no: Some(new_no),
+                            text: format!("    let value = {}; // new file {f}", i * 2),
+                        });
+                        new_no += 1;
+                    }
+                    _ => {
+                        diff.push(DiffLine {
+                            kind: Added,
+                            old_no: None,
+                            new_no: Some(new_no),
+                            text: format!("    // appended note {i} in file {f}"),
+                        });
+                        new_no += 1;
+                    }
+                }
+            }
+        }
+        diff
+    }
+
+    #[test]
+    fn windowed_range_only_highlights_visible_rows_unified() {
+        let diff = synthetic_diff(2, 400); // 1,000+ rows, far larger than any real viewport
+        reset_highlight_calls();
+        let window = diff_lines_range(&diff, "txt", "TwoDark", 100, 500, 40);
+        let calls = highlight_calls();
+        assert_eq!(window.len(), 40, "要求した高さぶんだけ返る");
+        assert!(
+            calls > 0 && calls <= 80,
+            "可視範囲(高さ40)を大きく超えてハイライトしている(全 {} 行中 {calls} 回): O(diff全体)に戻っていないか",
+            diff.len()
+        );
+    }
+
+    #[test]
+    fn windowed_range_only_highlights_visible_rows_side_by_side() {
+        let diff = synthetic_diff(2, 400);
+        reset_highlight_calls();
+        let window = diff_lines_side_by_side_range(&diff, "txt", "TwoDark", 100, 0, 300, 40);
+        let calls = highlight_calls();
+        assert_eq!(window.len(), 40, "要求した高さぶんだけ返る");
+        // Each side-by-side row can highlight up to two halves (old + new), so allow 2x headroom.
+        assert!(
+            calls > 0 && calls <= 160,
+            "可視範囲(高さ40×2列)を大きく超えてハイライトしている({calls} 回): O(diff全体)に戻っていないか"
+        );
+    }
+
+    /// Render `lines` (already the desired vertical slice; `Paragraph` gets `scroll=(0, hscroll)`)
+    /// into a `TestBackend` cell buffer for byte/style-exact comparison against a reference render.
+    fn render_to_buffer(
+        lines: Vec<Line<'static>>,
+        width: u16,
+        height: u16,
+        hscroll: u16,
+    ) -> ratatui::buffer::Buffer {
+        use ratatui::layout::Rect;
+        use ratatui::text::Text;
+        use ratatui::widgets::Paragraph;
+        use ratatui::Terminal;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            let para = Paragraph::new(Text::from(lines)).scroll((0, hscroll));
+            f.render_widget(para, area);
+        })
+        .unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// Same as `render_to_buffer`, but scrolls a **full, unsliced** line list by `scroll` (the
+    /// "old implementation" shape: build everything, let `Paragraph` clip it).
+    fn render_full_scrolled(
+        lines: Vec<Line<'static>>,
+        width: u16,
+        height: u16,
+        scroll: u16,
+        hscroll: u16,
+    ) -> ratatui::buffer::Buffer {
+        use ratatui::layout::Rect;
+        use ratatui::text::Text;
+        use ratatui::widgets::Paragraph;
+        use ratatui::Terminal;
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let mut term = Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        term.draw(|f| {
+            let para = Paragraph::new(Text::from(lines)).scroll((scroll, hscroll));
+            f.render_widget(para, area);
+        })
+        .unwrap();
+        term.backend().buffer().clone()
+    }
+
+    fn assert_buffers_match(
+        actual: &ratatui::buffer::Buffer,
+        reference: &ratatui::buffer::Buffer,
+        width: u16,
+        height: u16,
+        ctx: &str,
+    ) {
+        for y in 0..height {
+            for x in 0..width {
+                let a = &actual[(x, y)];
+                let r = &reference[(x, y)];
+                assert_eq!(
+                    (a.symbol(), a.fg, a.bg, a.modifier),
+                    (r.symbol(), r.fg, r.bg, r.modifier),
+                    "{ctx}: cell({x},{y}) がフル描画と不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn diff_lines_range_matches_full_render_across_scroll_positions_and_file_boundary() {
+        let diff = synthetic_diff(2, 400);
+        let total = diff.len();
+        let (iw, ih) = (72u16, 18u16);
+        let full = diff_lines(&diff, "txt", "TwoDark", iw as usize);
+        assert_eq!(full.len(), total, "diff_lines は1行=1DiffLineのまま");
+
+        let file2_header = diff
+            .iter()
+            .position(|dl| is_file_header(dl) && dl.text.ends_with(".py"))
+            .expect("2つ目のファイルヘッダがある");
+        let max_v = total.saturating_sub(ih as usize);
+        // 0=先頭 / 37=中間 / file2_header の直前・直後(ヘッダ跨ぎ)/ 末尾ページ。
+        let scrolls = [
+            0usize,
+            37,
+            file2_header.saturating_sub(2),
+            file2_header,
+            file2_header + 3,
+            max_v,
+        ];
+
+        for scroll in scrolls {
+            let window =
+                diff_lines_range(&diff, "txt", "TwoDark", iw as usize, scroll, ih as usize);
+            let actual = render_to_buffer(window, iw, ih, 0);
+            let reference = render_full_scrolled(full.clone(), iw, ih, scroll as u16, 0);
+            assert_buffers_match(&actual, &reference, iw, ih, &format!("scroll={scroll}"));
+        }
+    }
+
+    #[test]
+    fn diff_lines_range_preserves_intra_pairing_when_window_splits_a_change_block() {
+        // A single block: 30 Removed then 30 Added (each a word-level change on the same
+        // "value_K = …" line). If the windowed path computed `intra_ranges` only over the visible
+        // slice instead of the whole diff, a window that starts mid-block would lose the removed
+        // lines *before* it that determine the pairing offset, mispairing Removed/Added lines and
+        // producing a different (wrong) "changed characters" range than the full render.
+        use DiffLineKind::*;
+        let mut diff = Vec::new();
+        for k in 0..30u32 {
+            diff.push(DiffLine {
+                kind: Removed,
+                old_no: Some(k + 1),
+                new_no: None,
+                text: format!("value_{k} = OLD_{k};"),
+            });
+        }
+        for k in 0..30u32 {
+            diff.push(DiffLine {
+                kind: Added,
+                old_no: None,
+                new_no: Some(k + 1),
+                text: format!("value_{k} = NEW_{k}_CHANGED;"),
+            });
+        }
+        let (iw, ih) = (60u16, 20u16);
+        let full = diff_lines(&diff, "txt", "TwoDark", iw as usize);
+
+        // The window starts 15 rows in (mid-Removed-run) and ends 5 rows into the Added run.
+        let window = diff_lines_range(&diff, "txt", "TwoDark", iw as usize, 15, 20);
+        let actual = render_to_buffer(window, iw, ih, 0);
+        let reference = render_full_scrolled(full, iw, ih, 15, 0);
+        assert_buffers_match(&actual, &reference, iw, ih, "block-straddling window");
+    }
+
+    #[test]
+    fn diff_lines_side_by_side_range_matches_full_render_across_scroll_positions() {
+        let diff = synthetic_diff(2, 400);
+        let (iw, ih) = (72u16, 18u16);
+        let ext = "txt";
+        let full = diff_lines_side_by_side(&diff, ext, "TwoDark", iw as usize, 0);
+        let total = side_by_side_row_count(&diff, ext);
+        assert_eq!(
+            full.len(),
+            total,
+            "row_count はフル描画の行数と一致するはず"
+        );
+        assert!(
+            total < diff.len(),
+            "不揃いな remove/add ブロックの折り畳みで行数は diff.len() 未満になるはず(区別できているか): total={total} diff.len()={}",
+            diff.len()
+        );
+        let max_v = total.saturating_sub(ih as usize);
+        for scroll in [0usize, 20, max_v / 2, max_v] {
+            let window = diff_lines_side_by_side_range(
+                &diff,
+                ext,
+                "TwoDark",
+                iw as usize,
+                0,
+                scroll,
+                ih as usize,
+            );
+            let actual = render_to_buffer(window, iw, ih, 0);
+            let reference = render_full_scrolled(full.clone(), iw, ih, scroll as u16, 0);
+            assert_buffers_match(&actual, &reference, iw, ih, &format!("sbs scroll={scroll}"));
+        }
+    }
+
+    #[test]
+    fn diff_lines_side_by_side_range_matches_full_render_with_hscroll() {
+        // The body-only horizontal scroll (independent from the vertical window) must still line
+        // up: the windowed render at hscroll=H must equal the full render's row at the same
+        // logical row, also drawn at hscroll=H (side-by-side's hscroll is applied per-row inside
+        // `render_half`, not via Paragraph, so this exercises a different code path than the
+        // vertical-only test above).
+        let diff = synthetic_diff(1, 200);
+        let (iw, ih) = (50u16, 12u16);
+        let ext = "txt";
+        for hscroll in [0usize, 6] {
+            let full = diff_lines_side_by_side(&diff, ext, "TwoDark", iw as usize, hscroll);
+            let total = side_by_side_row_count(&diff, ext);
+            let max_v = total.saturating_sub(ih as usize);
+            let window = diff_lines_side_by_side_range(
+                &diff,
+                ext,
+                "TwoDark",
+                iw as usize,
+                hscroll,
+                max_v / 2,
+                ih as usize,
+            );
+            let actual = render_to_buffer(window, iw, ih, 0);
+            let reference = render_full_scrolled(full, iw, ih, (max_v / 2) as u16, 0);
+            assert_buffers_match(&actual, &reference, iw, ih, &format!("hscroll={hscroll}"));
+        }
+    }
+
+    #[test]
+    fn unified_max_hscroll_matches_the_widest_built_line() {
+        // Cross-check the highlight-free width estimate against the actual widths `diff_lines`
+        // (built with highlighting) produces — must match exactly, since highlighting only
+        // re-styles substrings and never changes displayed text or width.
+        let diff = synthetic_diff(2, 60);
+        for width in [40usize, 80, 120] {
+            let lines = diff_lines(&diff, "txt", "TwoDark", width);
+            let expected = lines
+                .iter()
+                .map(|l| l.width())
+                .max()
+                .unwrap_or(0)
+                .saturating_sub(width);
+            let actual = unified_max_hscroll(&diff, width);
+            assert_eq!(actual, expected, "width={width}");
+        }
+    }
+
+    #[test]
+    fn unified_total_rows_is_diff_len_with_headers() {
+        // Documents the invariant `diff_lines_range` relies on for O(1) total-row-count: one
+        // `DiffLine` (headers included) always maps to exactly one unified output row.
+        let diff = synthetic_diff(3, 25);
+        assert_eq!(diff_lines(&diff, "txt", "TwoDark", 80).len(), diff.len());
     }
 }

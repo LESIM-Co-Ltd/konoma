@@ -711,40 +711,56 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     let ext = app.current_preview_ext().to_string();
     let theme = app.cfg.ui.theme.code_theme.clone();
     let iw = inner.width as usize;
+    let ih = inner.height as usize;
     // Horizontal scroll: stacked layout uses Paragraph's horizontal offset; side-by-side shifts
     // **each column's body text only** internally (the gutter/separator stay fixed). Both use the
     // same preview_hscroll, operated with h/l·0/$.
+    //
+    // Only the rows actually on screen are ever syntax-highlighted (`highlight_line_by_ext`, via
+    // `diff_lines_range`/`diff_lines_side_by_side_range`) — that's the expensive step (measured
+    // ~60µs/row; ~400–760ms for a real 6,500-row diff when the whole document was highlighted on
+    // every keypress, vs. a ~60ms render budget). The total row count (needed to clamp vertical
+    // scroll *before* slicing which rows to render) and the horizontal scroll ceiling both come
+    // from highlight-free layout passes (`side_by_side_row_count`/`unified_max_hscroll`/
+    // `side_by_side_max_hscroll`), so per-frame cost stays O(viewport) instead of O(diff size).
     let (lines, para_hscroll) = if split {
         let max_h = crate::preview::gitdiff::side_by_side_max_hscroll(&diff, iw) as u16;
         app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
-        let lines = crate::preview::gitdiff::diff_lines_side_by_side(
+        let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
+        let max_v = total_rows.saturating_sub(ih) as u16;
+        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+        let lines = crate::preview::gitdiff::diff_lines_side_by_side_range(
             &diff,
             &ext,
             &theme,
             iw,
             app.tab.preview_hscroll as usize,
+            app.tab.preview_scroll as usize,
+            ih,
         );
         (lines, 0)
     } else {
-        let lines = crate::preview::gitdiff::diff_lines(&diff, &ext, &theme, iw);
-        let max_h = lines
-            .iter()
-            .map(|l| l.width())
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(iw) as u16;
+        let total_rows = diff.len(); // one DiffLine = one unified row, headers included
+        let max_v = total_rows.saturating_sub(ih) as u16;
+        app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+        let max_h = crate::preview::gitdiff::unified_max_hscroll(&diff, iw) as u16;
         app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
+        let lines = crate::preview::gitdiff::diff_lines_range(
+            &diff,
+            &ext,
+            &theme,
+            iw,
+            app.tab.preview_scroll as usize,
+            ih,
+        );
         (lines, app.tab.preview_hscroll)
     };
-    let total_rows = lines.len();
 
-    // Clamp vertical scroll so it never scrolls past the end (a diff never wraps = horizontal is truncated).
-    let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
-    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
-
+    // Vertical scroll is already applied by slicing to the visible window above (unlike before,
+    // when the full document was handed to Paragraph and Paragraph's own scroll clipped it).
     let para = Paragraph::new(Text::from(lines))
         .block(block)
-        .scroll((app.tab.preview_scroll, para_hscroll));
+        .scroll((0, para_hscroll));
     frame.render_widget(para, area);
 }
 

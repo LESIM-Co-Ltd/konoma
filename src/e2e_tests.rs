@@ -6341,6 +6341,148 @@ fn e2e_git_diff_layout_toggle_cycles_in_preview() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// =============================================================================
+// The windowed-diff perf fix: `render_gitdiff` must highlight only what's on screen.
+//
+// `windowed_range_only_highlights_visible_rows_{unified,side_by_side}` in gitdiff.rs prove
+// `diff_lines_range`/`diff_lines_side_by_side_range` themselves are windowed — called directly, not
+// through `render_gitdiff`/`ui::render`. That leaves the wiring unverified: nothing stops
+// `render_gitdiff` from going back to passing `(0, diff.len())` (the whole document) while the
+// windowed functions it calls stay correct in isolation — and the 16 tests that existed before this
+// one all stayed green when that exact regression was tried (see this file's own history). These
+// tests drive a real keystroke → `handle_key` → `ui::render` pass (the same path the run loop takes)
+// against a diff of 2,400+ rows and assert the highlight counter — which `diff_line_to_line`/
+// `render_half` bump on every actual `highlight_line_by_ext` call — stays in the viewport's order of
+// magnitude, not the diff's.
+// =============================================================================
+
+/// A repo with one file whose working-tree diff is far larger than any screen: every one of
+/// `n` lines is rewritten, so nothing folds into "unchanged" context — the diff is ~2n rows
+/// (n Removed + n Added), all real output from an actual `git diff` invocation (not a synthetic
+/// `Vec<DiffLine>` built in-process), so `App::git_diff_lines()` → `file_diff` → `render_gitdiff`'s
+/// real wiring runs end to end.
+#[cfg(feature = "git")]
+fn seed_huge_diff_repo(dir: &std::path::Path) {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    let n = 1200;
+    let original: String = (0..n).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dir.join("big.txt"), &original).unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+    // Rewrite every single line: nothing is left unchanged, so the working-tree diff has ~2n rows
+    // (n Removed immediately followed by n Added), far larger than any terminal's screen.
+    let changed: String = (0..n).map(|i| format!("line {i} changed\n")).collect();
+    std::fs::write(dir.join("big.txt"), &changed).unwrap();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
+    let dir = sandbox("gitdiff_unified_windowed");
+    seed_huge_diff_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("big.txt");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview(), "d で big.txt の diff を開く");
+    assert!(
+        !s.app.diff_is_split(200),
+        "既定は unified(diff.layout=\"unified\")"
+    );
+
+    // The diff itself must actually be far larger than the screen, or a small highlight count
+    // would prove nothing (it could just be a small diff).
+    let total_rows = s.app.git_diff_lines().len();
+    assert!(
+        total_rows > 2000,
+        "全1200行を書き換えたので diff は2000行超のはず(実際 {total_rows})"
+    );
+
+    // `s.select`/`s.key('d')` above already triggered draws while the highlight counter was
+    // running (it's already been counting since Sim::new's very first draw) — reset it and take
+    // exactly one more render pass to measure, mirroring the unit tests in gitdiff.rs.
+    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    s.draw();
+    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let vh = s.app.tab.preview_viewport as usize;
+    assert!(vh > 0, "diff プレビューの高さが描画で設定されているはず");
+    assert!(
+        calls > 0 && calls <= vh * 3,
+        "可視範囲(高さ{vh})を大きく超えてハイライトしている(全{total_rows}行中{calls}回): \
+         render_gitdiff が diff_lines_range に全行を渡す退行が起きていないか"
+    );
+
+    // Scrolling must not break the windowing: after `G` (to the very end), the count must stay in
+    // the same order of magnitude, not jump toward `total_rows`.
+    s.key('G');
+    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    s.draw();
+    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    assert!(
+        calls_at_bottom > 0 && calls_at_bottom <= vh * 3,
+        "末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
+    let dir = sandbox("gitdiff_split_windowed");
+    seed_huge_diff_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("big.txt");
+    s.key('d');
+    s.key('s'); // unified → side-by-side (unconditional at any width, unlike Auto)
+    assert!(
+        s.app.diff_is_split(1) && s.app.diff_is_split(200),
+        "s 一回で side-by-side に固定されるはず"
+    );
+    s.see("side-by-side");
+
+    let diff = s.app.git_diff_lines();
+    let ext = s.app.current_preview_ext().to_string();
+    let total_rows = crate::preview::gitdiff::side_by_side_row_count(&diff, &ext);
+    assert!(
+        total_rows > 1000,
+        "side-by-side の行数も画面よりずっと大きいはず(実際 {total_rows})"
+    );
+
+    // Each side-by-side row can highlight up to two halves (old + new) — same 2x headroom the
+    // unit tests in gitdiff.rs use.
+    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    s.draw();
+    let calls = crate::preview::gitdiff::highlight_calls_for_test();
+    let vh = s.app.tab.preview_viewport as usize;
+    assert!(vh > 0);
+    assert!(
+        calls > 0 && calls <= vh * 6,
+        "side-by-side でも可視範囲(高さ{vh})を大きく超えてハイライトしている(全{total_rows}行中{calls}回)"
+    );
+
+    // Scrolling in side-by-side layout must not break the windowing either.
+    s.key('G');
+    crate::preview::gitdiff::reset_highlight_calls_for_test();
+    s.draw();
+    let calls_at_bottom = crate::preview::gitdiff::highlight_calls_for_test();
+    assert!(
+        calls_at_bottom > 0 && calls_at_bottom <= vh * 6,
+        "side-by-side で末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn e2e_git_worktree_diff_toggle_layout_and_back() {
