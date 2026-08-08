@@ -1250,9 +1250,20 @@ fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
         return Err(anyhow!("git disabled (external.git = false)"));
     }
     let cwd = workdir_of(root);
-    let out = std::process::Command::new("git")
-        .current_dir(&cwd)
-        .args(args)
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&cwd).args(args);
+    // Test-only: `git_error_message` (below) matches on the *literal English* `fatal:`/`error:`
+    // prefix, which several tests assert leads the flash message. Git translates that line
+    // whenever a matching locale catalog is installed (a real, reachable environment — e.g.
+    // `LC_ALL=tr_TR.UTF-8` — not a hypothetical one), which would otherwise make those
+    // assertions flaky depending on which machine/locale runs the suite. Pin the *child*
+    // process's locale to `C` so the message is always the untranslated source string,
+    // regardless of the ambient environment the test binary itself runs under. `#[cfg(test)]`
+    // means this is compiled only into test binaries, never the shipped binary — real users
+    // still see git's messages translated to their own locale exactly as before.
+    #[cfg(test)]
+    cmd.env("LC_ALL", "C");
+    let out = cmd
         .output()
         .with_context(|| format!("failed to launch git {}", args.join(" ")))?;
     if out.status.success() {
@@ -2140,6 +2151,11 @@ fn classify(s: git2::Status) -> FileStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Every use of `unique_tmp` in this module is now behind `#[cfg(feature = "git")]` (see
+    // `background_reads_never_write_the_index`'s doc for why that test itself is gated) — gate the
+    // import too, or a `--no-default-features` build warns (and fails `-D warnings`) on it being
+    // unused.
+    #[cfg(feature = "git")]
     use crate::test_support::unique_tmp;
 
     /// `diff_contents` (the diff engine for the follow baseline diff) emits only the changed hunks
@@ -2177,6 +2193,16 @@ mod tests {
     /// Confirm that reading status while the stat cache is stale (content identical, only mtime
     /// updated) does not change .git/index. If this breaks, a `git pull` running while konoma is
     /// scanning status fails with "index.lock: File exists" (user report 2026-07-07).
+    ///
+    /// `#[cfg(feature = "git")]` (matching its sibling `external_git_disabled_returns_empty_for_a_
+    /// real_repo` right below): without the git feature, `statuses`/`ignored`/`file_diff` are the
+    /// no-git stubs, which unconditionally return empty/None regardless of the repo's real state —
+    /// `assert!(st.is_empty())` would then hold *by construction*, not because anything was
+    /// actually verified, while the fixture setup (the `run` closure, a raw `git` CLI invocation)
+    /// still unconditionally required a `git` binary on PATH for a no-git build to even pass this
+    /// test. Gating it means a `--no-default-features` test run needs no `git` binary at all — the
+    /// promise every other no-git test already keeps.
+    #[cfg(feature = "git")]
     #[test]
     fn background_reads_never_write_the_index() {
         let dir = unique_tmp("konoma_no_optional_locks_test");

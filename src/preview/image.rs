@@ -133,13 +133,36 @@ mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
 
+    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the
+    /// crate root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
+    /// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
+    /// silently skipped every assertion in every test that used it. Tolerant of the one case where
+    /// the fixture is legitimately absent — `samples/` is excluded from the published crate
+    /// (`Cargo.toml`'s `exclude`) — by returning `None` (same early-return as before) but saying so
+    /// loudly (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the
+    /// process later exits non-zero for any reason) instead of silently passing zero assertions.
+    fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
+        if p.exists() {
+            Some(p)
+        } else {
+            eprintln!(
+                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+            );
+            None
+        }
+    }
+
     #[test]
     fn decode_gif_real_sample_has_multiple_frames() {
-        let p = Path::new("samples/sample.gif");
-        if !p.exists() {
-            return; // skip in environments where samples has been excluded from the package
-        }
-        let frames = decode_gif(p).expect("sample.gif はアニメーションとしてデコードできるはず");
+        let Some(p) = sample_path_or_skip("sample.gif") else {
+            return;
+        };
+        let frames = decode_gif(&p).expect("sample.gif はアニメーションとしてデコードできるはず");
         assert!(frames.len() > 1, "アニメ GIF は 2 フレーム以上");
         // Each frame is already composited to the same canvas size, and delay is at or above the
         // rounded floor.
@@ -154,11 +177,10 @@ mod tests {
     fn decode_gif_inline_real_sample_has_multiple_frames() {
         // Same fixture/skip-guard as decode_gif_real_sample_has_multiple_frames — this exercises
         // the smaller inline budget (MAX_GIF_BYTES_INLINE) used for Markdown-embedded GIFs.
-        let p = Path::new("samples/sample.gif");
-        if !p.exists() {
-            return; // skip in environments where samples has been excluded from the package
-        }
-        let frames = decode_gif_inline(p)
+        let Some(p) = sample_path_or_skip("sample.gif") else {
+            return;
+        };
+        let frames = decode_gif_inline(&p)
             .expect("sample.gif はインライン経路でもアニメとしてデコードできるはず");
         assert!(frames.len() > 1, "アニメ GIF は 2 フレーム以上");
         let (w0, h0) = (frames[0].0.width(), frames[0].0.height());

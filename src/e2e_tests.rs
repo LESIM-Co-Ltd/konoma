@@ -459,6 +459,32 @@ fn canon(dir: &std::path::Path) -> std::path::PathBuf {
     dir.canonicalize().unwrap()
 }
 
+/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path. A bare
+/// `"samples/…"` resolves against the test binary's **cwd**, which is only the crate root by
+/// convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test --manifest-path …`, is
+/// a real, supported invocation) — the tests that used to build one directly (`std::fs::copy`
+/// straight off a bare relative path, with no existence check at all) would then hard-fail with an
+/// IO error from a cwd that has nothing to do with whether the fixture is actually missing.
+/// Tolerant of the one case where the fixture is legitimately absent — `samples/` is excluded from
+/// the published crate (`Cargo.toml`'s `exclude`) — by returning `None` so the caller can skip,
+/// same as the rest of this codebase's samples-gated tests, but saying so loudly (`eprintln!`,
+/// visible with `--nocapture` or in the captured-output dump whenever the process later exits
+/// non-zero for any reason) instead of silently passing zero assertions.
+fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("samples")
+        .join(name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+        );
+        None
+    }
+}
+
 /// A config with `code_bg = "none"` — the real setting that broke the first bg-based code
 /// detection (inline code / code blocks then have no background, only `fg(White)` / the `▎` gutter).
 /// Tests must exercise this so a bg-only skip can never regress unnoticed again.
@@ -1489,8 +1515,16 @@ fn e2e_git_hub_stage_and_diff() {
     // stage → the display changes (a staged mark). unstage reverts it.
     s.key('s');
     s.key('u');
-    // Enter opens the diff; q returns to the hub.
+    // Enter opens the diff; q returns to the hub. `s.see("diff")` alone has no detection power
+    // here: the hub's own footer legend (`StGitHubKeys`) always contains the literal substring
+    // "diff" (the "Enter:diff" hint), so it would still pass even if `Enter` were a complete
+    // no-op that left the hub showing. Assert the actual state transition via `is_git_diff_preview`
+    // instead — the same accessor used elsewhere in this file for the same purpose.
     s.enter();
+    assert!(
+        s.app.is_git_diff_preview(),
+        "Enter で全画面 diff プレビューに入る"
+    );
     s.see("diff");
     s.key('q');
     assert!(s.app.is_git_view(), "diff の q でハブへ戻る");
@@ -5278,8 +5312,11 @@ fn e2e_search_works_on_decorated_markdown_preview() {
 /// A surface without a search model (images, etc.) still rejects it and notifies via flash, as before.
 #[test]
 fn e2e_search_rejected_on_media_preview() {
+    let Some(fixture) = sample_path_or_skip("sample.svg") else {
+        return;
+    };
     let dir = sandbox("search_media");
-    std::fs::copy("samples/sample.svg", dir.join("pic.svg")).unwrap();
+    std::fs::copy(&fixture, dir.join("pic.svg")).unwrap();
     let mut s = Sim::new(&canon(&dir));
     s.select("pic.svg");
     s.enter();
@@ -8376,8 +8413,11 @@ fn e2e_ui_image_render_scale_shrinks_display_rect() {
 /// on-screen cell size for the very first display of a vector image.
 #[test]
 fn e2e_ui_svg_max_px_changes_apparent_display_size() {
+    let Some(fixture) = sample_path_or_skip("sample.svg") else {
+        return;
+    };
     let dir = sandbox("ui_svg_max_px_cfg");
-    std::fs::copy("samples/sample.svg", dir.join("p.svg")).unwrap();
+    std::fs::copy(&fixture, dir.join("p.svg")).unwrap();
     let root = canon(&dir);
     let inner = ratatui::layout::Rect::new(0, 0, 80, 20);
 
@@ -8830,8 +8870,11 @@ fn e2e_ui_mermaid_rows_changes_reserved_diagram_height() {
 
 #[test]
 fn e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled() {
+    let Some(fixture) = sample_path_or_skip("sample.svg") else {
+        return;
+    };
     let dir = sandbox("ui_busy_indicator_cfg");
-    std::fs::copy("samples/sample.svg", dir.join("p.svg")).unwrap();
+    std::fs::copy(&fixture, dir.join("p.svg")).unwrap();
     let root = canon(&dir);
 
     // default busy_indicator=true: while media is loading, the spinner+label shows.
@@ -9254,15 +9297,53 @@ fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// RAII guard: pins `NO_PROXY` to `*` for its lifetime and restores whatever the ambient
+/// environment had (or clears it) when dropped — including on an early return via a failed
+/// `assert!`/panic, so a test failure never leaves the process-global var permanently mutated for
+/// whatever else runs in the same test binary afterward. See `NoProxyGuard::new`'s doc for *why*.
+struct NoProxyGuard(Option<std::ffi::OsString>);
+
+impl NoProxyGuard {
+    /// Isolates the real fetch (`fetch_remote_bytes` in app.rs) from whatever proxy the *ambient*
+    /// environment happens to configure. `ureq`'s `Config::default()` — which `fetch_remote_bytes`
+    /// goes through unconditionally, it never calls `.proxy(..)` itself — bakes in
+    /// `Proxy::try_from_env()` at agent-construction time: if `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`
+    /// (any casing) is set, a request meant to stay on loopback is actually routed through that
+    /// proxy instead of connecting directly, and connection-refused-in-~1ms turns into "however
+    /// long the real proxy takes to answer or time out" — up to `fetch_remote_bytes`'s 20s
+    /// `timeout_global`, so a proxied environment would flake or hang the calling test, and worse,
+    /// a *reachable* proxy could make a "without ever reaching a real network" test actually reach
+    /// one. `NO_PROXY=*` (checked by `ureq` before any of the proxy vars are consulted — see
+    /// `Proxy::is_no_proxy`) makes every host bypass the proxy unconditionally, restoring the
+    /// loopback-only guarantee regardless of what the environment running the suite has configured.
+    fn new() -> Self {
+        let saved = std::env::var_os("NO_PROXY");
+        std::env::set_var("NO_PROXY", "*");
+        Self(saved)
+    }
+}
+
+impl Drop for NoProxyGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(v) => std::env::set_var("NO_PROXY", v),
+            None => std::env::remove_var("NO_PROXY"),
+        }
+    }
+}
+
 /// A remote (http/https) inline Markdown image, fetched by the real background thread
 /// (`attach_remote_md_loader`) — **without ever reaching a real network**: `http://127.0.0.1:1/...`
 /// fails via connection-refused near-instantly (confirmed separately: ~1ms, well under the
 /// `recv_timeout`), since nothing can bind privileged port 1, and the request never leaves the
 /// loopback interface. Confirms loading → failure → text-placeholder degrade (principle #3)
 /// through actual keystrokes and the real fetch thread, not the config-level synchronous-failure
-/// path (`[external] remote_images = false`) unit tests already cover.
+/// path (`[external] remote_images = false`) unit tests already cover. `NoProxyGuard` (above)
+/// makes that "never reaching a real network" claim hold regardless of the ambient proxy env.
 #[test]
 fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
+    let _no_proxy = NoProxyGuard::new();
+
     let dir = sandbox("remote_image_no_network");
     std::fs::write(
         dir.join("d.md"),

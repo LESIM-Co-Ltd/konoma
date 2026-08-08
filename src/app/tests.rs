@@ -14,6 +14,30 @@ fn item_target(it: &MdItem) -> &str {
     }
 }
 
+/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
+/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
+/// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
+/// silently skipped every assertion in every test that used it. Tolerant of the one case where the
+/// fixture is legitimately absent — `samples/` is excluded from the published crate (`Cargo.toml`'s
+/// `exclude`) — by returning `None` (same early-return as before) but saying so loudly
+/// (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the process
+/// later exits non-zero for any reason) instead of silently passing zero assertions.
+fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("samples")
+        .join(name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+        );
+        None
+    }
+}
+
 #[test]
 fn path_styles_format_as_expected() {
     let open = unique_tmp("konoma_app_test_open");
@@ -1250,17 +1274,16 @@ fn app_with_kitty() -> App {
 /// Off-thread media loading: on start loading=true, nothing is read synchronously, and the result is applied when it arrives.
 #[test]
 fn media_load_is_async_then_applied() {
-    let p = Path::new("samples/sample.svg");
-    if !p.exists() {
-        return; // skip in environments where samples are excluded
-    }
+    let Some(p) = sample_path_or_skip("sample.svg") else {
+        return;
+    };
     let mut app = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Svg(p.to_path_buf());
+    let kind = PreviewKind::Svg(p.clone());
     app.tab.preview_kind = Some(kind.clone());
 
-    app.start_media_load(&kind, p);
+    app.start_media_load(&kind, &p);
     // Right after starting: it's loading, and the image isn't in place yet (the UI isn't blocked).
     assert!(app.is_media_loading(), "開始直後は loading");
     assert!(!app.is_image_preview(), "まだ読み込めていない");
@@ -1368,11 +1391,10 @@ fn pdf_page_navigation_clamps_and_indicates() {
 /// resolves (no poppler needed), so this only skips without the bundled sample.
 #[test]
 fn pdf_next_page_renders_off_thread() {
-    let p = Path::new("samples/sample.pdf");
-    if !p.exists() {
-        return; // skip in environments where samples are excluded
-    }
-    let Some(pages) = crate::preview::pdf::page_count(p) else {
+    let Some(p) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let Some(pages) = crate::preview::pdf::page_count(&p) else {
         return; // safety net in case parsing fails unexpectedly (normally unreachable)
     };
     if pages < 2 {
@@ -1381,15 +1403,15 @@ fn pdf_next_page_renders_off_thread() {
     let mut app = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
-    let kind = PreviewKind::Pdf(p.to_path_buf());
+    let kind = PreviewKind::Pdf(p.clone());
     app.tab.preview_kind = Some(kind.clone());
-    app.tab.preview_path = Some(p.to_path_buf());
+    app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
     app.tab.pdf_pages = Some(pages);
     app.tab.pdf_page = 1;
 
     // Load page 1 and apply it.
-    app.start_media_load(&kind, p);
+    app.start_media_load(&kind, &p);
     let r1 = rx
         .recv_timeout(std::time::Duration::from_secs(15))
         .expect("page1 worker should return");
@@ -16271,17 +16293,16 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
 /// navigation was exposed at all.
 #[test]
 fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
-    let p = Path::new("samples/sample.pdf");
-    if !p.exists() {
-        return; // samples excluded from the published crate
-    }
+    let Some(p) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
     let dir = unique_tmp("konoma_pdf_disabled_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let mut cfg = Config::default();
     cfg.external.pdf = false;
     let mut app = App::new(dir.clone(), cfg).unwrap();
-    app.enter_preview(p);
+    app.enter_preview(&p);
     assert_eq!(
         app.tab.pdf_pages,
         Some(3),
@@ -16290,7 +16311,7 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
 
     // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
     let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
-    app2.enter_preview(p);
+    app2.enter_preview(&p);
     assert_eq!(
         app2.tab.pdf_pages,
         Some(3),
@@ -16305,10 +16326,9 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
 /// missing tool would), proving the gate itself short-circuits rather than a missing tool doing it.
 #[test]
 fn video_thumbnail_skipped_when_external_video_disabled() {
-    let p = Path::new("samples/sample.mp4");
-    if !p.exists() {
-        return; // samples excluded from the published crate
-    }
+    let Some(p) = sample_path_or_skip("sample.mp4") else {
+        return;
+    };
     let dir = unique_tmp("konoma_video_disabled_test");
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -16316,19 +16336,40 @@ fn video_thumbnail_skipped_when_external_video_disabled() {
     cfg.external.video = false;
     let mut app = App::new(dir.clone(), cfg).unwrap();
     app.picker = Some(test_picker());
-    app.enter_preview(p);
+    app.enter_preview(&p);
     assert!(
         app.image_src.is_none(),
         "video=false: the thumbnail job must not run"
     );
     assert!(!app.is_media_loading(), "no job left pending either");
 
-    // Sanity: with video enabled (default) and ffmpeg/ffmpegthumbnailer installed, a thumbnail IS produced.
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
-    app2.picker = Some(test_picker());
-    app2.enter_preview(p);
-    if app2.image_src.is_none() {
-        eprintln!("skip sanity: no video-thumbnail tool available (ffmpeg/ffmpegthumbnailer)");
+    // Sanity: with video enabled (default) and ffmpeg installed, a thumbnail IS produced — this is
+    // what actually proves the disabled-run assertions above are testing the *flag*, not just "no
+    // tool happens to be installed on this machine" (the two are indistinguishable from
+    // `image_src.is_none()` alone). Probe `ffmpeg -version` directly, the same way
+    // `preview/video.rs`'s own `extracts_correct_frame_when_ffmpeg_available` does, rather than
+    // inferring availability from whether the thumbnail happened to appear: without this
+    // independent probe, an `if image_src.is_none() { eprintln!(..) }` with no `else` verifies
+    // nothing either way — a broken gate (thumbnailing silently failing even when enabled) and a
+    // genuinely absent tool both print the same "skip" line and let the test pass.
+    let has_ffmpeg = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !has_ffmpeg {
+        eprintln!("SKIP sanity: ffmpeg not on PATH");
+    } else {
+        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+        app2.picker = Some(test_picker());
+        app2.enter_preview(&p);
+        assert!(
+            app2.image_src.is_some(),
+            "sanity: with the flag enabled and ffmpeg available, a thumbnail IS produced"
+        );
     }
 
     std::fs::remove_dir_all(&dir).ok();
@@ -16770,6 +16811,16 @@ fn collect_all_returns_ascending_path_order() {
     std::fs::write(dir.join("c.txt"), b"x").unwrap();
 
     let v = collect_all(&dir, false);
+    // Pin down the count first: `assert_eq!(paths, sorted, ..)` and `v.iter().all(..)` below both
+    // hold vacuously (trivially pass) for an empty `v` — an early-return bug in `collect_all` (or
+    // `collect_scan` underneath it) that silently walked nothing would still make this test go
+    // green. 4 entries: the two top-level files, the one directory, and the file nested inside it
+    // (`collect_all` walks recursively and returns directories as entries too — see its doc).
+    assert_eq!(
+        v.len(),
+        4,
+        "a.txt, b_dir, b_dir/z.txt, c.txt の4件が返るはず: {v:?}"
+    );
     let paths: Vec<_> = v.iter().map(|e| e.path.clone()).collect();
     let mut sorted = paths.clone();
     sorted.sort();

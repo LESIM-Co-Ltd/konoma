@@ -210,6 +210,30 @@ mod tests {
         dir
     }
 
+    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the
+    /// crate root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
+    /// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
+    /// silently skipped every assertion in every test that used it. Tolerant of the one case where
+    /// the fixture is legitimately absent — `samples/` is excluded from the published crate
+    /// (`Cargo.toml`'s `exclude`) — by returning `None` (same early-return as before) but saying so
+    /// loudly (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the
+    /// process later exits non-zero for any reason) instead of silently passing zero assertions.
+    fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
+        if p.exists() {
+            Some(p)
+        } else {
+            eprintln!(
+                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+            );
+            None
+        }
+    }
+
     fn write_zip(path: &Path, entries: &[(&str, &[u8], bool)]) {
         let f = File::create(path).unwrap();
         let mut zw = zip::ZipWriter::new(f);
@@ -453,11 +477,10 @@ mod tests {
     /// from the published crate; see `Cargo.toml`'s `exclude`), mirroring `preview/pdf.rs`'s tests.
     #[test]
     fn lists_the_bundled_sample_zip() {
-        let p = Path::new("samples/sample.zip");
-        if !p.exists() {
+        let Some(p) = sample_path_or_skip("sample.zip") else {
             return;
-        }
-        let t = list(p, ArchiveKind::Zip).expect("bundled sample.zip should list cleanly");
+        };
+        let t = list(&p, ArchiveKind::Zip).expect("bundled sample.zip should list cleanly");
         assert!(!t.rows.is_empty());
         assert!(t.rows.iter().any(|r| r[0].ends_with("hello.rs")));
     }
@@ -465,11 +488,10 @@ mod tests {
     /// See `lists_the_bundled_sample_zip`.
     #[test]
     fn lists_the_bundled_sample_tar_gz() {
-        let p = Path::new("samples/sample.tar.gz");
-        if !p.exists() {
+        let Some(p) = sample_path_or_skip("sample.tar.gz") else {
             return;
-        }
-        let t = list(p, ArchiveKind::TarGz).expect("bundled sample.tar.gz should list cleanly");
+        };
+        let t = list(&p, ArchiveKind::TarGz).expect("bundled sample.tar.gz should list cleanly");
         assert!(!t.rows.is_empty());
         assert!(t.rows.iter().any(|r| r[0] == "sample.csv"));
     }
