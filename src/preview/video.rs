@@ -195,9 +195,34 @@ mod tests {
     static PATH_MUTATING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Returns None when external tools are missing or the target is not a video (does not crash; safe fallback).
+    ///
+    /// The nonexistent-path half is a weak check on its own: a missing path returns None whether
+    /// or not `ffmpeg`/`ffmpegthumbnailer` are even installed (neither tool runs at all — `Command`
+    /// still spawns fine against a bogus argument, but exits non-zero immediately), so it can't
+    /// distinguish "the tool correctly rejected the input" from "no tool ever ran." The non-video
+    /// half closes that gap: it writes a real, *existing* plain-text file with a `.mp4` name (so
+    /// `path.is_file()` succeeds and both `run_ffmpegthumbnailer`/`run_ffmpeg` actually spawn and
+    /// process it) via `unique_tmp` — on a machine with ffmpeg installed (confirmed present here:
+    /// `ffmpeg version 8.1.1`), this exercises the *real* tool actually running and failing to parse
+    /// a non-video container, not merely "the path didn't exist." On a machine without either tool
+    /// this degrades to the same "no tool ever ran" case as the nonexistent-path half, which is
+    /// still a legitimate (if weaker) pass — principle #3, "unsupported/missing tool degrades safely."
     #[test]
     fn nonexistent_or_nonvideo_returns_none() {
-        assert!(thumbnail(Path::new("/no/such/video.mp4")).is_none());
+        assert!(
+            thumbnail(Path::new("/no/such/video.mp4")).is_none(),
+            "存在しないパスは None"
+        );
+
+        let dir = unique_tmp("konoma_video_nonvideo_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let not_a_video = dir.join("notes.mp4");
+        std::fs::write(&not_a_video, b"this is plain text, not an mp4 container\n").unwrap();
+        assert!(
+            thumbnail(&not_a_video).is_none(),
+            ".mp4 という名前だけの非動画ファイルは None(ffmpeg があれば実際に起動して拒否したことを検査する)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// If ffmpeg is on PATH, verify that a thumbnail can actually be extracted from a generated tiny video, down to **the extracted frame's

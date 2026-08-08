@@ -1,11 +1,23 @@
 //! Archive (zip / tar / tar.gz) listing preview: reads only entry **metadata** (name, size,
-//! modified time) and never extracts/decompresses content. The listing is handed back as a
-//! `TableData` and rendered through the exact same grid as CSV/TSV (`ui/table.rs`) — Name / Size /
-//! Modified — so cell navigation, in-preview search, and cell/row/column copy all come for free.
+//! modified time). The listing is handed back as a `TableData` and rendered through the exact same
+//! grid as CSV/TSV (`ui/table.rs`) — Name / Size / Modified — so cell navigation, in-preview
+//! search, and cell/row/column copy all come for free.
 //!
-//! **Security boundary (read this before touching this file).** The historical `tar` crate
-//! advisories (RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068) are all about
-//! `Archive::unpack`'s symlink / path-traversal handling. This module:
+//! **What "metadata only" actually means per format (read this before touching this file).**
+//! zip's central directory holds every entry's metadata up front, so `list_zip` never reads an
+//! entry's compressed data stream at all — see the zip-specific bullet below. **tar has no central
+//! directory**: metadata for entry N+1 only becomes readable after the file-format offset of entry
+//! N's body has been passed, so listing a tar stream necessarily walks past (`Seek`s past, for a
+//! plain `.tar`; otherwise reads-and-discards, for `.tar.gz`) every byte of every entry's content up
+//! to wherever the listing stops — "never extracts/decompresses content" is true in the sense that
+//! entry bodies are never handed to a decoder/written anywhere, but every tar-family byte up to that
+//! point is still read (and, for `.tar.gz`, gzip-decompressed) off the underlying reader. The two
+//! caps below (`MAX_ENTRIES` and, for `.tar.gz` only, `MAX_TAR_GZ_READ_BYTES`) exist specifically to
+//! bound that walk.
+//!
+//! **Security boundary.** The historical `tar` crate advisories (RUSTSEC-2018-0002 / 2021-0080 /
+//! 2026-0067 / 2026-0068) are all about `Archive::unpack`'s symlink / path-traversal handling. This
+//! module:
 //! - never calls `unpack`/`unpack_in`, or any zip API that reads an entry's *content*
 //!   (`by_index_raw` returns a raw, non-decompressing reader; we only call `.name()`/`.size()`/
 //!   `.is_dir()`/`.last_modified()` on it, never `.read()`);
@@ -15,10 +27,16 @@
 //!   embedded newlines and CJK-width-truncates arbitrary cell text, so a hostile name is just an
 //!   ugly row, never a filesystem operation);
 //! - never pre-allocates based on a declared/uncompressed size (`TableData` only ever stores the
-//!   formatted string `human_size(declared_size)`, never a buffer of that size) — no zip-bomb
-//!   amplification is possible because nothing is decompressed in the first place;
-//! - caps the number of listed entries (`MAX_ENTRIES`), so a central directory / tar stream that
-//!   claims (truthfully or not) an enormous entry count cannot keep the UI thread busy forever.
+//!   formatted string `human_size(declared_size)`, never a buffer of that size) — a listing can
+//!   never itself amplify a declared size into a large in-memory buffer;
+//! - caps the number of listed **entries** (`MAX_ENTRIES`, all three formats) and, for `.tar.gz`
+//!   specifically, the total **decompressed bytes read** while walking to find them
+//!   (`MAX_TAR_GZ_READ_BYTES` — see `list_tar_gz`'s doc comment for why tar's other two formats
+//!   don't need a separate byte cap), so neither a central directory / tar stream that claims
+//!   (truthfully or not) an enormous entry count, nor one whose early entries carry enormous bodies,
+//!   can keep the caller (synchronous, on the UI thread — see `app/table_actions.rs::load_table`,
+//!   which runs this on every tab switch back to an open archive tab) busy for an unbounded amount
+//!   of time.
 //!
 //! **Dependency footprint.** zip's default features pull optional decompression codecs (bzip2
 //! among them, which links a C library) that this module has no use for: `by_index_raw` returns
@@ -26,17 +44,19 @@
 //! `default-features = false` is sufficient (verified against Deflate-compressed fixtures — see
 //! the tests below and the real `samples/sample.zip`, which a plain `zip` CLI also compresses with
 //! Deflate). Likewise tar's `default-features = false` only drops its `xattr` default feature
-//! (extended-attribute *restore*, an unpack-only concern); listing entries via `Archive::entries`
-//! never touches it.
+//! (extended-attribute *restore*, an unpack-only concern); listing entries via `Archive::entries`/
+//! `Archive::entries_with_seek` never touches it.
 //!
 //! Every parse failure returns `Err` (never panics — the call site in `app/table_actions.rs`
 //! additionally wraps this in `catch_silent` as a second line of defense against a bug in the
 //! `zip`/`tar` crates themselves), so the caller degrades to the `[can not preview: <ext>]`-style
 //! hint rather than showing anything (design principle #3, "unsupported is handled safely").
 
+use std::cell::Cell;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::{bail, Context, Result};
 
@@ -48,6 +68,27 @@ use crate::preview::table::TableData;
 /// say so) — it also happens to bound how long a crafted central directory / tar stream that
 /// claims a huge entry count can keep us busy, which CSV rows don't need to worry about.
 pub const MAX_ENTRIES: usize = 100_000;
+
+/// Cap on how many **decompressed bytes** `list_tar_gz` will read while walking a `.tar.gz`'s
+/// entries, independent of `MAX_ENTRIES`. A gzip stream isn't `Seek`, so — unlike a plain `.tar`
+/// (`list_tar_seek`, which jumps straight to each header without reading the bytes in between) —
+/// getting from entry N's header to entry N+1's means reading and gzip-decompressing every byte of
+/// entry N's declared body via tar's own non-seek `skip()` (a 32KB-buffered read loop,
+/// `tar-0.4.46/src/archive.rs:555`). Without this, a handful of entries with enormous declared
+/// bodies could make a listing decompress an unbounded amount of data well before `MAX_ENTRIES`
+/// entries had even been seen (measured: a 3.0MB tar.gz that decompresses to 1GB took 289ms to
+/// list — and this runs synchronously on the UI thread on every tab switch back to an open archive
+/// tab, per `app/table_actions.rs::load_table`).
+///
+/// 64 MiB, matching this codebase's existing precedent for the same kind of bound —
+/// `preview::pdf::PAGE_COUNT_MAX_BYTES`, "how much may a synchronous, UI-thread-adjacent read
+/// process before giving up and calling the rest unknown/truncated." At the throughput measured
+/// above (1GB / 289ms ≈ 3.6 GB/s, admittedly on trivially-compressible filler), 64 MiB lands
+/// around ~18ms; even at a far less favorable ~200 MB/s (real-world, less-compressible content),
+/// it's still a hard ~320ms ceiling for a single archive-tab open, not the previous unbounded read.
+/// Once crossed, listing stops and the table is marked `truncated` — same UX as hitting
+/// `MAX_ENTRIES`, just triggered by bytes instead of row count.
+const MAX_TAR_GZ_READ_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Which archive format `path` resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,12 +144,17 @@ pub fn list(path: &Path, kind: ArchiveKind) -> Result<TableData> {
     let (entries, truncated) = match kind {
         ArchiveKind::Zip => list_zip(path)?,
         ArchiveKind::Tar => {
+            // `File` is `Seek`, so a plain `.tar` walks its entries via `entries_with_seek` —
+            // getting from one header to the next is a single `seek()` past the declared body
+            // size, never a read of the body itself. See `list_tar_seek`'s doc comment.
             let f = File::open(path).with_context(|| format!("open: {}", path.display()))?;
-            list_tar(f)?
+            list_tar_seek(f)?
         }
         ArchiveKind::TarGz => {
+            // A gzip stream can't `Seek`, so this instead bounds the walk by total bytes read.
+            // See `list_tar_gz`'s doc comment.
             let f = File::open(path).with_context(|| format!("open: {}", path.display()))?;
-            list_tar(flate2::read::GzDecoder::new(f))?
+            list_tar_gz(flate2::read::GzDecoder::new(f))?
         }
     };
     let rows: Vec<Vec<String>> = entries
@@ -164,35 +210,100 @@ fn list_zip(path: &Path) -> Result<(Vec<Entry>, bool)> {
     Ok((out, total > MAX_ENTRIES))
 }
 
-fn list_tar<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
+/// Extracts the display fields konoma cares about from a tar entry's header — shared between
+/// `list_tar_seek` and `list_tar_gz`, which differ only in how they get from one entry to the next,
+/// never in what they read off an entry once they have it. Generic over `R` (this reads only
+/// `entry.header()`/`entry.path_bytes()`, neither of which touch the entry's content reader, so it
+/// works the same whether `R` is the seekable `File` `list_tar_seek` uses or the
+/// budget-tracking wrapper `list_tar_gz` uses).
+fn entry_from_tar<R: Read>(entry: &tar::Entry<'_, R>) -> Entry {
+    // Raw bytes, lossily decoded — never a `Path`/filesystem join (see module docs). A tar entry
+    // name is not guaranteed to be valid UTF-8; lossy decoding degrades gracefully (principle #3)
+    // instead of erroring the whole listing over one odd entry.
+    let name = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+    let is_dir = entry.header().entry_type().is_dir();
+    let size = entry.header().size().unwrap_or(0);
+    let modified = entry
+        .header()
+        .mtime()
+        .ok()
+        .filter(|&t| t > 0)
+        .map(format_epoch_utc)
+        .unwrap_or_default();
+    Entry {
+        name,
+        size,
+        is_dir,
+        modified,
+    }
+}
+
+/// Lists a plain (uncompressed) `.tar`'s entries via `Archive::entries_with_seek` — requires
+/// `R: Seek` (a plain `File`, which every real `.tar` on disk is opened as). Getting from entry N's
+/// header to entry N+1's is then a single `seek()` past N's declared body size (tar's own
+/// `Archive::skip`, `tar-0.4.46/src/archive.rs:555`, prefers `Seek` when the archive was opened
+/// this way — see that function's `if let Some(seekable_archive) = ...` branch), never a read of
+/// N's body: unlike `list_tar_gz` below, this needs no separate byte cap, since walking past even
+/// an enormous entry costs the same as walking past a tiny one.
+fn list_tar_seek<R: Read + Seek>(reader: R) -> Result<(Vec<Entry>, bool)> {
     let mut archive = tar::Archive::new(reader);
     let mut out = Vec::new();
     let mut truncated = false;
-    for entry in archive.entries().context("read tar entries")? {
+    for entry in archive.entries_with_seek().context("read tar entries")? {
         let entry = entry.context("read tar entry")?;
         if out.len() >= MAX_ENTRIES {
             truncated = true;
             break;
         }
-        // Raw bytes, lossily decoded — never a `Path`/filesystem join (see module docs). A tar
-        // entry name is not guaranteed to be valid UTF-8; lossy decoding degrades gracefully
-        // (principle #3) instead of erroring the whole listing over one odd entry.
-        let name = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
-        let is_dir = entry.header().entry_type().is_dir();
-        let size = entry.header().size().unwrap_or(0);
-        let modified = entry
-            .header()
-            .mtime()
-            .ok()
-            .filter(|&t| t > 0)
-            .map(format_epoch_utc)
-            .unwrap_or_default();
-        out.push(Entry {
-            name,
-            size,
-            is_dir,
-            modified,
-        });
+        out.push(entry_from_tar(&entry));
+    }
+    Ok((out, truncated))
+}
+
+/// A `Read` wrapper that tallies bytes passed through it into a shared counter — the mechanism
+/// `list_tar_gz` uses to bound its total decompressed-byte read (see `MAX_TAR_GZ_READ_BYTES`).
+/// `Rc<Cell<_>>` rather than a plain field: the counter needs to be readable from `list_tar_gz`'s
+/// loop while the reader itself is owned by the `tar::Archive` it was handed to. `list_tar_gz` runs
+/// synchronously on whatever thread calls it (see `app/table_actions.rs::load_table`), so this
+/// never needs to be `Send`/`Sync`.
+struct CountingRead<R> {
+    inner: R,
+    total: Rc<Cell<u64>>,
+}
+
+impl<R: Read> Read for CountingRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.total.set(self.total.get() + n as u64);
+        Ok(n)
+    }
+}
+
+/// Lists a `.tar.gz`'s entries via `Archive::entries` (tar's non-seek path — a gzip decompression
+/// stream can't `Seek`). Getting from entry N's header to entry N+1's means reading and
+/// gzip-decompressing every byte of N's declared body through tar's own 32KB-buffered `skip()`, so
+/// this wraps the reader in [`CountingRead`] and checks the running total after every entry
+/// retrieved: once it crosses [`MAX_TAR_GZ_READ_BYTES`], the listing stops and is marked
+/// `truncated`, the same as crossing `MAX_ENTRIES`. The check happens *after* an entry's header is
+/// already in hand (mirroring how the `MAX_ENTRIES` check above always has), so the walk may
+/// overshoot the byte cap by up to one entry's worth of skip cost — the point is bounding the total
+/// to a small multiple of the cap, not hitting it exactly.
+fn list_tar_gz<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
+    let total = Rc::new(Cell::new(0u64));
+    let counted = CountingRead {
+        inner: reader,
+        total: Rc::clone(&total),
+    };
+    let mut archive = tar::Archive::new(counted);
+    let mut out = Vec::new();
+    let mut truncated = false;
+    for entry in archive.entries().context("read tar entries")? {
+        let entry = entry.context("read tar entry")?;
+        if out.len() >= MAX_ENTRIES || total.get() >= MAX_TAR_GZ_READ_BYTES {
+            truncated = true;
+            break;
+        }
+        out.push(entry_from_tar(&entry));
     }
     Ok((out, truncated))
 }
@@ -201,7 +312,111 @@ fn list_tar<R: Read>(reader: R) -> Result<(Vec<Entry>, bool)> {
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
-    use std::io::Write;
+    use std::io::{Cursor, SeekFrom, Write};
+
+    /// A `Read`(+`Seek`) wrapper that counts how many `.read()` calls pass through it. Test-only —
+    /// used solely by `seeking_past_a_tar_entrys_body_never_reads_it` below to make the
+    /// seek-vs-buffered-read difference in `tar-0.4.46/src/archive.rs:555`'s `skip()` directly
+    /// observable by call count, without timing.
+    struct CountingReadSeek<R> {
+        inner: R,
+        reads: usize,
+    }
+
+    impl<R: Read> Read for CountingReadSeek<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            self.inner.read(buf)
+        }
+    }
+
+    impl<R: Seek> Seek for CountingReadSeek<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// Root cause proof for the tar half of this module's tar/tar.gz split: a plain `.tar` is
+    /// `Seek` (any real `.tar` on disk, opened as a `File`, is), so `list_tar_seek`
+    /// (`Archive::entries_with_seek`) should get from one entry's header to the next with a single
+    /// `seek()` — never reading the entry's body at all — while the non-seek path
+    /// (`Archive::entries`, which `list_tar_gz` must fall back to, since a gzip decompression
+    /// stream isn't `Seek`) has to `read()` its way through the body in 32KB-buffered chunks
+    /// (`tar-0.4.46/src/archive.rs:555`'s `skip()`).
+    ///
+    /// Built directly against the `tar` crate's two entry-point APIs (not through this module's
+    /// `list_tar_seek`/`list_tar_gz` wrappers), so the comparison isolates exactly the mechanism
+    /// the tar/tar.gz split relies on — with a single large (5MB) entry followed by a small one,
+    /// large enough that a 32KB-buffered skip needs on the order of 150 read calls, versus
+    /// effectively none via seek. Both halves also assert the resulting entry listing is
+    /// unchanged (the same content konoma's `entry_from_tar` reads off either path), so this
+    /// doubles as the non-regression check for the seek switch.
+    #[test]
+    fn seeking_past_a_tar_entrys_body_never_reads_it() {
+        let big = vec![0x5Au8; 5 * 1024 * 1024];
+        let mut bytes = Vec::new();
+        {
+            let mut b = tar::Builder::new(&mut bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(big.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            b.append_data(&mut header, "big.bin", big.as_slice())
+                .unwrap();
+            let mut header2 = tar::Header::new_gnu();
+            header2.set_size(3);
+            header2.set_mode(0o644);
+            header2.set_cksum();
+            b.append_data(&mut header2, "small.bin", &b"abc"[..])
+                .unwrap();
+            b.finish().unwrap();
+        }
+
+        // Seek path (what `list_tar_seek` uses): entries_with_seek.
+        let mut seek_reader = CountingReadSeek {
+            inner: Cursor::new(bytes.clone()),
+            reads: 0,
+        };
+        let names: Vec<String> = tar::Archive::new(&mut seek_reader)
+            .entries_with_seek()
+            .unwrap()
+            .map(|e| String::from_utf8_lossy(&e.unwrap().path_bytes()).into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["big.bin", "small.bin"],
+            "seek 経路でも一覧の内容は(順序含め)変わらない"
+        );
+        assert!(
+            seek_reader.reads < 20,
+            "entries_with_seek がヘッダ以外に大量の read を発行している(skip が seek でなく read になっている疑い): reads={}",
+            seek_reader.reads
+        );
+
+        // Non-seek path (what `list_tar_gz` must use instead for a real, non-seekable gzip
+        // stream): same bytes, fresh counter — the contrast that proves the assertion above is
+        // actually measuring something, not just "any correct implementation has few reads."
+        let mut buffered_reader = CountingReadSeek {
+            inner: Cursor::new(bytes),
+            reads: 0,
+        };
+        let names2: Vec<String> = tar::Archive::new(&mut buffered_reader)
+            .entries()
+            .unwrap()
+            .map(|e| String::from_utf8_lossy(&e.unwrap().path_bytes()).into_owned())
+            .collect();
+        assert_eq!(
+            names2,
+            vec!["big.bin", "small.bin"],
+            "非 seek 経路でも一覧の内容は(順序含め)変わらない(対照実験)"
+        );
+        assert!(
+            buffered_reader.reads > 100,
+            "非 seek 経路は 5MB のボディを 32KB ずつ読み飛ばすので read が100回を超えるはず\
+             (対照になっていない=このテストが何も証明していない): reads={}",
+            buffered_reader.reads
+        );
+    }
 
     fn tmp_dir(name: &str) -> std::path::PathBuf {
         let dir = unique_tmp(&format!("konoma_archive_test_{name}"));
@@ -470,6 +685,48 @@ mod tests {
         let t = list(&p, ArchiveKind::Zip).unwrap();
         assert_eq!(t.rows.len(), MAX_ENTRIES, "MAX_ENTRIES で打ち切る");
         assert!(t.truncated, "打ち切ったら truncated=true");
+    }
+
+    /// Root cause: `.tar.gz` can't `Seek` (a gzip stream), so listing it walks `tar::Archive::
+    /// entries()`'s **non-seek** skip path (`tar-0.4.46/src/archive.rs:555`'s `skip()`, a 32KB-
+    /// buffered read loop over an entry's *entire* body) to get from one header to the next — and
+    /// the only existing bound (`MAX_ENTRIES`) counts *rows*, not the bytes skipped to reach them,
+    /// so a small compressed file whose entries carry large bodies could make a listing read an
+    /// unbounded amount of decompressed data before ever hitting `MAX_ENTRIES` (measured: a 3.0MB
+    /// tar.gz that decompresses to 1GB took 289ms to list — and `load_table` calls this
+    /// synchronously on the UI thread on every tab switch back to an open archive tab).
+    ///
+    /// 40 entries of 5MB each (200MB decompressed, comfortably compressible filler so the fixture
+    /// itself is fast to build) — any read-byte cap sized to keep this operation fast must truncate
+    /// well before all 40 are listed. Deliberately asserted by **count**, not by wall-clock time (a
+    /// prior CI break from a timing assertion — see `docs/STATUS.md`): `truncated` must be set, and
+    /// strictly fewer than all 40 entries must have made it into the table.
+    #[test]
+    fn targz_read_is_bounded_by_bytes_not_just_entry_count() {
+        let dir = tmp_dir("targz_byte_cap");
+        let p = dir.join("big.tar.gz");
+        let filler = vec![0x5Au8; 5 * 1024 * 1024]; // 5MB, highly compressible (repeated byte)
+        let entries: Vec<(&str, &[u8])> = (0..40)
+            .map(|i| -> (&str, &[u8]) {
+                // `i` doesn't need to be part of the name for this test, so a fixed name is fine —
+                // tar allows duplicate names (this is a listing, not a filesystem).
+                let _ = i;
+                ("f", filler.as_slice())
+            })
+            .collect();
+        write_tar_gz(&p, &entries);
+
+        let t = list(&p, ArchiveKind::TarGz).unwrap();
+        assert!(
+            t.truncated,
+            "200MB 分の tar.gz を全部読み切ってしまっている(バイト上限が効いていない)"
+        );
+        assert!(
+            t.rows.len() < entries.len(),
+            "40件全部が一覧化されている(バイト上限が効いていない): rows={}",
+            t.rows.len()
+        );
+        assert!(!t.rows.is_empty(), "上限が厳しすぎて1件も読めていない");
     }
 
     /// The repo's own bundled fixture (built by simply zipping a few other sample files with the

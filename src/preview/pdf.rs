@@ -522,6 +522,35 @@ mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
 
+    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
+    /// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
+    /// --manifest-path …`, or a built test binary invoked directly from a different cwd, is a real,
+    /// supported invocation — measured: running this crate's built test binary directly with
+    /// cwd=`/tmp` turned every `samples/sample.pdf`-gated test here into a silent, instant "0.00s,
+    /// N passed" that verified nothing), so it silently missed the fixture and silently skipped
+    /// every assertion in every test that used it. Tolerant of the one case where the fixture is
+    /// legitimately absent — `samples/` is excluded from the published crate (`Cargo.toml`'s
+    /// `exclude`) — by returning `None` (same early-return as before) but saying so loudly
+    /// (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the process
+    /// later exits non-zero for any reason) instead of silently passing zero assertions. Mirrors
+    /// `preview/archive.rs`/`preview/image.rs`/`e2e_tests.rs`/`app/tests.rs`'s identical helper
+    /// (all four already fixed by `8087219`; this module was the one left behind).
+    fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
+        if p.exists() {
+            Some(p)
+        } else {
+            eprintln!(
+                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+            );
+            None
+        }
+    }
+
     /// Returns None for a missing/non-PDF file (does not crash; safe fallback), regardless of
     /// `allow_external`. page_count too.
     #[test]
@@ -537,11 +566,10 @@ mod tests {
     /// preview from working at all, only prevent the pdftocairo/pdftoppm/qlmanage/sips fallback.
     #[test]
     fn renders_sample_pdf_via_hayro_with_no_external_tool_allowed() {
-        let p = Path::new("samples/sample.pdf");
-        if !p.exists() {
-            return; // skip when samples are excluded from the build environment
-        }
-        let img = render_page(p, 1, false).expect("hayro renders without any external process");
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let img = render_page(&p, 1, false).expect("hayro renders without any external process");
         assert!(
             img.width() > 0 && img.height() > 0,
             "ラスタライズ結果の寸法が 0"
@@ -553,11 +581,10 @@ mod tests {
     /// mermaid/math SVGs — the terminal background should show through, not force white).
     #[test]
     fn render_page_has_transparent_margins_and_opaque_ink() {
-        let p = Path::new("samples/sample.pdf");
-        if !p.exists() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
             return;
-        }
-        let img = render_page(p, 1, false).expect("renders");
+        };
+        let img = render_page(&p, 1, false).expect("renders");
         let rgba = img.to_rgba8();
         assert_eq!(
             rgba.get_pixel(0, 0)[3],
@@ -573,12 +600,11 @@ mod tests {
     /// installed on the machine running the test. The bundled sample is a known 3-page document.
     #[test]
     fn page_count_is_pure_rust_and_always_available() {
-        let p = Path::new("samples/sample.pdf");
-        if !p.exists() {
-            return; // skip when samples are excluded from the build environment (no fixture)
-        }
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
         assert_eq!(
-            page_count(p),
+            page_count(&p),
             Some(3),
             "poppler の有無に関わらずページ数が取れる"
         );
@@ -617,19 +643,19 @@ mod tests {
     /// `allow_external: false`. Out-of-range pages degrade to `None`, never a panic/garbage page.
     #[test]
     fn multipage_sample_counts_and_renders_each_page_via_hayro() {
-        let p = Path::new("samples/sample.pdf");
-        if !p.exists() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
             return;
-        }
-        let pages = page_count(p).expect("hayro-syntax parses the bundled sample without any tool");
+        };
+        let pages =
+            page_count(&p).expect("hayro-syntax parses the bundled sample without any tool");
         assert!(pages >= 1, "ページ数は 1 以上");
         for pg in 1..=pages {
-            let img = render_page(p, pg, false).expect("hayro renders every page without a tool");
+            let img = render_page(&p, pg, false).expect("hayro renders every page without a tool");
             assert!(img.width() > 0 && img.height() > 0, "page {pg} 寸法が 0");
         }
         // An out-of-range page is None (on the hayro side pages.get(idx) is None; external tools also produce no file).
         assert!(
-            render_page(p, pages + 1, true).is_none(),
+            render_page(&p, pages + 1, true).is_none(),
             "範囲外ページは None"
         );
     }
@@ -748,18 +774,17 @@ mod tests {
     /// whether a size guard exists at all.
     #[test]
     fn page_count_treats_oversized_files_as_unknown_rather_than_reading_them() {
-        let p = Path::new("samples/sample.pdf");
-        if !p.exists() {
-            return; // skip when samples are excluded from the build environment
-        }
-        let real_size = std::fs::metadata(p).unwrap().len();
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let real_size = std::fs::metadata(&p).unwrap().len();
         assert_eq!(
-            page_count_impl(p, real_size + 1),
+            page_count_impl(&p, real_size + 1),
             Some(3),
             "cap がファイルサイズより大きければ通常どおり数えられる"
         );
         assert_eq!(
-            page_count_impl(p, real_size - 1),
+            page_count_impl(&p, real_size - 1),
             None,
             "cap をファイルサイズ未満にすると(内容は妥当なままなのに)数えない=サイズガードが機能していない"
         );

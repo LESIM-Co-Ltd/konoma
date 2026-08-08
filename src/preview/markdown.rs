@@ -5798,6 +5798,52 @@ mod tests {
     use super::*;
     use crate::config::DEFAULT_CODE_BG;
 
+    /// Regression pin for `KonomaStyles::blockquote()` actually being *reached*: tui-markdown
+    /// (`tui-markdown-0.3.7/src/lib.rs:347`) really does call `self.styles.blockquote()` and push
+    /// it onto its line-style stack for a plain (non-alert) blockquote line, so the color reaches
+    /// the decorated `Line`'s own style, not just the `StyleSheet` impl sitting unused. Confirmed
+    /// by dumping the actual render output before writing this assertion (`render_markdown("> hello
+    /// quote\n", ...)` produced a line with `style=Style::new().green().italic()` and three spans
+    /// carrying no style of their own — i.e. the color/italic live on the *line*, which is exactly
+    /// what a terminal buffer merges onto every cell of that line when no span overrides it). A
+    /// plain paragraph line right next to it must stay unstyled, so this also pins that the
+    /// blockquote style doesn't leak onto unrelated lines.
+    #[test]
+    fn blockquote_line_is_rendered_green_and_italic() {
+        let src = "> hello quote\n\nplain paragraph\n";
+        let lines = render_markdown(src, 40, CodeStyle::default(), "TwoDark", false);
+        let joined =
+            |l: &Line<'static>| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
+        let quote = lines
+            .iter()
+            .find(|l| joined(l).contains("hello quote"))
+            .expect("blockquote 行が描画されていない");
+        assert_eq!(
+            quote.style.fg,
+            Some(Color::Green),
+            "引用行が緑で描画されていない: {:?}",
+            quote.style
+        );
+        assert!(
+            quote.style.add_modifier.contains(Modifier::ITALIC),
+            "引用行が斜体で描画されていない: {:?}",
+            quote.style
+        );
+        let plain = lines
+            .iter()
+            .find(|l| joined(l).contains("plain paragraph"))
+            .expect("通常の段落行が描画されていない");
+        assert_ne!(
+            plain.style.fg,
+            Some(Color::Green),
+            "引用のスタイルが無関係な段落へ漏れている"
+        );
+        assert!(
+            !plain.style.add_modifier.contains(Modifier::ITALIC),
+            "引用のスタイルが無関係な段落へ漏れている"
+        );
+    }
+
     /// Test-default code decoration (equivalent to the production default `ui.theme`: background on, badge right-aligned, lighter background).
     const BG: CodeStyle = CodeStyle {
         bg: Some(DEFAULT_CODE_BG),
