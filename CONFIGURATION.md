@@ -159,7 +159,8 @@ Omitting `render_as` (or setting it to anything other than `"image"`) captures t
 command's output and shows it as plain text through the ordinary windowed reader — a
 missing/failing command (binary not found, non-zero exit, `{out}` never produced)
 degrades safely to `[can not preview: <ext>]` with the reason attached, instead of
-crashing.
+crashing. `command = ""` (or a whitespace-only value) is treated the same way — no
+command to delegate to — never as "run the previewed file itself".
 
 Anything that matches no rule and doesn't look like text shows a safe
 `[can not preview: <ext>]` screen — konoma never crashes on unknown input, and missing

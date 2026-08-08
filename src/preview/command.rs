@@ -32,10 +32,22 @@ use anyhow::{bail, Context, Result};
 /// `config::EditorConfig`'s `build_argv`, which does the same for `{path}`/`{line}`). `{out}` has no
 /// such fallback — an output-producing command with no `{out}` token in its template legitimately
 /// means "capture stdout instead" (`run_capture`'s `uses_out=false` path).
+///
+/// An empty (`command = ""`) or whitespace-only template is **not** "a template with no `{path}`
+/// token" — it is no command at all, and must not fall into that same append-the-path fallback: doing
+/// so used to make `argv` exactly `[path]`, i.e. the previewed file itself became `argv[0]`, the
+/// program `run_detached`/`run_capture` launch (bug, 2026-08 — a config typo, or an empty string
+/// meant to disable a rule, executed the file being previewed instead of doing nothing). Returning an
+/// empty `Vec` here instead routes to those functions' own existing `argv.split_first().context(
+/// "empty command template")` `Err` — this module's own graceful-degradation path (see the module doc
+/// comment) — without ever spawning a process.
 pub fn build_argv(template: &str, path: &Path, out: &Path) -> Vec<String> {
+    let mut argv: Vec<String> = template.split_whitespace().map(str::to_string).collect();
+    if argv.is_empty() {
+        return argv;
+    }
     let p = path.to_string_lossy().to_string();
     let o = out.to_string_lossy().to_string();
-    let mut argv: Vec<String> = template.split_whitespace().map(str::to_string).collect();
     let mut path_sub = false;
     for a in argv.iter_mut() {
         if a.contains("{path}") {
@@ -342,6 +354,40 @@ mod tests {
         );
     }
 
+    /// Root cause: an empty (`command = ""`) or whitespace-only (`"   "`) template used to fall
+    /// through to the same "no `{path}` token was substituted" fallback as a real template like
+    /// `"tool"` — `argv` starts empty, `path_sub` stays `false`, and the trailing `if !path_sub {
+    /// argv.push(p); }` then made the previewed file's own path the **entire** argv, i.e. `argv[0]`
+    /// — the program `run_detached`/`run_capture` launch. A config typo (or an empty string meant to
+    /// "turn a rule off") would launch the previewed file as a process instead of doing nothing.
+    /// `EditorConfig::build_argv` (`config::mod`) has the same `{path}`-fallback shape but is never
+    /// called with an empty template (the editor always resolves to at least `vim`), so this class of
+    /// bug is specific to a user-authored `command` string, which can legitimately be empty.
+    ///
+    /// An empty template has to mean "no command to delegate to", not "run the path" — see the
+    /// end-to-end test below for the same claim proven by actually running the result.
+    #[test]
+    fn build_argv_empty_or_whitespace_template_produces_no_argv() {
+        assert_eq!(
+            build_argv("", Path::new("/a/b.sh"), Path::new("/tmp/o")),
+            Vec::<String>::new(),
+            "空テンプレートが argv=[プレビュー対象のパス] になっている(実行されてしまう)"
+        );
+        assert_eq!(
+            build_argv("   ", Path::new("/a/b.sh"), Path::new("/tmp/o")),
+            Vec::<String>::new(),
+            "空白のみのテンプレートも同様に実行対象になってしまっている"
+        );
+        // A template with only unrelated tokens (no {path}/{out}) is unaffected — it should still
+        // append the path (the ordinary, documented fallback), which is what makes the bug's fallout
+        // dangerous: this codepath is *supposed* to append the path when the template is a real
+        // command that just forgot `{path}`.
+        assert_eq!(
+            build_argv("cat", Path::new("/a/b.sh"), Path::new("/tmp/o")),
+            vec!["cat", "/a/b.sh"]
+        );
+    }
+
     // ---- run_capture (unix-only: relies on `cat`/`true`/`false`/`yes`, no `sh -c`) ------------
 
     #[cfg(unix)]
@@ -418,6 +464,48 @@ mod tests {
         let err = run_capture(&argv, &out, true).unwrap_err();
         assert!(err.to_string().contains(&out.to_string_lossy().to_string()));
         assert!(!out.exists());
+    }
+
+    /// End-to-end proof of the empty-template fix, run exactly the way the app runs a delegated
+    /// command (`build_argv` then `run_capture`) rather than just inspecting `build_argv`'s return
+    /// value: the "previewed file" here is itself an executable script that leaves a marker file if
+    /// it is ever actually launched. With the pre-fix `build_argv`, `argv` was `[script_path]` and
+    /// `run_capture` would spawn and run it (Ok result, marker created) — previewing a file with
+    /// `command = ""` executed that file. After the fix, `argv` is empty and `run_capture` fails at
+    /// its very first line (`argv.split_first().context("empty command template")`) before any
+    /// process is ever spawned.
+    #[cfg(unix)]
+    #[test]
+    fn empty_template_end_to_end_never_executes_the_previewed_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let marker = tmp("empty_template_marker.txt");
+        let _ = std::fs::remove_file(&marker);
+        let script = tmp("empty_template_script.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let out = tmp("empty_template_out.txt");
+        let _ = std::fs::remove_file(&out);
+
+        // `command = ""` — an empty template, exactly as a user could write in config.example.toml.
+        let argv = build_argv("", &script, &out);
+        let result = run_capture(&argv, &out, false);
+
+        assert!(
+            result.is_err(),
+            "空テンプレートは「委譲するコマンドが無い」エラーになるべき: {result:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "空テンプレートでプレビュー対象自身(スクリプト)が実際に実行されてしまった"
+        );
+
+        std::fs::remove_file(&script).ok();
+        std::fs::remove_file(&marker).ok();
+        std::fs::remove_file(&out).ok();
     }
 
     // ---- run_capture: `uses_out=true` also accepts a suffixed sibling (`<out>.<ext>`) -----------
