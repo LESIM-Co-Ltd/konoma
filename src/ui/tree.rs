@@ -404,7 +404,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             tr(app.lang, Msg::StChangedOnly),
             app.tab.entries.len()
         ),
-        (None, Some(branch)) => format!(" {}  ⎇ {} ", app.format_path(&root), branch),
+        (None, Some(branch)) => format!(
+            " {}  {} {} ",
+            app.format_path(&root),
+            icons::branch_marker(icons_on),
+            branch
+        ),
         (None, None) => format!(" {} ", app.format_path(&root)),
     };
 
@@ -418,6 +423,84 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
+
+    // --- root title branch marker (⎇) gated by ui.icons -------------------------------------
+    // U+2387 ALTERNATIVE KEY SYMBOL (⎇) is absent from Menlo/SF Mono/Monaco/Courier/Andale
+    // Mono/Courier New/HackGen Console NF, so macOS always falls back to Apple Symbols — whose
+    // glyph advance (~1.033em) is ~1.7x a Menlo cell (~0.602em). Before this fix the glyph was
+    // emitted unconditionally regardless of `ui.icons`, so a terminal without a matching
+    // symbol-font fallback would show tofu, and `ui.icons=false` could not suppress it either.
+    #[cfg(feature = "git")]
+    #[test]
+    fn root_title_branch_marker_gated_by_icons() {
+        let dir = unique_tmp("konoma_tree_title_branch_marker_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} 失敗");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t.t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        git(&["branch", "-M", "trunk"]);
+
+        // icons=true (default): the branch glyph appears next to the branch name.
+        let mut app = App::new(
+            dir.canonicalize().unwrap(),
+            crate::config::Config::default(),
+        )
+        .unwrap();
+        app.refresh_git_if_needed();
+        assert_eq!(app.git_branch(), Some("trunk"), "ブランチ名が取れていない");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 8)).unwrap();
+        term.draw(|f| render(f, &mut app, f.area())).unwrap();
+        let s: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            s.contains('⎇'),
+            "icons=true でブランチアイコンが出ない: {s}"
+        );
+        assert!(s.contains("trunk"), "ブランチ名が出ない: {s}");
+
+        // icons=false: the Unicode glyph never appears (would spill into the next cell on a
+        // terminal without a matching symbol-font fallback); the ASCII label takes its place.
+        let mut cfg = crate::config::Config::default();
+        cfg.ui.icons = false;
+        let mut app2 = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+        app2.refresh_git_if_needed();
+        let mut term2 = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 8)).unwrap();
+        term2.draw(|f| render(f, &mut app2, f.area())).unwrap();
+        let s2: String = term2
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s2.contains('⎇'),
+            "icons=false なのにブランチアイコンが出ている: {s2}"
+        );
+        assert!(
+            s2.contains("br:"),
+            "icons=false で ASCII 代替(br:)が出ない: {s2}"
+        );
+        assert!(s2.contains("trunk"), "ブランチ名が出ない: {s2}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn highlight_match_marks_query_in_yellow() {

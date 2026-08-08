@@ -13,16 +13,23 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::i18n::tr;
+use crate::ui::icons;
 
 /// Render the Git view's change list full-screen, in the content area instead of tree/preview.
 pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
+    let icons_on = app.cfg.ui.icons;
     let entries = app.git_view_entries();
     let sel = app.git_view_sel();
 
-    // Title: " Git ⎇ <branch>  (N) ". Just the glyph when there's no branch.
+    // Title: " Git ⎇ <branch>  (N) " (icons=false: " Git br: <branch>  (N) "). Just the glyph/label
+    // when there's no branch.
     let title = match app.git_branch() {
-        Some(b) => format!(" Git ⎇ {b}  ({}) ", entries.len()),
+        Some(b) => format!(
+            " Git {} {b}  ({}) ",
+            icons::branch_marker(icons_on),
+            entries.len()
+        ),
         None => format!(" Git  ({}) ", entries.len()),
     };
 
@@ -138,11 +145,16 @@ fn line_with_right_meta(
 /// The selected row is reversed. Scrolls vertically to keep the selection visible (same naive follow as tree/changes).
 pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
+    let icons_on = app.cfg.ui.icons;
     let entries = app.git_log_entries();
     let sel = app.git_log_sel();
 
     let title = match app.git_branch() {
-        Some(b) => format!(" Git log ⎇ {b}  ({}) ", entries.len()),
+        Some(b) => format!(
+            " Git log {} {b}  ({}) ",
+            icons::branch_marker(icons_on),
+            entries.len()
+        ),
         None => format!(" Git log  ({}) ", entries.len()),
     };
 
@@ -341,12 +353,23 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::layout::{Constraint, Layout};
     use ratatui::style::{Color, Modifier};
     let lang = app.lang;
+    let icons_on = app.cfg.ui.icons;
     let rows = app.git_graph_rows();
     let sel = app.git_graph_sel();
     let n = rows.iter().filter(|r| r.commit.is_some()).count();
-    // While a base branch is pinned (Phase 2), also show base: <name> in the title.
+    // While a base branch is pinned (Phase 2), also show base: <name> in the title. The "base:"
+    // word is always spelled out (already self-descriptive in English); only the leading glyph is
+    // gated by `ui.icons`, so icons=false never duplicates the wording ("⌖ base:" → "base:", not
+    // "base: base:").
     let title = match app.git_graph_base_label() {
-        Some(b) => format!(" Git graph  ({n})  ⌖ base: {b} "),
+        Some(b) => {
+            let icon = if icons_on {
+                format!("{} ", icons::base_icon())
+            } else {
+                String::new()
+            };
+            format!(" Git graph  ({n})  {icon}base: {b} ")
+        }
         None => format!(" Git graph  ({n}) "),
     };
 
@@ -481,13 +504,23 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             if k > 0 {
                 spans.push(Span::from("  "));
             }
-            // HEAD=⎇+bold / base=⌖ / anything else=●. The color is that lane's color.
+            // HEAD=⎇(icons=false: "br:")+bold / base=⌖(icons=false: "base:") / anything else=●.
+            // The color is that lane's color. A space always separates the marker from the dot
+            // (never glued directly onto it) — the marker glyph's fallback rendering can be wider
+            // than 1 cell (see `icons::branch_marker`'s doc), and without the space it can spill
+            // onto, and visually merge with, the dot.
             if e.is_head {
-                spans.push(Span::styled("⎇", bold));
+                spans.push(Span::styled(icons::branch_marker(icons_on), bold));
+                spans.push(Span::from(" "));
                 spans.push(Span::styled("●", bold.fg(e.color)));
                 spans.push(Span::styled(format!(" {}", e.name), bold));
             } else if e.is_base {
-                spans.push(Span::styled("⌖●", Style::new().fg(e.color)));
+                spans.push(Span::styled(
+                    icons::base_marker(icons_on),
+                    Style::new().fg(e.color),
+                ));
+                spans.push(Span::from(" "));
+                spans.push(Span::styled("●", Style::new().fg(e.color)));
                 spans.push(Span::from(format!(" {}", e.name)));
             } else {
                 spans.push(Span::styled("●", Style::new().fg(e.color)));
@@ -516,6 +549,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
 pub fn render_graph_picker(frame: &mut Frame, app: &App, area: Rect) {
     use ratatui::style::Color;
     let lang = app.lang;
+    let icons_on = app.cfg.ui.icons;
     let items = app.git_graph_picker_items(); // (name, is_current, on), HEAD first
     let sel = app.git_graph_picker_sel();
     let shown = items.iter().filter(|(_, _, on)| *on).count();
@@ -541,7 +575,19 @@ pub fn render_graph_picker(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Span::from(check).dim()
                 };
-                let marker = if *is_cur { "⎇ " } else { "  " };
+                // A 2-column-fixed marker: the branch-name column must start at the same x for
+                // every row regardless of `is_cur`/`icons_on`, so both the "current" glyph/label
+                // and its ASCII fallback are exactly 2 cells wide, matching the blank "  " used
+                // for every other row (same convention as `render_branches`'s "* "/"  ").
+                let marker = if *is_cur {
+                    if icons_on {
+                        format!("{} ", icons::branch_icon())
+                    } else {
+                        "* ".to_string()
+                    }
+                } else {
+                    "  ".to_string()
+                };
                 let name_span = if *is_cur {
                     Span::styled(name.clone(), Style::new().fg(Color::Green).bold())
                 } else if *on {
@@ -1062,6 +1108,383 @@ mod tests {
         );
         assert!(s.contains("trunk"), "HEAD ブランチが無い: {s}");
         assert!(s.contains("feature-x"), "もう一方のブランチが無い: {s}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- ⎇/⌖ gated by ui.icons, never glued directly to the next glyph ----------------------
+    // U+2387 (⎇) / U+2316 (⌖) are absent from Menlo/SF Mono/Monaco/Courier/Andale Mono/Courier
+    // New/HackGen Console NF (fontTools cmap dump), so macOS always falls back to Apple Symbols
+    // — whose glyph advance is ~1.7x a Menlo cell. Before this fix, both glyphs were emitted
+    // unconditionally (ignoring `ui.icons`) and, in the graph legend, glued directly onto the
+    // following `●` with no space cell in between, so an oversized fallback glyph could spill
+    // onto — and visually merge with — the lane dot.
+
+    /// Column position (in cells) of the first occurrence of `needle` within `term`'s buffer.
+    /// Compared cell-by-cell (not via string `find`, which would return a *byte* offset — wrong
+    /// once a multi-byte glyph like ⎇/⌖/● precedes the match) so the result is a true column
+    /// index usable for alignment comparisons across rows/renders.
+    fn col_of(term: &Terminal<TestBackend>, needle: &str) -> Option<u16> {
+        let buf = term.backend().buffer();
+        let area = buf.area;
+        let needle_chars: Vec<char> = needle.chars().collect();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let mut ok = true;
+                for (k, ch) in needle_chars.iter().enumerate() {
+                    let xi = x + k as u16;
+                    if xi >= area.right() {
+                        ok = false;
+                        break;
+                    }
+                    match buf.cell((xi, y)) {
+                        Some(cell) if cell.symbol().starts_with(*ch) => {}
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    return Some(x);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn changes_and_log_titles_gate_branch_marker_by_icons() {
+        let dir = unique_tmp("konoma_git_titles_branch_marker_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        sh(&dir, &["branch", "-M", "trunk"]);
+
+        // icons=true (default): the branch glyph appears next to the branch name in both titles.
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.refresh_git_if_needed();
+        app.open_git_view();
+        let mut term = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        term.draw(|f| render_changes(f, &app, f.area())).unwrap();
+        let s: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            s.contains('⎇'),
+            "icons=true で changes ハブにブランチアイコンが無い: {s}"
+        );
+        assert!(s.contains("trunk"), "ブランチ名が無い: {s}");
+
+        app.open_git_log();
+        let mut term2 = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term2.draw(|f| render_log(f, &app, f.area())).unwrap();
+        let s2: String = term2
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            s2.contains('⎇'),
+            "icons=true で log にブランチアイコンが無い: {s2}"
+        );
+
+        // icons=false: the Unicode glyph never appears (tofu on a terminal with no symbol-font
+        // fallback, or an overflow into the next cell on one that has it); the ASCII label
+        // ("br:") takes its place instead.
+        let mut cfg = Config::default();
+        cfg.ui.icons = false;
+        let mut app2 = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+        app2.refresh_git_if_needed();
+        app2.open_git_view();
+        let mut term3 = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        term3.draw(|f| render_changes(f, &app2, f.area())).unwrap();
+        let s3: String = term3
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s3.contains('⎇'),
+            "icons=false なのに changes ハブにブランチアイコンが出ている: {s3}"
+        );
+        assert!(
+            s3.contains("br:"),
+            "icons=false で ASCII 代替(br:)が無い: {s3}"
+        );
+        assert!(s3.contains("trunk"), "ブランチ名が無い: {s3}");
+
+        app2.open_git_log();
+        let mut term4 = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term4.draw(|f| render_log(f, &app2, f.area())).unwrap();
+        let s4: String = term4
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s4.contains('⎇'),
+            "icons=false なのに log にブランチアイコンが出ている: {s4}"
+        );
+        assert!(
+            s4.contains("br:"),
+            "icons=false で log の ASCII 代替(br:)が無い: {s4}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn graph_title_gates_base_marker_without_duplicating_base_word() {
+        let dir = unique_tmp("konoma_graph_title_base_marker_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        sh(&dir, &["branch", "-M", "trunk"]);
+
+        // icons=true: the base glyph appears exactly once, and the (already-English) "base:"
+        // word right after it is not duplicated.
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.open_git_graph();
+        app.git_graph_set_base();
+        assert_eq!(app.git_graph_base_label(), Some("trunk"));
+        let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term.draw(|f| render_graph(f, &app, f.area())).unwrap();
+        let s: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert_eq!(
+            s.matches('⌖').count(),
+            1,
+            "icons=true で基準アイコンが1個でない: {s}"
+        );
+        assert_eq!(
+            s.matches("base:").count(),
+            1,
+            "base: が重複/欠落している: {s}"
+        );
+        assert!(s.contains("trunk"), "基準ブランチ名が出ない: {s}");
+
+        // icons=false: the Unicode glyph never appears, but the English "base:" word alone still
+        // conveys the meaning (no duplicated wording, no leftover icon).
+        let mut cfg = Config::default();
+        cfg.ui.icons = false;
+        let mut app2 = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+        app2.open_git_graph();
+        app2.git_graph_set_base();
+        let mut term2 = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term2.draw(|f| render_graph(f, &app2, f.area())).unwrap();
+        let s2: String = term2
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s2.contains('⌖'),
+            "icons=false なのに基準アイコンが出ている: {s2}"
+        );
+        assert_eq!(
+            s2.matches("base:").count(),
+            1,
+            "icons=false で base: が重複/欠落している: {s2}"
+        );
+        assert!(s2.contains("trunk"), "基準ブランチ名が出ない: {s2}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn graph_legend_head_and_base_markers_are_spaced_and_gated_by_icons() {
+        let dir = unique_tmp("konoma_graph_legend_marker_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "base commit"]);
+        sh(&dir, &["branch", "-M", "trunk"]);
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("b.txt"), b"two\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "feature commit"]);
+
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.open_git_graph();
+        app.git_graph_move(1); // down to the "trunk" tip row
+        app.git_graph_set_base();
+        assert_eq!(
+            app.git_graph_base_label(),
+            Some("trunk"),
+            "基準が trunk になっていない"
+        );
+        let legend = app.git_graph_legend();
+        assert!(
+            legend.iter().any(|e| e.name == "feature" && e.is_head),
+            "HEAD(feature)が凡例に無い"
+        );
+        assert!(
+            legend.iter().any(|e| e.name == "trunk" && e.is_base),
+            "base(trunk)が凡例に無い"
+        );
+
+        // icons=true: both markers appear, each followed by a space before the lane dot (never
+        // glued directly onto it).
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| render_graph(f, &app, f.area())).unwrap();
+        let s: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(s.contains('⎇'), "HEAD アイコンが無い: {s}");
+        assert!(s.contains('⌖'), "base アイコンが無い: {s}");
+        assert!(
+            !s.contains("⎇●"),
+            "HEAD アイコンと●の間に空白が無い(重なりうる): {s}"
+        );
+        assert!(
+            !s.contains("⌖●"),
+            "base アイコンと●の間に空白が無い(重なりうる): {s}"
+        );
+        assert!(s.contains("⎇ ●"), "HEAD アイコンの後ろに空白が無い: {s}");
+        assert!(s.contains("⌖ ●"), "base アイコンの後ろに空白が無い: {s}");
+
+        // icons=false: neither Unicode glyph appears; the ASCII labels take their place, still
+        // spaced before the dot.
+        let mut cfg = Config::default();
+        cfg.ui.icons = false;
+        let mut app2 = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+        app2.open_git_graph();
+        app2.git_graph_move(1);
+        app2.git_graph_set_base();
+        let mut term2 = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term2.draw(|f| render_graph(f, &app2, f.area())).unwrap();
+        let s2: String = term2
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s2.contains('⎇'),
+            "icons=false なのに HEAD アイコンが出ている: {s2}"
+        );
+        assert!(
+            !s2.contains('⌖'),
+            "icons=false なのに base アイコンが出ている: {s2}"
+        );
+        assert!(
+            s2.contains("br: ●"),
+            "icons=false で HEAD の ASCII 代替(br:)/空白が無い: {s2}"
+        );
+        assert!(
+            s2.contains("base: ●"),
+            "icons=false で base の ASCII 代替(base:)/空白が無い: {s2}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn graph_picker_marker_column_gated_by_icons_and_alignment_preserved() {
+        let dir = unique_tmp("konoma_graph_picker_marker_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        sh(&dir, &["branch", "-M", "trunk"]);
+        sh(&dir, &["branch", "feature-x"]);
+
+        let run = |icons: bool| -> Terminal<TestBackend> {
+            let mut cfg = Config::default();
+            cfg.ui.icons = icons;
+            let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+            app.open_git_graph();
+            app.git_graph_open_picker();
+            assert!(app.is_git_graph_picker());
+            let mut term = Terminal::new(TestBackend::new(60, 16)).unwrap();
+            term.draw(|f| render_graph_picker(f, &app, f.area()))
+                .unwrap();
+            term
+        };
+
+        // icons=true: the current-branch marker column ("⎇ ", 2 cells) and the blank marker
+        // column ("  ", 2 cells) leave the branch-name column starting at the same x for every
+        // row — the 2-column-fixed marker git.rs:544 depends on.
+        let term_on = run(true);
+        let cur_col_on =
+            col_of(&term_on, "trunk").expect("current row の名前が見つからない(icons=true)");
+        let other_col_on =
+            col_of(&term_on, "feature-x").expect("他ブランチの名前が見つからない(icons=true)");
+        assert_eq!(
+            cur_col_on, other_col_on,
+            "icons=true でカレント行と他行のブランチ名列がずれている"
+        );
+        let s_on: String = term_on
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            s_on.contains('⎇'),
+            "icons=true でカレントマーカーが出ない: {s_on}"
+        );
+
+        // icons=false: the Unicode glyph never appears; the ASCII fallback ("* ", also 2 cells)
+        // keeps the same column alignment — both across rows and across the icons toggle.
+        let term_off = run(false);
+        let cur_col_off =
+            col_of(&term_off, "trunk").expect("current row の名前が見つからない(icons=false)");
+        let other_col_off =
+            col_of(&term_off, "feature-x").expect("他ブランチの名前が見つからない(icons=false)");
+        assert_eq!(
+            cur_col_off, other_col_off,
+            "icons=false でカレント行と他行のブランチ名列がずれている"
+        );
+        assert_eq!(
+            cur_col_on, cur_col_off,
+            "icons のオン/オフでブランチ名の列位置が変わっている"
+        );
+        let s_off: String = term_off
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            !s_off.contains('⎇'),
+            "icons=false なのにカレントマーカーが出ている: {s_off}"
+        );
+        assert!(
+            s_off.contains("* "),
+            "icons=false で ASCII 代替(* )が無い: {s_off}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

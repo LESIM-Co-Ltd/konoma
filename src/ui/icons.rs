@@ -28,6 +28,48 @@ pub fn task_icon(checked: bool) -> char {
     }
 }
 
+/// Glyph for a repo's current branch (U+2387 ALTERNATIVE KEY SYMBOL, ⎇ — the conventional
+/// git-branch icon). Used only when `ui.icons=true`; see `branch_marker`.
+pub fn branch_icon() -> char {
+    '\u{2387}'
+}
+
+/// Glyph for the git graph's pinned base branch (U+2316 POSITION INDICATOR, ⌖). Used only when
+/// `ui.icons=true`; see `base_marker`.
+pub fn base_icon() -> char {
+    '\u{2316}'
+}
+
+/// Display marker for a repo's current branch, placed directly before the branch name — the tree
+/// root chip, the git changes/log titles, and the graph legend's HEAD entry. `icons=true` →
+/// `branch_icon()` (⎇); `icons=false` → the ASCII label `"br:"`.
+///
+/// Neither Menlo/SF Mono/Monaco/Courier/Andale Mono/Courier New nor HackGen Console NF (measured
+/// via a `fontTools` cmap dump) contain U+2387 — macOS always falls back to Apple Symbols, which
+/// does, so the glyph never renders as tofu (□) there. But that fallback glyph's advance width
+/// (~1.033em) is ~1.7x a Menlo cell's (~0.602em); if the terminal doesn't shrink it to fit the
+/// cell, it can spill into the next cell — the same failure mode the ☐/☑ task icons had before
+/// v0.6.0. Callers must put a space after the marker (never glue it directly to the next glyph)
+/// so an oversized fallback glyph overflows into blank space instead of overlapping content.
+pub fn branch_marker(icons: bool) -> &'static str {
+    if icons {
+        "\u{2387}"
+    } else {
+        "br:"
+    }
+}
+
+/// Display marker for the git graph's pinned base branch, placed directly before the branch name
+/// in the graph legend's base entry. `icons=true` → `base_icon()` (⌖); `icons=false` → the ASCII
+/// label `"base:"`. Same overflow caveat as `branch_marker` — always follow with a space.
+pub fn base_marker(icons: bool) -> &'static str {
+    if icons {
+        "\u{2316}"
+    } else {
+        "base:"
+    }
+}
+
 /// Icon for directories. Distinguished by open/closed state.
 pub fn dir_icon(expanded: bool) -> char {
     if expanded {
