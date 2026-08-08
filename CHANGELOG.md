@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.8] - 2026-08-08
+
 ### Added
 - **A `STALE` chip while the listing is out of date.** When a rebuild of the tree fails, konoma keeps
   the last good listing, so nothing breaks on screen — but the tree goes on showing files that may
@@ -1455,7 +1457,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...HEAD
+[0.23.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...v0.23.8
 [0.23.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...v0.23.6
 [0.23.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...v0.23.5
 [0.23.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.3...v0.23.4
