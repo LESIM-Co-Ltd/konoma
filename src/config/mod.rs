@@ -830,13 +830,7 @@ impl Config {
         match toml::from_str::<Config>(&text) {
             Ok(cfg) => (cfg, None),
             Err(e) => {
-                // A toml error can span multiple lines, so compress it to one line.
-                let msg = e
-                    .to_string()
-                    .lines()
-                    .next()
-                    .unwrap_or("parse error")
-                    .to_string();
+                let msg = format_config_load_error(&e);
                 // The config is broken = even the language setting can't be read, so notify in the
                 // default (English).
                 (
@@ -907,11 +901,59 @@ fn mime_glob_match(pattern: &str, mime: &str) -> bool {
     }
 }
 
+/// Pure core of `dirs_config_path`: given the already-resolved config-scope base (whatever
+/// `crate::bookmarks::xdg_config_home` decided — `$XDG_CONFIG_HOME`-based or
+/// `$HOME/.config`-based, shared with bookmarks/session storage and `app::cache_root`), the config
+/// file path is `<base>/konoma/config.toml`. `None` in means `None` out — unlike bookmarks/session
+/// storage (`bookmarks::default_base`), this is read-only (`Config::load_reporting` never writes),
+/// so "no known base" safely means "no config file to read, use defaults" with nothing to guard
+/// against writing into the working directory.
+fn dirs_config_path_from(config_home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    Some(config_home?.join("konoma").join("config.toml"))
+}
+
+/// Config file path (`$XDG_CONFIG_HOME/konoma/config.toml`, or `$HOME/.config/konoma/config.toml`,
+/// or `None`). Previously read only `$HOME` and silently ignored `$XDG_CONFIG_HOME` — now shares the
+/// same base resolution as `crate::bookmarks::default_base` (see that function's doc for the
+/// details of the rule and why the three previously disagreed).
 fn dirs_config_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    let mut p = std::path::PathBuf::from(home);
-    p.push(".config/konoma/config.toml");
-    Some(p)
+    dirs_config_path_from(crate::bookmarks::xdg_config_home())
+}
+
+/// Formats a `toml::from_str::<Config>` parse error into one line for `load_reporting`'s startup
+/// flash notification.
+///
+/// `toml::de::Error`'s own `Display` is multi-line — a `"TOML parse error at line N, column M"`
+/// header, an excerpt of the offending line, and the actual reason (e.g.
+/// `"invalid value: integer \`100000\`, expected u16"`) — but the flash notification this feeds
+/// (`main.rs`'s one-shot `app.flash`, cleared on the very next keypress) can only show one line.
+/// The pre-fix code kept just the *first* line (the location), which is the same
+/// `"TOML parse error at line N, column M"` for every single kind of error and never states what
+/// was actually wrong — reported as effectively silent, since the flash disappears before the user
+/// can even open the file to compare against a line number alone.
+///
+/// This keeps both: the location (still the first line of `Display`) and the reason
+/// (`Error::message()`, which — unlike `Display` — is *only* the "what went wrong" part, with no
+/// location decoration). `message()` can itself embed a newline for some error kinds (a bad table
+/// header's `"invalid table header\nexpected \`.\`, \`]\`"`), so that is collapsed too, to guarantee
+/// this whole function's result is always a single line.
+///
+/// Deliberately does *not* attempt to identify which struct **field** was the cause beyond what
+/// `toml`/`serde`'s own error already names — see the accompanying report for why a real per-field
+/// (or per-top-level-table) partial-recovery rewrite was intentionally not attempted here.
+fn format_config_load_error(e: &toml::de::Error) -> String {
+    let location = e
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or("parse error")
+        .to_string();
+    let reason = e.message().replace('\n', "; ");
+    if reason.is_empty() {
+        location
+    } else {
+        format!("{location}: {reason}")
+    }
 }
 
 #[cfg(test)]
@@ -1485,5 +1527,130 @@ d = "refresh"
                 "エラー文言の接頭辞が規約どおり: {e}"
             );
         }
+    }
+
+    /// Regression test for the reported bug: `dirs_config_path` used to read only `$HOME` and
+    /// silently ignore `$XDG_CONFIG_HOME`, unlike `app::cache_root` (which already honored
+    /// `XDG_CACHE_HOME`). This exercises the *real*, env-reading `dirs_config_path()` against
+    /// whatever environment the process was actually started with — a no-op when `XDG_CONFIG_HOME`
+    /// isn't set (most normal `cargo test` runs), so it never races other tests over process-wide
+    /// env state. To make it actually exercise the bug/fix, run it standalone in a dedicated
+    /// subprocess with a custom environment, e.g.:
+    ///   `env XDG_CONFIG_HOME=/custom/xdg HOME=/custom/home <test binary> dirs_config_path_honors_xdg_config_home_when_set --test-threads=1`
+    /// Before this fix: FAILED (the real path stayed under `/custom/home/.config` and ignored
+    /// `/custom/xdg` entirely). After this fix: passes.
+    #[test]
+    fn dirs_config_path_honors_xdg_config_home_when_set() {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            if !xdg.is_empty() {
+                let p = dirs_config_path();
+                assert_eq!(
+                    p,
+                    Some(std::path::PathBuf::from(&xdg).join("konoma/config.toml")),
+                    "XDG_CONFIG_HOME={xdg:?} が設定されていれば dirs_config_path はその配下を指すべき: {p:?}"
+                );
+            }
+        }
+    }
+
+    /// Pure core of `dirs_config_path`. `None` in means `None` out; otherwise it's always
+    /// `<base>/konoma/config.toml`, matching `crate::bookmarks::default_base_from`'s `<base>/konoma`
+    /// exactly (see the next test for the cross-function parity check).
+    #[test]
+    fn dirs_config_path_from_joins_konoma_config_toml_onto_the_resolved_base() {
+        assert_eq!(
+            dirs_config_path_from(Some(std::path::PathBuf::from("/x/.config"))),
+            Some(std::path::PathBuf::from("/x/.config/konoma/config.toml"))
+        );
+        assert_eq!(dirs_config_path_from(None), None);
+    }
+
+    /// `dirs_config_path()` must agree with `crate::bookmarks::xdg_config_home()` — the same shared
+    /// rule that `crate::bookmarks::default_base()` also routes through (see task 1 in the
+    /// accompanying report: three independent implementations used to disagree). Deliberately
+    /// compared against `xdg_config_home()` directly rather than `default_base()`: unlike
+    /// bookmarks/session storage, `dirs_config_path` is read-only and correctly stays `None` (no
+    /// config file to read, use defaults) when neither `XDG_CONFIG_HOME` nor `HOME` is set, instead
+    /// of following `default_base`'s system-temp-dir fallback (which exists only because
+    /// bookmarks/session storage *writes* and must never fall back to a relative path). Exercised
+    /// against the real environment (read-only, no env mutation), so it holds for whatever
+    /// `HOME`/`XDG_CONFIG_HOME` this test happens to run under.
+    #[test]
+    fn dirs_config_path_agrees_with_xdg_config_home() {
+        assert_eq!(
+            dirs_config_path(),
+            crate::bookmarks::xdg_config_home().map(|b| b.join("konoma").join("config.toml")),
+            "config ファイルパスは bookmarks/session と同じ共有ルール(xdg_config_home)で解決されるべき"
+        );
+    }
+
+    /// Task 3 (reported): a single bad field (`[ui] mermaid_rows = 100000`, out of `u16` range)
+    /// makes `toml::from_str::<Config>` fail for the **whole** document — confirmed here: even
+    /// though `show_hidden = true` right next to it is perfectly valid, `Err` is returned and
+    /// `load_reporting`'s `Err` arm replaces the *entire* config with `Config::default()`, silently
+    /// discarding `show_hidden` too (not just `mermaid_rows`). This is inherent to how
+    /// `#[derive(Deserialize)]` on a struct works (the whole struct either builds or it doesn't) —
+    /// per the report, a real per-field partial-recovery rewrite is out of scope for this fix; see
+    /// the report for why and what a coarser (per-top-level-table) alternative would look like.
+    #[test]
+    fn one_bad_field_currently_fails_the_whole_document_not_just_that_field() {
+        let toml = r#"
+[ui]
+show_hidden = true
+mermaid_rows = 100000
+"#;
+        assert!(
+            toml::from_str::<Config>(toml).is_err(),
+            "u16 を超える mermaid_rows は文書全体の parse を失敗させる(実測)"
+        );
+    }
+
+    /// Regression test for the reported "実質サイレント" 1-line message: before this fix,
+    /// `format_config_load_error` kept only the first line of `toml::de::Error`'s `Display`, which
+    /// for every parse error is just `"TOML parse error at line N, column M"` — the location, never
+    /// the actual reason (that's on a *different* line of `Display`, or in `Error::message()`).
+    /// Confirmed FAILING against that old formula for all three scenarios below (none of the
+    /// messages contained the word describing what was actually wrong).
+    #[test]
+    fn format_config_load_error_names_the_actual_reason_not_just_the_location() {
+        // A field with the wrong type (`[ui] mermaid_rows = 100000`, out of u16 range).
+        let bad_type = "\n[ui]\nshow_hidden = true\nmermaid_rows = 100000\n";
+        let e1 = toml::from_str::<Config>(bad_type).unwrap_err();
+        let msg1 = format_config_load_error(&e1);
+        assert!(
+            msg1.contains("u16"),
+            "型エラーの理由(u16 期待)がメッセージに含まれるべき: {msg1:?}"
+        );
+        assert!(
+            msg1.contains("line 4"),
+            "位置情報も残っているべき: {msg1:?}"
+        );
+
+        // A typo under `[keys]` (`copy_prefx` instead of `copy_prefix`): the extra key is captured
+        // by `KeysConfig`'s `#[serde(flatten)] surfaces: HashMap<String, HashMap<String, String>>`,
+        // so the scalar `"y"` fails to deserialize as a sub-table.
+        let bad_key = "\n[ui]\nshow_hidden = true\n\n[keys]\ncopy_prefx = \"y\"\n";
+        let e2 = toml::from_str::<Config>(bad_key).unwrap_err();
+        let msg2 = format_config_load_error(&e2);
+        assert!(
+            msg2.contains("expected a map"),
+            "型エラーの理由(map 期待)がメッセージに含まれるべき: {msg2:?}"
+        );
+
+        // A plain syntax error (unclosed table header) — its `Error::message()` itself spans two
+        // lines ("invalid table header\nexpected `.`, `]`"), so this also checks that the formatter
+        // collapses embedded newlines rather than letting a multi-line reason leak into what is
+        // shown as a single-line startup flash.
+        let syntax_broken = "[ui\nshow_hidden = true\n";
+        let e3 = toml::from_str::<Config>(syntax_broken).unwrap_err();
+        let msg3 = format_config_load_error(&e3);
+        assert!(
+            !msg3.contains('\n'),
+            "flash は1行なので、複数行に渡る reason は改行を潰して1行化すべき: {msg3:?}"
+        );
+        assert!(
+            msg3.contains("invalid table header"),
+            "構文エラーの理由も含まれるべき: {msg3:?}"
+        );
     }
 }

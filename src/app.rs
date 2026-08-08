@@ -4539,25 +4539,41 @@ fn md_band_pixels(full_rows: u16, row_off: u16, vis_rows: u16, dh: u32) -> (u32,
     (y0, y1.saturating_sub(y0).max(1))
 }
 
-/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME` or `~/.cache`). None if neither is available.
-fn cache_root() -> Option<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
-        if !x.is_empty() {
-            return Some(PathBuf::from(x));
-        }
-    }
-    let home = std::env::var_os("HOME")?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(home).join(".cache"))
+/// Pure core of `cache_root`. Falls back to the system temp directory (`std::env::temp_dir()` —
+/// always an absolute path, `$TMPDIR` or `/tmp` on Unix) when neither `$XDG_CACHE_HOME` nor `$HOME`
+/// is available, instead of the old `None`.
+///
+/// This is a *cache*, not persistent user data (unlike `bookmarks::default_base`/
+/// `config::dirs_config_path`), so losing it across a reboot is harmless — the next Markdown preview
+/// just re-downloads the image. Returning `None` here used to leave
+/// `app/md_media.rs::ensure_remote_md_fetch`'s `let (Some(tx), Some(dest)) = (.., md_remote_cache_path(url))
+/// else { return false; }` permanently un-taken: the background fetch thread never spawns, no
+/// `RemoteFetch` message ever arrives, and the URL is never recorded in `md_remote_failed` either —
+/// so a Markdown image behind an unresolvable cache root would sit at "loading" forever, never
+/// reaching principle #3's safe-degrade text placeholder. Falling through to a location that is
+/// always available restores that: the fetch is actually attempted and its real success/failure is
+/// reported through the existing `RemoteFetch`/`apply_remote_fetch` machinery.
+fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
+    xdg_or_home.unwrap_or_else(std::env::temp_dir)
+}
+
+/// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
+/// when neither is available — see `cache_root_from`'s doc for why).
+fn cache_root() -> PathBuf {
+    cache_root_from(crate::bookmarks::xdg_base_dir(
+        std::env::var_os("XDG_CACHE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        ".cache",
+    ))
 }
 
 /// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is
 /// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
+/// Kept `Option`-returning (always `Some` now that `cache_root` is total) because
+/// `app/md_media.rs::ensure_remote_md_fetch` pattern-matches `Some(dest)`.
 fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
-    let root = cache_root()?;
+    let root = cache_root();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     url.trim().hash(&mut hasher);
     Some(
@@ -4565,6 +4581,69 @@ fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
             .join("remote-images")
             .join(format!("{:016x}", hasher.finish())),
     )
+}
+
+/// Distinct from the `mod tests;` at the bottom of this file (`src/app/tests.rs`, off-limits to a
+/// concurrent fix in this same session): a small inline test module for `cache_root`/
+/// `md_remote_cache_path`, kept next to the code it tests (same convention `collect_all`'s
+/// `#[cfg(test)]` helpers above already use in this file).
+#[cfg(test)]
+mod cache_root_tests {
+    use super::*;
+
+    /// Regression test for the reported bug: when neither `$XDG_CACHE_HOME` nor `$HOME` is
+    /// available, `cache_root()` used to return `None`, and `md_remote_cache_path` propagated that
+    /// `None` straight through. `app/md_media.rs::ensure_remote_md_fetch` treats that `None` as "no
+    /// destination to download to" via `let (Some(tx), Some(dest)) = (.., md_remote_cache_path(url))
+    /// else { return false; }` — the background fetch thread is never spawned, so no `RemoteFetch`
+    /// ever arrives, so the URL is never recorded in `md_remote_failed` either: the "loading"
+    /// placeholder for that Markdown image sits there forever instead of degrading to a text
+    /// placeholder (principle #3 not reached).
+    ///
+    /// Before this fix, `cache_root_from` was `xdg_or_home` (identity, `Option<PathBuf>`-returning)
+    /// — confirmed FAILING when run against that formula: `cache_root_from(None).is_some()` was
+    /// `false` (the identity of `None` is `None`). Now total (`PathBuf`-returning): it always
+    /// resolves to *something*, falling back to the system temp dir.
+    #[test]
+    fn cache_root_from_falls_back_to_temp_dir_without_xdg_or_home() {
+        assert_eq!(
+            cache_root_from(None),
+            std::env::temp_dir(),
+            "XDG_CACHE_HOME/HOME どちらも無ければシステム一時ディレクトリへフォールバック\
+             (md_remote_cache_path が None を返すと、リモート画像のダウンロードが一生スレッド化されない)"
+        );
+    }
+
+    #[test]
+    fn cache_root_from_uses_resolved_xdg_or_home_when_present() {
+        assert_eq!(
+            cache_root_from(Some(PathBuf::from("/x/.cache"))),
+            PathBuf::from("/x/.cache")
+        );
+    }
+
+    /// `cache_root()` (the real, env-reading wrapper) must always resolve to an absolute path, in
+    /// whatever environment this test happens to run under.
+    #[test]
+    fn cache_root_is_always_absolute_in_the_real_environment() {
+        assert!(
+            cache_root().is_absolute(),
+            "実環境でも cache_root は常に絶対パス"
+        );
+    }
+
+    /// `md_remote_cache_path` must never return `None` purely because no cache directory could be
+    /// found — the whole point of `cache_root`'s temp-dir fallback. (A malformed/empty URL is a
+    /// different, unrelated reason `md_remote_cache_path` could theoretically fail; this crate's
+    /// hashing never rejects any `&str`, so there is no such case in practice, but the assertion is
+    /// scoped to the cache-root concern regardless.)
+    #[test]
+    fn md_remote_cache_path_is_always_some_in_the_real_environment() {
+        assert!(
+            md_remote_cache_path("https://example.com/never-cached.png").is_some(),
+            "cache_root が常に Some を返すので md_remote_cache_path も常に Some のはず"
+        );
+    }
 }
 
 /// Maximum bytes to download for one remote image (guards against huge / hostile responses).

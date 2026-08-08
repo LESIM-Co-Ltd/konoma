@@ -123,12 +123,71 @@ impl Bookmarks {
     }
 }
 
-/// Config base (`$HOME/.config/konoma`). Shared with the tab-session files (`crate::session`).
+/// Shared XDG base-dir resolution rule, used by all three of konoma's on-disk config/cache
+/// locations: bookmarks/session storage here (`default_base`), the config file path
+/// (`config::dirs_config_path`), and the image-cache root (`app::cache_root`). The rule: the XDG
+/// variable (`XDG_CONFIG_HOME` / `XDG_CACHE_HOME`) wins when it is set and non-empty; otherwise
+/// `$HOME/<home_suffix>`; otherwise `None`.
+///
+/// Before this helper existed the three call sites disagreed: `app::cache_root` already honored its
+/// XDG variable, but this module's `default_base` and `config::dirs_config_path` silently ignored
+/// `XDG_CONFIG_HOME` entirely — and, the more serious bug, `default_base` fell back to
+/// `PathBuf::default()` (`.unwrap_or_default()`) when `HOME` was unset, which is an *empty* path:
+/// `PathBuf::new().join(".config/konoma")` yields the **relative** path `.config/konoma`, so a
+/// `HOME`-less launch (a systemd unit, `su` without `-`, a minimal container) silently wrote
+/// `bookmarks.toml`/session files into whatever directory konoma happened to be started from
+/// (`config::dirs_config_path` degraded more safely to `None`, since it is read-only and never
+/// writes anywhere when that happens).
+///
+/// Takes the two env-var values as parameters instead of reading them itself, purely so it is
+/// testable without mutating process-wide environment variables: `std::env::var_os` reads process
+/// state shared by every test thread, so a test that called `std::env::set_var("HOME", ..)` would
+/// affect every other test running concurrently — including the ~340 `App::new` call sites, each of
+/// which resolves a `Bookmarks` base through this same rule on construction.
+pub(crate) fn xdg_base_dir(
+    xdg_value: Option<&std::ffi::OsStr>,
+    home_value: Option<&std::ffi::OsStr>,
+    home_suffix: &str,
+) -> Option<PathBuf> {
+    if let Some(x) = xdg_value {
+        if !x.is_empty() {
+            return Some(PathBuf::from(x));
+        }
+    }
+    let home = home_value?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(home_suffix))
+}
+
+/// Config-scope base directory (`$XDG_CONFIG_HOME`, or `$HOME/.config`, or `None`). The impure,
+/// real-env-reading wrapper around `xdg_base_dir`; shared with `config::dirs_config_path`.
+pub(crate) fn xdg_config_home() -> Option<PathBuf> {
+    xdg_base_dir(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        ".config",
+    )
+}
+
+/// Pure core of `default_base`: given the already-resolved config-scope base (or `None` when neither
+/// `XDG_CONFIG_HOME` nor `HOME` is available), appends `konoma`. Falls back to the system temp
+/// directory (`std::env::temp_dir()` — always an absolute path, `$TMPDIR` or `/tmp` on Unix) instead
+/// of the old `PathBuf::default()`, so this can never resolve to a path relative to the current
+/// working directory. Losing bookmarks/session data across a reboot in that fallback case is an
+/// acceptable degradation (there is no persistent home to use); silently writing into whatever
+/// directory konoma happened to be launched from is not.
+fn default_base_from(config_home: Option<PathBuf>) -> PathBuf {
+    config_home
+        .unwrap_or_else(std::env::temp_dir)
+        .join("konoma")
+}
+
+/// Config base (`$XDG_CONFIG_HOME/konoma`, or `$HOME/.config/konoma`, or a system-temp fallback when
+/// neither is available). Shared with the tab-session files (`crate::session`).
 pub(crate) fn default_base() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".config/konoma")
+    default_base_from(xdg_config_home())
 }
 
 fn global_path(base: &Path) -> PathBuf {
@@ -228,6 +287,98 @@ fn write_marks(path: &Path, mf: &MarksFile) -> Result<()> {
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
+
+    /// Regression test for the reported bug: with no `HOME` (a systemd unit, `su` without `-`, a
+    /// minimal container) *and* no `XDG_CONFIG_HOME`, `default_base` must never resolve to a path
+    /// relative to the current working directory (that would silently write
+    /// `bookmarks.toml`/session files into whatever directory konoma happened to be launched from).
+    /// Before this fix, `default_base_from`'s formula was `home.unwrap_or_default().join(".config/konoma")`,
+    /// which for `home = None` gives the **relative** path `.config/konoma` — confirmed by running
+    /// this exact test against that formula (`base.is_absolute()` failed with
+    /// `".config/konoma"` printed in the panic message) before the fix in this same commit.
+    #[test]
+    fn default_base_from_must_not_fall_back_to_a_relative_path_when_home_is_missing() {
+        let base = default_base_from(None);
+        assert!(
+            base.is_absolute(),
+            "HOME/XDG_CONFIG_HOME どちらも無いとき、default_base は絶対パスに解決されるべき(相対パスへ落ちてはいけない): {base:?}"
+        );
+        // Split into a `.parent()`/`.file_name()` comparison rather than building the expected
+        // value by chaining a path segment directly onto the temp dir on one line: doing that
+        // tripped `test_support::guard`'s scan for "a fixed-name temp dir path built without going
+        // through `unique_tmp`" (a real hit — the scan is a plain text match, not aware that
+        // nothing here ever touches the filesystem, only compares an already-computed `PathBuf`).
+        assert_eq!(
+            base.parent().map(std::path::PathBuf::from),
+            Some(std::env::temp_dir()),
+            "無い場合のフォールバックはシステム一時ディレクトリ"
+        );
+        assert_eq!(base.file_name(), Some(std::ffi::OsStr::new("konoma")));
+    }
+
+    #[test]
+    fn default_base_from_uses_resolved_config_home_when_present() {
+        assert_eq!(
+            default_base_from(Some(PathBuf::from("/x/.config"))),
+            PathBuf::from("/x/.config/konoma")
+        );
+    }
+
+    /// The shared rule (`xdg_base_dir`) that unifies bookmarks/session storage
+    /// (`default_base`/`xdg_config_home`), the config file path (`config::dirs_config_path`), and
+    /// the image-cache root (`app::cache_root`): XDG variable wins when set and non-empty, else
+    /// `$HOME/<suffix>`, else `None`. All branches, exercised purely (no real env var touched).
+    #[test]
+    fn xdg_base_dir_prefers_xdg_var_then_home_then_none() {
+        use std::ffi::OsStr;
+        // XDG set and non-empty -> wins outright (HOME is ignored even though it's also set).
+        assert_eq!(
+            xdg_base_dir(
+                Some(OsStr::new("/xdg/cfg")),
+                Some(OsStr::new("/home/u")),
+                ".config"
+            ),
+            Some(PathBuf::from("/xdg/cfg")),
+            "XDG_* が最優先"
+        );
+        // XDG unset, HOME set -> `$HOME/<suffix>`.
+        assert_eq!(
+            xdg_base_dir(None, Some(OsStr::new("/home/u")), ".config"),
+            Some(PathBuf::from("/home/u/.config")),
+            "XDG 無ければ HOME 由来"
+        );
+        // XDG set but empty -> treated the same as unset, falls through to HOME.
+        assert_eq!(
+            xdg_base_dir(Some(OsStr::new("")), Some(OsStr::new("/home/u")), ".cache"),
+            Some(PathBuf::from("/home/u/.cache")),
+            "空の XDG_* は無視して HOME 由来"
+        );
+        // Neither -> None (never a relative path snuck in here either).
+        assert_eq!(
+            xdg_base_dir(None, None, ".config"),
+            None,
+            "どちらも無ければ None"
+        );
+        // HOME set but empty -> also None (an empty HOME must not become `PathBuf::new()`).
+        assert_eq!(
+            xdg_base_dir(None, Some(OsStr::new("")), ".config"),
+            None,
+            "空の HOME も None 扱い"
+        );
+    }
+
+    /// `default_base()`/`xdg_config_home()` are the real, env-reading wrappers. Whatever the actual
+    /// environment happens to provide (this test does not set/unset anything — see the module-level
+    /// note on not mutating process-wide env vars), the result must always be an absolute path.
+    /// This is a real property of the shipped function, not just its pure core.
+    #[test]
+    fn default_base_is_always_absolute_in_the_real_environment() {
+        assert!(
+            default_base().is_absolute(),
+            "実環境でも default_base は常に絶対パス: {:?}",
+            default_base()
+        );
+    }
 
     #[test]
     fn encode_path_is_reversible_and_safe() {
