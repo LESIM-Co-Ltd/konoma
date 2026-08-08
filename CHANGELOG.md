@@ -6,7 +6,24 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **A `STALE` chip while the listing is out of date.** When a rebuild of the tree fails, konoma keeps
+  the last good listing, so nothing breaks on screen — but the tree goes on showing files that may
+  already be gone. The message saying so disappeared on the next keypress, like every other message,
+  while the outage did not. The chip sits in the context bar next to the follow and worktree chips
+  and stays until a rebuild succeeds.
+
 ### Fixed
+- **A failed refresh of the tree is now reported.** Two paths swallowed it outright — the refresh
+  driven by the filesystem watcher, and the one at the end of a tab switch — so the same failure was
+  announced or not depending on how you got there, and a stale listing looked exactly like a current
+  one. Only the start of an outage is announced, so a watcher firing per burst cannot take over the
+  message line.
+- **A batch rename whose rollback also fails now says which files it left behind.** Files stranded
+  under `.konoma-rename-tmp-N` or under a new name had to be cleaned up by hand, but the message
+  showed only why the rename failed: the error's outer context describing the incomplete rollback was
+  dropped while looking for the inner cause. The reason and the leftovers are now reported together,
+  and which files were left is determined by looking at the disk rather than by inferring it.
 - **The cursor could come to rest on a different file than the one it was on.** Both the `/` filter
   and the changed-files view (`C`) rebuild their list and re-sort it — by fuzzy score and by path
   respectively — but only clamped the cursor's index into range, and an index that stays in range
