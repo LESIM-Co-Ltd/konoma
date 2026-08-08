@@ -1798,6 +1798,13 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
         let (orig_line, text, prefix) = logical[idx];
         let ws = leading_ws_width(text);
         let rest = strip_ws_columns(text, ws);
+        // Byte length of the leading run just stripped — **not** `ws`, which is a display *column*
+        // width (a tab expands to the next 4-column stop, `leading_ws_width`'s own doc comment).
+        // `state_off` below is a byte offset into `text`, so adding `ws` instead of this silently
+        // overcounts by (columns - bytes) whenever the run contains a tab, landing the write on some
+        // byte of the task's own text rather than the checkbox (bug, 2026-08 — mirrors the correct,
+        // byte-based `indent` the top-level scan at the bottom of this file already uses).
+        let indent = text.len() - rest.len();
         if rest.trim().is_empty() {
             prev_not_paragraph = true;
             idx += 1;
@@ -1883,7 +1890,7 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
         if let Some((state, off)) = task_prefix_state(rest, tasks) {
             out.push(TaskLoc {
                 line: orig_line,
-                state_off: prefix + ws + off,
+                state_off: prefix + indent + off,
                 state,
             });
         }
@@ -6988,6 +6995,82 @@ mod tests {
                 lines[l.line][l.state_off..].starts_with(l.state),
                 "offset mismatch at line {} (bullet 種別に依らず正しい)",
                 l.line
+            );
+        }
+    }
+
+    /// Root cause: `scan_task_lines` — the recursive scan used for a GitHub alert's body and an open
+    /// `<details>`'s body, and any nesting of the two — computed `state_off` as `prefix + ws + off`,
+    /// where `ws` is `leading_ws_width`'s **display column** width (a tab expands to the next 4-column
+    /// stop) while `state_off` is used as a **byte** offset into the raw source line. A tab is 1 byte
+    /// but (at column 0) 4 columns, so every tab in the leading run inflated `state_off` by 3 bytes
+    /// too many — silently landing the 1-byte write on some byte of the task's own *text*, past the
+    /// checkbox, not on the checkbox itself, and with no flash at all (`md_toggle_focused_task`'s
+    /// cross-check compares the buggy offset against itself on both sides of an unedited file, so it
+    /// cannot catch an internally wrong offset — only an external edit). The top-level scan (the tail
+    /// of `task_source_locs` itself) has never had this bug: it computes its byte offset as
+    /// `line.len() - line.trim_start().len()`, a byte length, not a column count.
+    ///
+    /// Each case nests a tab- (or space+tab-) indented checkbox under an outer list item so it is
+    /// recognized as continuing the list (not as opening an indented code block, which would keep it
+    /// out of `task_prefix_state` entirely and hide the bug) — exactly the shape of the report ("- a"
+    /// then a tab-indented "- [ ] task"). Asserts `state_off` directly addresses the state character
+    /// on disk, not merely that the toggle's *count* matches (the count is unaffected by this bug:
+    /// wrong offset, same character total).
+    #[test]
+    fn scan_task_lines_state_off_is_byte_exact_with_tab_indentation() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "tab-indented checkbox inside an open <details> (the reported shape)",
+                "<details open>\n<summary>s</summary>\n\n- a\n\t- [ ] task\n\n</details>\n",
+            ),
+            (
+                "tab-indented checkbox inside a top-level GitHub alert",
+                "> [!NOTE]\n> - a\n> \t- [ ] task\n",
+            ),
+            (
+                "two-tab (deeper nesting) checkbox inside an open <details>",
+                "<details open>\n<summary>s</summary>\n\n- a\n\t- b\n\t\t- [ ] task\n\n</details>\n",
+            ),
+            (
+                "space-then-tab-indented checkbox inside an open <details>",
+                "<details open>\n<summary>s</summary>\n\n- a\n \t- [ ] task\n\n</details>\n",
+            ),
+            (
+                "tab-indented checkbox inside an alert nested in an open <details>",
+                "<details open>\n<summary>s</summary>\n\n> [!NOTE]\n> - a\n> \t- [ ] task\n\n</details>\n",
+            ),
+        ];
+        for (name, src) in cases {
+            set_details_open(Vec::new());
+            let locs = task_source_locs(src, &[' ', 'x'], &[]);
+            let lines: Vec<&str> = src.lines().collect();
+            let task_locs: Vec<&TaskLoc> = locs
+                .iter()
+                .filter(|l| lines[l.line].contains("task"))
+                .collect();
+            assert_eq!(
+                task_locs.len(),
+                1,
+                "{name}: 「task」を含む行のチェックボックスがちょうど1個見つかるはず: {:?}",
+                locs.iter()
+                    .map(|l| (l.line, l.state_off, l.state))
+                    .collect::<Vec<_>>()
+            );
+            let loc = task_locs[0];
+            let line = lines[loc.line];
+            assert!(
+                line.is_char_boundary(loc.state_off),
+                "{name}: state_off({}) が文字境界でない: {line:?}",
+                loc.state_off
+            );
+            assert_eq!(
+                line[loc.state_off..].chars().next(),
+                Some(loc.state),
+                "{name}: state_off({}) が状態文字 {:?} を指していない(行={:?})",
+                loc.state_off,
+                loc.state,
+                line
             );
         }
     }
