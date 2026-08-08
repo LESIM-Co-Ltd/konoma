@@ -2076,4 +2076,119 @@ mod tests {
             ALL_MSGS.len()
         );
     }
+
+    /// Extract every `Msg` variant name directly from this file's own enum declaration (`pub enum
+    /// Msg { ... }`) — the same self-scanning trick `e2e_tests.rs`'s `extract_ui_config_field_names`
+    /// uses for `UiConfig`. Brace-match the body, then keep only lines that are neither blank, a
+    /// comment (`//`/`///` — both start with `//`), nor an attribute (`#[...]`, e.g. the
+    /// `#[cfg_attr(not(feature = "git"), allow(dead_code))]` lines above the git-copy-only
+    /// variants), and take the identifier up to the first non-identifier character. Every `Msg`
+    /// variant is a plain unit variant (confirmed above: `ALL_MSGS` never writes a `(...)`/`{...}`
+    /// payload on one), so "identifier up to the first non-identifier char" is the whole variant
+    /// name, with no destructuring to worry about.
+    ///
+    /// This exists because `en()`/`jp()` being *exhaustive* matches only proves a translation exists
+    /// for every variant — it says nothing about whether anything ever runs
+    /// `every_message_has_text_in_both_languages` / `message_catalog_is_unique_and_mostly_translated`
+    /// *against* that variant, since both sweeps iterate `ALL_MSGS`, a hand-maintained array that a
+    /// new variant is never forced to join. `Msg` variant count and `ALL_MSGS.len()` happen to both
+    /// be 440 right now — perfect agreement that this test turns into a guarantee instead of a
+    /// coincidence.
+    fn extract_msg_variant_names() -> Vec<String> {
+        let src = include_str!("i18n.rs");
+        let marker = "pub enum Msg {";
+        let start = src
+            .find(marker)
+            .expect("Msg enum not found in i18n.rs — did it move or get renamed?");
+        let body_start = start + marker.len() - 1; // the opening '{' itself
+        let bytes = src.as_bytes();
+        let mut depth = 0i32;
+        let mut end = body_start;
+        for (i, &b) in bytes[body_start..].iter().enumerate() {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = body_start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(end > body_start, "matching closing brace not found");
+        let body = &src[body_start..end];
+        let mut names = Vec::new();
+        for line in body.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("//") || t.starts_with('#') {
+                continue;
+            }
+            let ident_end = t
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(t.len());
+            if ident_end > 0 {
+                names.push(t[..ident_end].to_string());
+            }
+        }
+        names
+    }
+
+    /// Safety valve for the extractor above: if the brace/line scan ever breaks (the enum
+    /// reformatted in a way it can't follow), it must fail LOUD by finding too few variants — not
+    /// silently return an empty/tiny list that would make `all_msg_variants_are_covered_by_all_msgs`
+    /// below vacuously pass. `Msg` currently has 440 variants; 300 is a conservative floor that still
+    /// catches "extraction basically broke" while tolerating future variant removals.
+    #[test]
+    fn msg_variant_extraction_finds_at_least_300_variants() {
+        let names = extract_msg_variant_names();
+        assert!(
+            names.len() >= 300,
+            "抽出数が少なすぎる(安全弁): {} 件 — パーサが壊れている可能性: 先頭5件={:?}",
+            names.len(),
+            &names[..names.len().min(5)]
+        );
+    }
+
+    /// Completeness: every `Msg` variant the enum actually declares must appear in `ALL_MSGS`
+    /// (otherwise a new variant silently never joins the `every_message_has_text_in_both_languages`
+    /// / `message_catalog_is_unique_and_mostly_translated` sweeps above), and vice versa (no stale
+    /// `ALL_MSGS` entry left over from a removed/renamed variant, which would silently test nothing
+    /// real). Add a variant to `Msg` without adding it to `ALL_MSGS` → this fails and names exactly
+    /// which one is missing.
+    #[test]
+    fn all_msg_variants_are_covered_by_all_msgs() {
+        let extracted = extract_msg_variant_names();
+        assert!(
+            extracted.len() >= 300,
+            "抽出数が少なすぎる(安全弁): {} 件",
+            extracted.len()
+        );
+        let extracted_set: std::collections::BTreeSet<&str> =
+            extracted.iter().map(|s| s.as_str()).collect();
+        // `ALL_MSGS` holds `Msg` values, not strings — `Msg` derives `Debug`, and for a fieldless
+        // (unit) variant that always renders exactly its identifier, so this reuses the same
+        // "identifier as a string" shape as `extracted` without maintaining a second by-hand list.
+        let table_names: Vec<String> = ALL_MSGS.iter().map(|m| format!("{m:?}")).collect();
+        let table_set: std::collections::BTreeSet<&str> =
+            table_names.iter().map(|s| s.as_str()).collect();
+        let missing_from_all_msgs: Vec<&&str> = extracted_set.difference(&table_set).collect();
+        let stale_in_all_msgs: Vec<&&str> = table_set.difference(&extracted_set).collect();
+        assert!(
+            missing_from_all_msgs.is_empty() && stale_in_all_msgs.is_empty(),
+            "enum Msg と ALL_MSGS が不一致。\n\
+             ALL_MSGS に無い(新規 variant を追加し忘れ?): {missing_from_all_msgs:?}\n\
+             enum に無い(削除/改名後の古いエントリ?): {stale_in_all_msgs:?}"
+        );
+        // No duplicate entries in ALL_MSGS either
+        // (`message_catalog_is_unique_and_mostly_translated` above already checks this via an
+        // all-pairs `assert_ne!` loop; this set-size comparison is a cheap second, independent proof
+        // that keeps holding even if that loop is ever weakened).
+        assert_eq!(
+            table_set.len(),
+            ALL_MSGS.len(),
+            "ALL_MSGS に重複 variant がある"
+        );
+    }
 }

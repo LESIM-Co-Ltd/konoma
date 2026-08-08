@@ -4665,6 +4665,17 @@ const MD_REMOTE_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Runs on a background thread. `ureq` is pure Rust (rustls + webpki-roots, no OpenSSL/native-tls),
 /// so this adds no external process and no system TLS dependency — replaces a former `curl` spawn.
 fn fetch_remote_image(url: &str, dest: &Path) -> bool {
+    fetch_remote_image_capped(url, dest, MD_REMOTE_MAX_BYTES)
+}
+
+/// Same as `fetch_remote_image`, but with the body-size cap taken as a parameter instead of always
+/// being `MD_REMOTE_MAX_BYTES`. Split out purely so a test can exercise the exact `.limit()`
+/// enforcement this uses in production against a tiny response (a handful of bytes over a small
+/// cap), instead of actually transferring 25MiB over a loopback socket just to prove the number is
+/// wired through — see `app/tests.rs`'s `fetch_remote_bytes_capped_rejects_a_body_over_the_cap`.
+/// Production code only ever calls `fetch_remote_image`, which always passes `MD_REMOTE_MAX_BYTES`,
+/// so this refactor changes no production behavior.
+fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
     let Some(parent) = dest.parent() else {
         return false;
     };
@@ -4672,7 +4683,7 @@ fn fetch_remote_image(url: &str, dest: &Path) -> bool {
         return false;
     }
     let tmp = dest.with_extension("part");
-    let Some(bytes) = fetch_remote_bytes(url) else {
+    let Some(bytes) = fetch_remote_bytes_capped(url, max_bytes) else {
         let _ = std::fs::remove_file(&tmp);
         return false;
     };
@@ -4694,11 +4705,13 @@ fn fetch_remote_image(url: &str, dest: &Path) -> bool {
 
 /// Perform the actual HTTP GET, bounded by a global timeout (principle #4 — don't let a background
 /// thread hang forever even though it's already off the UI thread) and a max body size (mirrors the
-/// old `curl --max-filesize`). Redirects are followed automatically (up to ureq's default of 10 —
-/// GitHub proxies images through camo, so this matters, same as the old `curl -L`). `gzip` is
-/// transparently decoded. Returns None on any failure: bad URL, connect/TLS error, non-2xx status
-/// (ureq treats those as errors by default, mirroring `curl --fail`), or an oversized body.
-fn fetch_remote_bytes(url: &str) -> Option<Vec<u8>> {
+/// old `curl --max-filesize`, taken as a parameter — see `fetch_remote_image_capped`'s doc for why:
+/// production always passes `MD_REMOTE_MAX_BYTES`, a test can inject a small cap instead). Redirects
+/// are followed automatically (up to ureq's default of 10 — GitHub proxies images through camo, so
+/// this matters, same as the old `curl -L`). `gzip` is transparently decoded. Returns None on any
+/// failure: bad URL, connect/TLS error, non-2xx status (ureq treats those as errors by default,
+/// mirroring `curl --fail`), or an oversized body.
+fn fetch_remote_bytes_capped(url: &str, max_bytes: u64) -> Option<Vec<u8>> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(20)))
         .user_agent("konoma image preview")
@@ -4707,7 +4720,7 @@ fn fetch_remote_bytes(url: &str) -> Option<Vec<u8>> {
     let mut resp = agent.get(url).call().ok()?;
     resp.body_mut()
         .with_config()
-        .limit(MD_REMOTE_MAX_BYTES)
+        .limit(max_bytes)
         .read_to_vec()
         .ok()
 }

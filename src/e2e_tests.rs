@@ -7151,7 +7151,18 @@ fn e2e_pastejump_non_github_url_unrecognized() {
     s.draw();
     assert_eq!(s.app.tab.mode, Mode::Tree);
     assert!(s.app.tab.preview_path.is_none());
-    assert!(s.app.flash.is_some());
+    // Not just "some flash appeared" — specifically the *unrecognized* classification
+    // (`Msg::PasteJumpUnrecognized`), so this can't silently regress into reporting "not found" or
+    // "no clipboard" instead (see `parse_paste_target` / `paste_jump_from` in `paste_jump.rs`).
+    assert_eq!(
+        s.app.flash.as_deref(),
+        Some(crate::i18n::tr(
+            s.app.lang,
+            crate::i18n::Msg::PasteJumpUnrecognized
+        )),
+        "非 GitHub URL は unrecognized として分類されるはず: {:?}",
+        s.app.flash
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -7189,7 +7200,17 @@ fn e2e_fileop_rename_to_existing_name_fails() {
     assert!(dir.join("notes.txt").exists());
     assert!(dir.join("data.csv").exists());
     assert!(!s.app.is_dialog());
-    assert!(s.app.flash.is_some());
+    // Not just "some flash appeared" — specifically *why* it was refused: `AlreadyExists` (the
+    // typed `fileops::FileOpError` translated by `App::describe_error`, added in v0.23.1). Without
+    // this, the rename could start silently succeeding, or start failing for an unrelated reason
+    // (e.g. a permissions error), and this test would still pass.
+    assert!(
+        s.app.flash.as_deref().is_some_and(
+            |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::AlreadyExists))
+        ),
+        "既に存在するので AlreadyExists の flash が出るはず: {:?}",
+        s.app.flash
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -9446,13 +9467,14 @@ fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
 struct NoProxyGuard(Option<std::ffi::OsString>);
 
 impl NoProxyGuard {
-    /// Isolates the real fetch (`fetch_remote_bytes` in app.rs) from whatever proxy the *ambient*
-    /// environment happens to configure. `ureq`'s `Config::default()` — which `fetch_remote_bytes`
-    /// goes through unconditionally, it never calls `.proxy(..)` itself — bakes in
-    /// `Proxy::try_from_env()` at agent-construction time: if `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`
-    /// (any casing) is set, a request meant to stay on loopback is actually routed through that
-    /// proxy instead of connecting directly, and connection-refused-in-~1ms turns into "however
-    /// long the real proxy takes to answer or time out" — up to `fetch_remote_bytes`'s 20s
+    /// Isolates the real fetch (`fetch_remote_bytes_capped` in app.rs) from whatever proxy the
+    /// *ambient* environment happens to configure. `ureq`'s `Config::default()` — which
+    /// `fetch_remote_bytes_capped` goes through unconditionally, it never calls `.proxy(..)` itself
+    /// — bakes in `Proxy::try_from_env()` at agent-construction time: if
+    /// `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` (any casing) is set, a request meant to stay on
+    /// loopback is actually routed through that proxy instead of connecting directly, and
+    /// connection-refused-in-~1ms turns into "however long the real proxy takes to answer or time
+    /// out" — up to `fetch_remote_bytes_capped`'s 20s
     /// `timeout_global`, so a proxied environment would flake or hang the calling test, and worse,
     /// a *reachable* proxy could make a "without ever reaching a real network" test actually reach
     /// one. `NO_PROXY=*` (checked by `ureq` before any of the proxy vars are consulted — see

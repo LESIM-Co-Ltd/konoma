@@ -10811,6 +10811,286 @@ fn refresh_fs_watched_does_not_retry_a_previously_failed_remote_image() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// ---- inline Markdown images: remote fetch — real HTTP round trips over a loopback socket ----
+//
+// The tests above (`fetch_remote_image_malformed_url_fails_without_touching_the_network`,
+// `refresh_retries_a_previously_failed_remote_image`) deliberately never let `ureq` send a byte: a
+// malformed URL fails inside its own request-construction step, before any DNS lookup or socket is
+// opened. So nothing in the suite had ever actually spoken HTTP — the response-parsing path (status
+// codes, redirects, gzip, the body-size cap, and the "reject a 200 HTML error page" guard) was
+// completely unverified. These tests close that gap with a real HTTP/1.1 server this test process
+// itself binds to a loopback port, serves from, and tears down — never touching an outside host,
+// which is what the "no test reaches the network" rule (see the malformed-URL test's doc comment
+// above) is actually about; the existing e2e test
+// `e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder` already treats
+// 127.0.0.1 the same way (there it's a connection-refused reply from nothing bound there; here it's
+// a real reply from something this test bound itself).
+
+/// Minimal, single-purpose HTTP/1.1 test server bound to an OS-assigned loopback port. Spawns a
+/// background thread that answers exactly `responses.len()` sequential TCP connections, each with
+/// the raw bytes given verbatim (callers build a whole response themselves: status line + headers +
+/// body), so a test using it exercises `fetch_remote_bytes_capped`/`fetch_remote_image_capped`'s
+/// real HTTP/1.1 response parsing, not just their failure-before-any-byte-is-sent paths.
+struct LoopbackServer {
+    addr: std::net::SocketAddr,
+}
+
+impl LoopbackServer {
+    fn start(responses: Vec<Vec<u8>>) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+        std::thread::spawn(move || {
+            for resp in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                drain_request_head(&mut stream);
+                use std::io::Write;
+                let _ = stream.write_all(&resp);
+                let _ = stream.flush();
+            }
+        });
+        Self { addr }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{}", self.addr, path)
+    }
+}
+
+/// Read (and discard) a request up to its blank line (a GET has no body) before replying — so a
+/// slow reader on the client side sees the full reply instead of a reset once the serving loop moves
+/// on and drops the stream.
+fn drain_request_head(stream: &mut std::net::TcpStream) {
+    use std::io::Read;
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 512];
+    while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => seen.extend_from_slice(&buf[..n]),
+        }
+    }
+}
+
+/// Build a raw HTTP/1.1 response. Always closes the connection after the one reply (matches
+/// `LoopbackServer`'s one-reply-per-connection design) and fills in `Content-Length` from `body`
+/// unless the caller already supplied one (the redirect test's empty-body 302 doesn't need one;
+/// everything else does, for deterministic framing).
+fn http_response(status_line: &str, headers: &[(&str, String)], body: &[u8]) -> Vec<u8> {
+    let mut out = format!("HTTP/1.1 {status_line}\r\n").into_bytes();
+    let has_len = headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
+    for (k, v) in headers {
+        out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+    }
+    if !has_len {
+        out.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    }
+    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    out.extend_from_slice(body);
+    out
+}
+
+/// A tiny real PNG's bytes (2x2, opaque) — built through the same `image` crate encoder the app
+/// itself decodes with (not a hand-rolled byte literal), via a scratch file (mirrors this file's
+/// existing `image::RgbaImage::…save(&png)` convention elsewhere) read back into memory.
+fn tiny_png_bytes() -> Vec<u8> {
+    let dir = unique_tmp("konoma_tiny_png_src");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("t.png");
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+        .save(&p)
+        .unwrap();
+    let bytes = std::fs::read(&p).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    bytes
+}
+
+fn gzip_bytes(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(data).unwrap();
+    enc.finish().unwrap()
+}
+
+/// Layer 1: a plain 200 response is received byte-for-byte.
+#[test]
+fn fetch_remote_bytes_capped_receives_a_real_200_body() {
+    let body = b"hello from the loopback test server";
+    let srv = LoopbackServer::start(vec![http_response(
+        "200 OK",
+        &[("Content-Type", "text/plain".into())],
+        body,
+    )]);
+    let got = fetch_remote_bytes_capped(&srv.url("/x"), MD_REMOTE_MAX_BYTES);
+    assert_eq!(got.as_deref(), Some(body.as_slice()));
+}
+
+/// Layer 3: a non-2xx status (client or server error) is treated as failure — `None`, mirroring
+/// `curl --fail` — even though the server sent a perfectly well-formed body along with it.
+#[test]
+fn fetch_remote_bytes_capped_rejects_non_2xx_status() {
+    for status in [
+        "404 Not Found",
+        "500 Internal Server Error",
+        "403 Forbidden",
+    ] {
+        let srv = LoopbackServer::start(vec![http_response(status, &[], b"nope")]);
+        assert!(
+            fetch_remote_bytes_capped(&srv.url("/x"), MD_REMOTE_MAX_BYTES).is_none(),
+            "status {status} は失敗のはず"
+        );
+    }
+}
+
+/// Layer 4: a redirect (3xx + `Location`) is followed automatically, and the bytes returned are the
+/// *final* response's — not the redirect's empty body. GitHub proxies images through camo exactly
+/// this way, per `fetch_remote_bytes_capped`'s doc comment.
+#[test]
+fn fetch_remote_bytes_capped_follows_a_redirect_to_the_final_body() {
+    let body = b"the real image lives here, not at the redirect";
+    // Two sequential connections on one server: the redirect, then the target it points to. The
+    // `Location` needs the real ephemeral port, so bind first and reuse `LoopbackServer`'s serving
+    // loop shape (duplicated here rather than factored out, since `LoopbackServer::start` takes an
+    // already-built `Vec<Vec<u8>>` and this response depends on the very address that start-up
+    // produces).
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local_addr");
+    let redirect = http_response(
+        "302 Found",
+        &[("Location", format!("http://{addr}/target"))],
+        b"",
+    );
+    let target = http_response("200 OK", &[], body);
+    std::thread::spawn(move || {
+        for resp in [redirect, target] {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            drain_request_head(&mut stream);
+            use std::io::Write;
+            let _ = stream.write_all(&resp);
+            let _ = stream.flush();
+        }
+    });
+    let got = fetch_remote_bytes_capped(&format!("http://{addr}/start"), MD_REMOTE_MAX_BYTES);
+    assert_eq!(
+        got.as_deref(),
+        Some(body.as_slice()),
+        "リダイレクト先の本文を受信するはず"
+    );
+}
+
+/// Layer 5: a `Content-Encoding: gzip` response is transparently decompressed — the crate is built
+/// with ureq's `gzip` feature (`Cargo.toml`) specifically for this.
+#[test]
+fn fetch_remote_bytes_capped_decodes_a_gzip_response() {
+    let plain = b"this text only exists compressed on the wire ".repeat(20);
+    let compressed = gzip_bytes(&plain);
+    let srv = LoopbackServer::start(vec![http_response(
+        "200 OK",
+        &[
+            ("Content-Encoding", "gzip".into()),
+            ("Content-Length", compressed.len().to_string()),
+        ],
+        &compressed,
+    )]);
+    let got = fetch_remote_bytes_capped(&srv.url("/x"), MD_REMOTE_MAX_BYTES);
+    assert_eq!(
+        got.as_deref(),
+        Some(plain.as_slice()),
+        "gzip 展開後の平文を受信するはず"
+    );
+}
+
+/// Layer 2: `MD_REMOTE_MAX_BYTES`'s enforcement mechanism (`resp.body_mut()…limit(n)`) rejects a
+/// body that exceeds the cap, and accepts the identical body under a cap that's big enough — proving
+/// it's specifically the cap causing the rejection, not something else about this response.
+///
+/// This deliberately does NOT transfer the real 25MiB `MD_REMOTE_MAX_BYTES` over the wire just to
+/// prove the number is wired through (slow, no extra coverage): `fetch_remote_bytes_capped` takes
+/// the cap as a parameter precisely so a small cap can exercise the exact same `.limit()` call
+/// production makes, just with a small enough `n` that a small (200-byte) body already exceeds it.
+#[test]
+fn fetch_remote_bytes_capped_rejects_a_body_over_the_cap() {
+    let body = vec![b'x'; 200];
+    let srv = LoopbackServer::start(vec![
+        http_response("200 OK", &[], &body),
+        http_response("200 OK", &[], &body),
+    ]);
+    assert!(
+        fetch_remote_bytes_capped(&srv.url("/a"), 50).is_none(),
+        "上限 50 バイトに対し 200 バイトの本文は失敗するはず"
+    );
+    assert_eq!(
+        fetch_remote_bytes_capped(&srv.url("/b"), 5_000).as_deref(),
+        Some(body.as_slice()),
+        "十分大きい上限では同じ本文が成功するはず(失敗の原因が上限そのものであることの対照)"
+    );
+}
+
+/// Layer 6: `fetch_remote_image`'s `md_image_dims` guard rejects a 200 response whose body isn't
+/// actually an image — the classic "server returns an HTML error page with a 200 status" case a bare
+/// status-code check would miss. No `.part` temp file is left behind either.
+#[test]
+fn fetch_remote_image_capped_rejects_a_200_html_error_page() {
+    let dir = unique_tmp("konoma_remote_html_reject_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("out.png");
+    let html = b"<html><body><h1>404 - not actually found</h1></body></html>";
+    let srv = LoopbackServer::start(vec![http_response(
+        "200 OK",
+        &[("Content-Type", "text/html".into())],
+        html,
+    )]);
+    assert!(!fetch_remote_image_capped(
+        &srv.url("/x"),
+        &dest,
+        MD_REMOTE_MAX_BYTES
+    ));
+    assert!(!dest.exists(), "HTML は画像として保存されないはず");
+    assert!(
+        !dest.with_extension("part").exists(),
+        ".part も残らないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The positive counterpart, full round trip: a real 200 PNG response is fetched, validated (accepted
+/// this time, unlike the HTML-error-page test above), and committed to `dest` — the whole
+/// `fetch_remote_image` pipeline a background thread runs every time a Markdown document embeds a
+/// remote image (`ensure_remote_md_fetch`).
+#[test]
+fn fetch_remote_image_capped_accepts_a_real_200_png() {
+    let dir = unique_tmp("konoma_remote_png_accept_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("out.png");
+    let png = tiny_png_bytes();
+    let srv = LoopbackServer::start(vec![http_response(
+        "200 OK",
+        &[("Content-Type", "image/png".into())],
+        &png,
+    )]);
+    assert!(fetch_remote_image_capped(
+        &srv.url("/x"),
+        &dest,
+        MD_REMOTE_MAX_BYTES
+    ));
+    assert!(dest.is_file(), "有効な画像は保存されるはず");
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        png,
+        "保存されたバイト列は取得したものと一致するはず"
+    );
+    assert!(
+        !dest.with_extension("part").exists(),
+        "コミット後は .part が残らないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn preview_survives_target_file_overwrite_and_delete() {
     // A previewed file can be overwritten or deleted out from under konoma (a script re-plots or
