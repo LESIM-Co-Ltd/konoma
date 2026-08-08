@@ -35,6 +35,8 @@ git_gutter = true
 # Tab stop width (default 4). In code/text previews, tabs expand to a "visible marker (→) plus spaces up to
 # the next tab stop". Terminals do not align tabs, so this keeps indentation aligned while still showing that
 # it is a tab. Set to 0 to keep raw tabs (columns may not line up).
+# A value outside the realistic tab-stop range 1..=16 falls back silently to the default (4) rather than
+# being used, so a typo (e.g. an extra zero) can't turn into a huge allocation.
 tab_width = 4
 # Whether to syntax-highlight code.
 #   true  = color with syntect (default). The first open of a language compiles its grammar (absorbed by

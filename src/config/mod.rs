@@ -529,6 +529,29 @@ impl UiConfig {
     }
 }
 
+/// Clamps a configured tab-stop width to a value safe for `preview::code::expand_tabs`, which
+/// allocates a `String` of exactly `tab_width` bytes (plus loops that many times) for the marker
+/// of a tab at column 0. `0` keeps its documented special meaning ("expansion disabled, raw tabs
+/// kept") and passes through unchanged — it is not an error value. Any other value is clamped to a
+/// realistic tab-stop range (`1..=16`); outside that range (an accidental huge value such as a
+/// typo'd `1000000000`, or the reported `9223372036854775807`) it falls back to the default (`4`)
+/// instead of being used for the allocation, since an unclamped huge value can exhaust memory and
+/// abort the process via `handle_alloc_error` — a hard abort that `catch_unwind` cannot catch, not
+/// a normal panic.
+///
+/// Not a method on `UiConfig` (unlike e.g. `UiConfig::math_color`): this mirrors `svg_max_px`'s
+/// existing pattern in the same file (`preview/svg.rs::HARD_MAX_PX`) of clamping at the sole point
+/// of use rather than through an config-level accessor, since `expand_tabs` is `tab_width`'s only
+/// consumer. `pub(crate)` so `preview::code::expand_tabs` can apply the rule directly to whatever
+/// raw `[ui] tab_width` value it is handed.
+pub(crate) fn clamp_tab_width(raw: usize) -> usize {
+    match raw {
+        0 => 0,
+        1..=16 => raw,
+        _ => 4,
+    }
+}
+
 /// Default tree sort (`[ui.sort]`). Changeable at runtime via the `s` sort menu.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -940,6 +963,35 @@ mod tests {
         assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
         ui.md_task_states = Vec::new();
         assert_eq!(ui.md_task_state_chars(), vec![' ', 'x']);
+    }
+
+    /// Regression test for the unbounded `[ui] tab_width` bug: `clamp_tab_width` (which
+    /// `preview::code::expand_tabs` applies to whatever raw value it is handed) must clamp
+    /// anything outside a realistic tab-stop range to the default, while preserving `0`'s
+    /// documented special meaning ("expansion disabled"), which is *not* an error value and must
+    /// not be folded into the fallback. Every case here is a pure comparison with no allocation,
+    /// so it is safe to test at the actual reported magnitude (`9223372036854775807`) and even
+    /// `usize::MAX` directly — unlike `expand_tabs` itself (covered separately, with a safe
+    /// magnitude, in `preview::code::tests`), calling this function can never abort.
+    #[test]
+    fn clamp_tab_width_bounds_to_a_realistic_range_but_keeps_zero_as_disable() {
+        // 0 keeps its documented special meaning (disable expansion) — it is not "invalid" and
+        // must not be rounded up to the default.
+        assert_eq!(clamp_tab_width(0), 0, "0=無効化は既定へ丸めない");
+        // Realistic values pass through unchanged.
+        assert_eq!(clamp_tab_width(1), 1);
+        assert_eq!(clamp_tab_width(4), 4, "既定と同じ値もそのまま");
+        assert_eq!(clamp_tab_width(16), 16, "上限16は許容");
+        // Out of range falls back to the default (4): a plausible typo, the value from the bug
+        // report, and the type's true maximum.
+        assert_eq!(clamp_tab_width(17), 4, "上限超は既定へ");
+        assert_eq!(clamp_tab_width(1_000_000_000), 4, "誤記(10億)も既定へ");
+        assert_eq!(
+            clamp_tab_width(9_223_372_036_854_775_807),
+            4,
+            "報告された極端値(9223372036854775807)も既定へ"
+        );
+        assert_eq!(clamp_tab_width(usize::MAX), 4, "usize::MAX も既定へ");
     }
 
     #[test]

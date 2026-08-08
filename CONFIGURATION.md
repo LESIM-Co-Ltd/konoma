@@ -57,7 +57,7 @@ copy_prefix = "y"
 | `wrap` | `true` | Soft-wrap text previews. `false` = no wrap + horizontal scrolling (`h`/`l`, `0`/`$`). |
 | `line_numbers` | `false` | Line-number gutter in code/text previews. |
 | `git_gutter` | `true` | Editor-style git change gutter (green added / blue modified / red deleted) in code/text previews of files with uncommitted changes. |
-| `tab_width` | `4` | Tab stop width in code/text previews (`0` keeps raw tabs). |
+| `tab_width` | `4` | Tab stop width in code/text previews (`0` keeps raw tabs). Values outside the realistic range `1..=16` fall back to `4`. |
 | `syntax_highlight` | `true` | Syntax highlighting for code previews (`false` = plain text, fastest). |
 | `preview_loading` | `"indicator"` | First-open wait for heavy code previews: `"indicator"` (loading screen) or `"progressive"` (plain text first, colors swap in when ready). |
 | `path_style` | `"relative"` | Title-bar path form: `"relative"` / `"home"` (`~/...`) / `"full"`. Cycle at runtime with `p`. |

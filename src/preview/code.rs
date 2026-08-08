@@ -414,7 +414,17 @@ const TAB_MARKER: char = '→';
 /// Expand tab characters in a line into "a marker (→) plus spaces up to the next tab stop". Terminals do not column-align
 /// tabs, so this ① aligns indentation columns and ② makes tabs visible. When `tab_width`=0, no conversion.
 /// Track the display column (full-width = 2) from the start of the line, extending each tab to the next multiple of `tab_width`. The marker is dimmed.
+///
+/// `tab_width` is clamped defensively (`config::clamp_tab_width`) before it is used for anything:
+/// below, a tab at column 0 allocates `String::with_capacity(tab_width)` and loops `tab_width`
+/// times to fill it, so an unclamped huge value straight from `[ui] tab_width` (a config typo, or
+/// the reported `9223372036854775807`) can exhaust memory and abort the process (`handle_alloc_error`,
+/// not a catchable panic). The clamp is enforced here, at the sole point of allocation, rather than
+/// on the caller — this is the same file's `svg_max_px` pattern (`preview::svg::HARD_MAX_PX`
+/// bounds the raster size at its own point of use), so callers are free to pass the raw config
+/// value straight through.
 pub fn expand_tabs(lines: Vec<Line<'static>>, tab_width: usize) -> Vec<Line<'static>> {
+    let tab_width = crate::config::clamp_tab_width(tab_width);
     // If there isn't a single tab, pass through unchanged to avoid a wasted clone.
     if tab_width == 0
         || !lines
@@ -755,6 +765,30 @@ mod tests {
         let line = Line::from("\tx".to_string());
         let out = expand_tabs(vec![line], 0);
         assert_eq!(line_str(&out[0]), "\tx", "0 は無変換");
+    }
+
+    /// Regression test for the unbounded `[ui] tab_width` bug: `expand_tabs` allocates
+    /// `String::with_capacity(stop)` and loops `stop` times for the marker of the first tab on a
+    /// line, where `stop == tab_width` when the tab is at column 0. Before the fix this was taken
+    /// straight from config with no cap, so a value like the reported `9223372036854775807` (or a
+    /// plain typo like `1000000000`) turns into a multi-gigabyte-or-more allocation attempt that
+    /// fails and calls `handle_alloc_error` — a hard process abort, not a catchable panic — and
+    /// even values that *do* allocate block the UI thread for `tab_width` iterations. We can't
+    /// safely exercise the actually-dangerous magnitudes here (that would abort/hang the test
+    /// process itself, exactly what must not happen), so this uses `1_000` — completely safe to
+    /// allocate/loop over, but outside the realistic 1..=16 tab-stop range the same as any larger
+    /// value, so it is equivalent evidence: the clamp treats "1_000" and "9223372036854775807"
+    /// identically (both fall back to the default), so this proves the real call site
+    /// (`expand_tabs`, not just an isolated accessor) is protected.
+    #[test]
+    fn expand_tabs_clamps_unreasonably_large_tab_width() {
+        let line = Line::from("\tx".to_string());
+        let out = expand_tabs(vec![line], 1_000);
+        assert_eq!(
+            line_str(&out[0]),
+            "→   x",
+            "現実的範囲(1..=16)外の tab_width は既定(4)にクランプされるべき"
+        );
     }
 
     #[test]

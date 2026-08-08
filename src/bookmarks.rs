@@ -194,14 +194,34 @@ fn read_marks(path: &Path) -> BTreeMap<char, PathBuf> {
     out
 }
 
+/// Writes `mf` to `path` **atomically** (mirrors `session::SessionStore::write`, which documents
+/// the same reasoning): it goes to a sibling `.tmp` file first and is then renamed into place, so
+/// a crash or kill mid-write can never truncate or corrupt an existing valid bookmarks file.
+/// Plain `std::fs::write(path, text)` opens the destination path itself with truncate-then-write —
+/// if the process dies partway through, `path` is left corrupted or empty; because `read_marks`
+/// treats any unparsable/empty file as "0 bookmarks" (`#[serde(default)]`), the very next `m`
+/// keypress would then silently overwrite it with just the one new mark, permanently losing
+/// everything that was there before. `rename` within the same directory is on the same filesystem,
+/// so it is atomic: a reader always sees either the fully old file or the fully new one, never a
+/// partial write, and it replaces the destination *as a directory entry* rather than opening
+/// through it (a regression test in `tests` below checks this: it does not follow a symlink at the
+/// destination the way a direct `fs::write` would).
+///
+/// (This duplicates `SessionStore::write`'s temp+rename body rather than sharing it: extracting a
+/// common helper would mean touching `session.rs` or adding a new shared module, both outside this
+/// fix's file scope — see the write-up in the accompanying report.)
 fn write_marks(path: &Path, mf: &MarksFile) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create bookmarks directory: {}", parent.display()))?;
     }
     let text = toml::to_string(mf).context("format bookmarks as TOML")?;
-    std::fs::write(path, text).with_context(|| format!("write bookmarks: {}", path.display()))?;
-    Ok(())
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)
+        .with_context(|| format!("write bookmarks temp file: {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("save bookmarks: {}", path.display()))
 }
 
 #[cfg(test)]
@@ -301,6 +321,82 @@ mod tests {
         assert_eq!(got.get(&'Z'), Some(&PathBuf::from("/tmp/global_z")));
         assert!(!got.contains_key(&'c'), "空値は無視");
         assert_eq!(got.len(), 2, "有効キーのみ復元(複数文字キー/空値は除外)");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for the non-atomic-write data-loss bug: `write_marks` used to call
+    /// `std::fs::write(path, text)` directly, which opens **the destination path itself** with
+    /// truncate-then-write. A real crash/kill mid-write leaves a corrupted or empty file, and
+    /// since the reader treats any unparsable file as "0 bookmarks" (`#[serde(default)]`), the
+    /// next `m` press would silently overwrite it with just the one new mark — permanently losing
+    /// everything that was there before. A real crash can't be simulated deterministically in a
+    /// unit test, but the exact same "the write follows/destroys whatever is currently at the
+    /// destination path" property can be: point the destination at a symlink and check that
+    /// whatever it *used* to point to survives. An atomic write (temp file + rename) never opens
+    /// the destination path at all until the content is fully staged elsewhere — `rename` replaces
+    /// the symlink itself (POSIX semantics: it does not follow it), so the old target is left
+    /// completely untouched. That is the same guarantee that protects a real bookmarks.toml
+    /// in-place from a process dying mid-write.
+    #[test]
+    #[cfg(unix)]
+    fn write_marks_replaces_via_rename_not_through_symlinks() {
+        let dir = unique_tmp("konoma_write_marks_atomic_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Stands in for "whatever was already at rest at the destination" (e.g. a valid
+        // bookmarks.toml's own inode before a crash). A direct `fs::write` through a symlink
+        // would follow it and truncate this; an atomic rename must never touch it.
+        let other = dir.join("other.toml");
+        std::fs::write(&other, "sentinel = \"do-not-touch\"\n").unwrap();
+
+        let target = dir.join("bookmarks.toml");
+        std::os::unix::fs::symlink(&other, &target).unwrap();
+
+        let mut mf = MarksFile::default();
+        mf.marks.insert("a".into(), "/tmp/new".into());
+        write_marks(&target, &mf).unwrap();
+
+        let other_after = std::fs::read_to_string(&other).unwrap();
+        assert_eq!(
+            other_after, "sentinel = \"do-not-touch\"\n",
+            "write_marks はシンボリックリンク先(=既存の内容)を破壊してはいけない(非アトミック書込みの再発防止)"
+        );
+        assert!(
+            !target.symlink_metadata().unwrap().file_type().is_symlink(),
+            "rename がシンボリックリンク自体を新しい内容の実ファイルへ置き換える"
+        );
+        let got = read_marks(&target);
+        assert_eq!(got.get(&'a'), Some(&PathBuf::from("/tmp/new")));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Companion to the symlink test above, mirroring `session::tests::write_replaces_in_place_and_leaves_no_temp`:
+    /// after a normal (non-symlink) write, no stray `.tmp` sibling is left behind.
+    #[test]
+    fn write_marks_leaves_no_temp_file_behind() {
+        let dir = unique_tmp("konoma_write_marks_no_temp_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bookmarks.toml");
+
+        let mut mf = MarksFile::default();
+        mf.marks.insert("a".into(), "/tmp/one".into());
+        write_marks(&path, &mf).unwrap();
+        mf.marks.insert("b".into(), "/tmp/two".into());
+        write_marks(&path, &mf).unwrap(); // 2nd write: temp write -> rename replaces in place.
+
+        let got = read_marks(&path);
+        assert_eq!(got.len(), 2, "2回目の書込みが反映される");
+
+        let leftovers = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "temp ファイルを残さない");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
