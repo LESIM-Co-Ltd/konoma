@@ -553,11 +553,17 @@ fn run(
     })
     .ok();
     let mut watched_root: Option<PathBuf> = None;
-    rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root);
+    // `attempted_*` tracks the last target we *tried* (success or failure), separately from
+    // `watched_*` (which only reflects a *successful* watch) — see `watch_target_changed`.
+    let mut attempted_root: Option<PathBuf> = Some(app.tab.root.clone());
+    if rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root) == WatchOutcome::Failed {
+        app.flash = Some(watch_failed_flash(app.lang, &app.tab.root));
+    }
     // Secondary watch: a file shown outside the tree root (a global-bookmark preview, or the repo-wide
     // git view when the root is a repo subdirectory) is not covered by the recursive root watch, so its
     // external/agent edits would never refresh. Watch its directory too (see `App::out_of_root_watch_dir`).
     let mut watched_extra: Option<PathBuf> = None;
+    let mut attempted_extra: Option<PathBuf> = None;
     // When root is a subdirectory of a repo — or root is a *linked worktree* (`git worktree add`),
     // whose own `HEAD`/`index` live under the main repo's `.git/worktrees/<name>/`, entirely outside
     // the worktree's own checkout — the git directory falls outside the recursive watch. Watch it
@@ -565,6 +571,7 @@ fn run(
     // external checkout) are picked up (`App::git_dir_watch`). When root *is* the repo root, this is
     // already covered by the recursive watch, so it's None.
     let mut watched_git: Option<PathBuf> = None;
+    let mut attempted_git: Option<PathBuf> = None;
 
     // Loading: warm the code grammar in the background and notify the run loop of completion over
     // this channel.
@@ -879,67 +886,148 @@ fn run(
             }
         }
 
-        // Re-point the watch target when root changes (h/l, tab switching, etc.).
-        if watched_root.as_deref() != Some(app.tab.root.as_path()) {
-            rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root);
+        // Re-point the watch target when root changes (h/l, tab switching, etc.). Gated on
+        // `attempted_root`, not `watched_root` — a failed watch() (e.g. the Linux inotify
+        // watch-descriptor limit) must not be retried on every idle poll tick; see
+        // `watch_target_changed`.
+        if watch_target_changed(attempted_root.as_deref(), Some(app.tab.root.as_path())) {
+            attempted_root = Some(app.tab.root.clone());
+            if rewatch(watcher.as_mut(), &mut watched_root, &app.tab.root) == WatchOutcome::Failed {
+                app.flash = Some(watch_failed_flash(app.lang, &app.tab.root));
+                needs_redraw = true;
+            }
         }
         // For a file shown outside root (a bookmark target / the repo-wide git view), also watch
         // its parent directory.
         // Becomes None — and the watch is dropped — once the displayed file changes / it returns
         // inside root / it returns to the tree.
         let want_extra = app.out_of_root_watch_dir();
-        if watched_extra.as_deref() != want_extra.as_deref() {
-            set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref());
+        if watch_target_changed(attempted_extra.as_deref(), want_extra.as_deref()) {
+            attempted_extra = want_extra.clone();
+            if set_extra_watch(watcher.as_mut(), &mut watched_extra, want_extra.as_deref())
+                == WatchOutcome::Failed
+            {
+                if let Some(dir) = want_extra.as_deref() {
+                    app.flash = Some(watch_failed_flash(app.lang, dir));
+                    needs_redraw = true;
+                }
+            }
         }
         // When root is a subdirectory of a repo, or is a linked worktree whose own `HEAD`/`index`
         // live under the main repo's `.git/worktrees/<name>/`, watch that git directory
         // non-recursively to catch external git operations.
         let want_git = app.git_dir_watch();
-        if watched_git.as_deref() != want_git.as_deref() {
-            set_extra_watch(watcher.as_mut(), &mut watched_git, want_git.as_deref());
+        if watch_target_changed(attempted_git.as_deref(), want_git.as_deref()) {
+            attempted_git = want_git.clone();
+            if set_extra_watch(watcher.as_mut(), &mut watched_git, want_git.as_deref())
+                == WatchOutcome::Failed
+            {
+                if let Some(dir) = want_git.as_deref() {
+                    app.flash = Some(watch_failed_flash(app.lang, dir));
+                    needs_redraw = true;
+                }
+            }
         }
     }
     Ok(())
 }
 
-/// Re-point the watcher at `root`. Failure is not fatal (auto-refresh just stops working).
+/// Outcome of a single (re)watch attempt — see `rewatch`, `set_extra_watch`, and
+/// `watch_target_changed` (the caller-side retry gate these outcomes feed into).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchOutcome {
+    /// No `notify::RecommendedWatcher` is available at all (construction failed at startup) —
+    /// unrelated to the per-target limit below; pre-existing, silent, unchanged by this fix.
+    NoWatcher,
+    /// The watch was removed and nothing new was requested (`want == None`).
+    Removed,
+    /// `watch()` succeeded.
+    Watching,
+    /// `watch()` failed. Most commonly on Linux: the per-user inotify watch-descriptor limit
+    /// (`fs.inotify.max_user_watches`, shared across *every* process the user runs, and consumed
+    /// one-per-directory by `RecursiveMode::Recursive` — this repo alone has 17k+ directories
+    /// under it, `target/` accounting for most). Auto-refresh for this target silently stops
+    /// working. The caller flashes this **once** (not every idle poll tick — see
+    /// `watch_target_changed`), since Agent Watch/live git-status updates dying with no
+    /// indication at all would be the worst possible failure mode for konoma's signature feature.
+    Failed,
+}
+
+/// Whether the watch target changed since the last **attempt** (success or failure) — the gate
+/// used before calling `rewatch`/`set_extra_watch` again, checked on every run() loop tick.
+/// Comparing against the last **successful** target (what run() did before this fix — `watched`,
+/// which a failed `watch()` never updates) means a failure is retried on every idle poll tick
+/// (~100ms, no backoff) forever: a busy loop that never gives up, hammering the same syscall that
+/// just failed (worse than doing nothing when the failure is the shared per-user inotify
+/// watch-descriptor limit — see `WatchOutcome::Failed` — since concurrent retries from this
+/// process compete with every other process's chance to get a watch). Comparing against the last
+/// **attempted** target (set unconditionally, before the syscall) fixes that: the next retry
+/// happens only once the caller actually asks for a different target (root change via `h`/`l`,
+/// tab switch, a file shown outside root changing, etc.).
+fn watch_target_changed(
+    attempted: Option<&std::path::Path>,
+    target: Option<&std::path::Path>,
+) -> bool {
+    attempted != target
+}
+
+/// Re-point the watcher at `root`. See `WatchOutcome::Failed` for what a failure means and why
+/// the caller must gate retries with `watch_target_changed` instead of calling this every tick.
 fn rewatch(
     watcher: Option<&mut notify::RecommendedWatcher>,
     watched: &mut Option<PathBuf>,
     root: &std::path::Path,
-) {
+) -> WatchOutcome {
     use notify::{RecursiveMode, Watcher};
     let Some(w) = watcher else {
-        return;
+        return WatchOutcome::NoWatcher;
     };
     if let Some(old) = watched.take() {
         let _ = w.unwatch(&old);
     }
     if w.watch(root, RecursiveMode::Recursive).is_ok() {
         *watched = Some(root.to_path_buf());
+        WatchOutcome::Watching
+    } else {
+        WatchOutcome::Failed
     }
 }
 
 /// Add/replace/remove the **secondary, non-recursive** watch for a file shown outside the tree root
 /// (`App::out_of_root_watch_dir`). `want=None` removes it. Non-recursive so it never overlaps the
-/// recursive root watch (no duplicate events). Failure is non-fatal (that file just won't auto-refresh).
+/// recursive root watch (no duplicate events). See `WatchOutcome::Failed` for what a failure means
+/// and why the caller must gate retries with `watch_target_changed` instead of calling this every tick.
 fn set_extra_watch(
     watcher: Option<&mut notify::RecommendedWatcher>,
     watched: &mut Option<PathBuf>,
     want: Option<&std::path::Path>,
-) {
+) -> WatchOutcome {
     use notify::{RecursiveMode, Watcher};
     let Some(w) = watcher else {
-        return;
+        return WatchOutcome::NoWatcher;
     };
     if let Some(old) = watched.take() {
         let _ = w.unwatch(&old);
     }
-    if let Some(dir) = want {
-        if w.watch(dir, RecursiveMode::NonRecursive).is_ok() {
-            *watched = Some(dir.to_path_buf());
-        }
+    let Some(dir) = want else {
+        return WatchOutcome::Removed;
+    };
+    if w.watch(dir, RecursiveMode::NonRecursive).is_ok() {
+        *watched = Some(dir.to_path_buf());
+        WatchOutcome::Watching
+    } else {
+        WatchOutcome::Failed
     }
+}
+
+/// One-shot flash text for `WatchOutcome::Failed`. The prefix goes through the `Msg` catalogue like
+/// every other user-visible string; the path is appended the way `CopiedPrefix` appends its value.
+fn watch_failed_flash(lang: crate::i18n::Lang, path: &std::path::Path) -> String {
+    format!(
+        "{}{}",
+        crate::i18n::tr(lang, crate::i18n::Msg::WatchFailedPrefix),
+        path.display()
+    )
 }
 
 /// Edit `path` in an external editor. Temporarily suspends the TUI (drops raw/alt screen), runs the
@@ -2344,6 +2432,113 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "writing a file must still be reported as a change"
         );
+
+        drop(watcher);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_target_changed_detects_actual_target_changes_only() {
+        let a = unique_tmp("konoma_watch_target_a");
+        let b = unique_tmp("konoma_watch_target_b");
+        // never-yet-attempted → any concrete target counts as "changed."
+        assert!(watch_target_changed(None, Some(a.as_path())));
+        // same target as last attempted (success or failure) → not changed (no retry).
+        assert!(!watch_target_changed(Some(a.as_path()), Some(a.as_path())));
+        // a genuinely different target → changed.
+        assert!(watch_target_changed(Some(a.as_path()), Some(b.as_path())));
+        // target removed (extra/git watch going from Some to None) → changed.
+        assert!(watch_target_changed(Some(a.as_path()), None));
+        // both "no target" → not changed.
+        assert!(!watch_target_changed(None, None));
+    }
+
+    #[test]
+    fn failed_watch_is_not_retried_on_every_idle_tick() {
+        // Simulates 5 idle poll ticks (run()'s ~100ms loop) with a root that can never be
+        // watched (nonexistent directory — the same Err branch notify returns when the Linux
+        // inotify per-user watch-descriptor limit, `fs.inotify.max_user_watches`, is hit; this
+        // repo alone has 17k+ directories under it). Before the fix, run()'s guard compared
+        // against `watched` (only set on a *successful* watch), so a failed attempt never
+        // updated it and every one of these 5 ticks re-attempted the real w.watch() syscall with
+        // no backoff (confirmed red: see watch_retry_storm_repro_before_fix in the commit that
+        // introduced this test). The fixed guard (`watch_target_changed`) compares against
+        // `attempted`, set unconditionally *before* the syscall, so only the first tick attempts.
+        let mut watcher =
+            notify::recommended_watcher(|_res: notify::Result<notify::Event>| {}).ok();
+        let bad_root = unique_tmp("konoma_watch_retry_storm_test");
+
+        let mut watched: Option<PathBuf> = None;
+        let mut attempted: Option<PathBuf> = None;
+        let mut attempts = 0;
+        let mut failures = 0;
+        for _tick in 0..5 {
+            if watch_target_changed(attempted.as_deref(), Some(bad_root.as_path())) {
+                attempted = Some(bad_root.clone());
+                attempts += 1;
+                if rewatch(watcher.as_mut(), &mut watched, &bad_root) == WatchOutcome::Failed {
+                    failures += 1;
+                }
+            }
+        }
+        assert_eq!(
+            attempts, 1,
+            "同一 root への再試行は初回の1回だけ(リトライ嵐の再発防止)"
+        );
+        assert_eq!(failures, 1, "flash も初回の1回だけ立つはず");
+        assert_eq!(
+            watched, None,
+            "失敗した watch は登録されない(unwatch 対象も無い=リークしない)"
+        );
+
+        // The target actually changing (root fixed / user navigates elsewhere) does retry.
+        let dir2 = unique_tmp("konoma_watch_retry_storm_test_ok");
+        std::fs::create_dir_all(&dir2).unwrap();
+        assert!(watch_target_changed(
+            attempted.as_deref(),
+            Some(dir2.as_path())
+        ));
+        attempted = Some(dir2.clone());
+        assert_eq!(
+            rewatch(watcher.as_mut(), &mut watched, &dir2),
+            WatchOutcome::Watching,
+            "root がウォッチ可能な値に変われば再試行して成功する"
+        );
+        assert_eq!(watched, Some(dir2.clone()));
+        assert_eq!(attempted.as_deref(), Some(dir2.as_path()));
+
+        drop(watcher);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn set_extra_watch_reports_removed_and_failed_outcomes() {
+        let mut watcher =
+            notify::recommended_watcher(|_res: notify::Result<notify::Event>| {}).ok();
+        let dir = unique_tmp("konoma_extra_watch_ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = unique_tmp("konoma_extra_watch_bad"); // never created → watch() fails.
+
+        let mut watched: Option<PathBuf> = None;
+        assert_eq!(
+            set_extra_watch(watcher.as_mut(), &mut watched, Some(dir.as_path())),
+            WatchOutcome::Watching
+        );
+        assert_eq!(watched, Some(dir.clone()));
+
+        // Switching to `None` (the file being shown returns inside root / to the tree) removes it.
+        assert_eq!(
+            set_extra_watch(watcher.as_mut(), &mut watched, None),
+            WatchOutcome::Removed
+        );
+        assert_eq!(watched, None);
+
+        // A target that can't be watched reports Failed and doesn't get registered.
+        assert_eq!(
+            set_extra_watch(watcher.as_mut(), &mut watched, Some(bad.as_path())),
+            WatchOutcome::Failed
+        );
+        assert_eq!(watched, None);
 
         drop(watcher);
         let _ = std::fs::remove_dir_all(&dir);

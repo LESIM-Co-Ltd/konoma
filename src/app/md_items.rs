@@ -519,7 +519,7 @@ impl App {
         let opener = "open";
         #[cfg(not(target_os = "macos"))]
         let opener = "xdg-open";
-        match std::process::Command::new(opener).arg(url).spawn() {
+        match spawn_opener(opener, url) {
             Ok(_) => self.flash = Some(format!("{}{url}", tr(self.lang, crate::i18n::Msg::Opened))),
             Err(e) => {
                 self.flash = Some(format!(
@@ -529,5 +529,101 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+/// Launches `opener url` (the OS URL/file handler) with stdio fully detached, and reaps it if it
+/// exits quickly. Returns the exit code if reaped within the budget, `None` if it was still
+/// running past the budget (given up on, not killed — see below), `Err` only if the process
+/// could not even be launched.
+///
+/// stdio: neither `open` (macOS) nor `xdg-open` (freedesktop) are meant to be interactive, but
+/// `xdg-open` is a shell script that can print GIO/GTK/desktop-file warnings straight to stderr —
+/// with stdio inherited (the pre-fix behavior here), those bytes land directly on konoma's
+/// raw-mode alternate screen and corrupt the display. Every *other* external-process call site in
+/// this codebase (`preview/command.rs`, `preview/video.rs`, `preview/pdf.rs`, `git.rs`) already
+/// nulls stdio for exactly this reason; this was the one call site that didn't.
+///
+/// Reaping: `open`/`xdg-open` are thin dispatchers — they fork the real handler (a browser, a
+/// PDF viewer, ...) and exit within milliseconds, which is the whole point of using them from
+/// scripts without blocking the caller. But `std::process::Child::drop` does not `wait()`, so
+/// never reaping the exited child leaves it a zombie until konoma itself quits — harmless for a
+/// single link, but this runs on every link the user opens in a session. So: poll `try_wait()`
+/// for a short, bounded budget (this function runs synchronously in `handle_key`, on the UI
+/// thread, so it must never block indefinitely) and reap the child if it exits inside that
+/// window. If it's somehow still running past the budget — an opener that doesn't self-detach,
+/// which would be non-standard — give up and leave it (same zombie-until-quit behavior as
+/// before this fix, but only for that rare/slow case instead of every open).
+fn spawn_opener(opener: &str, url: &str) -> std::io::Result<Option<i32>> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let deadline = Instant::now() + Duration::from_millis(150);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status.code()),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Can't determine exit status (platform oddity) — nothing more we can do.
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod opener_tests {
+    use super::*;
+
+    #[test]
+    fn spawn_opener_reaps_a_fast_exiting_process_without_blocking() {
+        // `true` is POSIX-standard on both macOS and Linux, ignores any argument, exits 0
+        // immediately — the common case for `open`/`xdg-open`, which fork the real handler and
+        // return right away. Pre-fix, the `Child` was dropped unread and left a zombie.
+        let start = std::time::Instant::now();
+        let code = spawn_opener("true", "ignored-arg").expect("spawn `true`");
+        assert_eq!(
+            code,
+            Some(0),
+            "a quickly-exiting opener must be reaped (no zombie left behind)"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(400),
+            "reaping a fast process must not stall the UI thread"
+        );
+    }
+
+    #[test]
+    fn spawn_opener_gives_up_promptly_instead_of_blocking_forever() {
+        // `sleep 1` deliberately outlives the ~150ms reap budget: this simulates the rare
+        // non-standard opener that doesn't self-detach. spawn_opener runs synchronously on the
+        // UI thread (inside handle_key), so it must give up quickly rather than block until the
+        // child exits — the child keeps running detached (stdio null) either way.
+        let start = std::time::Instant::now();
+        let code = spawn_opener("sleep", "1").expect("spawn `sleep 1`");
+        assert_eq!(
+            code, None,
+            "still running past the budget → given up on, not force-reaped"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "must give up promptly, never block for the process's full lifetime (fails pre-fix \
+             equivalent of an unbounded `wait()`, which would block ~1s here)"
+        );
+    }
+
+    #[test]
+    fn spawn_opener_returns_err_for_a_missing_binary() {
+        assert!(spawn_opener("konoma-definitely-not-a-real-binary-xyz-42", "x").is_err());
     }
 }

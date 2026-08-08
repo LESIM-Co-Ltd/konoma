@@ -148,8 +148,13 @@ toml = "0.8"
 # `Lang::from_lang_tag` は先頭の "ja" しか見ないのでどちらの区切りでも動く。
 sys-locale = "0.3"
 
-# クリップボード
-arboard = "3"
+# クリップボード。`wayland-data-control` を明示有効化=既定は X11 バックエンド(x11rb)のみで、
+# XWayland の無い Wayland セッション(sway/Hyprland で xwayland 無効・cage 等)では arboard の
+# Clipboard::new() 自体が失敗し `y` の全コピーが黙って不発になる(app.rs::set_clipboard の
+# Linux 分岐コメントは X11/Wayland 両対応と書いていたが実装は X11 のみだった)。
+# 新規依存 wl-clipboard-rs は `target.'cfg(all(unix, not(any(macos,android,emscripten))))'`
+# 配下=非 macOS Unix のみでビルドされ macOS には一切コンパイルされない(cargo tree で確認済)。
+arboard = { version = "3", features = ["wayland-data-control"] }
 
 # glob / mime 判定
 globset = "0.4"
