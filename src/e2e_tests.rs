@@ -9400,3 +9400,172 @@ fn e2e_yc_copies_when_preprocessing_creates_the_code_block() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Report 1: an inline animated GIF keeps ticking forever after leaving Preview. `md_image_cache` is
+/// a flat, path-keyed cache that `enter_preview` only clears when switching to a genuinely
+/// *different* file (`if !same_file`, `src/app.rs`) — nothing clears it just because the mode moved
+/// back to Tree via `q` (`back_to_tree`, also in `src/app.rs`, never touches it). Since
+/// `md_gif_poll_timeout`/`advance_md_gifs_if_due` (both in `src/app/md_media.rs`) scan every cache
+/// entry unconditionally, the run loop keeps waking up (≤100ms) and redrawing the *tree* forever even
+/// though nothing on screen is animating. Drives the exact same real-thread GIF pipeline as
+/// `e2e_ui_inline_gif_animates_through_real_decode_worker`, then leaves Preview with the real `q`
+/// keystroke (the same entry point the run loop uses).
+#[test]
+fn e2e_ui_inline_gif_stops_polling_after_leaving_preview() {
+    let dir = sandbox("inline_gif_stops_on_tree");
+    {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame, Rgba, RgbaImage};
+        let out = std::fs::File::create(dir.join("anim.gif")).unwrap();
+        let mut enc = GifEncoder::new(out);
+        let frames = [Rgba([220, 20, 20, 255]), Rgba([20, 20, 220, 255])]
+            .into_iter()
+            .map(|color| {
+                Frame::from_parts(
+                    RgbaImage::from_pixel(120, 80, color),
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(100, 1),
+                )
+            });
+        enc.encode_frames(frames).unwrap();
+    }
+    std::fs::write(dir.join("d.md"), "![anim](anim.gif)\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images(); // real decode thread: decode_gif_inline finds 2 frames
+    s.drain_md_encodes(); // frame 0's protocol
+    assert!(
+        s.app.md_gif_poll_timeout().is_some(),
+        "プレビュー中はアニメGIFのポーリング待ちが立つはず"
+    );
+
+    s.key('q'); // Action::PreviewBack -> back_to_tree, the same key the run loop dispatches
+    assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻るはず");
+    assert!(
+        s.app.md_gif_poll_timeout().is_none(),
+        "ツリーへ戻った後は GIF ポーリングが止まるはず(報告1): {:?}",
+        s.app.md_gif_poll_timeout()
+    );
+    assert!(
+        !s.app.advance_md_gifs_if_due(),
+        "ツリー表示中はコマ送りも起きないはず(報告1)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Report 1, tab-switch companion: switching to a *different* file within the same tab already goes
+/// through `enter_preview`'s `if !same_file { self.md_image_cache.clear() }`, which is the one place
+/// that genuinely empties the cache. Pins that this path keeps working once `back_to_tree`/mode
+/// gating is added elsewhere — a change scoped to `md_gif_poll_timeout`/`advance_md_gifs_if_due`
+/// alone must not weaken this existing behavior.
+#[test]
+fn e2e_ui_inline_gif_stops_polling_after_opening_a_different_file() {
+    let dir = sandbox("inline_gif_stops_on_switch");
+    {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame, Rgba, RgbaImage};
+        let out = std::fs::File::create(dir.join("anim.gif")).unwrap();
+        let mut enc = GifEncoder::new(out);
+        let frames = [Rgba([220, 20, 20, 255]), Rgba([20, 20, 220, 255])]
+            .into_iter()
+            .map(|color| {
+                Frame::from_parts(
+                    RgbaImage::from_pixel(120, 80, color),
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(100, 1),
+                )
+            });
+        enc.encode_frames(frames).unwrap();
+    }
+    std::fs::write(dir.join("d.md"), "![anim](anim.gif)\n").unwrap();
+    std::fs::write(dir.join("other.txt"), "plain text\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    assert!(s.app.md_gif_poll_timeout().is_some());
+
+    s.key('q');
+    s.select("other.txt");
+    s.enter();
+    assert!(
+        s.app.md_gif_poll_timeout().is_none(),
+        "別ファイルを開けば GIF ポーリングは止まるはず(既存挙動の非退行)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Report 2: every math expression in a document spawns its own OS thread the instant it's first
+/// scanned (`ensure_math_render`, `src/app/md_media.rs`), with no cap on how many run at once. A
+/// document with many distinct `$...$` expressions therefore calls `std::thread::spawn` that many
+/// times synchronously inside the very first `ensure_md_cache` pass (`src/app/md_render.rs`), which
+/// runs on the UI thread before the first frame can draw. Confirmed by a *state* count — how many
+/// entries land in the cache in this one pass, i.e. how many renders were actually kicked off — not a
+/// wall-clock timing (`md_image_cache` is private to `app`; the count is read through the
+/// `#[cfg(test)]` accessor added alongside this test in `src/app/md_media.rs`).
+#[test]
+fn e2e_ui_math_render_requests_are_bounded_not_all_at_once() {
+    let dir = sandbox("math_render_bounded");
+    let exprs: String = (0..80)
+        .map(|i| format!("$a{i}$"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    std::fs::write(dir.join("d.md"), exprs).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter(); // the very first ensure_md_cache pass — exactly where an unbounded implementation
+               // calls std::thread::spawn 80 times in a row before this line returns
+    let inserted = s.app.md_image_cache_len();
+    assert!(
+        inserted < 80,
+        "80個の式が一度に全部スレッド起動されてはいけない(報告2): 挿入数={inserted}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Report 2, convergence companion: capping concurrency must not silently strand the expressions
+/// beyond the cap in `Loading` forever. Drains only the decode channel (placement existence depends
+/// on decode+layout, not on the separate protocol-encode step, which — like a real inline image — is
+/// only requested for currently *visible* placements and would never arrive for most of these 40
+/// off-screen ones, hanging the test) in rounds, mirroring the run loop's per-tick drain, until every
+/// expression has a placement. Bounds the number of rounds so a regression that stops re-kicking
+/// skipped entries (e.g. capping without ever retrying) fails loudly instead of hanging.
+#[test]
+fn e2e_ui_math_render_cap_eventually_renders_every_expression() {
+    let dir = sandbox("math_render_cap_converges");
+    let n = 40;
+    let exprs: String = (0..n)
+        .map(|i| format!("$a{i}$"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    std::fs::write(dir.join("d.md"), exprs).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+
+    // Drain decode results in rounds until every expression is placed, or give up after a generous
+    // number of rounds (well beyond ceil(n / cap) for any sane cap).
+    let mut rounds = 0;
+    while s.app.md_images().len() < n && rounds < n * 4 {
+        s.drain_md_images();
+        rounds += 1;
+    }
+    assert_eq!(
+        s.app.md_images().len(),
+        n,
+        "上限を設けても、いずれ全ての式がレンダリングされ切るはず(報告2の修正が新しいスタックを生まない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

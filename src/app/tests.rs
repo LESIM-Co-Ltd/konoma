@@ -6922,6 +6922,12 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
     let dir = unique_tmp("konoma_md_gif_advance_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // These exercise the advance/poll mechanism itself, which only runs while a preview is up:
+    // `md_gif_poll_timeout`/`advance_md_gifs_if_due` return early outside `Mode::Preview` so that
+    // leaving a preview stops the animation (and the wakeups it needs) instead of driving redraws
+    // of a tree nothing is moving on. `App::new` starts in Tree, so put the app in the mode the
+    // mechanism belongs to rather than asserting from a state the feature never runs in.
+    app.tab.mode = Mode::Preview;
 
     let key = PathBuf::from("/tmp/anim.gif");
     let f0 = Arc::new(image::DynamicImage::new_rgba8(4, 4));
@@ -7008,6 +7014,12 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
     let dir = unique_tmp("konoma_md_gif_poll_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // These exercise the advance/poll mechanism itself, which only runs while a preview is up:
+    // `md_gif_poll_timeout`/`advance_md_gifs_if_due` return early outside `Mode::Preview` so that
+    // leaving a preview stops the animation (and the wakeups it needs) instead of driving redraws
+    // of a tree nothing is moving on. `App::new` starts in Tree, so put the app in the mode the
+    // mechanism belongs to rather than asserting from a state the feature never runs in.
+    app.tab.mode = Mode::Preview;
 
     assert!(
         app.md_gif_poll_timeout().is_none(),

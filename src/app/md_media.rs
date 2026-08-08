@@ -1,5 +1,17 @@
 use super::*;
 
+/// Cap on how many mermaid-fence/math renders may be in flight (spawned, result not yet applied) at
+/// once — see `App::ensure_mermaid_fence_render` / `App::ensure_math_render`. Unlike a real inline
+/// image, which is only requested for a placement the renderer actually draws (`ensure_md_image`,
+/// called per *visible* placement), a fence/math render is requested for the *whole* document right
+/// in `ensure_md_cache` (its rendered size has to be known just to lay the document out, even for
+/// content that is off-screen). Without a cap, a document with hundreds of distinct expressions calls
+/// `std::thread::spawn` hundreds of times synchronously in a single pass — on the UI thread, before
+/// the first frame can even draw (measured: 600 expressions → 911ms, ~15x the 60ms draw budget) — and
+/// past some count `std::thread::spawn` can itself fail (EAGAIN) and panic, which would take the
+/// whole app down (nothing wraps this loop in `catch_unwind`).
+const MAX_SYNTHETIC_RENDERS_IN_FLIGHT: usize = 16;
+
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
@@ -296,6 +308,24 @@ impl App {
         std::mem::take(&mut self.md_overlay_moved)
     }
 
+    /// How many mermaid-fence/math renders currently have a placeholder in `md_image_cache` but no
+    /// result yet (i.e. a background thread is running for them right now). Both kinds share the
+    /// same one-shot-thread-per-request shape and compete for the same `MAX_SYNTHETIC_RENDERS_IN_FLIGHT`
+    /// cap.
+    fn synthetic_renders_in_flight(&self) -> usize {
+        self.md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                if e.decoded.is_some() || e.failed {
+                    return false; // done (either way) — no longer occupying a slot
+                }
+                let s = k.to_string_lossy();
+                crate::preview::markdown::is_mermaid_fence_url(&s)
+                    || crate::preview::markdown::is_math_url(&s)
+            })
+            .count()
+    }
+
     /// Ensure a background mermaid render is in flight (or cached) for one ```mermaid fence.
     /// Keyed by content hash, so an edited fence renders fresh while unchanged fences reuse their
     /// raster. With no loader tx (tests), renders synchronously so behavior stays observable.
@@ -306,8 +336,6 @@ impl App {
         if self.md_image_cache.contains_key(&key) {
             return false;
         }
-        self.md_image_cache
-            .insert(key.clone(), MdImgEntry::default());
         let max_px = self.mermaid_px();
         let theme = self.cfg.ui.mermaid_theme.clone();
         let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
@@ -321,6 +349,20 @@ impl App {
             (img, Some(data))
         };
         if let Some(tx) = self.md_img_tx.clone() {
+            // Bounded concurrency (MAX_SYNTHETIC_RENDERS_IN_FLIGHT): at capacity, skip this pass
+            // *without* inserting a placeholder. Nothing is lost — `apply_md_image` invalidates
+            // `md_cache` whenever any synthetic entry's first result lands, so the very next
+            // `ensure_md_cache` rebuild re-scans the document's mermaid_fences and retries whatever
+            // is still absent from `md_image_cache`, now that a slot has freed up (the classifier
+            // that turns an absent key into a "loading" placement doesn't care whether a thread is
+            // actually running for it yet). This self-driving wave always converges without a
+            // dedicated persistent worker thread + channel, which is not an option here: that would
+            // need its sender stored as a new field on `App` (`src/app.rs` is off limits).
+            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
+                return false;
+            }
+            self.md_image_cache
+                .insert(key.clone(), MdImgEntry::default());
             std::thread::spawn(move || {
                 // Even if render() (rasterize_bytes = resvg) panics, don't kill the thread — always
                 // return a result: otherwise the entry stays stuck at decoded=None && !failed and
@@ -337,6 +379,8 @@ impl App {
             });
             false
         } else {
+            self.md_image_cache
+                .insert(key.clone(), MdImgEntry::default());
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -351,15 +395,14 @@ impl App {
 
     /// Ensure a background render is in flight (or cached) for one math expression, keyed by latex +
     /// display so an edited equation renders fresh while unchanged ones reuse their raster. Mirrors
-    /// `ensure_mermaid_fence_render`; the SVG is kept so `apply_md_image` can record its intrinsic (em)
-    /// size for layout. Returns true on a synchronous completion (no loader tx = tests).
+    /// `ensure_mermaid_fence_render` (including the `MAX_SYNTHETIC_RENDERS_IN_FLIGHT` cap and its
+    /// self-driving retry); the SVG is kept so `apply_md_image` can record its intrinsic (em) size for
+    /// layout. Returns true on a synchronous completion (no loader tx = tests).
     pub(super) fn ensure_math_render(&mut self, latex: String, display: bool) -> bool {
         let key = PathBuf::from(crate::preview::markdown::math_url(&latex, display));
         if self.md_image_cache.contains_key(&key) {
             return false;
         }
-        self.md_image_cache
-            .insert(key.clone(), MdImgEntry::default());
         let max_px = self.math_px();
         // Move the glyph color (already sanitized) into the worker. RaTeX's default is pure black,
         // which is invisible on a dark terminal, so paint it a color that stands out against the
@@ -376,6 +419,13 @@ impl App {
                 (img, Some(data))
             };
         if let Some(tx) = self.md_img_tx.clone() {
+            // See the identical guard in ensure_mermaid_fence_render for why skipping here (without
+            // inserting a placeholder) is safe and self-corrects on the next rebuild.
+            if self.synthetic_renders_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
+                return false;
+            }
+            self.md_image_cache
+                .insert(key.clone(), MdImgEntry::default());
             std::thread::spawn(move || {
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
                     .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
@@ -389,6 +439,8 @@ impl App {
             });
             false
         } else {
+            self.md_image_cache
+                .insert(key.clone(), MdImgEntry::default());
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -697,7 +749,17 @@ impl App {
     /// only for placements actually drawn) requests and receives a fresh encode of the new frame.
     /// Advancing an off-screen entry therefore costs only an index bump, never a re-encode.
     /// Returns true if any entry advanced (the caller re-renders).
+    ///
+    /// Gated on `Mode::Preview`: `md_image_cache` is a flat, path-keyed cache that is only cleared
+    /// by `enter_preview`'s `if !same_file` branch (switching to a genuinely different file) — it is
+    /// deliberately left alone by `back_to_tree` (re-entering the *same* file must resume playback
+    /// without a re-decode). Without this check, leaving Preview via `q` left every animating entry
+    /// ticking forever: this kept requesting a fresh encode (`proto_size = None` below) and
+    /// redrawing a *tree* screen where nothing is even visible, defeating the idle-CPU invariant.
     pub fn advance_md_gifs_if_due(&mut self) -> bool {
+        if !matches!(self.tab.mode, Mode::Preview) {
+            return false;
+        }
         let now = std::time::Instant::now();
         let mut advanced = false;
         for entry in self.md_image_cache.values_mut() {
@@ -727,10 +789,27 @@ impl App {
         advanced
     }
 
+    /// Test-only: how many entries currently sit in `md_image_cache` (private to `app`, so an e2e
+    /// test outside the module needs an accessor to observe it). Used to confirm — by state, not by
+    /// wall-clock timing — that a document with many distinct fence/math expressions does not have
+    /// them all land in the cache (= all spawned) in a single pass.
+    #[cfg(test)]
+    pub fn md_image_cache_len(&self) -> usize {
+        self.md_image_cache.len()
+    }
+
     /// Wait time until the soonest inline-GIF frame change, across every animating cache entry (for
     /// the run loop's poll timeout — mirrors `App::gif_poll_timeout` for the full-screen GIF path).
     /// None when no inline GIF is currently animating.
+    ///
+    /// Gated on `Mode::Preview` for the same reason as `advance_md_gifs_if_due` (which this mirrors
+    /// exactly): outside Preview there is nothing on screen to animate, so this must not keep the
+    /// run loop waking up every ≤100ms — that showed up as measured `poll=Some(100ms)` while sitting
+    /// on the tree, forcing a full redraw each time for a screen that never actually changes.
     pub fn md_gif_poll_timeout(&self) -> Option<std::time::Duration> {
+        if !matches!(self.tab.mode, Mode::Preview) {
+            return None;
+        }
         use std::time::Duration;
         let mut min: Option<Duration> = None;
         for entry in self.md_image_cache.values() {
