@@ -12,17 +12,46 @@ use super::*;
 /// whole app down (nothing wraps this loop in `catch_unwind`).
 const MAX_SYNTHETIC_RENDERS_IN_FLIGHT: usize = 16;
 
+/// Whether we're running inside tmux, for deciding whether konoma's own full-screen kitty transfer
+/// (`preview/kitty.rs`) must wrap its escapes in tmux's DCS passthrough (`kitty_is_tmux`).
+///
+/// OR's `$TMUX`'s mere *presence* together with `ratatui-image`'s own (private) detection rule —
+/// `TERM` starting with `"tmux"`, or `TERM_PROGRAM == "tmux"` (`picker.rs`'s
+/// `detect_tmux_and_outer_protocol_from_env`) — because the Markdown *inline*-image path asks the
+/// picker to build its own protocol (which uses that private `is_tmux`), while the full-screen path
+/// reads this crate's own `kitty_is_tmux`: two independent flags fed by two different rules, each
+/// only consulted by one of the two image paths. Checking `$TMUX` alone left them disagreeing behind
+/// an ssh hop out of a tmux pane, or under `sudo` inside one — both forward `TERM` but drop `$TMUX`
+/// (`sudo`'s `env_reset` keeps `TERM` via `env_keep` while clearing everything not on that list) — so
+/// the picker correctly detected tmux and wrapped its escapes while this flag stayed `false` and sent
+/// *unwrapped* kitty escapes for the full-screen path only: an unwrapped-vs-wrapped mismatch between
+/// the two paths, not present in either path taken alone. The other direction (this returns `true`
+/// when the picker's own rule would say `false`, e.g. a pre-3.2 tmux session where `$TMUX` is set but
+/// `TERM` is still `screen-*` and no known `TERM_PROGRAM` is set) is harmless: the picker then never
+/// detects `Kitty` as the `protocol_type` in the first place, so `use_kitty` is `false` and this flag
+/// is never read.
+///
+/// Takes the three env values as parameters instead of reading `std::env::var`/`var_os` directly, so
+/// it is a pure function safe to unit-test — `std::env::set_var` mutates process-wide state shared by
+/// every test thread (this crate's established convention, see `bookmarks::xdg_base_dir`).
+fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option<&str>) -> bool {
+    tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
+}
+
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
         // Use konoma's own compressed transmit only on a kitty-graphics terminal; other protocols
-        // (sixel/iterm2/halfblocks) keep the ratatui-image path. tmux is detected via $TMUX (the
-        // picker's own is_tmux is private), matching how the escapes must be passthrough-wrapped.
+        // (sixel/iterm2/halfblocks) keep the ratatui-image path.
         self.use_kitty = matches!(
             picker.protocol_type(),
             ratatui_image::picker::ProtocolType::Kitty
         );
-        self.kitty_is_tmux = std::env::var_os("TMUX").is_some();
+        self.kitty_is_tmux = is_tmux_from_env(
+            std::env::var_os("TMUX").is_some(),
+            std::env::var("TERM").ok().as_deref(),
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+        );
         self.picker = Some(picker);
         self.img_tx = Some(tx);
     }
@@ -826,5 +855,46 @@ impl App {
             min = Some(min.map_or(remaining, |m| m.min(remaining)));
         }
         min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
+    }
+}
+
+#[cfg(test)]
+mod tmux_detection_tests {
+    use super::is_tmux_from_env;
+
+    /// Baseline: nothing suggests tmux at all → no wrapping.
+    #[test]
+    fn no_signal_is_not_tmux() {
+        assert!(!is_tmux_from_env(false, None, None));
+        assert!(!is_tmux_from_env(false, Some("xterm-256color"), None));
+    }
+
+    /// Pre-3.2 tmux (no `TERM_PROGRAM`, `TERM` still `screen-*`): `$TMUX` alone already covered
+    /// this and must keep doing so — this is the "harmless" mismatch direction (picker would see
+    /// `Halfblocks` here anyway, so konoma's flag is never read), not something the fix should break.
+    #[test]
+    fn tmux_var_alone_is_tmux() {
+        assert!(is_tmux_from_env(true, Some("screen-256color"), None));
+    }
+
+    /// The bug: ssh'd out of a tmux pane (or `sudo` inside one) forwards `TERM` but drops `$TMUX`.
+    /// The picker's own detection (`TERM.starts_with("tmux")`) already gets this right; before the
+    /// fix, konoma's `$TMUX`-only check did not.
+    #[test]
+    fn term_starts_with_tmux_without_tmux_var_is_tmux() {
+        assert!(is_tmux_from_env(false, Some("tmux-256color"), None));
+    }
+
+    /// The other half of the picker's rule: `TERM_PROGRAM == "tmux"` with `$TMUX` unset.
+    #[test]
+    fn term_program_tmux_without_tmux_var_is_tmux() {
+        assert!(is_tmux_from_env(false, None, Some("tmux")));
+    }
+
+    /// A `TERM` that merely contains "tmux" without *starting* with it must not match (mirrors the
+    /// picker's `starts_with`, not a substring check).
+    #[test]
+    fn term_containing_but_not_starting_with_tmux_is_not_tmux() {
+        assert!(!is_tmux_from_env(false, Some("xterm-tmux-ish"), None));
     }
 }
