@@ -6,6 +6,23 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **A large diff no longer costs 743ms a keystroke.** Every frame highlighted every line of the diff
+  and then threw away everything off screen — twelve times the drawing budget on a 6,500-line diff,
+  and a newly created file is a diff where every line is added, which follow mode opens by itself.
+  Only the visible rows are highlighted now: 4.5ms unified, 5.2ms side-by-side.
+- **Listing a `.tar` or `.tar.gz` no longer reads the whole archive.** A plain `.tar` is seekable and
+  was not being told so; a `.tar.gz` cannot seek and now stops after 64MiB and says the listing is
+  truncated. A 3MB `.tar.gz` holding a gigabyte took 289ms, on every tab switch.
+
+### Fixed
+- **The changed-files view (`C`) survived neither a file operation nor a tab switch.** Creating,
+  renaming, pasting, duplicating or deleting left the ordinary listing on screen under a header still
+  claiming `± CHANGED (n)`, with the count taken from the wrong list; `/` behaved the same way. And
+  switching away while a `git status` scan was still running snapshotted the unfiltered tree, so
+  coming back showed an unmodified file under the CHANGED header and left the cursor on a different
+  file than it had been on.
+
 ### Fixed
 - **Two crashes.** A footnote whose continuation lines mixed ASCII-space indentation with a
   full-width space (U+3000) or a no-break space took the app down the moment the file was previewed:
