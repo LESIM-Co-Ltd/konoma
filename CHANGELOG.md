@@ -16,6 +16,24 @@ All notable changes to konoma are documented in this file. The format is based o
   truncated. A 3MB `.tar.gz` holding a gigabyte took 289ms, on every tab switch.
 
 ### Fixed
+- **A blank PDF page is no longer shown as blank.** The native renderer returns a pixmap rather than a
+  result, so a page it could not draw came back empty and the fallback to the external renderer —
+  which draws those pages fine — was never reached.
+- **`⎇` and `⌖` follow `ui.icons` like every other symbol**, and no longer sit flush against the branch
+  dot in the graph legend. They come from a fallback font whose glyphs are wider than the cell, so
+  they could overlap what was next to them.
+- **Images are laid out with the terminal's real cell size** when it answers the capability query but
+  not the size query. The fallback was 10x20, described by the library as arbitrary; against the font
+  this is used with, every image, diagram and formula was about 6% off.
+- **A file whose name is stored decomposed showed no git marker and could not be diffed** (macOS).
+  `git status` recomposes names before reporting them while the tree reads them from the directory, so
+  the two spellings never matched.
+- **A remote image that failed to download is retried on an explicit reload.** Remembering the failure
+  is deliberate — an agent writing files fires an event per write — but `r` is the user asking for it
+  to be fetched again, and until now only restarting konoma would do that.
+- **Full-screen images work in tmux when `$TMUX` is not set but `TERM` says tmux** — after an ssh, or
+  under `sudo`. konoma and the image backend disagreed about how to detect tmux, so konoma wrote raw
+  escapes that tmux then swallowed, while inline images kept working.
 - **The changed-files view (`C`) survived neither a file operation nor a tab switch.** Creating,
   renaming, pasting, duplicating or deleting left the ordinary listing on screen under a header still
   claiming `± CHANGED (n)`, with the count taken from the wrong list; `/` behaved the same way. And
