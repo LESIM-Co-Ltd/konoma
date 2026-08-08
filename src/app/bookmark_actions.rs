@@ -323,10 +323,10 @@ impl App {
             // showing a false "no changed files". Publish the anchor instead and let
             // `apply_statuses` do the rebuild once the real result lands.
             if self.git_status_pending.is_none() {
-                self.changed_anchor_pending = None;
+                self.tab.changed_anchor_pending = None;
                 self.reapply_changed_filter(anchor);
             } else {
-                self.changed_anchor_pending = anchor;
+                self.tab.changed_anchor_pending = anchor;
             }
         }
     }
@@ -380,7 +380,7 @@ impl App {
         // explicit `reapply_changed_filter(None)` gets there — `toggle_changed_filter`'s ON branch
         // always calls this right before setting `changed_filter = true`, so clearing it here closes
         // that window at its one entry point rather than at every place `changed_filter` goes false.
-        self.changed_anchor_pending = None;
+        self.tab.changed_anchor_pending = None;
     }
 
     /// Attach the Sender of the worker that finishes filter-pool scans in the background (called by
@@ -651,7 +651,8 @@ impl App {
         if !self.tab.changed_filter {
             return None;
         }
-        self.changed_anchor_pending
+        self.tab
+            .changed_anchor_pending
             .clone()
             .or_else(|| self.filter_anchor())
     }
@@ -1227,6 +1228,7 @@ impl App {
             // reading it live is right — and necessary, because this is the path an agent's writes
             // take: without it the list re-sorts under a cursor that never moved.
             let anchor = self
+                .tab
                 .changed_anchor_pending
                 .take()
                 .or_else(|| self.filter_anchor());
@@ -1411,7 +1413,7 @@ impl App {
         // structure and overwrite the correct pending identity with it, so the eventual landing
         // dragged the cursor onto a file the user was never on.
         let changed_anchor = self.changed_filter_anchor();
-        self.changed_anchor_pending = changed_anchor.clone();
+        self.tab.changed_anchor_pending = changed_anchor.clone();
         if recompute_ignored {
             self.git_status_for = None; // recompute statuses+branch on the next render
             self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
@@ -1439,7 +1441,7 @@ impl App {
                 // Rebuilding here and now, so nothing is deferred: drop the published copy rather
                 // than leave it for an unrelated later scan to pick up. The local is the same value
                 // (a synchronous scan above may already have taken the published one).
-                self.changed_anchor_pending = None;
+                self.tab.changed_anchor_pending = None;
                 self.reapply_changed_filter(changed_anchor);
             }
         } else if self.tab.tree_filter.is_some() {

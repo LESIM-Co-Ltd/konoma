@@ -19547,15 +19547,20 @@ fn changed_cursor_survives_toggling_hidden_files() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A deferred anchor is a **path** left on `App` for a scan that has not landed yet, so it must not
-/// be able to reach a different tab's list — on two tabs of the same repo the path exists in both,
-/// so a leak would be found and acted on rather than harmlessly ignored.
+/// A deferred anchor is a **path** carried by `PerTab` for a scan that has not landed yet, so it
+/// must not be able to reach a *different* tab's list — on two tabs of the same repo the path exists
+/// in both, so a leak would be found and acted on rather than harmlessly ignored.
 ///
 /// Asserted on the published anchor itself rather than on the resulting cursor: an end-to-end
 /// version of this is **vacuous**, because entering `C` on the second tab goes through
 /// `ensure_git_status_now`, which bumps the generation and makes `apply_statuses` discard the first
 /// tab's result before it can reach the list at all. The invariant that actually carries the weight
-/// is the one below — a refresh always republishes, so nothing is ever inherited.
+/// is the one below — a fresh tab's own `PerTab` starts at `None`, and switching to it restores
+/// *its* value, never tab 1's.
+///
+/// This is the isolation half of the contract; the persistence half — that tab 1's *own* anchor
+/// survives being saved and switched back to, rather than being discarded the instant it stops
+/// being active — is `a_deferred_changed_rebuild_survives_a_tab_switch_and_back` below.
 #[cfg(feature = "git")]
 #[test]
 fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
@@ -19571,29 +19576,105 @@ fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
     app.refresh_fs_changed(false, &[newfile]).unwrap();
     assert!(app.git_status_pending.is_some(), "土台: 先送りされている");
     assert_eq!(
-        app.changed_anchor_pending.as_deref(),
+        app.tab.changed_anchor_pending.as_deref(),
         Some(parked.as_path()),
         "土台: 先送り分のアンカーが公開されている"
     );
 
-    // `tab_new` is the one way the active tab changes **without** going through `load_active` (and
-    // therefore without the refresh that would republish), so this assertion is what gives the
-    // retirement in `save_active` its teeth.
+    // `tab_new` builds a brand-new `PerTab` in place (reusing `self.tab`, not cloning tab 1's), and
+    // `clear_filter_state` (called near its end) resets that fresh tab's own anchor to `None` — so
+    // it never sees tab 1's still-pending value.
     app.tab_new().unwrap();
     assert!(!app.tab.changed_filter, "土台: 新しいタブは通常ツリー");
     assert!(
-        app.changed_anchor_pending.is_none(),
+        app.tab.changed_anchor_pending.is_none(),
         "新しいタブに先送りアンカーが引き継がれない"
     );
 
-    // And the ordinary switch, which is protected twice over (retired on the way out, republished on
-    // the way in) — asserted for the contract, not for detection power.
+    // And the ordinary switch: each tab's anchor is genuinely its own, so switching to tab 2 reads
+    // *its* (still `None`) value, not tab 1's.
     app.tab_goto(0);
     assert!(app.tab.changed_filter, "土台: 1枚目は C 表示のまま");
     app.tab_cycle(1);
     assert!(
-        app.changed_anchor_pending.is_none(),
+        app.tab.changed_anchor_pending.is_none(),
         "タブ切替でも先送りアンカーは引き継がれない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **Residual bug (2026-08-08), same shape as Bug 1-4 above**: `changed_anchor_pending` used to live
+/// directly on `App` (not `PerTab`), and `save_active` explicitly reset it to `None` on *every* tab
+/// switch (see the removed reasoning: "one tab's anchor must never be found and acted on by another
+/// tab's rebuild"). That reset also discarded a tab's *own* still-pending anchor the moment the user
+/// switched away from it, even though the rest of its state (`entries`, `changed_filter`, `selected`)
+/// survives the switch just fine — so the snapshot and its anchor fell out of sync. When the deferred
+/// scan eventually landed (`apply_statuses`, run against whichever tab happened to be active by
+/// then), it fell back to reading the cursor out of the stale full-tree `entries` left behind by
+/// `rebuild_tree`, landing on an arbitrary, unrelated file instead of the one the deferred rebuild
+/// was anchored on.
+#[cfg(feature = "git")]
+#[test]
+fn a_deferred_changed_rebuild_survives_a_tab_switch_and_back() {
+    let dir = changed_cursor_repo("konoma_changed_defer_tabswitch");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app); // sub/m_two.txt
+
+    // Defer a rebuild to the (real, threaded) status scan.
+    let newfile = add_change_above(&dir);
+    app.refresh_fs_changed(false, &[newfile]).unwrap();
+    assert!(
+        app.git_status_pending.is_some(),
+        "土台: 走査中で先送りされている"
+    );
+
+    // Switch to a new tab (this is what `save_active` runs through) and confirm the fresh tab does
+    // not inherit tab 0's pending anchor.
+    app.tab_new().unwrap();
+    assert!(!app.tab.changed_filter, "土台: 新しいタブは通常ツリー");
+    assert!(
+        app.tab.changed_anchor_pending.is_none(),
+        "新しいタブに先送りアンカーが引き継がれない"
+    );
+
+    // ...but tab 0's own anchor must have survived being saved: it sits in its snapshot slot,
+    // untouched (the reset this test used to hit is gone — `save_active` no longer has anything
+    // App-level to retire).
+    assert_eq!(
+        app.tabs[0].changed_anchor_pending.as_deref(),
+        Some(target.as_path()),
+        "タブ0のスナップショット自身は先送りアンカーを保持したまま(save_active で消されていない)"
+    );
+
+    // Switch back **before** the scan lands.
+    app.tab_goto(0);
+    assert!(app.tab.changed_filter, "戻ったタブは C 表示のまま");
+
+    // Land the deferred scan now — the same thing `apply_statuses` does for whichever tab happens
+    // to be active when the result arrives (tab 0 again, here).
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("スキャン結果");
+    app.apply_statuses(res);
+
+    assert_eq!(
+        app.tab.entries.len(),
+        4,
+        "着地後、変更一覧は新規分を含め4件"
+    );
+    assert!(
+        app.tab
+            .entries
+            .iter()
+            .all(|e| !e.path.ends_with("committed_a.txt") && !e.path.ends_with("committed_z.txt")),
+        "着地後の一覧に無変更の通常ツリーのファイルが混ざっていない"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, target,
+        "タブ切替を挟んでもカーソルは同じファイルに残る(先送りアンカーが引き継がれている)"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -19658,7 +19739,7 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
         "土台: 1回目のスキャンがまだ走行中"
     );
     assert_eq!(
-        app.changed_anchor_pending.as_deref(),
+        app.tab.changed_anchor_pending.as_deref(),
         Some(target.as_path()),
         "土台: 1回目の先送りアンカーは正しい"
     );
@@ -19674,7 +19755,7 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
         "土台: 2回目の要求もコアレスされ、まだ同じスキャンが走行中"
     );
     assert_eq!(
-        app.changed_anchor_pending.as_deref(),
+        app.tab.changed_anchor_pending.as_deref(),
         Some(target.as_path()),
         "2回目の refresh で先送りアンカーが汚染されない(正しいアンカーが保持される)"
     );
@@ -19842,6 +19923,194 @@ fn start_filter_turns_off_the_changed_filter() {
         "`/` セッション自体は継続している"
     );
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------------------------
+// `reveal_and_select` (2026-08-08): every completed file operation (create/rename via
+// `dialog_submit`, paste/duplicate/trash/delete via `apply_file_op`) ends by calling this to put
+// the cursor on the thing that was just acted on. It called `rebuild_tree()` **on its own**,
+// unconditionally replacing `entries` with the ordinary listing and never reapplying `C`/`/`
+// afterward — so any of those operations, performed while a tree filter was active, silently
+// dropped out of it: the header kept claiming CHANGED (or the `/` query), but the list underneath
+// became the ordinary tree. This is the same shape as Bug 1-4 above, just at a different rebuild
+// call site.
+// ---------------------------------------------------------------------------------------------
+
+/// The `dialog_submit` `Create` path: `self.refresh()?` (which correctly reapplies `C`) runs first,
+/// so without the fix the drop only happens on `reveal_and_select`'s own second, unfiltered rebuild
+/// right after it — easy to miss by only checking the state right after `refresh()`.
+#[cfg(feature = "git")]
+#[test]
+fn creating_a_file_keeps_the_changed_filter_active() {
+    let dir = changed_cursor_repo("konoma_reveal_create_changed");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    park_on_last_change(&mut app); // cursor on sub/m_two.txt (a file, so op_base_dir = sub/)
+
+    app.start_create();
+    for c in "zz_new.txt".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert!(app.changed_filter(), "作成後も C フィルタは解除されない");
+    assert!(
+        app.tab.entries.iter().all(|e| {
+            !e.path.ends_with("committed_a.txt") && !e.path.ends_with("committed_z.txt")
+        }),
+        "一覧に無変更の通常ツリーのファイルが混ざっていない(通常ツリーへ戻っていない): {:?}",
+        app.tab.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    let created = dir.join("sub").join("zz_new.txt");
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == created),
+        "新規作成したファイルが変更一覧に現れる"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, created,
+        "カーソルは新規作成したファイル上にある"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `dialog_submit` `Rename` path.
+#[cfg(feature = "git")]
+#[test]
+fn renaming_a_file_keeps_the_changed_filter_active() {
+    let dir = changed_cursor_repo("konoma_reveal_rename_changed");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app); // sub/m_two.txt
+
+    app.start_rename(); // prefilled with "m_two.txt"
+    for _ in 0.."m_two.txt".chars().count() {
+        app.dialog_input_backspace();
+    }
+    for c in "renamed_two.txt".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert!(
+        app.changed_filter(),
+        "リネーム後も C フィルタは解除されない"
+    );
+    assert!(
+        app.tab.entries.iter().all(|e| {
+            !e.path.ends_with("committed_a.txt") && !e.path.ends_with("committed_z.txt")
+        }),
+        "一覧に無変更の通常ツリーのファイルが混ざっていない: {:?}",
+        app.tab.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    let renamed = target.parent().unwrap().join("renamed_two.txt");
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == renamed),
+        "リネーム後のファイルが変更一覧に現れる"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, renamed,
+        "カーソルはリネーム後のファイル上にある"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `apply_file_op` path (paste/duplicate/trash/delete all funnel through the same
+/// `reveal_and_select` call). Simulated the same way the existing cross-tab `FileOpResult` tests
+/// above do: the worker's work (here, a duplicate) is performed directly on disk, and
+/// `apply_file_op` is called with the result it would have produced.
+#[cfg(feature = "git")]
+#[test]
+fn duplicating_a_file_keeps_the_changed_filter_active() {
+    let dir = changed_cursor_repo("konoma_reveal_dup_changed");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.toggle_changed_filter();
+    let target = park_on_last_change(&mut app); // sub/m_two.txt
+
+    let duplicated = target.parent().unwrap().join("m_two copy.txt");
+    std::fs::copy(&target, &duplicated).unwrap();
+    app.fileop_gen = 101;
+    app.fileop_pending = Some(FileOpKind::Duplicate);
+    assert!(app.apply_file_op(FileOpResult {
+        gen: 101,
+        kind: FileOpKind::Duplicate,
+        root: dir.clone(),
+        ok: 1,
+        last: Some(duplicated.clone()),
+        err: None,
+    }));
+
+    assert!(app.changed_filter(), "複製後も C フィルタは解除されない");
+    assert!(
+        app.tab.entries.iter().all(|e| {
+            !e.path.ends_with("committed_a.txt") && !e.path.ends_with("committed_z.txt")
+        }),
+        "一覧に無変更の通常ツリーのファイルが混ざっていない: {:?}",
+        app.tab.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == duplicated),
+        "複製後のファイルが変更一覧に現れる"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, duplicated,
+        "カーソルは複製後のファイル上にある"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `/` (name filter) side of the same bug — `reveal_and_select` is not `C`-specific, so the
+/// unfiltered rebuild dropped an active `/` session exactly the same way. Doesn't need the `git`
+/// feature: `/` has nothing to do with git status.
+#[test]
+fn creating_a_file_keeps_the_name_filter_active() {
+    let dir = unique_tmp("konoma_reveal_create_filter");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("alpha.rs"), b"x").unwrap();
+    std::fs::write(dir.join("beta.rs"), b"x").unwrap();
+    std::fs::write(dir.join("gamma.txt"), b"x").unwrap(); // does not match the "rs" query below
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.start_filter();
+    for c in "rs".chars() {
+        app.filter_input_push(c);
+    }
+    assert_eq!(
+        app.tab.entries.len(),
+        2,
+        "土台: `rs` フィルタで2件(alpha.rs/beta.rs)"
+    );
+    app.tab.selected = 0;
+
+    app.start_create();
+    for c in "delta.rs".chars() {
+        app.dialog_input_push(c);
+    }
+    app.dialog_submit().unwrap();
+
+    assert_eq!(
+        app.tab.tree_filter.as_deref(),
+        Some("rs"),
+        "作成後も `/` フィルタは解除されない"
+    );
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path.ends_with("gamma.txt")),
+        "一覧にクエリへ一致しない通常ツリーのファイルが混ざっていない(通常ツリーへ戻っていない): {:?}",
+        app.tab.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+    let created = dir.join("delta.rs");
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == created),
+        "新規作成したファイルがフィルタ結果に現れる"
+    );
+    assert_eq!(
+        app.tab.entries[app.tab.selected].path, created,
+        "カーソルは新規作成したファイル上にある"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -740,7 +740,24 @@ impl App {
         Ok(false)
     }
 
-    /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it before rebuilding.
+    /// After an operation, reveal and select `target`. If the parent is a collapsed dir, expand it
+    /// before rebuilding.
+    ///
+    /// Restores whichever tree filter (`/` or `C`) is active afterward, the same way
+    /// `toggle_hidden`/`sort_menu_key` do — `rebuild_tree` unconditionally replaces `entries` with
+    /// the ordinary listing, so every caller of this method (paste/duplicate/trash/delete via
+    /// `apply_file_op`, create/rename via `dialog_submit`) used to silently drop out of `C`/`/` while
+    /// the header kept claiming CHANGED/the query, because nothing reapplied the filter afterward.
+    ///
+    /// The anchor passed to `refilter_after_visibility_change` is **`target` itself**, not the
+    /// pre-operation cursor: this method's whole point is "put the cursor on the thing that was just
+    /// created/moved/duplicated", so re-finding `target` directly in the freshly filtered/changed
+    /// list is what the caller wants, and (while a status scan is still in flight) is also what
+    /// correctly resolves once `apply_statuses` lands later — anchoring on the old cursor instead
+    /// would restore *that* position and never reach `target` at all. If `target` doesn't belong to
+    /// the active filter/changed set, the anchor is simply not found and the existing positional
+    /// fallback in `reapply_filter`/`reapply_changed_filter` takes over (stays near where the cursor
+    /// already was), exactly as it does for a visibility change that isn't about a specific file.
     pub(super) fn reveal_and_select(&mut self, target: &Path) -> Result<()> {
         if let Some(parent) = target.parent() {
             if let Some(e) = self.tab.entries.iter_mut().find(|e| e.path == parent) {
@@ -749,7 +766,9 @@ impl App {
                 }
             }
         }
+        let anchor = Some(target.to_path_buf());
         self.rebuild_tree()?;
+        self.refilter_after_visibility_change(anchor);
         if let Some(i) = self.tab.entries.iter().position(|e| e.path == target) {
             self.tab.selected = i;
         }

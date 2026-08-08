@@ -13,13 +13,14 @@ impl App {
         // This tab's media is about to be discarded by clear_image. Stash the one slot so that
         // when we return, decoding/rasterizing/launching external tools doesn't need to be redone.
         self.stash_media_cache();
-        // A changed-list rebuild this tab deferred to its in-flight `git status` was anchored on
-        // *this* tab's cursor. Retire it here — the one point every way of leaving the active tab
-        // passes through (`tab_new` deliberately does not go via `load_active`, which is why the
-        // filter-pool scan has to be retired explicitly there too). Left behind, the path would be
-        // found in the next tab's list on the same repo and drag its cursor onto a file the user
-        // never selected. Whoever ends up active republishes its own in `refresh_fs_inner`.
-        self.changed_anchor_pending = None;
+        // `changed_anchor_pending` (a `C` rebuild deferred to the in-flight `git status` scan) lives
+        // on `PerTab`, not here — it is simply part of the clone below, exactly like every other
+        // per-tab field, and needs no special handling at this checkpoint. (It used to be an
+        // `App`-level field explicitly reset to `None` right here, on the theory that leaving it set
+        // could let another tab of the same repo find and act on it — but that reset also discarded
+        // *this* tab's own still-pending anchor the moment it stopped being active, so the deferred
+        // rebuild that eventually landed fell back to reading the cursor out of the stale full-tree
+        // snapshot instead. See the field's doc comment on `PerTab`.)
         let snap = self.snapshot_tab();
         self.tabs[self.active_tab] = snap;
     }
