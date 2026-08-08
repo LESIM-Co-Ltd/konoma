@@ -7395,7 +7395,7 @@ fn e2e_delegated_command_text_preview_shows_captured_output() {
 }
 
 // =============================================================================
-// H2/H3 (docs/AUDIT-TESTS-2026-08.md): style-attribute assertions + config→keybinding wiring.
+// H2/H3 (docs/archive/AUDIT-TESTS-2026-08.md): style-attribute assertions + config→keybinding wiring.
 //
 // The audit found two "breakable with zero red tests" gaps: (1) `keymap::scheme_from_str` (the
 // `ui.keys` string → paging key scheme) had no test that goes config string → real keystrokes →
@@ -7614,7 +7614,7 @@ fn e2e_markdown_tab_focus_reverses_only_the_focused_marker_style() {
     assert!(!reversed(&s, "▸"));
 
     // A mermaid fence is not covered here: `Sim` never attaches an image `Picker` (that's a
-    // separate, larger change — H1 in docs/AUDIT-TESTS-2026-08.md, out of scope for this task), so
+    // separate, larger change — H1 in docs/archive/AUDIT-TESTS-2026-08.md, out of scope for this task), so
     // `mermaid_image_mode()` is false and a ```mermaid fence degrades to the plain-text
     // box-drawing diagram — it never becomes an `MdItemKind::MermaidFence` Tab item at all.
     // Confirmed by hand: opening a mermaid-only doc through this same harness, `focused_item()`
@@ -7644,7 +7644,7 @@ fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
 }
 
 // =============================================================================
-// H3 (docs/AUDIT-TESTS-2026-08.md): full `[ui]` config-field coverage table.
+// H3 (docs/archive/AUDIT-TESTS-2026-08.md): full `[ui]` config-field coverage table.
 //
 // Layer (c) from the audit: does setting a field to a NON-default value, through `App::new`,
 // actually change observable behavior (screen text/style) or app-state through real keystrokes —
