@@ -2947,7 +2947,25 @@ impl App {
         self.clear_command_out();
         self.tab.preview_path = Some(path.to_path_buf());
         // Resolve the preview kind via config. Unsupported kinds become CanNotPreview.
-        let kind = self.cfg.resolve_preview(path);
+        //
+        // Guarded by `is_previewable` **before** `resolve_preview` even runs: every entry point
+        // that opens a preview (tree activate/descend, paste-jump, bookmark jump, Ctrl-n/Ctrl-p
+        // file paging, follow, session restore, a Markdown link, ...) funnels through this one
+        // function, and every downstream opener (media load / the windowed reader / table parse /
+        // the render side's raw-text fallbacks) dispatches purely on the resolved `PreviewKind` —
+        // so forcing non-regular files (FIFOs, character/block devices, ...) to `CanNotPreview`
+        // right here closes every `File::open` path in the one place they all share. This has to
+        // happen before `resolve_preview`, not just around the Text/Code windowed reader, because
+        // `resolve_preview` itself can already open the file to sniff it (a mime-glob rule match
+        // via `infer::get_from_path`, or the no-rule-matched fallback via
+        // `text::is_probably_text`) — a `File::open` on a FIFO with no writer on the other end
+        // blocks forever (POSIX `open(2)`), and this all runs on the key-processing thread, so an
+        // unguarded open here froze the whole UI (not even `q`/`Ctrl-C` got processed again).
+        let kind = if crate::preview::is_previewable(path) {
+            self.cfg.resolve_preview(path)
+        } else {
+            PreviewKind::can_not_preview(path)
+        };
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;

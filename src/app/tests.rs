@@ -19781,3 +19781,180 @@ fn start_filter_turns_off_the_changed_filter() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// -------------------------------------------------------------------------------------------
+// FIFO / device-file preview: `tree_activate` (and every other `enter_preview` entry point)
+// used to check only `entry.is_dir`, so a FIFO/character-device "file" got handed straight to
+// `enter_preview`, which resolves a `PreviewKind` (opening the path to sniff it) and then opens
+// it again to actually read it. `File::open` on a FIFO with nobody writing to the other end
+// blocks the calling thread forever (POSIX `open(2)`) — and `enter_preview` runs on the
+// key-processing thread, so this froze the whole UI (not even `q`/`Ctrl-C` got processed again).
+// -------------------------------------------------------------------------------------------
+
+/// Run `f` (expected to call `enter_preview`/`tree_activate`/similar on `app`, entirely on this
+/// call) on a background thread and require it to finish within `timeout`. If the fix regresses
+/// and the underlying `File::open` blocks on a FIFO with no writer, that call can never return by
+/// itself (there is no way to cancel a blocked `open(2)` from another thread) — so rather than let
+/// the whole test (and everything after it in the same `cargo test` process) hang forever, this
+/// fails loudly via `recv_timeout` instead. The stuck worker thread is simply leaked when that
+/// happens (harmless: it just sits blocked until process exit, and doesn't stop the test binary
+/// from finishing the run).
+#[cfg(unix)]
+fn run_with_hang_guard<F>(mut app: App, timeout: std::time::Duration, f: F) -> App
+where
+    F: FnOnce(&mut App) + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        f(&mut app);
+        // Send-back failing (the receiver having already given up after a timeout) is fine —
+        // there's nobody left to report to.
+        let _ = tx.send(app);
+    });
+    rx.recv_timeout(timeout).unwrap_or_else(|_| {
+        panic!(
+            "operation did not return within {timeout:?} — File::open reached a FIFO/device and \
+             blocked on the key-processing path"
+        )
+    })
+}
+
+/// Entering preview on a FIFO must not hang, and must degrade to `CanNotPreview` (principle #3)
+/// instead of resolving to `Text`/`Code`/any kind whose renderer would try to actually open it.
+#[cfg(unix)]
+#[test]
+fn entering_preview_on_a_fifo_does_not_hang_and_degrades_safely() {
+    let dir = unique_tmp("konoma_fifo_preview_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo コマンドを起動できない");
+    assert!(status.success(), "mkfifo に失敗");
+
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let target = fifo.clone();
+    let app = run_with_hang_guard(app, std::time::Duration::from_secs(5), move |a| {
+        a.enter_preview(&target);
+    });
+
+    assert!(
+        matches!(
+            app.tab.preview_kind,
+            Some(PreviewKind::CanNotPreview { .. })
+        ),
+        "FIFO は CanNotPreview へ安全降格するはず: {:?}",
+        app.tab.preview_kind
+    );
+    assert_eq!(
+        app.tab.mode,
+        Mode::Preview,
+        "モード遷移自体は既存の unsupported extension と同じく Preview のまま"
+    );
+    assert_eq!(app.tab.preview_path.as_deref(), Some(fifo.as_path()));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A FIFO reached via a *directory* path also degrades safely (no crash), even though production
+/// code never calls `enter_preview` directly on a directory (`tree_activate`/`tree_descend` branch
+/// on `entry.is_dir` first) — a direct robustness check on the guard itself.
+#[cfg(unix)]
+#[test]
+fn entering_preview_on_a_directory_degrades_safely() {
+    let dir = unique_tmp("konoma_dir_preview_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.enter_preview(&sub);
+    assert!(
+        matches!(
+            app.tab.preview_kind,
+            Some(PreviewKind::CanNotPreview { .. })
+        ),
+        "ディレクトリを直接渡しても CanNotPreview へ安全降格: {:?}",
+        app.tab.preview_kind
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression: an ordinary regular file previews exactly as before (guard doesn't reject it).
+#[test]
+fn entering_preview_on_a_regular_file_still_works() {
+    let dir = unique_tmp("konoma_regular_preview_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("note.txt");
+    std::fs::write(&file, b"hello world\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.enter_preview(&file);
+    assert!(
+        matches!(app.tab.preview_kind, Some(PreviewKind::Text(_))),
+        "通常ファイルは従来どおり Text として開ける: {:?}",
+        app.tab.preview_kind
+    );
+    assert_eq!(app.tab.mode, Mode::Preview);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression: a symlink to a regular file still previews the link target's content, exactly
+/// as before (the guard follows symlinks rather than rejecting them outright).
+#[cfg(unix)]
+#[test]
+fn entering_preview_on_a_symlink_to_a_regular_file_still_works() {
+    let dir = unique_tmp("konoma_symlink_preview_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = dir.join("real.txt");
+    std::fs::write(&real, b"real content\n").unwrap();
+    let link = dir.join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.enter_preview(&link);
+    assert!(
+        matches!(app.tab.preview_kind, Some(PreviewKind::Text(_))),
+        "通常ファイルへのシンボリックリンクは従来どおり Text として開ける: {:?}",
+        app.tab.preview_kind
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-regression: `tree_descend` (`l`) still descends into a directory rather than trying to
+/// preview it — the guard lives in `enter_preview` and never runs for directory entries, since
+/// `tree_activate`/`tree_descend` branch on `entry.is_dir` before ever calling it.
+#[test]
+fn tree_descend_still_descends_into_directories() {
+    let dir = unique_tmp("konoma_dir_descend_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("inner.txt"), b"x").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.selected = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("sub"))
+        .unwrap();
+    app.tree_descend().unwrap();
+    assert_eq!(
+        app.tab.root.file_name().unwrap(),
+        "sub",
+        "ディレクトリはツリーの新しい root として潜行する(プレビューは開かない)"
+    );
+    assert_eq!(app.tab.mode, Mode::Tree, "モードは Tree のまま");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
