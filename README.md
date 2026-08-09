@@ -153,9 +153,10 @@ The gate for the full experience is the **terminal**, not the OS:
   **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
   shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
   **HackGen Console NF** covers both in one font.
-- **Optional tools** (all degrade gracefully): `ffmpeg` (video thumbnails), `git` (git suite),
-  `lazygit` (external git tool on `!`). PDF, images, SVG, Mermaid, LaTeX math and CSV need nothing —
-  konoma renders them itself.
+- **Optional tools** (all degrade gracefully): `ffmpegthumbnailer`/`ffmpeg` (video thumbnails), `git`
+  (git suite), `lazygit` (external git tool on `!`). Images, SVG, Mermaid, LaTeX math, CSV and almost
+  all PDFs need nothing — konoma renders them itself; `poppler` (`pdftocairo`/`pdftoppm`) is kept only
+  as a fallback for the rare PDF page the built-in renderer cannot draw.
 
 ## Install
 
