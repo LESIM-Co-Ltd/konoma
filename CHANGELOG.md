@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.23.9] - 2026-08-09
+
 ### Changed
 - **A large diff no longer costs 743ms a keystroke.** Every frame highlighted every line of the diff
   and then threw away everything off screen — twelve times the drawing budget on a 6,500-line diff,
@@ -1557,7 +1559,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...HEAD
+[0.23.9]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...v0.23.9
 [0.23.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...v0.23.8
 [0.23.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...v0.23.6
 [0.23.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.4...v0.23.5
