@@ -1,10 +1,17 @@
 # cargo-about config for generating THIRD-PARTY-LICENSES.md.
 # Regenerate with: cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md
 #
-# Scope to what is actually linked into the shipped binary: konoma targets only
-# macOS/Apple Silicon, and dev-dependencies (test/fuzz crates such as libfuzzer-sys)
-# are never distributed, so they are excluded from the attribution list.
-targets = ["aarch64-apple-darwin"]
+# Scope to what is actually linked into a shipped binary. konoma publishes prebuilt
+# binaries for all three of these (see .github/workflows/release.yml), so all three
+# have to be attributed — a Linux build links crates a macOS build never sees (the
+# Wayland and X11 clipboard backends, the inotify watcher), and listing only the
+# macOS target silently left those out. dev-dependencies (test/fuzz crates such as
+# libfuzzer-sys) are never distributed and stay excluded.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
 ignore-dev-dependencies = true
 ignore-build-dependencies = true
 
