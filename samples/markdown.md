@@ -26,7 +26,7 @@ fn main() {
 | Kind | Library | Depends on |
 |------|---------|------------|
 | md   | tui-markdown | ratatui-core |
-| diagram | mermaid-text | unicode-width |
+| diagram | mermaid-rs-renderer | fontdb |
 
 ### Inline styling, alignment, and escapes in tables
 
@@ -120,7 +120,7 @@ A full demo covering remote images, an SVG badge, and text fallback on a failed 
 graph TD
   A[Tree] -->|Enter| B{Resolve kind}
   B -->|.md| C[tui-markdown]
-  B -->|mermaid fence| D[mermaid-text]
+  B -->|mermaid fence| D[SVG to pixels]
   C --> E[Full-screen preview]
   D --> E
 ```

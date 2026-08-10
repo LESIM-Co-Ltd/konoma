@@ -28,6 +28,21 @@ peering through the gaps between the trees to look into the contents of the file
 — getting started, guides and full reference, in English and
 [日本語](https://lesim-co-ltd.github.io/konoma/ja/).
 
+## Quick start
+
+```bash
+cargo binstall konoma   # prebuilt binary, no compilation
+cargo install konoma    # or compile from crates.io
+konoma [DIR]            # opens DIR (defaults to the current directory)
+```
+
+**There is nothing else to install.** Images, PDF, SVG, Mermaid diagrams, LaTeX math, CSV and
+H.264/HEVC video thumbnails are all rendered by konoma itself, in pure Rust. Two optional extras
+add the rest: `git` enables the in-app git suite and `ffmpeg` covers the remaining video formats —
+a missing one costs you that one feature, never the app. See [Install](#install) for every
+installation route and [Requirements and optional tools](#requirements-and-optional-tools) for
+the terminal, font and tool details.
+
 ## Why it exists
 
 When you want a tree + preview pane filling one half of the screen while you work on the
@@ -50,9 +65,9 @@ in-between split view.
 </table>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown.png" alt="Inline images and a Mermaid diagram rendered in a Markdown preview" width="860">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown.png" alt="A Mermaid diagram and LaTeX math rendered as real images in a Markdown preview" width="860">
 </p>
-<p align="center"><b>Markdown</b> — inline images and Mermaid diagrams, rendered right in the preview</p>
+<p align="center"><b>Markdown</b> — Mermaid diagrams and LaTeX math, typeset and drawn as real images in the preview</p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-richtext.png" alt="Tables with inline styling and alignment, a horizontal rule, and interactive task lists in a Markdown preview" width="860">
@@ -141,28 +156,6 @@ Pre-release (feature-complete). The milestones below track what is implemented.
 - [x] crates.io publish
 - [x] Prebuilt binaries and `cargo binstall` (macOS, Linux `x86_64`)
 
-The gate for the full experience is the **terminal**, not the OS:
-
-- **Images, PDF pages, SVG, Mermaid diagrams, LaTeX math and video thumbnails** are drawn as **real
-  pixels** in any terminal that speaks a graphics protocol — **[kitty
-  graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/)** ([Ghostty](https://ghostty.org),
-  [kitty](https://sw.kovidgoyal.net/kitty/), [WezTerm](https://wezterm.org), Konsole), **iTerm2**, or
-  **sixel**. konoma has its own compressed transfer for the kitty protocol, so those terminals are the
-  fastest. Anywhere else the picture degrades to a **half-block approximation** — coarse, but visible.
-  **Text previews** (Markdown, code, git diffs, CSV, tables) work in **any** terminal.
-- **OS**: konoma runs on **macOS and Linux** (Unix). Of the combinations, **macOS on Apple Silicon** is the
-  most battle-tested; Intel macOS works too, and **Linux (`x86_64`)** builds and passes the full test suite
-  in CI, ships prebuilt binaries, and has had its previews verified rendering via kitty graphics — still
-  **beta**, as it is newer than the macOS path. **Windows is not supported** (Unix-only APIs).
-- **Fonts**: **icons** need [Nerd Font](https://www.nerdfonts.com/) glyphs (or set `ui.icons = false`), and
-  **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
-  shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
-  **HackGen Console NF** covers both in one font.
-- **Optional tools** (all degrade gracefully): `ffmpegthumbnailer`/`ffmpeg` (video formats konoma
-  cannot decode itself — see below), `git` (git suite), `lazygit` (external git tool on `!`).
-  **Images, SVG, Mermaid, LaTeX math, CSV, PDF and H.264/HEVC video thumbnails need nothing installed
-  at all** — konoma renders them itself, in pure Rust.
-
 ## Install
 
 Prebuilt binaries (fastest — no compilation) via [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
@@ -200,7 +193,25 @@ Press `?` in the app for the full, context-sensitive key reference.
 ([日本語](samples/tutorial.ja.md)) *inside konoma* — a hands-on walkthrough with
 links you can follow and checkboxes you can actually toggle.
 
-## Optional tools
+## Requirements and optional tools
+
+The gate for the full experience is the **terminal**, not the OS:
+
+- **Terminal**: **images, PDF pages, SVG, Mermaid diagrams, LaTeX math and video thumbnails** are drawn
+  as **real pixels** in any terminal that speaks a graphics protocol — **[kitty
+  graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/)** ([Ghostty](https://ghostty.org),
+  [kitty](https://sw.kovidgoyal.net/kitty/), [WezTerm](https://wezterm.org), Konsole), **iTerm2**, or
+  **sixel**. konoma has its own compressed transfer for the kitty protocol, so those terminals are the
+  fastest. Anywhere else the picture degrades to a **half-block approximation** — coarse, but visible.
+  **Text previews** (Markdown, code, git diffs, CSV, tables) work in **any** terminal.
+- **OS**: konoma runs on **macOS and Linux** (Unix). Of the combinations, **macOS on Apple Silicon** is the
+  most battle-tested; Intel macOS works too, and **Linux (`x86_64`)** builds and passes the full test suite
+  in CI, ships prebuilt binaries, and has had its previews verified rendering via kitty graphics — still
+  **beta**, as it is newer than the macOS path. **Windows is not supported** (Unix-only APIs).
+- **Fonts**: **icons** need [Nerd Font](https://www.nerdfonts.com/) glyphs (or set `ui.icons = false`), and
+  **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
+  shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
+  **HackGen Console NF** covers both in one font.
 
 konoma never breaks when an external tool is missing — the relevant preview just degrades to a hint
 (principle: "unsupported is shown safely, never a crash"). Install these to enable richer previews:
@@ -223,9 +234,7 @@ sudo apt install ffmpeg git lazygit       # Debian / Ubuntu
 
 Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
-system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.) The picture
-formats are drawn as real pixels in any terminal that speaks a graphics protocol — kitty graphics,
-iTerm2, or sixel — and degrade to a half-block approximation elsewhere; text previews work anywhere.
+system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.)
 
 ## Configuration
 
