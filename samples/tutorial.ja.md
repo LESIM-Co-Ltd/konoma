@@ -87,12 +87,13 @@ sudo apt install ffmpeg
 ```
 
 - **ffmpeg**（または `ffmpegthumbnailer`）— konoma 自身がデコードできない動画の
-  代表フレーム: HEVC（iPhone の既定録画形式）・VP9・AV1・`.mkv`/`.webm`。
-  **`.mp4`/`.m4v`/`.mov` の H.264 は不要**です（konoma 自身がデコードします）。
+  代表フレーム: VP9・AV1・旧世代のコーデック・`.mkv`/`.webm`。
+  **`.mp4`/`.m4v`/`.mov` の H.264 と HEVC（iPhone の既定録画形式）は不要**です
+  （konoma 自身がデコードします）。
 - **git** — 6 章の git スイート一式。たいていは既に入っています。
 
 画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**PDF**・
-**H.264 動画のサムネイル**・コードは**追加インストール不要**で、konoma 自身が純 Rust で描きます（macOS に限り、
+**H.264/HEVC 動画のサムネイル**・コードは**追加インストール不要**で、konoma 自身が純 Rust で描きます（macOS に限り、
 内蔵レンダラが扱えない PDF は OS 同梱の `qlmanage`/`sips` に 1 ページ目だけ
 フォールバックします。これも導入不要です）。ただし画像系は kitty graphics
 対応端末（Ghostty・kitty・WezTerm・Konsole）が要ります。テキストのプレビューは

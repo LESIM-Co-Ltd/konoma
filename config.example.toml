@@ -290,10 +290,11 @@ code_theme = "TwoDark"
 #              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
 #   image    = full-screen display via kitty graphics (zoom/pan). GIFs animate automatically.
 #   svg      = rasterized to an image via resvg/usvg/tiny-skia (pure Rust, no external tools).
-#   video    = a single representative frame, shown as a thumbnail (no in-terminal playback). H.264 inside
-#              .mp4/.m4v/.mov is decoded natively in Rust — nothing to install. Everything else (HEVC, VP9, AV1,
-#              .mkv/.webm/.avi, and H.264 in 10-bit/4:2:2/4:4:4/monochrome) uses ffmpegthumbnailer/ffmpeg if installed, and
-#              shows a hint if not. To play, see the command example below.
+#   video    = a single representative frame, shown as a thumbnail (no in-terminal playback). H.264 and HEVC
+#              inside .mp4/.m4v/.mov are decoded natively in Rust — nothing to install (HEVC is what an iPhone
+#              records by default). Everything else (VP9, AV1, older codecs, .mkv/.webm/.avi, and the uncommon
+#              profiles — H.264 in 10-bit/4:2:2/4:4:4/monochrome, HEVC outside Main/Main 10 4:2:0) uses
+#              ffmpegthumbnailer/ffmpeg if installed, and shows a hint if not. To play, see the command example below.
 #   pdf      = each page rasterized to an image natively in Rust (hayro; no external tool needed).
 #              On macOS only, a PDF hayro can't render (encrypted/corrupt/unsupported) falls back to
 #              the system's own qlmanage/sips — already installed — but those can only produce the
@@ -349,7 +350,7 @@ builtin = "code"
 
 [[preview.rules]]
 mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
-                           # H.264 mp4/m4v/mov needs no external tool; other codecs/containers use ffmpeg if installed.
+                           # H.264 and HEVC mp4/m4v/mov need no external tool; other codecs/containers use ffmpeg if installed.
 builtin = "video"
 # To "play" in an external player instead of in the terminal, drop the above and replace with (delegation):
 # command = "mpv {path}"
@@ -525,8 +526,8 @@ pdf              = true   # The external fallback rasterizer: macOS's bundled ql
                            # there is no external PDF tool to launch.
 video            = true   # The external fallback thumbnail extractors (ffmpegthumbnailer/ffmpeg), tried only when the
                            # built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e.
-                           # anything that is not H.264 in .mp4/.m4v/.mov. false never launches them; H.264 mp4/mov
-                           # thumbnails keep working. Same relationship `pdf` above has with hayro.
+                           # anything that is not H.264 or HEVC in .mp4/.m4v/.mov. false never launches them; H.264 and
+                           # HEVC mp4/mov thumbnails keep working. Same relationship `pdf` above has with hayro.
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.

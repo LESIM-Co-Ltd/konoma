@@ -43,10 +43,10 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
   1つのフォントで賄えます。
 
 **任意ツール**(無くてもその機能以外は動作): `git`(git スイート)・
-`ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない動画=HEVC・VP9・
+`ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない動画=VP9・
 AV1・`.mkv`/`.webm` のサムネイル)・`lazygit`(`!` の外部 git ツール)。
 画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・コード・**PDF**
-(`J`/`K` で全ページ)・**H.264 動画のサムネイル**(`.mp4`/`.m4v`/`.mov`)は
+(`J`/`K` で全ページ)・**H.264/HEVC 動画のサムネイル**(`.mp4`/`.m4v`/`.mov`)は
 Rust ネイティブで動作 — **追加インストールは一切不要**です。
 
 ## ゼロからのセットアップ
@@ -87,9 +87,9 @@ Rust ネイティブで動作 — **追加インストールは一切不要**で
    ```
    PDF はこれ無しで全ページ描画できます(純 Rust の `hayro`・`J`/`K` で
    ページ送り)。hayro が扱えない稀な PDF は macOS 同梱の `qlmanage`/`sips`
-   が拾うので、こちらも導入不要です。`.mp4`/`.m4v`/`.mov` の H.264 動画も
-   ネイティブでサムネイル化するので不要。`ffmpeg` はそれ以外(iPhone の既定
-   録画形式である HEVC・VP9・AV1・`.mkv`/`.webm`)のサムネイル用、
+   が拾うので、こちらも導入不要です。`.mp4`/`.m4v`/`.mov` の H.264 と HEVC
+   (iPhone の既定録画形式)もネイティブでサムネイル化するので不要。`ffmpeg` は
+   それ以外(VP9・AV1・`.mkv`/`.webm`)のサムネイル用、
    `git`/`lazygit` は git スイート用。
 6. **起動** — Ghostty を開いて:
    ```sh
@@ -125,7 +125,7 @@ Rust ネイティブで動作 — **追加インストールは一切不要**で
 4. **任意ツール** — PDF はここでも何も要りません(純 Rust の `hayro` が全ページを
    描画)。このプラットフォームには外部 PDF ツールがそもそも無く、
    `qlmanage`/`sips` のフォールバックは macOS 専用です。`.mp4`/`.m4v`/`.mov` の
-   H.264 動画サムネイルも不要で、`ffmpeg` は HEVC/VP9/AV1 と `.mkv`/`.webm`
+   H.264/HEVC 動画サムネイルも不要で、`ffmpeg` は VP9/AV1 と `.mkv`/`.webm`
    のためのものです。
    ```sh
    sudo apt install ffmpeg git

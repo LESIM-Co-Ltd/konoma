@@ -1667,6 +1667,7 @@ dependencies = [
  "re_mp4",
  "resvg",
  "rust_h264",
+ "rust_h265",
  "serde",
  "similar",
  "svgtypes",
@@ -3297,6 +3298,12 @@ name = "rust_h264"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
+
+[[package]]
+name = "rust_h265"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dde60f5842f27ed06f1d84844cacd93d1a159f606365b30a5594c771e6b4eb17"
 
 [[package]]
 name = "rustc-hash"

@@ -93,17 +93,27 @@ hayro = { version = "0.7", default-features = false, features = ["embed-fonts", 
 
 # 動画サムネイルの純 Rust 経路(preview/video.rs)。PDF と同じ形＝**内蔵で描けるものは何も入れずに描き、
 # 描けないものだけ ffmpegthumbnailer/ffmpeg へ降格**する。mp4/m4v/mov の索引(moov/stbl)を re_mp4 で読み、
-# キーフレーム1枚のバイト範囲だけを取り出して rust_h264 でデコードする(ファイル全体は読まない)。
+# キーフレーム1枚のバイト範囲だけを取り出して rust_h264 / rust_h265 でデコードする(ファイル全体は読まない)。
 #   - rust_h264: 依存クレート 0・C/asm/build.rs 無し(aarch64 の NEON は Rust の std::arch)・163KiB。
 #     Baseline/Main/High の 8bit 4:2:0 のみ。**High 10/4:2:2/4:4:4/モノクロはエラーを返さず壊れた絵を出す**
 #     ので、描く前に**ビットストリームの SPS**(コンテナの申告ではない)を読んで弾く
 #     (preview/video.rs の `sps_is_decodable`)。モノクロは profile_idc が High と同じ 100 なので
 #     profile だけでは区別できない＝コンテナの申告では足りない、が理由。
+#   - rust_h265: rust_h264 と同じ作者・同じ流儀。依存クレート 0(dev-dependencies のみ)・
+#     C/asm/build.rs 無し・17,941 行。**Main / Main 10 の 4:2:0(8bit/10bit)のみ**。
+#     危険の形は rust_h264 と違う: 4:2:2/4:4:4/モノクロは SPS パーサ自身が `Unsupported` を返して
+#     止まる(＝壊れた絵にはならない)一方、**12bit は SPS を通ってしまう**のに README が
+#     「12-bit infrastructure is in place but untested」と明言している＝無検証の経路に落ちる。
+#     加えて RExt 系プロファイルはツールセットそのものが未実装。よって H.264 と同じく
+#     **ビットストリームの SPS を自分で読んで**(hvcC の申告ではない)Main/Main 10・4:2:0・8/10bit・
+#     寸法上限を満たすものだけ通す(`hevc_sps_is_decodable`)。**HVCC(mp4 の長さ前置形式)は受け付けない**
+#     ので、パラメータセットとサンプルを Annex B に変換してから食わせる(`parse_hvcc`)。
 #   - re_mp4: 索引だけを読む(`Mp4::read` は Read+Seek・`read_bytes` と違い全体をメモリに載せない)。
 #     推移依存(byteorder/bytes/num-rational/serde/serde_json/thiserror)は全て既に konoma の
-#     Cargo.lock に互換版で在るので、新規パッケージはこの 2 つだけ。
-# HEVC(iPhone の既定録画形式)/VP9/AV1 と mkv/webm 等は引き続き ffmpeg 側の担当(原則#3 で降格)。
+#     Cargo.lock に互換版で在るので、新規パッケージはこの 3 つだけ。
+# VP9/AV1 と mkv/webm 等のコンテナ、旧世代コーデックは引き続き ffmpeg 側の担当(原則#3 で降格)。
 rust_h264 = "0.4"
+rust_h265 = "0.1"
 re_mp4 = "0.5"
 
 # Markdown 内 `http(s)://` 画像のリモート取得(`[external] remote_images`)。旧 `curl` 子プロセスの代わり。

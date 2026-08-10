@@ -7,15 +7,25 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- **Video thumbnails for H.264 mp4/m4v/mov now need nothing installed.** konoma reads the container
-  index and decodes one keyframe itself, in pure Rust — so a screen recording, a `git`-tracked demo
-  clip, or anything a browser can play shows a thumbnail on a machine with no `ffmpeg` at all. The
+- **Video thumbnails for H.264 and HEVC mp4/m4v/mov now need nothing installed.** konoma reads the
+  container index and decodes one keyframe itself, in pure Rust — so a screen recording, a
+  `git`-tracked demo clip, anything a browser can play, and **what an iPhone records by default**
+  (HEVC, Main and Main 10) all show a thumbnail on a machine with no `ffmpeg` at all. The
   frame is chosen by the same rule `ffmpegthumbnailer` uses by default — the keyframe nearest the 10%
   mark, walking forward if it lands on a blank fade-in — so the frame you see stays comparable.
-  **`ffmpegthumbnailer`/`ffmpeg` are still needed for everything else**: HEVC (iPhone's default
-  recording format), VP9, AV1, `.mkv`/`.webm`/`.avi` containers, and H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome.
+  **`ffmpegthumbnailer`/`ffmpeg` are now needed only for** VP9, AV1 and the older codecs, the
+  `.mkv`/`.webm`/`.avi` containers, and the profiles the built-in decoders deliberately refuse
+  (H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome; HEVC outside Main and Main 10 4:2:0 — 4:2:2, 4:4:4,
+  12-bit, monochrome and the Range Extensions family).
   Those degrade to the usual hint when no tool is installed, exactly as before. Still thumbnails
   only — konoma does not play video in the terminal.
+
+  Each codec is refused by reading **its own bitstream's** sequence parameter set rather than the
+  container's summary of it, before any decoding happens, because the two need not agree — an `hvcC`
+  record even carries the chroma format and bit depth it is being checked on, and nothing verifies
+  those against the stream they describe. What passes matched ffmpeg **byte for byte** on every
+  fixture measured: `samples/sample.mp4` and the new `samples/sample-hevc.mp4` (115,200 Y/U/V samples
+  each) and a 640x480 Main 10 clip compared at full 16-bit precision (460,800 samples).
 
 ### Removed
 - **poppler is no longer part of the PDF fallback chain, so PDF now needs nothing installed on any
@@ -30,8 +40,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ### Changed
 - `[external] video` now gates **only** the fallback extractors, matching what `[external] pdf`
-  means for PDF: the built-in decoder never launches a process, so with the flag off H.264 mp4/mov
-  thumbnails now appear where previously nothing did.
+  means for PDF: the built-in decoders never launch a process, so with the flag off H.264 and HEVC
+  mp4/mov thumbnails now appear where previously nothing did.
 - **A PDF the built-in renderer cannot draw has no fallback past page 1.** `qlmanage`/`sips` can only
   produce the first page, which poppler was not limited to. In practice the built-in renderer draws
   every page of everything it can open, and Linux has behaved exactly this way all along, but where

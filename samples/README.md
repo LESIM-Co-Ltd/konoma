@@ -9,7 +9,10 @@ and are covered by the project's MIT license.
 - `sample.jpg` / `sample.gif` — generated with ImageMagick (gradients, shapes, and an
   animated dot). `sample.gif` is a short original animation.
 - `sample.pdf` — a generated three-page text PDF (exercises PDF page navigation).
-- `sample.mp4` — an ffmpeg-generated test pattern (`testsrc2`); no recorded footage.
+- `sample.mp4` / `sample-hevc.mp4` — an ffmpeg-generated test pattern (`testsrc2`, 320x240, 3s);
+  no recorded footage. The same pattern encoded twice, as **H.264** and as **HEVC (H.265, Main
+  profile)**, so the two built-in video decoders can be compared side by side — and so each has a
+  fixture in the test suite that proves a thumbnail comes out with no external tool installed.
 - `images.md` — demonstrates **inline block-level images** (Markdown `![]()` and HTML
   `<img>`): the local `sample.png` / `sample.jpg`, plus remote `http(s)://` images
   fetched at runtime (a placeholder raster and a shields.io badge — nothing is
