@@ -38,7 +38,7 @@ import TerminalDemo from '../../../components/TerminalDemo.astro';
 		分割ペインはありません。ツリーも全画面、プレビューも全画面、切替は
 		キー2つ。Markdown は装飾描画(表・Mermaid 図・インライン画像・操作できる
 		チェックボックス)、コードはシンタックスハイライト、CSV は移動できる
-		テーブル、画像/PDF/SVG は kitty graphics による実ピクセル表示。
+		テーブル、画像/PDF/SVG は端末のグラフィックプロトコルによる実ピクセル表示。
 	</Card>
 	<Card title="AI ペア開発のために" icon="rocket">
 		左に konoma、右にコーディングエージェント。フォローモード(`F`)は
@@ -66,7 +66,7 @@ import TerminalDemo from '../../../components/TerminalDemo.astro';
 
 ![自作レンダラによるコミットグラフ](../../../assets/git-graph.png)
 
-![Markdown プレビュー内のインライン画像・Mermaid 図・LaTeX 数式](../../../assets/markdown.png)
+![Markdown プレビュー内のインライン画像・Mermaid 図](../../../assets/markdown.png)
 
 ![Markdown プレビューの表(セル内装飾・整列)・水平線・操作できるタスクリスト](../../../assets/markdown-richtext.png)
 
@@ -96,8 +96,9 @@ cargo install konoma        # ソースからビルド
 主対象は macOS (Apple Silicon)です。Intel macOS・Linux x86_64 も CI で全テストが通り
 プレビルドも配布し、Linux では画像・PDF・Markdown のプレビューが kitty graphics で
 描画されることを検証済みです(macOS より新しいため beta 扱い)。
-画像プレビューには kitty graphics 対応端末([Ghostty](https://ghostty.org) など)が
-必要です。起動は:
+画像はグラフィックプロトコルを話す端末なら実ピクセルで描かれます — kitty graphics
+([Ghostty](https://ghostty.org) など)・iTerm2・sixel。それ以外の端末では
+ハーフブロックの近似表示に落ちます。起動は:
 
 ```sh
 konoma [DIR]

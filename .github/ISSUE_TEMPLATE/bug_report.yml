@@ -5,27 +5,29 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report! konoma is macOS / Apple Silicon only — please confirm
-        that first. For a preview that shows `[can not preview]` on a format you expect
-        to work, that is usually a missing optional tool (ffmpeg, for the video formats
-        konoma cannot decode itself — HEVC, VP9, AV1, `.mkv`/`.webm`) rather than a bug;
-        see the README's Optional tools section. PDF, images, SVG, Mermaid, LaTeX math,
-        CSV and H.264 video thumbnails (`.mp4`/`.m4v`/`.mov`) need nothing installed, so
-        `[can not preview]` on those is worth reporting.
+        Thanks for the report! konoma runs on macOS and Linux (Windows is not supported) —
+        please confirm that first. For a preview that shows `[can not preview]` on a format
+        you expect to work, that is usually a missing optional tool (ffmpeg, for the video
+        formats konoma cannot decode itself — VP9, AV1, the older codecs such as Xvid,
+        MPEG-2 or WMV, the `.avi` container, and the uncommon profiles the built-in decoders
+        refuse) rather than a bug; see the README's Optional tools section. PDF, images, SVG,
+        Mermaid, LaTeX math, CSV and H.264/HEVC video thumbnails (`.mp4`/`.m4v`/`.mov` and
+        `.mkv`/`.webm`) need nothing installed, so `[can not preview]` on those is worth
+        reporting.
   - type: input
     id: version
     attributes:
       label: konoma version
-      description: The release tag or crate version (e.g. 0.15.0).
-      placeholder: "0.15.0"
+      description: The release tag or crate version — `konoma --version` prints it.
+      placeholder: "0.23.9"
     validations:
       required: true
   - type: input
     id: env
     attributes:
       label: Environment
-      description: macOS version, chip, and terminal (e.g. Ghostty).
-      placeholder: "macOS 15.5 · M2 · Ghostty 1.0"
+      description: OS and version, CPU architecture, and terminal (e.g. Ghostty).
+      placeholder: "macOS 15.5 · arm64 · Ghostty 1.0  —  or  —  Ubuntu 24.04 · x86_64 · kitty 0.42"
     validations:
       required: true
   - type: textarea

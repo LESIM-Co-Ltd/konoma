@@ -50,7 +50,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ### Changed
 - `[external] video` now gates **only** the fallback extractors, matching what `[external] pdf`
   means for PDF: the built-in decoders never launch a process, so with the flag off H.264 and HEVC
-  mp4/mov thumbnails now appear where previously nothing did.
+  thumbnails from mp4/m4v/mov and mkv/webm now appear where previously nothing did.
 - **A PDF the built-in renderer cannot draw has no fallback past page 1.** `qlmanage`/`sips` can only
   produce the first page, which poppler was not limited to. In practice the built-in renderer draws
   every page of everything it can open, and Linux has behaved exactly this way all along, but where

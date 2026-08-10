@@ -124,11 +124,12 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 |---|---|
 | `markdown` | 装飾 Markdown(見出し・表・リンク・チェックボックス・インライン画像・```` ```mermaid ```` フェンスは図に)。 |
 | `mermaid` | 単体 `.mmd`/`.mermaid` を図として表示。既定は実画像(純 Rust・全画面ズーム/パン)。`[ui] mermaid = "text"` で Unicode 罫線図に切替。 |
-| `image` | kitty graphics で全画面表示(ズーム/パン・GIF は自動アニメ)。 |
+| `image` | 端末のグラフィックプロトコルで全画面表示(ズーム/パン・GIF は自動アニメ)。 |
 | `svg` | プロセス内でラスタライズ(resvg・純 Rust)して画像表示。 |
 | `video` | 代表フレーム1枚をサムネイル表示。**`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264 と HEVC は純 Rust でデコード=外部ツール不要**(HEVC=iPhone の既定録画形式)。それ以外(VP9・AV1・旧世代コーデック・`.avi` コンテナ、および稀なプロファイル=H.264 の 10bit/4:2:2/4:4:4/モノクロ、Main/Main 10 4:2:0 以外の HEVC)は `ffmpegthumbnailer`/`ffmpeg` があれば使い、無ければヒント表示。いずれも端末内再生はしないので、再生したい場合は `command` で `mpv` へ。 |
 | `pdf` | 純 Rust(`hayro`)でネイティブにラスタライズ(外部ツール不要・1ページずつ) — `J`/`K` で任意のページへ。macOS に限り、hayro が描画できない PDF(暗号化・破損など)は OS 同梱の `qlmanage`/`sips`(常在・導入不要)へフォールバックしますが、これらは**1ページ目**しか出せません。 |
 | `csv` / `tsv` | 列レインボー+セルカーソルの整列テーブル(`hjkl` 移動・`y →` でコピー)。 |
+| `archive` | `.zip`/`.tar`/`.tar.gz`/`.tgz` のエントリ(名前 / サイズ / 更新日時)を CSV/TSV と同じ整列テーブルで一覧表示 — メタデータのみで**展開はしません**(`hjkl` / `y →` c/r/C も同様に効きます)。 |
 | `code` | シンタックスハイライト(文法は 拡張子 → ファイル名 → 先頭行 で解決)。 |
 | `text` | 素のテキスト。テキストらしいファイルの自動フォールバック先でもあります。 |
 
@@ -198,7 +199,7 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 | `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`o`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。なお**この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになります**(初回使用時に一度だけ判定)。その場合 `o` は「ディレクトリが repo でない」ではなく「git が見つかりません」と知らせます。 |
 | `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
-| `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、H.264/HEVC の mp4/mov のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
+| `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、これらのコンテナの H.264/HEVC のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
 | `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
 | `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)等。 |
 | `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |
@@ -235,9 +236,11 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 ```
 
 面(surface)名: `global`・`tree`・`tree_visual`・`preview_text`・
-`preview_text_visual`・`preview_image`・`preview_table`・`sort`・`bookmarks`・
-`info`・`help`、および(git ビルドで)`preview_git_diff`・`git_changes`・
-`git_log`・`git_graph`・`git_branches`・`git_detail`。
+`preview_text_visual`・`preview_image`・`preview_table`・`table_cell`
+(`preview_table` で `Enter` を押して開くセル全文ポップアップ)・`sort`・`bookmarks`・
+`tabs`・`outline`・`info`・`help`、および(git ビルドで)`preview_git_diff`・
+`git_changes`・`git_log`・`git_graph`・`git_graph_picker`・`git_branches`・
+`git_worktrees`(変更ハブの `w` で開くリンクワークツリー一覧)・`git_detail`。
 
 キー表記: 単文字(大文字=Shift 込み)・`space`・リテラル `0 $ ! + - = . / '`・
 修飾 `ctrl-<k>`(別名 `c-<k>`)・名前付き `tab enter esc backspace delete up down
@@ -252,11 +255,14 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 - **移動**: `navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end`
 - **ツリー**: `quit`・`close_tab_or_quit`・`tree_descend`・`tree_leave`・`tree_activate`・`filter_start`・`toggle_hidden`・`refresh`・`open_sort_menu`・`toggle_info`・`request_edit`・`cycle_path_style`・`set_anchor`・`reset_anchor`・`enter_visual`・`toggle_select`・`open_in_new_tab`(`Ctrl-t`=カーソル下のエントリを別タブ(前面)で開く)
 - **ブックマーク**: `mark_set`(`m`)・`mark_jump`(`'` = 一覧を開く。一覧内の素の英字はジャンプ)・`bookmark_edit`(`ctrl-e`)・`bookmark_delete`(`ctrl-d`)・`bookmark_close`。`m`/`'` はツリーとプレビューの両面に既定割当(プレビューでは表示中ファイルを登録)。
-- **パスコピー**(`y` リーダー): `copy_name`・`copy_relative`・`copy_full`・`copy_parent`・`copy_at_ref`(AI チャット用 `@相対パス`)
+- **パスコピー**(`y` リーダー): `copy_name`・`copy_relative`・`copy_full`・`copy_parent`・`copy_at_ref`(AI チャット用 `@相対パス`)・`copy_code_block`(`y c` = `Tab` でフォーカス中の Markdown コードブロックをコピー。フォーカス中のときだけメニューに出ます)
 - **ファイル管理**(`Space` リーダー): `file_create`・`file_rename`・`file_delete`・`file_copy`・`file_cut`・`file_paste`・`file_duplicate`(`Space→D`=カーソル/選択をその場に複製。例 `note copy.md`)
-- **プレビュー**: `preview_back`・`search_start`・`search_next`・`search_prev`・`preview_enter_visual`(`v`)・`preview_enter_visual_line`(`V`)・`preview_copy_selection`・`preview_copy_selection_ref`(`Y` = `@path#L12-34`)・`toggle_markdown_raw`(`R`)・`link_focus_next/prev`・`link_open`(`Enter`=同タブ)・`open_link_new_tab`(`Ctrl-t`=別タブ)・`image_zoom_in/out/reset`・`pdf_next_page`・`pdf_prev_page`・`preview_next_file` / `preview_prev_file`(`Ctrl-n` / `Ctrl-p`=ツリー表示順で次/前のファイルへ。ディレクトリはスキップ・端で wrap)・`table_copy_cell/row/column`
+- **プレビュー**: `preview_back`・`search_start`・`search_next`・`search_prev`・`preview_enter_visual`(`v`)・`preview_enter_visual_line`(`V`)・`preview_copy_selection`・`preview_copy_selection_ref`(`Y` = `@path#L12-34`)・`toggle_markdown_raw`(`R`)・`link_focus_next/prev`・`link_open`(`Enter`=同タブ)・`open_link_new_tab`(`Ctrl-t`=別タブ)・`image_zoom_in/out/reset`・`pdf_next_page`・`pdf_prev_page`・`preview_next_file` / `preview_prev_file`(`Ctrl-n` / `Ctrl-p`=ツリー表示順で次/前のファイルへ。ディレクトリはスキップ・端で wrap)
+- **テーブル**(`preview_table`): `table_copy_cell/row/column`(`y` リーダー)・`toggle_table_cell`(`Enter`= カーソル位置のセルの全文ポップアップ。グリッドは幅の広いセルを `…` で切り詰めるので、こちらは切り詰めない全文を折返しで表示し `j`/`k`/`g`/`G`/PageUp/PageDown でスクロールできます。`q`/Esc/`Enter` で閉じる。ポップアップ自身のキーは `[keys.table_cell]`)
 - **Agent Watch**: `toggle_follow`(`F`)・`toggle_changed_filter`(`C`)・`jump_next_change`(`n`)・`jump_prev_change`(`N`)・`toggle_follow_diff_scope`(`f`、フォロー diff 内で「開始以降」⇄ フル git diff を切替)
-- **Git**: `open_git_view`(`o`)・`open_git_diff_cursor`(`d`)・`git_stage`・`git_unstage`・`git_stage_all`・`git_unstage_all`・`git_discard`・`git_commit`・`git_open_log`・`git_open_graph`・`git_open_branches`・`git_launch_tool` (`!`, in the changes hub)・`cycle_diff_layout`・`git_copy_*`・`branch_*`
+- **Git**: `open_git_view`(`o`)・`open_git_diff_cursor`(`d`)・`git_stage`・`git_unstage`・`git_stage_all`・`git_unstage_all`・`git_discard`・`git_commit`・`git_open_log`・`git_open_graph`・`git_open_branches`・`git_launch_tool`(`!`・変更ハブ内)・`cycle_diff_layout`・`git_copy_*`・`branch_*`
+- **Git グラフ**(`git_graph`): `git_graph_set_base`・`git_graph_clear_base`・`git_graph_open_picker`(`b`= ブランチ選択パネルを開く)。パネル内(`[keys.git_graph_picker]`)は `git_graph_picker_toggle`・`git_graph_picker_all`・`git_graph_picker_current_only`・`git_graph_picker_move_up`・`git_graph_picker_move_down`
+- **Git ワークツリー**(`git_worktrees` — `git worktree add` で作る**リンク**ワークツリーのこと。このページの他の箇所で言う「ワークツリー」= 未コミットの作業ツリーとは別概念): `git_open_worktrees`(`w`・変更ハブ内)・`worktree_filter_start`(`/`= ブランチ名/パスで絞り込み)・`worktree_goto`(`Enter`・固定キー: このタブの root(と `open_dir`)を選択ワークツリーへ切替。config で別キーにも割当可)・`worktree_goto_new_tab`(`Ctrl-t`= 選択を別タブで開く。現在のタブは不変)・`worktree_create`(`n`= ブランチ名の入力ダイアログを開く。新規/既存は自動判別で追加の質問はしません → 上の `[git] worktree_dir` の位置にメインワークツリーの隣として `git worktree add` し、このタブをそこへ切替)・`worktree_show_changes`(`d`= 選択ワークツリーの base ブランチからの diff。**コミット済みと未コミットをまとめて**表示します — ワークツリーで作業するエージェントは途中でコミットしてしまうことが多く、未コミットのみの diff だと空になるためです。base が解決できない/何も積み上がっていない場合は未コミットのみの diff にフォールバックします → 上の `graph_base_branches` 参照)・`worktree_close`(`q`/Esc)。bare のメインワークツリー・locked/prunable なもの・現在アクティブなものは切替を拒否します(理由は flash で表示)。`worktree_show_changes` は現在アクティブなものでも動きます。
 - **パス貼り付けジャンプ**(`global`): `paste_jump`(`P`) — クリップボードのパス/GitHub リンクを読んでその場所へジャンプ(reveal+プレビュー)。ローカルの絶対/相対パス・GitHub `blob`/`raw` URL・`#L123` / `:123` の行アンカーに対応。対象が root 外ならそのリポジトリへ root を切替えます。
 - **タブ / アプリ**(`global`): `tab_new`(`t`)・`toggle_tab_list`(`T`=タブ一覧。一覧内 `tab_list_close`=`d`)・`tab_prev`/`tab_next`(`[`/`]`)・`quit`(`Q`)・`toggle_help`(`?`)。`tab_close` は既定キー無し(閉じるはツリーの `q`。`"w" = "tab_close"` で復活可)
 - `noop`(別名 `disabled`)は既定の割当を消します。
@@ -280,8 +286,12 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 
 ## フォントと端末の要件
 
-- **画像 / SVG / 動画サムネイル / PDF** には kitty graphics プロトコル対応端末
-  (Ghostty・kitty など)が必要。テキスト系はどの端末でも動きます。
+- **画像 / SVG / Mermaid / LaTeX 数式 / 動画サムネイル / PDF** は、グラフィック
+  プロトコルを話す端末なら**実ピクセル**で描かれます — **kitty graphics**
+  (Ghostty・kitty・WezTerm・Konsole)・**iTerm2**・**sixel**。konoma は kitty 向けに
+  自前の圧縮転送を持つので、kitty 系がいちばん速く出ます。それ以外の端末では
+  **ハーフブロックの近似表示**に落ちます(粗いですが映ります)。テキスト系の
+  プレビュー(Markdown・コード・git diff・CSV・表)はどの端末でも完全に動きます。
 - **アイコン**(`ui.icons = true`・既定)には Nerd Font グリフが必要:
   端末のフォールバックに `Symbols Nerd Font Mono` を足すか、NF 内蔵フォント
   (HackGen Console NF・UDEV Gothic NF …)を使用。無ければ `ui.icons = false`。

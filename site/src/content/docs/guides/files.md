@@ -20,11 +20,22 @@ All file management sits behind the `Space` leader (a menu shows the options):
 
 - `n` create (end with `/` for a directory), `r` rename, `d` delete.
 - `c` copy / `x` cut / `p` paste.
+- `D` duplicate in place — the cursor item (or the whole selection) is copied
+  next to itself under a free name (`note.md` → `note copy.md` →
+  `note copy 2.md`); directories are copied recursively.
 - **Deletions go to the system trash** after a confirmation dialog — nothing
   is ever destroyed silently. Renames of multiple selected files open a batch
   preview before applying.
 - `v` starts a visual range selection; `V` toggles selection on one entry.
   Operations then apply to the whole selection.
+
+## Drag & drop
+
+Drop files onto the tree — from your desktop file manager, or from another
+terminal — and konoma asks what to do with them: `c` copies, `m` moves, `n` or
+`Esc` cancels. The destination is the directory under the cursor (or the
+directory containing it, when the cursor is on a file). Nothing happens until
+you answer, and a drop is ignored while a dialog or preview is on screen.
 
 ## Bookmarks — `m` and `'`
 

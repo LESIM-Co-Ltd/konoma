@@ -81,7 +81,10 @@ colored in the tree, and code previews get a change gutter.
 The flagship workflow — konoma on the left, a coding agent on the right:
 
 - `F` turns on **follow mode**: every file the agent changes appears as a
-  diff, automatically. Any key takes control back; `F` resumes.
+  diff, automatically — and the diff shows **what changed since you pressed
+  `F`**, not the whole uncommitted diff, so edits you made earlier stay out of
+  the way. Press `f` to switch between that and the full `git diff`.
+- Follow is sticky: scrolling and `n`/`N` keep following. `q` stops it.
 - While a diff is shown, `n`/`N` cycle through the files changed in this
   follow session.
 - `C` lists every uncommitted file; `y` → `@` and `Y` copy references for

@@ -26,6 +26,9 @@ and are covered by the project's MIT license.
   *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,
   `code/app.ts`, `code/calc.c`, `code/main.go`; `sample.tar.gz` = `sample.csv`, `sample.tsv`,
   `japanese.txt`) — no third-party content, same as everything else here.
+- `sequence.mmd` — a hand-written Mermaid sequence diagram, for the standalone `.mmd`
+  preview (a whole file rendered as one full-screen diagram, as opposed to the ```` ```mermaid ````
+  fences inside `markdown.md`).
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
 - The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix

@@ -102,9 +102,10 @@ HEVC video thumbnails**, and code need **nothing extra** — they are rendered i
 konoma, in pure Rust.
 (On macOS only, a PDF the built-in renderer can't handle falls back to the
 system's own `qlmanage`/`sips` for its first page — nothing to install there
-either.) What they do need is a terminal that speaks the kitty graphics
-protocol (Ghostty, kitty, WezTerm, Konsole) for the picture formats; text
-previews work in any terminal.
+either.) The picture formats are drawn as real pixels in any terminal that
+speaks a graphics protocol — kitty graphics (Ghostty, kitty, WezTerm, Konsole),
+iTerm2, or sixel — and degrade to a coarse but visible half-block approximation
+anywhere else. Text previews work in any terminal.
 
 - [ ] I know what to install if I need it
 

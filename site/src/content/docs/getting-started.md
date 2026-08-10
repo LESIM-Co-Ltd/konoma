@@ -21,12 +21,16 @@ don't use cargo at all. Starting from a fresh machine? See
 The gate for konoma's full experience is the **terminal**, not the OS:
 
 - konoma runs on **macOS and Linux** (Unix). Windows is not supported (it uses
-  Unix-only APIs, and Windows terminals do not speak the kitty graphics protocol).
-- The full-screen **image / PDF / SVG / video previews need a terminal that speaks
-  the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**
-  — [Ghostty](https://ghostty.org), [kitty](https://sw.kovidgoyal.net/kitty/),
-  [WezTerm](https://wezterm.org), or Konsole. **Text previews** (Markdown, code,
-  git diffs) work in **any** terminal.
+  Unix-only APIs).
+- The full-screen **image / PDF / SVG / Mermaid / LaTeX math / video previews** are
+  drawn as **real pixels** in any terminal that speaks a graphics protocol —
+  **[kitty graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**
+  ([Ghostty](https://ghostty.org), [kitty](https://sw.kovidgoyal.net/kitty/),
+  [WezTerm](https://wezterm.org), Konsole), **iTerm2**, or **sixel**. konoma has its
+  own compressed transfer for the kitty protocol, so those terminals are the fastest.
+  Anywhere else the picture degrades to a **half-block approximation** — coarse, but
+  visible. **Text previews** (Markdown, code, git diffs, CSV, tables) work in **any**
+  terminal.
 - Of the OS/arch combinations, **macOS on Apple Silicon is the most battle-tested**.
   Intel macOS works too, and **Linux x86_64** builds and passes the full test suite
   in CI, ships prebuilt binaries, and has had its previews verified rendering via
@@ -62,10 +66,13 @@ konoma with image previews.
    ```sh
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
-2. **A kitty-graphics terminal** — Ghostty:
+2. **A terminal with a graphics protocol** — Ghostty speaks kitty graphics, the
+   fastest path for konoma's images:
    ```sh
    brew install --cask ghostty
    ```
+   (macOS's own Terminal.app has no graphics protocol, so pictures there fall back
+   to half-blocks; iTerm2 and any sixel-capable terminal work as well.)
 3. **A font with Nerd Font + CJK glyphs** (covers icons and Japanese in one):
    ```sh
    brew install --cask font-hackgen-console-nf
@@ -104,11 +111,13 @@ konoma with image previews.
 
 Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
 
-1. **A kitty-graphics terminal** — kitty is the simplest on Linux:
+1. **A terminal with a graphics protocol** — kitty is the simplest on Linux:
    ```sh
    sudo apt install kitty
    ```
-   (Ghostty and WezTerm work too.)
+   (Ghostty and WezTerm speak kitty graphics too; a sixel-capable terminal such as
+   Konsole or xterm with sixel enabled also shows real pixels, just without konoma's
+   compressed transfer.)
 2. **Fonts** — CJK glyphs plus a Nerd Font:
    ```sh
    sudo apt install fonts-noto-cjk        # CJK glyphs
@@ -135,7 +144,7 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
    ```sh
    sudo apt install ffmpeg git
    ```
-5. **Run it** inside your kitty-graphics terminal:
+5. **Run it** inside that terminal:
    ```sh
    konoma            # press ? for help
    ```

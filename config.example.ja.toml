@@ -58,7 +58,7 @@ path_style = "relative"
 keys = "vim"
 # 画像プレビューの表示サイズスケール (0.1〜1.0)。表示矩形をこの倍率に縮めて表示する。
 # 既定 1.0 では「初期=画像サイズ(フィット)、+で拡大、viewport を超えたら hjkl でパン」。
-# 1.0 未満にすると表示が小さくなる代わりに、kitty への転送ピクセル(=表示/ズームの待ち時間)が減る。
+# 1.0 未満にすると表示が小さくなる代わりに、端末への転送ピクセル(=表示/ズームの待ち時間)が減る。
 # 配置は常に中央・アスペクト比も正しい。速度が要るとき下げる(例 0.6 で転送 ≒ 1/3)。
 # GIF アニメ/全画像で共有(GIF の転送を軽くしたいときもこれ)。
 image_render_scale = 1.0
@@ -271,11 +271,12 @@ code_label_bg = "auto"
 code_theme = "TwoDark"
 
 # プレビュールールは上から評価し、最初にマッチしたものを使う。
-# builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text")
+# builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
+#          "archive" | "code" | "text")
 #   markdown=tui-markdown で装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
 #   mermaid =.mmd/.mermaid 単体を図として表示。既定は画像(mermaid-rs-renderer→resvg・純Rust・
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
-#   image  =kitty graphics で全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
+#   image  =端末のグラフィックプロトコルで全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
 #   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
 #   video  =代表フレーム1枚をサムネイル表示(端末内再生はしない)。.mp4/.m4v/.mov と .mkv/.webm の
 #          H.264 と HEVC は純 Rust でデコードする=外部ツール不要(HEVC=iPhone の既定録画形式)。
@@ -288,6 +289,8 @@ code_theme = "TwoDark"
 #          複数ページは J/K(または PageDown/PageUp)で送る(何も入れずに任意ページへ移動できる)。
 #   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
+#   archive=.zip/.tar/.tar.gz/.tgz を同じテーブルレンダラで一覧表示(エントリ名 / サイズ / 更新日時)。
+#          メタデータのみで展開は一切しない。hjkl / y→ のキーは csv と同じ。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
 # render_as: command 出力の扱い ("image" でPNG等を全画面画像表示。それ以外(未指定/"text"/未知の値)は
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
@@ -333,14 +336,15 @@ builtin = "code"
 
 [[preview.rules]]
 mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
-                           # H.264 と HEVC の mp4/m4v/mov は外部ツール不要。他のコーデック/コンテナは ffmpeg があれば使う
+                           # mp4/m4v/mov と mkv/webm の H.264 と HEVC は外部ツール不要。他のコーデック/コンテナは ffmpeg があれば使う
 builtin = "video"
 # 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
 # command = "mpv {path}"
 # detached = true          # 別プロセスで開き TUI をブロックしない
 
 [[preview.rules]]
-glob = "*.pdf"             # 既定: ページを1枚ずつラスタライズして全画面画像表示(J/K でページ送り・macOS は標準ツールで表示可)
+glob = "*.pdf"             # 既定: ページを1枚ずつ hayro(純Rust・外部ツール不要)でラスタライズして全画面画像表示(J/K でページ送り)
+                           # macOS に限り、hayro が描けない PDF は OS 同梱の qlmanage/sips へフォールバック(1ページ目のみ)
 builtin = "pdf"
 
 # どのルールにもマッチしないファイルは [can not preview: <ext>] を全画面表示。
@@ -389,7 +393,7 @@ builtin = "pdf"
 #   ブックマーク : m=登録・'=一覧はツリーとプレビュー両面に既定割当(プレビュー中は表示中ファイルを登録)。
 #                  一覧(')内は素の英字=そのブックマークへジャンプ(a-z ローカル/A-Z グローバル)。
 #                  "bookmark_edit"(既定 ctrl-e) "bookmark_delete"(既定 ctrl-d) "bookmark_close"(q / ')
-#                  ※ j/k/q と global の t/T/F/Q はキー操作に取られるため、その文字のブックマークは
+#                  ※ j/k/q と global の t/T/F/P/Q はキー操作に取られるため、その文字のブックマークは
 #                    j/k + Enter で選んで開く(または当該キーを config で退避)。
 #   プレビュー   : "preview_back" "search_start" "search_next" "search_prev"
 #                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
@@ -422,6 +426,9 @@ builtin = "pdf"
 #                    ＝コミット済み＋未コミットの両方(ワークツリーが既にコミット済みでも何かは表示される)。
 #                    base は下の graph_base_branches・無ければメインワークツリーのブランチにフォールバック。
 #                    base が無い/積み上げが無い時はさらに未コミットのみの diff にフォールバック)
+#                  "worktree_create"(n: ブランチ名の入力ダイアログを開く。新規/既存は自動判別なので
+#                    そのための質問は出ない → [git] worktree_dir の位置にメインワークツリーの隣として
+#                    `git worktree add` し、このタブをそこへ切り替える)
 #   無効化       : "noop"(別名 "disabled") = そのキーの既定割り当てを消す
 #
 # ■ リーダー(2 段キー / which-key): 押すと候補がフッターに出る。
@@ -473,7 +480,7 @@ command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim �
 [git]
 tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
-# main_branch: 【未実装/予約】基準ブランチ固定グラフ(リリース後・docs/GRAPH-BASE-SPEC.md)用。
+# main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
 worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で新規リンクワークツリーを置く場所: **メイン**
                         # ワークツリー自身のパス(今いる root ではない)を基準に、ブランチ名(`/` は `-` に置換=そのまま
@@ -501,9 +508,9 @@ pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage
                            # PDF プレビュー自体は hayro で動く。macOS 以外ではこのフラグは実質無効
                            # (起動する外部 PDF ツールがそもそも無い)。
 video            = true   # 外部フォールバックの抽出ツール(ffmpegthumbnailer/ffmpeg)。内蔵デコーダ
-                           # (純Rust・このフラグに関係なく常に動く)が扱えないファイル=.mp4/.m4v/.mov の
-                           # H.264/HEVC 以外の時だけ使う。false でも H.264/HEVC の mp4/mov のサムネイルは出る
-                           # (上の pdf と hayro の関係と同じ)。
+                           # (純Rust・このフラグに関係なく常に動く)が扱えないファイル=.mp4/.m4v/.mov と
+                           # .mkv/.webm の H.264/HEVC 以外の時だけ使う。false でもこれらのコンテナの
+                           # H.264/HEVC のサムネイルは出る(上の pdf と hayro の関係と同じ)。
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。

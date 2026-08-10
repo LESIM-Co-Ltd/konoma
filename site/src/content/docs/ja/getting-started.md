@@ -21,12 +21,15 @@ tarball を直接ダウンロードできます。**何もインストールさ�
 konoma の本領を発揮するゲートは OS ではなく **端末** です:
 
 - konoma は **macOS と Linux**(Unix)で動きます。Windows は非対応(Unix 専用 API を
-  使い、Windows の端末は kitty graphics プロトコルに非対応のため)。
-- 全画面の **画像 / PDF / SVG / 動画プレビューには
-  [kitty graphics プロトコル](https://sw.kovidgoyal.net/kitty/graphics-protocol/)対応端末**が
-  必要です — [Ghostty](https://ghostty.org)・[kitty](https://sw.kovidgoyal.net/kitty/)・
-  [WezTerm](https://wezterm.org)・Konsole など。**テキスト系プレビュー**(Markdown・
-  コード・git diff)は **どの端末でも** 動きます。
+  使うため)。
+- 全画面の **画像 / PDF / SVG / Mermaid / LaTeX 数式 / 動画プレビュー**は、
+  グラフィックプロトコルを話す端末なら**実ピクセル**で描かれます —
+  **[kitty graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**
+  ([Ghostty](https://ghostty.org)・[kitty](https://sw.kovidgoyal.net/kitty/)・
+  [WezTerm](https://wezterm.org)・Konsole)・**iTerm2**・**sixel**。konoma は kitty
+  向けに自前の圧縮転送を持つので、kitty 系がいちばん速く出ます。それ以外の端末では
+  **ハーフブロックの近似表示**に落ちます(粗いですが映ります)。**テキスト系プレビュー**
+  (Markdown・コード・git diff・CSV・表)は **どの端末でも** 完全に動きます。
 - OS/アーキの組合せでは **macOS (Apple Silicon) が最も実績があります**。Intel macOS も
   動作し、**Linux x86_64** は CI で全テストが通りプレビルドも配布・プレビューが kitty
   graphics で描画されることも検証済みですが、macOS より新しいため **beta** です。
@@ -60,10 +63,13 @@ AV1・旧世代コーデック・`.avi` のサムネイル)・`lazygit`(`!` の�
    ```sh
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
-2. **kitty-graphics 対応端末** — Ghostty:
+2. **グラフィックプロトコル対応端末** — Ghostty は kitty graphics を話すので、
+   konoma の画像がいちばん速く出ます:
    ```sh
    brew install --cask ghostty
    ```
+   (macOS 標準の Terminal.app はグラフィックプロトコルを持たないので、画像は
+   ハーフブロックの近似表示になります。iTerm2 や sixel 対応端末でも実ピクセルで出ます。)
 3. **Nerd Font + CJK グリフ入りフォント**(アイコンと日本語を1つで):
    ```sh
    brew install --cask font-hackgen-console-nf
@@ -102,11 +108,12 @@ AV1・旧世代コーデック・`.avi` のサムネイル)・`lazygit`(`!` の�
 
 以下は `apt`(Ubuntu/Debian)の例です。お使いのパッケージマネージャに読み替えてください。
 
-1. **kitty-graphics 対応端末** — Linux では kitty が最も簡単:
+1. **グラフィックプロトコル対応端末** — Linux では kitty が最も簡単:
    ```sh
    sudo apt install kitty
    ```
-   (Ghostty・WezTerm も可)
+   (Ghostty・WezTerm も kitty graphics 対応。Konsole や sixel を有効にした xterm など
+   sixel 対応端末でも実ピクセルで出ます。konoma の圧縮転送が効かないだけです。)
 2. **フォント** — CJK グリフ + Nerd Font:
    ```sh
    sudo apt install fonts-noto-cjk        # CJK グリフ
@@ -131,7 +138,7 @@ AV1・旧世代コーデック・`.avi` のサムネイル)・`lazygit`(`!` の�
    ```sh
    sudo apt install ffmpeg git
    ```
-5. **起動** — kitty-graphics 対応端末の中で:
+5. **起動** — その端末の中で:
    ```sh
    konoma            # ? でヘルプ
    ```

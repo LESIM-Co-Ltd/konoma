@@ -11,8 +11,9 @@ cargo build                 # debug build (cargo build --release for optimized)
 cargo run -- /path/to/dir   # run against a directory (defaults to the current dir)
 ```
 
-Images, SVG, video thumbnails, and PDF previews require a terminal that supports the
-kitty graphics protocol (e.g. Ghostty) for manual verification.
+To verify image, SVG, video-thumbnail and PDF previews by eye, use a terminal that
+speaks a graphics protocol — kitty graphics (e.g. Ghostty), iTerm2, or sixel. Anywhere
+else they fall back to half-blocks, which is too coarse to judge a rendering change by.
 
 ## Before submitting a PR
 
@@ -30,8 +31,8 @@ cargo test --no-default-features
 - The `git` feature is on by default; `--no-default-features` drops it. Keep both building.
 - Avoid panics in runtime code paths: return `Result` and add context with `anyhow`.
   Reserve `unwrap`/`expect` for self-evident init-time invariants.
-- Public-facing items (doc comments, README) are written in English; internal `//`
-  comments may be in Japanese.
+- Comments are written in English — doc comments, internal `//` comments, and the
+  public-facing docs (README, the documentation site) alike.
 - External tools (ffmpeg, git, …) must stay optional: the app should run and
   degrade gracefully when they are absent. Prefer a pure-Rust renderer over a new
   external dependency — that is why PDF, SVG, Mermaid and LaTeX math need nothing installed.

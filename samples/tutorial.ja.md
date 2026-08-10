@@ -95,9 +95,10 @@ sudo apt install ffmpeg
 画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**PDF**・
 **H.264/HEVC 動画のサムネイル**・コードは**追加インストール不要**で、konoma 自身が純 Rust で描きます（macOS に限り、
 内蔵レンダラが扱えない PDF は OS 同梱の `qlmanage`/`sips` に 1 ページ目だけ
-フォールバックします。これも導入不要です）。ただし画像系は kitty graphics
-対応端末（Ghostty・kitty・WezTerm・Konsole）が要ります。テキストのプレビューは
-どの端末でも動きます。
+フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを
+話す端末なら実ピクセルで描かれます — kitty graphics（Ghostty・kitty・WezTerm・
+Konsole）・iTerm2・sixel。それ以外の端末では粗いながらも見えるハーフブロックの
+近似表示に落ちます。テキストのプレビューはどの端末でも動きます。
 
 - [ ] 必要になったら何を入れればよいか分かった
 

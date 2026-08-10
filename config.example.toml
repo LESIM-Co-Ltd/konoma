@@ -62,7 +62,7 @@ path_style = "relative"
 keys = "vim"
 # Display-size scale for image previews (0.1–1.0). Shrinks the display rect by this factor.
 # At the default 1.0: "initial = image size (fit), + zooms in, pan with hjkl once it overflows the viewport".
-# Below 1.0 the display is smaller but fewer pixels are sent to kitty (= less zoom/display latency).
+# Below 1.0 the display is smaller but fewer pixels are sent to the terminal (= less zoom/display latency).
 # The image is always centered with correct aspect ratio. Lower it when you need speed (e.g. 0.6 ≈ 1/3 the transfer).
 # Shared by GIF animation and all images (also use this to make GIF transfers lighter).
 image_render_scale = 1.0
@@ -284,11 +284,12 @@ code_label_bg = "auto"
 code_theme = "TwoDark"
 
 # Preview rules are evaluated top to bottom; the first match wins.
-# builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "text")
+# builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
+#          "archive" | "code" | "text")
 #   markdown = decorated by tui-markdown (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
 #   mermaid  = a standalone .mmd/.mermaid shown as a diagram. Default is an image (mermaid-rs-renderer → resvg,
 #              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
-#   image    = full-screen display via kitty graphics (zoom/pan). GIFs animate automatically.
+#   image    = full-screen display via the terminal's graphics protocol (zoom/pan). GIFs animate automatically.
 #   svg      = rasterized to an image via resvg/usvg/tiny-skia (pure Rust, no external tools).
 #   video    = a single representative frame, shown as a thumbnail (no in-terminal playback). H.264 and HEVC
 #              inside .mp4/.m4v/.mov and .mkv/.webm are decoded natively in Rust — nothing to install (HEVC is
@@ -302,6 +303,8 @@ code_theme = "TwoDark"
 #              first page. Turn pages with J/K (or PageDown/PageUp) — any page, nothing to install.
 #   csv      = comma-separated shown as an aligned table (rainbow columns + cell cursor). hjkl=move cell / y→=cell/row/column copy.
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
+#   archive  = .zip/.tar/.tar.gz/.tgz listed in the same table renderer (entry name / size / modified date).
+#              Metadata only — nothing is ever extracted. Same hjkl / y→ keys as csv.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -351,14 +354,15 @@ builtin = "code"
 
 [[preview.rules]]
 mime = "video/*"           # Default: show a single representative frame as a thumbnail (no in-terminal playback).
-                           # H.264 and HEVC mp4/m4v/mov need no external tool; other codecs/containers use ffmpeg if installed.
+                           # H.264 and HEVC in mp4/m4v/mov and mkv/webm need no external tool; other codecs/containers use ffmpeg if installed.
 builtin = "video"
 # To "play" in an external player instead of in the terminal, drop the above and replace with (delegation):
 # command = "mpv {path}"
 # detached = true          # open in a separate process without blocking the TUI.
 
 [[preview.rules]]
-glob = "*.pdf"             # Default: rasterize each page to a full-screen image (turn pages with J/K; macOS built-in tools suffice).
+glob = "*.pdf"             # Default: rasterize each page to a full-screen image with hayro (pure Rust, no external tool; turn pages with J/K).
+                           # On macOS only, a PDF hayro can't draw falls back to the bundled qlmanage/sips — first page only.
 builtin = "pdf"
 
 # A file matching no rule shows [can not preview: <ext>] full screen.
@@ -407,7 +411,7 @@ builtin = "pdf"
 #   Bookmarks    : m=register, '=list are bound on both tree and preview by default (in preview, register the shown file).
 #                  Inside the list ('), a bare letter jumps to that bookmark (a-z local / A-Z global).
 #                  "bookmark_edit" (default ctrl-e) "bookmark_delete" (default ctrl-d) "bookmark_close" (q / ')
-#                  Note: j/k/q and global t/T/F/Q are taken by key actions, so a bookmark on those letters is opened
+#                  Note: j/k/q and global t/T/F/P/Q are taken by key actions, so a bookmark on those letters is opened
 #                    with j/k + Enter (or move the key elsewhere in the config).
 #   Preview      : "preview_back" "search_start" "search_next" "search_prev"
 #                  "preview_copy_selection_ref" (Y: copy the @path#L reference of the selection/caret)
@@ -497,7 +501,7 @@ command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR 
 [git]
 tool        = "lazygit"   # The external git tool launched with `!` in the hub (command + args, space-separated). e.g. "tig status"
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
-# main_branch: [unimplemented / reserved] for the pinned-base-branch graph (post-release, docs/GRAPH-BASE-SPEC.md).
+# main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
 worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved
                         # against the MAIN worktree's own path (not wherever this tab's root is), then joined with the
@@ -527,8 +531,9 @@ pdf              = true   # The external fallback rasterizer: macOS's bundled ql
                            # there is no external PDF tool to launch.
 video            = true   # The external fallback thumbnail extractors (ffmpegthumbnailer/ffmpeg), tried only when the
                            # built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e.
-                           # anything that is not H.264 or HEVC in .mp4/.m4v/.mov. false never launches them; H.264 and
-                           # HEVC mp4/mov thumbnails keep working. Same relationship `pdf` above has with hayro.
+                           # anything that is not H.264 or HEVC in .mp4/.m4v/.mov and .mkv/.webm. false never launches
+                           # them; H.264 and HEVC thumbnails from those containers keep working. Same relationship
+                           # `pdf` above has with hayro.
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.

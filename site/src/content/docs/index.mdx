@@ -39,7 +39,7 @@ import TerminalDemo from '../../components/TerminalDemo.astro';
 		you flip between them with two keys. Markdown renders decorated (tables,
 		Mermaid diagrams, inline images, interactive checkboxes), code gets
 		syntax highlighting, CSV becomes a navigable table, images/PDF/SVG draw
-		as real pixels via kitty graphics.
+		as real pixels through your terminal's graphics protocol.
 	</Card>
 	<Card title="Built for AI pair work" icon="rocket">
 		Put konoma on the left, your coding agent on the right. Follow mode
@@ -67,7 +67,7 @@ import TerminalDemo from '../../components/TerminalDemo.astro';
 
 ![Custom git commit-graph renderer](../../assets/git-graph.png)
 
-![Inline images, a Mermaid diagram, and LaTeX math rendered in a Markdown preview](../../assets/markdown.png)
+![Inline images and a Mermaid diagram rendered in a Markdown preview](../../assets/markdown.png)
 
 ![Tables with inline styling and alignment, a horizontal rule, and interactive task lists in a Markdown preview](../../assets/markdown-richtext.png)
 
@@ -97,8 +97,9 @@ cargo install konoma        # build from source
 macOS on Apple Silicon is the primary target. Intel macOS and Linux x86_64 also
 build, pass the full test suite in CI, and ship prebuilt binaries; on Linux the image,
 PDF, and Markdown previews are verified to render via kitty graphics (still beta —
-newer than the macOS path). For image previews you need a terminal that speaks the
-kitty graphics protocol, such as [Ghostty](https://ghostty.org). Then:
+newer than the macOS path). Pictures are drawn as real pixels in any terminal that
+speaks a graphics protocol — kitty graphics (e.g. [Ghostty](https://ghostty.org)),
+iTerm2, or sixel — and degrade to a half-block approximation elsewhere. Then:
 
 ```sh
 konoma [DIR]

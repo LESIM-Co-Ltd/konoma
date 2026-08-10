@@ -16,8 +16,8 @@ This opens a private advisory visible only to the maintainers.
 
 Please include, as far as you can:
 
-- the konoma version (`konoma` shows it in the crate metadata / release tag),
-- your macOS and terminal (e.g. Ghostty) versions,
+- the konoma version (`konoma --version`, or `-V`, prints it),
+- your OS and version (macOS or Linux), CPU architecture, and terminal (e.g. Ghostty) version,
 - a minimal reproduction (a file or directory layout that triggers it), and
 - the impact you observed.
 

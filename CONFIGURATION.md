@@ -132,7 +132,7 @@ Built-in renderers (`builtin = "..."`):
 |---|---|
 | `markdown` | Decorated Markdown (headings, tables, links, task checkboxes, inline images — animated GIFs cycle in place — and ```` ```mermaid ```` fences as diagrams). |
 | `mermaid` | Standalone `.mmd`/`.mermaid` files as diagrams. Renders as a real image by default (pure Rust, full-screen zoom/pan); set `[ui] mermaid = "text"` for Unicode box-drawing. Controlled by the `[ui] mermaid` option above. |
-| `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
+| `image` | Full-screen image drawn with the terminal's graphics protocol (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |
 | `video` | A single representative frame, shown as a thumbnail. **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` are decoded natively in Rust — no external tool needed** (HEVC covers what an iPhone records by default). Everything else (VP9, AV1, older codecs, the `.avi` container, and the uncommon profiles — H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome, HEVC outside Main / Main 10 4:2:0) is extracted with `ffmpegthumbnailer`/`ffmpeg` if installed, and shows a hint if not. No in-terminal playback either way — delegate to `mpv` via `command` if you want playback. |
 | `pdf` | Pages rasterized natively in Rust (`hayro`; one page at a time, no external tool needed) — `J`/`K` turn any page. On macOS only, a PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported) falls back to the system's own `qlmanage`/`sips` — always present, nothing to install — but those can only produce the **first** page. |
@@ -211,7 +211,7 @@ so an absent `[external]` section (or an absent field within it) changes nothing
 | `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `o` then says git is not installed rather than blaming the directory. |
 | `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
 | `pdf` | `true` | The **external fallback** rasterizer — macOS's bundled `qlmanage`/`sips`, tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on page 1 of a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. **On every other platform this flag is effectively a no-op**: there is no external PDF tool to launch. |
-| `video` | `true` | The **external fallback** thumbnail extractors (`ffmpegthumbnailer`/`ffmpeg`), tried only when the built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e. anything that isn't H.264 or HEVC in `.mp4`/`.m4v`/`.mov`. `false` never launches them, but H.264 and HEVC mp4/mov thumbnails keep working. Same relationship `pdf` has with `hayro` above. |
+| `video` | `true` | The **external fallback** thumbnail extractors (`ffmpegthumbnailer`/`ffmpeg`), tried only when the built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e. anything that isn't H.264 or HEVC in `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`. `false` never launches them, but H.264 and HEVC thumbnails from those containers keep working. Same relationship `pdf` has with `hayro` above. |
 | `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown — the only outbound network call konoma makes. Done in-process via `ureq` (rustls), not an external tool. |
 | `open_links` | `true` | Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, pasted-path jump (`P`), etc. |
 | `preview_commands` | `true` | Running a `[[preview.rules]] command = "..."` delegation. `false` makes a matching rule behave as if it hadn't matched (falls through to `[can not preview]`); builtin renderers (`markdown`, `image`, `pdf`, ...) are unaffected. |
@@ -264,7 +264,7 @@ Action names are snake_case strings — the full annotated list is in
 - **Movement**: `navigate:down|up|top|bottom|page_down|page_up|half_down|half_up|left|right|line_home|line_end`
 - **Tree**: `quit`, `close_tab_or_quit`, `tree_descend`, `tree_leave`, `tree_activate`, `filter_start`, `toggle_hidden`, `refresh`, `open_sort_menu`, `toggle_info`, `request_edit`, `cycle_path_style`, `set_anchor`, `reset_anchor`, `enter_visual`, `toggle_select`, `open_in_new_tab` (`Ctrl-t`: open the entry under the cursor in a new foreground tab)
 - **Bookmarks**: `mark_set` (`m`), `mark_jump` (`'` — opens the list; plain letters inside it jump), `bookmark_edit` (`ctrl-e`), `bookmark_delete` (`ctrl-d`), `bookmark_close`. `m`/`'` are bound in both the tree and previews (a preview bookmarks the shown file).
-- **Path copy** (`y` leader): `copy_name`, `copy_relative`, `copy_full`, `copy_parent`, `copy_at_ref` (`@relative/path` for AI chats)
+- **Path copy** (`y` leader): `copy_name`, `copy_relative`, `copy_full`, `copy_parent`, `copy_at_ref` (`@relative/path` for AI chats), `copy_code_block` (`y c` — copy the Markdown code block currently focused with `Tab`; the entry only appears in the menu while one is focused)
 - **File management** (`Space` leader): `file_create`, `file_rename`, `file_delete`, `file_copy`, `file_cut`, `file_paste`, `file_duplicate` (`Space→D`: duplicate the cursor/selection in place, e.g. `note copy.md`)
 - **Preview**: `preview_back`, `search_start`, `search_next`, `search_prev`, `preview_enter_visual` (`v`), `preview_enter_visual_line` (`V`), `preview_copy_selection`, `preview_copy_selection_ref` (`Y` = `@path#L12-34`), `toggle_markdown_raw` (`R`), `link_focus_next/prev`, `link_open` (`Enter` = current tab), `open_link_new_tab` (`Ctrl-t` = new tab), `image_zoom_in/out/reset`, `pdf_next_page`, `pdf_prev_page`, `preview_next_file` / `preview_prev_file` (`Ctrl-n` / `Ctrl-p` — page to the next/previous file in tree order, skipping directories, wrapping at the ends)
 - **Table** (`preview_table`): `table_copy_cell/row/column` (`y` leader), `toggle_table_cell` (`Enter`: a full-text popup for the cursor cell — the grid truncates wide cells with `…`, this shows the untruncated value, wrapped and scrollable with `j`/`k`/`g`/`G`/PageUp/PageDown; `q`/Esc/`Enter` close it; `[keys.table_cell]` covers the popup's own keys)
@@ -295,8 +295,12 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
 
 ## Fonts & terminal requirements
 
-- **Images / SVG / video thumbnails / PDF pages** need a terminal with the kitty
-  graphics protocol (Ghostty, kitty, WezTerm).
+- **Images / SVG / Mermaid / LaTeX math / video thumbnails / PDF pages** are drawn as
+  **real pixels** in any terminal that speaks a graphics protocol — **kitty graphics**
+  (Ghostty, kitty, WezTerm, Konsole), **iTerm2**, or **sixel**. konoma has its own
+  compressed transfer for the kitty protocol, so those terminals are the fastest.
+  Anywhere else the picture degrades to a **half-block approximation** — coarse, but
+  visible. Text previews (Markdown, code, git diffs, CSV, tables) work in any terminal.
 - **Icons** (`ui.icons = true`, the default) need Nerd Font glyphs: either add
   `Symbols Nerd Font Mono` as a fallback font in your terminal, or use an NF-bundled
   font (HackGen Console NF, UDEV Gothic NF, …). Without one, set `ui.icons = false`

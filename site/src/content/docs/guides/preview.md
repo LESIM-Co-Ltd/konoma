@@ -32,6 +32,12 @@ as real pixels).
   Standalone `.mmd` files open full screen directly. `ui.mermaid = "text"`
   keeps the legacy Unicode rendering; unsupported diagrams fall back to it
   automatically.
+- **LaTeX math**: `$…$` and `$$…$$` (or `\(…\)` / `\[…\]`) are typeset in pure
+  Rust and drawn as images — no browser, no Node, no TeX installation. A
+  terminal cannot place a picture inside a line of text, so an inline formula is
+  lifted onto a line of its own and a display formula is centered. `$5` and
+  anything inside code stays literal. Set `ui.math = "text"` to keep the raw
+  LaTeX instead, and `ui.math_color` to match your terminal's foreground.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
 
@@ -58,12 +64,25 @@ colors and a cell cursor:
 
 - `h j k l` move by cell; `g`/`G` first/last row; `0`/`$` first/last column.
 - `y` opens a copy menu: cell, row, column, or full path.
+- `Enter` opens the cursor cell in a popup — the full, untruncated value,
+  wrapped and scrollable (`Enter` / `q` / `Esc` closes it).
 - Quoted fields, CJK widths, ragged rows and non-UTF-8 input are all handled;
   parsing failures fall back to plain text.
 
+### Archives
+
+`.zip`, `.tar` and `.tar.gz` open in the same grid: one row per entry with its
+name, size and modified date. **Nothing is extracted** — konoma only reads the
+archive's index — so cell search (`/`), the cell cursor and the `y` copy menu
+all work exactly as they do for CSV, on a listing that never touches your disk.
+
 ## Images, SVG, GIF, video, PDF
 
-Drawn as real pixels via the kitty graphics protocol:
+Drawn as real pixels in any terminal that speaks a graphics protocol — kitty
+graphics (Ghostty, kitty, WezTerm, Konsole), iTerm2, or sixel. konoma has its
+own compressed transfer for the kitty protocol, so those terminals are the
+fastest; anywhere else the picture degrades to a coarse but visible half-block
+approximation.
 
 - `+` / `-` zoom, `0`/`=` reset to fit, `h j k l` pan.
 - GIFs animate automatically. SVGs rasterize in-process (no external tools).

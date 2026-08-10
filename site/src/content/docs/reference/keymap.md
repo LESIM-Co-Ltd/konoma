@@ -20,6 +20,7 @@ information contextually inside the app.
 | `[` / `]` / `1`-`9` | previous / next / numbered tab |
 | `F` | follow mode (auto-show whatever changes on disk) |
 | `T` | tab list (switch / close tabs; the tab bar shows `‹n / n›` when tabs overflow) |
+| `P` | jump to the path or GitHub link on the clipboard (reveal + preview; `#L12` / `:12` line anchors work) |
 
 ## Tree
 
@@ -35,11 +36,12 @@ information contextually inside the app.
 | `e` | open in external editor |
 | `p` | cycle path display (relative / `~` / full) |
 | `v` / `V` | visual range selection / toggle one selection |
-| `Space` → `n r d c x p` | create / rename / delete / copy / cut / paste |
+| `Space` → `n r d c x p D` | create / rename / delete / copy / cut / paste / duplicate in place |
 | `y` → `n r f p @` | copy name / relative / full / parent / `@ref` |
+| `Ctrl-t` | open the entry under the cursor in a new tab (file: preview · directory: its root) |
 | `m` + letter / `'` | set bookmark / bookmark list |
 | `a` / `A` | anchor display root here / reset anchor |
-| `o` / `d` | git changes hub / diff of the cursor file (the external git tool |
+| `o` / `d` | git changes hub / diff of the cursor file (the external git tool is `!`, inside the hub) |
 | `C` / `n` `N` | changed-files view / jump between changed files |
 | `q` | close tab (last tab: quit) |
 
@@ -52,10 +54,12 @@ information contextually inside the app.
 | `/` `n` `N` | search / next / previous match |
 | `Tab` / `Shift-Tab` | focus next / previous link or checkbox (Markdown) |
 | `Enter` | open focused link / toggle focused checkbox |
+| `Ctrl-t` | open the focused link in a new tab (URLs open in the browser either way) |
 | `Space` | toggle focused checkbox |
 | `R` | toggle rendered ⇄ raw source (Markdown/Mermaid) |
 | `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
 | `v` / `V` | select by character / by line, then `y` copies |
+| `y` → `c` | copy the focused Markdown code block (`Tab` focuses one; the rest of the `y` menu copies paths) |
 | `Y` | copy `@path#L12-34` reference |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` + letter / `'` | bookmark the previewed file / bookmark list |
@@ -117,5 +121,5 @@ information contextually inside the app.
 | `Ctrl-e` / `Ctrl-d` | edit target in editor / delete bookmark |
 | `'` `q` `Esc` | close |
 
-Letters used by the list or global keys (`j` `k` `q` `t` `T` `F` `Q`) can't
+Letters used by the list or global keys (`F` `P` `Q` `T` `j` `k` `q` `t`) can't
 letter-jump — select those with `j`/`k` + `Enter`, or rebind.
