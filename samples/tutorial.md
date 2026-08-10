@@ -91,17 +91,16 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-- **poppler** — PDF pages already render natively in Rust (`hayro`, no external
-  tool needed) — `J`/`K` move through every page either way; poppler (plus
-  macOS's built-in `qlmanage`/`sips`) is kept only as a fallback for the rare
-  PDF the built-in renderer can't handle.
 - **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of a video.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
 Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, and
-code need **nothing extra** — they are rendered inside konoma. What they do
-need is a terminal that speaks the kitty graphics protocol (Ghostty, kitty,
-WezTerm, Konsole) for the picture formats; text previews work in any terminal.
+code need **nothing extra** — they are rendered inside konoma, in pure Rust.
+(On macOS only, a PDF the built-in renderer can't handle falls back to the
+system's own `qlmanage`/`sips` for its first page — nothing to install there
+either.) What they do need is a terminal that speaks the kitty graphics
+protocol (Ghostty, kitty, WezTerm, Konsole) for the picture formats; text
+previews work in any terminal.
 
 - [ ] I know what to install if I need it
 

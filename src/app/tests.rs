@@ -1447,7 +1447,9 @@ fn pdf_page_navigation_clamps_and_indicates() {
 
 /// PDF multi-page end-to-end: navigating to page 2 kicks off an off-thread re-rasterization (via
 /// `hayro`, no external tool needed) that lands a new image. `page_count` is pure Rust and always
-/// resolves (no poppler needed), so this only skips without the bundled sample.
+/// resolves (nothing installed needed), so this only skips without the bundled sample. Page 2 in
+/// particular has no fallback at all any more (the macOS chain is first-page-only), so this also
+/// pins that the native renderer carries multi-page navigation on its own.
 #[test]
 fn pdf_next_page_renders_off_thread() {
     let Some(p) = sample_path_or_skip("sample.pdf") else {
@@ -15669,7 +15671,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
 }
 
 /// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it
-/// (an image decode, an SVG/mermaid rasterization, or a `pdftocairo`/`ffmpeg` run costing hundreds of
+/// (an image decode, an SVG/mermaid/PDF rasterization, or an `ffmpeg` run costing hundreds of
 /// milliseconds). Reuse is keyed on `(path, mtime, page)`, so an externally edited file is still re-read.
 #[test]
 fn returning_to_a_media_tab_reuses_the_decoded_image() {
@@ -16724,7 +16726,7 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `[external] pdf = false` means "never spawn pdftocairo/pdftoppm/qlmanage/sips" — it does **not**
+/// `[external] pdf = false` means "never spawn macOS's bundled qlmanage/sips" — it does **not**
 /// disable PDF preview, because `hayro` (the primary renderer) and `page_count` (`hayro-syntax`) are
 /// both pure Rust and never touch an external process. `tab.pdf_pages` must resolve identically
 /// (`Some(3)`, the bundled sample's known page count) whether the flag is on or off — unlike before

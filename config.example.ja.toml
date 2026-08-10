@@ -280,9 +280,9 @@ code_theme = "TwoDark"
 #   video  =ffmpegthumbnailer/ffmpeg で代表フレーム1枚を抽出しサムネイル表示(端末内再生はしない)。
 #          外部ツールは任意(不在ならヒント表示にフォールバック)。再生したい場合は下の command 例参照。
 #   pdf    =ページを純 Rust(hayro)で1枚ずつラスタライズして画像表示(外部ツール不要)。
-#          pdftocairo/pdftoppm/qlmanage/sips は hayro が描けない PDF(暗号化/破損/非対応)の
-#          フォールバックとしてのみ使う。複数ページは J/K(または PageDown/PageUp)で送る
-#          (外部ツール無しで任意ページに移動できる)。
+#          macOS に限り、hayro が描けない PDF(暗号化/破損/非対応)は OS 同梱の qlmanage/sips へ
+#          フォールバックする(導入不要)が、これらは1ページ目しか出せない。
+#          複数ページは J/K(または PageDown/PageUp)で送る(何も入れずに任意ページへ移動できる)。
 #   csv    =カンマ区切りを整列テーブルで表示(列レインボー＋セルカーソル)。hjkl=セル移動 / y→=セル/行/列コピー。
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
@@ -491,9 +491,11 @@ git              = true   # git 連携(status 色/ガター/Git ビュー/stage�
                            # この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになる
                            # (初回使用時に一度だけ判定)。`o` はその旨を知らせる。
 git_tool         = true   # `!` で起動する外部 git ツール(上の [git] tool)。
-pdf              = true   # 外部フォールバックの梯子(pdftocairo/pdftoppm/qlmanage/sips)。第一候補のレンダラ
-                           # (hayro・純Rust・このフラグに関係なく常に動く)がそのPDFで失敗した時(暗号化/破損/非対応)
-                           # だけ使う。false でもこれらの外部ツールを起動しないだけで、PDF プレビュー自体は hayro で動く。
+pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage/sips)。第一候補のレンダラ
+                           # (hayro・純Rust・このフラグに関係なく常に動く)がその PDF の1ページ目で失敗した時
+                           # (暗号化/破損/非対応)だけ使う。false でもこれらの外部ツールを起動しないだけで、
+                           # PDF プレビュー自体は hayro で動く。macOS 以外ではこのフラグは実質無効
+                           # (起動する外部 PDF ツールがそもそも無い)。
 video            = true   # 動画サムネイル抽出(ffmpegthumbnailer/ffmpeg)。
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。

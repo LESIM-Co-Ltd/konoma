@@ -37,9 +37,9 @@ pub enum PreviewKind {
     /// Does not play inside the terminal. Missing/failed external tools fall back safely (hint display).
     Video(PathBuf),
     /// Built-in PDF preview: renders the current page natively in Rust (`hayro`, no external tool
-    /// needed), then flows into the image path. `J`/`K` turn any page. Falls back to
-    /// pdftocairo/pdftoppm/qlmanage/sips only if `hayro` can't render a given PDF (encrypted/
-    /// corrupt/unsupported), and to a hint display if nothing can render it (`preview::pdf`).
+    /// needed), then flows into the image path. `J`/`K` turn any page. Falls back — on macOS, for
+    /// page 1 only — to the bundled `qlmanage`/`sips` if `hayro` can't render a given PDF
+    /// (encrypted/corrupt/unsupported), and to a hint display if nothing can render it (`preview::pdf`).
     Pdf(PathBuf),
     /// Built-in code highlighting (syntect).
     Code(PathBuf),

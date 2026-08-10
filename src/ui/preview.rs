@@ -336,8 +336,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
-        // A PDF that couldn't be rasterized (none of hayro/pdftocairo/pdftoppm/qlmanage/sips
-        // worked, or the terminal is unsupported). Shows the target file + a hint.
+        // A PDF that couldn't be rasterized (neither hayro nor — on macOS, for page 1 —
+        // qlmanage/sips worked, or the terminal is unsupported). Shows the target file + a hint.
         Some(PreviewKind::Pdf(p)) => (
             format!(
                 "{}\n{}",

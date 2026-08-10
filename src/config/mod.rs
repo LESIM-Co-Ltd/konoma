@@ -40,10 +40,11 @@ pub struct ExternalConfig {
     pub git: bool,
     /// The external git tool launched with `!` in the changes hub (`[git] tool`, default lazygit).
     pub git_tool: bool,
-    /// The external PDF fallback tools (pdftocairo/pdftoppm/qlmanage/sips), used only when the
+    /// The external PDF fallback tools — macOS's bundled `qlmanage`/`sips`, used only when the
     /// primary renderer (`hayro`, pure Rust — always active regardless of this flag) fails to render
-    /// a given PDF (encrypted/corrupt/unsupported). `false` never launches those tools; PDF preview
-    /// itself keeps working via `hayro` (see `preview::pdf`).
+    /// page 1 of a given PDF (encrypted/corrupt/unsupported). `false` never launches those tools;
+    /// PDF preview itself keeps working via `hayro` (see `preview::pdf`). Off macOS this flag is
+    /// effectively a no-op: there is no external chain there at all.
     pub pdf: bool,
     /// Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
     pub video: bool,
@@ -791,8 +792,8 @@ impl Default for PreviewConfig {
                 Rule {
                     // PDF is shown built-in by rasterizing the page in pure Rust (hayro) — no
                     // external tool needed. Only when hayro can't render it (encrypted/corrupted,
-                    // etc.) does it degrade to pdftocairo/pdftoppm/qlmanage/sips, and if those are
-                    // absent too it safely falls back to a hint display (principle #3).
+                    // etc.) does it degrade, on macOS and for page 1 only, to the bundled
+                    // qlmanage/sips; failing that it safely falls back to a hint display (principle #3).
                     glob: Some("*.pdf".into()),
                     builtin: Some("pdf".into()),
                     ..Rule::empty()

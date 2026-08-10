@@ -88,8 +88,8 @@ impl App {
             PreviewKind::Video(_) => {}
             // PDF: always spawn the job — `hayro` (the primary renderer, `preview::pdf::render_page`)
             // is pure Rust and never touches an external process, so it must work regardless of
-            // `[external] pdf`. That flag now only controls whether the job's *fallback* chain
-            // (pdftocairo/pdftoppm/qlmanage/sips, tried only if hayro itself fails) may run.
+            // `[external] pdf`. That flag now only controls whether the job's *fallback*
+            // (macOS's bundled qlmanage/sips, tried only if hayro itself fails on page 1) may run.
             PreviewKind::Pdf(_) => self.spawn_or_sync_media(MediaJob::Pdf(
                 path.to_path_buf(),
                 self.tab.pdf_page,
@@ -455,9 +455,9 @@ impl App {
     }
 
     /// Whether PDF page navigation is possible (a known multi-page PDF). The page count comes from
-    /// `page_count` (`hayro-syntax`, pure Rust, no poppler needed), and rendering any given page is
-    /// `hayro`'s job too — poppler is only consulted as a fallback when `hayro` itself fails, so
-    /// navigation is no longer coupled to poppler being installed.
+    /// `page_count` (`hayro-syntax`, pure Rust, nothing installed needed), and rendering any given
+    /// page is `hayro`'s job too — the only fallback left (macOS `qlmanage`/`sips`) is first-page-
+    /// only, so navigating past page 1 depends on `hayro` alone, never on an installed tool.
     pub fn pdf_can_navigate(&self) -> bool {
         matches!(self.tab.pdf_pages, Some(n) if n > 1)
     }

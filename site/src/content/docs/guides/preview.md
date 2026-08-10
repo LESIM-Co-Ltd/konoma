@@ -71,10 +71,10 @@ Drawn as real pixels via the kitty graphics protocol:
   (optional; a hint appears if neither is installed). Want playback? Delegate
   to `mpv` with one config rule.
 - PDFs render page by page, natively in Rust (`hayro`, no external tool
-  needed) — `J` / `K` (or PageDown/PageUp) turn any page. The external chain
-  (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`) only kicks in as a fallback for
-  the rare PDF `hayro` can't render (encrypted, corrupt, or otherwise
-  unsupported).
+  needed) — `J` / `K` (or PageDown/PageUp) turn any page. On macOS only, the
+  rare PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported)
+  falls back to the system's own `qlmanage`/`sips` — already installed —
+  though those can only produce the **first** page.
 
 ## Everything else
 

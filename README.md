@@ -154,9 +154,8 @@ The gate for the full experience is the **terminal**, not the OS:
   shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
   **HackGen Console NF** covers both in one font.
 - **Optional tools** (all degrade gracefully): `ffmpegthumbnailer`/`ffmpeg` (video thumbnails), `git`
-  (git suite), `lazygit` (external git tool on `!`). Images, SVG, Mermaid, LaTeX math, CSV and almost
-  all PDFs need nothing — konoma renders them itself; `poppler` (`pdftocairo`/`pdftoppm`) is kept only
-  as a fallback for the rare PDF page the built-in renderer cannot draw.
+  (git suite), `lazygit` (external git tool on `!`). **Images, SVG, Mermaid, LaTeX math, CSV and PDF
+  need nothing installed at all** — konoma renders them itself, in pure Rust.
 
 ## Install
 
@@ -203,17 +202,14 @@ brew install ffmpeg git           # macOS
 sudo apt install ffmpeg git       # Debian / Ubuntu
 ```
 
-- **poppler** (`pdftoppm` / `pdftocairo`) — PDF pages render natively in Rust (`hayro`, no external
-  tool needed, any page via `J`/`K`); poppler (plus macOS's built-in `qlmanage`/`sips`) is only a
-  fallback for the rare PDF the built-in renderer can't handle (encrypted, corrupt, or otherwise
-  unsupported).
 - **ffmpeg** or **ffmpegthumbnailer** — video thumbnail frames.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.
 
-Images, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders them
-itself. The picture formats do need a terminal that speaks the kitty graphics protocol; text
-previews work anywhere.
+Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders
+them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
+system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.) The picture
+formats do need a terminal that speaks the kitty graphics protocol; text previews work anywhere.
 
 ## Configuration
 

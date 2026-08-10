@@ -6,6 +6,29 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Removed
+- **poppler is no longer part of the PDF fallback chain, so PDF now needs nothing installed on any
+  platform.** `pdftocairo` and `pdftoppm` used to be tried whenever the built-in pure-Rust renderer
+  declined a document. Across the 1,628 real PDFs on a development machine run through the same
+  dispatch, the built-in renderer handled 1,604 (98.53%) with no crashes, 24 fell through — and
+  poppler rescued **none** of those 24: 18 were genuinely blank (poppler produced a uniform image for
+  them too) and 6 were not PDFs at all. Its only remaining effect was to make the answer to "why is
+  this PDF blank?" be "install poppler", for zero recovered documents. The fallback is now macOS's
+  bundled `qlmanage`/`sips`, which are already on the machine, and on every other platform there is
+  no external PDF chain at all — no child process is even compiled in.
+
+### Changed
+- **A PDF the built-in renderer cannot draw has no fallback past page 1.** `qlmanage`/`sips` can only
+  produce the first page, which poppler was not limited to. In practice the built-in renderer draws
+  every page of everything it can open, and Linux has behaved exactly this way all along, but where
+  poppler would previously have rasterized page 2 of an unsupported document you now get
+  `[can not preview]`.
+- `[external] pdf` now means "may macOS's `qlmanage`/`sips` be launched for page 1". On other
+  platforms it is effectively a no-op. PDF preview and page counting are unaffected by it either way,
+  as before — both are pure Rust.
+- The `[can not preview]` hint for a PDF no longer suggests installing poppler; it points at the
+  terminal's graphics support, or an encrypted/corrupt document.
+
 ## [0.23.9] - 2026-08-09
 
 ### Changed

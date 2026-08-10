@@ -32,8 +32,9 @@ cargo test --no-default-features
   Reserve `unwrap`/`expect` for self-evident init-time invariants.
 - Public-facing items (doc comments, README) are written in English; internal `//`
   comments may be in Japanese.
-- External tools (poppler, ffmpeg, git, …) must stay optional: the app should run and
-  degrade gracefully when they are absent.
+- External tools (ffmpeg, git, …) must stay optional: the app should run and
+  degrade gracefully when they are absent. Prefer a pure-Rust renderer over a new
+  external dependency — that is why PDF, SVG, Mermaid and LaTeX math need nothing installed.
 
 ## Code of Conduct
 

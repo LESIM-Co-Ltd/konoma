@@ -70,18 +70,20 @@ resvg = "0.47"
 # (valid ⟺ usvg が fill を黒フォールバックしない)ため直接依存として明示(既に resvg 経由で推移依存)。
 svgtypes = "0.16"
 
-# PDF のページ数取得(純 Rust・外部プロセス無し)。ページのラスタライズ自体は今も外部ツール
-# (pdftocairo/pdftoppm/qlmanage/sips)へ委譲するが(preview/pdf.rs)、「何ページあるか」を知るためだけに
+# PDF のページ数取得(純 Rust・外部プロセス無し)。「何ページあるか」を知るためだけに
 # 子プロセス pdfinfo(poppler) を起動していたのを廃止し、純 Rust でページツリーを直接読む。
 # default-features を落として images(zune-jpeg 等・埋め込み画像デコード用)を外す
-# (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページ数が分かることと
-# 実際にそのページを描けることは別問題(qlmanage/sips は1ページ目専用)なので、複数ページの
-# ナビゲーションは引き続き poppler の有無で明示的にゲートする(preview/pdf.rs 参照)。
+# (ページ数を数えるだけなので不要)＝依存は rustc-hash/smallvec の2つのみ。ページのラスタライズ本体も
+# 今は hayro(下記)が担うので、「数えられる ⟹ そのページを描ける」がほぼ常に成立し、複数ページの
+# ナビゲーションを外部ツールの有無でゲートする必要はもう無い(preview/pdf.rs 参照)。
 hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
 
-# PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。poppler/qlmanage/sips(preview/pdf.rs)は
-# hayro が失敗した時だけ使う**フォールバック**に降格した(暗号化/破損 PDF、または `[external] pdf = false`
-# で明示的にフォールバックを禁じた時)。`embed-fonts`/`embed-cmaps` は**既定 ON のまま明示指定**する:
+# PDF ページのラスタライズ本体(純Rust・外部プロセス無し)。フォールバックは macOS 同梱の
+# qlmanage/sips のみ(1ページ目専用・preview/pdf.rs)で、hayro が失敗した時だけ使う。poppler は
+# 2026-08 に梯子から外した: 実在 PDF 1,628 件で hayro が 1,604 件(98.53%)を描画し、降格した 24 件を
+# poppler は**1件も救えなかった**(18 件は poppler でも完全に均一な画像＝本当に白紙・6 件はそもそも
+# PDF でない)＝「PDF を見るには poppler を入れてください」を言わせるだけの依存だった。
+# `embed-fonts`/`embed-cmaps` は**既定 ON のまま明示指定**する:
 # 両方 off で実測したところ、①埋め込みフォントの PDF は無傷(バイト同一)だが、②**非埋め込みの標準14
 # フォント(Helvetica 等・reportlab 等が普通に出力する)と③Adobe-Japan1 等の定義済み CMap を使う
 # 非埋め込み CJK CID フォント(HeiseiMin-W3 等)が、エラーも警告も無く**無言で白紙**になる

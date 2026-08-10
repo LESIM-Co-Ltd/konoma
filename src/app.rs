@@ -729,9 +729,9 @@ enum MediaJob {
     Gif(PathBuf),
     /// Extract one representative frame from a video (delegated to ffmpegthumbnailer/ffmpeg). Thumbnail only; no playback.
     Video(PathBuf),
-    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, external tools
-    /// (pdftocairo/pdftoppm/qlmanage/sips) only as a fallback and only when the `bool` (`[external]
-    /// pdf`) allows it. Loaded one page at a time.
+    /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, macOS's bundled
+    /// `qlmanage`/`sips` only as a page-1 fallback and only when the `bool` (`[external] pdf`)
+    /// allows it. Loaded one page at a time.
     Pdf(PathBuf, u32, bool),
     /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme).
     /// None (unsupported diagram / parse failure) → the caller's text-diagram fallback shows.
@@ -1201,8 +1201,8 @@ pub struct App {
     /// `[can not preview]` fallback through `App::command_error`.
     command_err: Option<String>,
     /// The decoded media of the tab we most recently switched **away from**, so switching back does not
-    /// redo the work that produced it. That work is not just an image decode: SVG/mermaid are
-    /// rasterized and PDF/video shell out to `pdftocairo` / `ffmpeg`, which costs hundreds of
+    /// redo the work that produced it. That work is not just an image decode: SVG/mermaid/PDF are
+    /// rasterized and video shells out to `ffmpeg`, which costs hundreds of
     /// milliseconds. Exactly **one** slot, holding an `Arc` clone of the source image that was already
     /// in memory, so the extra footprint is bounded to a single image. Animated GIFs are never cached
     /// (their frames are separate state). Reuse requires an exact `(path, mtime, page)` match, so an
@@ -2988,7 +2988,7 @@ impl App {
         // external tool, so "can count ⟹ can draw" holds almost universally (there is no
         // "first-page-only" constraint like qlmanage/sips has) — the navigation suppression that
         // used to live here via `arbitrary_page_renderer_available()` (whether poppler was present)
-        // has been removed.
+        // has been removed, and poppler itself is no longer in the fallback chain at all.
         // `[external] pdf` doesn't affect getting the page count either: `page_count` is a pure
         // Rust read that never launches an external process, so it keeps working the same whether
         // `pdf=false` (= never launch an external rendering tool) or not (an external tool is
@@ -3386,7 +3386,7 @@ impl App {
     /// actually changed** (mtime guard). Without this, an image preview stays stale after an external
     /// edit: text/markdown follows via the md_cache clear, but images go through a separate path and were
     /// missed — so when a file is edited externally (e.g. an editor on the right), the konoma preview on the left did not refresh.
-    /// The mtime guard avoids re-decoding / re-running external tools (pdftocairo/ffmpeg) on unrelated FS
+    /// The mtime guard avoids re-decoding / re-running external tools (ffmpeg) on unrelated FS
     /// events. Zoom / pan / page are preserved across the reload.
     fn reload_media_if_changed(&mut self) {
         let is_media = match &self.tab.preview_kind {

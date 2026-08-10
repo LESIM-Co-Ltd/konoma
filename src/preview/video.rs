@@ -430,8 +430,8 @@ mod tests {
     ///
     /// Confirmed for real before this fix existed (pasted into the PR/commit description, not kept
     /// as a permanent test): `Command::new("tail").arg("-f").arg("/dev/null").stdout(Stdio::null())
-    /// .stderr(Stdio::null()).status()` — the exact shape `run_ffmpeg`/`run_poppler`/`run_sips`
-    /// used everywhere before this fix — was still blocked after 3 real seconds waiting on a
+    /// .stderr(Stdio::null()).status()` — the exact shape `run_ffmpeg` and every runner in
+    /// `preview::pdf` used before this fix — was still blocked after 3 real seconds waiting on a
     /// `recv_timeout`.
     ///
     /// This permanent test instead proves it deterministically and fast, via `spawn_and_wait_

@@ -293,9 +293,9 @@ code_theme = "TwoDark"
 #   video    = a representative frame extracted via ffmpegthumbnailer/ffmpeg, shown as a thumbnail (no in-terminal
 #              playback). The external tools are optional (a hint is shown if absent). To play, see the command example below.
 #   pdf      = each page rasterized to an image natively in Rust (hayro; no external tool needed).
-#              pdftocairo/pdftoppm/qlmanage/sips are kept only as a fallback for a PDF hayro can't
-#              render (encrypted/corrupt/unsupported). Turn pages with J/K (or PageDown/PageUp) —
-#              any page, no external tool required.
+#              On macOS only, a PDF hayro can't render (encrypted/corrupt/unsupported) falls back to
+#              the system's own qlmanage/sips — already installed — but those can only produce the
+#              first page. Turn pages with J/K (or PageDown/PageUp) — any page, nothing to install.
 #   csv      = comma-separated shown as an aligned table (rainbow columns + cell cursor). hjkl=move cell / y→=cell/row/column copy.
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
@@ -515,10 +515,11 @@ git              = true   # git integration (status colors, gutter, Git views, s
                            # Whatever this says, git integration also turns itself off automatically when no `git`
                            # executable is found on the machine (checked once, on first use), and `o` says so.
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
-pdf              = true   # The external fallback rasterizer chain (pdftocairo/pdftoppm/qlmanage/sips), tried only when
-                           # the primary renderer (hayro, pure Rust, always active regardless of this flag) fails on a
+pdf              = true   # The external fallback rasterizer: macOS's bundled qlmanage/sips, tried only when the primary
+                           # renderer (hayro, pure Rust, always active regardless of this flag) fails on page 1 of a
                            # given PDF (encrypted/corrupt/unsupported). false never launches those tools; PDF preview
-                           # itself keeps working via hayro.
+                           # itself keeps working via hayro. On every other platform this flag is effectively a no-op —
+                           # there is no external PDF tool to launch.
 video            = true   # Video thumbnail extraction (ffmpegthumbnailer/ffmpeg).
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.

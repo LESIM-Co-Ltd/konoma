@@ -3,20 +3,39 @@
 // path (prepare_image → worker re-encode → kitty graphics). Pages are rasterized one at a time, on
 // demand (prioritizing display speed, no read-ahead).
 //
-// **Renderer priority order (changed 2026-07)**:
-//   1. `hayro` (pure Rust, no external process) — the default and first choice. Measured: 20-30x
-//      faster than poppler for light documents, and 1.8-12x faster even for photo-heavy ones (15
-//      consecutive pages rendered = 143ms vs poppler's 60-70ms per single page), and renders Japanese
-//      (embedded fonts) correctly too. Encrypted PDFs, corrupt PDFs, and other parse/render failures
-//      return `None` and **degrade** to the external tools below (principle #3, "unsupported degrades safely").
-//   2. pdftocairo (poppler, best quality, anti-aliased)
-//   3. pdftoppm   (poppler)
-//   4. qlmanage   (macOS Quick Look, bundled = no install needed)
-//   5. sips       (bundled with macOS)
-// None of the external tools are tried at all if `allow_external` (= `[external] pdf`) is false —
-// hayro never launches an external process, so PDF preview via hayro still works even with this
-// setting false. If everything fails, returns None, and the caller degrades to a safe fallback (a
-// hint display) (PRD §5, ease of distribution).
+// **Renderer priority order**:
+//   1. `hayro` (pure Rust, no external process) — the default and first choice, on every platform.
+//      Measured: 20-30x faster than the poppler CLI it replaced for light documents, and 1.8-12x
+//      faster even for photo-heavy ones (15 consecutive pages rendered = 143ms, versus 60-70ms for
+//      a single page), and it renders Japanese (embedded fonts) correctly too. Encrypted PDFs,
+//      corrupt PDFs, and other parse/render failures return `None` and **degrade** to step 2
+//      (principle #3, "unsupported degrades safely").
+//   2. **macOS only**: `qlmanage` (Quick Look) → `sips`. Both are part of the OS, so this fallback
+//      costs the user no install at all. Both can only produce the *first* page, so it is gated on
+//      `page == 1`. On every other platform there is no external chain: `render_page_external`
+//      returns `None` immediately without spawning anything.
+//
+// **Why poppler was dropped (2026-08).** It used to sit between the two steps above. Measured over
+// the 1,628 real PDFs present on a development machine, run through exactly this dispatch: `hayro`
+// rendered 1,604 of them (98.53%) with zero panics, and 24 (1.47%) fell through to the external
+// chain. **poppler rescued none of those 24** — 18 were genuinely blank (poppler produced a
+// perfectly uniform image for them as well) and 6 were not PDFs at all (a gzip magic number, or a
+// fragment starting partway into a document). So the only thing keeping poppler bought was having
+// to tell users "install poppler to view PDFs" when their stated requirement was to install nothing
+// but `git` — in exchange for zero recovered documents. The two macOS tools stay precisely because
+// they are already on the machine.
+//
+// **Deliberate consequence of that removal**: `qlmanage`/`sips` are first-page-only, so when `hayro`
+// fails on page 2 or later there is now no fallback at all and the preview degrades to
+// `[can not preview]`. poppler could rasterize an arbitrary page, so this is a real (if, per the
+// measurement above, unexercised) reduction. Linux has behaved exactly this way all along, since
+// neither macOS tool exists there.
+//
+// `allow_external` (= `[external] pdf`) gates step 2 only: on macOS it decides whether qlmanage/sips
+// may launch, and on every other platform it is effectively a no-op because there is nothing left to
+// launch. `hayro` never spawns a process, so PDF preview keeps working with the flag off (PRD §5,
+// ease of distribution). If everything fails, this returns None and the caller degrades to a safe
+// fallback (a hint display).
 // hayro's per-page render takes only single-digit milliseconds, so calling it synchronously is fine,
 // but the caller (app.rs) calls it through the existing media-worker thread, so even blocking on an
 // external tool never blocks the UI.
@@ -26,14 +45,12 @@
 // but even after removing that command, getting the page count itself became possible. Now that
 // hayro also handles the actual page rendering, "knowing the page count ⟹ can render any page" holds
 // almost universally (there's no "first-page-only" constraint like qlmanage/sips have), so the caller
-// (app.rs's `enter_preview`/`reload_media_if_changed`) no longer gates page navigation on whether
-// poppler (pdftocairo/pdftoppm) is present. The utility that used to live here checking only "is
-// poppler on PATH" (`arbitrary_page_renderer_available`) has been deleted since it has no more
-// callers (rather than tagging it `#[allow(dead_code)]` needlessly — delete it once it's unused).
+// (app.rs's `enter_preview`/`reload_media_if_changed`) no longer gates page navigation on any
+// external tool being installed. The utility that used to live here checking only "is poppler on
+// PATH" (`arbitrary_page_renderer_available`) has been deleted since it has no more callers (rather
+// than tagging it `#[allow(dead_code)]` needlessly — delete it once it's unused).
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::sync::Arc;
 
 use hayro::hayro_interpret::font::{FontData, FontQuery};
@@ -50,8 +67,10 @@ const PAGE_MAX_PX: u32 = 1600;
 /// Rasterize page `page` (1-based) of the PDF at `path` and return it as an image. `hayro` (pure
 /// Rust, in-process) is tried first; only when it returns `None` (encrypted/corrupt/unsupported PDF,
 /// or a rendering panic caught by [`crate::preview::markdown::catch_silent`]) does this fall back to
-/// external tools — and only when `allow_external` is true (`[external] pdf`). Returns `None` if
-/// nothing could render the page (the caller degrades to a safe fallback with a hint).
+/// [`render_page_external`] — macOS's bundled `qlmanage`/`sips`, and only when `allow_external` is
+/// true (`[external] pdf`). Returns `None` if nothing could render the page (the caller degrades to
+/// a safe fallback with a hint); off macOS, and for any page past the first, that means `hayro`
+/// declining is final (see the module doc comment on why poppler is no longer in this chain).
 pub fn render_page(path: &Path, page: u32, allow_external: bool) -> Option<DynamicImage> {
     // A nonexistent path launches nothing and returns None immediately (hayro would also naturally
     // end up None from failing to read the file, but this explicit early return specifically avoids launching qlmanage's QuickLook).
@@ -63,14 +82,16 @@ pub fn render_page(path: &Path, page: u32, allow_external: bool) -> Option<Dynam
         return Some(img);
     }
     if !allow_external {
-        return None; // `[external] pdf = false`: never launch pdftocairo/pdftoppm/qlmanage/sips.
+        // `[external] pdf = false`: never launch qlmanage/sips. (Off macOS this branch is
+        // indistinguishable from the one below, which has nothing left to launch anyway.)
+        return None;
     }
     render_page_external(path, page)
 }
 
 /// Rasterize with `hayro` — pure Rust, no child process at all. `None` means "hayro couldn't do it"
 /// (encrypted, corrupt, page out of range, or a caught panic), never a crash: [`render_page`] then
-/// tries the external tools (if allowed).
+/// tries the macOS fallback tools (if allowed, and if this is page 1).
 fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
     // hayro is pre-1.0 and (like resvg/mermaid-rs-renderer) gets the same defense-in-depth as
     // `render_mermaid_safe`/`decode_gif`: a hostile/malformed PDF must degrade to the fallback
@@ -126,12 +147,16 @@ fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
 /// separately — a truncated/corrupted stream that hayro didn't notice was broken) produces a
 /// `Pixmap` that is valid in every structural sense but **fully transparent everywhere**, since
 /// the render background is `TRANSPARENT` (see the caller) and nothing painted over it. Treating
-/// that the same as every other hayro failure (`None`, not `Some(blank image)`) is what lets
-/// `render_page` fall through to the external-tool chain, which can still recover real content a
-/// damaged stream hid from hayro (measured on a damage-location sweep of the bundled sample:
-/// poppler never failed at an offset where hayro produced this signature) — and, for the rare
-/// case of a page that is legitimately blank, degrades to the same blank result at the cost of
-/// one extra external-tool call for just that page.
+/// that the same as every other hayro failure (`None`, not `Some(blank image)`) buys two things:
+/// on macOS `render_page` can still fall through to Quick Look for page 1, and everywhere else the
+/// user gets an honest `[can not preview]` instead of an empty rectangle that looks like a
+/// successful render of a document that isn't actually empty.
+///
+/// Historical note: this used to be justified by a damage-location sweep showing poppler could
+/// recover content a damaged stream hid from hayro. The larger corpus measurement that removed
+/// poppler from the chain (module doc comment) did not reproduce that: of the 24 documents out of
+/// 1,628 that reached the fallback, 18 hit exactly this all-transparent signature and poppler
+/// rendered them as a perfectly uniform image too — i.e. they were genuinely blank.
 fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
     if w == 0 || h == 0 {
@@ -281,13 +306,21 @@ fn cjk_family_candidates(family: Option<&CidFamily>) -> Vec<&'static str> {
         .collect()
 }
 
-/// The external-tool fallback chain (used only when `hayro` fails and the caller allows it).
+/// The external-tool fallback, on the one platform where it costs the user nothing to have:
+/// macOS's bundled `qlmanage` (Quick Look) and `sips`. Used only when `hayro` declined *and* the
+/// caller allows it (`[external] pdf`).
+///
+/// Both tools can only produce the **first** page, so anything past page 1 returns immediately
+/// without spawning a process — that early return is what used to be an inline `page == 1` guard on
+/// the last two rungs of a longer ladder whose upper rungs (poppler) could render an arbitrary
+/// page. See the module doc comment for why those upper rungs are gone and what it costs.
+#[cfg(target_os = "macos")]
 fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
-    let out = temp_png_path();
-    let ok = run_pdftocairo(path, &out, page)
-        || run_pdftoppm(path, &out, page)
-        // qlmanage/sips can only produce the first page, so the fallback is limited to page==1.
-        || (page == 1 && (run_qlmanage(path, &out) || run_sips(path, &out)));
+    if page != 1 {
+        return None;
+    }
+    let out = macos::temp_png_path();
+    let ok = macos::run_qlmanage(path, &out) || macos::run_sips(path, &out);
     let img = if ok {
         image::ImageReader::open(&out)
             .ok()
@@ -300,144 +333,185 @@ fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
     img
 }
 
-/// poppler `pdftocairo`. `-singlefile` writes `<prefix>.png` (so prefix = `out` without the extension
-/// lands the file exactly at `out`). `-scale-to` caps the longer side. Renders page `page` (`-f/-l page`).
-fn run_pdftocairo(path: &Path, out: &Path, page: u32) -> bool {
-    run_poppler("pdftocairo", path, out, page)
+/// Off macOS there is no external fallback at all, so this spawns nothing and returns `None`
+/// immediately — `hayro` declining is the final answer.
+///
+/// This is deliberately a hard compile-time absence rather than "try `qlmanage`, let the spawn fail
+/// with ENOENT": launching a program we know for a fact is not installed is pure waste (a process
+/// spawn attempt, a `PATH` walk, and — with the timeout poll loop below — a needlessly reachable
+/// code path), and it also means the Linux build compiles none of the child-process machinery at
+/// all. The unused `page`/`path` are named with a leading underscore because there is genuinely
+/// nothing left to do with them here.
+#[cfg(not(target_os = "macos"))]
+fn render_page_external(_path: &Path, _page: u32) -> Option<DynamicImage> {
+    None
 }
 
-/// poppler `pdftoppm`. Same `-singlefile`/`-scale-to`/single-page convention as pdftocairo.
-fn run_pdftoppm(path: &Path, out: &Path, page: u32) -> bool {
-    run_poppler("pdftoppm", path, out, page)
-}
+/// Everything needed to drive macOS's bundled rasterizers, compiled only on macOS. Grouped into a
+/// module so the whole set is gated by a single `cfg` rather than a dozen attributes, and so it is
+/// obvious at a glance that no other platform builds any child-process code in this file.
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::PAGE_MAX_PX;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Shared driver for the two poppler tools (identical flags). `out` must end in `.png`; the prefix
-/// passed to the tool is `out` with the extension stripped, so the produced `<prefix>.png` == `out`.
-/// Renders only page `page` (`-f page -l page`); an out-of-range page produces no file → returns false.
-fn run_poppler(tool: &str, path: &Path, out: &Path, page: u32) -> bool {
-    let prefix = out.with_extension("");
-    let page = page.to_string();
-    let mut cmd = Command::new(tool);
-    cmd.arg("-png")
-        .arg("-f")
-        .arg(&page)
-        .arg("-l")
-        .arg(&page)
-        .arg("-singlefile")
-        .arg("-scale-to")
-        .arg(PAGE_MAX_PX.to_string())
-        .arg(path)
-        .arg(&prefix)
-        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    matches!(spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT), Some(s) if s.success())
-        && out_is_nonempty(out)
-}
-
-/// macOS `qlmanage -t` (Quick Look thumbnail). It writes `<outdir>/<filename>.png`, so we render into a
-/// private temp dir and copy the produced PNG to `out`. Always present on macOS = the reliable fallback.
-fn run_qlmanage(path: &Path, out: &Path) -> bool {
-    let dir = temp_dir_path();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        // Defense-in-depth on top of `private_temp_dir`'s already-`0700` parent (an ancestor
-        // directory's search permission is what actually gates access — see `private_temp_dir`'s
-        // doc comment — but restricting this nested dir too costs nothing).
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    let mut cmd = Command::new("qlmanage");
-    cmd.arg("-t")
-        .arg("-s")
-        .arg(PAGE_MAX_PX.to_string())
-        .arg("-o")
-        .arg(&dir)
-        .arg(path)
-        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let status = spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT);
-    let mut ok = false;
-    if matches!(status, Some(s) if s.success()) {
-        if let Some(name) = path.file_name() {
-            let produced = dir.join(format!("{}.png", name.to_string_lossy()));
-            ok = out_is_nonempty(&produced) && std::fs::copy(&produced, out).is_ok();
+    /// macOS `qlmanage -t` (Quick Look thumbnail). It writes `<outdir>/<filename>.png`, so we render into a
+    /// private temp dir and copy the produced PNG to `out`. Always present on macOS = the reliable fallback.
+    pub(super) fn run_qlmanage(path: &Path, out: &Path) -> bool {
+        let dir = temp_dir_path();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return false;
         }
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-    ok
-}
-
-/// macOS `sips` (renders the first page of a PDF to PNG). Writes directly to `out`. Last-resort fallback.
-fn run_sips(path: &Path, out: &Path) -> bool {
-    let mut cmd = Command::new("sips");
-    cmd.arg("-s")
-        .arg("format")
-        .arg("png")
-        .arg("--resampleHeightWidthMax")
-        .arg(PAGE_MAX_PX.to_string())
-        .arg(path)
-        .arg("--out")
-        .arg(out)
-        .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    matches!(spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT), Some(s) if s.success())
-        && out_is_nonempty(out)
-}
-
-/// How long an external rendering tool (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`) is allowed to
-/// run before being killed and treated as a failure. Generous on purpose — a large/complex page
-/// can legitimately take a while — this exists only to turn "never returns" into "eventually gives
-/// up," not to police normal runtimes. Without this, a hung tool blocked `Command::status()`
-/// indefinitely: since these run on the media worker thread (see the module doc comment above),
-/// that leaked the worker thread *and* the child process forever, and left the busy-indicator
-/// spinner stuck spinning. (`hayro`, the pure-Rust primary renderer above, is unaffected — it never
-/// spawns a process at all; this only guards the external-tool fallback chain.)
-const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// How often [`spawn_and_wait_with_timeout`]'s poll loop re-checks the child. Small enough to
-/// notice the deadline promptly without busy-polling.
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-
-/// Spawns `cmd` and waits for it to exit, **polling** rather than blocking indefinitely
-/// (`Command::status()`'s behavior) — past `timeout` the child is killed and this returns `None`,
-/// exactly like "the tool failed" to every caller here (principle #3: this degrades to `[can not
-/// preview]`, it never hangs the app). `timeout` is a parameter (not a call to the `TOOL_TIMEOUT`
-/// constant baked in here) purely for testability: production call sites above always pass
-/// `TOOL_TIMEOUT`; tests pass something short so a deliberately-hanging fixture command doesn't
-/// make the test suite itself slow.
-fn spawn_and_wait_with_timeout(
-    cmd: &mut Command,
-    timeout: std::time::Duration,
-) -> Option<std::process::ExitStatus> {
-    let mut child = cmd.spawn().ok()?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap; the (now-meaningless, killed) status is discarded
-                    return None;
-                }
-                std::thread::sleep(POLL_INTERVAL);
+        {
+            // Defense-in-depth on top of `private_temp_dir`'s already-`0700` parent (an ancestor
+            // directory's search permission is what actually gates access — see `private_temp_dir`'s
+            // doc comment — but restricting this nested dir too costs nothing).
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        let mut cmd = Command::new("qlmanage");
+        cmd.arg("-t")
+            .arg("-s")
+            .arg(PAGE_MAX_PX.to_string())
+            .arg("-o")
+            .arg(&dir)
+            .arg(path)
+            .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let status = spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT);
+        let mut ok = false;
+        if matches!(status, Some(s) if s.success()) {
+            if let Some(name) = path.file_name() {
+                let produced = dir.join(format!("{}.png", name.to_string_lossy()));
+                ok = out_is_nonempty(&produced) && std::fs::copy(&produced, out).is_ok();
             }
-            Err(_) => return None,
         }
+        let _ = std::fs::remove_dir_all(&dir);
+        ok
+    }
+
+    /// macOS `sips` (renders the first page of a PDF to PNG). Writes directly to `out`. Last-resort fallback.
+    pub(super) fn run_sips(path: &Path, out: &Path) -> bool {
+        let mut cmd = Command::new("sips");
+        cmd.arg("-s")
+            .arg("format")
+            .arg("png")
+            .arg("--resampleHeightWidthMax")
+            .arg(PAGE_MAX_PX.to_string())
+            .arg(path)
+            .arg("--out")
+            .arg(out)
+            .stdin(Stdio::null()) // never let a helper read the terminal out from under crossterm
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        matches!(spawn_and_wait_with_timeout(&mut cmd, TOOL_TIMEOUT), Some(s) if s.success())
+            && out_is_nonempty(out)
+    }
+
+    /// How long an external rendering tool (`qlmanage`/`sips`) is allowed to run before being
+    /// killed and treated as a failure. Generous on purpose — a large/complex page can legitimately
+    /// take a while — this exists only to turn "never returns" into "eventually gives up," not to
+    /// police normal runtimes. Without this, a hung tool blocked `Command::status()` indefinitely:
+    /// since these run on the media worker thread (see the module doc comment above), that leaked
+    /// the worker thread *and* the child process forever, and left the busy-indicator spinner stuck
+    /// spinning. (`hayro`, the pure-Rust primary renderer, is unaffected — it never spawns a process
+    /// at all; this only guards the fallback below it.)
+    const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// How often [`spawn_and_wait_with_timeout`]'s poll loop re-checks the child. Small enough to
+    /// notice the deadline promptly without busy-polling.
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+    /// Spawns `cmd` and waits for it to exit, **polling** rather than blocking indefinitely
+    /// (`Command::status()`'s behavior) — past `timeout` the child is killed and this returns `None`,
+    /// exactly like "the tool failed" to every caller here (principle #3: this degrades to `[can not
+    /// preview]`, it never hangs the app). `timeout` is a parameter (not a call to the `TOOL_TIMEOUT`
+    /// constant baked in here) purely for testability: production call sites above always pass
+    /// `TOOL_TIMEOUT`; tests pass something short so a deliberately-hanging fixture command doesn't
+    /// make the test suite itself slow.
+    pub(super) fn spawn_and_wait_with_timeout(
+        cmd: &mut Command,
+        timeout: std::time::Duration,
+    ) -> Option<std::process::ExitStatus> {
+        let mut child = cmd.spawn().ok()?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait(); // reap; the (now-meaningless, killed) status is discarded
+                        return None;
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Whether the output file exists and is non-empty (verify by the actual file, since content can be empty even with exit code 0).
+    fn out_is_nonempty(out: &Path) -> bool {
+        std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false)
+    }
+
+    /// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
+    /// subdirectory under the system temp dir for this module's rasterized-page PNGs (and qlmanage's
+    /// scratch directory). A rasterized page would otherwise briefly sit at a
+    /// pid-and-counter-predictable path readable by any other local user on a shared box, since the
+    /// PNG is written by `qlmanage`/`sips` — processes we don't control — under whatever mode their
+    /// own default umask picks (typically `0644`). Restricting the *directory* (rather than trying to
+    /// `chmod` a file after an external tool writes it, which we have no reliable hook for anyway) is
+    /// what actually closes this: POSIX requires execute/search permission on every ancestor
+    /// directory to open a file by path, so `0700` here blocks other users regardless of the mode the
+    /// external tool used for the file itself.
+    ///
+    /// (macOS's own `std::env::temp_dir()` — a per-user `/var/folders/.../T/` — already happens to be
+    /// `0700`, so this is belt-and-braces here rather than the only line of defense it would be under
+    /// a world-writable `/tmp`. It is kept because relying on that being true of every macOS release
+    /// and every `TMPDIR` override is exactly the kind of assumption that quietly stops holding.)
+    fn private_temp_dir() -> PathBuf {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("konoma-pdf-{}", std::process::id()));
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
+            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
+            // where a wider-permission window briefly exists.
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+            // Defense-in-depth for the unlikely case the directory already existed with looser
+            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            dir
+        })
+        .clone()
+    }
+
+    /// A temp PNG path that does not collide within the process (pid + atomic counter; no randomness/time dependency).
+    pub(super) fn temp_png_path() -> PathBuf {
+        private_temp_dir().join(format!("page-{}.png", next_id()))
+    }
+
+    /// A temp directory path for qlmanage output (same uniqueness scheme).
+    pub(super) fn temp_dir_path() -> PathBuf {
+        private_temp_dir().join(format!("ql-{}.d", next_id()))
+    }
+
+    fn next_id() -> u64 {
+        static N: AtomicU64 = AtomicU64::new(0);
+        N.fetch_add(1, Ordering::Relaxed)
     }
 }
 
 /// Number of pages in the PDF at `path`, parsed **natively** — no external process at all (replaces
 /// the former `pdfinfo` child process). Uses `hayro-syntax`, a pure-Rust "read the PDF syntax" crate,
 /// to load the document and read its page tree. Returns None when the file is missing, empty, not a
-/// PDF, or too corrupt to parse — this is a read-only structural query, so it works even without
-/// poppler installed (unlike before, where no page count was possible at all without it).
+/// PDF, or too corrupt to parse — this is a read-only structural query, so it needs nothing
+/// installed at all (unlike before, where no page count was possible without poppler on the machine).
 ///
 /// Wrapped in [`crate::preview::markdown::catch_silent`] as defense-in-depth (the same treatment
 /// `render_mermaid_safe`/`decode_gif` get): PDF parsers are a classic panic surface for hostile input,
@@ -481,61 +555,6 @@ fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
         (n >= 1).then_some(n)
     })
     .flatten()
-}
-
-/// Whether the output file exists and is non-empty (verify by the actual file, since content can be empty even with exit code 0).
-fn out_is_nonempty(out: &Path) -> bool {
-    std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false)
-}
-
-/// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
-/// subdirectory under the system temp dir for this module's rasterized-page PNGs (and qlmanage's
-/// scratch directory). `std::env::temp_dir()` is world-writable/world-readable on Linux (`/tmp` is
-/// mode `1777`) — a rasterized page would otherwise briefly sit at a pid-and-counter-predictable
-/// path readable by any other local user on a shared box, since the PNG (in the external-tool
-/// fallback path) is written by `pdftocairo`/`pdftoppm`/`qlmanage`/`sips` — processes we don't
-/// control — under whatever mode their own default umask picks (typically `0644`). Restricting the
-/// *directory* (rather than trying to `chmod` a file after an external tool writes it, which we
-/// have no reliable hook for anyway) is what actually closes this: POSIX requires execute/search
-/// permission on every ancestor directory to open a file by path, so `0700` here blocks other users
-/// regardless of the mode the external tool used for the file itself.
-fn private_temp_dir() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("konoma-pdf-{}", std::process::id()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-            // where a wider-permission window briefly exists.
-            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-            // Defense-in-depth for the unlikely case the directory already existed with looser
-            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::fs::create_dir(&dir);
-        }
-        dir
-    })
-    .clone()
-}
-
-/// A temp PNG path that does not collide within the process (pid + atomic counter; no randomness/time dependency).
-fn temp_png_path() -> PathBuf {
-    private_temp_dir().join(format!("page-{}.png", next_id()))
-}
-
-/// A temp directory path for qlmanage output (same uniqueness scheme).
-fn temp_dir_path() -> PathBuf {
-    private_temp_dir().join(format!("ql-{}.d", next_id()))
-}
-
-fn next_id() -> u64 {
-    static N: AtomicU64 = AtomicU64::new(0);
-    N.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -584,7 +603,11 @@ mod tests {
 
     /// `hayro` renders the bundled sample **without any external tool** — this is the core of the
     /// 2026-07 switch: `allow_external: false` (`[external] pdf = false`) must not prevent PDF
-    /// preview from working at all, only prevent the pdftocairo/pdftoppm/qlmanage/sips fallback.
+    /// preview from working at all, only prevent the (macOS-only) qlmanage/sips fallback.
+    ///
+    /// Both values of `allow_external` must produce the *identical* result here, because `hayro`
+    /// succeeds and `render_page` returns before the flag is ever consulted — which is also why
+    /// asserting the `true` case spawns nothing and is safe to run in this suite.
     #[test]
     fn renders_sample_pdf_via_hayro_with_no_external_tool_allowed() {
         let Some(p) = sample_path_or_skip("sample.pdf") else {
@@ -594,6 +617,13 @@ mod tests {
         assert!(
             img.width() > 0 && img.height() > 0,
             "ラスタライズ結果の寸法が 0"
+        );
+        let with_external =
+            render_page(&p, 1, true).expect("hayro still answers first when external is allowed");
+        assert_eq!(
+            (with_external.width(), with_external.height()),
+            (img.width(), img.height()),
+            "allow_external は hayro 経路に一切影響しない(フラグを見る前に返っている)"
         );
     }
 
@@ -617,8 +647,8 @@ mod tests {
     }
 
     /// `page_count` is pure Rust (`hayro-syntax`) and needs no external tool at all — unlike the
-    /// former `pdfinfo` call, this must succeed deterministically regardless of whether poppler is
-    /// installed on the machine running the test. The bundled sample is a known 3-page document.
+    /// former `pdfinfo` call, this must succeed deterministically regardless of what is installed on
+    /// the machine running the test. The bundled sample is a known 3-page document.
     #[test]
     fn page_count_is_pure_rust_and_always_available() {
         let Some(p) = sample_path_or_skip("sample.pdf") else {
@@ -627,7 +657,7 @@ mod tests {
         assert_eq!(
             page_count(&p),
             Some(3),
-            "poppler の有無に関わらずページ数が取れる"
+            "外部ツールの有無に関わらずページ数が取れる"
         );
     }
 
@@ -659,9 +689,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `hayro` renders **any** page natively (no external tool needed for page > 1, unlike the old
-    /// qlmanage/sips-only fallback) — every page of the bundled multi-page sample rasterizes with
-    /// `allow_external: false`. Out-of-range pages degrade to `None`, never a panic/garbage page.
+    /// `hayro` renders **any** page natively — every page of the bundled multi-page sample
+    /// rasterizes with `allow_external: false`. This is what makes it acceptable for the fallback
+    /// chain to be first-page-only: pages past the first have no fallback at all now, so the
+    /// primary renderer has to handle them, and it does. Out-of-range pages degrade to `None`,
+    /// never a panic/garbage page.
     #[test]
     fn multipage_sample_counts_and_renders_each_page_via_hayro() {
         let Some(p) = sample_path_or_skip("sample.pdf") else {
@@ -674,7 +706,9 @@ mod tests {
             let img = render_page(&p, pg, false).expect("hayro renders every page without a tool");
             assert!(img.width() > 0 && img.height() > 0, "page {pg} 寸法が 0");
         }
-        // An out-of-range page is None (on the hayro side pages.get(idx) is None; external tools also produce no file).
+        // An out-of-range page is None: hayro's `pages.get(idx)` is None, and the fallback declines
+        // without spawning anything (page != 1 off the top of `render_page_external`, and off macOS
+        // there is no fallback at all).
         assert!(
             render_page(&p, pages + 1, true).is_none(),
             "範囲外ページは None"
@@ -744,27 +778,31 @@ mod tests {
     }
 
     /// Root cause: `temp_png_path`/`temp_dir_path` built their paths directly under `std::env::
-    /// temp_dir()`, which is world-writable/world-readable on Linux (`/tmp` is mode `1777`) — the
-    /// rasterized page briefly sits at a pid-and-counter-predictable path readable by any other
-    /// local user on a shared box, since the PNG (in the external-tool fallback path) is written by
-    /// `pdftocairo`/`pdftoppm`/`qlmanage`/`sips` — processes we don't control — under whatever mode
-    /// their own default umask picks (typically `0644`). Restricting the **directory** is what
+    /// temp_dir()` — the rasterized page briefly sits at a pid-and-counter-predictable path
+    /// readable by any other local user on a shared box, since the PNG (in the external-tool
+    /// fallback path) is written by `qlmanage`/`sips` — processes we don't control — under whatever
+    /// mode their own default umask picks (typically `0644`). Restricting the **directory** is what
     /// actually closes this — POSIX requires execute/search permission on every ancestor directory
     /// to open a file by path, so `0700` blocks other users regardless of the mode the external
     /// tool used for the file itself.
-    #[cfg(unix)]
+    ///
+    /// macOS-only along with the code it covers: these temp paths only exist to receive output from
+    /// the two bundled macOS tools, and no other platform compiles them at all now that poppler is
+    /// gone from the chain.
+    #[cfg(target_os = "macos")]
     #[test]
     fn temp_paths_live_in_an_owner_only_directory() {
         use std::os::unix::fs::PermissionsExt;
 
-        for path in [temp_png_path(), temp_dir_path()] {
+        for path in [macos::temp_png_path(), macos::temp_dir_path()] {
             let dir = path.parent().expect("temp path has a parent dir");
             // The discriminating check: this must be *our own* dedicated subdirectory, not the
             // shared system temp dir directly. Checking only the resulting mode below isn't enough
             // to prove our own code sets it — on macOS, `std::env::temp_dir()` itself already
             // happens to be `0700` (a per-user `/var/folders/.../T/`), which would make a mode-only
-            // assertion pass by coincidence even without this fix. Linux's `/tmp` (mode `1777`,
-            // world-writable) has no such luck, which is exactly the platform this bug targets.
+            // assertion pass by coincidence even without this fix. (A `TMPDIR` pointed at a
+            // world-writable directory, which is what the fix actually defends against here, would
+            // not be so lucky — hence asserting on *our own* subdirectory, not just its mode.)
             assert_ne!(
                 dir,
                 std::env::temp_dir(),
@@ -816,18 +854,18 @@ mod tests {
     /// measured separately via a damage-location sweep of the bundled sample: ~8% of truncation
     /// points that corrupt the content stream without hayro noticing) was indistinguishable from
     /// "hayro legitimately drew a blank page", and `render_page_native_inner` returned
-    /// `Some(blank image)` for both. That silently skipped the external-tool fallback chain
-    /// (poppler/qlmanage/sips) even with `[external] pdf = true`, hiding real content poppler
-    /// could still recover (measured on the same sweep: poppler never failed at a byte offset
-    /// where hayro produced this technically-successful-but-blank signature).
+    /// `Some(blank image)` for both. That silently skipped the fallback chain even with
+    /// `[external] pdf = true`, and — more importantly now that the chain is only macOS Quick Look
+    /// for page 1 — it showed the user a blank rectangle indistinguishable from a real render
+    /// instead of an honest `[can not preview]`.
     ///
     /// This fixture is a **valid, well-formed, single-page PDF with a zero-length content
     /// stream** — the PDF-syntax-level shape of "genuinely nothing to draw", as opposed to a
     /// corrupted/truncated one (`page_count_handles_bad_input_without_panicking` above covers the
     /// corrupt-bytes case; this one is deliberately parseable). `render_page_native_inner` must
     /// treat "hayro drew nothing" the same way it already treats every other hayro failure:
-    /// return `None`, so `render_page` falls through to the external chain instead of showing a
-    /// blank page as if it were confirmed real content.
+    /// return `None`, so `render_page` degrades instead of presenting a blank page as if it were
+    /// confirmed real content.
     #[test]
     fn native_render_returns_none_when_hayro_draws_nothing() {
         let dir = unique_tmp("konoma-pdf-blank-content-stream");
@@ -843,47 +881,75 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The public entry point degrades all the way through: with the native renderer declining
-    /// (the case above) and `allow_external: true`, `render_page` still produces *something* via
-    /// the poppler/qlmanage/sips chain — it never silently loses the page. With
-    /// `allow_external: false` (`[external] pdf = false`) it correctly reports "can't preview"
-    /// (`None`) instead of ever showing a blank image as if it were confirmed real content.
+    /// `[external] pdf = false` never shows a blank page as if it were confirmed real content: a
+    /// document `hayro` declines (the fixture above) reports "can't preview" (`None`) rather than
+    /// the technically-successful empty raster.
     ///
-    /// Cost measured (release build, this fixture, this machine): hayro's own (declined) attempt
-    /// takes ~9ms; falling through to `pdftocairo` for the same page adds ~170ms. That extra cost
-    /// is paid **once per view of a page that renders as fully blank** — the same call sites
-    /// (`enter_preview`/tab-switch-without-a-cache-hit/an actual file change) already pay this
-    /// exact cost today for any encrypted/corrupt PDF, so this doesn't introduce a new class of
-    /// hot-loop cost, only extends the existing fallback trigger to one more (measured: rare —
-    /// ~3% of a 120-document real-world corpus) case.
+    /// **Deliberately no assertion about the `allow_external: true` path on macOS.** That path
+    /// would launch `qlmanage`, i.e. Quick Look — a GUI subsystem — from `cargo test`. Nothing in
+    /// this suite may do that: it is slow, it depends on machine state no CI runner shares, and it
+    /// puts UI on the developer's screen. The gate itself is covered without spawning anything by
+    /// `external_fallback_declines_pages_past_the_first` and
+    /// `render_page_external_is_absent_off_macos` below, which exercise both early returns in
+    /// `render_page_external` (page ≠ 1, and the non-macOS stub).
     #[test]
-    fn render_page_falls_back_to_external_tools_when_hayro_draws_nothing() {
+    fn render_page_reports_no_preview_when_hayro_draws_nothing_and_external_is_off() {
         let dir = unique_tmp("konoma-pdf-blank-content-stream-fallback");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("blank.pdf");
         std::fs::write(&p, minimal_blank_pdf_bytes()).unwrap();
 
-        // Best-effort, matching this module's other external-tool tests: only proves something on
-        // a machine that actually has pdftocairo/pdftoppm/qlmanage/sips on PATH — skip (not fail)
-        // otherwise, rather than reporting a false regression on a stripped-down CI runner.
-        if render_page_external(&p, 1).is_none() {
-            eprintln!(
-                "skip: このマシンに外部 PDF レンダラが無い(pdftocairo/pdftoppm/qlmanage/sips)"
-            );
-            std::fs::remove_dir_all(&dir).ok();
-            return;
-        }
-
-        assert!(
-            render_page(&p, 1, true).is_some(),
-            "hayro が blank を返しても allow_external=true なら外部ツールへ降格して何かを描く"
-        );
         assert!(
             render_page(&p, 1, false).is_none(),
             "allow_external=false は blank を real content として見せず None のまま"
         );
 
+        // Off macOS there is no fallback chain left at all, so the flag makes no difference —
+        // and this still spawns nothing, so it is safe to assert unconditionally here.
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            render_page(&p, 1, true).is_none(),
+            "macOS 以外では外部フォールバックが存在しないので allow_external=true でも None"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The fallback tools are first-page-only, so `render_page_external` must decline anything past
+    /// page 1 **before** spawning a process. Safe to assert on every platform precisely because it
+    /// returns at the top: on macOS this is the branch that keeps a page-2 miss from launching Quick
+    /// Look pointlessly, and off macOS the whole function is the stub below.
+    ///
+    /// This is the guard that used to be an inline `page == 1` condition on the last two rungs of a
+    /// longer ladder; poppler occupied the rungs above it and could render an arbitrary page. With
+    /// poppler gone (see the module doc comment: it recovered 0 of the 24 documents that reached the
+    /// fallback across a 1,628-document corpus), a page-2 failure in `hayro` has no fallback at all —
+    /// that is the intended trade, and this test pins the resulting behavior.
+    #[test]
+    fn external_fallback_declines_pages_past_the_first() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        assert!(
+            render_page_external(&p, 2).is_none(),
+            "2ページ目以降は外部フォールバック無し(プロセスも起動しない)"
+        );
+        assert!(render_page_external(&p, 7).is_none());
+    }
+
+    /// Off macOS, `render_page_external` is a compile-time stub: no child process, no `PATH` walk,
+    /// no timeout poll loop — just `None`. Before poppler was dropped this platform did reach the
+    /// external chain (poppler is not macOS-specific); now there is deliberately nothing left for it
+    /// to reach, and `hayro` declining is the final answer.
+    ///
+    /// Asserting on `Path::new("/")` (a directory, not a PDF, and certainly not renderable) makes
+    /// the point sharper than a real PDF would: even for input no rasterizer could ever handle,
+    /// there is nothing here that could try.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn render_page_external_is_absent_off_macos() {
+        assert!(render_page_external(Path::new("/"), 1).is_none());
+        assert!(render_page_external(Path::new("/no/such/file.pdf"), 1).is_none());
     }
 
     /// A minimal, valid, single-page PDF whose page has an **empty content stream** (`/Length 0`,
@@ -920,11 +986,12 @@ mod tests {
         out
     }
 
-    /// Root cause: `run_poppler`/`run_qlmanage`/`run_sips` used a blocking `Command::status()`
-    /// with no upper bound at all — a hung external tool (a pathological/crafted PDF that makes it
-    /// loop forever, say) blocked the media worker thread permanently, leaking both the thread and
-    /// the child process, and left the busy-indicator spinner stuck spinning. (`hayro`, the primary
-    /// pure-Rust renderer, is unaffected — it never spawns a process at all.)
+    /// Root cause: `run_qlmanage`/`run_sips` (and the poppler runners that used to sit above them)
+    /// used a blocking `Command::status()` with no upper bound at all — a hung external tool (a
+    /// pathological/crafted PDF that makes it loop forever, say) blocked the media worker thread
+    /// permanently, leaking both the thread and the child process, and left the busy-indicator
+    /// spinner stuck spinning. (`hayro`, the primary pure-Rust renderer, is unaffected — it never
+    /// spawns a process at all.)
     ///
     /// Confirmed for real before this fix existed (pasted into the PR/commit description, not kept
     /// as a permanent test): `Command::new("tail").arg("-f").arg("/dev/null").stdout(Stdio::null())
@@ -940,16 +1007,24 @@ mod tests {
     /// *exact* wall-clock durations (a prior CI break — see `docs/STATUS.md`), so the bound below
     /// is a large, deliberately loose multiple of the injected timeout: it exists only so a real
     /// regression (no timeout at all) fails this test instead of hanging the whole test run.
-    #[cfg(unix)]
+    ///
+    /// macOS-only now, along with the machinery it guards: `spawn_and_wait_with_timeout` only exists
+    /// to drive `qlmanage`/`sips`, and no other platform compiles it. (The fixture is `tail`, a
+    /// plain coreutil that touches nothing outside this process — not one of the PDF tools, which
+    /// this suite never launches.)
+    #[cfg(target_os = "macos")]
     #[test]
     fn spawn_and_wait_with_timeout_kills_a_command_that_never_exits() {
+        use std::process::{Command, Stdio};
+
         let mut cmd = Command::new("tail");
         cmd.arg("-f")
             .arg("/dev/null")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let started = std::time::Instant::now();
-        let status = spawn_and_wait_with_timeout(&mut cmd, std::time::Duration::from_millis(200));
+        let status =
+            macos::spawn_and_wait_with_timeout(&mut cmd, std::time::Duration::from_millis(200));
         let elapsed = started.elapsed();
         assert!(
             status.is_none(),

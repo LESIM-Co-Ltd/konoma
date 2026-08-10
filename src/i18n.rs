@@ -1027,7 +1027,7 @@ fn en(msg: Msg) -> &'static str {
             "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)"
         }
         PdfPreviewUnavailable => {
-            "[pdf] cannot render — use a kitty-graphics terminal (install poppler for a fallback with unusual PDFs)"
+            "[pdf] cannot render — use a kitty-graphics terminal (or this PDF is encrypted/corrupt)"
         }
         ArchiveListUnavailable => {
             "[archive] cannot list entries — corrupt file or unsupported format"
@@ -1483,7 +1483,7 @@ fn jp(msg: Msg) -> &'static str {
             "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)"
         }
         PdfPreviewUnavailable => {
-            "[PDF] 表示不可 — kitty graphics 対応端末を使ってください(特殊な PDF 向けのフォールバックとして poppler も導入可)"
+            "[PDF] 表示不可 — kitty graphics 対応端末を使ってください(または暗号化/破損した PDF です)"
         }
         ArchiveListUnavailable => {
             "[アーカイブ] 一覧化できません — 壊れたファイルか非対応形式です"

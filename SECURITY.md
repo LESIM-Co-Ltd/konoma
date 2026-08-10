@@ -27,7 +27,7 @@ as we work on a fix.
 ## Scope notes
 
 konoma previews arbitrary local files and delegates some previews to optional
-external tools (`git`, `poppler`, `ffmpeg`, an editor). Relevant classes of issue
+external tools (`git`, `ffmpeg`, an editor). Relevant classes of issue
 include: a crafted file that crashes the app instead of degrading to the safe
 `[can not preview]` fallback, path handling that escapes the intended directory,
 or an argument passed to a delegated command in a way that could be abused. Reports

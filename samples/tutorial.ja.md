@@ -86,17 +86,15 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-- **poppler** — PDF は純 Rust(`hayro`)で既に全ページがネイティブ描画され、
-  `J`/`K` のページ送りも動きます（外部ツール不要）。poppler（と macOS 標準の
-  `qlmanage`/`sips`）は hayro が扱えない稀な PDF のフォールバックとしてのみ
-  使われます。
 - **ffmpeg**（または `ffmpegthumbnailer`）— 動画の代表フレーム。
 - **git** — 6 章の git スイート一式。たいていは既に入っています。
 
 画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**PDF**・コードは
-**追加インストール不要**で、konoma 自身が描きます。ただし画像系は kitty
-graphics 対応端末（Ghostty・kitty・WezTerm・Konsole）が要ります。テキストの
-プレビューはどの端末でも動きます。
+**追加インストール不要**で、konoma 自身が純 Rust で描きます（macOS に限り、
+内蔵レンダラが扱えない PDF は OS 同梱の `qlmanage`/`sips` に 1 ページ目だけ
+フォールバックします。これも導入不要です）。ただし画像系は kitty graphics
+対応端末（Ghostty・kitty・WezTerm・Konsole）が要ります。テキストのプレビューは
+どの端末でも動きます。
 
 - [ ] 必要になったら何を入れればよいか分かった
 

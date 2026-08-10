@@ -62,9 +62,9 @@ kitty graphics による実ピクセル描画:
 - 動画は `ffmpegthumbnailer`/`ffmpeg` で代表フレームを表示(任意ツール・無ければ
   ヒント表示)。再生したければ config 1 行で `mpv` に委譲できます。
 - PDF は純 Rust(`hayro`・外部ツール不要)でページ単位に描画 — `J` / `K`
-  (PageDown/PageUp)で任意のページへ送れます。外部チェーン
-  (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`)は hayro が扱えない稀な PDF
-  (暗号化・破損など)のフォールバックとしてのみ使われます。
+  (PageDown/PageUp)で任意のページへ送れます。macOS に限り、hayro が扱えない
+  稀な PDF(暗号化・破損など)は OS 同梱の `qlmanage`/`sips`(導入不要)へ
+  フォールバックしますが、これらは**1ページ目**しか出せません。
 
 ## それ以外
 

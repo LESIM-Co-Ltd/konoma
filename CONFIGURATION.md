@@ -135,7 +135,7 @@ Built-in renderers (`builtin = "..."`):
 | `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |
 | `video` | A representative frame extracted with `ffmpegthumbnailer`/`ffmpeg` (optional tools; a hint is shown if absent). No in-terminal playback — delegate to `mpv` via `command` if you want playback. |
-| `pdf` | Pages rasterized natively in Rust (`hayro`; one page at a time, no external tool needed) — `J`/`K` turn any page. `pdftocairo`/`pdftoppm`/`qlmanage`/`sips` (on macOS the last two are always present) are kept only as a fallback for PDFs `hayro` can't render (encrypted, corrupt, or otherwise unsupported). |
+| `pdf` | Pages rasterized natively in Rust (`hayro`; one page at a time, no external tool needed) — `J`/`K` turn any page. On macOS only, a PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported) falls back to the system's own `qlmanage`/`sips` — always present, nothing to install — but those can only produce the **first** page. |
 | `csv` / `tsv` | Aligned table with rainbow columns and a cell cursor (`hjkl` moves, `y →` copies cell/row/column). |
 | `archive` | Lists entries (name / size / modified) for `.zip`/`.tar`/`.tar.gz`/`.tgz` in the same aligned-table renderer as CSV/TSV — metadata only, nothing is extracted (`hjkl` / `y →` c/r/C copy work the same). |
 | `code` | Syntax-highlighted source (grammar resolved by extension → file name → first line). |
@@ -210,7 +210,7 @@ so an absent `[external]` section (or an absent field within it) changes nothing
 |---|---|---|
 | `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `o` then says git is not installed rather than blaming the directory. |
 | `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
-| `pdf` | `true` | The **external fallback** rasterizer chain (`pdftocairo`/`pdftoppm`/`qlmanage`/`sips`), tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. |
+| `pdf` | `true` | The **external fallback** rasterizer — macOS's bundled `qlmanage`/`sips`, tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on page 1 of a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. **On every other platform this flag is effectively a no-op**: there is no external PDF tool to launch. |
 | `video` | `true` | Video thumbnail extraction (`ffmpegthumbnailer`/`ffmpeg`). |
 | `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown — the only outbound network call konoma makes. Done in-process via `ureq` (rustls), not an external tool. |
 | `open_links` | `true` | Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, pasted-path jump (`P`), etc. |
@@ -305,6 +305,6 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
   font to include CJK glyphs, or CJK shows as tofu (□) — konoma computes the display
   widths correctly regardless; the glyphs come from the font. A Nerd-Font-patched CJK
   font like HackGen Console NF or UDEV Gothic NF covers both icons and CJK in one font.
-- **Optional tools**: `poppler` (multi-page PDF), `ffmpegthumbnailer`/`ffmpeg` (video
-  thumbnails), `git` + `lazygit` (git suite / external tool). Everything degrades
-  gracefully when absent.
+- **Optional tools**: `ffmpegthumbnailer`/`ffmpeg` (video thumbnails), `git` + `lazygit`
+  (git suite / external tool). Everything degrades gracefully when absent. **PDF needs
+  nothing installed** — it is rendered in pure Rust.
