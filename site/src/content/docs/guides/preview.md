@@ -68,12 +68,13 @@ Drawn as real pixels via the kitty graphics protocol:
 - `+` / `-` zoom, `0`/`=` reset to fit, `h j k l` pan.
 - GIFs animate automatically. SVGs rasterize in-process (no external tools).
 - Videos show a representative frame. **H.264 and HEVC inside
-  `.mp4`/`.m4v`/`.mov` are decoded natively in Rust — nothing to install**,
-  which covers an iPhone's default recording format. VP9, AV1, the older
-  codecs, `.mkv`/`.webm`/`.avi`, and the uncommon profiles (H.264 in 10-bit /
-  4:2:2 / 4:4:4 / monochrome, HEVC outside Main / Main 10 4:2:0) use
-  `ffmpegthumbnailer`/`ffmpeg` if installed, and show a hint if not. Want
-  playback? Delegate to `mpv` with one config rule.
+  `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` are decoded natively in Rust —
+  nothing to install**, which covers an iPhone's default recording format as
+  well as the container most ripped or re-encoded files arrive in. VP9, AV1,
+  the older codecs (Xvid, MPEG-2, WMV, …), the `.avi` container, and the
+  uncommon profiles (H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome, HEVC outside
+  Main / Main 10 4:2:0) use `ffmpegthumbnailer`/`ffmpeg` if installed, and show
+  a hint if not. Want playback? Delegate to `mpv` with one config rule.
 - PDFs render page by page, natively in Rust (`hayro`, no external tool
   needed) — `J` / `K` (or PageDown/PageUp) turn any page. On macOS only, the
   rare PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported)

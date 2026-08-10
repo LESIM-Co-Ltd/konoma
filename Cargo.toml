@@ -92,8 +92,10 @@ hayro-syntax = { version = "0.7", default-features = false, features = ["std"] }
 hayro = { version = "0.7", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 
 # 動画サムネイルの純 Rust 経路(preview/video.rs)。PDF と同じ形＝**内蔵で描けるものは何も入れずに描き、
-# 描けないものだけ ffmpegthumbnailer/ffmpeg へ降格**する。mp4/m4v/mov の索引(moov/stbl)を re_mp4 で読み、
-# キーフレーム1枚のバイト範囲だけを取り出して rust_h264 / rust_h265 でデコードする(ファイル全体は読まない)。
+# 描けないものだけ ffmpegthumbnailer/ffmpeg へ降格**する。**コンテナ 2 種 × コーデック 2 種**:
+# mp4/m4v/mov は re_mp4 が索引(moov/stbl)を読み、mkv/webm は symphonia-format-mkv がデマルチプレクスして、
+# どちらもキーフレーム 1 枚ぶんのバイトだけを取り出して rust_h264 / rust_h265 でデコードする
+# (ファイル全体は読まない)。ガード・デコード・YUV→RGB・縮小はコンテナに依らず共通。
 #   - rust_h264: 依存クレート 0・C/asm/build.rs 無し(aarch64 の NEON は Rust の std::arch)・163KiB。
 #     Baseline/Main/High の 8bit 4:2:0 のみ。**High 10/4:2:2/4:4:4/モノクロはエラーを返さず壊れた絵を出す**
 #     ので、描く前に**ビットストリームの SPS**(コンテナの申告ではない)を読んで弾く
@@ -111,10 +113,29 @@ hayro = { version = "0.7", default-features = false, features = ["embed-fonts", 
 #   - re_mp4: 索引だけを読む(`Mp4::read` は Read+Seek・`read_bytes` と違い全体をメモリに載せない)。
 #     推移依存(byteorder/bytes/num-rational/serde/serde_json/thiserror)は全て既に konoma の
 #     Cargo.lock に互換版で在るので、新規パッケージはこの 3 つだけ。
-# VP9/AV1 と mkv/webm 等のコンテナ、旧世代コーデックは引き続き ffmpeg 側の担当(原則#3 で降格)。
+# VP9/AV1 と旧世代コーデック(および .avi)は引き続き ffmpeg 側の担当(原則#3 で降格)。
 rust_h264 = "0.4"
 rust_h265 = "0.1"
 re_mp4 = "0.5"
+
+# mkv/webm コンテナのデマルチプレクス(純 Rust・C 依存なし)。**デマルチプレクサだけ**を使い、
+# デコードは上の rust_h264/rust_h265 に流す＝コンテナの入口が増えるだけで、ガード(ビットストリームの
+# SPS 検査)も絵の作り方も mp4 と完全に共通。symphonia の**デコーダは一切引かない**
+# (symphonia 本体 crate や symphonia-codec-* は依存に入れていない＝音声デコーダも入らない)。
+#   - 取り出すもの: 映像トラックの CodecId(H264/HEVC/VP9/AV1…)と CodecPrivate(avcC/hvcC)。
+#     mkv の H.264/HEVC は mp4 と同じ**長さ前置**のサンプルなので、既存の avcC/hvcC パーサと
+#     Annex B 変換がそのまま使える。VP9/AV1 は CodecId の段階で弾く(デコードを試みない)。
+#   - **`Packet` にキーフレームのフラグが無い**(track_id/pts/dts/dur/trim_*/data のみ)ので、
+#     どのパケットがキーフレームかは NAL タイプを自分で見て決める(preview/video.rs の
+#     `sample_has_keyframe`)。mp4 の `stss`(同期サンプル表)に相当するものが mkv には無い、が理由。
+#   - **どちらの feature も既定は空**(symphonia-core の default = []・symphonia-format-mkv には
+#     [features] 自体が無い)なので切るものが無く、`default-features = false` は書いても無意味＝書かない。
+#   - 新規パッケージは symphonia-{core,common,metadata,format-mkv} と num-complex の **5 つ**
+#     (bitflags/bytemuck/smallvec/log/lazy_static/regex-lite は既に Cargo.lock に在る)。ライセンスは
+#     **MPL-2.0**(about.toml の accepted に既出)＝ファイル単位の弱いコピーレフトで、MIT の konoma に
+#     そのままリンクできる(改変しない限り追加義務は無い)。
+symphonia-core = "0.6"
+symphonia-format-mkv = "0.6"
 
 # Markdown 内 `http(s)://` 画像のリモート取得(`[external] remote_images`)。旧 `curl` 子プロセスの代わり。
 # TLS は rustls(+webpki-roots=純Rustのルート証明書同梱)に固定し native-tls/OpenSSL は一切引かない

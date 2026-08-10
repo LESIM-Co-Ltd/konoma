@@ -125,11 +125,11 @@ confirm_bookmark_overwrite = true
 # Keys: hjkl=move cell / g·G=first/last row / 0·$=first/last column / y→ c:cell r:row C:column f:full path / q:back.
 csv_rainbow = true
 
-# `/` のツリー絞り込みの照合方法。
-#   "fuzzy"     = 飛び石一致をスコア順に(fzf 流)。`aprs` が `app_resolver.rs` にヒットする。既定。
-#                 空白区切りの語は AND(すべて含むものだけ残る)。
-#   "substring" = 従来の単純な部分一致(プールの順序を保つ)。
-# どちらも大文字小文字は無視する。不正値は "fuzzy" として扱う。
+# How `/` matches while filtering the tree.
+#   "fuzzy"     … subsequence matching, best score first (fzf-style): `aprs` finds `app_resolver.rs`.
+#                 The default. Space-separated words are ANDed (only entries containing all of them stay).
+#   "substring" … the older plain substring match (keeps the pool's own order).
+# Both ignore case. An unrecognized value is treated as "fuzzy".
 filter_mode = "fuzzy"
 
 # How follow mode (F) opens the file it jumps to.
@@ -291,10 +291,11 @@ code_theme = "TwoDark"
 #   image    = full-screen display via kitty graphics (zoom/pan). GIFs animate automatically.
 #   svg      = rasterized to an image via resvg/usvg/tiny-skia (pure Rust, no external tools).
 #   video    = a single representative frame, shown as a thumbnail (no in-terminal playback). H.264 and HEVC
-#              inside .mp4/.m4v/.mov are decoded natively in Rust — nothing to install (HEVC is what an iPhone
-#              records by default). Everything else (VP9, AV1, older codecs, .mkv/.webm/.avi, and the uncommon
-#              profiles — H.264 in 10-bit/4:2:2/4:4:4/monochrome, HEVC outside Main/Main 10 4:2:0) uses
-#              ffmpegthumbnailer/ffmpeg if installed, and shows a hint if not. To play, see the command example below.
+#              inside .mp4/.m4v/.mov and .mkv/.webm are decoded natively in Rust — nothing to install (HEVC is
+#              what an iPhone records by default). Everything else (VP9, AV1, older codecs, the .avi container,
+#              and the uncommon profiles — H.264 in 10-bit/4:2:2/4:4:4/monochrome, HEVC outside Main/Main 10
+#              4:2:0) uses ffmpegthumbnailer/ffmpeg if installed, and shows a hint if not. To play, see the
+#              command example below.
 #   pdf      = each page rasterized to an image natively in Rust (hayro; no external tool needed).
 #              On macOS only, a PDF hayro can't render (encrypted/corrupt/unsupported) falls back to
 #              the system's own qlmanage/sips — already installed — but those can only produce the

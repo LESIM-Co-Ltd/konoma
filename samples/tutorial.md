@@ -92,9 +92,9 @@ sudo apt install ffmpeg
 ```
 
 - **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of the videos konoma
-  can't decode itself: VP9, AV1, the older codecs, `.mkv`/`.webm`.
-  **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` need nothing** — konoma decodes those
-  itself, including what an iPhone records by default.
+  can't decode itself: VP9, AV1, the older codecs, `.avi`.
+  **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` need nothing** — konoma
+  decodes those itself, including what an iPhone records by default.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
 Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, **H.264 and

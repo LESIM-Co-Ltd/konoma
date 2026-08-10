@@ -45,10 +45,11 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 
 **Optional tools**, all degrading gracefully when absent: `git` (git suite),
 `ffmpegthumbnailer` / `ffmpeg` (thumbnails for the video formats konoma can't
-decode itself — VP9, AV1, `.mkv`/`.webm`), `lazygit` (external git
+decode itself — VP9, AV1, the older codecs, `.avi`), `lazygit` (external git
 tool on `!`, inside the changes hub). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code,
-**PDF** (any page, via `J`/`K`) and **H.264 / HEVC video thumbnails** (`.mp4`/`.m4v`/`.mov`)
-render natively in Rust — **nothing else to install at all**.
+**PDF** (any page, via `J`/`K`) and **H.264 / HEVC video thumbnails**
+(`.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`) render natively in Rust — **nothing else to
+install at all**.
 
 ## Set up from scratch
 
@@ -90,8 +91,8 @@ konoma with image previews.
    PDF pages render without any of this (pure-Rust `hayro`, any page via
    `J`/`K`), and macOS's own `qlmanage`/`sips` — already installed — cover the
    rare PDF `hayro` can't handle. H.264 and HEVC video in `.mp4`/`.m4v`/`.mov`
-   is decoded natively too — including what an iPhone records by default;
-   `ffmpeg` adds thumbnails for the rest (VP9, AV1, `.mkv`/`.webm`).
+   and `.mkv`/`.webm` is decoded natively too — including what an iPhone records
+   by default; `ffmpeg` adds thumbnails for the rest (VP9, AV1, older codecs).
    `git`/`lazygit` add the git suite.
 6. **Run it** — open Ghostty, then:
    ```sh
@@ -129,8 +130,8 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
 4. **Optional tools** — PDF needs nothing here either: pure-Rust `hayro`
    renders every page, and there is no external PDF tool on this platform at
    all (the `qlmanage`/`sips` fallback is macOS-only). H.264 and HEVC video
-   thumbnails (`.mp4`/`.m4v`/`.mov`) need nothing either; `ffmpeg` covers
-   VP9/AV1 and `.mkv`/`.webm`.
+   thumbnails (`.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`) need nothing either;
+   `ffmpeg` covers VP9/AV1 and the older codecs.
    ```sh
    sudo apt install ffmpeg git
    ```

@@ -87,9 +87,9 @@ sudo apt install ffmpeg
 ```
 
 - **ffmpeg**（または `ffmpegthumbnailer`）— konoma 自身がデコードできない動画の
-  代表フレーム: VP9・AV1・旧世代のコーデック・`.mkv`/`.webm`。
-  **`.mp4`/`.m4v`/`.mov` の H.264 と HEVC（iPhone の既定録画形式）は不要**です
-  （konoma 自身がデコードします）。
+  代表フレーム: VP9・AV1・旧世代のコーデック・`.avi`。
+  **`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264 と HEVC（iPhone の既定録画形式）は
+  不要**です（konoma 自身がデコードします）。
 - **git** — 6 章の git スイート一式。たいていは既に入っています。
 
 画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**PDF**・

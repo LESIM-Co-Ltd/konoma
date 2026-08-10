@@ -126,7 +126,7 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 | `mermaid` | 単体 `.mmd`/`.mermaid` を図として表示。既定は実画像(純 Rust・全画面ズーム/パン)。`[ui] mermaid = "text"` で Unicode 罫線図に切替。 |
 | `image` | kitty graphics で全画面表示(ズーム/パン・GIF は自動アニメ)。 |
 | `svg` | プロセス内でラスタライズ(resvg・純 Rust)して画像表示。 |
-| `video` | 代表フレーム1枚をサムネイル表示。**`.mp4`/`.m4v`/`.mov` の H.264 と HEVC は純 Rust でデコード=外部ツール不要**(HEVC=iPhone の既定録画形式)。それ以外(VP9・AV1・旧世代コーデック・`.mkv`/`.webm`/`.avi`、および稀なプロファイル=H.264 の 10bit/4:2:2/4:4:4/モノクロ、Main/Main 10 4:2:0 以外の HEVC)は `ffmpegthumbnailer`/`ffmpeg` があれば使い、無ければヒント表示。いずれも端末内再生はしないので、再生したい場合は `command` で `mpv` へ。 |
+| `video` | 代表フレーム1枚をサムネイル表示。**`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264 と HEVC は純 Rust でデコード=外部ツール不要**(HEVC=iPhone の既定録画形式)。それ以外(VP9・AV1・旧世代コーデック・`.avi` コンテナ、および稀なプロファイル=H.264 の 10bit/4:2:2/4:4:4/モノクロ、Main/Main 10 4:2:0 以外の HEVC)は `ffmpegthumbnailer`/`ffmpeg` があれば使い、無ければヒント表示。いずれも端末内再生はしないので、再生したい場合は `command` で `mpv` へ。 |
 | `pdf` | 純 Rust(`hayro`)でネイティブにラスタライズ(外部ツール不要・1ページずつ) — `J`/`K` で任意のページへ。macOS に限り、hayro が描画できない PDF(暗号化・破損など)は OS 同梱の `qlmanage`/`sips`(常在・導入不要)へフォールバックしますが、これらは**1ページ目**しか出せません。 |
 | `csv` / `tsv` | 列レインボー+セルカーソルの整列テーブル(`hjkl` 移動・`y →` でコピー)。 |
 | `code` | シンタックスハイライト(文法は 拡張子 → ファイル名 → 先頭行 で解決)。 |
@@ -286,8 +286,8 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
   端末のフォールバックに `Symbols Nerd Font Mono` を足すか、NF 内蔵フォント
   (HackGen Console NF・UDEV Gothic NF …)を使用。無ければ `ui.icons = false`。
 - **任意ツール**: `ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない
-  動画=VP9・AV1・`.mkv`/`.webm` のサムネイル)・`git` +
+  動画=VP9・AV1・旧世代コーデック・`.avi` のサムネイル)・`git` +
   `lazygit`(git スイート/外部ツール)。PDF・画像・SVG・Markdown・Mermaid・
-  LaTeX 数式・CSV・`.mp4`/`.m4v`/`.mov` の H.264/HEVC 動画サムネイルは
-  **追加インストールが一切不要**で、純 Rust で描画されます。
+  LaTeX 数式・CSV・`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 動画
+  サムネイルは**追加インストールが一切不要**で、純 Rust で描画されます。
   すべて不在時は安全に降格します。

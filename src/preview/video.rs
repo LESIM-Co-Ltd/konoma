@@ -6,23 +6,34 @@
 // (investigated 2026-06-27; see docs/AUDIT).
 //
 // **Extractor priority order** (the same shape `preview::pdf` uses for hayro → qlmanage/sips):
-//   1. Pure Rust, in-process, no external tool at all — `re_mp4` reads the container index and
+//   1. Pure Rust, in-process, no external tool at all — a demultiplexer reads the container and
 //      `rust_h264`/`rust_h265` decodes one keyframe. This covers **H.264 (AVC) and HEVC (H.265)
-//      inside mp4/m4v/mov**: between them, a screen recording, a `git`-tracked demo clip, anything a
-//      browser can play, and what an iPhone records by default.
+//      inside mp4/m4v/mov and mkv/webm**: between them, a screen recording, a `git`-tracked demo
+//      clip, anything a browser can play, what an iPhone records by default, and the container
+//      almost every ripped or re-encoded file on a disk arrives in.
 //   2. `ffmpegthumbnailer`, then `ffmpeg`. Now needed only for **VP9, AV1 and the older codecs**
-//      (MPEG-4 Part 2, ProRes, …), the **mkv/webm/avi containers**, and the H.264/HEVC profiles
-//      step 1 deliberately refuses (below). Both remain strictly optional: if neither is installed
-//      this returns None and the caller degrades to a hint message (PRD §5 ease of distribution,
-//      principle #3 "unsupported must fail safely").
+//      (MPEG-4 Part 2, ProRes, …) — which is what a `.webm` usually turns out to be — plus the
+//      **`.avi` container** and the H.264/HEVC profiles step 1 deliberately refuses (below). Both
+//      remain strictly optional: if neither is installed this returns None and the caller degrades
+//      to a hint message (PRD §5 ease of distribution, principle #3 "unsupported must fail safely").
+//
+// **Two containers, two codecs, one everything-else.** The container layer is the only part that
+// forks: `re_mp4` indexes ISO-BMFF, `symphonia-format-mkv` demultiplexes Matroska/WebM. From the
+// parameter-set guard down — decoder dispatch, `NativeFrame`, YUV→RGB, the thumbnail shrink, the
+// `catch_silent` wrapper, what `[external] video` does and doesn't gate — the two share one
+// implementation, so "supported" means the same thing in both and neither can drift from the other.
+// The one thing Matroska needs of its own is **which packet is a keyframe**: it has no sample table
+// and symphonia's `Packet` carries no such flag, so [`sample_has_keyframe`] reads the NAL type
+// instead of being told (see [`thumbnail_native_mkv`] for how the search is bounded).
 //
 // **Why the pure-Rust path is narrow on purpose.**
-//   * *Container*: only `mp4`/`m4v`/`mov` are even opened, because that is what `re_mp4` indexes.
-//     Anything else returns None before a single byte is read.
-//   * *Codec family*: the track's `codec_string` must start with `avc1`/`avc3` (H.264) or
-//     `hvc1`/`hev1` (HEVC); VP9, AV1 and the rest are rejected by name rather than being left to
-//     fail somewhere deeper. This picks which decoder the file belongs to and is a cheap early
-//     filter, **not** a second opinion on the one below: both come from the same `avcC`/`hvcC` record.
+//   * *Container*: only `mp4`/`m4v`/`mov`/`mkv`/`webm` are even opened. Anything else (`.avi`, …)
+//     returns None before a single byte is read.
+//   * *Codec family*: from the track's `codec_string` in mp4 (`avc1`/`avc3` for H.264, `hvc1`/`hev1`
+//     for HEVC) and from the codec ID in Matroska; VP9, AV1 and the rest are rejected by name rather
+//     than being left to fail somewhere deeper. This picks which decoder the file belongs to and is a
+//     cheap early filter, **not** a second opinion on the one below: both come from the same
+//     `avcC`/`hvcC` record, which Matroska stores verbatim as `CodecPrivate`.
 //   * *Stream properties*: **each decoder gets its own guard, because they are dangerous in
 //     different places** — see `sps_is_decodable` (H.264) and `hevc_sps_is_decodable` (HEVC). Both
 //     read the **bitstream's own sequence parameter set** rather than the container's summary of it,
@@ -52,12 +63,15 @@
 //
 // **What "supported" does and does not promise.** For the streams that pass the gate above, the
 // decoded frame matched ffmpeg byte for byte on the bundled samples — all 115,200 Y/U/V samples of
-// `samples/sample.mp4` (H.264) and of `samples/sample-hevc.mp4` (HEVC Main), and all 460,800 samples
-// of a 640x480 Main 10 clip compared at full 16-bit precision. That is not a guarantee for every
-// such stream: an H.264 clip carrying custom quantization matrices (SPS/PPS scaling lists) decoded
-// with **2.6% of samples differing, by up to 50 levels** — visually the same picture, but not
-// bit-identical. Acceptable for a thumbnail, and worth knowing before anyone writes a test that
-// asserts equality with ffmpeg in general.
+// `samples/sample.mp4` (H.264), of `samples/sample-hevc.mp4` (HEVC Main) and of `samples/sample.mkv`
+// (H.264 in Matroska), and all 460,800 samples of a 640x480 Main 10 clip compared at full 16-bit
+// precision. That is not a guarantee for every such stream, and the same measurement makes the point
+// both ways: on a 640x480 H.264 mkv, the first keyframe came back byte-identical to ffmpeg's while
+// the keyframe one second later differed on **32 of 460,800 samples, by one level each**; an H.264
+// clip carrying custom quantization matrices (SPS/PPS scaling lists) decoded with **2.6% of samples
+// differing, by up to 50 levels** — visually the same picture, but not bit-identical. Acceptable for
+// a thumbnail, and worth knowing before anyone writes a test that asserts equality with ffmpeg in
+// general.
 //
 // The whole pure-Rust path runs inside `catch_silent`, like every other pre-1.0 decoder konoma
 // drives (resvg, hayro, mermaid-rs-renderer): a hostile or malformed file must degrade to the
@@ -66,16 +80,17 @@
 // above) and `re_mp4` (a capacity overflow parsing a fuzzed `avcC`) were observed panicking on real
 // inputs during review.
 //
-// One honest caveat on the ordering: the guards above are konoma's, but `re_mp4::Mp4::read` runs
-// *before* them, so "refused rather than allocated" describes what this module decides, not the
-// container parse it has to do first to decide anything. That parse is bounded by the index rather
-// than the file (`mdat` is skipped, not read — a 1 GB clip costs 19 MB of RSS, measured), and its
-// failures land in `catch_silent` like everything else.
+// One honest caveat on the ordering: the guards above are konoma's, but the container parse runs
+// *before* them, so "refused rather than allocated" describes what this module decides, not the read
+// it has to do first to decide anything. In mp4 that parse is bounded by the index rather than the
+// file (`mdat` is skipped, not read — a 1 GB clip costs 19 MB of RSS, measured); Matroska has no
+// index to lean on, so it is bounded by an explicit read budget instead ([`BudgetedSource`]). Both
+// land in `catch_silent` on failure like everything else.
 //
 // `allow_external` (= `[external] video`) gates **step 2 only**. Step 1 never launches a process, so
-// H.264 and HEVC mp4/mov thumbnails keep working with the flag off — exactly the relationship
-// `[external] pdf` has with hayro. Tool execution runs on the media worker thread, so a blocking child process never
-// blocks the UI.
+// H.264 and HEVC thumbnails keep working with the flag off, in either container — exactly the
+// relationship `[external] pdf` has with hayro. Tool execution runs on the media worker thread, so a
+// blocking child process never blocks the UI.
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -86,6 +101,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
+use symphonia_core::codecs::video::{well_known as video_codecs, VideoCodecParameters};
+use symphonia_core::codecs::video::{well_known::extra_data as extra_data_ids, VideoCodecId};
+use symphonia_core::codecs::CodecParameters;
+use symphonia_core::formats::{FormatOptions, FormatReader, MediaInfo, SeekMode, SeekTo, Track};
+use symphonia_core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
+use symphonia_core::units::{Time, Timestamp};
+use symphonia_format_mkv::MkvReader;
 
 /// Maximum side (px) of the extracted thumbnail. Since the image path shrinks it further to terminal cells, large enough to look crisp is sufficient.
 const THUMB_MAX_PX: u32 = 1024;
@@ -103,10 +125,17 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// notice the deadline promptly without busy-polling.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Container extensions the pure-Rust path will even open. `re_mp4` indexes the ISO-BMFF family;
-/// everything else (mkv/webm/avi/…) is the external chain's job, and is rejected here without
-/// reading the file at all.
-const NATIVE_CONTAINER_EXTS: [&str; 3] = ["mp4", "m4v", "mov"];
+/// Container extensions the pure-Rust path will even open, and which demultiplexer each one wants.
+/// `re_mp4` indexes the ISO-BMFF family; `symphonia-format-mkv` handles Matroska and WebM (which are
+/// the same container — WebM is a constrained Matroska profile and the demuxer reads both). Anything
+/// else (`avi`, …) is the external chain's job and is rejected here without reading the file at all.
+const NATIVE_CONTAINER_EXTS: [(&str, NativeContainer); 5] = [
+    ("mp4", NativeContainer::Mp4),
+    ("m4v", NativeContainer::Mp4),
+    ("mov", NativeContainer::Mp4),
+    ("mkv", NativeContainer::Matroska),
+    ("webm", NativeContainer::Matroska),
+];
 
 /// `profile_idc` values `rust_h264` actually decodes correctly: Baseline (66), Main (77),
 /// High (100). Necessary but **not sufficient** — the profile says nothing about chroma format or
@@ -165,6 +194,31 @@ const NATIVE_FLAT_FRAME_RETRIES: usize = 3;
 /// (a solid fade-in/out card) and the next keyframe is tried instead.
 const NATIVE_FLAT_LUMA_SPREAD: u8 = 8;
 
+/// Total bytes one Matroska attempt may read from the file, covering the header, the cue table, the
+/// seek, and the packet walk together. Matroska has no sample table, so "find a keyframe" is a
+/// forward scan — and on a file without cue points `symphonia` implements *seeking* as a forward scan
+/// too, so without this, asking for the 10% mark of a 2 GB clip would read 200 MB before returning.
+///
+/// 32 MiB is far more than a well-formed file needs (a cue point turns the seek into a jump, and one
+/// keyframe of a 4K clip is on the order of a megabyte) and small enough that hitting the ceiling is
+/// quick. See [`thumbnail_native_mkv`] for what happens then: one retry from the beginning of the
+/// file, and failing that the external chain.
+const NATIVE_MKV_MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+
+/// How many packets one Matroska attempt may walk past. Secondary to the byte budget above — bytes
+/// are what actually costs — but it also bounds a pathological file that yields a great many tiny
+/// packets, and it keeps the search from wandering minutes into a clip whose keyframes are absent or
+/// unreadable. Comfortably past the ~10% mark of an ordinary clip, which is where the walk starts.
+const NATIVE_MKV_MAX_PACKETS: usize = 2000;
+
+/// H.264 NAL unit type for an IDR slice (§7.4.1) — a picture that can be decoded with no reference
+/// to anything before it.
+const H264_NAL_TYPE_IDR: u8 = 5;
+
+/// H.265 NAL unit types for IRAP pictures (§7.4.2.2): BLA_W_LP, BLA_W_RADL, BLA_N_LP, IDR_W_RADL,
+/// IDR_N_LP and CRA_NUT. These are the HEVC equivalent of an IDR — where decoding may start.
+const HEVC_IRAP_NAL_TYPES: [u8; 6] = [16, 17, 18, 19, 20, 21];
+
 /// Extract and return one representative frame from the video at `path`.
 ///
 /// Tries the pure-Rust H.264/HEVC mp4 path first (no external process, works regardless of
@@ -191,9 +245,15 @@ fn thumbnail_native(path: &Path) -> Option<DynamicImage> {
 }
 
 fn thumbnail_native_inner(path: &Path) -> Option<DynamicImage> {
-    if !has_native_container_ext(path) {
-        return None;
+    match native_container_kind(path)? {
+        NativeContainer::Mp4 => thumbnail_native_mp4(path),
+        NativeContainer::Matroska => thumbnail_native_mkv(path),
     }
+}
+
+/// The ISO-BMFF half: `re_mp4` reads the index, and the sample table says outright which samples are
+/// keyframes and where their bytes are.
+fn thumbnail_native_mp4(path: &Path) -> Option<DynamicImage> {
     // `Mp4::read` (not `read_bytes`) walks the boxes through a `Read + Seek`, so only the index
     // (`moov`/`stbl`) is materialized — a 4 GB recording never gets loaded into memory to take a
     // thumbnail of it. Only the one sample we choose is read, further down.
@@ -214,42 +274,94 @@ fn thumbnail_native_inner(path: &Path) -> Option<DynamicImage> {
 
     let cfg = track.raw_codec_config(&mp4)?;
 
-    // Guard 2 — the load-bearing one. Read the **sequence parameter set out of the bitstream**, not
-    // the container's summary of it, and require exactly what the decoder for this codec implements.
-    // See `sps_is_decodable` / `hevc_sps_is_decodable` and the module doc comment.
-    let stream = match kind {
-        NativeCodecKind::Avc => {
-            let avcc = rust_h264::nal::parse_avcc_config(&cfg).ok()?;
-            let sps = parse_sps_facts(&avcc.sps_nals.first()?.rbsp)?;
-            if !sps_is_decodable(&sps) {
-                return None;
-            }
-            NativeStream::Avc(avcc)
-        }
-        NativeCodecKind::Hevc => {
-            let hvcc = parse_hvcc(&cfg)?;
-            let sps = parse_hevc_sps_facts(&hvcc.sps_rbsp)?;
-            if !hevc_sps_is_decodable(&sps) {
-                return None;
-            }
-            NativeStream::Hevc(hvcc)
-        }
-    };
+    // Guard 2 — the load-bearing one, shared with the Matroska path: the parameter sets are read out
+    // of the **bitstream**, not out of the container's summary of it.
+    let stream = native_stream_from_config(kind, &cfg)?;
 
-    // Every failure inside this loop is a `continue`, not an early return: one unreadable or
-    // undecodable keyframe should cost us that keyframe, not the whole file.
-    let mut last: Option<DynamicImage> = None;
-    for sample_idx in pick_keyframes(&track.samples, NATIVE_FLAT_FRAME_RETRIES) {
-        let Some(sample) = track.samples.get(sample_idx) else {
+    // Every failure inside the closure is a `continue`, not an early return: one unreadable sample
+    // should cost us that keyframe, not the whole file. `pick_keyframes` already caps the list, so
+    // skipping cannot turn into an unbounded walk.
+    let mut candidates = pick_keyframes(&track.samples, NATIVE_FLAT_FRAME_RETRIES).into_iter();
+    thumbnail_from_keyframes(&stream, || loop {
+        let Some(sample) = track.samples.get(candidates.next()?) else {
             continue;
         };
         if sample.size == 0 || sample.size > NATIVE_MAX_SAMPLE_BYTES {
             continue;
         }
-        let Some(buf) = read_sample_bytes(&mut file, sample.offset, sample.size) else {
-            continue;
+        if let Some(buf) = read_sample_bytes(&mut file, sample.offset, sample.size) {
+            return Some(buf);
+        }
+    })
+}
+
+/// Containers the pure-Rust path can demultiplex, and which demultiplexer does it. The layer below
+/// this — parameter-set guard, decoder, YUV→RGB, thumbnail shrink — is identical for both, so this
+/// is the only place the two diverge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeContainer {
+    /// ISO-BMFF (`mp4`/`m4v`/`mov`), indexed by `re_mp4`.
+    Mp4,
+    /// Matroska and WebM (`mkv`/`webm`), demultiplexed by `symphonia-format-mkv`.
+    Matroska,
+}
+
+/// Which demultiplexer a path's extension asks for, or None for a container the pure-Rust path does
+/// not open at all (`avi`, …) — decided before the file is opened, so such a file costs nothing.
+/// ASCII case-insensitive.
+fn native_container_kind(path: &Path) -> Option<NativeContainer> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    NATIVE_CONTAINER_EXTS
+        .iter()
+        .find(|(known, _)| ext.eq_ignore_ascii_case(known))
+        .map(|(_, container)| *container)
+}
+
+/// Build the decoder-ready parameter sets for a track, after checking that its **bitstream** is
+/// something the matching decoder gets right.
+///
+/// This is guard 2, the load-bearing one, and it is shared by both containers on purpose: `cfg` is
+/// the very same `avcC`/`hvcC` record either way (Matroska stores it verbatim as `CodecPrivate`), so
+/// a stream that mp4 would refuse must be refused in mkv too. See `sps_is_decodable` /
+/// `hevc_sps_is_decodable` and the module doc comment for what each clause is protecting against.
+fn native_stream_from_config(kind: NativeCodecKind, cfg: &[u8]) -> Option<NativeStream<'_>> {
+    match kind {
+        NativeCodecKind::Avc => {
+            let avcc = rust_h264::nal::parse_avcc_config(cfg).ok()?;
+            let sps = parse_sps_facts(&avcc.sps_nals.first()?.rbsp)?;
+            if !sps_is_decodable(&sps) {
+                return None;
+            }
+            Some(NativeStream::Avc(avcc))
+        }
+        NativeCodecKind::Hevc => {
+            let hvcc = parse_hvcc(cfg)?;
+            let sps = parse_hevc_sps_facts(&hvcc.sps_rbsp)?;
+            if !hevc_sps_is_decodable(&sps) {
+                return None;
+            }
+            Some(NativeStream::Hevc(hvcc))
+        }
+    }
+}
+
+/// Decode candidate keyframes, best first, and return the first one that is a real picture.
+///
+/// The container layer above supplies the bytes (`next_keyframe` returns one length-prefixed sample
+/// at a time, in the order they should be tried, and None when it has run out or hit its own read
+/// budget); everything from here down is codec- and container-independent. Bounded by
+/// [`NATIVE_FLAT_FRAME_RETRIES`] here as well as by the caller, so a source that never says "no more"
+/// still cannot loop.
+fn thumbnail_from_keyframes(
+    stream: &NativeStream<'_>,
+    mut next_keyframe: impl FnMut() -> Option<Vec<u8>>,
+) -> Option<DynamicImage> {
+    let mut last: Option<DynamicImage> = None;
+    for _ in 0..NATIVE_FLAT_FRAME_RETRIES {
+        let Some(buf) = next_keyframe() else {
+            break;
         };
-        let Some(frame) = decode_keyframe(&stream, &buf) else {
+        let Some(frame) = decode_keyframe(stream, &buf) else {
             continue;
         };
         let flat = luma_spread(&frame.y) < NATIVE_FLAT_LUMA_SPREAD;
@@ -270,16 +382,322 @@ fn thumbnail_native_inner(path: &Path) -> Option<DynamicImage> {
     last.map(shrink_to_thumb)
 }
 
-/// Whether the path's extension is one the pure-Rust path opens (ASCII case-insensitive).
-fn has_native_container_ext(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| {
-            NATIVE_CONTAINER_EXTS
-                .iter()
-                .any(|known| e.eq_ignore_ascii_case(known))
+/// The Matroska half. Same three steps as the mp4 path — pick the video track, check its bitstream,
+/// decode a keyframe — with one structural difference the container forces: **Matroska has no sample
+/// table**. There is no `stss` saying which frames are keyframes and no `stsz`/`stco` saying where
+/// their bytes are, so instead of indexing straight to the frame we want, we position the demuxer and
+/// then read packets forward, deciding for ourselves which one is a keyframe (see
+/// [`sample_has_keyframe`] — symphonia's `Packet` carries no such flag).
+///
+/// "Read forward" is exactly the shape that must not be allowed to run away on a large file, so the
+/// whole attempt reads through a [`BudgetedSource`] and gives up at [`NATIVE_MKV_MAX_SCAN_BYTES`].
+/// Two attempts at most:
+///
+/// 1. Seek to the 10% mark (matching what the mp4 path and `ffmpegthumbnailer` pick), then scan.
+///    On a file with cue points — which is nearly every real `.mkv`, since `mkvmerge` and `ffmpeg`
+///    both write them — this jumps straight there and costs almost nothing.
+/// 2. If that found nothing, scan from the very beginning instead. This is what covers a **cue-less**
+///    file, where symphonia implements the seek as a forward walk that our read budget cuts short:
+///    the honest fallback is the first keyframe rather than the one at 10%.
+///
+/// Worst case is therefore two bounded passes, and a file too big to reach a keyframe within the
+/// budget degrades to the external chain like any other refusal.
+///
+/// One honest difference from the mp4 path: that one picks the keyframe *nearest* the 10% mark
+/// because the sample table lets it look both ways, while this one can only walk forward from where
+/// the seek landed, so it takes the first keyframe **at or after** it.
+fn thumbnail_native_mkv(path: &Path) -> Option<DynamicImage> {
+    match mkv_attempt(path, true, MkvBudget::DEFAULT) {
+        MkvAttempt::Frame(img) => Some(img),
+        // Only worth a second pass if the first one started somewhere other than the beginning.
+        MkvAttempt::NoFrame { sought: true } => {
+            match mkv_attempt(path, false, MkvBudget::DEFAULT) {
+                MkvAttempt::Frame(img) => Some(img),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// What one [`mkv_attempt`] is allowed to read. A parameter rather than the constants baked in at
+/// the point of use, purely for testability — production always passes [`MkvBudget::DEFAULT`], and a
+/// test can pass something tiny to prove the ceiling really is what stops the scan (the same reason
+/// [`spawn_and_wait_with_timeout`] takes its timeout).
+#[derive(Debug, Clone, Copy)]
+struct MkvBudget {
+    bytes: u64,
+    packets: usize,
+}
+
+impl MkvBudget {
+    const DEFAULT: Self = Self {
+        bytes: NATIVE_MKV_MAX_SCAN_BYTES,
+        packets: NATIVE_MKV_MAX_PACKETS,
+    };
+}
+
+/// How one [`mkv_attempt`] ended. The distinction that matters is "this file is not ours" (do not
+/// spend a second read budget on it) versus "ours, but we did not reach a usable keyframe from where
+/// we started" (a second pass from the beginning may well work).
+enum MkvAttempt {
+    /// A finished thumbnail.
+    Frame(DynamicImage),
+    /// Wrong container, a codec neither built-in decoder handles, a bitstream the guard refused, or
+    /// an unreadable file. Retrying changes nothing.
+    Refused,
+    /// A decodable stream, but no keyframe turned into a picture before the packet/byte budget ran
+    /// out. `sought` says whether this attempt had asked to start at the 10% mark.
+    NoFrame { sought: bool },
+}
+
+fn mkv_attempt(path: &Path, seek_to_ten_percent: bool, budget: MkvBudget) -> MkvAttempt {
+    let Some(source) = BudgetedSource::open(path, budget.bytes) else {
+        return MkvAttempt::Refused;
+    };
+    let mss = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
+    let Ok(mut reader) = MkvReader::try_new(mss, FormatOptions::default()) else {
+        return MkvAttempt::Refused;
+    };
+
+    // Guard 1 — codec family, from the container, exactly as the mp4 path uses `codec_string`: pick
+    // which decoder (if any) this track belongs to and reject VP9/AV1/everything else by ID, before
+    // any of it reaches a decoder.
+    let Some(track) = find_mkv_track(&reader) else {
+        return MkvAttempt::Refused;
+    };
+
+    // Guard 2 — the load-bearing one, shared verbatim with the mp4 path. Matroska stores the same
+    // `avcC`/`hvcC` record in `CodecPrivate`, so this reads the same bitstream parameter sets.
+    let Some(stream) = native_stream_from_config(track.kind, &track.cfg) else {
+        return MkvAttempt::Refused;
+    };
+    let length_size = stream_length_size(&stream);
+
+    let mut sought = false;
+    if seek_to_ten_percent {
+        if let Some(time) = track.ten_percent {
+            // A failed seek is not fatal: the demuxer restores its iterator state on error, so the
+            // scan below simply starts wherever it already was (the beginning).
+            sought = reader
+                .seek(
+                    SeekMode::Coarse,
+                    SeekTo::Time {
+                        time,
+                        track_id: Some(track.id),
+                    },
+                )
+                .is_ok();
+        }
+    }
+
+    let mut packets_left = budget.packets;
+    let found = thumbnail_from_keyframes(&stream, || {
+        while packets_left > 0 {
+            packets_left -= 1;
+            // `Err` is the read budget being spent, or a corrupt element — either way, stop. `None`
+            // is end of stream.
+            let packet = reader.next_packet().ok()??;
+            if packet.track_id != track.id
+                || packet.data.is_empty()
+                || packet.data.len() as u64 > NATIVE_MAX_SAMPLE_BYTES
+                || !sample_has_keyframe(track.kind, &packet.data, length_size)
+            {
+                continue;
+            }
+            return Some(packet.data.into_vec());
+        }
+        None
+    });
+
+    match found {
+        Some(img) => MkvAttempt::Frame(img),
+        None => MkvAttempt::NoFrame { sought },
+    }
+}
+
+/// The one video track [`mkv_attempt`] settled on, lifted out of the reader so the borrow ends
+/// before the packet walk needs `&mut reader`.
+struct MkvTrack {
+    id: u32,
+    kind: NativeCodecKind,
+    /// The `avcC`/`hvcC` record, verbatim out of Matroska's `CodecPrivate`.
+    cfg: Vec<u8>,
+    /// Where to seek to, or None when the file does not say enough about its own length to ask.
+    ten_percent: Option<Time>,
+}
+
+/// The first video track with a codec a built-in decoder handles, as owned data.
+///
+/// Returns everything the rest of the attempt needs in one go precisely so the reader's borrow ends
+/// here: the packet walk afterwards needs `&mut reader`, and the parameter-set bytes have to outlive
+/// it. Taking `&dyn FormatReader` keeps this to the two container-agnostic accessors it actually
+/// uses (`tracks`, `media_info`).
+fn find_mkv_track(reader: &dyn FormatReader) -> Option<MkvTrack> {
+    reader.tracks().iter().find_map(|t| {
+        let CodecParameters::Video(v) = t.codec_params.as_ref()? else {
+            return None;
+        };
+        let kind = mkv_codec_kind(v.codec)?;
+        Some(MkvTrack {
+            id: t.id,
+            kind,
+            cfg: extra_data_for(v, kind)?.to_vec(),
+            ten_percent: ten_percent_time(reader.media_info(), t),
         })
-        .unwrap_or(false)
+    })
+}
+
+/// The built-in decoder for a Matroska track's codec ID, or None for one neither handles. The ID
+/// counterpart of [`native_codec_kind`], and the same early filter: **VP9 and AV1 are rejected here**,
+/// by name, rather than being handed to a decoder that cannot read them. (A WebM file is usually one
+/// of those two, so this is the clause that makes `.webm` support honest: konoma opens the container,
+/// finds a codec it has no decoder for, and degrades to ffmpeg.)
+fn mkv_codec_kind(codec: VideoCodecId) -> Option<NativeCodecKind> {
+    match codec {
+        video_codecs::CODEC_ID_H264 => Some(NativeCodecKind::Avc),
+        video_codecs::CODEC_ID_HEVC => Some(NativeCodecKind::Hevc),
+        _ => None,
+    }
+}
+
+/// The decoder configuration record for `kind`, picked **by extra-data ID** rather than by position.
+///
+/// A track can carry several extra-data blocks (Dolby Vision configuration alongside the HEVC one,
+/// for instance), and they are not in a guaranteed order, so `extra_data.first()` would sooner or
+/// later hand `parse_hvcc` something that is not an `hvcC` at all. The IDs are distinct per codec
+/// (AVC = 1, HEVC = 2), which also means a mislabelled track cannot smuggle an `avcC` into the HEVC
+/// parser: the ID has to agree with the codec ID that chose the decoder.
+fn extra_data_for(params: &VideoCodecParameters, kind: NativeCodecKind) -> Option<&[u8]> {
+    let wanted = match kind {
+        NativeCodecKind::Avc => extra_data_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG,
+        NativeCodecKind::Hevc => extra_data_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG,
+    };
+    params
+        .extra_data
+        .iter()
+        .find(|e| e.id == wanted)
+        .map(|e| &*e.data)
+}
+
+/// The playback position 10% into the file, or None if it cannot be worked out — matching what the
+/// mp4 path and `ffmpegthumbnailer` both aim at, so which frame a user sees does not depend on which
+/// extractor produced it.
+///
+/// Asked of the **media**, not the track: Matroska writes the duration once for the whole segment,
+/// and `symphonia`'s demuxer accordingly leaves every `Track::duration` as `None` (measured — an
+/// earlier version of this read the track's and so never once performed a seek). Expressed as a
+/// `Time` in seconds rather than a raw timestamp for the same reason: the segment and the track can
+/// in principle be on different timebases, and `SeekTo::Time` makes the demuxer do that conversion
+/// with the track's own.
+///
+/// Returning None also covers the case where the demuxer's `seek` would **panic**: both of its arms
+/// do `track.time_base.unwrap()` on the strength of a comment claiming a track always has one. That
+/// would be contained by `catch_silent` like any other decoder panic, but not asking is better than
+/// being caught, so a track without a timebase is simply never asked to seek.
+fn ten_percent_time(media: &MediaInfo, track: &Track) -> Option<Time> {
+    track.time_base?;
+    let total = media
+        .time_base?
+        .calc_time(Timestamp::new(i64::try_from(media.duration?.get()).ok()?))?;
+    Some(Time::from_nanos(i64::try_from(total.as_nanos() / 10).ok()?))
+}
+
+/// The width of the length prefix in front of each NAL inside a sample, from whichever parameter-set
+/// record this track has. Matroska stores H.264/HEVC in the same length-prefixed form mp4 does, so
+/// this is what lets the same NAL walk serve both containers.
+fn stream_length_size(stream: &NativeStream<'_>) -> usize {
+    match stream {
+        NativeStream::Avc(avcc) => avcc.length_size,
+        NativeStream::Hevc(hvcc) => hvcc.length_size,
+    }
+}
+
+/// Whether a length-prefixed sample contains a NAL that can start decoding on its own.
+///
+/// This exists because **symphonia's `Packet` has no keyframe flag** — it carries `track_id`, the
+/// timestamps, a duration and the data, and nothing else — while mp4's sample table states it
+/// outright (`is_sync`). Handing a non-keyframe to a freshly created decoder does not produce an
+/// error; it produces a picture built from references that were never decoded, which is the
+/// wrong-picture failure mode this module exists to avoid.
+///
+/// The NAL type lives in a different place in each codec, and getting *that* wrong would silently
+/// classify every packet as a keyframe or none of them:
+///   * H.264 (§7.3.1): a 1-byte header, type in the low 5 bits. Type 5 is an IDR slice.
+///   * H.265 (§7.4.2.2): a **2-byte** header, type in bits 6..1 of the first byte. Types 16..=21 are
+///     the IRAP pictures (BLA, IDR, CRA) — the ones that begin a decodable segment.
+fn sample_has_keyframe(kind: NativeCodecKind, sample: &[u8], length_size: usize) -> bool {
+    let mut found = false;
+    for_each_nal(sample, length_size, |nal| {
+        let Some(&first) = nal.first() else {
+            return;
+        };
+        found |= match kind {
+            NativeCodecKind::Avc => first & 0x1f == H264_NAL_TYPE_IDR,
+            NativeCodecKind::Hevc => HEVC_IRAP_NAL_TYPES.contains(&((first >> 1) & 0x3f)),
+        };
+    });
+    found
+}
+
+/// A file read through a hard byte budget, so nothing inside the demuxer can read without bound.
+///
+/// The budget is enforced here, at the source, rather than by counting the packets we get back,
+/// because the walk that actually needs bounding happens **inside** `symphonia`: on a Matroska file
+/// with no cue points, `seek` is implemented as a forward scan, so asking for the 10% mark of a 2 GB
+/// file would read 200 MB before returning. Once the budget is spent every read fails, which
+/// `symphonia` reports as an ordinary I/O error and [`mkv_attempt`] treats as "give up" — the same
+/// safe degradation every other refusal in this module takes.
+///
+/// Seeks are free and deliberately not charged: skipping to a cue point costs no I/O, and charging
+/// for it would penalise exactly the files that are cheapest to handle.
+struct BudgetedSource {
+    file: File,
+    len: Option<u64>,
+    remaining: u64,
+}
+
+impl BudgetedSource {
+    fn open(path: &Path, budget: u64) -> Option<Self> {
+        let file = File::open(path).ok()?;
+        let len = file.metadata().ok().map(|m| m.len());
+        Some(Self {
+            file,
+            len,
+            remaining: budget,
+        })
+    }
+}
+
+impl std::io::Read for BudgetedSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other("video scan read budget exhausted"));
+        }
+        let cap = usize::try_from(self.remaining).unwrap_or(usize::MAX);
+        let take = buf.len().min(cap);
+        let read = self.file.read(&mut buf[..take])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+impl std::io::Seek for BudgetedSource {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+
+impl MediaSource for BudgetedSource {
+    fn is_seekable(&self) -> bool {
+        // Only ever wraps a regular file opened by path; `byte_len` being present says the metadata
+        // call succeeded, which is the same thing symphonia's own `impl MediaSource for File` checks.
+        self.len.is_some()
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.len
+    }
 }
 
 /// Which built-in decoder a track belongs to, decided from the container's codec string. The two
@@ -880,10 +1298,19 @@ fn decode_keyframe_hevc(hvcc: &HvccConfig, sample: &[u8]) -> Option<NativeFrame>
     hevc_frame_to_native(&frame)
 }
 
-/// Rewrite a length-prefixed sample (each NAL preceded by a `length_size`-byte big-endian length) as
-/// Annex B start codes, appending to `out`. A prefix that runs past the end of the buffer stops the
-/// conversion and keeps what was read so far — a truncated sample costs its tail, not the frame.
-fn append_as_annex_b(out: &mut Vec<u8>, sample: &[u8], length_size: usize) {
+/// Walk the NAL units of a length-prefixed sample (each NAL preceded by a `length_size`-byte
+/// big-endian length), handing each payload to `f`.
+///
+/// One implementation shared by the two things that need to look inside a sample — the Annex B
+/// conversion the HEVC decoder requires, and the keyframe test the Matroska path needs because its
+/// packets carry no such flag. A prefix that runs past the end of the buffer ends the walk and keeps
+/// whatever came before it: a truncated sample costs its tail, not the frame.
+fn for_each_nal(sample: &[u8], length_size: usize, mut f: impl FnMut(&[u8])) {
+    // Never zero in practice (both `avcC` and `hvcC` store the width minus one, so it is 1..=4), but
+    // a zero would advance the cursor by nothing on every iteration and loop forever.
+    if length_size == 0 {
+        return;
+    }
     let mut i = 0usize;
     while i + length_size <= sample.len() {
         let mut len = 0usize;
@@ -894,10 +1321,17 @@ fn append_as_annex_b(out: &mut Vec<u8>, sample: &[u8], length_size: usize) {
         let Some(nal) = sample.get(i..i.saturating_add(len)) else {
             return;
         };
-        out.extend_from_slice(&[0, 0, 0, 1]);
-        out.extend_from_slice(nal);
+        f(nal);
         i += len;
     }
+}
+
+/// Rewrite a length-prefixed sample as Annex B start codes, appending to `out`.
+fn append_as_annex_b(out: &mut Vec<u8>, sample: &[u8], length_size: usize) {
+    for_each_nal(sample, length_size, |nal| {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+    });
 }
 
 /// Normalize a `rust_h265` frame to 8-bit planes.
@@ -2202,24 +2636,48 @@ mod tests {
         assert_eq!(native_codec_kind(None), None, "コーデック不明は拒否");
     }
 
-    /// The container gate is by **extension**, decided before the file is opened, so a `.mkv`/
-    /// `.webm`/extensionless path costs nothing at all. Proven discriminatingly: the fixture files
-    /// below hold **byte-for-byte valid mp4 data** (a copy of `samples/sample.mp4`, which
-    /// `native_path_extracts_a_real_frame_without_any_external_tool` shows really does decode) and
-    /// are still refused — so the refusal can only be coming from the name, i.e. nothing read it.
+    /// The container gate is by **extension**, decided before the file is opened, and it decides
+    /// *which demultiplexer* the file gets — not merely whether to open it. An `.avi` or
+    /// extensionless path therefore still costs nothing at all.
+    ///
+    /// The second half is what makes this discriminating rather than a restatement of the table: the
+    /// fixture holds **byte-for-byte valid mp4 data** (a copy of `samples/sample.mp4`, which
+    /// `native_path_extracts_a_real_frame_without_any_external_tool` shows really does decode) under
+    /// an `.mkv` name. Naming it `.mkv` routes it to the Matroska demuxer, which correctly refuses
+    /// it — so extension and content disagreeing degrades safely instead of producing a picture from
+    /// the "wrong" reader. (Before mkv support this was refused by the extension alone; the outcome
+    /// the user sees is the same, but the reason has moved one layer down.)
     #[test]
     fn native_path_only_opens_containers_it_indexes() {
-        assert!(has_native_container_ext(Path::new("/x/clip.mp4")));
-        assert!(
-            has_native_container_ext(Path::new("/x/clip.MP4")),
+        use NativeContainer::{Matroska, Mp4};
+        assert_eq!(native_container_kind(Path::new("/x/clip.mp4")), Some(Mp4));
+        assert_eq!(
+            native_container_kind(Path::new("/x/clip.MP4")),
+            Some(Mp4),
             "大小無視"
         );
-        assert!(has_native_container_ext(Path::new("/x/clip.m4v")));
-        assert!(has_native_container_ext(Path::new("/x/clip.mov")));
-        assert!(!has_native_container_ext(Path::new("/x/clip.mkv")));
-        assert!(!has_native_container_ext(Path::new("/x/clip.webm")));
-        assert!(!has_native_container_ext(Path::new("/x/clip.avi")));
-        assert!(!has_native_container_ext(Path::new("/x/clip")));
+        assert_eq!(native_container_kind(Path::new("/x/clip.m4v")), Some(Mp4));
+        assert_eq!(native_container_kind(Path::new("/x/clip.mov")), Some(Mp4));
+        assert_eq!(
+            native_container_kind(Path::new("/x/clip.mkv")),
+            Some(Matroska)
+        );
+        assert_eq!(
+            native_container_kind(Path::new("/x/clip.webm")),
+            Some(Matroska),
+            "WebM は Matroska の部分集合=同じ demuxer が読む"
+        );
+        assert_eq!(
+            native_container_kind(Path::new("/x/clip.WEBM")),
+            Some(Matroska),
+            "大小無視"
+        );
+        assert_eq!(
+            native_container_kind(Path::new("/x/clip.avi")),
+            None,
+            "avi はどちらの demuxer の担当でもない=外部ツールへ降格"
+        );
+        assert_eq!(native_container_kind(Path::new("/x/clip")), None);
 
         let Some(src) = sample_path_or_skip("sample.mp4") else {
             return;
@@ -2227,14 +2685,459 @@ mod tests {
         let bytes = std::fs::read(&src).unwrap();
         let dir = unique_tmp("konoma_video_ext_gate_test");
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["clip.mkv", "clip.webm", "clip"] {
+        for name in ["clip.mkv", "clip.webm", "clip", "clip.avi"] {
             let disguised = dir.join(name);
             std::fs::write(&disguised, &bytes).unwrap();
             assert!(
                 thumbnail_native(&disguised).is_none(),
-                "{name}: 拡張子ゲートで即 None(中身が正しい mp4 でも読みに行かない)"
+                "{name}: 拡張子と中身が食い違うファイルは安全に None(別コンテナの reader が絵を作ってしまわない)"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The Matroska half of the point of this module: an ordinary `.mkv` becomes a real picture with
+    /// **no external tool involved at all**. `thumbnail_native` cannot spawn a process by
+    /// construction, so a pass here can't be ffmpeg quietly doing the work.
+    ///
+    /// Checked the same three ways as the two mp4 cases, because "an image came back" is far too
+    /// weak: the dimensions must be the source clip's own 320x240, the frame must not be flat (a
+    /// decoder producing a solid gray rectangle would satisfy a size-only assertion), and it must be
+    /// reachable through the public `thumbnail` entry point **with `allow_external` off**, which
+    /// pins the ordering guarantee that the native step runs before the `[external] video` gate.
+    ///
+    /// Measured while writing this, against `ffmpeg -f rawvideo -pix_fmt yuv420p` on the same frame:
+    /// konoma's decoded Y/U/V planes for this fixture are **byte-identical** to ffmpeg's, all
+    /// 115,200 samples of them.
+    #[test]
+    fn native_path_extracts_a_real_frame_from_mkv_without_any_external_tool() {
+        let Some(p) = sample_path_or_skip("sample.mkv") else {
+            return;
+        };
+        let started = Instant::now();
+        let img = thumbnail_native(&p).expect("H.264 mkv は純 Rust 経路でサムネイルになるはず");
+        eprintln!(
+            "native thumbnail of samples/sample.mkv: {:?}",
+            started.elapsed()
+        );
+
+        assert_eq!(
+            (img.width(), img.height()),
+            (320, 240),
+            "元動画そのままの寸法(既定値やスケール後の寸法ではない)"
+        );
+        let luma: Vec<u8> = img.to_luma8().into_raw();
+        let spread = luma_spread(&luma);
+        assert!(
+            spread > NATIVE_FLAT_LUMA_SPREAD,
+            "一様な絵しか出ていない(デコード結果が絵になっていない): 輝度幅={spread}"
+        );
+
+        assert!(
+            thumbnail(&p, false).is_some(),
+            "[external] video = false でも純 Rust 経路が先に走る"
+        );
+    }
+
+    /// The Matroska path really does aim at the 10% mark rather than settling for the first frame.
+    ///
+    /// This is not a cosmetic detail, and it is the one place where reading the wrong field fails
+    /// **silently**: Matroska writes its duration once for the whole segment, so every
+    /// `Track::duration` symphonia hands back is `None`. An earlier version of this module read the
+    /// track's, got None every time, and therefore never performed a single seek — producing a
+    /// perfectly good thumbnail of frame 0 with nothing to say it had skipped the step. Hence the
+    /// assertion is on the position, not merely on `is_some()`.
+    #[test]
+    fn mkv_seek_target_comes_from_the_media_duration() {
+        let Some(p) = sample_path_or_skip("sample.mkv") else {
+            return;
+        };
+        let source = BudgetedSource::open(&p, NATIVE_MKV_MAX_SCAN_BYTES).unwrap();
+        let mss = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
+        let reader = MkvReader::try_new(mss, FormatOptions::default()).unwrap();
+
+        assert!(
+            reader.tracks().iter().all(|t| t.duration.is_none()),
+            "この前提が変わったら(トラックにも duration が入るようになったら)この検査の意味も変わる"
+        );
+        let track = find_mkv_track(&reader).expect("H.264 トラックが見つかる");
+        let target = track
+            .ten_percent
+            .expect("セグメントの duration から 10% 位置が求まる");
+        // The fixture is 3 seconds long, so 10% is 0.3s. Compared in nanoseconds against a small
+        // window rather than exactly, since the duration comes back as a float in the file.
+        let ns = target.as_nanos();
+        assert!(
+            (290_000_000..=310_000_000).contains(&ns),
+            "10% 位置が 0.3 秒付近でない: {ns}ns"
+        );
+    }
+
+    /// Which packet is a keyframe, which is the one thing the Matroska path has to decide for itself:
+    /// **symphonia's `Packet` carries no keyframe flag** (unlike mp4's `is_sync` sample table), and
+    /// handing a non-keyframe to a fresh decoder does not produce an error — it produces a picture
+    /// assembled from references that were never decoded.
+    ///
+    /// The NAL type sits in a different place in each codec, and the two ways to get it wrong both
+    /// fail quietly rather than loudly: read H.264's 5 bits out of HEVC's 2-byte header and every
+    /// packet looks like a keyframe (or none does), with the only symptom being a wrong picture.
+    #[test]
+    fn keyframe_detection_reads_the_nal_type_of_each_codec() {
+        use NativeCodecKind::{Avc, Hevc};
+
+        /// One length-prefixed sample (4-byte lengths, as every real `avcC`/`hvcC` uses) holding the
+        /// given NAL header bytes, each followed by a byte of payload.
+        fn sample(nals: &[&[u8]]) -> Vec<u8> {
+            let mut out = Vec::new();
+            for nal in nals {
+                out.extend_from_slice(&((nal.len() as u32) + 1).to_be_bytes());
+                out.extend_from_slice(nal);
+                out.push(0xab); // payload
+            }
+            out
+        }
+
+        // H.264: one header byte, type in the low 5 bits. 5 is an IDR slice; 1 is a non-IDR slice,
+        // 7/8 are the parameter sets that accompany it.
+        assert!(sample_has_keyframe(Avc, &sample(&[&[0x65]]), 4), "IDR(5)");
+        assert!(
+            sample_has_keyframe(Avc, &sample(&[&[0x67], &[0x68], &[0x65]]), 4),
+            "SPS/PPS の後ろに IDR が続くのが普通の形"
+        );
+        assert!(
+            !sample_has_keyframe(Avc, &sample(&[&[0x41]]), 4),
+            "非 IDR スライス(1)はキーフレームでない=単体でデコードできない"
+        );
+        assert!(!sample_has_keyframe(Avc, &sample(&[&[0x67], &[0x68]]), 4));
+        // The HEVC IDR type (19) sits in the low 5 bits of 0x33 — reading H.264's field out of an
+        // HEVC stream would call this a keyframe. It must not, and vice versa below.
+        assert!(!sample_has_keyframe(Avc, &sample(&[&[0x33]]), 4));
+
+        // H.265: two header bytes, type in bits 6..1 of the first. 16..=21 are the IRAP pictures.
+        for nal_type in HEVC_IRAP_NAL_TYPES {
+            let header = [nal_type << 1, 0x01];
+            assert!(
+                sample_has_keyframe(Hevc, &sample(&[&header]), 4),
+                "IRAP({nal_type}) はキーフレーム"
+            );
+        }
+        for nal_type in [0u8, 1, 15, 22, 23, 32, 33, 34] {
+            let header = [nal_type << 1, 0x01];
+            assert!(
+                !sample_has_keyframe(Hevc, &sample(&[&header]), 4),
+                "NAL type {nal_type} は IRAP でない"
+            );
+        }
+        // A real HEVC keyframe sample: VPS/SPS/PPS (32/33/34) then IDR_W_RADL (19).
+        let params_then_idr = sample(&[&[64, 1], &[66, 1], &[68, 1], &[38, 1]]);
+        assert!(sample_has_keyframe(Hevc, &params_then_idr, 4));
+        // Same bytes read as H.264 must not be mistaken for one (0x40 & 0x1f = 0, 0x26 & 0x1f = 6).
+        assert!(!sample_has_keyframe(Avc, &params_then_idr, 4));
+
+        // Malformed samples answer "no" rather than reading past the end or looping.
+        assert!(!sample_has_keyframe(Avc, &[], 4));
+        assert!(
+            !sample_has_keyframe(Avc, &[0, 0], 4),
+            "長さ前置が途中で切れている"
+        );
+        assert!(
+            !sample_has_keyframe(Avc, &[0x00, 0x00, 0x00, 0xff, 0x65], 4),
+            "宣言された長さがバッファをはみ出している"
+        );
+        assert!(
+            !sample_has_keyframe(Avc, &[0x00, 0x00, 0x00, 0x00], 4),
+            "長さ 0 の NAL(中身が無い)"
+        );
+        // `length_size` of 0 cannot occur in a real record, but it would advance the cursor by
+        // nothing on every iteration — the walk must refuse it rather than spin forever.
+        assert!(!sample_has_keyframe(Avc, &sample(&[&[0x65]]), 0));
+    }
+
+    /// The read budget is what keeps "Matroska has no sample table, so walk forward" from turning
+    /// into an unbounded read, and it has to hold **inside** symphonia: on a file with no cue points
+    /// the demuxer implements seeking as a forward scan of its own, so asking for the 10% mark of a
+    /// 2 GB clip would read 200 MB before returning anything.
+    ///
+    /// Both halves matter. The first pins the mechanism (reads succeed up to the ceiling, then fail
+    /// rather than being silently short), and the second proves it is wired into the extraction path
+    /// by running the *real* fixture — one that demonstrably decodes with the production budget —
+    /// under a budget too small to reach a keyframe, and requiring it to give up rather than hang or
+    /// guess.
+    #[test]
+    fn mkv_scan_gives_up_at_its_read_budget() {
+        let dir = unique_tmp("konoma_video_mkv_budget_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("data.bin");
+        std::fs::write(&file, vec![7u8; 4096]).unwrap();
+
+        let mut src = BudgetedSource::open(&file, 100).expect("open");
+        assert_eq!(src.byte_len(), Some(4096), "元ファイルの長さは正直に返す");
+        assert!(src.is_seekable());
+        let mut buf = [0u8; 64];
+        assert_eq!(src.read(&mut buf).unwrap(), 64, "予算内は普通に読める");
+        assert_eq!(
+            src.read(&mut buf).unwrap(),
+            36,
+            "予算の残りぶんだけ読んで止まる"
+        );
+        assert!(
+            src.read(&mut buf).is_err(),
+            "予算を使い切ったら以降は失敗する(黙って 0 バイト=EOF を返すと、呼び出し側が正常終了と取り違える)"
+        );
+        // A budget of zero fails on the very first read rather than looking like an empty file.
+        assert!(BudgetedSource::open(&file, 0)
+            .expect("open")
+            .read(&mut buf)
+            .is_err());
+        std::fs::remove_dir_all(&dir).ok();
+
+        let Some(p) = sample_path_or_skip("sample.mkv") else {
+            return;
+        };
+        // Control: with the production budget this very file decodes, so a refusal below can only be
+        // the budget doing it.
+        assert!(
+            matches!(
+                mkv_attempt(&p, true, MkvBudget::DEFAULT),
+                MkvAttempt::Frame(_)
+            ),
+            "対照: 既定の予算ならこのファイルは絵になる"
+        );
+        for bytes in [1u64, 512, 4096] {
+            assert!(
+                !matches!(
+                    mkv_attempt(&p, true, MkvBudget { bytes, packets: 8 }),
+                    MkvAttempt::Frame(_)
+                ),
+                "{bytes} バイトしか読めない予算では諦める(読み続けない)"
+            );
+        }
+        // The packet ceiling is the other half of the bound: plenty of bytes, but no permission to
+        // walk far enough to find a keyframe.
+        assert!(
+            !matches!(
+                mkv_attempt(
+                    &p,
+                    false,
+                    MkvBudget {
+                        bytes: NATIVE_MKV_MAX_SCAN_BYTES,
+                        packets: 0
+                    }
+                ),
+                MkvAttempt::Frame(_)
+            ),
+            "パケット数の上限も効く"
+        );
+    }
+
+    /// Codec dispatch on the Matroska side, which is by **ID** rather than by the mp4 path's codec
+    /// string. The important half is the rejections: a `.webm` is usually VP9 or AV1, and neither
+    /// built-in decoder implements either — they have to fall out here, by name, rather than be
+    /// handed to a decoder that cannot read them.
+    #[test]
+    fn mkv_codec_id_dispatch_picks_the_right_decoder() {
+        use NativeCodecKind::{Avc, Hevc};
+        assert_eq!(mkv_codec_kind(video_codecs::CODEC_ID_H264), Some(Avc));
+        assert_eq!(mkv_codec_kind(video_codecs::CODEC_ID_HEVC), Some(Hevc));
+        for other in [
+            video_codecs::CODEC_ID_VP9,
+            video_codecs::CODEC_ID_AV1,
+            video_codecs::CODEC_ID_VP8,
+            video_codecs::CODEC_ID_MPEG4,
+            video_codecs::CODEC_ID_THEORA,
+            VideoCodecId::default(),
+        ] {
+            assert_eq!(
+                mkv_codec_kind(other),
+                None,
+                "{other} は内蔵デコーダの担当でない=外部ツールへ降格する"
+            );
+        }
+    }
+
+    /// The decoder configuration record is chosen **by extra-data ID, not by position**.
+    ///
+    /// A track may carry several blocks — a Dolby Vision configuration alongside the HEVC one is the
+    /// common case — and nothing promises an order, so `extra_data.first()` would sooner or later
+    /// hand `parse_hvcc` something that is not an `hvcC` at all. Since both records start with a
+    /// version byte and are then walked by length fields, the failure would not be a clean refusal:
+    /// it would be a parse of unrelated bytes.
+    #[test]
+    fn extra_data_is_chosen_by_id_not_by_position() {
+        use symphonia_core::codecs::video::VideoExtraData;
+        let block = |id, byte| VideoExtraData {
+            id,
+            data: vec![byte; 4].into_boxed_slice(),
+        };
+        let mut params = VideoCodecParameters::default();
+        // Deliberately out of order, with the Dolby Vision block first.
+        params.extra_data.push(block(
+            extra_data_ids::VIDEO_EXTRA_DATA_ID_DOLBY_VISION_CONFIG,
+            0xDD,
+        ));
+        params.extra_data.push(block(
+            extra_data_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG,
+            0xEE,
+        ));
+        params.extra_data.push(block(
+            extra_data_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG,
+            0xAA,
+        ));
+
+        assert_eq!(
+            extra_data_for(&params, NativeCodecKind::Hevc),
+            Some(&[0xEE; 4][..]),
+            "先頭の Dolby Vision 記録を hvcC と取り違えている"
+        );
+        assert_eq!(
+            extra_data_for(&params, NativeCodecKind::Avc),
+            Some(&[0xAA; 4][..])
+        );
+        // A track with no record for this codec is refused rather than given someone else's.
+        let mut only_avc = VideoCodecParameters::default();
+        only_avc.extra_data.push(block(
+            extra_data_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG,
+            0xAA,
+        ));
+        assert_eq!(extra_data_for(&only_avc, NativeCodecKind::Hevc), None);
+        assert_eq!(
+            extra_data_for(&VideoCodecParameters::default(), NativeCodecKind::Avc),
+            None,
+            "CodecPrivate がまったく無いトラック(VP9 の webm がこの形)"
+        );
+    }
+
+    /// Malformed Matroska never panics and never guesses, at each layer that can fail: a file that
+    /// is not Matroska at all (the demuxer), a truncated one (the element walk), and one whose
+    /// cluster payload has been shredded while the header and cues still parse — which is what
+    /// reaches the **decoder** rather than stopping earlier.
+    #[test]
+    fn mkv_native_path_degrades_safely_on_broken_input() {
+        assert!(thumbnail_native(Path::new("/no/such/video.mkv")).is_none());
+
+        let dir = unique_tmp("konoma_video_mkv_broken_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let garbage = dir.join("garbage.mkv");
+        std::fs::write(&garbage, b"not matroska at all, just some bytes\n").unwrap();
+        assert!(thumbnail_native(&garbage).is_none(), "非 mkv は None");
+
+        let Some(src) = sample_path_or_skip("sample.mkv") else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let original = std::fs::read(&src).unwrap();
+
+        let truncated = dir.join("truncated.mkv");
+        std::fs::write(&truncated, &original[..original.len() / 3]).unwrap();
+        assert!(
+            thumbnail_native(&truncated).is_none(),
+            "途中で切れた mkv は None(panic しない)"
+        );
+
+        // Shred everything after the first Cluster (`0x1F43B675`), leaving the EBML header, the
+        // Tracks element and its `CodecPrivate` intact — so the guard passes and the **decoder** is
+        // the thing handed nonsense, rather than the parse stopping before it.
+        let cluster = original
+            .windows(4)
+            .position(|w| w == [0x1F, 0x43, 0xB6, 0x75])
+            .expect("samples/sample.mkv に Cluster 要素がある");
+        let mut bytes = original.clone();
+        for b in bytes.iter_mut().skip(cluster + 4) {
+            *b = b.wrapping_mul(31).wrapping_add(7);
+        }
+        let shredded = dir.join("shredded.mkv");
+        std::fs::write(&shredded, &bytes).unwrap();
+        assert!(
+            thumbnail_native(&shredded).is_none(),
+            "サンプルデータが壊れた mkv は None(panic しない)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The Matroska counterpart of `guard_reads_the_bitstream_not_the_container`, and the reason the
+    /// guard is shared between the two containers rather than reimplemented: Matroska stores the very
+    /// same `avcC` record in `CodecPrivate`, so a stream mp4 would refuse must be refused here too —
+    /// and a *container* that misdeclares its stream must be ignored here too.
+    ///
+    /// Both halves patch a single byte of `samples/sample.mkv` and assert opposite outcomes, which
+    /// is what makes this discriminating rather than a restatement of the mp4 test:
+    ///
+    /// * Patching the record's `AVCProfileIndication` must change **nothing** — that byte is the
+    ///   container's self-declaration, and nothing verifies it against the bitstream.
+    /// * Patching the **SPS's** `profile_idc` must be refused, even though the bitstream underneath
+    ///   is untouched, decodable 8-bit High. Drop the guard and this returns a picture instead.
+    ///
+    /// The record is located by searching for the exact bytes the demuxer handed back, so this
+    /// cannot quietly start patching the wrong offset the day the fixture is re-encoded.
+    #[test]
+    fn mkv_guard_reads_the_bitstream_not_the_container() {
+        let Some(src) = sample_path_or_skip("sample.mkv") else {
+            return;
+        };
+        let original = std::fs::read(&src).unwrap();
+
+        let cfg = {
+            let source = BudgetedSource::open(&src, NATIVE_MKV_MAX_SCAN_BYTES).unwrap();
+            let mss = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
+            let reader = MkvReader::try_new(mss, FormatOptions::default()).unwrap();
+            let track = find_mkv_track(&reader).expect("H.264 トラックが見つかる");
+            assert_eq!(track.kind, NativeCodecKind::Avc);
+            track.cfg
+        };
+        let record = original
+            .windows(cfg.len())
+            .position(|w| w == cfg)
+            .expect("CodecPrivate(avcC 記録)がファイル中にそのまま入っている");
+
+        // avcC payload: [0]=configurationVersion, [1]=AVCProfileIndication, [2]=compat, [3]=level,
+        // [4]=lengthSizeMinusOne, [5]=numOfSPS, [6..8]=spsLength, [8]=SPS NAL header, [9]=profile_idc.
+        let container_profile = record + 1;
+        let sps_profile = record + 9;
+        assert_eq!(
+            original[record], 1,
+            "avcC の先頭は configurationVersion=1(検算)"
+        );
+        assert_eq!(original[container_profile], 100, "コンテナ申告は High(100)");
+        assert_eq!(
+            original[record + 8] & 0x1f,
+            7,
+            "SPS NAL(type 7)を指している(検算)"
+        );
+        assert_eq!(original[sps_profile], 100, "ビットストリームも High(100)");
+
+        let dir = unique_tmp("konoma_video_mkv_bitstream_guard_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Control: the unpatched copy really does decode, so a None below can only be the guard.
+        let control = dir.join("control.mkv");
+        std::fs::write(&control, &original).unwrap();
+        assert!(
+            thumbnail_native(&control).is_some(),
+            "対照: 無改変のコピーはデコードできる"
+        );
+
+        for bad in [110u8, 122, 244] {
+            let mut bytes = original.clone();
+            bytes[container_profile] = bad;
+            let p = dir.join(format!("container{bad}.mkv"));
+            std::fs::write(&p, &bytes).unwrap();
+            assert!(
+                thumbnail_native(&p).is_some(),
+                "CodecPrivate の申告({bad})は判断材料でない=ビットストリームが 8bit 4:2:0 High なら描ける"
+            );
+
+            let mut bytes = original.clone();
+            bytes[sps_profile] = bad;
+            let p = dir.join(format!("sps{bad}.mkv"));
+            std::fs::write(&p, &bytes).unwrap();
+            assert!(
+                thumbnail_native(&p).is_none(),
+                "SPS が profile {bad} と言うならデコード前に拒否する(mp4 と同じガードが mkv でも効く)"
+            );
+        }
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

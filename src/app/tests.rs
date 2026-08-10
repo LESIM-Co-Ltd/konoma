@@ -16763,30 +16763,45 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
 }
 
 /// `[external] video = false` must **not** disable video thumbnails as such — only the external
-/// extractors. H.264 in mp4/m4v/mov is decoded in pure Rust, in-process, so it has to keep working
-/// with the flag off, exactly like PDF keeps working via `hayro`. (Before the built-in decoder
-/// existed this flag was the whole feature's switch, and this test asserted the opposite.)
+/// extractors. H.264 in mp4/m4v/mov and in mkv/webm is decoded in pure Rust, in-process, so it has
+/// to keep working with the flag off, exactly like PDF keeps working via `hayro`. (Before the
+/// built-in decoder existed this flag was the whole feature's switch, and this test asserted the
+/// opposite.)
+///
+/// Both containers are checked through the **whole app path**, not just the extractor: preview-kind
+/// resolution sniffs content, the media job runs, and `image_src` ends up set. That is a different
+/// question from `preview::video`'s own tests — a container the extractor handles perfectly is still
+/// invisible if nothing upstream classifies the file as a video in the first place.
 ///
 /// Deliberately does **not** probe for ffmpeg: the point is that the picture appears on a machine
 /// with no external tool at all, and with the flag denying their use even if there were one.
 #[test]
 fn video_thumbnail_is_native_even_when_external_video_disabled() {
-    let Some(p) = sample_path_or_skip("sample.mp4") else {
-        return;
-    };
     let dir = unique_tmp("konoma_video_native_flag_test");
     std::fs::create_dir_all(&dir).unwrap();
 
-    let mut cfg = Config::default();
-    cfg.external.video = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
-    app.picker = Some(test_picker());
-    app.enter_preview(&p);
-    assert!(
-        app.image_src.is_some(),
-        "video=false でも H.264 mp4 は内蔵デコーダでサムネイルになる(フラグは外部ツール専用)"
-    );
-    assert!(!app.is_media_loading(), "no job left pending either");
+    for name in ["sample.mp4", "sample.mkv"] {
+        let Some(p) = sample_path_or_skip(name) else {
+            continue;
+        };
+        let mut cfg = Config::default();
+        cfg.external.video = false;
+        let mut app = App::new(dir.clone(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(&p);
+        assert!(
+            matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+            "{name}: 動画プレビューとして解決されていない(でなければ以下は何も検査していない)"
+        );
+        assert!(
+            app.image_src.is_some(),
+            "{name}: video=false でも H.264 は内蔵デコーダでサムネイルになる(フラグは外部ツール専用)"
+        );
+        assert!(
+            !app.is_media_loading(),
+            "{name}: no job left pending either"
+        );
+    }
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -16797,10 +16812,12 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
 ///
 /// The fixture is `samples/sample.mp4`'s bytes under a `.mkv` name. That is genuinely the shape this
 /// branch is for: preview-kind resolution sniffs *content* (`infer`), so it still resolves to
-/// `PreviewKind::Video`, while the built-in decoder's container gate — which is by **extension**,
-/// since that is what tells it whether `re_mp4` can index the file — declines it. Using a real HEVC
-/// or VP9 clip would test the same code path, but no such fixture is committed (and generating one
-/// would need the very tool this test must not depend on).
+/// `PreviewKind::Video`, while the built-in path declines it — the extension routes it to the
+/// Matroska demuxer, which correctly refuses a file that is actually ISO-BMFF. (Before mkv support
+/// the refusal came one layer earlier, from the extension gate itself; the outcome this test asserts
+/// is the same either way.) Using a real VP9 or AV1 clip would exercise the same branch through the
+/// codec check instead, but no such fixture is committed — and generating one would need the very
+/// tool this test must not depend on.
 #[test]
 fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
     let Some(src) = sample_path_or_skip("sample.mp4") else {

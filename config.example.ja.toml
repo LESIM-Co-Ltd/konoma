@@ -277,11 +277,11 @@ code_theme = "TwoDark"
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
 #   image  =kitty graphics で全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
 #   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
-#   video  =代表フレーム1枚をサムネイル表示(端末内再生はしない)。.mp4/.m4v/.mov の H.264 と HEVC は
-#          純 Rust でデコードする=外部ツール不要(HEVC=iPhone の既定録画形式)。それ以外(VP9・AV1・
-#          旧世代コーデック・.mkv/.webm/.avi、および稀なプロファイル=H.264 の 10bit/4:2:2/4:4:4/モノクロ、
-#          Main/Main 10 4:2:0 以外の HEVC)は ffmpegthumbnailer/ffmpeg があれば使い、無ければ
-#          ヒント表示にフォールバックする。再生したい場合は下の command 例参照。
+#   video  =代表フレーム1枚をサムネイル表示(端末内再生はしない)。.mp4/.m4v/.mov と .mkv/.webm の
+#          H.264 と HEVC は純 Rust でデコードする=外部ツール不要(HEVC=iPhone の既定録画形式)。
+#          それ以外(VP9・AV1・旧世代コーデック・.avi コンテナ、および稀なプロファイル=H.264 の
+#          10bit/4:2:2/4:4:4/モノクロ、Main/Main 10 4:2:0 以外の HEVC)は ffmpegthumbnailer/ffmpeg が
+#          あれば使い、無ければヒント表示にフォールバックする。再生したい場合は下の command 例参照。
 #   pdf    =ページを純 Rust(hayro)で1枚ずつラスタライズして画像表示(外部ツール不要)。
 #          macOS に限り、hayro が描けない PDF(暗号化/破損/非対応)は OS 同梱の qlmanage/sips へ
 #          フォールバックする(導入不要)が、これらは1ページ目しか出せない。

@@ -134,7 +134,7 @@ Built-in renderers (`builtin = "..."`):
 | `mermaid` | Standalone `.mmd`/`.mermaid` files as diagrams. Renders as a real image by default (pure Rust, full-screen zoom/pan); set `[ui] mermaid = "text"` for Unicode box-drawing. Controlled by the `[ui] mermaid` option above. |
 | `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |
-| `video` | A single representative frame, shown as a thumbnail. **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` are decoded natively in Rust — no external tool needed** (HEVC covers what an iPhone records by default). Everything else (VP9, AV1, older codecs, `.mkv`/`.webm`/`.avi`, and the uncommon profiles — H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome, HEVC outside Main / Main 10 4:2:0) is extracted with `ffmpegthumbnailer`/`ffmpeg` if installed, and shows a hint if not. No in-terminal playback either way — delegate to `mpv` via `command` if you want playback. |
+| `video` | A single representative frame, shown as a thumbnail. **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` are decoded natively in Rust — no external tool needed** (HEVC covers what an iPhone records by default). Everything else (VP9, AV1, older codecs, the `.avi` container, and the uncommon profiles — H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome, HEVC outside Main / Main 10 4:2:0) is extracted with `ffmpegthumbnailer`/`ffmpeg` if installed, and shows a hint if not. No in-terminal playback either way — delegate to `mpv` via `command` if you want playback. |
 | `pdf` | Pages rasterized natively in Rust (`hayro`; one page at a time, no external tool needed) — `J`/`K` turn any page. On macOS only, a PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported) falls back to the system's own `qlmanage`/`sips` — always present, nothing to install — but those can only produce the **first** page. |
 | `csv` / `tsv` | Aligned table with rainbow columns and a cell cursor (`hjkl` moves, `y →` copies cell/row/column). |
 | `archive` | Lists entries (name / size / modified) for `.zip`/`.tar`/`.tar.gz`/`.tgz` in the same aligned-table renderer as CSV/TSV — metadata only, nothing is extracted (`hjkl` / `y →` c/r/C copy work the same). |
@@ -306,6 +306,6 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
   widths correctly regardless; the glyphs come from the font. A Nerd-Font-patched CJK
   font like HackGen Console NF or UDEV Gothic NF covers both icons and CJK in one font.
 - **Optional tools**: `ffmpegthumbnailer`/`ffmpeg` (thumbnails for video konoma can't decode
-  itself — VP9, AV1, `.mkv`/`.webm`), `git` + `lazygit` (git suite / external tool).
-  Everything degrades gracefully when absent. **PDF, and H.264/HEVC video in `.mp4`/`.m4v`/`.mov`,
-  need nothing installed** — both are decoded in pure Rust.
+  itself — VP9, AV1, older codecs, `.avi`), `git` + `lazygit` (git suite / external tool).
+  Everything degrades gracefully when absent. **PDF, and H.264/HEVC video in `.mp4`/`.m4v`/`.mov`
+  and `.mkv`/`.webm`, need nothing installed** — both are decoded in pure Rust.

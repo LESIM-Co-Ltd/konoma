@@ -204,10 +204,11 @@ sudo apt install ffmpeg git       # Debian / Ubuntu
 ```
 
 - **ffmpeg** or **ffmpegthumbnailer** — thumbnails for the video formats konoma cannot decode itself:
-  **VP9**, **AV1** and the older codecs, the `.mkv`/`.webm`/`.avi` containers, and the uncommon
-  profiles (H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome; HEVC outside Main / Main 10 4:2:0).
-  **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` — the ordinary case, including what an iPhone records
-  by default — need nothing**: konoma decodes that keyframe itself, in pure Rust.
+  **VP9**, **AV1** and the older codecs (Xvid, MPEG-2, WMV, …), the `.avi` container, and the
+  uncommon profiles (H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome; HEVC outside Main / Main 10
+  4:2:0). **H.264 and HEVC inside `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm` — the ordinary case,
+  including what an iPhone records by default — need nothing**: konoma decodes that keyframe itself,
+  in pure Rust.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.
 

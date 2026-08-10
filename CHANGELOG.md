@@ -7,14 +7,15 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- **Video thumbnails for H.264 and HEVC mp4/m4v/mov now need nothing installed.** konoma reads the
-  container index and decodes one keyframe itself, in pure Rust — so a screen recording, a
-  `git`-tracked demo clip, anything a browser can play, and **what an iPhone records by default**
-  (HEVC, Main and Main 10) all show a thumbnail on a machine with no `ffmpeg` at all. The
-  frame is chosen by the same rule `ffmpegthumbnailer` uses by default — the keyframe nearest the 10%
-  mark, walking forward if it lands on a blank fade-in — so the frame you see stays comparable.
-  **`ffmpegthumbnailer`/`ffmpeg` are now needed only for** VP9, AV1 and the older codecs, the
-  `.mkv`/`.webm`/`.avi` containers, and the profiles the built-in decoders deliberately refuse
+- **Video thumbnails for H.264 and HEVC now need nothing installed, in mp4/m4v/mov *and*
+  mkv/webm.** konoma reads the container itself and decodes one keyframe, in pure Rust — so a screen
+  recording, a `git`-tracked demo clip, anything a browser can play, **what an iPhone records by
+  default** (HEVC, Main and Main 10), and the Matroska container most ripped or re-encoded files
+  arrive in all show a thumbnail on a machine with no `ffmpeg` at all. The frame is chosen by the
+  same rule `ffmpegthumbnailer` uses by default — the keyframe at the 10% mark, walking forward if it
+  lands on a blank fade-in — so the frame you see stays comparable.
+  **`ffmpegthumbnailer`/`ffmpeg` are now needed only for** VP9, AV1 and the older codecs (Xvid,
+  MPEG-2, WMV, …), the `.avi` container, and the profiles the built-in decoders deliberately refuse
   (H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome; HEVC outside Main and Main 10 4:2:0 — 4:2:2, 4:4:4,
   12-bit, monochrome and the Range Extensions family).
   Those degrade to the usual hint when no tool is installed, exactly as before. Still thumbnails
@@ -23,9 +24,17 @@ All notable changes to konoma are documented in this file. The format is based o
   Each codec is refused by reading **its own bitstream's** sequence parameter set rather than the
   container's summary of it, before any decoding happens, because the two need not agree — an `hvcC`
   record even carries the chroma format and bit depth it is being checked on, and nothing verifies
-  those against the stream they describe. What passes matched ffmpeg **byte for byte** on every
-  fixture measured: `samples/sample.mp4` and the new `samples/sample-hevc.mp4` (115,200 Y/U/V samples
-  each) and a 640x480 Main 10 clip compared at full 16-bit precision (460,800 samples).
+  those against the stream they describe. That guard, the decoders and everything downstream of them
+  are shared by both containers, so "supported" means the same thing in each. What passes matched
+  ffmpeg **byte for byte** on every fixture measured: `samples/sample.mp4`, `samples/sample-hevc.mp4`
+  and `samples/sample.mkv` (115,200 Y/U/V samples each) and a 640x480 Main 10 clip compared at full
+  16-bit precision (460,800 samples).
+
+  Matroska has no sample table, so unlike mp4 there is no index saying which frames are keyframes:
+  konoma seeks to the 10% mark and then reads packets forward, identifying keyframes from the
+  bitstream itself. That search is bounded — 32 MiB and 2,000 packets per attempt — so a huge or
+  cue-less file gives up and degrades to the external chain instead of reading on. A `.webm` is
+  usually VP9 or AV1, and those are still refused by codec ID before anything is decoded.
 
 ### Removed
 - **poppler is no longer part of the PDF fallback chain, so PDF now needs nothing installed on any
