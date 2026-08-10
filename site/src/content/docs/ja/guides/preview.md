@@ -59,8 +59,10 @@ kitty graphics による実ピクセル描画:
 
 - `+` / `-` ズーム、`0`/`=` でフィットに戻す、`h j k l` でパン。
 - GIF は自動でアニメーション。SVG はプロセス内でラスタライズ(外部ツール不要)。
-- 動画は `ffmpegthumbnailer`/`ffmpeg` で代表フレームを表示(任意ツール・無ければ
-  ヒント表示)。再生したければ config 1 行で `mpv` に委譲できます。
+- 動画は代表フレームを表示。**`.mp4`/`.m4v`/`.mov` の H.264 は純 Rust で
+  デコードするので何も要りません**。HEVC(iPhone の既定録画形式)・VP9・AV1・
+  `.mkv`/`.webm`/`.avi` は `ffmpegthumbnailer`/`ffmpeg` があれば使い、無ければ
+  ヒント表示になります。再生したければ config 1 行で `mpv` に委譲できます。
 - PDF は純 Rust(`hayro`・外部ツール不要)でページ単位に描画 — `J` / `K`
   (PageDown/PageUp)で任意のページへ送れます。macOS に限り、hayro が扱えない
   稀な PDF(暗号化・破損など)は OS 同梱の `qlmanage`/`sips`(導入不要)へ

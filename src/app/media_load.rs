@@ -79,13 +79,15 @@ impl App {
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
             }
-            // `[external] video = false`: never spawn the job (never runs ffmpegthumbnailer/ffmpeg).
-            // `image_src` stays None, so the render side falls back exactly like "tool not installed"
-            // (VideoThumbUnavailable hint) — no new UI state needed.
-            PreviewKind::Video(_) if self.cfg.external.video => {
-                self.spawn_or_sync_media(MediaJob::Video(path.to_path_buf()))
-            }
-            PreviewKind::Video(_) => {}
+            // Video: always spawn the job — H.264 in mp4/m4v/mov is decoded in pure Rust
+            // (`preview::video::thumbnail`'s first step) and never touches an external process, so
+            // it must work regardless of `[external] video`, exactly like PDF/hayro below. That flag
+            // only controls whether the job's *fallback* (ffmpegthumbnailer/ffmpeg, for HEVC/VP9/AV1
+            // and non-mp4 containers) may launch. With the flag off and a file the built-in decoder
+            // declines, `image_src` stays None and the render side shows the same
+            // `VideoThumbUnavailable` hint as a missing tool would — no new UI state needed.
+            PreviewKind::Video(_) => self
+                .spawn_or_sync_media(MediaJob::Video(path.to_path_buf(), self.cfg.external.video)),
             // PDF: always spawn the job — `hayro` (the primary renderer, `preview::pdf::render_page`)
             // is pure Rust and never touches an external process, so it must work regardless of
             // `[external] pdf`. That flag now only controls whether the job's *fallback*

@@ -6,6 +6,17 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Video thumbnails for H.264 mp4/m4v/mov now need nothing installed.** konoma reads the container
+  index and decodes one keyframe itself, in pure Rust — so a screen recording, a `git`-tracked demo
+  clip, or anything a browser can play shows a thumbnail on a machine with no `ffmpeg` at all. The
+  frame is chosen by the same rule `ffmpegthumbnailer` uses by default — the keyframe nearest the 10%
+  mark, walking forward if it lands on a blank fade-in — so the frame you see stays comparable.
+  **`ffmpegthumbnailer`/`ffmpeg` are still needed for everything else**: HEVC (iPhone's default
+  recording format), VP9, AV1, `.mkv`/`.webm`/`.avi` containers, and H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome.
+  Those degrade to the usual hint when no tool is installed, exactly as before. Still thumbnails
+  only — konoma does not play video in the terminal.
+
 ### Removed
 - **poppler is no longer part of the PDF fallback chain, so PDF now needs nothing installed on any
   platform.** `pdftocairo` and `pdftoppm` used to be tried whenever the built-in pure-Rust renderer
@@ -18,6 +29,9 @@ All notable changes to konoma are documented in this file. The format is based o
   no external PDF chain at all — no child process is even compiled in.
 
 ### Changed
+- `[external] video` now gates **only** the fallback extractors, matching what `[external] pdf`
+  means for PDF: the built-in decoder never launches a process, so with the flag off H.264 mp4/mov
+  thumbnails now appear where previously nothing did.
 - **A PDF the built-in renderer cannot draw has no fallback past page 1.** `qlmanage`/`sips` can only
   produce the first page, which poppler was not limited to. In practice the built-in renderer draws
   every page of everything it can open, and Linux has behaved exactly this way all along, but where

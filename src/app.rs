@@ -727,8 +727,10 @@ enum MediaJob {
     Svg(PathBuf, u32),
     /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
     Gif(PathBuf),
-    /// Extract one representative frame from a video (delegated to ffmpegthumbnailer/ffmpeg). Thumbnail only; no playback.
-    Video(PathBuf),
+    /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
+    /// mp4/m4v/mov, with ffmpegthumbnailer/ffmpeg behind it for everything else and only when the
+    /// `bool` (`[external] video`) allows launching them. Thumbnail only; no playback.
+    Video(PathBuf, bool),
     /// Rasterize page N (1-based) of a PDF — `hayro` (pure Rust) first, macOS's bundled
     /// `qlmanage`/`sips` only as a page-1 fallback and only when the `bool` (`[external] pdf`)
     /// allows it. Loaded one page at a time.
@@ -771,7 +773,9 @@ impl MediaJob {
                 // A single-frame / non-animated GIF → display as a still image.
                 None => crate::preview::image::decode_static(&p).map(MediaPayload::Static),
             },
-            MediaJob::Video(p) => crate::preview::video::thumbnail(&p).map(MediaPayload::Static),
+            MediaJob::Video(p, allow_external) => {
+                crate::preview::video::thumbnail(&p, allow_external).map(MediaPayload::Static)
+            }
             MediaJob::Pdf(p, page, allow_external) => {
                 crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
             }

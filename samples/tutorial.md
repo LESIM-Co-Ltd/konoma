@@ -91,11 +91,14 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-- **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of a video.
+- **ffmpeg** (or `ffmpegthumbnailer`) — the representative frame of the videos konoma
+  can't decode itself: HEVC (what an iPhone records), VP9, AV1, `.mkv`/`.webm`.
+  **H.264 inside `.mp4`/`.m4v`/`.mov` needs nothing** — konoma decodes that itself.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
-Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, and
-code need **nothing extra** — they are rendered inside konoma, in pure Rust.
+Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, **H.264
+video thumbnails**, and code need **nothing extra** — they are rendered inside
+konoma, in pure Rust.
 (On macOS only, a PDF the built-in renderer can't handle falls back to the
 system's own `qlmanage`/`sips` for its first page — nothing to install there
 either.) What they do need is a terminal that speaks the kitty graphics

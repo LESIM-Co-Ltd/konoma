@@ -126,7 +126,7 @@ Built-in renderers (`builtin = "..."`):
 | `mermaid` | Standalone `.mmd`/`.mermaid` files as diagrams. Renders as a real image by default (pure Rust, full-screen zoom/pan); `[ui] mermaid = "text"` switches to Unicode box-drawing. |
 | `image` | Full-screen image via kitty graphics (zoom/pan; GIFs animate automatically). |
 | `svg` | Rasterized in-process (resvg; pure Rust) and shown as an image. |
-| `video` | A representative frame extracted with `ffmpegthumbnailer`/`ffmpeg` (optional tools; a hint is shown if absent). No in-terminal playback — delegate to `mpv` via `command` if you want playback. |
+| `video` | A single representative frame, shown as a thumbnail. **H.264 inside `.mp4`/`.m4v`/`.mov` is decoded natively in Rust — no external tool needed.** Everything else (HEVC, VP9, AV1, `.mkv`/`.webm`/`.avi`, and H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome) is extracted with `ffmpegthumbnailer`/`ffmpeg` if installed, and shows a hint if not. No in-terminal playback either way — delegate to `mpv` via `command` if you want playback. |
 | `pdf` | Pages rasterized natively in Rust (`hayro`; one page at a time, no external tool needed) — `J`/`K` turn any page. On macOS only, a PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported) falls back to the system's own `qlmanage`/`sips` — always present, nothing to install — but those can only produce the **first** page. |
 | `csv` / `tsv` | Aligned table with rainbow columns and a cell cursor (`hjkl` moves, `y →` copies cell/row/column). |
 | `code` | Syntax-highlighted source (grammar resolved by extension → file name → first line). |
@@ -201,7 +201,7 @@ so an absent `[external]` section (or an absent field within it) changes nothing
 | `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `o` then says git is not installed rather than blaming the directory. |
 | `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
 | `pdf` | `true` | The **external fallback** rasterizer — macOS's bundled `qlmanage`/`sips`, tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on page 1 of a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. **On every other platform this flag is effectively a no-op**: there is no external PDF tool to launch. |
-| `video` | `true` | Video thumbnail extraction (`ffmpegthumbnailer`/`ffmpeg`). |
+| `video` | `true` | The **external fallback** thumbnail extractors (`ffmpegthumbnailer`/`ffmpeg`), tried only when the built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e. anything that isn't H.264 in `.mp4`/`.m4v`/`.mov`. `false` never launches them, but H.264 mp4/mov thumbnails keep working. Same relationship `pdf` has with `hayro` above. |
 | `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown — the only outbound network call konoma makes. Done in-process via `ureq` (rustls), not an external tool. |
 | `open_links` | `true` | Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, pasted-path jump (`P`), etc. |
 | `preview_commands` | `true` | Running a `[[preview.rules]] command = "..."` delegation. `false` makes a matching rule behave as if it hadn't matched (falls through to `[can not preview]`); builtin renderers (`markdown`, `image`, `pdf`, ...) are unaffected. |
@@ -286,7 +286,8 @@ Backward-compatible aliases for path copy also exist at the `[keys]` top level
   `Symbols Nerd Font Mono` as a fallback font in your terminal, or use an NF-bundled
   font (HackGen Console NF, UDEV Gothic NF, …). Without one, set `ui.icons = false`
   for plain-symbol fallbacks.
-- **Optional tools**: `ffmpegthumbnailer`/`ffmpeg` (video thumbnails), `git` + `lazygit`
-  (git suite / external tool). PDF, images, SVG, Markdown, Mermaid, LaTeX math, and CSV
-  need **nothing extra at all** — they are rendered in pure Rust. Everything degrades
-  gracefully when absent.
+- **Optional tools**: `ffmpegthumbnailer`/`ffmpeg` (thumbnails for video konoma can't
+  decode itself — HEVC, VP9, AV1, `.mkv`/`.webm`), `git` + `lazygit`
+  (git suite / external tool). PDF, images, SVG, Markdown, Mermaid, LaTeX math, CSV and
+  H.264 video thumbnails (`.mp4`/`.m4v`/`.mov`) need **nothing extra at all** — they are
+  rendered in pure Rust. Everything degrades gracefully when absent.

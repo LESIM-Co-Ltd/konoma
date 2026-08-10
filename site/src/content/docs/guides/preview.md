@@ -67,9 +67,11 @@ Drawn as real pixels via the kitty graphics protocol:
 
 - `+` / `-` zoom, `0`/`=` reset to fit, `h j k l` pan.
 - GIFs animate automatically. SVGs rasterize in-process (no external tools).
-- Videos show a representative frame via `ffmpegthumbnailer`/`ffmpeg`
-  (optional; a hint appears if neither is installed). Want playback? Delegate
-  to `mpv` with one config rule.
+- Videos show a representative frame. **H.264 inside `.mp4`/`.m4v`/`.mov` is
+  decoded natively in Rust — nothing to install.** HEVC (an iPhone's default
+  recording format), VP9, AV1 and `.mkv`/`.webm`/`.avi` use
+  `ffmpegthumbnailer`/`ffmpeg` if installed, and show a hint if not. Want
+  playback? Delegate to `mpv` with one config rule.
 - PDFs render page by page, natively in Rust (`hayro`, no external tool
   needed) — `J` / `K` (or PageDown/PageUp) turn any page. On macOS only, the
   rare PDF `hayro` can't render (encrypted, corrupt, or otherwise unsupported)

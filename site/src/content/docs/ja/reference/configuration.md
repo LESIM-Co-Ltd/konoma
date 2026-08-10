@@ -126,7 +126,7 @@ konoma の中核モデル: **フォーマット→ビューアを TOML で宣言
 | `mermaid` | 単体 `.mmd`/`.mermaid` を図として表示。既定は実画像(純 Rust・全画面ズーム/パン)。`[ui] mermaid = "text"` で Unicode 罫線図に切替。 |
 | `image` | kitty graphics で全画面表示(ズーム/パン・GIF は自動アニメ)。 |
 | `svg` | プロセス内でラスタライズ(resvg・純 Rust)して画像表示。 |
-| `video` | `ffmpegthumbnailer`/`ffmpeg` で代表フレーム表示(任意ツール・無ければヒント)。再生したい場合は `command` で `mpv` へ。 |
+| `video` | 代表フレーム1枚をサムネイル表示。**`.mp4`/`.m4v`/`.mov` の H.264 は純 Rust でデコード=外部ツール不要**。それ以外(HEVC・VP9・AV1・`.mkv`/`.webm`/`.avi`、H.264 でも 10bit/4:2:2/4:4:4/モノクロ)は `ffmpegthumbnailer`/`ffmpeg` があれば使い、無ければヒント表示。いずれも端末内再生はしないので、再生したい場合は `command` で `mpv` へ。 |
 | `pdf` | 純 Rust(`hayro`)でネイティブにラスタライズ(外部ツール不要・1ページずつ) — `J`/`K` で任意のページへ。macOS に限り、hayro が描画できない PDF(暗号化・破損など)は OS 同梱の `qlmanage`/`sips`(常在・導入不要)へフォールバックしますが、これらは**1ページ目**しか出せません。 |
 | `csv` / `tsv` | 列レインボー+セルカーソルの整列テーブル(`hjkl` 移動・`y →` でコピー)。 |
 | `code` | シンタックスハイライト(文法は 拡張子 → ファイル名 → 先頭行 で解決)。 |
@@ -198,7 +198,7 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 | `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`o`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。なお**この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになります**(初回使用時に一度だけ判定)。その場合 `o` は「ディレクトリが repo でない」ではなく「git が見つかりません」と知らせます。 |
 | `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
-| `video` | `true` | 動画サムネイル抽出(`ffmpegthumbnailer`/`ffmpeg`)。 |
+| `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` の H.264 以外の時だけ使う。`false` でもそれらを起動しないだけで、H.264 の mp4/mov のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
 | `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |
 | `open_links` | `true` | URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・パス貼付ジャンプ(`P`)等。 |
 | `preview_commands` | `true` | `[[preview.rules]] command = "..."` への委譲。`false` にすると、そのルールは「マッチしなかった」扱いになり `[can not preview]` へ落ちます(`markdown`/`image`/`pdf` 等の builtin レンダラには影響しません)。 |
@@ -285,7 +285,9 @@ left right home end pageup pagedown`。空白区切りの 2 トークンは和�
 - **アイコン**(`ui.icons = true`・既定)には Nerd Font グリフが必要:
   端末のフォールバックに `Symbols Nerd Font Mono` を足すか、NF 内蔵フォント
   (HackGen Console NF・UDEV Gothic NF …)を使用。無ければ `ui.icons = false`。
-- **任意ツール**: `ffmpegthumbnailer`/`ffmpeg`(動画サムネイル)・`git` +
+- **任意ツール**: `ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない
+  動画=HEVC・VP9・AV1・`.mkv`/`.webm` のサムネイル)・`git` +
   `lazygit`(git スイート/外部ツール)。PDF・画像・SVG・Markdown・Mermaid・
-  LaTeX 数式・CSV は**追加インストールが一切不要**で、純 Rust で描画されます。
+  LaTeX 数式・CSV・`.mp4`/`.m4v`/`.mov` の H.264 動画サムネイルは
+  **追加インストールが一切不要**で、純 Rust で描画されます。
   すべて不在時は安全に降格します。

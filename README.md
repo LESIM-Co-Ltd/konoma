@@ -153,9 +153,10 @@ The gate for the full experience is the **terminal**, not the OS:
   **CJK text** (the `jp` UI, CJK filenames/contents) needs the terminal font to include **CJK glyphs** or it
   shows as tofu (□) — konoma computes the widths correctly regardless. A Nerd-Font-patched CJK font like
   **HackGen Console NF** covers both in one font.
-- **Optional tools** (all degrade gracefully): `ffmpegthumbnailer`/`ffmpeg` (video thumbnails), `git`
-  (git suite), `lazygit` (external git tool on `!`). **Images, SVG, Mermaid, LaTeX math, CSV and PDF
-  need nothing installed at all** — konoma renders them itself, in pure Rust.
+- **Optional tools** (all degrade gracefully): `ffmpegthumbnailer`/`ffmpeg` (video formats konoma
+  cannot decode itself — see below), `git` (git suite), `lazygit` (external git tool on `!`).
+  **Images, SVG, Mermaid, LaTeX math, CSV, PDF and H.264 video thumbnails need nothing installed at
+  all** — konoma renders them itself, in pure Rust.
 
 ## Install
 
@@ -202,7 +203,10 @@ brew install ffmpeg git           # macOS
 sudo apt install ffmpeg git       # Debian / Ubuntu
 ```
 
-- **ffmpeg** or **ffmpegthumbnailer** — video thumbnail frames.
+- **ffmpeg** or **ffmpegthumbnailer** — thumbnails for the video formats konoma cannot decode itself:
+  **HEVC** (what an iPhone records by default), **VP9**, **AV1**, the `.mkv`/`.webm`/`.avi`
+  containers, and H.264 in 10-bit / 4:2:2 / 4:4:4 / monochrome. **H.264 inside `.mp4`/`.m4v`/`.mov` — the ordinary
+  case — needs nothing**: konoma decodes that keyframe itself, in pure Rust.
 - **git** — the in-app git suite (status / diff / log / graph / branches). Enabled by default;
   build with `--no-default-features` to drop it.
 

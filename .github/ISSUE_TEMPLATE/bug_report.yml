@@ -7,10 +7,11 @@ body:
       value: |
         Thanks for the report! konoma is macOS / Apple Silicon only — please confirm
         that first. For a preview that shows `[can not preview]` on a format you expect
-        to work, that is usually a missing optional tool (ffmpeg, for video thumbnails)
-        rather than a bug; see the README's Optional tools section. PDF, images, SVG,
-        Mermaid, LaTeX math and CSV need nothing installed, so `[can not preview]` on
-        those is worth reporting.
+        to work, that is usually a missing optional tool (ffmpeg, for the video formats
+        konoma cannot decode itself — HEVC, VP9, AV1, `.mkv`/`.webm`) rather than a bug;
+        see the README's Optional tools section. PDF, images, SVG, Mermaid, LaTeX math,
+        CSV and H.264 video thumbnails (`.mp4`/`.m4v`/`.mov`) need nothing installed, so
+        `[can not preview]` on those is worth reporting.
   - type: input
     id: version
     attributes:

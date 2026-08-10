@@ -16762,15 +16762,19 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `[external] video = false`: the thumbnail extraction job is never spawned, even for a real video
-/// with ffmpeg installed — `image_src` stays `None` (falls back to the "unavailable" hint like a
-/// missing tool would), proving the gate itself short-circuits rather than a missing tool doing it.
+/// `[external] video = false` must **not** disable video thumbnails as such — only the external
+/// extractors. H.264 in mp4/m4v/mov is decoded in pure Rust, in-process, so it has to keep working
+/// with the flag off, exactly like PDF keeps working via `hayro`. (Before the built-in decoder
+/// existed this flag was the whole feature's switch, and this test asserted the opposite.)
+///
+/// Deliberately does **not** probe for ffmpeg: the point is that the picture appears on a machine
+/// with no external tool at all, and with the flag denying their use even if there were one.
 #[test]
-fn video_thumbnail_skipped_when_external_video_disabled() {
+fn video_thumbnail_is_native_even_when_external_video_disabled() {
     let Some(p) = sample_path_or_skip("sample.mp4") else {
         return;
     };
-    let dir = unique_tmp("konoma_video_disabled_test");
+    let dir = unique_tmp("konoma_video_native_flag_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let mut cfg = Config::default();
@@ -16779,20 +16783,56 @@ fn video_thumbnail_skipped_when_external_video_disabled() {
     app.picker = Some(test_picker());
     app.enter_preview(&p);
     assert!(
-        app.image_src.is_none(),
-        "video=false: the thumbnail job must not run"
+        app.image_src.is_some(),
+        "video=false でも H.264 mp4 は内蔵デコーダでサムネイルになる(フラグは外部ツール専用)"
     );
     assert!(!app.is_media_loading(), "no job left pending either");
 
-    // Sanity: with video enabled (default) and ffmpeg installed, a thumbnail IS produced — this is
-    // what actually proves the disabled-run assertions above are testing the *flag*, not just "no
-    // tool happens to be installed on this machine" (the two are indistinguishable from
-    // `image_src.is_none()` alone). Probe `ffmpeg -version` directly, the same way
-    // `preview/video.rs`'s own `extracts_correct_frame_when_ffmpeg_available` does, rather than
-    // inferring availability from whether the thumbnail happened to appear: without this
-    // independent probe, an `if image_src.is_none() { eprintln!(..) }` with no `else` verifies
-    // nothing either way — a broken gate (thumbnailing silently failing even when enabled) and a
-    // genuinely absent tool both print the same "skip" line and let the test pass.
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other half of the flag's meaning: for a video the **built-in decoder declines**, `[external]
+/// video = false` really does keep the external tools from running, and `image_src` stays `None`
+/// (the render side then shows the same "unavailable" hint a missing tool would).
+///
+/// The fixture is `samples/sample.mp4`'s bytes under a `.mkv` name. That is genuinely the shape this
+/// branch is for: preview-kind resolution sniffs *content* (`infer`), so it still resolves to
+/// `PreviewKind::Video`, while the built-in decoder's container gate — which is by **extension**,
+/// since that is what tells it whether `re_mp4` can index the file — declines it. Using a real HEVC
+/// or VP9 clip would test the same code path, but no such fixture is committed (and generating one
+/// would need the very tool this test must not depend on).
+#[test]
+fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
+    let Some(src) = sample_path_or_skip("sample.mp4") else {
+        return;
+    };
+    let dir = unique_tmp("konoma_video_external_gate_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("clip.mkv");
+    std::fs::copy(&src, &p).unwrap();
+
+    let mut cfg = Config::default();
+    cfg.external.video = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&p);
+    assert!(
+        matches!(app.tab.preview_kind, Some(PreviewKind::Video(_))),
+        "sanity: このファイルは動画プレビューとして解決される(でなければ以下は何も検査していない)"
+    );
+    assert!(
+        app.image_src.is_none(),
+        "video=false: 内蔵デコーダが扱えないファイルで外部ツールを起動してはいけない"
+    );
+    assert!(!app.is_media_loading(), "no job left pending either");
+
+    // Sanity: with the flag enabled and ffmpeg installed, a thumbnail IS produced — this is what
+    // proves the assertion above is testing the *flag*, not just "no tool happens to be installed
+    // on this machine" (the two are indistinguishable from `image_src.is_none()` alone). Probe
+    // `ffmpeg -version` directly rather than inferring availability from whether the thumbnail
+    // happened to appear: without this independent probe, an `if image_src.is_none() { eprintln!(..) }`
+    // with no `else` verifies nothing either way — a broken gate and a genuinely absent tool both
+    // print the same "skip" line and let the test pass.
     let has_ffmpeg = std::process::Command::new("ffmpeg")
         .arg("-version")
         .stdin(std::process::Stdio::null())

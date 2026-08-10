@@ -277,8 +277,10 @@ code_theme = "TwoDark"
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
 #   image  =kitty graphics で全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。
 #   svg    =resvg/usvg/tiny-skia でラスタライズして画像表示(純Rust・外部不要)。
-#   video  =ffmpegthumbnailer/ffmpeg で代表フレーム1枚を抽出しサムネイル表示(端末内再生はしない)。
-#          外部ツールは任意(不在ならヒント表示にフォールバック)。再生したい場合は下の command 例参照。
+#   video  =代表フレーム1枚をサムネイル表示(端末内再生はしない)。.mp4/.m4v/.mov の H.264 は
+#          純 Rust でデコードする=外部ツール不要。それ以外(HEVC・VP9・AV1・.mkv/.webm/.avi、
+#          H.264 でも 10bit/4:2:2/4:4:4/モノクロ)は ffmpegthumbnailer/ffmpeg があれば使い、無ければ
+#          ヒント表示にフォールバックする。再生したい場合は下の command 例参照。
 #   pdf    =ページを純 Rust(hayro)で1枚ずつラスタライズして画像表示(外部ツール不要)。
 #          macOS に限り、hayro が描けない PDF(暗号化/破損/非対応)は OS 同梱の qlmanage/sips へ
 #          フォールバックする(導入不要)が、これらは1ページ目しか出せない。
@@ -330,6 +332,7 @@ builtin = "code"
 
 [[preview.rules]]
 mime = "video/*"           # 既定: 代表フレーム1枚をサムネイル表示(端末内再生はしない)
+                           # H.264 の mp4/m4v/mov は外部ツール不要。他のコーデック/コンテナは ffmpeg があれば使う
 builtin = "video"
 # 端末内ではなく外部プレイヤーで"再生"したい場合は、上を消して下に差し替える(委譲):
 # command = "mpv {path}"
@@ -496,7 +499,10 @@ pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage
                            # (暗号化/破損/非対応)だけ使う。false でもこれらの外部ツールを起動しないだけで、
                            # PDF プレビュー自体は hayro で動く。macOS 以外ではこのフラグは実質無効
                            # (起動する外部 PDF ツールがそもそも無い)。
-video            = true   # 動画サムネイル抽出(ffmpegthumbnailer/ffmpeg)。
+video            = true   # 外部フォールバックの抽出ツール(ffmpegthumbnailer/ffmpeg)。内蔵デコーダ
+                           # (純Rust・このフラグに関係なく常に動く)が扱えないファイル=.mp4/.m4v/.mov の
+                           # H.264 以外の時だけ使う。false でも H.264 の mp4/mov のサムネイルは出る
+                           # (上の pdf と hayro の関係と同じ)。
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
