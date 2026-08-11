@@ -6,6 +6,31 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **A repository created with `git init --ref-format=reftable` (git 2.45+) is no longer treated as
+  "not a git repository at all".** The branch chip, the status markers in the tree, the ignored
+  (dimmed) entries, the Git hub (`o`) with its changed-file list, the changed-files filter (`C`),
+  the worktree list (`w`), the `WT` chip inside a linked worktree, and every write (stage, unstage,
+  discard, commit, branch and worktree operations) all work there now.
+
+  konoma runs those over the `git` CLI, which handles reftable perfectly, but it asked *libgit2*
+  where the repository was — and libgit2 rejects the `extensions.refstorage = reftable` key
+  outright, so a failed lookup took the CLI-backed features down with it. Discovery now falls back
+  to `git rev-parse` when, and only when, a `.git` marker says a repository really is there. An
+  ordinary directory still answers "not a repository" from a pure filesystem check without
+  launching anything, and the fallback's result is remembered per repository, so neither case pays
+  a process per filesystem event.
+
+  The branch name comes from `git` itself, never from `.git/HEAD` — a reftable repository keeps the
+  backwards-compatibility placeholder `ref: refs/heads/.invalid` in that file, and a tool that reads
+  it displays a branch that does not exist.
+
+  **Still empty in a reftable repository:** the diff views (`d`, `Enter` on a change), the log and
+  graph, the branch list, and the follow-mode baseline diff — everything that reads git *objects*
+  rather than paths, since that work is libgit2's. Those degrade quietly (an empty view, a "no
+  commits" notice) instead of failing, and could be moved onto the CLI the same way status already
+  is.
+
 ## [0.24.0] - 2026-08-11
 
 ### Added

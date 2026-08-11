@@ -1170,13 +1170,13 @@ fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resul
     Ok(())
 }
 
-/// Return the workdir of the repo containing `root` (when the git feature is enabled). Returns root itself if none is found.
+/// Return the workdir of the repo containing `root` (when the git feature is enabled). Returns root
+/// itself if none is found. Goes through `git::workdir` rather than calling libgit2 here, so the
+/// external git tool starts in the working-tree root even in a repository libgit2 cannot open
+/// (reftable — see the discovery section at the top of `git.rs`).
 #[cfg(feature = "git")]
 fn git_workdir(root: &std::path::Path) -> PathBuf {
-    git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(|w| w.to_path_buf()))
-        .unwrap_or_else(|| root.to_path_buf())
+    git::workdir(root).unwrap_or_else(|| root.to_path_buf())
 }
 
 #[cfg(not(feature = "git"))]

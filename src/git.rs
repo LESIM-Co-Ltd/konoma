@@ -215,13 +215,9 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
     STATUS_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     use std::os::unix::ffi::OsStrExt;
     let mut map = HashMap::new();
-    let Some(workdir) = git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(Path::to_path_buf))
-    else {
+    let Some(workdir) = workdir(root) else {
         return map; // not a repo / a bare repo
     };
-    let workdir = workdir.canonicalize().unwrap_or(workdir);
 
     // porcelain v1 -z: each record is `XY <path>`, NUL-separated. When it's a rename/copy (X or Y
     // is R/C), the NUL field right after is the old path. -uall = recurse into untracked dirs too
@@ -315,13 +311,9 @@ pub fn ignored(root: &Path) -> HashSet<PathBuf> {
     }
     use std::os::unix::ffi::OsStrExt;
     let mut set = HashSet::new();
-    let Some(workdir) = git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(Path::to_path_buf))
-    else {
+    let Some(workdir) = workdir(root) else {
         return set; // not a repo / a bare repo
     };
-    let workdir = workdir.canonicalize().unwrap_or(workdir);
 
     // `--ignored=traditional`: enumerate ignored entries with `!!`, and **collapse a fully-ignored
     //   directory** (node_modules/ becomes one entry, not recursed into) = the same as git2's
@@ -367,18 +359,227 @@ pub fn ignored(_root: &Path) -> HashSet<PathBuf> {
     HashSet::new()
 }
 
-/// Returns the **workdir (working-tree root)** of the git repository that `root` belongs to (canonicalized).
-/// Returns None when not a repo / when the feature is disabled. `discover` is lightweight because it does not
-/// compute status, so it serves as the key for deciding "do not rebuild the expensive `ignored` set when
-/// moving root within the same repository."
+// ── Repository discovery: the one place that answers "where is the repo?" ────────────────────
+//
+// Everything below that needs to *locate* a repository (workdir / git-dir / common-dir) goes
+// through `resolve_repo_dirs`, and everything that needs libgit2's object database goes through
+// `open_repo`. Two reasons for the single gate:
+//
+//   1. **libgit2 refuses repositories it does not fully understand.** `core.repositoryformat
+//      version = 1` requires every `[extensions]` key to be one libgit2 knows; an unknown one is a
+//      hard error. `git init --ref-format=reftable` (git 2.45+) writes `extensions.refstorage =
+//      reftable`, so `git2::Repository::discover` fails outright on such a repository — even
+//      though the `git` CLI, which does all of konoma's status/ignored/changed-files/worktree-list
+//      work, handles it perfectly. Before this gate existed, a failed *discovery* took those CLI
+//      features down with it and konoma showed a reftable repository as "not a repository at all"
+//      (no branch chip, no status markers, `o` did nothing).
+//   2. It keeps the CLI fallback's cost in exactly one auditable place (see below).
+//
+// The order inside `resolve_repo_dirs` is what keeps this affordable — konoma re-resolves on every
+// filesystem event, so a stray `git` spawn here is a performance bug, not a detail:
+//
+//   1. libgit2 `discover` — no child process. Handles every ordinary repository, i.e. ~everyone.
+//   2. a pure-Rust `.git` ancestor walk — no child process. No marker ⇒ genuinely not a
+//      repository ⇒ answer "no" immediately. This is the case that must never spawn.
+//   3. only when a marker exists but libgit2 still refused: one `git rev-parse`, **memoized** per
+//      marker directory, so a reftable user pays it once rather than once per filesystem event.
+
+/// Where a repository lives, as plain paths. Produced either by libgit2 (fast path) or by the
+/// `git rev-parse` fallback; the two are interchangeable by construction.
 #[cfg(feature = "git")]
-pub fn workdir(root: &Path) -> Option<PathBuf> {
+#[derive(Clone, Default)]
+struct RepoDirs {
+    /// Working-tree root (`--show-toplevel`). `None` for a bare repository.
+    workdir: Option<PathBuf>,
+    /// This worktree's own git-dir (`--git-dir`): `<repo>/.git` normally,
+    /// `<main>/.git/worktrees/<name>` inside a linked worktree.
+    git_dir: Option<PathBuf>,
+    /// The git-dir shared by every worktree of the repository (`--git-common-dir`). Equal to
+    /// `git_dir` except inside a linked worktree — which is exactly how `worktree_origin` tells
+    /// the two apart without libgit2's `is_worktree()`.
+    common_dir: Option<PathBuf>,
+}
+
+/// Memoized `git rev-parse` results, keyed by the directory holding the `.git` marker. Process-wide
+/// (unlike this file's thread-local *flags*) because it is a pure fact about the filesystem, so
+/// sharing it across the background status/ignored threads is both safe and the point. Bounded by
+/// the number of distinct repositories a session visits.
+#[cfg(feature = "git")]
+static REPO_DIRS_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, RepoDirs>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(all(test, feature = "git"))]
+thread_local! {
+    /// Test-only count of **CLI discovery fallbacks** (step 3 above) issued on this thread, so a
+    /// guard can pin down "an ordinary directory spawns nothing". Thread-local for the same reason
+    /// as `EXTERNAL_GIT_ENABLED`: a process-wide counter would also see the calls made by every
+    /// other test running in parallel, which is precisely the flake `STATUS_CALLS` produced.
+    static DISCOVERY_CLI_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` and reports how many `git rev-parse` discovery fallbacks it triggered on this thread.
+#[cfg(all(test, feature = "git"))]
+pub fn count_discovery_cli_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DISCOVERY_CLI_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        DISCOVERY_CLI_CALLS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+/// Walks from `start` up to the filesystem root looking for a `.git` entry, and returns **the
+/// directory containing it** (not the marker itself).
+///
+/// A `.git` entry may be a directory (ordinary repository) *or* a file (linked worktree, submodule
+/// — it holds a `gitdir:` pointer), so this only asks "does an entry with that name exist here",
+/// via `symlink_metadata` so that a `.git` symlink counts too.
+///
+/// Pure filesystem lookup, no child process: this is what lets step 3 stay unreachable for the
+/// overwhelmingly common "this is just a directory" case.
+#[cfg(feature = "git")]
+fn git_marker_dir(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Step 3: ask the `git` CLI where the repository is, and remember the answer.
+///
+/// Deliberately run **from the marker directory** rather than from `root`: the result then depends
+/// only on the cache key, so every `root` under one repository shares one answer (konoma descends
+/// with `l` constantly), and a `root` that happens to sit *inside* `.git/` cannot poison the entry
+/// for the working tree above it.
+///
+/// One invocation resolves all three paths (`--path-format=absolute` makes the two git-dirs
+/// absolute; `--show-toplevel` already is). Failure — including a `git` older than the flag
+/// (2.31+), or a bare repository, where `--show-toplevel` errors — caches "nothing", which simply
+/// means konoma behaves as it did before this fallback existed.
+#[cfg(feature = "git")]
+fn repo_dirs_via_cli(marker_dir: &Path) -> RepoDirs {
+    let cache = REPO_DIRS_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    // A poisoned lock must not take the app down: fall through and recompute uncached.
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(marker_dir) {
+            return hit.clone();
+        }
+    }
+    #[cfg(test)]
+    DISCOVERY_CLI_CALLS.with(|c| c.set(c.get() + 1));
+
+    let dirs = run_rev_parse_dirs(marker_dir);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(marker_dir.to_path_buf(), dirs.clone());
+    }
+    dirs
+}
+
+/// The one `git rev-parse` invocation behind `repo_dirs_via_cli` (split out so the caching and the
+/// process launch can be read separately).
+#[cfg(feature = "git")]
+fn run_rev_parse_dirs(dir: &Path) -> RepoDirs {
+    use std::os::unix::ffi::OsStrExt;
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args([
+            "--no-optional-locks", // read-only background call (same etiquette as statuses())
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .output();
+    let Ok(out) = out else {
+        return RepoDirs::default();
+    };
+    if !out.status.success() {
+        return RepoDirs::default();
+    }
+    // Bytes, not `String`: a path is not required to be UTF-8. (`rev-parse` has no NUL-separated
+    // mode, so a path containing a literal newline is not representable here — such a repository
+    // simply keeps the pre-fallback behaviour.)
+    let mut lines = out
+        .stdout
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let p = PathBuf::from(std::ffi::OsStr::from_bytes(l));
+            p.canonicalize().unwrap_or(p)
+        });
+    let workdir = lines.next();
+    let git_dir = lines.next();
+    let common_dir = lines.next();
+    if git_dir.is_none() || common_dir.is_none() {
+        return RepoDirs::default(); // truncated output — treat as "could not resolve"
+    }
+    RepoDirs {
+        workdir,
+        git_dir,
+        common_dir,
+    }
+}
+
+/// Locates the repository containing `root`, by the three-step ladder documented at the top of this
+/// section. Every "where is the repo?" question in this file funnels through here.
+#[cfg(feature = "git")]
+fn resolve_repo_dirs(root: &Path) -> RepoDirs {
+    if !external_git_enabled() {
+        return RepoDirs::default();
+    }
+    // 1. libgit2 (no child process).
+    if let Ok(repo) = git2::Repository::discover(root) {
+        let canon = |p: &Path| {
+            let p = p.to_path_buf();
+            p.canonicalize().unwrap_or(p)
+        };
+        return RepoDirs {
+            workdir: repo.workdir().map(canon), // None for a bare repo
+            git_dir: Some(canon(repo.path())),
+            common_dir: Some(canon(repo.commondir())),
+        };
+    }
+    // 2. No `.git` anywhere above `root` ⇒ not a repository. Answer without spawning anything.
+    //    (A bare repository has no marker either, but step 1 already opened those.)
+    let Some(marker_dir) = git_marker_dir(root) else {
+        return RepoDirs::default();
+    };
+    // 3. A repository libgit2 will not open (reftable, or any future unknown extension).
+    repo_dirs_via_cli(&marker_dir)
+}
+
+/// Opens the repository containing `root` **through libgit2**, for the operations below that need
+/// its object database (diffs, the commit graph, branch refs) rather than just a path.
+///
+/// Returns `None` for a repository libgit2 refuses to open — today that means a **reftable**
+/// repository (see this section's header). Callers all degrade to empty/`None` there, so in a
+/// reftable repository konoma keeps status markers, the ignored set, the changed-files list, the
+/// worktree list and every write (all CLI-backed), while `file_diff` / `log` / `commit_diff` /
+/// `commit_meta` / `branches` / `branches_by_recency` / `branch_tip` / `head_commit_id` /
+/// `blob_at` / `worktree_diff` / `diff_since` / `merge_base_time` come back empty. That is a
+/// deliberate, safe degradation, not an oversight: each of those could be rewritten on top of the
+/// `git` CLI (`git diff`, `git log`, `git for-each-ref`, …) the same way status already is, which
+/// is the work to do if reftable repositories should get the Git views too.
+#[cfg(feature = "git")]
+fn open_repo(root: &Path) -> Option<git2::Repository> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
-    let wd = repo.workdir()?.to_path_buf();
-    Some(wd.canonicalize().unwrap_or(wd))
+    git2::Repository::discover(root).ok()
+}
+
+/// Returns the **workdir (working-tree root)** of the git repository that `root` belongs to (canonicalized).
+/// Returns None when not a repo / for a bare repo / when the feature is disabled. Discovery is
+/// lightweight (see this section's header — it never computes status), so it serves as the key for
+/// deciding "do not rebuild the expensive `ignored` set when moving root within the same repository."
+#[cfg(feature = "git")]
+pub fn workdir(root: &Path) -> Option<PathBuf> {
+    resolve_repo_dirs(root).workdir
 }
 
 #[cfg(not(feature = "git"))]
@@ -395,12 +596,7 @@ pub fn workdir(_root: &Path) -> Option<PathBuf> {
 /// the main repo's root). Returns None when not a repo / when the feature is disabled.
 #[cfg(feature = "git")]
 pub fn git_dir(root: &Path) -> Option<PathBuf> {
-    if !external_git_enabled() {
-        return None;
-    }
-    let repo = git2::Repository::discover(root).ok()?;
-    let p = repo.path().to_path_buf();
-    Some(p.canonicalize().unwrap_or(p))
+    resolve_repo_dirs(root).git_dir
 }
 
 #[cfg(not(feature = "git"))]
@@ -415,18 +611,55 @@ pub fn branch(root: &Path) -> Option<String> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
-    if let Ok(head) = repo.head() {
-        // git2 0.21: shorthand() is Result<&str, Error> (UTF-8 validated). The None-equivalent is
-        // absorbed with .ok().
-        return head.shorthand().ok().map(|s| s.to_string());
+    if let Some(repo) = open_repo(root) {
+        if let Ok(head) = repo.head() {
+            // git2 0.21: shorthand() is Result<&str, Error> (UTF-8 validated). The None-equivalent is
+            // absorbed with .ok().
+            return head.shorthand().ok().map(|s| s.to_string());
+        }
+        // If there is no commit yet (unborn), pull it from HEAD's symbolic reference instead.
+        // git2 0.21: symbolic_target() is Result<Option<&str>, Error>.
+        return repo
+            .find_reference("HEAD")
+            .ok()
+            .and_then(|r| r.symbolic_target().ok().flatten().map(|t| t.to_string()))
+            .map(|t| t.trim_start_matches("refs/heads/").to_string());
     }
-    // If there is no commit yet (unborn), pull it from HEAD's symbolic reference instead.
-    // git2 0.21: symbolic_target() is Result<Option<&str>, Error>.
-    repo.find_reference("HEAD")
-        .ok()
-        .and_then(|r| r.symbolic_target().ok().flatten().map(|t| t.to_string()))
-        .map(|t| t.trim_start_matches("refs/heads/").to_string())
+    // libgit2 would not open this repository (reftable — see the discovery section's header). Ask
+    // git itself, but only once a `.git` marker has confirmed there is a repository here at all,
+    // so an ordinary directory still costs nothing.
+    branch_via_cli(&git_marker_dir(root)?)
+}
+
+/// The `git` CLI answer to "which branch is checked out", for a repository libgit2 refuses.
+///
+/// **Never reads `.git/HEAD` directly.** A reftable repository keeps a backwards-compatibility
+/// placeholder there — literally `ref: refs/heads/.invalid` — so a tool that parses that file
+/// reports a branch that does not exist. Asking git is the only way to get the truth.
+#[cfg(feature = "git")]
+fn branch_via_cli(dir: &Path) -> Option<String> {
+    let run = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    };
+    match run(&["--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"]) {
+        // The ordinary case: one child process, the branch name.
+        Some(name) if name != "HEAD" => Some(name),
+        // Detached HEAD — `--abbrev-ref` literally prints `HEAD`; show a short hash instead, which
+        // is what the libgit2 path's `shorthand()` also yields there.
+        Some(_) => run(&["--no-optional-locks", "rev-parse", "--short", "HEAD"]),
+        // `rev-parse HEAD` fails before the first commit. `branch --show-current` still names the
+        // unborn branch, matching the libgit2 path's symbolic-target lookup above.
+        None => run(&["--no-optional-locks", "branch", "--show-current"]),
+    }
 }
 
 #[cfg(not(feature = "git"))]
@@ -441,10 +674,14 @@ pub fn branch(_root: &Path) -> Option<String> {
 /// title already shows the root directory's own name, which for a linked worktree is some
 /// unrelated branch/feature name, not the project's.
 ///
-/// `repo.is_worktree()` answers "linked worktree" directly (true even from a subdirectory reached
-/// by descending with `l`, since discovery walks up to the repo regardless of `root`). The origin
-/// name is derived from `repo.commondir()` (the shared git-dir every worktree of one repository
-/// points at), whose shape differs by layout:
+/// "Is this a linked worktree?" is answered by **git-dir ≠ common-dir**: a linked worktree gets its
+/// own private git-dir (`<common>/worktrees/<name>`) while sharing the common one, whereas a main
+/// worktree's two are the same directory. (libgit2's `is_worktree()` says the same thing, but is
+/// unavailable for a repository libgit2 will not open — see the discovery section's header — and
+/// this phrasing works identically on both paths.) It holds even from a subdirectory reached by
+/// descending with `l`, since discovery walks up to the repo regardless of `root`. The origin name
+/// is derived from the common dir (the shared git-dir every worktree of one repository points at),
+/// whose shape differs by layout:
 /// - ordinary repo + its linked worktrees: commondir = `<main>/.git/` → the origin name is the
 ///   **parent directory's** name (`<main>`'s basename).
 /// - bare repo + its worktrees (`git clone --bare` + `git worktree add`): commondir = `<bare>/repo.git/`
@@ -454,14 +691,11 @@ pub fn branch(_root: &Path) -> Option<String> {
 /// The two are told apart by whether commondir's basename is literally `.git`.
 #[cfg(feature = "git")]
 pub fn worktree_origin(root: &Path) -> Option<String> {
-    if !external_git_enabled() {
-        return None;
-    }
-    let repo = git2::Repository::discover(root).ok()?;
-    if !repo.is_worktree() {
+    let dirs = resolve_repo_dirs(root);
+    let (git_dir, commondir) = (dirs.git_dir?, dirs.common_dir?);
+    if git_dir == commondir {
         return None; // the main worktree (or a bare repo with no worktree at all)
     }
-    let commondir = repo.commondir();
     let name = commondir.file_name()?.to_str()?;
     if name == ".git" {
         commondir
@@ -539,7 +773,7 @@ pub fn branches(root: &Path) -> Vec<BranchInfo> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -619,13 +853,9 @@ pub fn worktrees(root: &Path) -> Vec<WorktreeInfo> {
     // invoked from, so this is just picking *some* directory to run git in — not "the main
     // worktree's workdir". If `root` is inside a linked worktree, this resolves to that linked
     // worktree's own path, not the main one.
-    let Some(cwd) = git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(Path::to_path_buf))
-    else {
+    let Some(cwd) = workdir(root) else {
         return Vec::new(); // not a repo / a bare repo opened directly as root
     };
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
 
     let out = std::process::Command::new("git")
         .current_dir(&cwd)
@@ -744,7 +974,7 @@ pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let mut out: Vec<(String, bool, i64)> = Vec::new();
@@ -781,7 +1011,7 @@ pub fn branch_tip(root: &Path, name: &str) -> Option<String> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
+    let repo = open_repo(root)?;
     let branch = repo.find_branch(name, git2::BranchType::Local).ok()?;
     let oid = branch.get().peel_to_commit().ok()?.id();
     Some(oid.to_string())
@@ -939,7 +1169,7 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let Some(workdir) = repo.workdir() else {
@@ -1028,7 +1258,7 @@ pub fn head_commit_id(root: &Path) -> Option<String> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
+    let repo = open_repo(root)?;
     let commit = repo.head().ok()?.peel_to_commit().ok()?;
     Some(commit.id().to_string())
 }
@@ -1041,7 +1271,7 @@ pub fn blob_at(root: &Path, sha: &str, file: &Path) -> Option<Vec<u8>> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
+    let repo = open_repo(root)?;
     let workdir = repo.workdir()?;
     let workdir = workdir
         .canonicalize()
@@ -1124,13 +1354,9 @@ pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
     }
     use std::os::unix::ffi::OsStrExt;
     let mut out = Vec::new();
-    let Some(workdir) = git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(Path::to_path_buf))
-    else {
+    let Some(workdir) = workdir(root) else {
         return out; // not a repo / a bare repo
     };
-    let workdir = workdir.canonicalize().unwrap_or(workdir);
 
     // porcelain v1 -z: each record is `XY <path>`, NUL-separated. When it's a rename/copy (X or Y
     // is R/C), the NUL field right after is the old path (the new path comes first — confirmed by
@@ -1197,7 +1423,7 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
     if !external_git_enabled() {
         return out;
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return out;
     };
     let Ok(mut walk) = repo.revwalk() else {
@@ -1240,7 +1466,7 @@ pub fn commit_diff(root: &Path, id: &str) -> Vec<DiffLine> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let Ok(oid) = git2::Oid::from_str(id) else {
@@ -1280,7 +1506,7 @@ pub fn commit_meta(root: &Path, id: &str) -> Option<CommitMeta> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
+    let repo = open_repo(root)?;
     let oid = git2::Oid::from_str(id).ok()?;
     let commit = repo.find_commit(oid).ok()?;
     let message = commit.message().unwrap_or("").trim_end().to_string();
@@ -1308,13 +1534,11 @@ pub fn commit_diff(_root: &Path, _id: &str) -> Vec<DiffLine> {
     Vec::new()
 }
 
-/// Resolves the target repo workdir for write operations (prefers discover, falls back to root on failure).
+/// Resolves the target repo workdir for write operations (prefers discovery, falls back to root on
+/// failure — `git` itself walks up from a subdirectory just fine, so root is a safe last resort).
 #[cfg(feature = "git")]
 fn workdir_of(root: &Path) -> PathBuf {
-    git2::Repository::discover(root)
-        .ok()
-        .and_then(|r| r.workdir().map(|w| w.to_path_buf()))
-        .unwrap_or_else(|| root.to_path_buf())
+    workdir(root).unwrap_or_else(|| root.to_path_buf())
 }
 
 /// Picks the single line out of `git`'s stderr that's worth showing the user.
@@ -2010,7 +2234,7 @@ pub fn worktree_diff(root: &Path) -> Vec<DiffLine> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let head_tree = repo
@@ -2061,7 +2285,7 @@ pub fn diff_since(root: &Path, base: &str) -> Vec<DiffLine> {
     if !external_git_enabled() {
         return Vec::new();
     }
-    let Ok(repo) = git2::Repository::discover(root) else {
+    let Some(repo) = open_repo(root) else {
         return Vec::new();
     };
     let Ok(base_branch) = repo.find_branch(base, git2::BranchType::Local) else {
@@ -2128,7 +2352,7 @@ pub fn merge_base_time(root: &Path, base: &str) -> Option<i64> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = git2::Repository::discover(root).ok()?;
+    let repo = open_repo(root)?;
     let base_oid = repo
         .find_branch(base, git2::BranchType::Local)
         .ok()?
@@ -2382,6 +2606,11 @@ mod tests {
         assert!(statuses(&dir).is_empty(), "statuses");
         assert!(ignored(&dir).is_empty(), "ignored");
         assert!(workdir(&dir).is_none(), "workdir");
+        // The two other discovery entry points share `workdir`'s gate (they all funnel through
+        // `resolve_repo_dirs`) — assert them here so moving that gate can never silently let a
+        // disabled build keep resolving repositories.
+        assert!(git_dir(&dir).is_none(), "git_dir");
+        assert!(worktree_origin(&dir).is_none(), "worktree_origin");
         assert!(branch(&dir).is_none(), "branch");
         assert!(branches(&dir).is_empty(), "branches");
         assert!(branches_by_recency(&dir).is_empty(), "branches_by_recency");
@@ -3243,6 +3472,228 @@ mod tests {
             !map.contains_key(&canon.join("old.txt")),
             "旧パスはツリーに出ないので map に入らないはず"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Repository discovery ────────────────────────────────────────────────────────────────
+
+    /// The `.git` ancestor walk (step 2 of the discovery ladder) recognises every shape of marker
+    /// git itself does — a **directory** (ordinary repository), a **file** (linked worktree /
+    /// submodule, holding a `gitdir:` pointer) — finds one on an **ancestor** rather than only on
+    /// `start`, and reports **nothing** for a plain directory. That last case is what keeps an
+    /// ordinary directory from ever reaching the `git rev-parse` fallback.
+    #[cfg(feature = "git")]
+    #[test]
+    fn git_marker_dir_finds_dir_file_and_ancestor_markers() {
+        let base = unique_tmp("konoma_marker_walk_test");
+        let _ = std::fs::remove_dir_all(&base);
+        // Marker as a directory, with a nested subdirectory to walk up from.
+        let as_dir = base.join("as_dir");
+        std::fs::create_dir_all(as_dir.join(".git")).unwrap();
+        std::fs::create_dir_all(as_dir.join("sub/deep")).unwrap();
+        // Marker as a file (what `git worktree add` writes).
+        let as_file = base.join("as_file");
+        std::fs::create_dir_all(as_file.join("sub")).unwrap();
+        std::fs::write(
+            as_file.join(".git"),
+            b"gitdir: /elsewhere/.git/worktrees/x\n",
+        )
+        .unwrap();
+        // No marker anywhere.
+        let plain = base.join("plain/inner");
+        std::fs::create_dir_all(&plain).unwrap();
+
+        assert_eq!(git_marker_dir(&as_dir).as_deref(), Some(as_dir.as_path()));
+        assert_eq!(
+            git_marker_dir(&as_dir.join("sub/deep")).as_deref(),
+            Some(as_dir.as_path()),
+            "祖先の .git ディレクトリを見つける"
+        );
+        assert_eq!(
+            git_marker_dir(&as_file.join("sub")).as_deref(),
+            Some(as_file.as_path()),
+            ".git が**ファイル**(リンクワークツリー)でも marker"
+        );
+        assert_eq!(
+            git_marker_dir(&plain),
+            None,
+            "どこにも .git が無ければ「repo ではない」と即断する"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// **Performance contract**: an ordinary (non-repository) directory must not launch a single
+    /// `git rev-parse` discovery process, no matter which entry point asks. konoma re-resolves the
+    /// repository on every filesystem event, so a spawn here would reintroduce exactly the class of
+    /// stall the `.git` self-loop / Phase G caching work spent so long removing.
+    ///
+    /// Counts the *discovery fallback* specifically (the CLI ladder's step 3). The separate,
+    /// once-per-process `git --version` probe behind `external_git_enabled()` predates this and is
+    /// pinned to a fixed answer here so the count reflects only discovery.
+    #[cfg(feature = "git")]
+    #[test]
+    fn an_ordinary_directory_never_spawns_a_discovery_process() {
+        let dir = unique_tmp("konoma_no_spawn_outside_repo_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
+        set_git_binary_available_for_test(Some(true));
+
+        let (_, calls) = count_discovery_cli_calls(|| {
+            // Every entry point that asks "where is the repo?", including from a subdirectory.
+            for probe in [dir.clone(), dir.join("sub")] {
+                assert!(workdir(&probe).is_none());
+                assert!(git_dir(&probe).is_none());
+                assert!(branch(&probe).is_none());
+                assert!(worktree_origin(&probe).is_none());
+                assert!(statuses(&probe).is_empty());
+                assert!(ignored(&probe).is_empty());
+                assert!(changed_files(&probe).is_empty());
+                assert!(worktrees(&probe).is_empty());
+            }
+        });
+        set_git_binary_available_for_test(None);
+        assert_eq!(
+            calls, 0,
+            "repo でないディレクトリで発見用の子プロセスを起動してはいけない"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Creates a **reftable** repository (git 2.45+) at `dir` with one commit, returning `false`
+    /// when this machine's `git` is too old to do so — in which case the caller skips, the same way
+    /// the PDF tests skip when their optional tool is missing.
+    #[cfg(feature = "git")]
+    fn init_reftable_repo(dir: &Path) -> bool {
+        let run = |args: &[&str]| -> bool {
+            std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !run(&["init", "--ref-format=reftable", "-q", "."]) {
+            return false; // git < 2.45
+        }
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(dir.join("tracked.txt"), b"one\n").unwrap();
+        run(&["add", "-A"]) && run(&["commit", "-qm", "init"])
+    }
+
+    /// Regression (user report): a **reftable** repository was treated as "not a repository at
+    /// all" — no branch chip, no status markers, the Git hub did nothing — even though the `git`
+    /// CLI worked there perfectly. libgit2 rejects `extensions.refstorage = reftable` outright, and
+    /// konoma routed *discovery* through libgit2 while doing the actual work over the CLI, so a
+    /// refused discovery took the CLI-backed features down with it.
+    ///
+    /// Also pins the two things the fix must not get wrong: the branch name must come from `git`
+    /// (a reftable repository's `.git/HEAD` holds the compatibility placeholder
+    /// `ref: refs/heads/.invalid`, which a naive reader would report as the branch), and the CLI
+    /// fallback must be **memoized** (konoma re-resolves on every filesystem event).
+    #[cfg(feature = "git")]
+    #[test]
+    fn reftable_repository_keeps_status_branch_and_worktree_features() {
+        let dir = unique_tmp("konoma_reftable_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if !init_reftable_repo(&dir) {
+            eprintln!("skip: この git は --ref-format=reftable を作れない (git < 2.45)");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let canon = dir.canonicalize().unwrap();
+        // The premise of the whole fix. Should a future git2 learn reftable, discovery simply takes
+        // the fast path and the behavioural assertions below must still hold — so the
+        // fallback-specific ones are gated on this rather than asserted outright.
+        let libgit2_refuses = git2::Repository::discover(&dir).is_err();
+        assert_eq!(
+            std::fs::read_to_string(canon.join(".git/HEAD"))
+                .unwrap()
+                .trim(),
+            "ref: refs/heads/.invalid",
+            "reftable の .git/HEAD は後方互換のプレースホルダ(嘘のブランチ名)"
+        );
+
+        // Uncommitted changes of both kinds, so `statuses` has something real to report.
+        std::fs::write(canon.join("tracked.txt"), b"two\n").unwrap();
+        std::fs::write(canon.join("fresh.txt"), b"new\n").unwrap();
+
+        assert_eq!(
+            workdir(&dir).as_deref(),
+            Some(canon.as_path()),
+            "workdir が作業ツリーの根を返す"
+        );
+        assert_eq!(
+            git_dir(&dir).as_deref(),
+            Some(canon.join(".git").as_path()),
+            "git_dir"
+        );
+        // From a subdirectory too (konoma descends with `l`).
+        std::fs::create_dir_all(canon.join("sub")).unwrap();
+        assert_eq!(
+            workdir(&canon.join("sub")).as_deref(),
+            Some(canon.as_path())
+        );
+
+        let st = statuses(&dir);
+        assert_eq!(
+            st.get(&canon.join("tracked.txt")),
+            Some(&FileStatus::Modified),
+            "変更が M として出る: {st:?}"
+        );
+        assert_eq!(
+            st.get(&canon.join("fresh.txt")),
+            Some(&FileStatus::Untracked),
+            "未追跡が U として出る: {st:?}"
+        );
+        assert_eq!(
+            changed_files(&dir).len(),
+            2,
+            "変更ファイル一覧 (Git ハブ) も出る"
+        );
+        assert!(
+            !worktrees(&dir).is_empty(),
+            "worktree 一覧 (CLI 経路) も出る"
+        );
+
+        let b = branch(&dir).expect("ブランチ名が取れる");
+        assert!(
+            b == "main" || b == "master",
+            "既定ブランチ名が取れる: {b:?}"
+        );
+        assert!(
+            !b.contains(".invalid"),
+            ".git/HEAD のプレースホルダを読んではいけない: {b:?}"
+        );
+        assert_eq!(
+            worktree_origin(&dir),
+            None,
+            "メインワークツリーなので WT チップは出さない"
+        );
+
+        // libgit2-only features degrade to empty **without panicking** (documented on `open_repo`).
+        if libgit2_refuses {
+            assert!(file_diff(&dir, &canon.join("tracked.txt")).is_empty());
+            assert!(log(&dir, 10).is_empty());
+            assert!(branches(&dir).is_empty());
+            assert!(head_commit_id(&dir).is_none());
+            assert!(worktree_diff(&dir).is_empty());
+
+            // Memoization: the ladder's step 3 runs once per repository, not once per question.
+            let (_, calls) = count_discovery_cli_calls(|| {
+                for _ in 0..20 {
+                    let _ = workdir(&dir);
+                    let _ = git_dir(&dir);
+                    let _ = statuses(&dir);
+                }
+            });
+            assert_eq!(
+                calls, 0,
+                "発見結果はキャッシュ済み — fs イベント毎に rev-parse を起動してはいけない"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
