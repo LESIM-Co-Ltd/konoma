@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-11
+
 ### Added
 - **Video thumbnails for H.264 and HEVC now need nothing installed, in mp4/m4v/mov *and*
   mkv/webm.** konoma reads the container itself and decodes one keyframe, in pure Rust — so a screen
@@ -61,6 +63,13 @@ All notable changes to konoma are documented in this file. The format is based o
   as before — both are pure Rust.
 - The `[can not preview]` hint for a PDF no longer suggests installing poppler; it points at the
   terminal's graphics support, or an encrypted/corrupt document.
+- **Documentation corrected on what a terminal needs.** Every entry point said images, PDF, SVG,
+  Mermaid, math and video thumbnails *require* a kitty-graphics terminal. They do not: konoma's own
+  compressed transfer is kitty-only, but iTerm2 and sixel terminals are drawn as real pixels through
+  ratatui-image, and only the remaining ones fall back to half-blocks. Text previews always worked
+  everywhere. The issue templates also claimed konoma is macOS-only and that Linux is out of scope,
+  while CI runs a Linux job and every release ships a Linux binary. Drag & drop, `--help`/`--version`,
+  `Space -> D`, `y c`, `Ctrl-t` and global `P` were documented nowhere.
 
 ## [0.23.9] - 2026-08-09
 
@@ -1615,7 +1624,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...v0.24.0
 [0.23.9]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...v0.23.9
 [0.23.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...v0.23.8
 [0.23.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.5...v0.23.6
