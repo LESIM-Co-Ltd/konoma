@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-08-12
+
 ### Fixed
 - **A repository created with `git init --ref-format=reftable` (git 2.45+) is no longer treated as
   "not a git repository at all".** The branch chip, the status markers in the tree, the ignored
@@ -1660,7 +1662,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...v0.24.0
 [0.23.9]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...v0.23.9
 [0.23.8]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.6...v0.23.8
