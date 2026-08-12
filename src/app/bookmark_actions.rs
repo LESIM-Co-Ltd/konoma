@@ -2,6 +2,43 @@
 
 use super::*;
 
+/// What one coalesced filesystem-event burst did, beyond the list of paths it touched. Accumulated
+/// over the burst by `main`'s run loop (OR-ing every event's contribution) and handed to
+/// `App::fs_burst_is_build_churn`, which needs both halves to decide whether the burst may be
+/// skipped.
+///
+/// A struct rather than two `bool` parameters on purpose: both flags mean "this burst must not be
+/// skipped", so a swapped pair would still compile and still *usually* behave — silently losing
+/// exactly one of the two guarantees. Naming the fields at the call site makes that impossible.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FsBurstKinds {
+    /// `.gitignore` or `.git/info/exclude` changed, so the heavy ignore set must be rebuilt
+    /// (`is_ignore_rule_file`). Also forces the refresh: the burst's paths may have just *become*
+    /// ignored, or stopped being.
+    pub ignore_rules_changed: bool,
+    /// At least one event added, removed or renamed an entry rather than only rewriting the bytes
+    /// of one that already existed (`is_structural_event`), so the set of rows on screen changed.
+    pub structural: bool,
+}
+
+impl FsBurstKinds {
+    /// Fold another event's flags in (a burst is skippable only if *every* event in it was).
+    pub fn merge(&mut self, other: Self) {
+        self.ignore_rules_changed |= other.ignore_rules_changed;
+        self.structural |= other.structural;
+    }
+}
+
+/// The file each filtered view was sitting on before a tree rebuild, so the cursor can be put back
+/// on the *same file* rather than the same index (see `App::capture_view_anchors`).
+struct ViewAnchors {
+    /// Cursor identity for the `/` text filter. `None` when that filter isn't active.
+    filter: Option<PathBuf>,
+    /// Cursor identity for the `C` changed-files list. Also published on `App` as
+    /// `changed_anchor_pending`, because the rebuild is often deferred until a status scan lands.
+    changed: Option<PathBuf>,
+}
+
 impl App {
     // --- Bookmarks (M7 auxiliary) ----------------------------------------------
     /// Whether we are waiting for an alphabetic key after `m` (while true, main intercepts keys).
@@ -1339,16 +1376,28 @@ impl App {
         }
     }
 
-    /// Whether an fs-event burst is pure build churn — every changed path is gitignored and no ignore
-    /// rule changed — so the tree/status refresh can be skipped. An empty `changed` (unknown / `.git`-only)
-    /// is NOT churn (returns false) so external git operations still refresh. Follow is unaffected: its
-    /// candidates are already filtered by `is_ignored` in `follow_note_change`.
+    /// Whether an fs-event burst is pure build churn — every changed path is gitignored, no ignore
+    /// rule changed, and nothing was created, removed or renamed — so the tree/status refresh can be
+    /// skipped. An empty `changed` (unknown / `.git`-only) is NOT churn (returns false) so external
+    /// git operations still refresh. Follow is unaffected: its candidates are already filtered by
+    /// `is_ignored` in `follow_note_change`.
+    ///
+    /// The `structural` half of `kinds` is what keeps the skip honest. Skipping is only ever safe
+    /// for **writes**: they change what a row says, and the very next unignored event repairs it.
+    /// A create/removal/rename changes *which rows exist*, and skipping that leaves the tree
+    /// listing files that are gone — with nothing to repair it, because a listing nobody rebuilds
+    /// stays wrong until the user navigates away. That was a real bug: deleting a file inside an
+    /// ignored directory (`out/` in a `.gitignore`) left it on screen, and returning from a preview
+    /// then re-derived its detail columns from a path that no longer existed.
     pub(crate) fn fs_burst_is_build_churn(
         &self,
         changed: &[std::path::PathBuf],
-        ignore_rules_changed: bool,
+        kinds: FsBurstKinds,
     ) -> bool {
-        !changed.is_empty() && !ignore_rules_changed && changed.iter().all(|p| self.is_ignored(p))
+        !changed.is_empty()
+            && !kinds.ignore_rules_changed
+            && !kinds.structural
+            && changed.iter().all(|p| self.is_ignored(p))
     }
 
     /// The current branch name (None if not a repo). Used for the tree's title display.
@@ -1435,18 +1484,22 @@ impl App {
         self.refresh_reporting_staleness(|app| app.refresh_fs_changed(recompute_ignored, changed));
     }
 
-    fn refresh_fs_inner(
-        &mut self,
-        recompute_ignored: bool,
-        changed: &[std::path::PathBuf],
-        reload_preview: bool,
-    ) -> Result<()> {
+    /// Note which file each filtered view is "on", **before** a `rebuild_tree` replaces `entries`
+    /// with the unfiltered listing, so `rebuild_tree_preserving_filtered_view` can put the cursor
+    /// back on the same file afterwards. Always call the two as a pair, with nothing in between
+    /// that touches `entries`.
+    ///
+    /// Also **publishes** the `C`-list anchor on `App` — deliberately before the caller kicks a git
+    /// status scan, because that scan may run synchronously, and `apply_statuses` consumes the
+    /// published anchor to rebuild the changed list. Publishing after the kick would hand the scan
+    /// a stale anchor and leave a fresh one behind for an unrelated later scan to pick up.
+    fn capture_view_anchors(&mut self) -> ViewAnchors {
         // Which file the cursor is on, taken **before** the `rebuild_tree` below replaces `entries`
         // with the unfiltered listing. After that point the filtered index names a different file
         // entirely, so reading it later doesn't just lose the cursor — once the pool catches up, the
         // wrong file is *found* and the cursor is dragged onto it (an agent's write burst reliably
         // walked the cursor onto files the user never looked at). Only meaningful while filtering.
-        let filter_anchor = if self.tab.tree_filter.is_some() {
+        let filter = if self.tab.tree_filter.is_some() {
             self.filter_anchor()
         } else {
             None
@@ -1464,22 +1517,17 @@ impl App {
         // faster than one `git status` scan) would read `selected`'s position in the wrong
         // structure and overwrite the correct pending identity with it, so the eventual landing
         // dragged the cursor onto a file the user was never on.
-        let changed_anchor = self.changed_filter_anchor();
-        self.tab.changed_anchor_pending = changed_anchor.clone();
-        if recompute_ignored {
-            self.git_status_for = None; // recompute statuses+branch on the next render
-            self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
-            self.git_ignored_dirty = true; // rebuild the heavy ignored too (ignore-rule change / explicit refresh).
-                                           // The old set is kept until the new one lands (computed on a separate thread, avoids flicker).
-        } else {
-            self.refresh_git_status_only(); // statuses+branch only (ignored keeps its cache)
-        }
-        self.diff_cache = None; // the working tree may have changed → drop the diff cache (keeps up with external edits)
-        self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
-                                  // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
-                                  // expanded briefly becomes unreadable while an agent bulk-rewrites files)
-                                  // must **not skip** the preview/view reload below. Those only depend on
-                                  // preview_path / git state, not the new tree, so the tree's Err is returned at the end.
+        let changed = self.changed_filter_anchor();
+        self.tab.changed_anchor_pending = changed.clone();
+        ViewAnchors { filter, changed }
+    }
+
+    /// `rebuild_tree`, plus putting whichever filtered view is active back on top of the fresh
+    /// listing. `rebuild_tree` alone resets `entries` to the whole tree, so calling it directly
+    /// while `/` or `C` is on shows everything while still displaying the query — call this instead
+    /// (with the anchors from `capture_view_anchors`) anywhere the tree is re-derived.
+    /// Returns `rebuild_tree`'s result unchanged; the view work happens either way.
+    fn rebuild_tree_preserving_filtered_view(&mut self, anchors: ViewAnchors) -> Result<()> {
         let tree = self.rebuild_tree();
         // While the changed-files-only filter is active, rebuild the list from the latest statuses (follows an agent's edits).
         if self.tab.changed_filter {
@@ -1494,19 +1542,60 @@ impl App {
                 // than leave it for an unrelated later scan to pick up. The local is the same value
                 // (a synchronous scan above may already have taken the published one).
                 self.tab.changed_anchor_pending = None;
-                self.reapply_changed_filter(changed_anchor);
+                self.reapply_changed_filter(anchors.changed);
             }
         } else if self.tab.tree_filter.is_some() {
             // While the text filter (`/`) is active, rebuild_tree resets entries back to showing
             // everything, so re-filter **immediately** with the pool we already have (fixing the
             // inconsistency where the query is restored but the list shows everything).
-            self.reapply_filter(filter_anchor);
+            self.reapply_filter(anchors.filter);
             // Then refresh the pool itself in the background, so it follows external
             // additions/deletions. This is the hot path for konoma's headline use: an agent
             // touching files fires an FS event per write, and re-walking the whole tree
             // synchronously on each one is what an agent's build churn turns into a freeze.
             self.kick_filter_pool_refresh();
         }
+        tree
+    }
+
+    /// Re-derive the tree at a seam where the fs may have changed without us hearing about it —
+    /// currently `back_to_tree`, i.e. the moment the listing becomes visible again after a preview.
+    /// Reports a rebuild failure the same way the watcher path does, since there is no `?` to ride.
+    ///
+    /// Why the seam needs this: FS notification is lossy by nature (bursts coalesce, a watch can
+    /// fail, and until this commit an entire class of events was skipped outright), so a preview
+    /// session is long enough for the listing to drift. Re-verifying the git markers here but not
+    /// the rows was worse than doing neither — it refreshed *part* of the row, which is how a
+    /// deleted file came back as a confident `0 B`. Measured cost: ~0.02 ms on a typical tree
+    /// (konoma's own root, 25 rows) and ~5.3 ms with 10,000 rows expanded, once per return to the
+    /// tree — well inside the <60 ms responsiveness budget, so freshness wins.
+    pub(super) fn reverify_tree_at_seam(&mut self) {
+        let anchors = self.capture_view_anchors();
+        self.refresh_reporting_staleness(|app| app.rebuild_tree_preserving_filtered_view(anchors));
+    }
+
+    fn refresh_fs_inner(
+        &mut self,
+        recompute_ignored: bool,
+        changed: &[std::path::PathBuf],
+        reload_preview: bool,
+    ) -> Result<()> {
+        let anchors = self.capture_view_anchors();
+        if recompute_ignored {
+            self.git_status_for = None; // recompute statuses+branch on the next render
+            self.git_status_dirty = true; // an ignore-rule change can also change status output = invalidate the workdir cache
+            self.git_ignored_dirty = true; // rebuild the heavy ignored too (ignore-rule change / explicit refresh).
+                                           // The old set is kept until the new one lands (computed on a separate thread, avoids flicker).
+        } else {
+            self.refresh_git_status_only(); // statuses+branch only (ignored keeps its cache)
+        }
+        self.diff_cache = None; // the working tree may have changed → drop the diff cache (keeps up with external edits)
+        self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
+                                  // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
+                                  // expanded briefly becomes unreadable while an agent bulk-rewrites files)
+                                  // must **not skip** the preview/view reload below. Those only depend on
+                                  // preview_path / git state, not the new tree, so the tree's Err is returned at the end.
+        let tree = self.rebuild_tree_preserving_filtered_view(anchors);
         // Drop paths that vanished from the selection set (retain keeps only ones that still exist; symlinks aren't followed).
         self.tab.selection.retain(|p| p.symlink_metadata().is_ok());
         // Only make the active derived view follow along.

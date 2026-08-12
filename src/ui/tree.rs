@@ -265,9 +265,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // Pre-pass: fill only the visible rows into App's (path → cells) detail-cell cache first.
     // Prevents the per-row stat (the `items` column is read_dir) from running on every keypress; discarded on tree rebuild.
     if show_details {
-        let vis: Vec<(std::path::PathBuf, bool)> = app.tab.entries[offset..end]
+        let vis: Vec<std::path::PathBuf> = app.tab.entries[offset..end]
             .iter()
-            .map(|e| (e.path.clone(), e.is_dir))
+            .map(|e| e.path.clone())
             .collect();
         app.ensure_detail_cells(&vis, &detail_cols);
     }

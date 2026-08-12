@@ -24,6 +24,29 @@ All notable changes to konoma are documented in this file. The format is based o
   right-aligned title, so a long path can never push it off the border.
 
 ### Fixed
+- **A file deleted inside a gitignored directory stayed in the tree as a ghost row, sized `0 B`.**
+  Browsing a directory that a `.gitignore` covers — a build output directory, `node_modules`, or in
+  the reported case an `out/` full of generated images — and deleting one of its files from outside
+  konoma left the row on screen. Opening a preview and returning to the tree then replaced its size
+  with a confident `0 B`, so the row didn't look stale, it looked like a real empty file. Nothing
+  short of navigating out of the directory and back would clear it.
+
+  Two things had to line up. First, the optimization that absorbs build churn — when every path in a
+  filesystem burst is gitignored, skip rebuilding the tree — never looked at *what* the events were.
+  It was written for writes to `target/`, where skipping only means a size column is briefly stale
+  and the next event fixes it, but it swallowed creations, deletions and renames just the same, and
+  those change which rows exist at all. The guard now skips a burst only when every event in it
+  merely rewrote the contents of something that already existed; anything that adds, removes or
+  renames an entry always refreshes, gitignored or not. Writes to ignored paths are still skipped,
+  so the churn the optimization exists for is still absorbed.
+
+  Second, returning from a preview to the tree dropped the cached detail columns without re-deriving
+  the rows, which is worse than doing neither: it recomputed half of each row against the disk while
+  the other half still came from a listing that could be minutes old. The listing itself is now
+  re-derived at that same moment (measured at ~0.02 ms for a typical tree and ~5.3 ms with 10,000
+  rows expanded, once per return to the tree), and any active `/` or `C` filter is preserved across
+  it. Finally, a row whose metadata cannot be read now shows **blank** detail columns instead of
+  inventing `size 0`, so no future gap can turn a stale row back into a confident lie.
 - **A still image in a Markdown preview disappeared after about five minutes, if the same document
   also had an animated GIF in it.** An animated inline GIF re-encodes its picture on every frame,
   and each re-encode asked ratatui-image for a fresh kitty protocol — which picks its image id with

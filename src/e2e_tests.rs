@@ -4381,6 +4381,85 @@ fn e2e_details_columns_show_size_and_modified() {
 }
 
 #[test]
+fn e2e_returning_from_a_preview_drops_a_row_whose_file_vanished() {
+    // The reported bug, at the seam where it became visible: while one file is previewed another
+    // file in the same directory disappears (an agent, or an external `rm`), and `q` brings back a
+    // listing that still carries its row — with a freshly computed, entirely fictional `0 B` in the
+    // size column, because returning to the tree re-derived the detail cells but not the rows.
+    //
+    // Deliberately watcher-free (and git-free): this covers the *self-repair* half of the fix, so
+    // it holds no matter which fs events were delivered or missed. The watcher half — never
+    // skipping a create/remove/rename — is covered in `main.rs` and `app::tests`.
+    let dir = sandbox("stale_row_on_return");
+    std::fs::write(dir.join("kept.txt"), "kept-kept-kept\n").unwrap();
+    std::fs::write(dir.join("gone.txt"), "gone\n").unwrap();
+    let dir = canon(&dir);
+
+    let mut cfg = Config::default();
+    cfg.ui.details = vec!["size".into()];
+    let mut s = Sim::with_config(&dir, cfg);
+    s.see("gone.txt");
+    s.see("5 B"); // gone.txt's real size, before it disappears
+    s.dont_see("0 B");
+
+    s.select("kept.txt");
+    s.enter(); // full-screen preview
+    assert!(s.app.tab.preview_path.is_some(), "プレビューに入っている");
+
+    // Disappears while the preview is up — exactly what an agent deleting a build artifact does.
+    std::fs::remove_file(dir.join("gone.txt")).unwrap();
+
+    s.key('q'); // back to the tree
+    assert!(
+        !s.app
+            .tab
+            .entries
+            .iter()
+            .any(|e| e.path.ends_with("gone.txt")),
+        "消えたファイルの行が entries に残っている(ツリーを再検証していない)"
+    );
+    s.dont_see("gone.txt");
+    // The specific lie: a row for a file that no longer exists, sized 0 B.
+    s.dont_see("0 B");
+    s.see("kept.txt"); // …without throwing away the rows that are still real
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_returning_from_a_preview_keeps_the_active_filter() {
+    // Guards the risk the seam re-verification introduces: `rebuild_tree` resets `entries` to the
+    // whole tree, so re-deriving the listing on the way back from a preview must go through the
+    // filter-preserving path. Getting this wrong shows the query in the title while listing
+    // everything under it — the same inconsistency a previous fix (tab switching) had to repair.
+    let dir = sandbox("filter_survives_preview");
+    seed_files(&dir);
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+
+    s.key('/');
+    s.keys("csv");
+    s.enter(); // confirm the filter (the list stays filtered)
+    let filtered = s.app.tab.entries.len();
+    assert!(filtered >= 1, "csv に一致する行がある");
+    s.see("data.csv");
+    s.dont_see("readme.md");
+
+    s.select("data.csv");
+    s.enter(); // preview
+    assert!(s.app.tab.preview_path.is_some(), "プレビューに入っている");
+    s.key('q'); // back to the tree — re-derives the listing
+
+    assert_eq!(
+        s.app.tab.entries.len(),
+        filtered,
+        "プレビューから戻っても絞り込みが効いたまま(全件に戻らない)"
+    );
+    s.see("data.csv");
+    s.dont_see("readme.md");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn e2e_path_style_cycles() {
     // p=CyclePathStyle cycles Relative→Home→Full→Relative. The path: display at the top follows along too.
     use crate::app::PathStyle;

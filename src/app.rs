@@ -40,6 +40,9 @@ mod tab_lifecycle;
 mod table_actions;
 
 use md_text::*;
+// Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
+// only consumer is `App::fs_burst_is_build_churn`, which lives with the type).
+pub use bookmark_actions::FsBurstKinds;
 // Only referenced by tests (`crate::app::PreviewSelection`) — `preview_visual` itself uses the
 // type unqualified since it's defined there, so this re-export would be unused_imports outside cfg(test).
 #[cfg(test)]
@@ -2461,22 +2464,25 @@ impl App {
     /// Fill the detail-column cell cache for the given visible rows (tree render pre-pass).
     /// A path already cached is skipped; the whole cache is dropped by `rebuild_tree` (the choke
     /// point every fs change goes through), so cells are computed once per tree generation.
-    pub fn ensure_detail_cells(&mut self, rows: &[(PathBuf, bool)], cols: &[String]) {
-        for (path, is_dir) in rows {
+    ///
+    /// A row whose metadata cannot be read gets **blank cells, never invented ones**. This used to
+    /// fall back to a synthetic `RowMeta { size: 0, mtime: None, .. }`, which renders as a confident
+    /// `0 B` — so a row that outlived the file it names didn't look stale, it looked like a real
+    /// empty file. Blank is how these columns already report what they cannot obtain (`modified`
+    /// with no mtime, `items` on an unreadable directory), and it keeps the display honest should
+    /// any future path let a stale row survive a moment longer than intended.
+    pub fn ensure_detail_cells(&mut self, rows: &[PathBuf], cols: &[String]) {
+        for path in rows {
             if self.detail_cells_cache.contains_key(path) {
                 continue;
             }
-            let meta = crate::fileops::quick_meta(path).unwrap_or(crate::fileops::RowMeta {
-                is_dir: *is_dir,
-                is_symlink: false,
-                size: 0,
-                mtime: None,
-                mode: 0,
-            });
-            let cells: Vec<String> = cols
-                .iter()
-                .map(|id| crate::fileops::detail_cell(id, path, &meta).unwrap_or_default())
-                .collect();
+            let cells: Vec<String> = match crate::fileops::quick_meta(path) {
+                Some(meta) => cols
+                    .iter()
+                    .map(|id| crate::fileops::detail_cell(id, path, &meta).unwrap_or_default())
+                    .collect(),
+                None => vec![String::new(); cols.len()],
+            };
             self.detail_cells_cache.insert(path.clone(), cells);
         }
     }
@@ -3797,10 +3803,6 @@ impl App {
         // bypassed for this deliberate re-verify — otherwise the stale markers would linger.
         self.git_status_for = None;
         self.git_status_dirty = true;
-        // Same seam re-verification for the detail columns: their cells are cached per tree
-        // generation (Phase G) and a missed fs event would otherwise pin stale size/mtime until
-        // the next rebuild. Dropping here keeps them as robust as the git markers.
-        self.detail_cells_cache.clear();
         self.tab.preview_path = None;
         self.tab.preview_kind = None;
         self.clear_command_out(); // release any delegated-command temp output
@@ -3831,6 +3833,16 @@ impl App {
         self.tab.preview_cursor_col = 0;
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
+        // Same seam re-verification for the listing itself: re-derive the rows from disk (which
+        // also drops the per-generation detail-cell cache, since `rebuild_tree` clears it).
+        //
+        // This used to drop only the cells and leave `entries` alone, which was strictly worse than
+        // doing neither: the rows still named whatever the last rebuild saw, while their size/mtime
+        // got recomputed from disk — so a file deleted during the preview came back on screen with a
+        // freshly computed, entirely fictional `0 B`. Refreshing half a row is how a stale view turns
+        // into a false one. Runs last, so the preview is fully torn down first — `rebuild_tree` can
+        // move the cursor, and nothing above should observe a half-rebuilt tab.
+        self.reverify_tree_at_seam();
     }
 
     /// Whether this preview kind displays through the media (image) pipeline — and therefore needs

@@ -41,8 +41,9 @@ use ratatui_image::thread::{ResizeRequest, ResizeResponse};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
-    App, FileOpResult, FilterPoolResult, GitOpResult, IgnoredResult, KittyResult, MdEncodeRequest,
-    MdEncodeResult, MdImageResult, MediaResult, RemoteFetch, SortKey, StatusResult,
+    App, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult, KittyResult,
+    MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult, RemoteFetch, SortKey,
+    StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -479,6 +480,36 @@ fn is_content_event(kind: &notify::EventKind) -> bool {
     }
 }
 
+/// Whether an fs event changes **which entries exist** (a create, a removal, or a rename) rather
+/// than only the contents of an entry that already existed. Feeds `FsBurstKinds::structural`, which
+/// the build-churn guard uses to decide what it may skip.
+///
+/// The distinction is the whole point of that guard: a write changes what a row *says*, so skipping
+/// it leaves a stale number on screen and the next event fixes it. A create/removal/rename changes
+/// whether the row is *there at all*, and skipping that leaves the tree listing files that no
+/// longer exist — a listing that is not merely stale but false, and that nothing later repairs
+/// (see `App::fs_burst_is_build_churn`).
+///
+/// Only two shapes are classified as content-only, and both say "an entry that exists had its bytes
+/// rewritten": `Modify(Data(..))` (macOS `ITEM_MODIFIED`, Linux `IN_MODIFY`) and `Access(Close(Write))`
+/// (Linux `IN_CLOSE_WRITE`). `Modify(Metadata(..))` joins them because metadata applies *to an entry
+/// that exists* — it can never add or remove a row — and excluding it matters in practice: macOS
+/// raises `ITEM_INODE_META_MOD` alongside `ITEM_MODIFIED` on an ordinary write, so treating metadata
+/// as structural would defeat the guard for exactly the plain build writes it exists to absorb.
+///
+/// Everything else — including the deliberately vague `EventKind::Any`/`Other` and `Modify(Any/Other)`
+/// that coarse backends emit — counts as structural, i.e. err towards refreshing. `Access` variants
+/// other than `Close(Write)` never reach here (`is_content_event` drops them first); classifying
+/// them as structural is the harmless safe side if that ever changes.
+fn is_structural_event(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode, ModifyKind};
+    !matches!(
+        kind,
+        notify::EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Metadata(_))
+            | notify::EventKind::Access(AccessKind::Close(AccessMode::Write))
+    )
+}
+
 /// Hard cap on how many changed paths one filesystem burst reports individually.
 /// Beyond this the burst is treated as "paths unknown", which the caller handles conservatively
 /// (a full refresh). A burst that large is a build or a bulk copy, where per-path information is
@@ -615,11 +646,14 @@ fn run(
     // File watching: auto-update the tree/git status on a change under the current root.
     // notify's callback is called from a separate thread, so send changes to the run loop over a
     // std channel.
-    // The channel's bool = "whether an ignore rule (.gitignore / .git/info/exclude) changed."
+    // The channel's FsBurstKinds = what this event did beyond touching paths: whether an ignore
+    // rule (.gitignore / .git/info/exclude) changed, and whether it changed *which* entries exist
+    // (create/remove/rename) rather than only their contents. The run loop ORs these across the
+    // burst; both halves force a refresh (see App::fs_burst_is_build_churn).
     // `.git/*.lock` churn from an external git operation is also a reload target
     // (classify_fs_paths — konoma is lock-free, so no self-feedback loop occurs).
     // The channel's Vec<PathBuf> = candidate changed paths for follow mode (excluding under .git).
-    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(bool, Vec<PathBuf>)>();
+    let (fs_tx, fs_rx) = std::sync::mpsc::channel::<(FsBurstKinds, Vec<PathBuf>)>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
             // Events that aren't a content change (Linux inotify's open/read notifications) are
@@ -631,7 +665,13 @@ fn run(
             }
             let (meaningful, ignore_rules) = classify_fs_paths(&ev.paths);
             if meaningful {
-                let _ = fs_tx.send((ignore_rules, follow_candidates(&ev.paths)));
+                // The event kind is read here, at the only place it exists — `ev` is dropped right
+                // after, so anything the skip decision needs must be carried on the channel.
+                let kinds = FsBurstKinds {
+                    ignore_rules_changed: ignore_rules,
+                    structural: is_structural_event(&ev.kind),
+                };
+                let _ = fs_tx.send((kinds, follow_candidates(&ev.paths)));
             }
         }
     })
@@ -676,7 +716,7 @@ fn run(
     // aren't processed on the spot — they're accumulated and applied only once after the
     // operation finishes (should_defer_fs_events below).
     let mut deferred_fs = false;
-    let mut deferred_ignore_rules = false;
+    let mut deferred_kinds = FsBurstKinds::default();
 
     let mut needs_redraw = true;
     loop {
@@ -896,7 +936,7 @@ fn run(
         // If even one event changed an ignore rule (.gitignore / .git/info/exclude), also rebuild
         // the heavy ignored set. Otherwise just update the cheap statuses+branch.
         let mut fs_changed = false;
-        let mut ignore_rules_changed = false;
+        let mut burst_kinds = FsBurstKinds::default();
         // The paths that changed in this burst (the watcher side sends them excluding under
         // `.git`). Empty = either `.git` only or unknown (including exceeding the cap), in which
         // case `refresh_fs_changed` errs safe = also reloads the preview.
@@ -912,14 +952,14 @@ fn run(
         // (App::should_defer_fs_events — apply_file_op already calls refresh() on completion, so
         // nothing is missed).
         let defer_fs = app.should_defer_fs_events();
-        while let Ok((b, paths)) = fs_rx.try_recv() {
+        while let Ok((kinds, paths)) = fs_rx.try_recv() {
             if defer_fs {
                 deferred_fs = true;
-                deferred_ignore_rules |= b;
+                deferred_kinds.merge(kinds);
                 continue;
             }
             fs_changed = true;
-            ignore_rules_changed |= b;
+            burst_kinds.merge(kinds);
             // Follow mode: record a valid target into the session list (the population n/N reviews)
             // while also setting the last one as the pending target (latest-wins). An invalid path
             // doesn't consume a dwell slot.
@@ -938,18 +978,19 @@ fn run(
         if !defer_fs && deferred_fs {
             deferred_fs = false;
             fs_changed = true;
-            ignore_rules_changed |= deferred_ignore_rules;
-            deferred_ignore_rules = false;
+            burst_kinds.merge(deferred_kinds);
+            deferred_kinds = FsBurstKinds::default();
         }
-        // Build-churn guard: when every path in the burst is gitignored (and the ignore rules
-        // themselves haven't changed), skip the whole tree rebuild that a write to target/ or
-        // node_modules/ alone would otherwise trigger (wasted work).
-        if fs_changed && !app.fs_burst_is_build_churn(&changed_paths, ignore_rules_changed) {
+        // Build-churn guard: when every path in the burst is gitignored, the ignore rules
+        // themselves haven't changed, and nothing was created/removed/renamed, skip the whole tree
+        // rebuild that a write to target/ or node_modules/ alone would otherwise trigger (wasted
+        // work). Writes are all it may skip — see `App::fs_burst_is_build_churn`.
+        if fs_changed && !app.fs_burst_is_build_churn(&changed_paths, burst_kinds) {
             // In addition to the listing + git status, refresh_fs() also uniformly re-fetches the
             // active derived view
             // (in Preview mode, reload the current preview → fixes the known bug where the preview
             //  stayed stale after an external-editor edit. In the Git view, update the change listing).
-            app.refresh_fs_watched(ignore_rules_changed, &changed_paths);
+            app.refresh_fs_watched(burst_kinds.ignore_rules_changed, &changed_paths);
             needs_redraw = true;
         }
         // Follow's switch judgment (outside the drain = every loop). A target arriving during
@@ -2531,6 +2572,83 @@ mod tests {
     }
 
     #[test]
+    fn is_structural_event_separates_writes_from_appearing_and_disappearing_entries() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
+            RenameMode,
+        };
+        use notify::EventKind;
+
+        // Content-only: the entry already existed and only its bytes (or its metadata) changed, so
+        // the set of rows is unchanged and the build-churn guard may skip the burst.
+        assert!(!is_structural_event(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(!is_structural_event(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Content
+        ))));
+        assert!(!is_structural_event(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        // Metadata implies the entry exists — and macOS raises ITEM_INODE_META_MOD next to
+        // ITEM_MODIFIED on an ordinary write, so counting it as structural would defeat the guard
+        // for exactly the plain build writes it exists to absorb.
+        assert!(!is_structural_event(&EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::Any)
+        )));
+        assert!(!is_structural_event(&EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::WriteTime)
+        )));
+
+        // Structural: which entries exist changed, so the listing must be rebuilt even when every
+        // path is gitignored (this is the deleted-file-stays-on-screen bug).
+        assert!(is_structural_event(&EventKind::Create(CreateKind::File)));
+        assert!(is_structural_event(&EventKind::Create(CreateKind::Folder)));
+        assert!(is_structural_event(&EventKind::Remove(RemoveKind::File)));
+        assert!(is_structural_event(&EventKind::Remove(RemoveKind::Folder)));
+        assert!(is_structural_event(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::Any
+        ))));
+        assert!(is_structural_event(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::From
+        ))));
+
+        // Unclassifiable kinds (coarse backends, rescans) err towards refreshing.
+        assert!(is_structural_event(&EventKind::Any));
+        assert!(is_structural_event(&EventKind::Other));
+        assert!(is_structural_event(&EventKind::Modify(ModifyKind::Any)));
+        assert!(is_structural_event(&EventKind::Modify(ModifyKind::Other)));
+    }
+
+    #[test]
+    fn burst_kinds_merge_is_sticky_across_a_burst() {
+        // One structural event anywhere in a coalesced burst must disqualify the whole burst from
+        // being skipped — a delete arriving alongside a thousand build writes is the real case.
+        let mut kinds = FsBurstKinds::default();
+        assert!(!kinds.structural && !kinds.ignore_rules_changed);
+        for _ in 0..3 {
+            kinds.merge(FsBurstKinds {
+                ignore_rules_changed: false,
+                structural: false,
+            });
+        }
+        assert!(!kinds.structural, "書き込みだけを畳んでも structural=false");
+        kinds.merge(FsBurstKinds {
+            ignore_rules_changed: false,
+            structural: true,
+        });
+        kinds.merge(FsBurstKinds {
+            ignore_rules_changed: false,
+            structural: false,
+        });
+        assert!(
+            kinds.structural,
+            "1件でも structural があればバースト全体が structural(後続の書き込みで戻らない)"
+        );
+        assert!(!kinds.ignore_rules_changed, "他方のフラグは巻き込まれない");
+    }
+
+    #[test]
     fn watcher_ignores_reads_but_reports_writes() {
         // An integration test that runs is_content_event through a real notify watcher in the same
         // order as run()'s callback (is_content_event → classify_fs_paths).
@@ -2591,6 +2709,82 @@ mod tests {
         assert!(
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "writing a file must still be reported as a change"
+        );
+
+        drop(watcher);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watcher_reports_a_deletion_as_structural() {
+        // An integration test that runs the *real* backend's event kinds through the same pipeline
+        // as run()'s callback (is_content_event → classify_fs_paths → is_structural_event), because
+        // the skip decision is only as good as what the OS actually reports. Deleting a file must
+        // arrive with structural=true; without it, `fs_burst_is_build_churn` skips the refresh for
+        // any file under an ignored directory and the deleted row stays on screen.
+        //
+        // Unlike the read-side assertion above, this one has detection power on **both** OSes:
+        // macOS FSEvents raises ITEM_REMOVED and Linux inotify raises IN_DELETE.
+        use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = unique_tmp("konoma_watch_structural_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doomed.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let (tx, rx) = mpsc::channel::<FsBurstKinds>();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                if !is_content_event(&ev.kind) {
+                    return;
+                }
+                let (meaningful, ignore_rules) = classify_fs_paths(&ev.paths);
+                if meaningful {
+                    let _ = tx.send(FsBurstKinds {
+                        ignore_rules_changed: ignore_rules,
+                        structural: is_structural_event(&ev.kind),
+                    });
+                }
+            }
+        })
+        .expect("recommended_watcher");
+        watcher
+            .watch(&dir, RecursiveMode::Recursive)
+            .expect("watch");
+
+        // settle: discard the directory/file creation's own events over ~500ms.
+        let settle_until = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < settle_until {
+            let _ = rx.recv_timeout(Duration::from_millis(50));
+        }
+
+        std::fs::remove_file(&file).unwrap();
+        // Collect what the burst reports for up to 10s, the same way the run loop ORs a burst
+        // together — a backend is free to also emit unrelated content events for the parent
+        // directory, and the guard only needs *one* of them to be structural.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut burst = FsBurstKinds::default();
+        let mut got_any = false;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(kinds) => {
+                    got_any = true;
+                    burst.merge(kinds);
+                    if burst.structural {
+                        break;
+                    }
+                }
+                Err(_) if got_any => break, // the burst is over
+                Err(_) => {}
+            }
+        }
+        assert!(got_any, "削除がイベントとして届かない(監視自体の失敗)");
+        assert!(
+            burst.structural,
+            "ファイル削除は structural として届かなければならない\
+             (届かないと ignored ディレクトリ配下の削除でツリーが更新されない)"
         );
 
         drop(watcher);

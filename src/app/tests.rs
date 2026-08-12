@@ -743,9 +743,10 @@ fn gitignored_entries_detected_and_dimmed() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// C13 (minor carryover): if an fs-event burst consists entirely of gitignored paths (build churn
-/// such as target/, etc.), it is fine to skip `refresh_fs_changed`. Mixed/empty/ignore-rule-change
-/// cases err on the safe side = always refresh.
+/// C13 (minor carryover): if an fs-event burst consists entirely of gitignored paths **whose
+/// contents were merely rewritten** (build churn such as target/, etc.), it is fine to skip
+/// `refresh_fs_changed`. Mixed/empty/ignore-rule-change/structural cases err on the safe side =
+/// always refresh.
 #[cfg(feature = "git")]
 #[test]
 fn fs_burst_build_churn_skips_only_all_ignored_paths() {
@@ -771,25 +772,158 @@ fn fs_burst_build_churn_skips_only_all_ignored_paths() {
     );
     assert!(!app.is_ignored(&src_rs), "src.rs は tracked のはず(前提)");
 
+    // A burst of plain writes (nothing created/removed/renamed) — the case the guard exists for.
+    let writes = crate::app::FsBurstKinds {
+        ignore_rules_changed: false,
+        structural: false,
+    };
+    // The same paths, but the burst also added/removed/renamed something.
+    let structural = crate::app::FsBurstKinds {
+        ignore_rules_changed: false,
+        structural: true,
+    };
+
     assert!(
-        app.fs_burst_is_build_churn(std::slice::from_ref(&out_o), false),
-        "全パスが ignored → churn=true でスキップ可"
+        app.fs_burst_is_build_churn(std::slice::from_ref(&out_o), writes),
+        "全パスが ignored で書き込みのみ → churn=true でスキップ可(ビルド churn の非退行)"
     );
     assert!(
-        !app.fs_burst_is_build_churn(std::slice::from_ref(&src_rs), false),
+        !app.fs_burst_is_build_churn(std::slice::from_ref(&src_rs), writes),
         "非 ignored パスのみ → churn=false でリフレッシュ"
     );
     assert!(
-        !app.fs_burst_is_build_churn(&[out_o.clone(), src_rs.clone()], false),
+        !app.fs_burst_is_build_churn(&[out_o.clone(), src_rs.clone()], writes),
         "混在 → churn=false でリフレッシュ"
     );
     assert!(
-        !app.fs_burst_is_build_churn(&[], false),
+        !app.fs_burst_is_build_churn(&[], writes),
         "空(不明/.git のみ) → churn=false でリフレッシュ"
     );
     assert!(
-        !app.fs_burst_is_build_churn(&[out_o], true),
+        !app.fs_burst_is_build_churn(
+            std::slice::from_ref(&out_o),
+            crate::app::FsBurstKinds {
+                ignore_rules_changed: true,
+                structural: false,
+            }
+        ),
         "無視ルール自体が変わった → churn=false で常にリフレッシュ"
+    );
+    // The fix: a create/remove/rename changes *which rows exist*, so it must never be skipped —
+    // even when every path in the burst is ignored. Skipping it left deleted files on screen.
+    assert!(
+        !app.fs_burst_is_build_churn(std::slice::from_ref(&out_o), structural),
+        "ignored でも作成/削除/リネームを含む → churn=false でリフレッシュ(行の有無が変わる)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The reported bug, end to end on the decision the run loop makes: a file deleted **inside a
+/// gitignored directory** (`out/` in the `.gitignore`, browsed with root set to `out/`) used to stay
+/// on screen forever. The build-churn guard saw "every changed path is ignored" and skipped the
+/// refresh — a rule written for *writes* to `target/`, which silently swallowed removals too.
+///
+/// The event kinds are produced by the real classifier (`crate::is_structural_event`) from the kind
+/// a deletion actually raises, so reverting either half — the classifier or the guard's use of it —
+/// fails here.
+#[cfg(feature = "git")]
+#[test]
+fn deleting_a_file_inside_an_ignored_directory_updates_the_tree() {
+    use notify::event::RemoveKind;
+    use notify::EventKind;
+
+    let dir = unique_tmp("konoma_ignored_delete_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("out")).unwrap();
+    git2::Repository::init(&dir).unwrap();
+    std::fs::write(dir.join(".gitignore"), b"out/\n").unwrap();
+    std::fs::write(dir.join("out").join("a_keep.jpg"), b"keep-me").unwrap();
+    std::fs::write(dir.join("out").join("b_delete.png"), b"delete-me").unwrap();
+
+    // Browse the ignored directory itself, as in the report.
+    let root = dir.join("out").canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.rebuild_tree().unwrap();
+    app.refresh_git_if_needed();
+
+    let keep = root.join("a_keep.jpg");
+    let doomed = root.join("b_delete.png");
+    assert!(
+        app.is_ignored(&doomed),
+        "前提: out/ 配下は gitignore 対象(この条件でのみ再現する)"
+    );
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == doomed),
+        "前提: 削除前はツリーに居る"
+    );
+
+    std::fs::remove_file(&doomed).unwrap();
+
+    // What `main`'s watcher callback + run loop build for this event.
+    let kinds = crate::app::FsBurstKinds {
+        ignore_rules_changed: false,
+        structural: crate::is_structural_event(&EventKind::Remove(RemoveKind::File)),
+    };
+    let changed = vec![doomed.clone()];
+    assert!(
+        !app.fs_burst_is_build_churn(&changed, kinds),
+        "ignored 配下でも削除はスキップしてはいけない"
+    );
+    app.refresh_fs_watched(kinds.ignore_rules_changed, &changed);
+
+    assert!(
+        !app.tab.entries.iter().any(|e| e.path == doomed),
+        "削除されたファイルがツリーに残っている(幽霊行)"
+    );
+    assert!(
+        app.tab.entries.iter().any(|e| e.path == keep),
+        "残っているファイルは巻き添えで消えない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A row whose metadata can't be read shows **blank** detail cells, never invented ones. The old
+/// fallback (`RowMeta { size: 0, .. }`) rendered as a confident `0 B`, which is how a row that
+/// outlived its file managed to look like a real empty file rather than like a mistake.
+#[test]
+fn detail_cells_are_blank_when_the_metadata_cannot_be_read() {
+    let dir = unique_tmp("konoma_detail_cells_missing_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("real.txt"), b"0123456789").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let cols: Vec<String> = ["size", "modified", "type", "perm"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let real = dir.join("real.txt");
+    let missing = dir.join("never_existed.txt");
+    app.ensure_detail_cells(&[real.clone(), missing.clone()], &cols);
+
+    let real_cells = app
+        .detail_cells_get(&real)
+        .expect("実在ファイルはセルを持つ");
+    assert_eq!(
+        real_cells[0], "10 B",
+        "実在ファイルは実サイズを出す(非退行)"
+    );
+    assert!(!real_cells[1].is_empty(), "実在ファイルは更新日時を出す");
+
+    let missing_cells = app
+        .detail_cells_get(&missing)
+        .expect("不在パスもキャッシュはされる(毎フレーム stat し直さない)");
+    assert_eq!(
+        missing_cells.len(),
+        cols.len(),
+        "列数は揃える(右寄せレイアウトが崩れない)"
+    );
+    assert!(
+        missing_cells.iter().all(|c| c.is_empty()),
+        "メタデータが取れない行は全列空欄(0 B や file と偽らない): {missing_cells:?}"
     );
 
     std::fs::remove_dir_all(&dir).ok();
