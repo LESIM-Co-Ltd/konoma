@@ -754,16 +754,19 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         if is_mermaid {
             app.ensure_md_fence_density(&p.url, cols, p.rows);
         }
+        // On a kitty terminal this is konoma's own compressed transmit on a fixed image id (so a
+        // GIF re-encoding every frame *replaces* its picture in the terminal instead of piling up
+        // one per frame); everywhere else it is the ratatui-image protocol, unchanged.
         if zoomed {
             app.ensure_md_fence_zoom(&p.url, cols, p.rows);
-            if let Some(proto) = app.md_fence_zoom_proto(&p.url, cols, p.rows) {
-                frame.render_widget(Image::new(proto), target);
+            if let Some(img) = app.md_fence_zoom_proto(&p.url, cols, p.rows) {
+                img.render(target, frame.buffer_mut());
                 continue;
             }
         }
         app.ensure_md_image(&p.url, cols, p.rows, row_off, vis_rows);
-        if let Some(proto) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
-            frame.render_widget(Image::new(proto), target);
+        if let Some(img) = app.md_image_proto(&p.url, cols, p.rows, row_off, vis_rows) {
+            img.render(target, frame.buffer_mut());
         }
     }
     // A frame that drew nothing at all is not recorded (None) = only when something was drawn up

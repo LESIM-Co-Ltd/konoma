@@ -1654,6 +1654,75 @@ struct WinCache {
     lines: Vec<Line<'static>>,
 }
 
+/// One drawable inline Markdown image: either konoma's own compressed kitty transmit or
+/// ratatui-image's protocol for every other graphics backend.
+///
+/// The split exists because a kitty image is **addressable**: it carries an id, and re-transmitting
+/// that id replaces the picture instead of adding a second one. Everything else (sixel, iTerm2,
+/// halfblocks) is written as cell content — the terminal keeps nothing between frames — so those
+/// backends can keep re-encoding freely and stay on the ratatui-image path unchanged.
+#[derive(Clone)]
+pub enum InlineImage {
+    /// konoma's zlib-compressed (`o=z`) transmit + Unicode placeholders, on a fixed image id.
+    Kitty(crate::preview::kitty::KittyImage),
+    /// ratatui-image's fixed-size protocol (sixel / iTerm2 / halfblocks).
+    Proto(Protocol),
+}
+
+impl InlineImage {
+    /// Draw into `area`. Both arms refuse to draw when the encoded image is **larger** than the
+    /// area, matching `ratatui_image::Image`'s no-clipping rule: while a freshly scrolled band is
+    /// still encoding, the renderer deliberately hands the previous (taller) encode to this
+    /// function, and drawing it clipped would show the wrong slice of the picture rather than
+    /// simply nothing for one frame. The full-screen path keeps its own clamping behavior — this
+    /// rule is about matching what the inline path did before, not about `KittyImage` in general.
+    pub(crate) fn render(&self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+        match self {
+            Self::Kitty(ki) => {
+                let (cols, rows) = ki.cell_size();
+                if cols > area.width || rows > area.height {
+                    return;
+                }
+                ki.render(area, buf);
+            }
+            Self::Proto(p) => {
+                ratatui::widgets::Widget::render(ratatui_image::Image::new(p), area, buf)
+            }
+        }
+    }
+
+    /// Whether this went through konoma's compressed kitty transmit. Test-only: it is the one
+    /// difference the two arms are allowed to have, so a test can pin which backend a terminal got.
+    #[cfg(test)]
+    pub fn is_kitty(&self) -> bool {
+        matches!(self, Self::Kitty(_))
+    }
+
+    /// The encoded size in cells. Test-only, and deliberately readable from *both* arms: the kitty
+    /// arm reimplements `Picker::new_protocol`'s sizing, so the way to keep it honest is to run the
+    /// same request through both and compare this.
+    #[cfg(test)]
+    pub fn cell_size(&self) -> (u16, u16) {
+        match self {
+            Self::Kitty(ki) => ki.cell_size(),
+            Self::Proto(p) => {
+                let s = p.size();
+                (s.width, s.height)
+            }
+        }
+    }
+
+    /// Bytes of this image's one-shot transmit escape (0 for a protocol that is re-sent as cell
+    /// content every frame). Test-only, to state the compression win in real numbers.
+    #[cfg(test)]
+    pub fn transmit_len(&self) -> usize {
+        match self {
+            Self::Kitty(ki) => ki.transmit_len(),
+            Self::Proto(_) => 0,
+        }
+    }
+}
+
 /// A decoded inline Markdown image plus its background-encoded render protocol(s).
 #[derive(Default)]
 struct MdImgEntry {
@@ -1661,12 +1730,12 @@ struct MdImgEntry {
     /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread.
     decoded: Option<Arc<image::DynamicImage>>,
     /// The graphics protocol for the fully-visible image, encoded for `proto_size`.
-    protocol: Option<Protocol>,
+    protocol: Option<InlineImage>,
     /// The (cols, rows) `protocol` was encoded for.
     proto_size: Option<(u16, u16)>,
     /// The graphics protocol for a partially-scrolled image: only the visible vertical band, cropped and
     /// encoded so the image renders clipped instead of being hidden. Re-encoded when the band changes.
-    clip_protocol: Option<Protocol>,
+    clip_protocol: Option<InlineImage>,
     /// The (cols, full_rows, row_off, vis_rows) band `clip_protocol` was encoded for.
     clip_key: Option<(u16, u16, u16, u16)>,
     /// An encode request is in flight on the worker thread (at most one per image, so scrolling does not
@@ -1676,9 +1745,23 @@ struct MdImgEntry {
     failed: bool,
     /// In-place zoom protocol for a **focused inline mermaid diagram** (`+`/`-` while focused):
     /// a crop of the source encoded into the same (cols, rows) cell area (the layout never moves).
-    zoom_protocol: Option<Protocol>,
+    zoom_protocol: Option<InlineImage>,
     /// The (cols, rows, crop px rect) `zoom_protocol` was encoded for.
     zoom_key: Option<(u16, u16, PxRect)>,
+    /// One **fixed** kitty image id per protocol slot (full / clip / zoom — indexed by
+    /// `MdEncodeKey::slot`), allocated on the slot's first encode and reused for every later one.
+    ///
+    /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
+    /// terminal, so an animated GIF re-encoding its slot once per frame costs the terminal one
+    /// image forever instead of one per frame. The slots need ids of their *own*, though — the
+    /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
+    /// slots of the same entry can be on screen across consecutive frames; sharing an id there would
+    /// let the band's transmit silently take over the cells the full image is still drawn from.
+    ///
+    /// Ids are never recycled when an entry is dropped (`next_id` only counts up). That keeps the
+    /// resident image count proportional to the *pictures a session has opened*, which is what the
+    /// full-screen path has always cost — not to how long one of them has been animating.
+    kitty_ids: [Option<u32>; 3],
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
@@ -1698,6 +1781,17 @@ struct MdImgEntry {
     /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
+}
+
+impl MdImgEntry {
+    /// The fixed kitty id for the slot `key` fills, allocating it on first use. `None` when this
+    /// terminal is not a kitty one — then the encode goes back through ratatui-image.
+    fn kitty_id_for(&mut self, key: &MdEncodeKey, use_kitty: bool) -> Option<u32> {
+        if !use_kitty {
+            return None;
+        }
+        Some(*self.kitty_ids[key.slot()].get_or_insert_with(crate::preview::kitty::next_id))
+    }
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -1725,6 +1819,18 @@ enum MdEncodeKey {
     Zoom { cols: u16, rows: u16, crop: PxRect },
 }
 
+impl MdEncodeKey {
+    /// Which of `MdImgEntry`'s three protocol slots this result belongs in — and therefore which of
+    /// its three fixed kitty ids the encode must be transmitted under.
+    fn slot(&self) -> usize {
+        match self {
+            Self::Full { .. } => 0,
+            Self::Clip { .. } => 1,
+            Self::Zoom { .. } => 2,
+        }
+    }
+}
+
 /// A request to encode an inline image (or a cropped band of it) off the UI thread (principle #4).
 pub struct MdEncodeRequest {
     path: PathBuf,
@@ -1734,6 +1840,9 @@ pub struct MdEncodeRequest {
     crop: Option<PxRect>,
     cols: u16,
     rows: u16,
+    /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
+    /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
+    kitty: Option<(u32, bool)>,
 }
 
 /// Result of a background inline-image encode, delivered to the run loop.
@@ -1743,7 +1852,7 @@ pub struct MdEncodeResult {
     /// None = the encode failed. The worker **always** sends a result: swallowing failures left
     /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
     /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
-    protocol: Option<Protocol>,
+    image: Option<InlineImage>,
 }
 
 /// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
@@ -1760,7 +1869,7 @@ pub fn md_encode_worker(
                               // Wrap the whole request handling in a panic catch: even if one new_protocol/crop
                               // panics, don't kill the worker thread (killing it would stop every future encode,
                               // latching enc_inflight forever).
-        let protocol = crate::preview::markdown::catch_silent(move || {
+        let image = crate::preview::markdown::catch_silent(move || {
             let img = match req.crop {
                 Some((x, y, w, h)) => req.image.crop_imm(x, y, w, h),
                 None => (*req.image).clone(),
@@ -1776,21 +1885,67 @@ pub fn md_encode_worker(
                 } else {
                     Resize::Fit(Some(FilterType::Lanczos3))
                 };
-            // Always send back a result even on failure (Err): swallowing it would leave enc_inflight stuck true forever.
-            picker.new_protocol(img, size, resize).ok()
+            // Always send back a result even on failure (Err/None): swallowing it would leave
+            // enc_inflight stuck true forever.
+            match req.kitty {
+                Some((id, is_tmux)) => encode_inline_kitty(picker, img, size, &resize, id, is_tmux)
+                    .map(InlineImage::Kitty),
+                None => picker
+                    .new_protocol(img, size, resize)
+                    .ok()
+                    .map(InlineImage::Proto),
+            }
         })
         .flatten();
-        if tx
-            .send(MdEncodeResult {
-                path,
-                key,
-                protocol,
-            })
-            .is_err()
-        {
+        if tx.send(MdEncodeResult { path, key, image }).is_err() {
             break;
         }
     }
+}
+
+/// Encode one inline image as konoma's own **compressed** kitty transmit under the fixed `id`.
+///
+/// The sizing is deliberately not reinvented: it replays `Picker::new_protocol`'s decision through
+/// `Resize`'s public API, so this lands on the exact same cell area — and the same transparent
+/// padding when the aspect ratio does not divide evenly into cells — that the ratatui-image path it
+/// replaces produced. Getting that wrong would not fail loudly; it would quietly stretch every
+/// diagram and equation by a few percent.
+///
+/// The one thing that does change is the payload: RGBA compressed with `o=z` (see `preview::kitty`),
+/// which is what makes re-encoding an animated frame affordable in the first place.
+fn encode_inline_kitty(
+    picker: &Picker,
+    img: image::DynamicImage,
+    target: ratatui::layout::Size,
+    resize: &Resize,
+    id: u32,
+    is_tmux: bool,
+) -> Option<crate::preview::kitty::KittyImage> {
+    let font = picker.font_size();
+    let natural = Resize::natural_size(&img, font);
+    // `new_protocol` skips the resize entirely when the image already fits the target at its
+    // natural cell size and lines up with the font grid on at least one axis (`needs_resize`'s
+    // early `None`). `Scale` never takes that shortcut — it is defined as "resize even when
+    // smaller". konoma passes no background color, so the padding color is ratatui-image's default.
+    let fits = natural.width <= target.width && natural.height <= target.height;
+    let on_grid = img.width() == u32::from(natural.width) * u32::from(font.width)
+        || img.height() == u32::from(natural.height) * u32::from(font.height);
+    let (img, area) = if !matches!(resize, Resize::Scale(_)) && fits && on_grid {
+        (img, natural)
+    } else {
+        let area = resize.size_for(&img, font, target);
+        (resize.resize(&img, font, area, None), area)
+    };
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    Some(crate::preview::kitty::KittyImage::build(
+        &img.to_rgba8(),
+        area.width,
+        area.height,
+        id,
+        is_tmux,
+    ))
 }
 
 /// Result of a background inline-image decode, delivered to the run loop.

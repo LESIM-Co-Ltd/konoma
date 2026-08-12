@@ -7075,7 +7075,7 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
                 (f0.clone(), std::time::Duration::from_millis(50)),
                 (f1.clone(), std::time::Duration::from_millis(50)),
             ],
-            protocol: Some(proto),
+            protocol: Some(crate::app::InlineImage::Proto(proto)),
             proto_size: Some((4, 2)),
             clip_key: Some((4, 2, 0, 2)),
             zoom_key: Some((4, 2, (0, 0, 4, 4))),
@@ -7168,6 +7168,311 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
         t >= Duration::from_millis(10) && t <= Duration::from_millis(100),
         "10〜100ms にクランプ: {t:?}"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Inline images on a kitty terminal: fixed ids + compressed transmit -----------------------
+
+/// A `Picker` forced to kitty graphics (no real terminal needed), used to drive the inline-image
+/// path down the branch a Ghostty/kitty user actually takes.
+fn kitty_picker() -> ratatui_image::picker::Picker {
+    let mut p = ratatui_image::picker::Picker::halfblocks();
+    p.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    p
+}
+
+/// Every kitty image id **transmitted** into `buf` (`i=<id>,a=T` is the header of a transmit
+/// escape). This is the quantity the terminal accounts its image-storage budget against, so it is
+/// the honest observable for "konoma stops filling the terminal up".
+fn transmitted_kitty_ids(buf: &ratatui::buffer::Buffer) -> Vec<u32> {
+    let dump: String = buf.content.iter().map(|c| c.symbol()).collect();
+    dump.split("i=")
+        .skip(1)
+        .filter_map(|part| part.split_once(",a=T"))
+        .filter_map(|(id, _)| id.parse::<u32>().ok())
+        .collect()
+}
+
+/// An App on a kitty terminal with a real encode worker, plus a pre-decoded inline-GIF cache entry
+/// of `colors.len()` frames (zero frame delays, so advancing is driven by calls, not by the clock).
+/// Returns the app, the url used as the cache key, the encode-result receiver, and the sandbox dir.
+fn inline_gif_app(
+    name: &str,
+    colors: &[[u8; 3]],
+) -> (
+    App,
+    String,
+    std::sync::mpsc::Receiver<MdEncodeResult>,
+    PathBuf,
+) {
+    let dir = unique_tmp(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // `ensure_md_image` resolves a non-synthetic url on disk before encoding it, so the key has to
+    // name a real file. Its contents are never read here: the entry below stands in for a decode
+    // that already happened.
+    let file = dir.join("anim.gif");
+    std::fs::write(&file, b"GIF89a").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(resize_rx));
+    app.attach_image_backend(kitty_picker(), resize_tx);
+    assert!(app.uses_kitty_image(), "前提: kitty 端末として扱われる");
+
+    let (req_tx, req_rx) = std::sync::mpsc::channel();
+    let (res_tx, res_rx) = std::sync::mpsc::channel();
+    let picker = kitty_picker();
+    std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
+    app.attach_md_encoder(req_tx);
+
+    let frames: Vec<_> = colors
+        .iter()
+        .map(|c| {
+            let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                200,
+                100,
+                image::Rgb(*c),
+            ));
+            (std::sync::Arc::new(img), std::time::Duration::ZERO)
+        })
+        .collect();
+    app.tab.mode = Mode::Preview;
+    app.md_image_cache.insert(
+        file.clone(),
+        MdImgEntry {
+            decoded: Some(frames[0].0.clone()),
+            frames,
+            ..Default::default()
+        },
+    );
+    (app, file.to_string_lossy().to_string(), res_rx, dir)
+}
+
+/// **The bug**: an animated inline GIF re-encodes its picture on every frame, and each re-encode
+/// used to go through `Picker::new_protocol`, which picks a kitty image id with `rand::random()`.
+/// A fresh id per frame is a fresh *image* to the terminal — nothing is ever replaced and konoma
+/// never deletes anything — so a Markdown document with a GIF in it pushed ~66 MB/min at Ghostty's
+/// 320 MB image budget and, about five minutes in, got a still image evicted out from under
+/// placeholder cells konoma would never re-transmit: the still simply disappeared.
+///
+/// The fix pins one id per cache-entry slot and reuses it, which makes each later transmit a
+/// *replacement* (kitty: "when re-transmitting image data for a specific id, the existing image and
+/// all its placements must be deleted"). So the observable is not a byte count or a timing — it is
+/// that cycling the animation many times over never introduces a second id.
+///
+/// Deliberately driven by calls rather than by the clock (zero frame delays): this has to fail on
+/// the old code for a structural reason, not because a slow machine got fewer frames in.
+#[test]
+fn inline_gif_animation_never_transmits_a_second_kitty_image_id() {
+    let colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+    let (mut app, url, res_rx, dir) = inline_gif_app("konoma_md_gif_kitty_id_test", &colors);
+    let (cols, rows) = (20u16, 5u16);
+    let area = Rect::new(0, 0, cols, rows);
+
+    let mut ids = std::collections::BTreeSet::new();
+    let mut transmits = 0usize;
+    let mut dumps = Vec::new();
+    // The very first tick only starts the frame timer (frame 0 is already the shown one).
+    assert!(!app.advance_md_gifs_if_due(), "最初の tick は計時開始だけ");
+    // Three full laps of a three-frame animation.
+    for _ in 0..(colors.len() * 3) {
+        app.ensure_md_image(&url, cols, rows, 0, rows);
+        let res = res_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker が結果を返す");
+        assert!(app.apply_md_encode(res));
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let img = app
+            .md_image_proto(&url, cols, rows, 0, rows)
+            .expect("エンコード済みの画像が描ける");
+        assert!(img.is_kitty(), "kitty 端末では konoma 自前の転送を使う");
+        img.render(area, &mut buf);
+
+        let frame_ids = transmitted_kitty_ids(&buf);
+        transmits += frame_ids.len();
+        ids.extend(frame_ids);
+        dumps.push(buf.content.iter().map(|c| c.symbol()).collect::<String>());
+
+        assert!(app.advance_md_gifs_if_due(), "遅延0なので毎回コマが進む");
+    }
+
+    // Vacuity guard: the assertion below is only meaningful if every frame really did re-transmit.
+    assert_eq!(transmits, colors.len() * 3, "毎コマ転送が起きている");
+    assert_eq!(
+        ids.len(),
+        1,
+        "コマを何周させても端末に載る画像 ID は1つのまま(= 端末が埋まらない): {ids:?}"
+    );
+    // ...and the animation still animates: consecutive frames carry different pixels.
+    assert_ne!(dumps[0], dumps[1], "コマが変われば転送データも変わる");
+    assert_eq!(
+        dumps[0],
+        dumps[colors.len()],
+        "一周すると同じコマ=同じデータに戻る"
+    );
+
+    // Nothing accumulates in konoma either: one entry holds exactly one encoded full-image slot,
+    // whose payload stays one frame's worth however long it has been playing.
+    let entry = &app.md_image_cache[&PathBuf::from(&url)];
+    let held = entry
+        .protocol
+        .as_ref()
+        .expect("full スロットの画像")
+        .transmit_len();
+    assert!(entry.clip_protocol.is_none() && entry.zoom_protocol.is_none());
+    assert!(
+        held < 64 * 1024,
+        "常駐はコマ1枚ぶんだけ(コマ数に比例しない): {held} bytes"
+    );
+    assert_eq!(entry.frames.len(), colors.len(), "デコード済みコマ数は不変");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other half of the fix: on a kitty terminal the inline path now sends the pixels
+/// **zlib-compressed** (`o=z`), which is what makes re-encoding a frame several times a second
+/// affordable at all. Measured against the very thing it replaced — the same encode request with
+/// the ratatui-image kitty protocol, whose payload is raw RGBA.
+#[test]
+fn inline_kitty_transmit_is_much_smaller_than_the_uncompressed_protocol() {
+    let picker = kitty_picker();
+    let (req_tx, req_rx) = std::sync::mpsc::channel();
+    let (res_tx, res_rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
+    // Screenshot/diagram-like content: large flat regions, which is what konoma is usually asked
+    // to show next to an agent.
+    let mut img = image::RgbaImage::new(600, 300);
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        let on = (x / 40 + y / 40) % 2 == 0;
+        *p = image::Rgba(if on {
+            [32, 36, 44, 255]
+        } else {
+            [200, 205, 215, 255]
+        });
+    }
+    let img = std::sync::Arc::new(image::DynamicImage::ImageRgba8(img));
+    for kitty in [None, Some((4321u32, false))] {
+        req_tx
+            .send(MdEncodeRequest {
+                path: std::path::PathBuf::from("/tmp/shot.png"),
+                key: MdEncodeKey::Full { cols: 60, rows: 15 },
+                image: img.clone(),
+                crop: None,
+                cols: 60,
+                rows: 15,
+                kitty,
+            })
+            .unwrap();
+    }
+    drop(req_tx);
+    let old = res_rx.recv().unwrap().image.expect("旧経路のエンコード");
+    let new = res_rx.recv().unwrap().image.expect("新経路のエンコード");
+    h.join().unwrap();
+    assert!(!old.is_kitty() && new.is_kitty(), "比較対象の取り違え防止");
+    assert_eq!(old.cell_size(), new.cell_size(), "表示セル数は同じ");
+
+    // Bytes that actually reach the terminal on the transmit frame.
+    let bytes = |i: &crate::app::InlineImage| {
+        let area = Rect::new(0, 0, 60, 15);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        i.render(area, &mut buf);
+        buf.content.iter().map(|c| c.symbol().len()).sum::<usize>()
+    };
+    let (old_bytes, new_bytes) = (bytes(&old), bytes(&new));
+    assert!(
+        new_bytes * 5 < old_bytes,
+        "圧縮転送は非圧縮より桁違いに小さい: {new_bytes} vs {old_bytes} bytes"
+    );
+}
+
+/// The ids are fixed **per slot**, and the three slots must not share one.
+///
+/// Pinning one id per *entry* would look like it works and then corrupt the display while
+/// scrolling: the renderer keeps drawing the full-image encode until the freshly scrolled band's
+/// encode lands, so the two are on screen across consecutive frames — and a transmit on a shared id
+/// deletes whatever that id was showing. The band would silently take over the cells the full image
+/// is still drawn from. Conversely each slot must *keep* its id across re-encodes, which is the
+/// property that stops the terminal filling up.
+#[test]
+fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
+    let (mut app, url, res_rx, dir) =
+        inline_gif_app("konoma_md_inline_slot_id_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+    let (cols, full_rows) = (20u16, 8u16);
+
+    // Fully visible → the Full slot.
+    app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
+    let full_req_id = app.md_image_cache[&key].kitty_ids[0].expect("full スロットに ID");
+    assert!(app.apply_md_encode(res_rx.recv().unwrap()));
+
+    // Scrolled so only the lower band shows → the Clip slot, which needs an id of its own.
+    app.ensure_md_image(&url, cols, full_rows, 3, 5);
+    let clip_id = app.md_image_cache[&key].kitty_ids[1].expect("clip スロットに ID");
+    assert!(app.apply_md_encode(res_rx.recv().unwrap()));
+
+    // The in-place zoom of a focused diagram → the Zoom slot.
+    app.tab.fence_zoom = 2.0;
+    app.ensure_md_fence_zoom(&url, cols, full_rows);
+    let zoom_id = app.md_image_cache[&key].kitty_ids[2].expect("zoom スロットに ID");
+    assert!(app.apply_md_encode(res_rx.recv().unwrap()));
+
+    let ids = [full_req_id, clip_id, zoom_id];
+    assert_eq!(
+        std::collections::BTreeSet::from(ids).len(),
+        3,
+        "3スロットは別々の ID を持つ(同一だと転送が互いの表示を消す): {ids:?}"
+    );
+
+    // Re-encoding any slot reuses that slot's id rather than taking a new one.
+    let entry = app.md_image_cache.get_mut(&key).unwrap();
+    entry.proto_size = None; // what a GIF frame advance does
+    entry.clip_key = None;
+    app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
+    assert_eq!(
+        app.md_image_cache[&key].kitty_ids,
+        [Some(full_req_id), Some(clip_id), Some(zoom_id)],
+        "再エンコードでは ID を取り直さない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Non-kitty terminals (sixel / iTerm2 / halfblocks) are untouched: they write the image as cell
+/// content, so the terminal keeps nothing between frames and there is nothing to accumulate. The
+/// request must not carry a kitty id, and the result must be the ratatui-image protocol.
+#[test]
+fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
+    let dir = unique_tmp("konoma_md_inline_nonkitty_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("pic.png");
+    std::fs::write(&file, b"not really a png").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
+    Box::leak(Box::new(resize_rx));
+    app.attach_image_backend(test_picker(), resize_tx); // halfblocks
+    assert!(!app.uses_kitty_image());
+
+    let (req_tx, req_rx) = std::sync::mpsc::channel();
+    app.attach_md_encoder(req_tx);
+    app.md_image_cache.insert(
+        file.clone(),
+        MdImgEntry {
+            decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(
+                200, 100,
+            ))),
+            ..Default::default()
+        },
+    );
+    app.ensure_md_image(&file.to_string_lossy(), 20, 5, 0, 5);
+    let req = req_rx.try_recv().expect("エンコードを要求する");
+    assert!(req.kitty.is_none(), "非 kitty 端末では固定 ID を渡さない");
+    // ...and no id was burned for a slot that will never use one.
+    assert_eq!(app.md_image_cache[&file].kitty_ids, [None, None, None]);
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -12842,42 +13147,50 @@ fn fence_focus_scrolls_block_and_draws_border() {
 /// Regression 2026-07-17: since it used Fit (downscale-only), when the mermaid_rows/width-derived
 /// grid was larger than the base raster, the diagram would sit top-left with empty bands on the
 /// right/bottom (user report: "not displayed centered").
+///
+/// Runs the whole thing **twice**, once per graphics backend: the kitty arm does not call
+/// `Picker::new_protocol` at all (it builds konoma's compressed transmit instead) and therefore
+/// re-derives the target cell area itself, so the two must be measured against each other. A
+/// silent few-percent stretch of every diagram and equation is exactly the kind of thing that
+/// would not fail loudly anywhere else.
 #[test]
 fn encode_worker_scales_fence_diagrams_up_to_grid() {
-    let picker = test_picker(); // font 10x20 / Halfblocks
-    let (req_tx, req_rx) = std::sync::mpsc::channel();
-    let (res_tx, res_rx) = std::sync::mpsc::channel();
-    let h = std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
-    let img = std::sync::Arc::new(image::DynamicImage::new_rgba8(200, 100)); // equivalent to 20x5 cells
-    let send = |path: &str| {
-        req_tx
-            .send(MdEncodeRequest {
-                path: std::path::PathBuf::from(path),
-                key: MdEncodeKey::Full { cols: 40, rows: 10 },
-                image: img.clone(),
-                crop: None,
-                cols: 40,
-                rows: 10,
-            })
-            .unwrap();
-    };
-    send("mermaid-fence://cafe"); // a fence diagram → upscaled to the grid (40x10)
-    send("/tmp/photo.png"); // a photo → stays at its natural size (20x5)
-    drop(req_tx);
-    let fence = res_rx.recv().unwrap();
-    let photo = res_rx.recv().unwrap();
-    h.join().unwrap();
-    let fs = fence
-        .protocol
-        .expect("フェンスのエンコードは成功する")
-        .size();
-    assert_eq!(
-        (fs.width, fs.height),
-        (40, 10),
-        "フェンスはグリッドを満たす"
-    );
-    let ps = photo.protocol.expect("写真のエンコードは成功する").size();
-    assert_eq!((ps.width, ps.height), (20, 5), "写真は拡大しない");
+    // (label, kitty request payload) — None = the ratatui-image path, Some = konoma's own transmit.
+    for (label, kitty) in [("ratatui-image", None), ("kitty", Some((1234u32, false)))] {
+        let picker = test_picker(); // font 10x20 / Halfblocks
+        let (req_tx, req_rx) = std::sync::mpsc::channel();
+        let (res_tx, res_rx) = std::sync::mpsc::channel();
+        let h = std::thread::spawn(move || md_encode_worker(picker, req_rx, res_tx));
+        let img = std::sync::Arc::new(image::DynamicImage::new_rgba8(200, 100)); // equivalent to 20x5 cells
+        let send = |path: &str| {
+            req_tx
+                .send(MdEncodeRequest {
+                    path: std::path::PathBuf::from(path),
+                    key: MdEncodeKey::Full { cols: 40, rows: 10 },
+                    image: img.clone(),
+                    crop: None,
+                    cols: 40,
+                    rows: 10,
+                    kitty,
+                })
+                .unwrap();
+        };
+        send("mermaid-fence://cafe"); // a fence diagram → upscaled to the grid (40x10)
+        send("/tmp/photo.png"); // a photo → stays at its natural size (20x5)
+        drop(req_tx);
+        let fence = res_rx.recv().unwrap();
+        let photo = res_rx.recv().unwrap();
+        h.join().unwrap();
+        let fence = fence.image.expect("フェンスのエンコードは成功する");
+        assert_eq!(
+            fence.cell_size(),
+            (40, 10),
+            "{label}: フェンスはグリッドを満たす"
+        );
+        assert_eq!(fence.is_kitty(), kitty.is_some(), "{label}: 経路の選択");
+        let photo = photo.image.expect("写真のエンコードは成功する");
+        assert_eq!(photo.cell_size(), (20, 5), "{label}: 写真は拡大しない");
+    }
 }
 
 /// An inline diagram's initial size **fits the display area**: target rows = min(mermaid_rows,
@@ -13714,7 +14027,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     let redraw = app.apply_md_encode(MdEncodeResult {
         path: key.clone(),
         key: MdEncodeKey::Full { cols: 10, rows: 5 },
-        protocol: None,
+        image: None,
     });
     assert!(redraw);
     {
@@ -13743,7 +14056,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
             rows: 2,
             crop,
         },
-        protocol: None,
+        image: None,
     });
     let e2 = app.md_image_cache.get(&key2).unwrap();
     assert!(!e2.enc_inflight);

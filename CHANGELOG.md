@@ -24,6 +24,25 @@ All notable changes to konoma are documented in this file. The format is based o
   right-aligned title, so a long path can never push it off the border.
 
 ### Fixed
+- **A still image in a Markdown preview disappeared after about five minutes, if the same document
+  also had an animated GIF in it.** An animated inline GIF re-encodes its picture on every frame,
+  and each re-encode asked ratatui-image for a fresh kitty protocol — which picks its image id with
+  `rand::random()`. To the terminal a new id is a new *image*, so nothing was ever replaced: konoma
+  handed a kitty terminal a full, uncompressed copy of the frame, forever, at a measured ~66 MB per
+  minute. Ghostty budgets 320 MB for image storage and, when it runs out, evicts images that have no
+  placement on screen — which is exactly what a still that has scrolled out of view looks like.
+  About five minutes in, that still was thrown away, and konoma had no reason to send it again, so
+  it came back blank.
+
+  Inline images are now drawn on a kitty terminal with konoma's own graphics path, the one the
+  full-screen viewer already used. Each cached image keeps a **fixed** id per protocol slot and
+  reuses it, so every later transmit *replaces* the picture in the terminal instead of adding one:
+  a GIF can loop for hours and still cost the terminal a single image. The pixels also go out
+  zlib-compressed (`o=z`), which for a diagram- or screenshot-like frame is around 90× less data
+  per frame than before (2.0 MB → 22 KB at 86×22 cells).
+
+  Nothing changes for sixel, iTerm2 or halfblocks terminals: those write the image as cell content,
+  so the terminal keeps nothing between frames and there was never anything to accumulate.
 - **The position indicator in the text/code preview title reached the end of a file without ever
   saying so.** The old `[N%]` was the window's start byte over the *whole file length*, so the final
   screenful — which is never above the window — could not be counted: scrolling to the very bottom

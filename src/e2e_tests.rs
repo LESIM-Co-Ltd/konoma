@@ -119,10 +119,23 @@ impl Sim {
     /// The receivers are kept on `Sim` and drained one result at a time by `drain_md_images` /
     /// `drain_md_encodes` / `drain_media` / `drain_remote` — mirrors `with_async_file_ops` +
     /// `drain_file_ops`, and the run loop's per-tick `while let Ok(r) = rx.try_recv()` loops in `main.rs`.
-    fn with_media(mut self) -> Sim {
+    fn with_media(self) -> Sim {
+        self.with_media_on(ratatui_image::picker::Picker::halfblocks())
+    }
+
+    /// `with_media` on a `Picker` forced to **kitty graphics**, so a test can drive the branch a
+    /// Ghostty/kitty user actually takes: konoma's own compressed transmit on a fixed image id,
+    /// rather than ratatui-image's protocol. Note that the drawn buffer then carries kitty escape
+    /// sequences instead of halfblock glyphs — read it with `transmitted_kitty_ids`, not `see`.
+    fn with_media_kitty(self) -> Sim {
+        let mut picker = ratatui_image::picker::Picker::halfblocks();
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+        self.with_media_on(picker)
+    }
+
+    fn with_media_on(mut self, picker: ratatui_image::picker::Picker) -> Sim {
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
-        std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here (halfblocks)
-        let picker = ratatui_image::picker::Picker::halfblocks();
+        std::mem::forget(resize_rx); // the kitty zoom/pan resize path isn't exercised here
         self.app.attach_image_backend(picker.clone(), resize_tx);
 
         let (media_tx, media_rx) = std::sync::mpsc::channel();
@@ -9169,6 +9182,119 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
         !greens.is_empty(),
         "実ピクセル(緑)が描画バッファに届いているはず: {:?}",
         drawn_rgb_fgs(&s.term)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Every kitty image id **transmitted** into the drawn terminal buffer (`i=<id>,a=T` heads a
+/// transmit escape). That is the quantity a kitty terminal charges its image-storage budget
+/// against, so it is the honest way to ask "is konoma filling the terminal up?".
+fn transmitted_kitty_ids(term: &Terminal<TestBackend>) -> Vec<u32> {
+    let dump: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    dump.split("i=")
+        .skip(1)
+        .filter_map(|part| part.split_once(",a=T"))
+        .filter_map(|(id, _)| id.parse::<u32>().ok())
+        .collect()
+}
+
+/// Write a `frames`-frame animated GIF, each frame a distinct solid color.
+fn write_animated_gif(path: &std::path::Path, colors: &[[u8; 3]]) {
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Frame, Rgba, RgbaImage};
+    let file = std::fs::File::create(path).unwrap();
+    let mut enc = GifEncoder::new(file);
+    enc.set_repeat(image::codecs::gif::Repeat::Infinite)
+        .unwrap();
+    for c in colors {
+        let img = RgbaImage::from_pixel(120, 60, Rgba([c[0], c[1], c[2], 255]));
+        enc.encode_frame(Frame::from_parts(
+            img,
+            0,
+            0,
+            Delay::from_numer_denom_ms(10, 1),
+        ))
+        .unwrap();
+    }
+}
+
+/// **The regression the whole fix exists for**, driven through the real renderer on a kitty
+/// terminal: open a Markdown document with an animated GIF in it and let the animation run several
+/// laps, exactly as the run loop does (`advance_md_gifs_if_due` → redraw → the redraw asks for the
+/// new frame's encode → apply → redraw).
+///
+/// Before the fix every frame was transmitted under a fresh `rand::random()` id, so the terminal
+/// accumulated one whole image per frame (~66 MB/min measured) until it hit its storage budget and
+/// evicted a still image that had scrolled out of view — which konoma would never re-transmit, so
+/// the still came back blank after a few minutes. The observable is therefore not bytes or timing
+/// but the *number of distinct ids the terminal is handed*, read straight off the drawn buffer.
+///
+/// The unit-level sibling (`inline_gif_animation_never_transmits_a_second_kitty_image_id`) pins the
+/// same invariant one layer down; this one additionally covers `overlay_inline_images`, i.e. that
+/// the real draw path is what emits those transmits.
+#[test]
+fn e2e_ui_animated_inline_gif_reuses_one_kitty_image_id_across_laps() {
+    let dir = sandbox("inline_gif_kitty_id");
+    let colors = [[220, 20, 20], [20, 220, 20], [20, 20, 220]];
+    write_animated_gif(&dir.join("anim.gif"), &colors);
+    std::fs::write(dir.join("d.md"), "before\n\n![anim](anim.gif)\n\nafter\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images(); // the decode thread hands back all frames
+    s.drain_md_encodes(); // the encode worker turns frame 0 into a drawable image
+
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1, "GIF が1枚配置される");
+    let (url, cols, rows) = (
+        placements[0].url.clone(),
+        placements[0].cols,
+        placements[0].rows,
+    );
+    assert!(
+        s.app
+            .md_image_proto(&url, cols, rows, 0, rows)
+            .is_some_and(|i| i.is_kitty()),
+        "kitty 端末では konoma 自前の転送経路を通る"
+    );
+
+    let mut ids: std::collections::BTreeSet<u32> =
+        transmitted_kitty_ids(&s.term).into_iter().collect();
+    assert_eq!(ids.len(), 1, "最初の描画で1枚だけ転送される");
+    let mut transmits = ids.len();
+
+    // Three laps of a three-frame animation, each step the run loop's own sequence.
+    for _ in 0..(colors.len() * 3) {
+        while !s.app.advance_md_gifs_if_due() {
+            // The very first tick only starts the frame timer; the 10ms delays then elapse on
+            // their own. Looping (rather than sleeping a fixed amount) keeps this independent of
+            // how fast the machine is.
+            std::hint::spin_loop();
+        }
+        s.draw(); // the redraw notices the new frame and requests its encode
+        s.drain_md_encodes(); // ...which the worker returns, and drain redraws with it
+        let frame_ids = transmitted_kitty_ids(&s.term);
+        transmits += frame_ids.len();
+        ids.extend(frame_ids);
+    }
+
+    // Vacuity guard: without real re-transmits the assertion below would hold trivially.
+    assert!(
+        transmits >= colors.len() * 3,
+        "コマごとに転送が起きている: {transmits}"
+    );
+    assert_eq!(
+        ids.len(),
+        1,
+        "何周させても端末に載る画像 ID は1つのまま(= 画像ストレージが埋まらない): {ids:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

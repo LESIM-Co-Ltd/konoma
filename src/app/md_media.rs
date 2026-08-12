@@ -168,6 +168,8 @@ impl App {
         let zoom = self.tab.fence_zoom;
         let font = self.picker.as_ref().map(|p| p.font_size());
         let enc_tx = self.md_enc_tx.clone();
+        // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
+        let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
         let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
             return;
         };
@@ -200,21 +202,26 @@ impl App {
             return;
         }
         let Some(tx) = enc_tx else { return };
+        let enc_key = MdEncodeKey::Zoom { cols, rows, crop };
+        let kitty = entry
+            .kitty_id_for(&enc_key, use_kitty)
+            .map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = tx.send(MdEncodeRequest {
             path: key_path,
-            key: MdEncodeKey::Zoom { cols, rows, crop },
+            key: enc_key,
             image: img,
             crop: Some(crop),
             cols,
             rows,
+            kitty,
         });
     }
 
-    /// The protocol for the focused inline diagram's current zoom, if encoded for this (cols, rows).
-    /// While a fresh crop is still encoding, the previous zoom crop (or the unzoomed full protocol)
+    /// The image for the focused inline diagram's current zoom, if encoded for this (cols, rows).
+    /// While a fresh crop is still encoding, the previous zoom crop (or the unzoomed full image)
     /// stays visible instead of blinking out.
-    pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&Protocol> {
+    pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&InlineImage> {
         let entry = self.md_image_cache.get(&PathBuf::from(url))?;
         match entry.zoom_key {
             Some((c, r, _)) if (c, r) == (cols, rows) => {
@@ -482,10 +489,10 @@ impl App {
         }
     }
 
-    /// Apply a completed background encode: store the protocol in its full or clip slot. Returns redraw.
-    /// A failed encode (`protocol: None`) records the attempted key **without** touching the stored
-    /// protocols — the last good state stays visible and the same request is not retried every frame.
-    /// Only when nothing was ever encodable (no full protocol at all) does the entry degrade to the
+    /// Apply a completed background encode: store the image in its full or clip slot. Returns redraw.
+    /// A failed encode (`image: None`) records the attempted key **without** touching the stored
+    /// images — the last good state stays visible and the same request is not retried every frame.
+    /// Only when nothing was ever encodable (no full image at all) does the entry degrade to the
     /// text fallback (principle #3).
     pub fn apply_md_encode(&mut self, res: MdEncodeResult) -> bool {
         let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
@@ -493,7 +500,7 @@ impl App {
         };
         entry.enc_inflight = false;
         let mut degrade = false;
-        match (res.key, res.protocol) {
+        match (res.key, res.image) {
             (MdEncodeKey::Full { cols, rows }, Some(p)) => {
                 entry.protocol = Some(p);
                 entry.proto_size = Some((cols, rows));
@@ -679,6 +686,8 @@ impl App {
         let Some(enc_tx) = self.md_enc_tx.clone() else {
             return;
         };
+        // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
+        let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return;
         };
@@ -694,17 +703,22 @@ impl App {
             if entry.proto_size == Some((cols, full_rows)) {
                 return;
             }
+            let enc_key = MdEncodeKey::Full {
+                cols,
+                rows: full_rows,
+            };
+            let kitty = entry
+                .kitty_id_for(&enc_key, use_kitty)
+                .map(|id| (id, is_tmux));
             entry.enc_inflight = true;
             let _ = enc_tx.send(MdEncodeRequest {
                 path,
-                key: MdEncodeKey::Full {
-                    cols,
-                    rows: full_rows,
-                },
+                key: enc_key,
                 image: img,
                 crop: None,
                 cols,
                 rows: full_rows,
+                kitty,
             });
             return;
         }
@@ -715,27 +729,32 @@ impl App {
         }
         let (dw, dh) = (img.width(), img.height());
         let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
+        let enc_key = MdEncodeKey::Clip {
+            cols,
+            full_rows,
+            row_off,
+            vis_rows,
+        };
+        let kitty = entry
+            .kitty_id_for(&enc_key, use_kitty)
+            .map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = enc_tx.send(MdEncodeRequest {
             path,
-            key: MdEncodeKey::Clip {
-                cols,
-                full_rows,
-                row_off,
-                vis_rows,
-            },
+            key: enc_key,
             image: img,
             crop: Some((0, y0, dw, h)),
             cols,
             rows: vis_rows,
+            kitty,
         });
     }
 
-    /// The render protocol to draw for the visible portion of inline image `url`. Prefers the protocol
-    /// that exactly matches the current position (full image when fully visible, or the band matching
+    /// The image to draw for the visible portion of inline image `url`. Prefers the encode that
+    /// exactly matches the current position (full image when fully visible, or the band matching
     /// `(cols, full_rows, row_off, vis_rows)`); while a newly-scrolled band is still encoding it returns
-    /// the last encoded protocol so the image stays on screen (and snaps to the exact band on arrival)
-    /// rather than blinking out. None only until the very first protocol for this image is ready.
+    /// the last encode so the image stays on screen (and snaps to the exact band on arrival)
+    /// rather than blinking out. None only until the very first encode for this image is ready.
     pub fn md_image_proto(
         &self,
         url: &str,
@@ -743,7 +762,7 @@ impl App {
         full_rows: u16,
         row_off: u16,
         vis_rows: u16,
-    ) -> Option<&Protocol> {
+    ) -> Option<&InlineImage> {
         let path = if crate::preview::markdown::is_synthetic_md_url(url) {
             PathBuf::from(url)
         } else {

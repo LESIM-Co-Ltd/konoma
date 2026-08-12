@@ -31,8 +31,30 @@ const UNIT_WIDTH: CellDiffOption =
     CellDiffOption::ForcedWidth(std::num::NonZeroU16::new(1).unwrap());
 
 /// Monotonic image-id source. Each opened image gets a fresh id so a new transmit never collides
-/// with a still-referenced older one; kitty auto-removes a virtual placement once its placeholders
-/// are gone, so no explicit delete is needed (same lifecycle as ratatui-image).
+/// with a still-referenced older one (re-using an id is destructive: "when re-transmitting image
+/// data for a specific id, the existing image and all its placements must be deleted").
+///
+/// **A fresh id per transmit means the terminal accumulates images, and konoma never deletes any.**
+/// What kitty reclaims on its own is only the *placement* — the on-screen instance — once its
+/// Unicode placeholders are gone; the *image data* behind it stays resident, counted against the
+/// terminal's image-storage quota, until the terminal itself evicts something ("when the terminal
+/// is running out of quota space for new images, existing images without placements will be
+/// preferentially deleted"). Conflating the two is a trap: it reads as "nothing leaks", when in
+/// fact every transmit permanently adds to the quota. That is fine for a *one-shot* transmit — the
+/// full-screen path transmits once per opened image, and per zoom/pan step — but it is *not* a
+/// licence to transmit on a timer.
+///
+/// So anything that re-transmits **the same picture slot over and over** must allocate its id once
+/// and then reuse it, which turns each later transmit into a replacement rather than an addition
+/// (the destructive re-use quoted above is exactly the wanted behavior there). That is what the
+/// inline Markdown image path does: `MdImgEntry` pins one id per protocol slot, so an animated GIF
+/// cycling its frames forever occupies a constant amount of terminal storage. Before that, it went
+/// through ratatui-image's `Picker::new_protocol`, which picks its id with `rand::random()` — a
+/// fresh id **per frame**, measured at ~66 MB/min against Ghostty's 320 MB budget, which evicted a
+/// long-lived still image out from under a placeholder konoma would never re-transmit (the still
+/// simply vanished after ~5 minutes).
+///
+/// [Deleting images]: https://sw.kovidgoyal.net/kitty/graphics-protocol/#deleting-images
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Allocate a fresh kitty image id (never 0 — kitty treats 0 as "unspecified").
@@ -89,10 +111,18 @@ impl KittyImage {
         }
     }
 
-    /// Display size in cells this image was built (resized) for. Test-only inspection.
-    #[cfg(test)]
+    /// Display size in cells this image was built (resized) for. The full-screen path compares it
+    /// against the wanted target to know a terminal resize forces a rebuild; the inline path uses it
+    /// to reproduce `ratatui_image::Image`'s "refuse to draw into an area smaller than the image".
     pub fn cell_size(&self) -> (u16, u16) {
         (self.cols, self.rows)
+    }
+
+    /// Bytes of the (compressed, base64'd) transmit escape this image carries. Test-only: lets a
+    /// test state the compression win, and the constant per-frame residency, in real numbers.
+    #[cfg(test)]
+    pub fn transmit_len(&self) -> usize {
+        self.transmit.len()
     }
 
     /// Emit the image into `buf` at `area`: the transmit sequence once (first frame), then the
