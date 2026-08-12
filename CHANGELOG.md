@@ -25,11 +25,20 @@ All notable changes to konoma are documented in this file. The format is based o
   backwards-compatibility placeholder `ref: refs/heads/.invalid` in that file, and a tool that reads
   it displays a branch that does not exist.
 
-  **Still empty in a reftable repository:** the diff views (`d`, `Enter` on a change), the log and
-  graph, the branch list, and the follow-mode baseline diff — everything that reads git *objects*
-  rather than paths, since that work is libgit2's. Those degrade quietly (an empty view, a "no
-  commits" notice) instead of failing, and could be moved onto the CLI the same way status already
-  is.
+  The reads that go through libgit2's *object database* rather than a path — the diff views (`d`,
+  `Enter` on a change), the log and the graph, the branch list, the commit detail heading, the
+  worktree list's `d` diff and the follow-mode baseline — now fall back to the CLI as well, so a
+  reftable repository gets the entire git suite rather than a set of empty views.
+
+  Those fallbacks compute a diff by asking git *which* paths differ and then diffing the two sides'
+  contents with the same line differ konoma already renders for the follow-mode baseline, rather
+  than parsing git's own unified-diff output. The same lines come out marked added and removed; the
+  hunk boundaries and the grouping of nearby changes are that differ's rather than libgit2's, and
+  can differ slightly. Binary files are left out of the line diff entirely, as they are on the
+  libgit2 path.
+
+  **A repository libgit2 can open is untouched by all of this** — not one extra child process runs
+  there, which matters because the change gutter asks for a file's diff every time you open one.
 
 ## [0.24.0] - 2026-08-11
 

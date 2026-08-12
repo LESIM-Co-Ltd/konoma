@@ -557,20 +557,244 @@ fn resolve_repo_dirs(root: &Path) -> RepoDirs {
 /// its object database (diffs, the commit graph, branch refs) rather than just a path.
 ///
 /// Returns `None` for a repository libgit2 refuses to open — today that means a **reftable**
-/// repository (see this section's header). Callers all degrade to empty/`None` there, so in a
-/// reftable repository konoma keeps status markers, the ignored set, the changed-files list, the
-/// worktree list and every write (all CLI-backed), while `file_diff` / `log` / `commit_diff` /
-/// `commit_meta` / `branches` / `branches_by_recency` / `branch_tip` / `head_commit_id` /
-/// `blob_at` / `worktree_diff` / `diff_since` / `merge_base_time` come back empty. That is a
-/// deliberate, safe degradation, not an oversight: each of those could be rewritten on top of the
-/// `git` CLI (`git diff`, `git log`, `git for-each-ref`, …) the same way status already is, which
-/// is the work to do if reftable repositories should get the Git views too.
+/// repository (see this section's header).
+///
+/// A `None` here is no longer a dead end: every caller falls back to the `git` CLI (the next
+/// section), so a reftable repository gets the whole git suite — status markers, the ignored set,
+/// the changed-files list, the worktree list, the graph and every write were already CLI-backed,
+/// and `file_diff` / `log` / `commit_diff` / `commit_meta` / `branches` / `branches_by_recency` /
+/// `branch_tip` / `head_commit_id` / `blob_at` / `worktree_diff` / `diff_since` /
+/// `merge_base_time` now have CLI implementations of their own.
+///
+/// **What still differs from this path**: the fallback diffs are computed by diffing the two sides'
+/// *contents* with [`diff_contents`], so their hunk boundaries are `similar`'s rather than
+/// libgit2's — the same lines are marked added/removed, but where a hunk starts and how nearby
+/// changes are grouped can differ slightly. That is deliberate (see the fallback section's header):
+/// it reuses output konoma already shows users elsewhere instead of introducing a second,
+/// hand-written unified-diff parser.
 #[cfg(feature = "git")]
 fn open_repo(root: &Path) -> Option<git2::Repository> {
     if !external_git_enabled() {
         return None;
     }
     git2::Repository::discover(root).ok()
+}
+
+// ── CLI fallbacks for the object-database reads (reftable repositories) ──────
+//
+// Everything in this file that needs the *object database* (diffs, log, branch refs, commit
+// metadata) keeps its libgit2 implementation **verbatim** and only reaches for the `git` CLI when
+// `open_repo` returned `None`. Two consequences worth stating plainly:
+//
+//   * **An ordinary repository launches not one extra child process.** Pinned by
+//     `the_libgit2_path_never_spawns_a_read_fallback`. This is not cosmetic: `file_diff` feeds the
+//     change gutter, and `statuses`/`ignored` are recomputed on filesystem events — extra spawns
+//     on those paths are precisely the class of stall the `.git` self-loop and Phase G work spent
+//     so long removing.
+//   * **The fallback is deliberately un-clever.** It never parses a unified diff. It asks git
+//     *which* paths differ, reads each side's bytes (`git cat-file blob` for a tree-ish side, the
+//     file itself for the working-tree side) and hands the pair to [`diff_contents`] — the same
+//     `similar`-backed function the follow-baseline diff already renders for users. Writing a
+//     unified-diff parser instead would mean owning a second notion of "what a hunk is" whose
+//     disagreements with git only ever surface as subtly wrong output.
+//
+// The cost is one child process per side per file, so a large multi-file diff spawns a lot of
+// them. Acceptable for a path only reachable in a repository libgit2 cannot open at all, where the
+// alternative was an empty view.
+
+#[cfg(all(test, feature = "git"))]
+thread_local! {
+    /// Test-only count of **read fallbacks** (this section) issued on this thread — the counter
+    /// behind `count_read_cli_calls`. Thread-local for the same reason as `DISCOVERY_CLI_CALLS`: a
+    /// process-wide counter would also see the spawns of every other test running in parallel.
+    static READ_CLI_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` and reports how many read fallbacks it spawned on this thread.
+///
+/// Counts *only* this section's helper. The long-standing CLI implementations (`statuses`,
+/// `ignored`, `changed_files`, `worktrees`, `dag_commits`, `precomposed_pathspec`) build their own
+/// `Command` and are intentionally left alone, so this measures exactly "did a libgit2-backed read
+/// fall back to the CLI" and nothing else.
+#[cfg(all(test, feature = "git"))]
+pub fn count_read_cli_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = READ_CLI_CALLS.with(|c| c.get());
+    let out = f();
+    (out, READ_CLI_CALLS.with(|c| c.get()).saturating_sub(before))
+}
+
+/// Runs one **read-only** `git` command in `dir` and returns its stdout as raw bytes, or `None` if
+/// git could not be launched or exited non-zero.
+///
+/// Bytes, not `String`: paths and file contents are not required to be UTF-8. `--no-optional-locks`
+/// is prepended here rather than at each call site so no fallback can forget it — every one of them
+/// is a background read that must never contend with a user's concurrent `git pull` (see
+/// `statuses()`). stdin is `/dev/null` so a subcommand that would otherwise prompt (credentials,
+/// an editor) fails instead of hanging the UI thread.
+#[cfg(feature = "git")]
+fn git_read<I, S>(dir: &Path, args: I) -> Option<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    #[cfg(test)]
+    READ_CLI_CALLS.with(|c| c.set(c.get() + 1));
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .arg("--no-optional-locks")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// [`git_read`] for a command whose output is a single token (an object id, a timestamp).
+/// `None` when the command failed *or* printed nothing — both mean "unresolvable" to every caller.
+#[cfg(feature = "git")]
+fn git_read_token<I, S>(dir: &Path, args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let out = git_read(dir, args)?;
+    let s = String::from_utf8_lossy(&out).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// The directory a read fallback runs in: the repository's working-tree root.
+///
+/// `None` — and therefore *no child process at all* — when `root` is not inside a repository with
+/// a working tree. Resolved through the same memoized discovery ladder as everything else, so the
+/// overwhelmingly common "this is just a directory" case is answered by a filesystem walk. A bare
+/// repository also lands here: `git rev-parse --show-toplevel` fails in one, so discovery already
+/// reports no workdir, and the fallbacks stay disabled exactly as they were.
+#[cfg(feature = "git")]
+fn cli_dir(root: &Path) -> Option<PathBuf> {
+    resolve_repo_dirs(root).workdir
+}
+
+/// git's own "is this binary?" heuristic: a NUL byte within the first 8000 bytes.
+///
+/// Used to keep binary content out of [`diff_contents`], which is a *line* differ — running it
+/// over a PNG would emit megabytes of mojibake. libgit2 does not emit line callbacks for a binary
+/// delta either, so skipping the body (while still emitting the file header) is what makes the two
+/// paths agree.
+#[cfg(feature = "git")]
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&b| b == 0)
+}
+
+/// `git cat-file blob <rev>:<rel>` — the bytes of repo-relative path `rel` as of tree-ish `rev`.
+/// `None` when the path did not exist there (every caller reads that as "added on the new side").
+///
+/// `rel` is passed through as an `OsStr`, so a non-UTF-8 name survives, and the spec always starts
+/// with `rev`, so a filename beginning with `-` can never be mistaken for an option. No NFC
+/// normalization is applied on macOS (unlike `precomposed_pathspec`, which exists for libgit2's
+/// pathspec matcher): git precomposes its own argv when `core.precomposeunicode` is on, so an
+/// NFD-spelled path from the tree side resolves — verified with a decomposed filename, where both
+/// spellings returned the same blob.
+#[cfg(feature = "git")]
+fn cli_blob(dir: &Path, rev: &str, rel: &Path) -> Option<Vec<u8>> {
+    use std::ffi::OsStr;
+    let mut spec = std::ffi::OsString::from(rev);
+    spec.push(":");
+    spec.push(rel.as_os_str());
+    git_read(
+        dir,
+        [OsStr::new("cat-file"), OsStr::new("blob"), spec.as_os_str()],
+    )
+}
+
+/// Splits NUL-terminated `git` output (`-z`) into repo-relative paths, dropping the trailing empty
+/// field. Raw bytes → `PathBuf`, never a lossy `String`, so a non-UTF-8 name round-trips.
+#[cfg(feature = "git")]
+fn cli_paths(out: &[u8]) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    out.split(|&b| b == 0)
+        .filter(|f| !f.is_empty())
+        .map(|f| PathBuf::from(std::ffi::OsStr::from_bytes(f)))
+        .collect()
+}
+
+/// Appends one file's fallback diff to `out`, in the shape `collect_diff_lines` produces for
+/// libgit2: an optional file-boundary header (bare path, both line numbers `None`) followed by the
+/// line diff. `None` on a side means "the file does not exist there" (added / deleted).
+///
+/// A file whose two sides are both absent contributes nothing. A binary file contributes its
+/// header and no body, matching libgit2 (see [`looks_binary`]). Text is compared through
+/// `from_utf8_lossy` — the same conversion `collect_diff_lines` applies to libgit2's line content.
+#[cfg(feature = "git")]
+fn push_file_diff(
+    out: &mut Vec<DiffLine>,
+    rel: &Path,
+    old: Option<&[u8]>,
+    new: Option<&[u8]>,
+    with_headers: bool,
+) {
+    if old.is_none() && new.is_none() {
+        return;
+    }
+    let (old_b, new_b) = (old.unwrap_or_default(), new.unwrap_or_default());
+    if with_headers {
+        out.push(DiffLine {
+            kind: DiffLineKind::Context,
+            old_no: None,
+            new_no: None,
+            text: rel.to_string_lossy().into_owned(),
+        });
+    }
+    if looks_binary(old_b) || looks_binary(new_b) {
+        return;
+    }
+    out.extend(diff_contents(
+        &String::from_utf8_lossy(old_b),
+        &String::from_utf8_lossy(new_b),
+    ));
+}
+
+/// Every path that differs between tree-ish `old` and the working tree (index included), plus
+/// untracked files — the CLI equivalent of the `diff_tree_to_workdir_with_index` +
+/// `include_untracked`/`recurse_untracked_dirs` options the libgit2 diffs use.
+///
+/// `old = None` is the unborn-HEAD case, where libgit2 diffs against an empty tree: everything
+/// tracked *or* untracked counts as added, so the tracked side comes from `ls-files --cached`
+/// rather than a diff. `--no-renames` keeps a rename reported as a delete plus an add, which is
+/// what libgit2 produces too (konoma never asks it to run rename detection). Sorted and
+/// deduplicated so the merged listing is ordered by path, as libgit2's delta order is.
+#[cfg(feature = "git")]
+fn cli_paths_vs_worktree(dir: &Path, old: Option<&str>) -> Vec<PathBuf> {
+    let tracked = match old {
+        Some(rev) => git_read(
+            dir,
+            ["diff", "--name-only", "--no-renames", "-z", rev, "--"],
+        ),
+        None => git_read(dir, ["ls-files", "-z", "--cached"]),
+    };
+    let untracked = git_read(dir, ["ls-files", "-z", "--others", "--exclude-standard"]);
+    let mut paths: Vec<PathBuf> = tracked
+        .as_deref()
+        .map(cli_paths)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(untracked.as_deref().map(cli_paths).unwrap_or_default())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// The diff from tree-ish `old` (`None` = unborn HEAD) through the index to the working tree, for
+/// every changed file — the CLI stand-in for `worktree_diff` and `diff_since`.
+#[cfg(feature = "git")]
+fn cli_diff_vs_worktree(dir: &Path, old: Option<&str>) -> Vec<DiffLine> {
+    let mut out = Vec::new();
+    for rel in cli_paths_vs_worktree(dir, old) {
+        let before = old.and_then(|rev| cli_blob(dir, rev, &rel));
+        let after = std::fs::read(dir.join(&rel)).ok();
+        push_file_diff(&mut out, &rel, before.as_deref(), after.as_deref(), true);
+    }
+    out
 }
 
 /// Returns the **workdir (working-tree root)** of the git repository that `root` belongs to (canonicalized).
@@ -774,7 +998,7 @@ pub fn branches(root: &Path) -> Vec<BranchInfo> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        return branches_via_cli(root);
     };
     let mut out = Vec::new();
     if let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) {
@@ -791,6 +1015,43 @@ pub fn branches(root: &Path) -> Vec<BranchInfo> {
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
+
+/// `branches` for a repository libgit2 will not open. One `git for-each-ref`.
+///
+/// `%(HEAD)` is git's own answer to "is this the checked-out branch" (`*` or a space), so a
+/// detached HEAD marks nothing current — exactly what `Branch::is_head()` reports. Refnames may
+/// not contain control characters, so NUL-separated fields on newline-separated records is
+/// unambiguous here.
+#[cfg(feature = "git")]
+fn branches_via_cli(root: &Path) -> Vec<BranchInfo> {
+    let Some(dir) = cli_dir(root) else {
+        return Vec::new();
+    };
+    let Some(out) = git_read(
+        &dir,
+        ["for-each-ref", "--format=%(refname:short)%00%(HEAD)", REFS],
+    ) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out);
+    let mut list: Vec<BranchInfo> = text
+        .lines()
+        .filter_map(|line| {
+            let (name, head) = line.split_once('\0')?;
+            (!name.is_empty()).then(|| BranchInfo {
+                name: name.to_string(),
+                is_current: head.trim() == "*",
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    list
+}
+
+/// The one ref namespace konoma's branch listings care about (local branches only, as
+/// `git2::BranchType::Local` selects).
+#[cfg(feature = "git")]
+const REFS: &str = "refs/heads/";
 
 #[cfg(not(feature = "git"))]
 pub fn branches(_root: &Path) -> Vec<BranchInfo> {
@@ -975,7 +1236,7 @@ pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        return branches_by_recency_via_cli(root);
     };
     let mut out: Vec<(String, bool, i64)> = Vec::new();
     if let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) {
@@ -998,6 +1259,41 @@ pub fn branches_by_recency(root: &Path) -> Vec<(String, bool, i64)> {
     out
 }
 
+/// `branches_by_recency` for a repository libgit2 will not open. One `git for-each-ref`.
+///
+/// `%(committerdate:unix)` on a branch ref is the tip commit's committer time — the same clock the
+/// libgit2 path reads via `peel_to_commit().time().seconds()`. An unreadable timestamp sorts as
+/// oldest (`0`), matching that path's `unwrap_or(0)`.
+#[cfg(feature = "git")]
+fn branches_by_recency_via_cli(root: &Path) -> Vec<(String, bool, i64)> {
+    let Some(dir) = cli_dir(root) else {
+        return Vec::new();
+    };
+    let Some(out) = git_read(
+        &dir,
+        [
+            "for-each-ref",
+            "--format=%(refname:short)%00%(HEAD)%00%(committerdate:unix)",
+            REFS,
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out);
+    let mut list: Vec<(String, bool, i64)> = text
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.split('\0');
+            let name = it.next()?;
+            let head = it.next()?;
+            let t = it.next().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
+            (!name.is_empty()).then(|| (name.to_string(), head.trim() == "*", t))
+        })
+        .collect();
+    list.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    list
+}
+
 #[cfg(not(feature = "git"))]
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
 pub fn branches_by_recency(_root: &Path) -> Vec<(String, bool, i64)> {
@@ -1011,10 +1307,26 @@ pub fn branch_tip(root: &Path, name: &str) -> Option<String> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = open_repo(root)?;
+    let Some(repo) = open_repo(root) else {
+        return branch_tip_via_cli(root, name);
+    };
     let branch = repo.find_branch(name, git2::BranchType::Local).ok()?;
     let oid = branch.get().peel_to_commit().ok()?.id();
     Some(oid.to_string())
+}
+
+/// `branch_tip` for a repository libgit2 will not open. One `git rev-parse`.
+///
+/// The ref is spelled in full (`refs/heads/<name>`) so a branch can never be confused with a file
+/// of the same name, and `^{commit}` peels it — together they are `find_branch(.., Local)` plus
+/// `peel_to_commit()`.
+#[cfg(feature = "git")]
+fn branch_tip_via_cli(root: &Path, name: &str) -> Option<String> {
+    let dir = cli_dir(root)?;
+    git_read_token(
+        &dir,
+        ["rev-parse", "--verify", &format!("{REFS}{name}^{{commit}}")],
+    )
 }
 
 #[cfg(not(feature = "git"))]
@@ -1170,7 +1482,7 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        return file_diff_via_cli(root, file);
     };
     let Some(workdir) = repo.workdir() else {
         return Vec::new();
@@ -1204,6 +1516,31 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
         Err(_) => return Vec::new(),
     };
     collect_diff_lines(&diff, false)
+}
+
+/// `file_diff` for a repository libgit2 will not open: HEAD's blob against the file on disk.
+///
+/// At most two child processes (`cat-file`, and none for the disk read), which matters because
+/// this feeds the change gutter — though `App::git_gutter_marks` caches per path, so it is once
+/// per file opened, not once per keystroke.
+///
+/// The missing-side cases line up with the libgit2 options this replaces: no blob at HEAD means
+/// untracked or unborn, which `include_untracked`/`show_untracked_content` render as all-added;
+/// no file on disk means deleted, which renders as all-removed. Both absent contributes nothing.
+#[cfg(feature = "git")]
+fn file_diff_via_cli(root: &Path, file: &Path) -> Vec<DiffLine> {
+    let Some(dir) = cli_dir(root) else {
+        return Vec::new();
+    };
+    let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let Ok(rel) = file_abs.strip_prefix(&dir) else {
+        return Vec::new(); // outside this repository's working tree
+    };
+    let before = cli_blob(&dir, "HEAD", rel);
+    let after = std::fs::read(&file_abs).ok();
+    let mut out = Vec::new();
+    push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), false);
+    out
 }
 
 #[cfg(not(feature = "git"))]
@@ -1258,7 +1595,12 @@ pub fn head_commit_id(root: &Path) -> Option<String> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = open_repo(root)?;
+    let Some(repo) = open_repo(root) else {
+        // `rev-parse --verify HEAD^{commit}` is exactly `head()?.peel_to_commit()?`, and fails the
+        // same way before the first commit.
+        let dir = cli_dir(root)?;
+        return git_read_token(&dir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    };
     let commit = repo.head().ok()?.peel_to_commit().ok()?;
     Some(commit.id().to_string())
 }
@@ -1271,7 +1613,12 @@ pub fn blob_at(root: &Path, sha: &str, file: &Path) -> Option<Vec<u8>> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = open_repo(root)?;
+    let Some(repo) = open_repo(root) else {
+        let dir = cli_dir(root)?;
+        let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        let rel = file_abs.strip_prefix(&dir).ok()?;
+        return cli_blob(&dir, sha, rel);
+    };
     let workdir = repo.workdir()?;
     let workdir = workdir
         .canonicalize()
@@ -1424,7 +1771,7 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
         return out;
     }
     let Some(repo) = open_repo(root) else {
-        return out;
+        return log_via_cli(root, max);
     };
     let Ok(mut walk) = repo.revwalk() else {
         return out;
@@ -1454,6 +1801,57 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
     out
 }
 
+/// `log` for a repository libgit2 will not open. One `git log`.
+///
+/// Formatted the same way `dag_commits` (which has always been CLI-backed) formats its own log:
+/// `%x1f`-separated fields, one commit per line, with a leading separator so the split yields a
+/// fixed number of fields. That is safe precisely because none of these fields can contain a
+/// newline — `%s` is a subject, which git folds to a single line, and an author name and a commit
+/// header timestamp cannot hold one either. (`commit_meta`, which needs the multi-line `%B`, uses
+/// NUL separation instead.) `git log`'s default ordering is reverse-chronological, the same as the
+/// libgit2 path's `Sort::TIME`, and it fails on an unborn HEAD, yielding the same empty list.
+#[cfg(feature = "git")]
+fn log_via_cli(root: &Path, max: usize) -> Vec<CommitInfo> {
+    let Some(dir) = cli_dir(root) else {
+        return Vec::new();
+    };
+    let Some(out) = git_read(
+        &dir,
+        [
+            "log",
+            &format!("--max-count={max}"),
+            "--format=%x1f%H%x1f%h%x1f%an%x1f%ct%x1f%s",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|line| {
+            // Bound in the format's own order (%H %h %an %ct %s) rather than in the struct's, so
+            // the fields and the placeholders can be read against each other — `it` is stateful,
+            // and a reordering here would silently shift every value by one.
+            let mut it = line.split('\u{1f}');
+            let _lead = it.next(); // the leading %x1f, so the split has a fixed arity
+            let id = it.next()?.to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let short = it.next().unwrap_or("").to_string();
+            let author = it.next().unwrap_or("").to_string();
+            let time_epoch = it.next().unwrap_or("").parse().unwrap_or(0);
+            let summary = it.next().unwrap_or("").to_string();
+            Some(CommitInfo {
+                id,
+                short,
+                summary,
+                author,
+                time_epoch,
+            })
+        })
+        .collect()
+}
+
 #[cfg(not(feature = "git"))]
 pub fn log(_root: &Path, _max: usize) -> Vec<CommitInfo> {
     Vec::new()
@@ -1467,7 +1865,7 @@ pub fn commit_diff(root: &Path, id: &str) -> Vec<DiffLine> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        return commit_diff_via_cli(root, id);
     };
     let Ok(oid) = git2::Oid::from_str(id) else {
         return Vec::new();
@@ -1484,6 +1882,45 @@ pub fn commit_diff(root: &Path, id: &str) -> Vec<DiffLine> {
         Err(_) => return Vec::new(),
     };
     collect_diff_lines(&diff, true)
+}
+
+/// `commit_diff` for a repository libgit2 will not open: which paths the commit touched, then both
+/// sides of each one.
+///
+/// `diff-tree --root` covers the root commit in the same call as every other (it diffs against
+/// nothing rather than failing), which is how the libgit2 path's `parent(0)`-or-empty-tree choice
+/// is reproduced without asking about parentage first: `<id>^` simply has no blob for a root
+/// commit, and "no blob on the old side" already means added. `^` is git's first-parent operator,
+/// matching `commit.parent(0)`.
+#[cfg(feature = "git")]
+fn commit_diff_via_cli(root: &Path, id: &str) -> Vec<DiffLine> {
+    let Some(dir) = cli_dir(root) else {
+        return Vec::new();
+    };
+    let Some(listing) = git_read(
+        &dir,
+        [
+            "diff-tree",
+            "-r",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            id,
+            "--",
+        ],
+    ) else {
+        return Vec::new(); // unresolvable commit
+    };
+    let parent = format!("{id}^");
+    let mut out = Vec::new();
+    for rel in cli_paths(&listing) {
+        let before = cli_blob(&dir, &parent, &rel);
+        let after = cli_blob(&dir, id, &rel);
+        push_file_diff(&mut out, &rel, before.as_deref(), after.as_deref(), true);
+    }
+    out
 }
 
 /// **Metadata** of a commit (for the heading at the top of the detail view). `message` is the full %B-equivalent text
@@ -1506,19 +1943,52 @@ pub fn commit_meta(root: &Path, id: &str) -> Option<CommitMeta> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = open_repo(root)?;
+    let Some(repo) = open_repo(root) else {
+        return commit_meta_via_cli(root, id);
+    };
     let oid = git2::Oid::from_str(id).ok()?;
     let commit = repo.find_commit(oid).ok()?;
     let message = commit.message().unwrap_or("").trim_end().to_string();
     let author = commit.author().name().unwrap_or("").to_string();
     let secs = commit.time().seconds().max(0) as u64;
     let date = crate::fileops::format_epoch_short(secs);
-    let short = id[..id.len().min(7)].to_string();
     Some(CommitMeta {
         id: id.to_string(),
-        short,
+        short: short_id(id),
         author,
         date,
+        message,
+    })
+}
+
+/// The 7-character abbreviation shown in the detail heading, taken from the caller's own `id`
+/// string rather than from git — both paths must agree, and `id` is the identity the caller is
+/// already displaying elsewhere.
+#[cfg(feature = "git")]
+fn short_id(id: &str) -> String {
+    id[..id.len().min(7)].to_string()
+}
+
+/// `commit_meta` for a repository libgit2 will not open. One `git show -s`.
+///
+/// The message is `%B` (subject *and* body, multi-line), so the fields are NUL-separated and the
+/// message is taken as "everything after the second separator" — a commit message may contain any
+/// byte, so it must never be split on. Trailing whitespace is trimmed, as `commit.message()`'s
+/// consumer does. A commit that does not resolve makes `git show` fail, giving the same `None`.
+#[cfg(feature = "git")]
+fn commit_meta_via_cli(root: &Path, id: &str) -> Option<CommitMeta> {
+    let dir = cli_dir(root)?;
+    let out = git_read(&dir, ["show", "-s", "--format=%an%x00%ct%x00%B", id, "--"])?;
+    let text = String::from_utf8_lossy(&out);
+    let mut it = text.splitn(3, '\0');
+    let author = it.next()?.to_string();
+    let secs: i64 = it.next()?.trim().parse().unwrap_or(0);
+    let message = it.next().unwrap_or("").trim_end().to_string();
+    Some(CommitMeta {
+        id: id.to_string(),
+        short: short_id(id),
+        author,
+        date: crate::fileops::format_epoch_short(secs.max(0) as u64),
         message,
     })
 }
@@ -2235,7 +2705,12 @@ pub fn worktree_diff(root: &Path) -> Vec<DiffLine> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        // Fallback: HEAD (or the empty tree when unborn) against the working tree.
+        let Some(dir) = cli_dir(root) else {
+            return Vec::new();
+        };
+        let head = git_read_token(&dir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+        return cli_diff_vs_worktree(&dir, head.as_deref());
     };
     let head_tree = repo
         .head()
@@ -2286,7 +2761,15 @@ pub fn diff_since(root: &Path, base: &str) -> Vec<DiffLine> {
         return Vec::new();
     }
     let Some(repo) = open_repo(root) else {
-        return Vec::new();
+        let Some(dir) = cli_dir(root) else {
+            return Vec::new();
+        };
+        // Same short-circuits as below, in the same order: unknown base / unborn HEAD / no common
+        // ancestor each yield an empty diff the caller falls back from.
+        let Some(mb) = cli_merge_base(&dir, base) else {
+            return Vec::new();
+        };
+        return cli_diff_vs_worktree(&dir, Some(&mb));
     };
     let Ok(base_branch) = repo.find_branch(base, git2::BranchType::Local) else {
         return Vec::new();
@@ -2352,7 +2835,14 @@ pub fn merge_base_time(root: &Path, base: &str) -> Option<i64> {
     if !external_git_enabled() {
         return None;
     }
-    let repo = open_repo(root)?;
+    let Some(repo) = open_repo(root) else {
+        let dir = cli_dir(root)?;
+        let mb = cli_merge_base(&dir, base)?;
+        // `%ct` is the committer timestamp — the same clock `Commit::time()` reports.
+        return git_read_token(&dir, ["show", "-s", "--format=%ct", &mb, "--"])?
+            .parse()
+            .ok();
+    };
     let base_oid = repo
         .find_branch(base, git2::BranchType::Local)
         .ok()?
@@ -2365,6 +2855,23 @@ pub fn merge_base_time(root: &Path, base: &str) -> Option<i64> {
     repo.find_commit(merge_base_oid)
         .ok()
         .map(|c| c.time().seconds())
+}
+
+/// `git merge-base <base branch> HEAD` for a repository libgit2 will not open — the shared first
+/// step of `diff_since` and `merge_base_time`.
+///
+/// `None` when the local branch `base` does not exist, when HEAD is unborn, or when the two share
+/// no history; the callers treat all three the same way their libgit2 counterparts do. `base` is
+/// resolved as a full `refs/heads/` ref (matching `find_branch(.., Local)`) before being handed to
+/// `merge-base`, so a file of the same name can never stand in for the branch.
+#[cfg(feature = "git")]
+fn cli_merge_base(dir: &Path, base: &str) -> Option<String> {
+    let base_oid = git_read_token(
+        dir,
+        ["rev-parse", "--verify", &format!("{REFS}{base}^{{commit}}")],
+    )?;
+    let head_oid = git_read_token(dir, ["rev-parse", "--verify", "HEAD^{commit}"])?;
+    git_read_token(dir, ["merge-base", &base_oid, &head_oid])
 }
 
 #[cfg(not(feature = "git"))]
@@ -3673,14 +4180,10 @@ mod tests {
             "メインワークツリーなので WT チップは出さない"
         );
 
-        // libgit2-only features degrade to empty **without panicking** (documented on `open_repo`).
+        // The object-database reads are covered by their own test
+        // (`reftable_repository_serves_the_object_database_reads_over_the_cli`); what belongs here
+        // is the discovery contract this test is about.
         if libgit2_refuses {
-            assert!(file_diff(&dir, &canon.join("tracked.txt")).is_empty());
-            assert!(log(&dir, 10).is_empty());
-            assert!(branches(&dir).is_empty());
-            assert!(head_commit_id(&dir).is_none());
-            assert!(worktree_diff(&dir).is_empty());
-
             // Memoization: the ladder's step 3 runs once per repository, not once per question.
             let (_, calls) = count_discovery_cli_calls(|| {
                 for _ in 0..20 {
@@ -3697,6 +4200,432 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The other half of the reftable story: the reads that go through libgit2's **object
+    /// database** — diffs, log, branch refs, commit metadata — used to come back empty in a
+    /// reftable repository, so the Git views opened onto nothing. Each now falls back to the `git`
+    /// CLI, and this pins that all twelve return real data.
+    ///
+    /// Deliberately asserts on *content*, not just "non-empty": an implementation that shells out
+    /// and then misparses the output would still be non-empty.
+    #[cfg(feature = "git")]
+    #[test]
+    fn reftable_repository_serves_the_object_database_reads_over_the_cli() {
+        let dir = unique_tmp("konoma_reftable_reads_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if !init_reftable_repo(&dir) {
+            eprintln!("skip: この git は --ref-format=reftable を作れない (git < 2.45)");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let canon = dir.canonicalize().unwrap();
+        if git2::Repository::discover(&dir).is_ok() {
+            // A future git2 that speaks reftable would take the fast path; nothing to fall back to.
+            eprintln!("skip: この git2 は reftable を開ける (フォールバック経路が走らない)");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .current_dir(&canon)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false));
+        };
+        // Three commits, a branch pinned at the middle one (so a merge-base exists that is neither
+        // HEAD nor the root), and uncommitted work of both kinds left on top.
+        std::fs::write(canon.join("tracked.txt"), b"one\ntwo\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "second subject\n\nbody line"]);
+        run(&["branch", "sidebranch"]);
+        std::fs::write(canon.join("same.txt"), b"x\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "third"]);
+        std::fs::write(canon.join("tracked.txt"), b"one\nTWO\n").unwrap();
+        std::fs::write(canon.join("fresh.txt"), b"brand new\n").unwrap();
+
+        // ── log / commit_meta ────────────────────────────────────────────────
+        let entries = log(&dir, 10);
+        assert_eq!(entries.len(), 3, "log がコミットを返す: {entries:?}");
+        assert_eq!(entries[0].summary, "third", "件名 (newest first)");
+        assert_eq!(entries[1].summary, "second subject");
+        assert_eq!(entries[2].summary, "init");
+        assert_eq!(entries[0].author, "Test");
+        assert!(entries[0].time_epoch > 0, "コミット時刻");
+        assert_eq!(entries[0].short, entries[0].id[..7], "短縮ハッシュ");
+        assert_eq!(log(&dir, 2).len(), 2, "max を尊重する");
+
+        let meta = commit_meta(&dir, &entries[1].id).expect("commit_meta");
+        assert_eq!(meta.author, "Test");
+        assert_eq!(
+            meta.message, "second subject\n\nbody line",
+            "本文の改行を保った完全メッセージ"
+        );
+        assert_eq!(meta.short, entries[1].id[..7]);
+        assert!(!meta.date.is_empty());
+        assert!(
+            commit_meta(&dir, "0000000000000000000000000000000000000000").is_none(),
+            "存在しないコミットは None"
+        );
+
+        // ── branches / branch_tip / head_commit_id ───────────────────────────
+        let names: Vec<String> = branches(&dir).iter().map(|b| b.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n == "sidebranch"),
+            "ブランチ名が出る: {names:?}"
+        );
+        assert_eq!(
+            branches(&dir).iter().filter(|b| b.is_current).count(),
+            1,
+            "現在のブランチがちょうど1つ"
+        );
+        let by_rec = branches_by_recency(&dir);
+        assert_eq!(by_rec.len(), names.len(), "同じ集合を返す");
+        assert!(
+            by_rec.iter().all(|(_, _, t)| *t > 0),
+            "tip の時刻: {by_rec:?}"
+        );
+
+        let head = head_commit_id(&dir).expect("head_commit_id");
+        assert_eq!(head, entries[0].id, "HEAD は log の先頭と一致");
+        assert_eq!(
+            branch_tip(&dir, "sidebranch").as_deref(),
+            Some(entries[1].id.as_str()),
+            "sidebranch は真ん中のコミットを指したまま (HEAD ではない)"
+        );
+        assert!(branch_tip(&dir, "no-such-branch").is_none());
+
+        // ── blob_at ─────────────────────────────────────────────────────────
+        let blob = blob_at(&dir, &head, &canon.join("tracked.txt")).expect("blob_at");
+        assert_eq!(
+            blob, b"one\ntwo\n",
+            "作業ツリーの現在値ではなくコミット時点の中身"
+        );
+        assert!(
+            blob_at(&dir, &head, &canon.join("fresh.txt")).is_none(),
+            "そのコミットに無いファイルは None"
+        );
+
+        // ── file_diff ───────────────────────────────────────────────────────
+        let d = file_diff(&dir, &canon.join("tracked.txt"));
+        assert!(
+            d.iter()
+                .any(|l| l.kind == DiffLineKind::Removed && l.text == "two"),
+            "変更前の行: {d:?}"
+        );
+        assert!(
+            d.iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "TWO"),
+            "変更後の行: {d:?}"
+        );
+        let fresh = file_diff(&dir, &canon.join("fresh.txt"));
+        assert!(
+            fresh.iter().all(|l| l.kind == DiffLineKind::Added)
+                && fresh.iter().any(|l| l.text == "brand new"),
+            "未追跡ファイルは全行追加: {fresh:?}"
+        );
+        assert!(
+            file_diff(&dir, &canon.join("same.txt")).is_empty(),
+            "変更の無いファイルは空"
+        );
+
+        // ── worktree_diff / commit_diff ─────────────────────────────────────
+        let wt = worktree_diff(&dir);
+        assert!(
+            wt.iter()
+                .any(|l| l.old_no.is_none() && l.new_no.is_none() && l.text == "fresh.txt"),
+            "ファイル境界ヘッダ (未追跡も含む): {wt:?}"
+        );
+        assert!(
+            wt.iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "TWO"),
+            "未コミットの変更行"
+        );
+
+        let cd = commit_diff(&dir, &entries[1].id);
+        assert!(
+            cd.iter()
+                .any(|l| l.old_no.is_none() && l.new_no.is_none() && l.text == "tracked.txt"),
+            "コミット差分のヘッダ: {cd:?}"
+        );
+        assert!(
+            cd.iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "two"),
+            "親コミットに対する追加行: {cd:?}"
+        );
+        let root_commit = commit_diff(&dir, &entries[2].id);
+        assert!(
+            root_commit
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "one"),
+            "ルートコミットは全行追加 (--root): {root_commit:?}"
+        );
+
+        // ── diff_since / merge_base_time ────────────────────────────────────
+        let since = diff_since(&dir, "sidebranch");
+        assert!(
+            since
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "TWO"),
+            "merge-base 以降 = コミット済み+未コミット: {since:?}"
+        );
+        assert!(
+            since.iter().any(|l| l.text == "same.txt"),
+            "分岐後にコミットしたファイルも含む: {since:?}"
+        );
+        assert!(
+            diff_since(&dir, "no-such-branch").is_empty(),
+            "存在しない base は空"
+        );
+        let t = merge_base_time(&dir, "sidebranch").expect("merge_base_time");
+        assert_eq!(t, entries[1].time_epoch, "merge-base は分岐元のコミット");
+        assert!(merge_base_time(&dir, "no-such-branch").is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Performance contract**, the read counterpart of
+    /// `an_ordinary_directory_never_spawns_a_discovery_process`: in a repository libgit2 *can*
+    /// open, not one of the CLI fallbacks may run. `file_diff` alone is enough reason — it backs
+    /// the change gutter — but the same holds for every read here.
+    #[cfg(feature = "git")]
+    #[test]
+    fn the_libgit2_path_never_spawns_a_read_fallback() {
+        let dir = unique_tmp("konoma_no_read_fallback_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        std::fs::write(canon.join("a.txt"), b"one\n").unwrap();
+        commit_all(&dir, "init");
+        std::fs::write(canon.join("a.txt"), b"two\n").unwrap();
+        let head = head_commit_id(&dir).expect("head");
+        let branch_name = branch(&dir).expect("branch");
+
+        let (_, calls) = count_read_cli_calls(|| {
+            for _ in 0..3 {
+                let _ = file_diff(&dir, &canon.join("a.txt"));
+                let _ = log(&dir, 10);
+                let _ = commit_diff(&dir, &head);
+                let _ = commit_meta(&dir, &head);
+                let _ = branches(&dir);
+                let _ = branches_by_recency(&dir);
+                let _ = branch_tip(&dir, &branch_name);
+                let _ = head_commit_id(&dir);
+                let _ = blob_at(&dir, &head, &canon.join("a.txt"));
+                let _ = worktree_diff(&dir);
+                let _ = diff_since(&dir, &branch_name);
+                let _ = merge_base_time(&dir, &branch_name);
+            }
+        });
+        assert_eq!(
+            calls, 0,
+            "libgit2 が開ける repo でフォールバックの子プロセスを起動してはいけない"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The two implementations must describe the same repository. Run in an **ordinary** repository
+    /// (where libgit2 works) so both paths can be invoked side by side on identical input — the
+    /// only place that comparison is possible at all.
+    ///
+    /// Compared at the granularity the fallback actually promises (see `open_repo`'s doc): the
+    /// **set of changed lines** is identical, while hunk boundaries and context grouping are
+    /// `similar`'s rather than libgit2's and may differ. Metadata, on the other hand, must match
+    /// exactly — nothing about a hash or a timestamp is a matter of interpretation.
+    #[cfg(feature = "git")]
+    #[test]
+    fn the_cli_fallback_and_libgit2_describe_the_same_repository() {
+        let dir = unique_tmp("konoma_fallback_parity_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        // Enough shape that a naive implementation would drift: several files, an untouched middle
+        // that both must treat as context, and an added file.
+        let body: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(canon.join("a.txt"), &body).unwrap();
+        std::fs::write(canon.join("b.txt"), b"kept\n").unwrap();
+        commit_all(&dir, "init");
+        let changed = body.replace("line 3\n", "LINE THREE\n") + "appended\n";
+        std::fs::write(canon.join("a.txt"), &changed).unwrap();
+        std::fs::write(canon.join("added.txt"), b"fresh\n").unwrap();
+
+        // Changed lines, ignoring context: what the two paths must agree on. Sorted, because only
+        // the *set* is promised — the order lines appear in follows hunk grouping, which is
+        // exactly the part that may differ.
+        let changes = |lines: &[DiffLine]| -> Vec<String> {
+            let mut v: Vec<String> = lines
+                .iter()
+                .filter(|l| l.kind != DiffLineKind::Context)
+                .map(|l| {
+                    let sign = if l.kind == DiffLineKind::Added {
+                        '+'
+                    } else {
+                        '-'
+                    };
+                    format!("{sign}{}", l.text)
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let headers = |lines: &[DiffLine]| -> Vec<String> {
+            lines
+                .iter()
+                .filter(|l| l.old_no.is_none() && l.new_no.is_none())
+                .map(|l| l.text.clone())
+                .collect()
+        };
+
+        let file = canon.join("a.txt");
+        assert_eq!(
+            changes(&file_diff(&dir, &file)),
+            changes(&file_diff_via_cli(&dir, &file)),
+            "file_diff の変更行が一致する"
+        );
+        assert!(
+            !changes(&file_diff_via_cli(&dir, &file)).is_empty(),
+            "比較が空同士で成立していない"
+        );
+
+        let libgit2_wt = worktree_diff(&dir);
+        let cli_wt = cli_diff_vs_worktree(&canon, head_commit_id(&dir).as_deref());
+        assert_eq!(
+            changes(&libgit2_wt),
+            changes(&cli_wt),
+            "worktree_diff の変更行 (未追跡込み) が一致する"
+        );
+        assert_eq!(
+            headers(&libgit2_wt),
+            headers(&cli_wt),
+            "ファイル境界ヘッダの並びが一致する"
+        );
+
+        let head = head_commit_id(&dir).expect("head");
+        assert_eq!(
+            head,
+            git_read_token(&canon, ["rev-parse", "--verify", "HEAD^{commit}"]).unwrap(),
+            "head_commit_id"
+        );
+        assert_eq!(
+            blob_at(&dir, &head, &file),
+            cli_blob(&canon, &head, Path::new("a.txt")),
+            "blob_at の中身"
+        );
+        assert_eq!(
+            log(&dir, 10)
+                .iter()
+                .map(|c| (
+                    c.id.clone(),
+                    c.summary.clone(),
+                    c.author.clone(),
+                    c.time_epoch
+                ))
+                .collect::<Vec<_>>(),
+            log_via_cli(&dir, 10)
+                .iter()
+                .map(|c| (
+                    c.id.clone(),
+                    c.summary.clone(),
+                    c.author.clone(),
+                    c.time_epoch
+                ))
+                .collect::<Vec<_>>(),
+            "log のコミット列"
+        );
+        let m1 = commit_meta(&dir, &head).unwrap();
+        let m2 = commit_meta_via_cli(&dir, &head).unwrap();
+        assert_eq!(
+            (m1.id, m1.short, m1.author, m1.date, m1.message),
+            (m2.id, m2.short, m2.author, m2.date, m2.message),
+            "commit_meta の全項目"
+        );
+        assert_eq!(
+            branches(&dir)
+                .iter()
+                .map(|b| (b.name.clone(), b.is_current))
+                .collect::<Vec<_>>(),
+            branches_via_cli(&dir)
+                .iter()
+                .map(|b| (b.name.clone(), b.is_current))
+                .collect::<Vec<_>>(),
+            "branches"
+        );
+        assert_eq!(
+            branches_by_recency(&dir),
+            branches_by_recency_via_cli(&dir),
+            "branches_by_recency"
+        );
+        let name = branch(&dir).unwrap();
+        assert_eq!(
+            branch_tip(&dir, &name),
+            branch_tip_via_cli(&dir, &name),
+            "branch_tip"
+        );
+        assert_eq!(
+            merge_base_time(&dir, &name),
+            git_read_token(
+                &canon,
+                [
+                    "show",
+                    "-s",
+                    "--format=%ct",
+                    &cli_merge_base(&canon, &name).unwrap(),
+                    "--"
+                ]
+            )
+            .and_then(|s| s.parse::<i64>().ok()),
+            "merge_base_time"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Binary content must not be fed to the line differ: libgit2 emits no line callbacks for a
+    /// binary delta, so the fallback emits the file header and stops there too. (A PNG run through
+    /// `diff_contents` would otherwise spill megabytes of mojibake into the diff view.)
+    #[cfg(feature = "git")]
+    #[test]
+    fn binary_files_contribute_a_header_but_no_lines() {
+        let mut out = Vec::new();
+        push_file_diff(
+            &mut out,
+            Path::new("logo.png"),
+            Some(b"\x89PNG\r\n\x1a\n\x00\x00old"),
+            Some(b"\x89PNG\r\n\x1a\n\x00\x00new"),
+            true,
+        );
+        assert_eq!(out.len(), 1, "ヘッダ1行のみ: {out:?}");
+        assert_eq!(out[0].text, "logo.png");
+        assert!(out[0].old_no.is_none() && out[0].new_no.is_none());
+
+        let mut none = Vec::new();
+        push_file_diff(
+            &mut none,
+            Path::new("logo.png"),
+            Some(b"\x00a"),
+            None,
+            false,
+        );
+        assert!(none.is_empty(), "ヘッダ無しならバイナリは何も出さない");
+
+        // Text still goes through, including a non-UTF-8 byte (lossy, as libgit2's own line
+        // content conversion is).
+        let mut text = Vec::new();
+        push_file_diff(
+            &mut text,
+            Path::new("t.txt"),
+            Some(b"a\n"),
+            Some(b"\xff\n"),
+            false,
+        );
+        assert!(
+            text.iter().any(|l| l.kind == DiffLineKind::Added),
+            "非 UTF-8 のテキストも差分になる: {text:?}"
+        );
+    }
+
     #[cfg(feature = "git")]
     fn init_repo(dir: &Path) {
         let repo = git2::Repository::init(dir).unwrap();
@@ -3704,6 +4633,14 @@ mod tests {
         cfg.set_str("user.name", "Test").unwrap();
         cfg.set_str("user.email", "test@example.com").unwrap();
         cfg.set_str("commit.gpgsign", "false").ok();
+    }
+
+    /// Stages everything and commits, through this module's own write helpers (which are CLI-backed
+    /// either way, so the fixture is identical for both repository formats).
+    #[cfg(feature = "git")]
+    fn commit_all(dir: &Path, msg: &str) {
+        stage_all(dir).unwrap();
+        commit(dir, msg).unwrap();
     }
 
     /// macOS-only regression (`normalize_status_path`): `git init` sets `core.precomposeunicode
