@@ -6,6 +6,17 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **The text, code and raw-Markdown preview footer no longer hides most of its key hints behind
+  `…`.** The `v`/`V` range-selection hint was wired to the explanatory sentence written for the `?`
+  help screen — `v: select a character range   V: select whole lines (copy with y)` — so a single
+  hint spent more than 60 columns and everything after it (`Y:@ref` for copying an `@path#L`
+  reference, `F` to resume follow mode, `q`, `?`, `e`, `g/G`, `hl`, `0/$`, `[/]`, `p`, and the page
+  keys) was pushed past the footer's trailing `…` and could not be read at all. It also printed the
+  key twice, as `v/V:v: … V: …`. The footer now shows the short label `v/V:select` (`v/V:選択`), in
+  keeping with its sibling hints, and the full explanation stays in the `?` help screen where there
+  is room for it.
+
 ## [0.24.1] - 2026-08-12
 
 ### Fixed

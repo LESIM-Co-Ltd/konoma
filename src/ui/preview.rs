@@ -191,8 +191,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
     // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only.
+    // Short label on purpose: the footer is one line shared with every other hint, so the
+    // explanatory wording (`PreviewSelectHelp`) belongs to the `?` help screen, not here.
     if app.is_windowed() {
-        v.push(hint(lang, "v/V", crate::i18n::Msg::PreviewSelectHelp));
+        v.push(hint(lang, "v/V", crate::i18n::Msg::HintSelect));
         v.push(hint(lang, "Y", crate::i18n::Msg::WkAtRef));
     }
     // A path back into follow (F) — shows it can be resumed with one key after it stops.

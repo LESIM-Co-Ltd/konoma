@@ -530,6 +530,140 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The footer is a single shared line, so every hint label has to be a short word. `v`/`V` used
+    /// to be wired to `Msg::PreviewSelectHelp` — the explanatory sentence written for the `?` help
+    /// screen ("v: select a character range   V: select whole lines (copy with y)"). That one hint
+    /// took 60+ columns and pushed `Y:@ref` / `F:FOLLOW` and everything after it past the trailing
+    /// `…`, and it repeated the key prefix (`v/V:` immediately followed by another `v:`/`V:`).
+    /// Checked in both languages: the short label shows up, the explanatory wording does not.
+    #[test]
+    fn windowed_preview_footer_uses_the_short_select_label() {
+        let dir = unique_tmp("konoma_footer_select_label_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello\nworld\n").unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("a.txt"))
+            .unwrap();
+        app.tree_activate().unwrap();
+        // The v/V hint only appears for a windowed preview (Code/Text/raw Markdown); if this ever
+        // stops holding, the assertions below would pass vacuously.
+        assert!(app.is_windowed(), "テキストは windowed プレビューのはず");
+
+        for (lang, short, long) in [
+            (Lang::En, "v/V:select", "select a character range"),
+            (Lang::Jp, "v/V:選択", "文字範囲を選択"),
+        ] {
+            app.lang = lang;
+            let footer = hint_tokens(&app).join("  ");
+            assert!(
+                footer.contains(short),
+                "{lang:?}: 短いフッター語 {short:?} が無い: {footer}"
+            );
+            assert!(
+                !footer.contains(long),
+                "{lang:?}: ヘルプ用の長文 {long:?} がフッターに出ている: {footer}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The counterpart to the test above: the long explanatory wording must stay in the `?` help
+    /// screen, which is where it belongs. Without this, "shorten the footer" could be satisfied by
+    /// deleting the explanation outright — losing the only place that spells out what `v` and `V`
+    /// each do.
+    #[test]
+    fn preview_help_screen_keeps_the_long_select_explanation() {
+        let dir = unique_tmp("konoma_help_select_help_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello\nworld\n").unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("a.txt"))
+            .unwrap();
+        app.tree_activate().unwrap();
+
+        for (lang, long) in [
+            (Lang::En, "select a character range"),
+            (Lang::Jp, "文字範囲を選択"),
+        ] {
+            app.lang = lang;
+            // Go through the real `?` overlay body, not just `help_sections`, so this covers what
+            // the user actually reads.
+            let help: String = crate::ui::help::help_lines(&app)
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                help.contains(long),
+                "{lang:?}: ヘルプ画面から説明文 {long:?} が消えている: {help}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Same-shaped hole, closed by type rather than one case at a time: sweep both footers (Tree and
+    /// every Preview kind reachable here) in both languages and require every token to stay within a
+    /// short display width. A help-screen sentence wired into a footer trips this no matter which
+    /// `Msg` it is, so the next one gets caught here instead of on screen.
+    #[test]
+    fn no_footer_hint_is_long_enough_to_be_help_text() {
+        // The widest legitimate token today is ~20 columns ("C-n/p:next/prev file"); the sentence
+        // this guards against was 69. 24 leaves room for wording tweaks without letting prose in.
+        const MAX_COLS: usize = 24;
+        let dir = unique_tmp("konoma_footer_token_width_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"hello\nworld\n").unwrap();
+        std::fs::write(
+            dir.join("b.md"),
+            b"# t\n\n- [ ] task\n\n[x](https://e.com)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("c.csv"), b"a,b\n1,2\n").unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+
+        let check = |app: &App, where_: &str| {
+            for tok in hint_tokens(app) {
+                assert!(
+                    tok.width() <= MAX_COLS,
+                    "{where_}: フッターのヒントが長すぎる({} 桁 > {MAX_COLS}) — ヘルプ用の長文を渡していないか: {tok:?}",
+                    tok.width()
+                );
+            }
+        };
+
+        for lang in [Lang::En, Lang::Jp] {
+            app.lang = lang;
+            // Tree footer.
+            check(&app, &format!("{lang:?}/tree"));
+            // Each preview kind's footer (text = windowed, Markdown = decorated, CSV = table).
+            for name in ["a.txt", "b.md", "c.csv"] {
+                app.back_to_tree();
+                app.tab.selected = app
+                    .tab
+                    .entries
+                    .iter()
+                    .position(|e| e.path.ends_with(name))
+                    .unwrap();
+                app.tree_activate().unwrap();
+                check(&app, &format!("{lang:?}/{name}"));
+            }
+            app.back_to_tree();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn fit_tokens_priority_and_truncation() {
         let toks: Vec<String> = ["aaa", "bbb", "ccc", "ddd"]

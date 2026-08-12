@@ -474,7 +474,12 @@ pub enum Msg {
     // --- Text/code preview selection (v = character range / V = line) ---
     PreviewVisualHint,
     PreviewVisualLineHint,
+    /// Long, explanatory wording for the `?` help screen only. The footer wants the short
+    /// `HintSelect` instead — a full sentence there eats the whole line and pushes the sibling
+    /// hints off into the `…`.
     PreviewSelectHelp,
+    /// Short footer label for `v`/`V` (range selection). Sibling of the other `Hint*` footer words.
+    HintSelect,
     StVisualLine,
     // --- Agent Watch (① changed filter ② follow ③ @-reference copy) ---
     WkAtRef,
@@ -913,6 +918,7 @@ fn en(msg: Msg) -> &'static str {
         PreviewVisualHint => "h / j / k / l: extend    y: copy    Y: @ref    v / Esc: cancel",
         PreviewVisualLineHint => "j / k / g / G: extend    y: copy lines    Y: @ref    V / Esc: cancel",
         PreviewSelectHelp => "v: select a character range   V: select whole lines (copy with y)",
+        HintSelect => "select",
         StVisualLine => "V-LINE",
         WkAtRef => "@ref",
         WkCodeBlock => "code block",
@@ -1373,6 +1379,7 @@ fn jp(msg: Msg) -> &'static str {
         PreviewVisualHint => "h / j / k / l: 範囲拡張    y: コピー    Y: @参照    v / Esc: 取消",
         PreviewVisualLineHint => "j / k / g / G: 範囲拡張    y: 行コピー    Y: @参照    V / Esc: 取消",
         PreviewSelectHelp => "v: 文字範囲を選択   V: 行を選択(y でコピー)",
+        HintSelect => "選択",
         StVisualLine => "行ビジュアル",
         WkAtRef => "@参照",
         WkCodeBlock => "コードブロック",
@@ -1965,6 +1972,7 @@ mod tests {
         Msg::PreviewVisualHint,
         Msg::PreviewVisualLineHint,
         Msg::PreviewSelectHelp,
+        Msg::HintSelect,
         Msg::StVisualLine,
         Msg::WkAtRef,
         Msg::WkCodeBlock,
