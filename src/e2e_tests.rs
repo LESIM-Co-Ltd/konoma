@@ -2863,9 +2863,13 @@ fn e2e_md_thematic_break_becomes_rule_and_fenced_dashes_kept() {
     s.see("above paragraph");
     s.see("below paragraph");
     // A thematic-break row: within the preview frame (leading │), a row exists where the rest is all ─.
-    // (The frame's top/bottom border is excluded since it starts with ┌/└.)
+    // (The frame's top/bottom border is excluded since it starts with ┌/└.) The *right* border is
+    // either the frame's `│` or the scroll indicator's `█` — the indicator is drawn on top of that
+    // column — so both close the row here; what this asserts is the rule's own width, not the frame.
     let has_rule = s.screen().lines().any(|l| {
-        l.starts_with('│') && l.ends_with('│') && l.chars().filter(|&c| c == '─').count() >= 60
+        l.starts_with('│')
+            && (l.ends_with('│') || l.ends_with('█'))
+            && l.chars().filter(|&c| c == '─').count() >= 60
     });
     assert!(has_rule, "--- が全幅 ─ 罫線になる:\n{}", s.screen());
     // --- inside a fence stays literal (since extras run after the code path, there's no false trigger).
@@ -3178,9 +3182,11 @@ fn e2e_markdown_br_in_an_alert_keeps_the_callout_and_its_fence_whole() {
     // genuinely empty quote line of its own (the `>` between the prose and the fence), so the count
     // is the test, not the presence.
     let screen = s.screen();
+    // `█` joins the trim set alongside the frame's `│`: the scroll indicator is drawn on top of the
+    // right border column, so a row that is "nothing but the callout bar" can end in either glyph.
     let blank_callout_rows = screen
         .lines()
-        .filter(|r| r.trim_matches(|c| c == '│' || c == ' ') == "▌")
+        .filter(|r| r.trim_matches(|c| c == '│' || c == '█' || c == ' ') == "▌")
         .count();
     assert_eq!(
         blank_callout_rows, 1,

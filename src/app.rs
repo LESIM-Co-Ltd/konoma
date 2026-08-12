@@ -528,6 +528,38 @@ impl PathStyle {
     }
 }
 
+/// How far a preview is scrolled, expressed in that view's **own scroll unit**.
+///
+/// The unit differs per view on purpose, and that is safe because every consumer — the `Top`/`Bot`/
+/// `All`/`NN%` title label and the border-column scrollbar — reads only the *ratios* between these
+/// three numbers, never their absolute values:
+///   - decorated Markdown and the git diff count **display rows** (after wrapping), which is what
+///     they scroll by;
+///   - the windowed (less-style) reader counts **bytes**, because that is what *it* scrolls by — it
+///     deliberately never learns a total line count (see `preview::window`), so rows aren't
+///     available to it without reading the whole file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScrollExtent {
+    /// Current offset from the start of the content.
+    pub pos: u64,
+    /// Largest reachable offset. `0` means everything already fits on one screen.
+    pub max: u64,
+    /// How much of the content one screenful covers, in the same unit.
+    pub viewport: u64,
+}
+
+impl ScrollExtent {
+    /// `pos` is clamped into `0..=max` so "at the end" is decided the same way everywhere, even
+    /// when a caller passes a position that a resize has not been reconciled with yet.
+    pub fn new(pos: u64, max: u64, viewport: u64) -> Self {
+        Self {
+            pos: pos.min(max),
+            max,
+            viewport,
+        }
+    }
+}
+
 /// A single entry shown in the tree.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -4179,14 +4211,29 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Windowed scroll progress (0..=100 %). For the title display. None if not windowed.
-    pub fn window_progress(&self) -> Option<u16> {
-        let w = self.preview_win.as_ref()?;
+    /// Scroll extent of the windowed (less-style) reader, in **bytes**, for a viewport `rows` tall.
+    /// `None` when this preview isn't windowed.
+    ///
+    /// Replaces the old `window_progress`, whose `byte_top * 100 / file_len` could never reach
+    /// 100 %: the bytes shown on the final screenful are never *above* the window, so the fraction
+    /// topped out at `last_page_top / len` (the taller the viewport, the further it fell short).
+    /// Here the denominator is the reachable scroll range, so the end really reads as the end.
+    pub fn window_scroll_extent(&mut self, rows: u16) -> Option<ScrollExtent> {
+        // `last_page_top` is memoized per count on the FileWindow, so this costs nothing per frame
+        // after the first (`preview::window::FileWindow::last_page`).
+        let count = rows.max(1) as usize;
+        let w = self.preview_win.as_mut()?;
         let len = w.len();
-        if len == 0 {
-            return Some(0);
-        }
-        Some((self.tab.preview_byte_top.min(len) * 100 / len) as u16)
+        let max = w.last_page_top(count).unwrap_or(0);
+        // One screenful measured in bytes = from the last page's first line to EOF, i.e. exactly
+        // the part that stays visible once scrolling stops. `max + viewport == len`, so the thumb
+        // ends up sized as "what you can see / the whole file" — the same ratio the row-counting
+        // views get for free.
+        Some(ScrollExtent::new(
+            self.tab.preview_byte_top,
+            max,
+            len.saturating_sub(max),
+        ))
     }
 
     pub fn preview_hscroll(&mut self, delta: i32) {

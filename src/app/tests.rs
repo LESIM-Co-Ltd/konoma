@@ -4191,6 +4191,47 @@ fn is_image_preview_requires_src_and_kind() {
     assert!(!app2.is_image_preview());
 }
 
+/// The scroll position indicator (title marker + border-column thumb) must stay off the
+/// image-family views — image/PDF/video/SVG/full-screen mermaid all render through `render_image`.
+///
+/// Two reasons, both concrete: those cells carry kitty graphics Unicode placeholders, and drawing
+/// anything else into or beside them is what exposes an image-ID-colored bar (chased down three
+/// separate times here); and they don't scroll at all — zoom (`x1.6`) and PDF paging (`2/3`) are
+/// what report position for them.
+#[test]
+fn image_preview_draws_no_scroll_indicator() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = app_with_image();
+    app.tab.preview_path = Some(PathBuf::from("x.png"));
+    app.tab.mode = Mode::Preview;
+    assert!(app.is_image_preview(), "画像ビューに入っている");
+
+    let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    term.draw(|f| crate::ui::preview::render(f, &mut app, f.area()))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // The right border column is where the thumb would land: every cell between the corners must
+    // still be plain border.
+    let x = buf.area.width - 1;
+    for y in 1..(buf.area.height - 1) {
+        assert_eq!(
+            buf[(x, y)].symbol(),
+            "│",
+            "画像ビューの右端は枠のまま (row {y})"
+        );
+    }
+    let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+    for marker in ["[Top]", "[Bot]", "[All]", "%]"] {
+        assert!(
+            !s.contains(marker),
+            "画像ビューに位置ラベル {marker} は出さない: {s:?}"
+        );
+    }
+}
+
 #[test]
 fn help_in_image_mode_shows_only_image_section() {
     // ? during an image preview shows only the image section. Tree/Git/text-only sections

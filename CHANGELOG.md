@@ -6,7 +6,31 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **Previews that scroll now show where you are and how much is left.** A scrollbar thumb rides the
+  frame's right border — its length is the share of the document currently on screen, so a long file
+  gets a short thumb and a short one gets a long thumb — and the top border carries a position
+  marker: `All` when nothing is off-screen, `Top` and `Bot` at the two ends, and a percentage of the
+  scrollable range in between (`先頭` / `末尾` / `全体` in Japanese).
+
+  It covers all three scrolling previews: text, code and raw Markdown (`R`), the decorated Markdown
+  view, and the full-screen git diff — the last two previously showed no position at all. Image, PDF,
+  video-thumbnail, SVG and full-screen mermaid views are deliberately left alone: they don't scroll
+  (zoom `x1.6` and PDF paging `2/3` already report position for them), and their cells carry kitty
+  graphics placeholders that must not be drawn over.
+
+  The thumb replaces part of the border rather than sitting next to it, so **no text column is
+  given up** — the body wraps exactly where it did before. The marker is drawn as its own
+  right-aligned title, so a long path can never push it off the border.
+
 ### Fixed
+- **The position indicator in the text/code preview title reached the end of a file without ever
+  saying so.** The old `[N%]` was the window's start byte over the *whole file length*, so the final
+  screenful — which is never above the window — could not be counted: scrolling to the very bottom
+  of a file twice as tall as the viewport stopped at roughly `[50%]`, and the taller the terminal,
+  the further short it fell. It also had no way to express "there is nothing to scroll" or "you are
+  at the end". The percentage is now taken against the reachable scroll range, and the two ends and
+  the fits-on-one-screen case have their own labels.
 - **The text, code and raw-Markdown preview footer no longer hides most of its key hints behind
   `…`.** The `v`/`V` range-selection hint was wired to the explanatory sentence written for the `?`
   help screen — `v: select a character range   V: select whole lines (copy with y)` — so a single
