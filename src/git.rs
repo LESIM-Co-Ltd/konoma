@@ -598,9 +598,10 @@ fn open_repo(root: &Path) -> Option<git2::Repository> {
 //     unified-diff parser instead would mean owning a second notion of "what a hunk is" whose
 //     disagreements with git only ever surface as subtly wrong output.
 //
-// The cost is one child process per side per file, so a large multi-file diff spawns a lot of
-// them. Acceptable for a path only reachable in a repository libgit2 cannot open at all, where the
-// alternative was an empty view.
+// The object reads themselves are batched: every blob a diff needs, both sides of every file,
+// comes back from a single `git cat-file --batch` (see [`cat_file_batch`]). A child process costs
+// ~4ms to start, so the per-file spelling this replaced made a multi-file diff grow linearly —
+// ~1.6s on a 200-file commit — while the batched form stays flat.
 
 #[cfg(all(test, feature = "git"))]
 thread_local! {
@@ -685,25 +686,179 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|&b| b == 0)
 }
 
-/// `git cat-file blob <rev>:<rel>` — the bytes of repo-relative path `rel` as of tree-ish `rev`.
-/// `None` when the path did not exist there (every caller reads that as "added on the new side").
+/// The bytes of repo-relative path `rel` as of tree-ish `rev`. `None` when the path did not exist
+/// there (every caller reads that as "added on the new side").
 ///
-/// `rel` is passed through as an `OsStr`, so a non-UTF-8 name survives, and the spec always starts
-/// with `rev`, so a filename beginning with `-` can never be mistaken for an option. No NFC
-/// normalization is applied on macOS (unlike `precomposed_pathspec`, which exists for libgit2's
-/// pathspec matcher): git precomposes its own argv when `core.precomposeunicode` is on, so an
-/// NFD-spelled path from the tree side resolves — verified with a decomposed filename, where both
-/// spellings returned the same blob.
+/// The one-object spelling of [`cat_file_batch`] rather than its own `git cat-file blob` call: a
+/// batch of one costs the same single child process, and keeping every object read on one code
+/// path means the framing and the failure handling cannot drift apart between them.
+///
+/// No NFC normalization is applied on macOS (unlike `precomposed_pathspec`, which exists for
+/// libgit2's pathspec matcher): git precomposes its own input when `core.precomposeunicode` is on,
+/// so an NFD-spelled path from the tree side resolves — verified with a decomposed filename, where
+/// both spellings returned the same blob.
 #[cfg(feature = "git")]
 fn cli_blob(dir: &Path, rev: &str, rel: &Path) -> Option<Vec<u8>> {
-    use std::ffi::OsStr;
+    cat_file_batch(dir, std::slice::from_ref(&blob_spec(rev, rel)))
+        .into_iter()
+        .next()
+        .flatten()
+}
+
+/// The `<rev>:<path>` object spec `git cat-file` takes, built as an `OsString` so a non-UTF-8
+/// filename survives. Always starts with `rev`, so a filename beginning with `-` can never be
+/// mistaken for an option.
+#[cfg(feature = "git")]
+fn blob_spec(rev: &str, rel: &Path) -> std::ffi::OsString {
     let mut spec = std::ffi::OsString::from(rev);
     spec.push(":");
     spec.push(rel.as_os_str());
-    git_read(
-        dir,
-        [OsStr::new("cat-file"), OsStr::new("blob"), spec.as_os_str()],
-    )
+    spec
+}
+
+/// Reads many objects with **one** `git cat-file --batch` child process, returning one slot per
+/// input spec (`None` = git had no blob there, which every caller reads as "absent on that side").
+///
+/// This is what keeps a multi-file diff from costing a process per file: `commit_diff` on a
+/// 200-file commit asks for 400 blobs and still spawns one `cat-file`. The per-spawn cost is ~4ms,
+/// so the batched form is the difference between a diff view that opens and one that stalls for
+/// most of a second.
+///
+/// **Framing.** `--batch` answers each input line with `<oid> <type> <size>\n`, then exactly
+/// `<size>` bytes, then a `\n`. Only the header is text: the payload is read by *count*, never by
+/// line, or any blob containing a newline (i.e. every text file) would desynchronise the stream.
+/// A spec git cannot resolve is answered `<spec> missing\n` with no payload — routine here, since
+/// a file added in a commit has no blob on the parent side. The header is parsed from the right
+/// (`… <type> <size>`) because a path — and therefore a `missing` line — may contain spaces.
+/// Only `blob` payloads are handed back, so asking for a directory yields `None` exactly as the
+/// previous `cat-file blob` call did; other types are still consumed so the stream stays aligned.
+///
+/// **Why the writer runs on its own thread.** Writing every spec before reading anything
+/// deadlocks: once git's stdout pipe fills (~64 KiB) git blocks writing, so it stops draining its
+/// stdin, and this thread then blocks filling *that* pipe. Neither side can move. Both konoma's
+/// other multi-stream child (`preview::command::run_capture`) and this one solve it the same way —
+/// one stream per thread. The writer also owns the `ChildStdin` so dropping it closes the pipe,
+/// which is what tells `--batch` to exit.
+///
+/// A spec whose bytes contain a newline cannot travel through a newline-delimited protocol at all;
+/// those (legal, pathological) filenames get their own child process rather than being dropped.
+/// A child that fails to launch, dies early, or emits an unparsable header degrades to `None`
+/// slots — never a panic.
+#[cfg(feature = "git")]
+fn cat_file_batch(dir: &Path, specs: &[std::ffi::OsString]) -> Vec<Option<Vec<u8>>> {
+    use std::io::{BufReader, Write};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut out: Vec<Option<Vec<u8>>> = specs.iter().map(|_| None).collect();
+    if specs.is_empty() {
+        return out;
+    }
+
+    let (batched, lone): (Vec<usize>, Vec<usize>) =
+        (0..specs.len()).partition(|&i| !specs[i].as_bytes().contains(&b'\n'));
+    for i in lone {
+        out[i] = git_read(
+            dir,
+            [
+                std::ffi::OsStr::new("cat-file"),
+                std::ffi::OsStr::new("blob"),
+                specs[i].as_os_str(),
+            ],
+        );
+    }
+    if batched.is_empty() {
+        return out;
+    }
+
+    #[cfg(test)]
+    READ_CLI_CALLS.with(|c| c.set(c.get() + 1));
+
+    // stderr is discarded: a `missing` answer already arrives on stdout, and nothing else here is
+    // actionable. stdin is a pipe (unlike `git_read`'s `/dev/null`) because it *is* the input.
+    let Ok(mut child) = std::process::Command::new("git")
+        .current_dir(dir)
+        .arg("--no-optional-locks")
+        .args(["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return out;
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return out;
+    };
+
+    let mut payload = Vec::new();
+    for &i in &batched {
+        payload.extend_from_slice(specs[i].as_bytes());
+        payload.push(b'\n');
+    }
+    let writer = std::thread::spawn(move || {
+        // A broken pipe (git exited early) is not an error worth reporting: the reader below
+        // already sees the truncated answer stream and leaves the rest of the slots `None`.
+        let _ = stdin.write_all(&payload);
+        let _ = stdin.flush();
+    });
+
+    let mut reader = BufReader::new(stdout);
+    for &i in &batched {
+        match read_batch_frame(&mut reader) {
+            Some(bytes) => out[i] = bytes,
+            None => break, // stream ended or lost sync — the remaining slots stay `None`
+        }
+    }
+
+    let _ = writer.join();
+    let _ = child.wait();
+    out
+}
+
+/// Reads one `cat-file --batch` response.
+///
+/// `None` means the stream ended or the header could not be parsed, and the caller must stop —
+/// once framing is lost, later answers can no longer be trusted to line up with their specs.
+/// `Some(None)` is the ordinary "git has no blob there" answer.
+#[cfg(feature = "git")]
+fn read_batch_frame<R: std::io::BufRead>(r: &mut R) -> Option<Option<Vec<u8>>> {
+    use std::io::Read;
+
+    let mut header = Vec::new();
+    if r.read_until(b'\n', &mut header).ok()? == 0 {
+        return None; // EOF
+    }
+    if header.last() == Some(&b'\n') {
+        header.pop();
+    }
+    // Parsed from the right: `<oid> <type> <size>`. A `missing` / `ambiguous` answer echoes the
+    // spec, which may itself contain spaces, so splitting from the left would misread it.
+    let text = String::from_utf8_lossy(&header);
+    let mut tail = text.rsplitn(3, ' ');
+    let size = tail.next().and_then(|s| s.parse::<usize>().ok());
+    let kind = tail.next();
+    let (Some(size), Some(kind)) = (size, kind) else {
+        return Some(None); // `<spec> missing` — no payload follows
+    };
+    if !matches!(kind, "blob" | "tree" | "commit" | "tag") {
+        return Some(None);
+    }
+
+    // `take` rather than a `size`-sized allocation: a bogus header must not let git (or a corrupted
+    // stream) ask this process to reserve an arbitrary amount of memory up front.
+    let mut buf = Vec::new();
+    r.by_ref().take(size as u64).read_to_end(&mut buf).ok()?;
+    if buf.len() != size {
+        return None; // truncated payload — framing is gone
+    }
+    let mut nl = [0u8; 1];
+    r.read_exact(&mut nl).ok()?; // the separator `--batch` writes after every payload
+
+    // Non-blob types are consumed above (to keep the stream aligned) but never returned: the
+    // previous `cat-file blob` spelling failed on them, and every caller expects file contents.
+    Some((kind == "blob").then_some(buf))
 }
 
 /// Splits NUL-terminated `git` output (`-z`) into repo-relative paths, dropping the trailing empty
@@ -788,11 +943,20 @@ fn cli_paths_vs_worktree(dir: &Path, old: Option<&str>) -> Vec<PathBuf> {
 /// every changed file — the CLI stand-in for `worktree_diff` and `diff_since`.
 #[cfg(feature = "git")]
 fn cli_diff_vs_worktree(dir: &Path, old: Option<&str>) -> Vec<DiffLine> {
+    let paths = cli_paths_vs_worktree(dir, old);
+    // Every "before" side in one `cat-file` (see [`cat_file_batch`]); the "after" side is the file
+    // on disk, which costs no process at all. Unborn HEAD has no old side to read.
+    let before: Vec<Option<Vec<u8>>> = match old {
+        Some(rev) => {
+            let specs: Vec<_> = paths.iter().map(|rel| blob_spec(rev, rel)).collect();
+            cat_file_batch(dir, &specs)
+        }
+        None => paths.iter().map(|_| None).collect(),
+    };
     let mut out = Vec::new();
-    for rel in cli_paths_vs_worktree(dir, old) {
-        let before = old.and_then(|rev| cli_blob(dir, rev, &rel));
-        let after = std::fs::read(dir.join(&rel)).ok();
-        push_file_diff(&mut out, &rel, before.as_deref(), after.as_deref(), true);
+    for (rel, before) in paths.iter().zip(before) {
+        let after = std::fs::read(dir.join(rel)).ok();
+        push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), true);
     }
     out
 }
@@ -1520,7 +1684,7 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
 
 /// `file_diff` for a repository libgit2 will not open: HEAD's blob against the file on disk.
 ///
-/// At most two child processes (`cat-file`, and none for the disk read), which matters because
+/// One child process (`cat-file`, and none for the disk read), which matters because
 /// this feeds the change gutter — though `App::git_gutter_marks` caches per path, so it is once
 /// per file opened, not once per keystroke.
 ///
@@ -1914,11 +2078,19 @@ fn commit_diff_via_cli(root: &Path, id: &str) -> Vec<DiffLine> {
         return Vec::new(); // unresolvable commit
     };
     let parent = format!("{id}^");
+    let paths = cli_paths(&listing);
+    // Both sides of every file in one `cat-file` (see [`cat_file_batch`]): the old side for all
+    // paths, then the new side for all paths, so slot `i` and slot `n + i` are one file's pair.
+    let specs: Vec<_> = paths
+        .iter()
+        .map(|rel| blob_spec(&parent, rel))
+        .chain(paths.iter().map(|rel| blob_spec(id, rel)))
+        .collect();
+    let blobs = cat_file_batch(&dir, &specs);
+    let (before, after) = blobs.split_at(paths.len());
     let mut out = Vec::new();
-    for rel in cli_paths(&listing) {
-        let before = cli_blob(&dir, &parent, &rel);
-        let after = cli_blob(&dir, id, &rel);
-        push_file_diff(&mut out, &rel, before.as_deref(), after.as_deref(), true);
+    for ((rel, before), after) in paths.iter().zip(before).zip(after) {
+        push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), true);
     }
     out
 }
@@ -4426,6 +4598,188 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `cat_file_batch` answers every spec from one child process, in order, and keeps its framing
+    /// across the cases that would break a line-oriented reader: a payload containing NUL and
+    /// newlines, a `missing` answer with no payload at all, a path whose own spaces could be
+    /// mistaken for git's header fields, and a non-blob object.
+    #[cfg(feature = "git")]
+    #[test]
+    fn cat_file_batch_answers_every_spec_in_one_process() {
+        let dir = unique_tmp("konoma_cat_file_batch_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+
+        let text = b"first\nsecond\nthird\n".to_vec();
+        // NUL *and* a newline: read by line, the payload would be mistaken for the next header.
+        let binary = vec![0u8, b'\n', 1, 2, 0, b'\n', 255, 0];
+        // Spaces in the name: a `missing` answer echoes the spec, so a header split from the left
+        // would read `blob`/`<size>` out of the *path* instead of out of git's own fields.
+        let spaced = "a file blob 12 name.txt";
+        std::fs::write(canon.join("text.txt"), &text).unwrap();
+        std::fs::write(canon.join("bin.dat"), &binary).unwrap();
+        std::fs::write(canon.join(spaced), &binary).unwrap();
+        commit_all(&dir, "init");
+        let head = head_commit_id(&dir).expect("head");
+
+        let specs = vec![
+            blob_spec(&head, Path::new("text.txt")),
+            blob_spec(&head, Path::new("no-such-file.txt")), // → `missing`, no payload
+            blob_spec(&head, Path::new("bin.dat")),
+            blob_spec(&head, Path::new(spaced)),
+            blob_spec(&head, Path::new("no such blob 9 file")), // a `missing` full of spaces
+            blob_spec(&head, Path::new("also-missing")),        // a `missing` at the very end
+        ];
+        let (got, calls) = count_read_cli_calls(|| cat_file_batch(&canon, &specs));
+
+        assert_eq!(calls, 1, "specs 6 個でも cat-file の起動は 1 回");
+        assert_eq!(got.len(), specs.len(), "スロットは spec と 1:1");
+        assert_eq!(got[0].as_deref(), Some(&text[..]), "テキストの中身");
+        assert_eq!(got[1], None, "存在しないパスは missing → None");
+        assert_eq!(
+            got[2].as_deref(),
+            Some(&binary[..]),
+            "NUL と改行を含むバイナリがバイト単位で保たれる"
+        );
+        assert_eq!(
+            got[3].as_deref(),
+            Some(&binary[..]),
+            "空白入りのファイル名でも読める"
+        );
+        assert_eq!(got[4], None, "空白だらけの missing 行を中身と取り違えない");
+        assert_eq!(got[5], None, "末尾の missing でも枠がずれない");
+
+        // A directory is not a blob: the previous `cat-file blob` spelling failed on it, and the
+        // batched form must answer `None` too rather than handing back a tree object's bytes.
+        std::fs::create_dir_all(canon.join("sub")).unwrap();
+        std::fs::write(canon.join("sub/inner.txt"), b"inner\n").unwrap();
+        commit_all(&dir, "second");
+        let head2 = head_commit_id(&dir).expect("head2");
+        let mixed = vec![
+            blob_spec(&head2, Path::new("sub")),
+            blob_spec(&head2, Path::new("sub/inner.txt")),
+        ];
+        let got = cat_file_batch(&canon, &mixed);
+        assert_eq!(got[0], None, "ディレクトリ (tree) は blob ではない → None");
+        assert_eq!(
+            got[1].as_deref(),
+            Some(&b"inner\n"[..]),
+            "tree を読み飛ばしても次のスロットがずれない"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The deadlock guard. Writing every spec before reading anything wedges once *both* pipes
+    /// fill: git blocks writing its stdout, stops draining stdin, and this side blocks writing.
+    ///
+    /// The spec count is **measured, not guessed**. With the writer inlined (the shape this test
+    /// exists to reject) the wedge reproduced here at 4000 specs and did *not* at 2000 — the pipe
+    /// holds 64 KiB, but below that threshold git drains fast enough that neither side stalls.
+    /// 6000 leaves margin over the threshold for a slower or differently-buffered machine while
+    /// still finishing well under a second: a regression must surface as a hang or a wrong answer
+    /// *here*, never as a CI timeout.
+    #[cfg(feature = "git")]
+    #[test]
+    fn cat_file_batch_does_not_deadlock_when_both_pipes_fill() {
+        let dir = unique_tmp("konoma_cat_file_batch_pipe_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+
+        // A long name so the input stream (spec + `\n` per line) crosses the pipe buffer quickly.
+        let name = format!("{}.txt", "a-fairly-long-file-name-".repeat(2));
+        let body = b"payload line one\npayload line two\n".to_vec();
+        std::fs::write(canon.join(&name), &body).unwrap();
+        // One larger blob so a multi-KiB payload is framed by count, not by luck.
+        let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(canon.join("big.dat"), &big).unwrap();
+        commit_all(&dir, "init");
+        let head = head_commit_id(&dir).expect("head");
+
+        let mut specs: Vec<_> = (0..6000)
+            .map(|_| blob_spec(&head, Path::new(&name)))
+            .collect();
+        specs.insert(3000, blob_spec(&head, Path::new("big.dat")));
+
+        let (got, calls) = count_read_cli_calls(|| cat_file_batch(&canon, &specs));
+        assert_eq!(calls, 1, "6001 spec でも起動は 1 回");
+        assert_eq!(got.len(), specs.len());
+        assert_eq!(got[3000].as_deref(), Some(&big[..]), "大きい blob の中身");
+        assert!(
+            got.iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 3000)
+                .all(|(_, b)| b.as_deref() == Some(&body[..])),
+            "全スロットが正しい中身で埋まる (途中で打ち切られていない)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Performance contract.** A multi-file diff must not grow a process per file: whatever the
+    /// commit touches, the CLI path spawns exactly one listing call plus one `cat-file --batch`.
+    /// Asserted at two very different file counts, because the constant is the point — the
+    /// per-file spelling this replaced cost ~4ms × 2 × files.
+    #[cfg(feature = "git")]
+    #[test]
+    fn a_multi_file_diff_spawns_one_cat_file_whatever_the_file_count() {
+        let dir = unique_tmp("konoma_batch_spawn_count_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+
+        let write_n = |n: usize, tag: &str| {
+            for i in 0..n {
+                std::fs::write(canon.join(format!("f{i}.txt")), format!("{tag} {i}\n")).unwrap();
+            }
+        };
+        write_n(12, "one");
+        commit_all(&dir, "init");
+        let small = head_commit_id(&dir).expect("head");
+        write_n(3, "two");
+        commit_all(&dir, "three files");
+        let three = head_commit_id(&dir).expect("head");
+        write_n(12, "three");
+        commit_all(&dir, "twelve files");
+        let twelve = head_commit_id(&dir).expect("head");
+
+        // `cli_dir` is memoized after the first call; warm it so discovery cannot be mistaken for
+        // a read fallback (it uses a different counter, but the intent should not depend on that).
+        let _ = cli_dir(&dir);
+
+        let (lines3, calls3) = count_read_cli_calls(|| commit_diff_via_cli(&dir, &three));
+        let (lines12, calls12) = count_read_cli_calls(|| commit_diff_via_cli(&dir, &twelve));
+        assert_eq!(calls3, 2, "3 ファイル: diff-tree 1 + cat-file 1");
+        assert_eq!(
+            calls12, 2,
+            "12 ファイル: ファイル数が増えても起動数は変わらない"
+        );
+        assert!(
+            !lines3.is_empty() && lines12.len() > lines3.len(),
+            "比較が空同士で成立していない: {} vs {}",
+            lines3.len(),
+            lines12.len()
+        );
+
+        // The same contract for the working-tree side (`worktree_diff` / `diff_since`), where the
+        // "after" side is read from disk and only the "before" side needs git.
+        write_n(12, "dirty");
+        let (wt, calls_wt) =
+            count_read_cli_calls(|| cli_diff_vs_worktree(&canon, Some(small.as_str())));
+        assert!(!wt.is_empty(), "作業ツリー差分が空でない");
+        assert_eq!(
+            calls_wt, 3,
+            "listing 2 (diff --name-only + ls-files --others) + cat-file 1 — \
+             変更 12 ファイルでもこれ以上増えない"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The two implementations must describe the same repository. Run in an **ordinary** repository
     /// (where libgit2 works) so both paths can be invoked side by side on identical input — the
     /// only place that comparison is possible at all.
@@ -4513,6 +4867,17 @@ mod tests {
             blob_at(&dir, &head, &file),
             cli_blob(&canon, &head, Path::new("a.txt")),
             "blob_at の中身"
+        );
+        // A *root* commit, where the two paths reach the "no parent" case by different routes
+        // (`parent(0)`-or-empty-tree vs `diff-tree --root`).
+        assert!(
+            !changes(&commit_diff(&dir, &head)).is_empty(),
+            "比較が空同士で成立していない"
+        );
+        assert_eq!(
+            changes(&commit_diff(&dir, &head)),
+            changes(&commit_diff_via_cli(&dir, &head)),
+            "commit_diff の変更行が一致する"
         );
         assert_eq!(
             log(&dir, 10)

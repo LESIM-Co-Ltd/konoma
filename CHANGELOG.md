@@ -35,7 +35,9 @@ All notable changes to konoma are documented in this file. The format is based o
   than parsing git's own unified-diff output. The same lines come out marked added and removed; the
   hunk boundaries and the grouping of nearby changes are that differ's rather than libgit2's, and
   can differ slightly. Binary files are left out of the line diff entirely, as they are on the
-  libgit2 path.
+  libgit2 path. Every object a diff needs — both sides of every file — is read by a single
+  `git cat-file --batch`, so the number of processes a diff launches stays the same whether it
+  touches one file or hundreds: a large commit does not get slower in proportion to its size.
 
   **A repository libgit2 can open is untouched by all of this** — not one extra child process runs
   there, which matters because the change gutter asks for a file's diff every time you open one.
