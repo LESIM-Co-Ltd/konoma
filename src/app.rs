@@ -5743,3 +5743,8 @@ mod tests;
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
 mod md_snapshot_tests;
+// The same kind of safety net, over the new Markdown block model instead of rendering — see its
+// own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
+// directly (a sibling, not a descendant, so those are `pub(super)` there).
+#[cfg(test)]
+mod md_model_snapshot_tests;

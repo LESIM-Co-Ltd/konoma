@@ -27,6 +27,8 @@ use pulldown_cmark::Options as ParseOptions;
 use tui_markdown::{Options, StyleSheet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+pub(crate) mod model;
+
 // Decoration colors. A code block is enclosed as a "special area" with a background + left gutter.
 const CODE_GUTTER_FG: Color = Color::Cyan;
 const HEAD_FG: Color = Color::Cyan;
@@ -3943,8 +3945,12 @@ fn render_html_block(raw: &str) -> Vec<Line<'static>> {
 
 /// One of the five GitHub alert types (`> [!NOTE]` etc.). A handful of common Obsidian aliases map
 /// onto the nearest GitHub type so those documents render too.
+///
+/// `pub(crate)`, not private: `preview::markdown::model` (a child module) re-exports this so
+/// `BlockKind::Quote.alert` can use the exact same type the renderer does, rather than a second
+/// enum with the same variants — see that module's doc comment on `Quote`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AlertKind {
+pub(crate) enum AlertKind {
     Note,
     Tip,
     Important,

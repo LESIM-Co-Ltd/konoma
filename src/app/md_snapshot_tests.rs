@@ -82,7 +82,11 @@ fn sample_src(name: &str) -> Option<String> {
 /// depends on corpus insertion order or directory-listing order. Labels are corpus-prefixed so a
 /// name that happens to repeat across two corpora (or between a corpus and a sample file) doesn't
 /// collide in the sort — both entries simply appear, adjacently, under their own prefixed labels.
-fn all_cases() -> Vec<(String, String)> {
+///
+/// `pub(super)`: `md_model_snapshot_tests` (a sibling module) drives its own dump off the exact
+/// same corpus/order — see that module's doc comment for why sharing this one function, rather
+/// than re-gathering the same corpora a second time, matters.
+pub(super) fn all_cases() -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = Vec::new();
     for (name, src) in crate::preview::markdown::task_corpus::cases() {
         v.push((format!("task_corpus: {name}"), src.to_string()));
@@ -103,6 +107,34 @@ fn all_cases() -> Vec<(String, String)> {
     }
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v
+}
+
+/// Computes `pre_src` — the text `build_decorated`'s Markdown branch ultimately hands to
+/// `render_markdown_with_images` (front matter stripped off, footnotes renumbered, inline HTML
+/// converted), in that order and gated by the same `cfg` fields `build_decorated` reads. This is
+/// also the text the new block model (`crate::preview::markdown::model`) is designed to walk (see
+/// its module doc comment). `pub(super)` so `md_model_snapshot_tests` — a sibling module — can
+/// drive `Doc::parse` off *exactly* this, rather than a second, hand-copied preprocessing mirror
+/// that could quietly drift from this one (the two golden-snapshot harnesses would then silently
+/// stop covering the same text).
+pub(super) fn pre_src_for(cfg: &Config, src: &str) -> String {
+    let body = if cfg.ui.md_frontmatter {
+        crate::preview::markdown::strip_front_matter(src).1
+    } else {
+        src.to_string()
+    };
+    let origin = crate::preview::markdown::identity_origin(&body);
+    let (s, origin) = if cfg.ui.md_footnotes {
+        crate::preview::markdown::process_footnotes_traced(&body, &origin)
+    } else {
+        (body, origin)
+    };
+    let (pre_src, _origin) = if cfg.ui.md_inline_html {
+        crate::preview::markdown::process_inline_html_traced(&s, &origin)
+    } else {
+        (s, origin)
+    };
+    pre_src
 }
 
 /// Everything one case renders to, over the app's real Markdown pipeline.
@@ -141,31 +173,20 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
     let theme = cfg.ui.theme.code_theme.as_str();
     let tasks = cfg.ui.md_task_state_chars();
 
-    // Front matter: split the leading `---`…`---` off (mirrors `build_decorated`).
-    let (fm_lines, body) = if cfg.ui.md_frontmatter {
+    // Front matter: split the leading `---`…`---` off (mirrors `build_decorated`) — only the
+    // *rendered* metadata-block lines are needed here; `pre_src_for` (below) independently derives
+    // the same stripped body for the rest of the pipeline, so the two can never disagree about it.
+    let fm_lines = if cfg.ui.md_frontmatter {
         match crate::preview::markdown::strip_front_matter(src) {
-            (Some(fm), body) => (
-                crate::preview::markdown::render_front_matter(&fm, SNAPSHOT_WIDTH),
-                body,
-            ),
-            (None, body) => (Vec::new(), body),
+            (Some(fm), _) => crate::preview::markdown::render_front_matter(&fm, SNAPSHOT_WIDTH),
+            (None, _) => Vec::new(),
         }
     } else {
-        (Vec::new(), src.to_string())
+        Vec::new()
     };
 
     // Footnotes, then inline HTML — same order and gating as `build_decorated`.
-    let origin = crate::preview::markdown::identity_origin(&body);
-    let (s, origin) = if cfg.ui.md_footnotes {
-        crate::preview::markdown::process_footnotes_traced(&body, &origin)
-    } else {
-        (body, origin)
-    };
-    let (pre_src, _origin) = if cfg.ui.md_inline_html {
-        crate::preview::markdown::process_inline_html_traced(&s, &origin)
-    } else {
-        (s, origin)
-    };
+    let pre_src = pre_src_for(cfg, src);
 
     // `<details>` open/closed state: `md_details = "auto"` (both variants here) reduces this to
     // exactly the tags' own `open` attribute — see `App::details_default_open`.
@@ -484,7 +505,10 @@ fn first_diff_context(expected: &str, actual: &str, context: usize) -> String {
     s
 }
 
-/// Compares `actual` against the on-disk snapshot for `variant`.
+/// Compares `actual` against the on-disk snapshot at `path`, identified as `label` in any panic
+/// message. `pub(super)`: `md_model_snapshot_tests` reuses this exact comparison/diff/regenerate
+/// machinery (rather than a second, hand-copied copy) for its own, differently-named snapshot file
+/// — see that module's doc comment.
 ///
 /// With `KONOMA_UPDATE_SNAPSHOTS=1` set in the environment, writes `actual` to disk instead of
 /// comparing (see the module doc comment for the full regenerate command) — review the resulting
@@ -493,8 +517,7 @@ fn first_diff_context(expected: &str, actual: &str, context: usize) -> String {
 /// A missing snapshot file is treated like a missing `samples/*.md` fixture (see `sample_src`):
 /// `snapshots/` is excluded from the published crate, so a build from an extracted tarball
 /// legitimately has nothing to compare against — this skips rather than fails in that case.
-fn assert_matches_snapshot(variant: &str, actual: &str) {
-    let path = snapshot_path(variant);
+pub(super) fn assert_matches_snapshot(path: PathBuf, label: &str, actual: &str) {
     if std::env::var_os("KONOMA_UPDATE_SNAPSHOTS").is_some() {
         std::fs::create_dir_all(path.parent().expect("snapshot path has a parent dir"))
             .expect("create snapshots/ dir");
@@ -519,14 +542,14 @@ fn assert_matches_snapshot(variant: &str, actual: &str) {
         if e != a {
             let (name, _) = e;
             panic!(
-                "markdown render snapshot ({variant}) drifted at case #{i} {name:?}\n{}\n\
+                "markdown snapshot ({label}) drifted at case #{i} {name:?}\n{}\n\
                  Re-run with KONOMA_UPDATE_SNAPSHOTS=1 and inspect the diff if this is intentional.",
                 first_diff_context(e.1, a.1, 3)
             );
         }
     }
     panic!(
-        "markdown render snapshot ({variant}) drifted: expected {} cases, got {} \
+        "markdown snapshot ({label}) drifted: expected {} cases, got {} \
          (the set of cases itself changed, not just their content) — \
          re-run with KONOMA_UPDATE_SNAPSHOTS=1 if this is intentional.",
         exp_cases.len(),
@@ -538,7 +561,11 @@ fn assert_matches_snapshot(variant: &str, actual: &str) {
 /// regenerate it after an intentional rendering change.
 #[test]
 fn markdown_render_snapshot_default() {
-    assert_matches_snapshot("default", &dump_variant(&Config::default()));
+    assert_matches_snapshot(
+        snapshot_path("default"),
+        "default",
+        &dump_variant(&Config::default()),
+    );
 }
 
 /// The `code_bg = "none"` golden snapshot — the one config value under which several real bugs
@@ -549,7 +576,11 @@ fn markdown_render_snapshot_default() {
 fn markdown_render_snapshot_code_bg_none() {
     let mut cfg = Config::default();
     cfg.ui.theme.code_bg = "none".to_string();
-    assert_matches_snapshot("code_bg_none", &dump_variant(&cfg));
+    assert_matches_snapshot(
+        snapshot_path("code_bg_none"),
+        "code_bg_none",
+        &dump_variant(&cfg),
+    );
 }
 
 /// Permanent regression guard for the property item 1 of the task this module was built for asks
