@@ -5748,3 +5748,8 @@ mod md_snapshot_tests;
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
 #[cfg(test)]
 mod md_model_snapshot_tests;
+// Diff harness comparing the new block-model renderer (`crate::preview::markdown::render`) against
+// the production renderer over the same parity corpus — see its own module doc comment for what it
+// measures and why it is not itself a golden snapshot.
+#[cfg(test)]
+mod md_render_diff_tests;

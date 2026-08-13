@@ -28,6 +28,7 @@ use tui_markdown::{Options, StyleSheet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) mod model;
+pub(crate) mod render;
 
 // Decoration colors. A code block is enclosed as a "special area" with a background + left gutter.
 const CODE_GUTTER_FG: Color = Color::Cyan;
@@ -13188,6 +13189,252 @@ pub(crate) mod preprocess_corpus {
             ),
         ]
     }
+}
+
+#[cfg(test)]
+pub(crate) mod inline_corpus {
+    /// Documents exercising the **inline/paragraph** surface of Markdown — emphasis, strong,
+    /// strikethrough, inline code, links (all four forms), images, line breaks, headings (ATX and
+    /// setext), thematic breaks, super/subscript, escapes, entities, and CJK — the exact surface
+    /// `crate::preview::markdown::render::render_doc` claims to cover for a `Heading`/`Paragraph`/
+    /// `ThematicBreak`-only document (see that module's own doc comment on scope). Sibling of
+    /// `task_corpus` / `code_corpus` / `preprocess_corpus`, and built the same way: from the case
+    /// split CommonMark/GFM's own grammar implies for these constructs, not from a list of bugs
+    /// already met — see `preprocess_corpus`'s own doc comment for why that distinction matters.
+    ///
+    /// Why this axis needed its own corpus (2026-08): the existing corpora were all built to pin
+    /// **block-shaped** constructs (tasks, code blocks, footnotes, inline-HTML rewrites) — none of
+    /// them contains so much as a single `*emphasis*` example. A style bug in `render_doc`'s own
+    /// `Emphasis`/`Strong`/`Strikethrough`/link/heading handling can therefore ship with the existing
+    /// parity corpus reporting a clean "37 of 40 supported cases match exactly" — a real, verified
+    /// gap: with the `Tag::Emphasis` arm in `render.rs` deliberately mis-styled `BOLD` instead of
+    /// `ITALIC`, `markdown_render_diff_report` stayed green, because none of the 40 "supported" cases
+    /// it already had ever exercised emphasis at all.
+    ///
+    /// Two known-and-accepted mismatch categories (see `md_render_diff_tests`'s own module doc
+    /// comment) apply to constructs this axis would otherwise cover, and are handled by *keeping them
+    /// out of this gated corpus* rather than by adding to `KNOWN_MISMATCHES` (that list, per this
+    /// module's own review process, is not self-service — see
+    /// `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap`'s own doc
+    /// comment):
+    ///
+    /// * A **reference-style link `[a][r]` whose definition lives in a separate top-level block**
+    ///   cannot resolve in `render_doc`'s per-block re-parse — confirmed structurally (not just by
+    ///   inspection) by probing `pulldown-cmark`'s own event stream directly: a link reference
+    ///   definition never becomes part of *any* surrounding `Paragraph`'s own byte range, even when
+    ///   written on the line immediately before the reference with no blank line between them (the
+    ///   parser still treats the definition as its own construct, contributing zero events, and the
+    ///   following `Paragraph` starts only *after* it) — so there is no way to place a definition and
+    ///   its reference inside the same block's own `src` slice for `render_doc` to see both at once.
+    ///   The dangling-reference cases below (no definition anywhere) exercise the *syntax* and render
+    ///   literal bracket text on both sides, matching; the *resolved* shape (a definition that
+    ///   actually exists) is pinned instead, deterministically, by
+    ///   `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap` — outside
+    ///   `all_cases()`, so it cannot flip `markdown_render_diff_report` red over a gap this stage's
+    ///   own scope statement already documents as accepted (`render.rs`'s module doc comment) but that
+    ///   nobody has reviewed and folded into `KNOWN_MISMATCHES` yet.
+    /// * **Inline math** (`$…$`, and also `\(…\)`/`\[…\]` — the app's own LaTeX-delimiter convention,
+    ///   which a literal, CommonMark-escaped `\[…\]` collides with; see `scan_inline_math`'s own
+    ///   unconditional handling of those two byte sequences) is not a construct this corpus touches at
+    ///   all (deliberately: it is already covered, and already known-mismatched, by
+    ///   `code_span_corpus`'s three math cases — see `KNOWN_MISMATCHES`) — `"escaped brackets are
+    ///   literal"` below escapes only the opening bracket for exactly this reason: `\[not a
+    ///   link\](nope)` (both sides escaped, the shape CommonMark itself uses for "escape a literal
+    ///   bracket pair") reads as a `\[…\]` display-math expression to `scan_inline_math` regardless of
+    ///   authorial intent, which is a real characteristic of the production pipeline unrelated to
+    ///   `render_doc` — confirmed empirically, not merely reasoned about, while building this corpus.
+    ///
+    /// Every other case below is expected to render identically on both sides: the block-local
+    /// re-parse only diverges from the whole-document parse when something *outside* the block's own
+    /// byte range changes how that block's own bytes are interpreted, or when a source-level
+    /// pre-pass (math extraction) intercepts a shape before tui-markdown ever sees it — reference
+    /// resolution and the escaped-bracket/math collision are the two such cases this corpus
+    /// deliberately calls out (and keeps out of the gate); everything else (emphasis, links whose
+    /// destination is fully self-contained, images left inline because they share a line with other
+    /// text, headings, thematic breaks, escapes, entities, CJK) is fully determined by the block's own
+    /// bytes alone, so re-parsing it in isolation reproduces the same events the whole-document parse
+    /// would have produced for that same span.
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            // ---- emphasis: *em* / _em_ ----
+            ("emphasis star", "This is *emphasized* text.\n"),
+            ("emphasis underscore", "This is _emphasized_ text.\n"),
+            ("emphasis star mid-word", "foo*bar*baz plain.\n"),
+            (
+                "emphasis star immediately followed by punctuation",
+                "Please read *this*, carefully.\n",
+            ),
+            // ---- strong: **strong** / __strong__ ----
+            ("strong star", "This is **strong** text.\n"),
+            ("strong underscore", "This is __strong__ text.\n"),
+            // ---- both, nested either way ----
+            ("strong then emphasis nested", "This is ***both*** at once.\n"),
+            (
+                "strong containing emphasis",
+                "This is **bold *and italic* end** text.\n",
+            ),
+            (
+                "emphasis containing strong",
+                "This is *italic **and bold** end* text.\n",
+            ),
+            // ---- strikethrough ----
+            ("strikethrough", "This was ~~deleted~~ text.\n"),
+            (
+                "strikethrough containing emphasis",
+                "This was ~~*deleted and italic*~~ text.\n",
+            ),
+            // ---- inline code ----
+            ("inline code plain", "Run `cargo test` now.\n"),
+            (
+                "inline code with double backticks",
+                "Use `` `nested` `` here.\n",
+            ),
+            ("inline code containing a backtick", "Use ``a ` b`` here.\n"),
+            (
+                "inline code containing markdown lookalikes",
+                "See `*not em* [not](a/link)` literally.\n",
+            ),
+            // ---- links: inline ----
+            ("link inline", "See [the docs](https://example.com/docs).\n"),
+            (
+                "link inline with title",
+                "See [the docs](https://example.com/docs \"Docs\").\n",
+            ),
+            (
+                "link with relative path destination",
+                "See [the guide](./docs/guide.md) for setup.\n",
+            ),
+            (
+                "link destination is an anchor",
+                "Jump to [Usage](#usage) below.\n",
+            ),
+            (
+                "link label containing emphasis",
+                "See [**bold label**](https://example.com/x).\n",
+            ),
+            // ---- links: reference style ----
+            (
+                "reference link with no definition stays literal",
+                "See [the docs][missing] here.\n",
+            ),
+            (
+                "shortcut reference with no definition stays literal",
+                "See [missing] here.\n",
+            ),
+            // The *resolved* shapes (a definition that actually exists, in a separate top-level
+            // block) are deliberately not here — see this module's own doc comment — they are
+            // pinned instead by
+            // `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap`,
+            // which reuses `RESOLVED_REFERENCE_LINK_CASES` below so the two pins can never drift
+            // onto different source text.
+            // ---- links: autolink ----
+            ("autolink", "Visit <https://example.com/> today.\n"),
+            (
+                "autolink mailto",
+                "Contact <mailto:hello@example.com> today.\n",
+            ),
+            // ---- images: inline (a paragraph whose entire line is *not* just the image, so it is
+            // never intercepted as a standalone block-level image before tui-markdown ever sees it —
+            // see the module doc comment on the categories this corpus avoids) ----
+            (
+                "inline image alt text shown mid-paragraph",
+                "Look at this: ![a red fox](fox.png) closely.\n",
+            ),
+            (
+                "inline image with no alt text",
+                "Look at this: ![](fox.png) closely.\n",
+            ),
+            // ---- line breaks: soft vs. hard ----
+            ("soft break", "line one\nline two\n"),
+            ("hard break via two trailing spaces", "line one  \nline two\n"),
+            ("hard break via trailing backslash", "line one\\\nline two\n"),
+            // ---- headings: ATX levels 1-6 ----
+            ("heading level 1", "# Title One\n"),
+            ("heading level 2", "## Title Two\n"),
+            ("heading level 3", "### Title Three\n"),
+            ("heading level 4", "#### Title Four\n"),
+            ("heading level 5", "##### Title Five\n"),
+            ("heading level 6", "###### Title Six\n"),
+            (
+                "heading containing strong and code",
+                "## Setup with **care** and `cargo run`\n",
+            ),
+            (
+                "heading with attributes",
+                "## Custom Heading {#custom-id .note lang=en}\n",
+            ),
+            // ---- headings: setext ----
+            ("setext heading level 1", "Big Title\n=========\n"),
+            ("setext heading level 2", "Smaller Title\n-------------\n"),
+            // ---- thematic breaks (each preceded by a blank line / at document start, so it can
+            // never be mistaken for a setext underline of a preceding paragraph) ----
+            ("thematic break dashes", "---\n"),
+            ("thematic break asterisks", "***\n"),
+            ("thematic break underscores", "___\n"),
+            (
+                "thematic break between two paragraphs",
+                "before.\n\n---\n\nafter.\n",
+            ),
+            // ---- superscript / subscript ----
+            ("superscript", "x^2^ is x squared.\n"),
+            ("subscript", "H~2~O is water.\n"),
+            // ---- escapes ----
+            ("escaped asterisks are literal", "This is \\*not emphasized\\*.\n"),
+            (
+                "escaped brackets are literal",
+                "This is \\[not a link](nope).\n",
+            ),
+            ("escaped backslash", "A literal backslash: \\\\ done.\n"),
+            // ---- entities ----
+            ("named entity amp", "Fish \\& chips, or: fish &amp; chips.\n"),
+            ("named entity copy", "All rights &copy; 2026.\n"),
+            // ---- CJK ----
+            ("cjk paragraph", "これは日本語の段落です。特殊な記法は使っていません。\n"),
+            ("cjk heading", "# 日本語の見出し\n"),
+            (
+                "cjk emphasis touching the delimiters",
+                "日本語*強調*語のテキスト。\n",
+            ),
+            (
+                "cjk emphasis after full-width punctuation",
+                "これは、*強調*です。\n",
+            ),
+            (
+                "cjk link label",
+                "詳細は[日本語のラベル](https://example.com/ja)を参照。\n",
+            ),
+            // ---- edges ----
+            ("empty document", ""),
+            ("whitespace-only line produces no block", "   \n"),
+            (
+                "very long single-line paragraph",
+                "word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト\n",
+            ),
+            (
+                "many consecutive blank lines between paragraphs collapse the same as one",
+                "first.\n\n\n\n\nsecond.\n",
+            ),
+        ]
+    }
+
+    /// `(label, source)` for the *resolved* cross-block reference-link shape this corpus's own
+    /// `cases()` deliberately excludes (see its doc comment) — the full form `[a][r]` and the
+    /// shortcut form `[a]`, both with their `[r]: url` / `[a]: url` definition in the paragraph
+    /// immediately following (a blank line apart, the realistic shape: `preprocess_corpus`'s own
+    /// "def" cases use the identical layout for footnote definitions). `pub(crate)` so
+    /// `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap` pins
+    /// *this exact* text — not a second, hand-copied pair of strings that could quietly drift onto
+    /// a shape the structural proof in this module's doc comment no longer actually covers.
+    pub(crate) const RESOLVED_REFERENCE_LINK_CASES: &[(&str, &str)] = &[
+        (
+            "reference link with definition in the next block",
+            "See [the docs][ref] here.\n\n[ref]: https://example.com/docs\n",
+        ),
+        (
+            "shortcut reference with definition in the next block",
+            "See [ref] here.\n\n[ref]: https://example.com/docs\n",
+        ),
+    ];
 }
 
 /// Parity between what the renderer draws and what the source scanners find, measured **the way the

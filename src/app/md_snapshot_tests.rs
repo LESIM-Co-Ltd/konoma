@@ -44,7 +44,11 @@ use super::*;
 /// this mirrors (`app_faithful_parity_tests::drawn_code`/`drawn_tasks` in `markdown.rs`) — wide
 /// enough that the corpus's short lines don't force awkward wraps, narrow enough to keep the dump
 /// readable.
-const SNAPSHOT_WIDTH: u16 = 100;
+///
+/// `pub(super)`: `md_render_diff_tests` (a sibling module) renders its own new-renderer side at this
+/// exact same width, so the two sides of that comparison can never quietly drift onto different
+/// widths.
+pub(super) const SNAPSHOT_WIDTH: u16 = 100;
 
 /// `samples/*.md` included alongside the corpora, read from disk (not `include_str!`) so a build
 /// from the *published* crate — where `/samples` is excluded (see `Cargo.toml`) — degrades to
@@ -100,6 +104,9 @@ pub(super) fn all_cases() -> Vec<(String, String)> {
     for (name, src) in crate::preview::markdown::preprocess_corpus::cases() {
         v.push((format!("preprocess_corpus: {name}"), src.to_string()));
     }
+    for (name, src) in crate::preview::markdown::inline_corpus::cases() {
+        v.push((format!("inline_corpus: {name}"), src.to_string()));
+    }
     for name in SAMPLE_FILES {
         if let Some(src) = sample_src(name) {
             v.push((format!("samples: {name}"), src));
@@ -138,8 +145,11 @@ pub(super) fn pre_src_for(cfg: &Config, src: &str) -> String {
 }
 
 /// Everything one case renders to, over the app's real Markdown pipeline.
-struct CaseRender {
-    lines: Vec<Line<'static>>,
+///
+/// `pub(super)`: `md_render_diff_tests` (a sibling module) reads `lines` back out of this as the
+/// "old renderer" side of its own comparison — see `render_case`'s own doc comment.
+pub(super) struct CaseRender {
+    pub(super) lines: Vec<Line<'static>>,
     images: Vec<crate::preview::markdown::ImagePlacement>,
     items: Vec<MdItem>,
     anchors: Vec<(String, usize)>,
@@ -161,7 +171,11 @@ struct CaseRender {
 /// images "unavailable" (as with no image backend), mermaid fences and math expressions always
 /// "extracted" (`Image{cols:20,rows:5}` / `Raw`) so the extraction and placement logic itself is
 /// still exercised end to end, just not the picker-dependent raster step.
-fn render_case(cfg: &Config, src: &str) -> CaseRender {
+///
+/// `pub(super)`: `md_render_diff_tests` (a sibling module) calls this directly for the "old
+/// renderer" side of its own comparison, rather than a second, hand-copied assembly of the same
+/// pipeline — see that module's own doc comment.
+pub(super) fn render_case(cfg: &Config, src: &str) -> CaseRender {
     let icons = cfg.ui.icons;
     let code = crate::preview::markdown::CodeStyle {
         bg: cfg.ui.theme.code_bg(),

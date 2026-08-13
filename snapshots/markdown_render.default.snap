@@ -5355,6 +5355,784 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== inline_corpus: autolink ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Visit "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} https://example.com/"
+  s02 fg=-,bg=-,mod=- " today."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/"}
+
+=== inline_corpus: autolink mailto ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Contact "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} mailto:hello@example.com"
+  s02 fg=-,bg=-,mod=- " today."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="mailto:hello@example.com"}
+
+=== inline_corpus: cjk emphasis after full-width punctuation ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "これは、"
+  s01 fg=-,bg=-,mod=I "強調"
+  s02 fg=-,bg=-,mod=- "です。"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: cjk emphasis touching the delimiters ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "日本語"
+  s01 fg=-,bg=-,mod=I "強調"
+  s02 fg=-,bg=-,mod=- "語のテキスト。"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: cjk heading ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "日本語の見出し"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="日本語の見出し"
+-- ITEMS (0) --
+
+=== inline_corpus: cjk link label ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "詳細は"
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} 日本語のラベル"
+  s02 fg=-,bg=-,mod=- "を参照。"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/ja"}
+
+=== inline_corpus: cjk paragraph ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "これは日本語の段落です。特殊な記法は使っていません。"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: emphasis containing strong ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=I "italic "
+  s02 fg=-,bg=-,mod=BI "and bold"
+  s03 fg=-,bg=-,mod=I " end"
+  s04 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: emphasis star ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=I "emphasized"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: emphasis star immediately followed by punctuation ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Please read "
+  s01 fg=-,bg=-,mod=I "this"
+  s02 fg=-,bg=-,mod=- ", carefully."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: emphasis star mid-word ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "foo"
+  s01 fg=-,bg=-,mod=I "bar"
+  s02 fg=-,bg=-,mod=- "baz plain."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: emphasis underscore ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=I "emphasized"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: empty document ===
+-- LINES (0) --
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: escaped asterisks are literal ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=- "*not emphasized"
+  s02 fg=-,bg=-,mod=- "*."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: escaped backslash ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "A literal backslash: "
+  s01 fg=-,bg=-,mod=- "\\ done."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: escaped brackets are literal ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=- "[not a link"
+  s02 fg=-,bg=-,mod=- "]"
+  s03 fg=-,bg=-,mod=- "(nope)."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: hard break via trailing backslash ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "line one"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "line two"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: hard break via two trailing spaces ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "line one"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "line two"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: heading containing strong and code ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Setup with "
+  s01 fg=-,bg=-,mod=B "care"
+  s02 fg=-,bg=-,mod=- " and "
+  s03 fg=white,bg=rgb(43,48,59),mod=- "cargo run"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="setup-with-care-and-cargo-run"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 1 ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Title One"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-one"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 2 ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Title Two"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-two"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 3 ===
+-- LINES (1) --
+L0000 style=fg=cyan,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- "Title Three"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-three"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 4 ===
+-- LINES (1) --
+L0000 style=fg=cyan,bg=-,mod=DI align=-
+  s00 fg=-,bg=-,mod=- "Title Four"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-four"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 5 ===
+-- LINES (1) --
+L0000 style=fg=cyan,bg=-,mod=DI align=-
+  s00 fg=-,bg=-,mod=- "Title Five"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-five"
+-- ITEMS (0) --
+
+=== inline_corpus: heading level 6 ===
+-- LINES (1) --
+L0000 style=fg=cyan,bg=-,mod=DI align=-
+  s00 fg=-,bg=-,mod=- "Title Six"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="title-six"
+-- ITEMS (0) --
+
+=== inline_corpus: heading with attributes ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Custom Heading"
+  s01 fg=-,bg=-,mod=D " {#custom-id .note lang=en}"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="custom-heading-custom-id-note-langen"
+-- ITEMS (0) --
+
+=== inline_corpus: inline code containing a backtick ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Use "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "a ` b"
+  s02 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: inline code containing markdown lookalikes ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "*not em* [not](a/link)"
+  s02 fg=-,bg=-,mod=- " literally."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: inline code plain ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Run "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "cargo test"
+  s02 fg=-,bg=-,mod=- " now."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: inline code with double backticks ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Use "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "`nested`"
+  s02 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: inline image alt text shown mid-paragraph ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Look at this: "
+  s01 fg=-,bg=-,mod=- "a red fox"
+  s02 fg=-,bg=-,mod=- " closely."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: inline image with no alt text ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Look at this: "
+  s01 fg=-,bg=-,mod=- " closely."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: link destination is an anchor ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Jump to "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} Usage"
+  s02 fg=-,bg=-,mod=- " below."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="#usage"}
+
+=== inline_corpus: link inline ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} the docs"
+  s02 fg=-,bg=-,mod=- "."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/docs"}
+
+=== inline_corpus: link inline with title ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} the docs"
+  s02 fg=-,bg=-,mod=- "."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/docs"}
+
+=== inline_corpus: link label containing emphasis ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} bold label"
+  s02 fg=-,bg=-,mod=- "."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/x"}
+
+=== inline_corpus: link with relative path destination ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} the guide"
+  s02 fg=-,bg=-,mod=- " for setup."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="./docs/guide.md"}
+
+=== inline_corpus: many consecutive blank lines between paragraphs collapse the same as one ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "first."
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "second."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: named entity amp ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Fish "
+  s01 fg=-,bg=-,mod=- "& chips, or: fish "
+  s02 fg=-,bg=-,mod=- "&"
+  s03 fg=-,bg=-,mod=- " chips."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: named entity copy ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "All rights "
+  s01 fg=-,bg=-,mod=- "©"
+  s02 fg=-,bg=-,mod=- " 2026."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: reference link with no definition stays literal ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=-,bg=-,mod=- "["
+  s02 fg=-,bg=-,mod=- "the docs"
+  s03 fg=-,bg=-,mod=- "]"
+  s04 fg=-,bg=-,mod=- "["
+  s05 fg=-,bg=-,mod=- "missing"
+  s06 fg=-,bg=-,mod=- "]"
+  s07 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: setext heading level 1 ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Big Title"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="big-title"
+-- ITEMS (0) --
+
+=== inline_corpus: setext heading level 2 ===
+-- LINES (2) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Smaller Title"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="smaller-title"
+-- ITEMS (0) --
+
+=== inline_corpus: shortcut reference with no definition stays literal ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=-,bg=-,mod=- "["
+  s02 fg=-,bg=-,mod=- "missing"
+  s03 fg=-,bg=-,mod=- "]"
+  s04 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: soft break ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "line one"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "line two"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strikethrough ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This was "
+  s01 fg=-,bg=-,mod=X "deleted"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strikethrough containing emphasis ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This was "
+  s01 fg=-,bg=-,mod=IX "deleted and italic"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strong containing emphasis ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=B "bold "
+  s02 fg=-,bg=-,mod=BI "and italic"
+  s03 fg=-,bg=-,mod=B " end"
+  s04 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strong star ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=B "strong"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strong then emphasis nested ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=BI "both"
+  s02 fg=-,bg=-,mod=- " at once."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: strong underscore ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "This is "
+  s01 fg=-,bg=-,mod=B "strong"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: subscript ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "H~2~O is water."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: superscript ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "x^2"
+  s01 fg=-,bg=-,mod=- "^"
+  s02 fg=-,bg=-,mod=- " is x squared."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: thematic break asterisks ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: thematic break between two paragraphs ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "before."
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "after."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: thematic break dashes ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: thematic break underscores ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: very long single-line paragraph ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト word 通常のテキスト"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== inline_corpus: whitespace-only line produces no block ===
+-- LINES (0) --
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === preprocess_corpus: alert with a fence and a continued def after it ===
 -- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
