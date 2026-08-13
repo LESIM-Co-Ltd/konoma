@@ -9836,6 +9836,72 @@ pub(crate) mod code_corpus {
                 "crlf centered banner with no <br> (registry: tinytemplate README.md)",
                 "<h1 align=\"center\">TT</h1>\r\n\r\n<div align=\"center\">\r\n    <a href=\"https://docs.rs/tt/\">API Documentation</a>\r\n    |\r\n    <a href=\"https://example.com/changelog\">Changelog</a>\r\n</div>\r\n\r\n<div align=\"center\">\r\n    <a href=\"https://example.com/actions\">\r\n        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\r\n    </a>\r\n</div>\r\n\r\ntail\r\n",
             ),
+            // ---- KNOWN FAILURE, NOT YET FIXED (2026-08): a lazily continued paragraph glues onto a
+            // list-item-nested fence's closing line upstream, dropping the code block's header ----
+            //
+            // Root cause (paragraph side): `flush_code_run` requires a code run's *last* rendered row
+            // to be nothing but fence characters (`is_closing_fence`). When a fenced block sits inside
+            // a list item and the very next line — no blank line in between, i.e. a CommonMark lazy
+            // continuation — is a paragraph whose first inline is a code span, tui-markdown renders
+            // that paragraph's first line glued onto the *same row* as the closing fence (e.g. the
+            // rendered row reads `` "```inline" `` instead of a bare `` "```" ``). `is_closing_fence`
+            // then rejects that row, so the whole run — opener, body, and the glued closer — is handed
+            // back completely undecorated (no header is ever drawn for it), while the write-back
+            // scanner (`code_block_source_locs`, which asks pulldown-cmark directly and never sees
+            // tui-markdown's rendered rows) still counts the block normally. The mismatch cancels `y c`
+            // for every code block in the document, not just this one (the count guard is
+            // document-wide). A paragraph whose first line is plain text does not glue — its own line
+            // stays on its own row — which is the control case right below the failing ones.
+            (
+                "KNOWN FAILURE: list item fence glued to a following inline-code paragraph (no blank line) drops the header",
+                "1. item:\n   ```\n   aaa\n   ```\n   `inline` after\n",
+            ),
+            (
+                "KNOWN FAILURE: same glue, with an unrelated real fence following later in the document",
+                "1. item:\n   ```\n   aaa\n   ```\n   `inline` after\n\n```\nbbb\n```\n",
+            ),
+            (
+                "control: list item fence + a plain-text lazy continuation (no blank line) does not glue",
+                "1. item:\n   ```\n   aaa\n   ```\n   after\n",
+            ),
+            (
+                "control: list item fence + a blank line before the inline-code paragraph does not glue",
+                "1. item:\n   ```\n   aaa\n   ```\n\n   `inline` after\n",
+            ),
+            (
+                "KNOWN FAILURE: same glue in a bullet list item",
+                "- item:\n  ```\n  aaa\n  ```\n  `inline` after\n",
+            ),
+            (
+                "control: bullet list item fence + a plain-text lazy continuation does not glue",
+                "- item:\n  ```\n  aaa\n  ```\n  after\n",
+            ),
+            // Not a case of the glue defect after all (checked by hand while writing this corpus,
+            // 2026-08): a *plain* block quote wraps every line of its contents in a `"> "` prefix —
+            // including the fence's own opening/closing marker lines — so the run's first line never
+            // reads `"```"` in the first place; `flush_code_run` already hands that whole shape back
+            // undecorated regardless of what follows it (see that function's own doc comment, and the
+            // pre-existing corpus entry "a plain (non-alert) block quote wrapping a fence is not
+            // detected by either side" a few entries above this one). The write-back scanner agrees
+            // (also 0), so this stays green — the two sides matching here says nothing about the glue
+            // defect either way, only that this particular shape was already a known non-detection on
+            // both sides before this corpus addition.
+            (
+                "list item fence nested inside a plain block quote, with an inline-code continuation — masked by the pre-existing block-quote non-detection, not the glue defect",
+                "> - item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n",
+            ),
+            // Root cause (body side, a related but distinct upstream defect): tui-markdown also runs
+            // a list-item-nested fence's own **body** lines together onto a single rendered row (the
+            // same joining `tui_markdown_runs_an_indented_blocks_adjacent_lines_together` already pins
+            // for *indented* blocks — this is the fenced-in-a-list-item case of the same upstream
+            // behavior; a top-level fence's body is not affected, see that test's control case). This
+            // does not change how many blocks are drawn, so the count stays in parity here and this
+            // entry alone is expected to stay green; the on-screen row split (or lack of it) is
+            // checked directly by `list_item_fence_body_lines_stay_split_on_screen` below.
+            (
+                "list item fence with a two-line body (count parity only — content is checked elsewhere)",
+                "1. item:\n\n   ```\n   aaa\n   bbb\n   ```\n",
+            ),
         ]
     }
 }
@@ -11487,6 +11553,70 @@ mod task_scan_parity_tests {
             code_block_source_locs("para\n\n    one\n    two\n", &[]),
             vec!["one\ntwo".to_string()],
             "コピー対象はファイルの行のまま(画面の連結に引きずられない)"
+        );
+    }
+
+    /// The rendered *body* rows of every code block in `src`, gutter stripped, in document order —
+    /// the header row (`is_code_header_span`) and the trailing blank padding row (empty after the
+    /// gutter is stripped) are excluded, leaving only the highlighted content rows.
+    fn code_body_row_texts(src: &str) -> Vec<String> {
+        set_details_open(Vec::new());
+        let (lines, _) = render_markdown_with_images(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        lines
+            .iter()
+            .filter(|l| is_code_line(l) && !l.spans.first().is_some_and(is_code_header_span))
+            .map(|l| l.to_string().trim_start_matches('▎').trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// KNOWN FAILURE, NOT YET FIXED (2026-08): a code fence's own body lines are supposed to reach
+    /// the screen one *source* line per rendered row. `tui_markdown_runs_an_indented_blocks_adjacent_lines_together`
+    /// above already pins that this holds for a **top-level** fence (its `"one"` / `"two"` control
+    /// case) — used here again as the control, to show the defect is specific to the list-nested
+    /// case and not something wrong with this test's own plumbing.
+    ///
+    /// It does **not** hold when the fence sits inside a list item: tui-markdown runs the fenced
+    /// block's consecutive body lines together into a single rendered row there too — the
+    /// fenced-in-a-list-item case of the very same upstream joining
+    /// `tui_markdown_runs_an_indented_blocks_adjacent_lines_together` documents for *indented*
+    /// blocks. The block *count* still matches the write-back scanner for this shape (see the
+    /// "list item fence with a two-line body" entry added to `code_corpus`, which stays green), so
+    /// this defect is invisible to every count-based test in this module — a document with this
+    /// shape draws a code block with the correct header, but its two-line body arrives on screen as
+    /// one glued row (`"aaabbb"`) instead of the two separate rows `"aaa"` / `"bbb"` a reader would
+    /// expect (and that `y c` — which copies the file's own lines — actually holds).
+    #[test]
+    fn list_item_fence_body_lines_stay_split_on_screen() {
+        // Control: the identical two-line body in a top-level (non-list) fence stays split.
+        let top_level = code_body_row_texts("```\naaa\nbbb\n```\n");
+        assert_eq!(
+            top_level,
+            vec!["aaa".to_string(), "bbb".to_string()],
+            "対照ケース(トップレベルのフェンス)が想定どおり分かれていない\
+             (直したいのはリスト項目内だけのはず)\n--- rows ---\n{top_level:?}"
+        );
+
+        // The failing case: the identical body, only wrapped in an ordered list item.
+        let in_list = code_body_row_texts("1. item:\n\n   ```\n   aaa\n   bbb\n   ```\n");
+        assert_eq!(
+            in_list,
+            vec!["aaa".to_string(), "bbb".to_string()],
+            "リスト項目内のフェンスの本文行が画面上で1行に連結されている\
+             (この文書のコードブロックが1行に潰れて表示される)\n--- rows ---\n{in_list:?}"
         );
     }
 
