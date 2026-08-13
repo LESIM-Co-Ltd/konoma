@@ -9,7 +9,7 @@
 //!
 //! ## Expected mismatch categories (this stage)
 //!
-//! Even restricted to Heading/Paragraph/ThematicBreak-only documents, a few things are known,
+//! Even restricted to Heading/Paragraph/ThematicBreak-only documents, a couple of things are known,
 //! accepted gaps at this stage rather than bugs to chase down — see [`render_case_new`]'s callers for
 //! where each one comes from:
 //!
@@ -22,15 +22,19 @@
 //!   (`math_on: true`), lifting `$…$`/`$$…$$` onto their own reserved-row placeholder before
 //!   tui-markdown ever sees them. The block model has no concept of math extraction at all (it is not
 //!   a `BlockKind`), so `render::render_doc` renders a `$…$` run as literal text.
-//! * **Cross-block reference-style links.** `[text][ref]` whose `[ref]: url` definition lives in a
-//!   *different* top-level block does not resolve in `render`'s block-local re-parse — see
-//!   `render::render_heading`'s/`render_paragraph`'s own doc comments.
-//! * **Context-sensitive CommonMark constructs re-parsed out of context.** A `Paragraph` block's own
-//!   `src` slice is re-parsed in isolation (not from a whole-document parse); constructs whose
-//!   classification depends on surrounding blocks (e.g. whether a line inside a paragraph's own text
-//!   is allowed to *interrupt* it) can, in principle, come out differently. None of the mismatches
-//!   this module actually found while it was written trace back to this category, but it is a real,
-//!   structural gap rather than one this file can rule out by construction.
+//!
+//! Two *further* categories used to apply here — both artifacts of `render::render_doc` re-parsing
+//! each `Heading`/`Paragraph`'s own byte range in isolation rather than reading from a single
+//! whole-document parse: a **cross-block reference-style link** (`[text][ref]` whose `[ref]: url`
+//! definition lives in a different top-level block) could never resolve that way, and *any*
+//! CommonMark construct whose classification depends on context outside its own block was, in
+//! principle, at risk of coming out differently when re-parsed alone. `render.rs` no longer
+//! re-parses anything at all (see its own module doc comment) — every block's own inline events are
+//! read straight out of the one event stream `Doc::parse` recorded for the *whole* document
+//! (`model::Doc.events`) — so both categories are gone structurally, not merely unobserved; see
+//! `crate::preview::markdown::inline_corpus`'s own doc comment for how the reference-link case
+//! specifically was proven to resolve, and [`markdown_render_diff_report`]'s own numbers below for
+//! the (lack of) fallout from the second, broader category.
 //!
 //! Every mismatch this module actually observes is recorded in [`KNOWN_MISMATCHES`], by case name,
 //! filled in from a real run of this harness (not asserted to be empty from the start — see the task
@@ -103,7 +107,6 @@ fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static
     let pre_src = pre_src_for(cfg, src);
     let doc = crate::preview::markdown::model::Doc::parse(&pre_src);
     let out = crate::preview::markdown::render::render_doc(
-        &pre_src,
         &doc,
         SNAPSHOT_WIDTH,
         code,
@@ -273,46 +276,4 @@ fn markdown_render_diff_report() {
 #[test]
 fn markdown_render_diff_corpus_is_not_empty() {
     assert!(all_cases().len() > 100);
-}
-
-/// Pins the "cross-block reference-style link" gap — `render.rs`'s own module doc comment already
-/// documents it as an accepted mismatch category (a reference-style link whose `[ref]: url`
-/// definition lives in a different top-level block cannot resolve in `render_doc`'s per-block
-/// re-parse), and `crate::preview::markdown::inline_corpus`'s own doc comment records the structural
-/// proof (probed directly against `pulldown-cmark`'s event stream: a link reference definition never
-/// becomes part of any surrounding `Paragraph`'s own byte range, so there is no way to place a
-/// definition and its reference inside one block's `src` slice).
-///
-/// Deliberately **not** part of `all_cases()` / `inline_corpus::cases()` (see that module's own doc
-/// comment): folding a real instance of this category into the gated corpus would make
-/// `markdown_render_diff_report` fail with a mismatch this stage's own scope statement already
-/// accepts as expected. But `KNOWN_MISMATCHES` is a reviewed sign-off list, not something a corpus
-/// addition gets to grow on its own judgment — deciding a mismatch is an acceptable, understood gap
-/// (`markdown_render_diff_report`'s own doc comment: "If this is an intentional, understood gap ...
-/// add the case name(s) to KNOWN_MISMATCHES") is exactly the kind of call that deserves review rather
-/// than being folded in silently by whoever next happens to touch the corpus. This test exists so the
-/// finding is proven and reviewable on its own terms — case names and all — without gating the main
-/// report, and so it is automatically flagged as stale (the `assert_ne` below starts failing) rather
-/// than silently rotting as an unverified claim in a doc comment, if `render_doc` is ever taught to
-/// resolve cross-block references.
-#[test]
-fn cross_block_reference_style_links_are_a_known_unlisted_gap() {
-    let cfg = Config::default();
-    for (name, src) in crate::preview::markdown::inline_corpus::RESOLVED_REFERENCE_LINK_CASES {
-        let old = render_case(&cfg, src);
-        let (new_lines, unsupported) = render_case_new(&cfg, src);
-        assert!(
-            unsupported.is_empty(),
-            "{name}: expected a Paragraph-only (supported) case, got unsupported block kinds \
-             {unsupported:?} — the case text no longer matches what this pin assumes"
-        );
-        assert_ne!(
-            old.lines, new_lines,
-            "{name}: render_doc now matches the production renderer on a cross-block reference — \
-             if this is real (not a fluke of this specific text), render_doc has started resolving \
-             references across block boundaries; move this case out of \
-             RESOLVED_REFERENCE_LINK_CASES and into inline_corpus::cases() instead of leaving this \
-             pin stale"
-        );
-    }
 }

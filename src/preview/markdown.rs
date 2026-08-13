@@ -13211,28 +13211,10 @@ pub(crate) mod inline_corpus {
     /// `ITALIC`, `markdown_render_diff_report` stayed green, because none of the 40 "supported" cases
     /// it already had ever exercised emphasis at all.
     ///
-    /// Two known-and-accepted mismatch categories (see `md_render_diff_tests`'s own module doc
-    /// comment) apply to constructs this axis would otherwise cover, and are handled by *keeping them
-    /// out of this gated corpus* rather than by adding to `KNOWN_MISMATCHES` (that list, per this
-    /// module's own review process, is not self-service — see
-    /// `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap`'s own doc
-    /// comment):
+    /// One known-and-accepted mismatch category (see `md_render_diff_tests`'s own module doc
+    /// comment) applies to a construct this axis would otherwise cover, and is handled by *keeping
+    /// it out of this gated corpus* rather than by adding to `KNOWN_MISMATCHES`:
     ///
-    /// * A **reference-style link `[a][r]` whose definition lives in a separate top-level block**
-    ///   cannot resolve in `render_doc`'s per-block re-parse — confirmed structurally (not just by
-    ///   inspection) by probing `pulldown-cmark`'s own event stream directly: a link reference
-    ///   definition never becomes part of *any* surrounding `Paragraph`'s own byte range, even when
-    ///   written on the line immediately before the reference with no blank line between them (the
-    ///   parser still treats the definition as its own construct, contributing zero events, and the
-    ///   following `Paragraph` starts only *after* it) — so there is no way to place a definition and
-    ///   its reference inside the same block's own `src` slice for `render_doc` to see both at once.
-    ///   The dangling-reference cases below (no definition anywhere) exercise the *syntax* and render
-    ///   literal bracket text on both sides, matching; the *resolved* shape (a definition that
-    ///   actually exists) is pinned instead, deterministically, by
-    ///   `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap` — outside
-    ///   `all_cases()`, so it cannot flip `markdown_render_diff_report` red over a gap this stage's
-    ///   own scope statement already documents as accepted (`render.rs`'s module doc comment) but that
-    ///   nobody has reviewed and folded into `KNOWN_MISMATCHES` yet.
     /// * **Inline math** (`$…$`, and also `\(…\)`/`\[…\]` — the app's own LaTeX-delimiter convention,
     ///   which a literal, CommonMark-escaped `\[…\]` collides with; see `scan_inline_math`'s own
     ///   unconditional handling of those two byte sequences) is not a construct this corpus touches at
@@ -13244,16 +13226,24 @@ pub(crate) mod inline_corpus {
     ///   authorial intent, which is a real characteristic of the production pipeline unrelated to
     ///   `render_doc` — confirmed empirically, not merely reasoned about, while building this corpus.
     ///
-    /// Every other case below is expected to render identically on both sides: the block-local
-    /// re-parse only diverges from the whole-document parse when something *outside* the block's own
-    /// byte range changes how that block's own bytes are interpreted, or when a source-level
-    /// pre-pass (math extraction) intercepts a shape before tui-markdown ever sees it — reference
-    /// resolution and the escaped-bracket/math collision are the two such cases this corpus
-    /// deliberately calls out (and keeps out of the gate); everything else (emphasis, links whose
-    /// destination is fully self-contained, images left inline because they share a line with other
-    /// text, headings, thematic breaks, escapes, entities, CJK) is fully determined by the block's own
-    /// bytes alone, so re-parsing it in isolation reproduces the same events the whole-document parse
-    /// would have produced for that same span.
+    /// A **reference-style link `[a][r]` whose definition lives in a separate top-level block** used
+    /// to be a second such category — `render_doc` re-parsed each block's own byte range in isolation,
+    /// which could never see a definition sitting in a *different* block's own range — but is not one
+    /// any more: `render.rs` was rewritten to read every block's inline events straight out of
+    /// `Doc::parse`'s single, whole-document event stream instead (`model::Doc.events`), so a resolved
+    /// reference now sees exactly what the real parser saw. The **resolved** shape (a definition that
+    /// actually exists, in the *next* top-level block) is included below, gated like everything else,
+    /// right alongside the dangling ones. The **dangling**-reference cases below (no definition
+    /// anywhere) are unaffected either way — pulldown-cmark reports literal bracket text for those on
+    /// both sides regardless of how many times the document is parsed.
+    ///
+    /// Every other case below is expected to render identically on both sides: the two renderers only
+    /// diverge when a source-level pre-pass (math extraction) intercepts a shape before tui-markdown
+    /// ever sees it, which is the one case this corpus deliberately calls out (and keeps out of the
+    /// gate) above; everything else (emphasis, links whose destination is fully self-contained, images
+    /// left inline because they share a line with other text, headings, thematic breaks, escapes,
+    /// entities, CJK, and now cross-block references too) is fully determined by the document's own
+    /// bytes, read once, the same way for both.
     pub fn cases() -> Vec<(&'static str, &'static str)> {
         vec![
             // ---- emphasis: *em* / _em_ ----
@@ -13321,12 +13311,25 @@ pub(crate) mod inline_corpus {
                 "shortcut reference with no definition stays literal",
                 "See [missing] here.\n",
             ),
-            // The *resolved* shapes (a definition that actually exists, in a separate top-level
-            // block) are deliberately not here — see this module's own doc comment — they are
-            // pinned instead by
-            // `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap`,
-            // which reuses `RESOLVED_REFERENCE_LINK_CASES` below so the two pins can never drift
-            // onto different source text.
+            // The *resolved* shapes (a definition that actually exists) — the full form `[a][r]`
+            // and the shortcut form `[a]`, both with their `[r]: url` / `[a]: url` definition in
+            // the paragraph *immediately following* (a blank line apart, the realistic shape:
+            // `preprocess_corpus`'s own "def" cases use the identical layout for footnote
+            // definitions) — used to be excluded from this gated corpus entirely (see this module's
+            // own doc comment): `render_doc`'s old per-block re-parse could never resolve a
+            // definition sitting in a different top-level block, so folding a real instance of this
+            // shape in here would have made `markdown_render_diff_report` fail on a gap that stage
+            // already accepted as expected. `render.rs`'s rewrite onto a single whole-document parse
+            // (`model::Doc.events`) closed that gap structurally, so these are gated like everything
+            // else now.
+            (
+                "reference link with definition in the next block",
+                "See [the docs][ref] here.\n\n[ref]: https://example.com/docs\n",
+            ),
+            (
+                "shortcut reference with definition in the next block",
+                "See [ref] here.\n\n[ref]: https://example.com/docs\n",
+            ),
             // ---- links: autolink ----
             ("autolink", "Visit <https://example.com/> today.\n"),
             (
@@ -13416,25 +13419,6 @@ pub(crate) mod inline_corpus {
             ),
         ]
     }
-
-    /// `(label, source)` for the *resolved* cross-block reference-link shape this corpus's own
-    /// `cases()` deliberately excludes (see its doc comment) — the full form `[a][r]` and the
-    /// shortcut form `[a]`, both with their `[r]: url` / `[a]: url` definition in the paragraph
-    /// immediately following (a blank line apart, the realistic shape: `preprocess_corpus`'s own
-    /// "def" cases use the identical layout for footnote definitions). `pub(crate)` so
-    /// `md_render_diff_tests::cross_block_reference_style_links_are_a_known_unlisted_gap` pins
-    /// *this exact* text — not a second, hand-copied pair of strings that could quietly drift onto
-    /// a shape the structural proof in this module's doc comment no longer actually covers.
-    pub(crate) const RESOLVED_REFERENCE_LINK_CASES: &[(&str, &str)] = &[
-        (
-            "reference link with definition in the next block",
-            "See [the docs][ref] here.\n\n[ref]: https://example.com/docs\n",
-        ),
-        (
-            "shortcut reference with definition in the next block",
-            "See [ref] here.\n\n[ref]: https://example.com/docs\n",
-        ),
-    ];
 }
 
 /// Parity between what the renderer draws and what the source scanners find, measured **the way the

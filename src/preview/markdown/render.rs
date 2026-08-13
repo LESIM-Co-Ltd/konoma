@@ -21,30 +21,30 @@
 //!
 //! ## How inline content is rendered
 //!
-//! Not by calling into the `tui-markdown` crate at all — this file reimplements the handful of
-//! `tui_markdown::TextWriter` methods that matter for the three block kinds above (see the pinned
-//! `tui-markdown = "0.3.7"` dependency's own `src/lib.rs`, `impl<I, S> TextWriter<'_, I, S>`):
-//! `text`/`code`/`soft_break`/`hard_break`, the `push_inline_style`/`pop_inline_style` stack for
-//! `Emphasis`/`Strong`/`Strikethrough`/`Subscript`/`Superscript`, and `push_link`/`pop_link` for
-//! `Link` — which appends `" ("` + the URL styled `KonomaStyles::link()` + `")"` right after the
-//! label, the exact 4-span shape `app::md_text::collapse_links` looks for (see that function's own
-//! doc comment: "Pattern: `[label]` `" ("` `[URL(blue underline)]` `")"`"). `Image` renders only its
-//! alt text — tui-markdown's own `Tag::Image` arm is a no-op `warn!`, so the URL is dropped and
-//! never appended anywhere, and nothing about the tag itself changes the writer's state; this file
-//! mirrors that exactly (`start_inline_tag`'s `Tag::Image` arm).
+//! Not by calling into `pulldown-cmark` at all — and, since this file was rewritten for the
+//! `md-block-walk` refactor, **not by re-parsing anything either**: a `Heading`'s or `Paragraph`'s
+//! own inline events are read straight out of `Doc.events` (see `model::Doc`'s own doc comment), by
+//! the index range `Doc::parse` already recorded for that exact block (`BlockKind::Heading.inline` /
+//! `BlockKind::Paragraph.inline` — `render_heading`'s/`render_paragraph`'s own first argument is
+//! exactly that slice, `&doc.events[inline]`). `Doc::parse` walks `src` **once**, as a whole
+//! document, so a reference-style link (`[text][ref]`) whose `[ref]: url` definition lives in a
+//! *different* top-level block resolves correctly here — the accepted-gap category an earlier,
+//! per-block-re-parsing version of this file had to document (and `md_render_diff_tests` had to
+//! carve a dedicated, unlisted pin around) no longer exists at all; see
+//! `crate::preview::markdown::inline_corpus`'s own doc comment for the structural proof, and
+//! `model::Doc.events`'s doc comment for why a single walk gets this "for free".
 //!
-//! Each `Heading`/`Paragraph` block's own inline events come from **re-parsing that block's own
-//! byte range alone**, with `tui_markdown_parse_options()` — the exact option set the `tui-markdown`
-//! crate hardcodes internally (see `from_str_with_options`), so this walk sees exactly the events
-//! tui-markdown itself would for the same text — rather than being threaded through from
-//! `Doc::parse`'s own walk (`model::parse_blocks` intentionally never keeps a block's inline events;
-//! see that module's own doc comment on scope). Re-parsing a *slice* rather than the whole document
-//! has one known, accepted cost, documented rather than hidden: a reference-style link
-//! (`[text][ref]`) whose definition lives in a *different* top-level block does not resolve in this
-//! block-local re-parse the way it would in a whole-document parse — pulldown-cmark falls back to
-//! literal bracket text. `md_render_diff_tests` reports this as an ordinary mismatch, not a special
-//! case; see that module's own doc comment for the full list of mismatch categories expected at this
-//! stage.
+//! What this file *does* reimplement is the handful of `tui_markdown::TextWriter` methods that
+//! matter for the three block kinds this pass covers (see the pinned `tui-markdown = "0.3.7"`
+//! dependency's own `src/lib.rs`, `impl<I, S> TextWriter<'_, I, S>`): `text`/`code`/`soft_break`/
+//! `hard_break`, the `push_inline_style`/`pop_inline_style` stack for `Emphasis`/`Strong`/
+//! `Strikethrough`/`Subscript`/`Superscript`, and `push_link`/`pop_link` for `Link` — which appends
+//! `" ("` + the URL styled `KonomaStyles::link()` + `")"` right after the label, the exact 4-span
+//! shape `app::md_text::collapse_links` looks for (see that function's own doc comment: "Pattern:
+//! `[label]` `" ("` `[URL(blue underline)]` `")"`"). `Image` renders only its alt text —
+//! tui-markdown's own `Tag::Image` arm is a no-op `warn!`, so the URL is dropped and never appended
+//! anywhere, and nothing about the tag itself changes the writer's state; this file mirrors that
+//! exactly (`start_inline_tag`'s `Tag::Image` arm).
 //!
 //! Once a block's own raw lines are built, `super::decorate_md_lines` — the exact function
 //! `render_text_block_safe` calls on tui-markdown's own output — turns the heading's leading `#`
@@ -60,7 +60,9 @@
 //! non-test build has no path from any renderer to `render_doc` at all.
 #![allow(dead_code)]
 
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use std::ops::Range;
+
+use pulldown_cmark::{Event, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet;
@@ -88,17 +90,18 @@ pub(crate) struct RenderOut {
 /// or after the last (`needs_newline` starts `false`). Every other block kind is recorded in
 /// `unsupported`, in the order encountered, and contributes no lines and no separator at all.
 ///
-/// `src` must be the exact string `doc` was parsed from (`Doc::parse(src)`) — every `Block::src`
-/// range is sliced out of it directly. `width`/`theme`/`icons`/`tasks` are threaded straight through
-/// to `super::decorate_md_lines`, matching `render_markdown_with_images`'s own call to it via
-/// `render_text_block_safe`; `theme` and `tasks` are not yet read by anything *this* pass renders (no
-/// code blocks, and no task-list item can be represented in a Heading/Paragraph/ThematicBreak-only
-/// document — a task marker only ever exists inside a `ListItem`, which is unsupported here), kept
-/// for signature parity with `render_markdown_with_images` so a later stage that adds `CodeBlock`/
-/// `List` support does not have to change every call site's argument list again.
+/// No `src: &str` parameter: everything this pass needs — a `Heading`'s/`Paragraph`'s own inline
+/// events, a heading's own attribute metadata — is already sitting on `doc` itself, put there by
+/// `Doc::parse`'s single walk (see the module doc comment). `width`/`theme`/`icons`/`tasks` are
+/// threaded straight through to `super::decorate_md_lines`, matching `render_markdown_with_images`'s
+/// own call to it via `render_text_block_safe`; `theme` and `tasks` are not yet read by anything
+/// *this* pass renders (no code blocks, and no task-list item can be represented in a
+/// Heading/Paragraph/ThematicBreak-only document — a task marker only ever exists inside a
+/// `ListItem`, which is unsupported here), kept for signature parity with
+/// `render_markdown_with_images` so a later stage that adds `CodeBlock`/`List` support does not have
+/// to change every call site's argument list again.
 pub(crate) fn render_doc(
-    src: &str,
-    doc: &Doc,
+    doc: &Doc<'_>,
     width: u16,
     code: CodeStyle,
     theme: &str,
@@ -110,17 +113,33 @@ pub(crate) fn render_doc(
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
         match &block.kind {
-            BlockKind::Heading { level } => {
+            BlockKind::Heading {
+                level,
+                inline,
+                id,
+                classes,
+                attrs,
+            } => {
                 if !raw.is_empty() {
                     raw.push(Line::default());
                 }
-                raw.extend(render_heading(&src[block.src.clone()], *level, styles));
+                let meta = HeadingMeta {
+                    id: id.clone(),
+                    classes: classes.clone(),
+                    attrs: attrs.clone(),
+                };
+                raw.extend(render_heading(
+                    &doc.events[inline.clone()],
+                    *level,
+                    &meta,
+                    styles,
+                ));
             }
-            BlockKind::Paragraph => {
+            BlockKind::Paragraph { inline } => {
                 if !raw.is_empty() {
                     raw.push(Line::default());
                 }
-                raw.extend(render_paragraph(&src[block.src.clone()], styles));
+                raw.extend(render_paragraph(&doc.events[inline.clone()], styles));
             }
             BlockKind::ThematicBreak => {
                 if !raw.is_empty() {
@@ -237,20 +256,32 @@ impl InlineWriter {
     }
 }
 
-/// Walks `events` until (and consuming) the `Event::End` matching `stop`, dispatching every event a
-/// `Heading`'s or `Paragraph`'s own inline content can contain to the matching `InlineWriter` method
-/// — mirroring `TextWriter::handle_event`/`start_tag`/`end_tag` exactly for those events (see the
-/// module doc comment). Recurses one level for every further inline `Start` it meets
-/// (`start_inline_tag`), so nested constructs (bold inside a link's label, an image inside a link,
-/// ...) balance correctly, the same way `model::skip_inline_to` balances the block model's own walk.
+/// Walks `events`, dispatching every event a `Heading`'s or `Paragraph`'s own inline content can
+/// contain to the matching `InlineWriter` method — mirroring `TextWriter::handle_event`/`start_tag`/
+/// `end_tag` exactly for those events (see the module doc comment). Recurses one level for every
+/// further inline `Start` it meets (`start_inline_tag`), so nested constructs (bold inside a link's
+/// label, an image inside a link, ...) balance correctly, the same way `model::skip_inline_to`
+/// balances the block model's own walk.
+///
+/// `stop`, when `Some`, is the `TagEnd` this call should consume and return on — used for every
+/// *nested* call (`wrap_styled`, `Link`, `Image`): the caller has just consumed that construct's own
+/// `Start`, so its `End` is still somewhere ahead in the very same slice, mixed in with whatever
+/// else the construct contains. The *root* call, from `render_heading`/`render_paragraph`, passes
+/// `None` instead: their own `events` iterator is already exactly one block's own inline content —
+/// no wrapping `Start`/`End` pair at all, on either side (see `BlockKind::Heading.inline`'s own doc
+/// comment on that convention) — so there is nothing to stop *for*; the loop simply runs until the
+/// iterator itself is exhausted. A bare `Event::End` reaching this loop with `stop == None` cannot
+/// legitimately happen for well-formed input either way (nothing in this slice was left unbalanced
+/// by `Doc::parse`'s own walk); the catch-all arm below drops it the same defensive way it drops
+/// every other construct this file does not represent, rather than assuming it unreachable.
 fn walk_inline<'a>(
     events: &mut impl Iterator<Item = Event<'a>>,
     w: &mut InlineWriter,
-    stop: TagEnd,
+    stop: Option<TagEnd>,
 ) {
     while let Some(ev) = events.next() {
         match ev {
-            Event::End(e) if e == stop => return,
+            Event::End(e) if Some(e) == stop => return,
             Event::Start(tag) => start_inline_tag(events, w, tag),
             Event::Text(t) => w.text(&t),
             Event::Code(c) => w.code(&c),
@@ -260,9 +291,8 @@ fn walk_inline<'a>(
             // `handle_event` only ever `warn!`s and drops these, producing no output (see the crate
             // citation in the module doc comment) — matched here the same way, silently.
             // `TaskListMarker`/`Rule`/a mismatched `Event::End` cannot legitimately occur inside a
-            // `Heading`'s or `Paragraph`'s own inline content at all (both this walk's re-parse and
-            // the whole-document parse `Doc::parse` itself did use the same option set —
-            // `tui_markdown_parse_options()` — so they see the same events for the same text).
+            // `Heading`'s or `Paragraph`'s own inline content at all (`Doc::parse`'s own walk already
+            // balanced every construct correctly before this slice was ever handed to this file).
             // Dropped the same defensive way rather than assumed unreachable, so a pulldown-cmark
             // edge case this file has not been tested against still degrades (principle #3) instead
             // of desyncing the walk.
@@ -317,10 +347,10 @@ fn start_inline_tag<'a>(
         ),
         Tag::Link { dest_url, .. } => {
             w.push_link(dest_url.into_string());
-            walk_inline(events, w, TagEnd::Link);
+            walk_inline(events, w, Some(TagEnd::Link));
             w.pop_link();
         }
-        Tag::Image { .. } => walk_inline(events, w, TagEnd::Image),
+        Tag::Image { .. } => walk_inline(events, w, Some(TagEnd::Image)),
         other => skip_balanced(events, other.to_end()),
     }
 }
@@ -335,7 +365,7 @@ fn wrap_styled<'a>(
     style: Style,
 ) {
     w.push_inline_style(style);
-    walk_inline(events, w, stop);
+    walk_inline(events, w, Some(stop));
     w.pop_inline_style();
 }
 
@@ -389,39 +419,32 @@ impl HeadingMeta {
     }
 }
 
+/// Clones every `Event` out of `events` (an inline slice, `&doc.events[block_inline_range]`), in
+/// order — cheap, not merely convenient: see `model::Walker::next`'s own doc comment for why cloning
+/// one of these is never more than a couple of machine words. `walk_inline` and its own recursive
+/// helpers all want an owned `Event<'a>` stream (mirroring `tui_markdown::TextWriter`'s own
+/// `Iterator<Item = Event<'a>>` bound, matching a real `Parser`'s own `Item` type), so this is the
+/// one place a `&[(Event<'a>, Range<usize>)]` slice becomes that shape — every other caller in this
+/// file goes through it rather than writing `events.iter().map(|(ev, _)| ev.clone())` again itself.
+fn events_iter<'a, 'e>(
+    events: &'e [(Event<'a>, Range<usize>)],
+) -> impl Iterator<Item = Event<'a>> + 'e {
+    events.iter().map(|(ev, _)| ev.clone())
+}
+
 /// Renders one `Heading` block's own raw lines (before `decorate_md_lines`): the hash-marker span
 /// tui-markdown itself starts a heading line with — `decorate_headings`, downstream, recognizes and
-/// strips exactly this shape (see `heading_level`) — the heading's own inline content, and, if the
-/// source used `{#id ...}` heading-attribute syntax, the metadata suffix. `text` is the block's own
-/// `src` slice (e.g. `"## Title\n"`); re-parsed here with `tui_markdown_parse_options()` rather than
-/// threaded from `Doc::parse`'s own walk — see the module doc comment for why, and for the one
-/// accepted gap (cross-block reference links) that choice costs. `model_level` is `Doc::parse`'s own
-/// reading of this same heading (`BlockKind::Heading::level`), used only as a cross-check
-/// (`debug_assert_eq!`) — the actual rendered level comes from this function's own re-parse, so a
-/// mismatch (if this file's assumptions about re-parsing a slice are ever wrong for some input) is
-/// caught in a debug build rather than silently rendering the wrong hierarchy.
-fn render_heading(text: &str, model_level: u8, styles: KonomaStyles) -> Vec<Line<'static>> {
-    let mut events = Parser::new_ext(text, super::tui_markdown_parse_options());
-    let Some(Event::Start(Tag::Heading {
-        level: parsed_level,
-        id,
-        classes,
-        attrs,
-    })) = events.next()
-    else {
-        // The model classified this block as a Heading from the exact same source slice, using an
-        // option set (`model::parse_options`) that only ever *adds* `ENABLE_TABLES` on top of this
-        // same base — see that function's own doc comment — which cannot change how a heading itself
-        // parses. Re-parsing it alone should therefore always reproduce the same tag; degrading to no
-        // output (principle #3) rather than panicking if that assumption is ever wrong for some input
-        // this file has not been tested against. The diff harness reports it as a mismatch either way.
-        return Vec::new();
-    };
-    debug_assert_eq!(
-        parsed_level as u8, model_level,
-        "re-parsing a Heading block's own src slice should reproduce the level Doc::parse itself saw"
-    );
-    let level = parsed_level as u8;
+/// strips exactly this shape (see `heading_level`) — the heading's own inline content, read directly
+/// from `inline` (`Doc.events[block's own inline range]` — see the module doc comment: no second
+/// parse of any kind), and, if the source used `{#id ...}` heading-attribute syntax, the metadata
+/// suffix `Doc::parse` itself already captured (`meta`, built by the one caller, `render_doc`, from
+/// `BlockKind::Heading`'s own `id`/`classes`/`attrs` fields).
+fn render_heading(
+    inline: &[(Event<'_>, Range<usize>)],
+    level: u8,
+    meta: &HeadingMeta,
+    styles: KonomaStyles,
+) -> Vec<Line<'static>> {
     let heading_style = styles.heading(level);
     let hashes = format!("{} ", "#".repeat(level as usize));
     let mut w = InlineWriter {
@@ -430,15 +453,9 @@ fn render_heading(text: &str, model_level: u8, styles: KonomaStyles) -> Vec<Line
         link: None,
         styles,
     };
-    walk_inline(&mut events, &mut w, TagEnd::Heading(parsed_level));
-    let meta = HeadingMeta {
-        id: id.map(|c| c.into_string()),
-        classes: classes.into_iter().map(|c| c.into_string()).collect(),
-        attrs: attrs
-            .into_iter()
-            .map(|(k, v)| (k.into_string(), v.map(|v| v.into_string())))
-            .collect(),
-    };
+    // `None`: this is the *root* call over an already-exact inline slice — see `walk_inline`'s own
+    // doc comment on why only nested calls (inside `start_inline_tag`) need a real `stop` tag.
+    walk_inline(&mut events_iter(inline), &mut w, None);
     if let Some(suffix) = meta.to_suffix() {
         w.push_span(Span::styled(suffix, styles.heading_meta()));
     }
@@ -446,18 +463,18 @@ fn render_heading(text: &str, model_level: u8, styles: KonomaStyles) -> Vec<Line
 }
 
 /// Renders one `Paragraph` block's own raw lines (before `decorate_md_lines`) — see `render_heading`
-/// for the shared re-parse rationale and its accepted gap.
-fn render_paragraph(text: &str, styles: KonomaStyles) -> Vec<Line<'static>> {
-    let mut events = Parser::new_ext(text, super::tui_markdown_parse_options());
-    if !matches!(events.next(), Some(Event::Start(Tag::Paragraph))) {
-        return Vec::new(); // see render_heading's doc comment on this degrade
-    }
+/// for the shared rationale (`inline` is `Doc.events[block's own inline range]`, read directly, no
+/// second parse).
+fn render_paragraph(
+    inline: &[(Event<'_>, Range<usize>)],
+    styles: KonomaStyles,
+) -> Vec<Line<'static>> {
     let mut w = InlineWriter {
         lines: vec![Line::default()],
         inline_styles: Vec::new(),
         link: None,
         styles,
     };
-    walk_inline(&mut events, &mut w, TagEnd::Paragraph);
+    walk_inline(&mut events_iter(inline), &mut w, None);
     w.lines
 }

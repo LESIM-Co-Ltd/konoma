@@ -58,12 +58,51 @@ fn fmt_range(r: &Range<usize>) -> String {
     format!("{}..{}", r.start, r.end)
 }
 
+/// Concatenates every `Event::Text`/`Event::Code`/`Event::SoftBreak`(→ `" "`)/`Event::HardBreak`(→
+/// `"\n"`) payload in `events[inline]`, in order — the same minimal, style-blind reconstruction
+/// `model::tests::inline_plain_text` uses at the unit-test level, kept here as an independent copy
+/// rather than reused directly: that one is `#[cfg(test)]`-private to `model.rs`'s own `mod tests`,
+/// and this dump has no path to it. Folded into `fmt_kind`'s own `Heading`/`Paragraph` output the
+/// same way `code_body_text` is folded into its `CodeBlock` output — a snapshot of *only* the
+/// `inline` range's own numbers, with no reconstructed text alongside it, would leave a silent
+/// content regression (the range pointing at the *wrong* slice of `Doc.events`, while still
+/// well-formed) invisible to this dump.
+fn inline_text(events: &[(Event<'_>, Range<usize>)], inline: &Range<usize>) -> String {
+    let mut s = String::new();
+    for (ev, _) in &events[inline.clone()] {
+        match ev {
+            Event::Text(t) => s.push_str(t),
+            Event::Code(c) => s.push_str(c),
+            Event::SoftBreak => s.push(' '),
+            Event::HardBreak => s.push('\n'),
+            _ => {}
+        }
+    }
+    s
+}
+
 /// Exhaustive on purpose (matching `md_snapshot_tests::fmt_item_kind`'s own precedent): a new
 /// `BlockKind` variant must be taught to this dump rather than silently rendering as nothing.
-fn fmt_kind(k: &BlockKind, src: &str) -> String {
+/// `events` is `Doc.events` for the whole document this block came from — every `Heading`/
+/// `Paragraph`'s own `inline` field indexes into that same single `Vec`, at any nesting depth.
+fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> String {
     match k {
-        BlockKind::Heading { level } => format!("Heading{{level={level}}}"),
-        BlockKind::Paragraph => "Paragraph".to_string(),
+        BlockKind::Heading {
+            level,
+            inline,
+            id,
+            classes,
+            attrs,
+        } => format!(
+            "Heading{{level={level}, inline={}:{}, id={id:?}, classes={classes:?}, attrs={attrs:?}}}",
+            fmt_range(inline),
+            snippet(&inline_text(events, inline)),
+        ),
+        BlockKind::Paragraph { inline } => format!(
+            "Paragraph{{inline={}:{}}}",
+            fmt_range(inline),
+            snippet(&inline_text(events, inline)),
+        ),
         BlockKind::CodeBlock {
             lang,
             fenced,
@@ -112,21 +151,29 @@ fn fmt_kind(k: &BlockKind, src: &str) -> String {
 }
 
 /// Dumps one block and (recursively, indented) its children — the block's own kind, source range,
-/// and a truncated preview of its source text (a `CodeBlock`'s `body` snippet is folded into
-/// `fmt_kind` already, since that's the field the model's whole value proposition rests on; see
-/// `crate::preview::markdown::model::BlockKind::CodeBlock`'s doc comment).
-fn dump_block(b: &Block, src: &str, depth: usize, out: &mut String) {
+/// and a truncated preview of its source text (a `CodeBlock`'s `body` snippet, and a
+/// `Heading`/`Paragraph`'s own reconstructed inline text, are folded into `fmt_kind` already, since
+/// those are the fields the model's whole value proposition rests on; see
+/// `crate::preview::markdown::model::BlockKind::CodeBlock`'s doc comment). `events` is `Doc.events`
+/// for the whole document `b` came from, threaded through unchanged at every depth.
+fn dump_block(
+    b: &Block,
+    src: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    depth: usize,
+    out: &mut String,
+) {
     let indent = "  ".repeat(depth);
     writeln!(
         out,
         "{indent}{} src={} text={}",
-        fmt_kind(&b.kind, src),
+        fmt_kind(&b.kind, src, events),
         fmt_range(&b.src),
         snippet(&src[b.src.clone()])
     )
     .unwrap();
     for c in &b.children {
-        dump_block(c, src, depth + 1, out);
+        dump_block(c, src, events, depth + 1, out);
     }
 }
 
@@ -136,7 +183,7 @@ fn dump_case(cfg: &Config, name: &str, raw_src: &str, out: &mut String) {
     writeln!(out, "=== {name} ===").unwrap();
     writeln!(out, "-- BLOCKS ({}) --", doc.blocks.len()).unwrap();
     for b in &doc.blocks {
-        dump_block(b, &pre_src, 0, out);
+        dump_block(b, &pre_src, &doc.events, 0, out);
     }
     writeln!(out).unwrap();
 }
@@ -302,7 +349,7 @@ fn leaf_ranges(blocks: &[Block], out: &mut Vec<Range<usize>>) {
         let is_leaf = matches!(
             b.kind,
             BlockKind::Heading { .. }
-                | BlockKind::Paragraph
+                | BlockKind::Paragraph { .. }
                 | BlockKind::CodeBlock { .. }
                 | BlockKind::Table { .. }
                 | BlockKind::Html { .. }

@@ -5635,6 +5635,20 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== inline_corpus: reference link with definition in the next block ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} the docs"
+  s02 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/docs"}
+
 === inline_corpus: reference link with no definition stays literal ===
 -- LINES (1) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -5680,6 +5694,20 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="smaller-title"
 -- ITEMS (0) --
+
+=== inline_corpus: shortcut reference with definition in the next block ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "See "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} ref"
+  s02 fg=-,bg=-,mod=- " here."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="https://example.com/docs"}
 
 === inline_corpus: shortcut reference with no definition stays literal ===
 -- LINES (1) --

@@ -1,10 +1,15 @@
 //! A structural block model of a preprocessed Markdown document, built by walking
-//! `pulldown-cmark`'s own event stream once — the first step of a planned rendering refactor
-//! (`md-block-walk`). **This module is not wired into any renderer yet**: `render_*` in the parent
-//! module still derives block structure the way it always has (from tui-markdown's *rendered
-//! output*, re-parsed by half a dozen ad-hoc line scanners — `code_block_mask`, `structure_mask`,
-//! `code_block_source_locs`, `task_source_locs`, ...). Those keep working exactly as before; this
-//! is a pure addition that changes no observable behavior.
+//! `pulldown-cmark`'s own event stream **exactly once** — the first step of a planned rendering
+//! refactor (`md-block-walk`). **This module is not wired into any *production* renderer yet**:
+//! `render_*` in the parent module still derives block structure the way it always has (from
+//! tui-markdown's *rendered output*, re-parsed by half a dozen ad-hoc line scanners —
+//! `code_block_mask`, `structure_mask`, `code_block_source_locs`, `task_source_locs`, ...). Those
+//! keep working exactly as before. `crate::preview::markdown::render` — this module's own sibling —
+//! *is* built on `Doc`, and reads every leaf block's inline content straight out of the single event
+//! stream `Doc::parse` records here (`Doc.events`), with no second parse of any kind; see that
+//! module's own doc comment. That renderer is itself not wired into any *preview* path yet (see its
+//! own module doc comment for the one caller it has today), so none of this changes any observable
+//! behavior of the running app.
 //!
 //! ## Why this exists
 //!
@@ -16,6 +21,15 @@
 //! meant to become *that* single source of truth — built once, by asking the real parser, with
 //! byte ranges precise enough that a future `y c` or checkbox-toggle can slice the input directly
 //! instead of re-deriving "which block is the Nth one on screen" via a count-guard.
+//!
+//! "Built once" is not just a byte-range promise: `Doc::parse` calls `pulldown_cmark::Parser::new_ext`
+//! exactly one time, over the *whole* document, and never re-parses any substring of it for any
+//! reason — not for a block's own inline content, not for a tight list item's stray inline run,
+//! nowhere. An earlier version of `render.rs` re-parsed each `Heading`/`Paragraph`'s own byte range
+//! in isolation instead, which meant a reference-style link (`[text][ref]`) whose `[ref]: url`
+//! definition lived in a different top-level block could never resolve (the definition and the
+//! reference never shared a re-parsed slice) — see `Doc.events`'s own doc comment for how a leaf
+//! block gets at its inline content without that cost today.
 //!
 //! ## What text this model expects
 //!
@@ -31,36 +45,59 @@
 //!
 //! ## Scope
 //!
-//! Block-level only. Inline content nested *inside* a `Paragraph`/`Heading`/`TableCell` (emphasis,
-//! links, code spans, images, ...) is walked *past*, never turned into a node — see
-//! `skip_inline_to`. `mermaid`-tagged fences are represented as an ordinary `CodeBlock { lang:
-//! Some("mermaid"), .. }`, exactly like any other fenced block; the parent module's own choice to
-//! render some of those as diagrams instead of code is a rendering decision, and this is a
-//! structural model of the document, not of the screen.
+//! Block-level structure only — this file never builds an inline-content *tree* (no `Emphasis`/
+//! `Link`/`Code` node types here at all). Inline content nested *inside* a `TableCell` (emphasis,
+//! links, code spans, images, ...) is walked *past* and recorded nowhere — see `skip_inline_to`. A
+//! `Heading`'s or `Paragraph`'s own inline content is the one place this model *does* keep something:
+//! not a tree, just *where* that content sits in the single, whole-document event stream every block
+//! here was parsed from (`Doc.events`) — an index range (`BlockKind::Heading.inline` /
+//! `BlockKind::Paragraph.inline`), the same way `BlockKind::CodeBlock.body_spans` names a code
+//! block's own content by *byte* range into `src` instead. Either way, a caller wanting the actual
+//! content still has to walk raw `pulldown_cmark::Event`s itself (`render.rs`'s own `walk_inline`
+//! does exactly this) — this model draws the boundary, not the picture.
+//!
+//! `mermaid`-tagged fences are represented as an ordinary `CodeBlock { lang: Some("mermaid"), .. }`,
+//! exactly like any other fenced block; the parent module's own choice to render some of those as
+//! diagrams instead of code is a rendering decision, and this is a structural model of the document,
+//! not of the screen.
 //!
 //! One exception, not a violation of the above: a **tight** list item's own inline text, which
 //! pulldown-cmark reports with no enclosing `Paragraph` at all (unlike a loose item's), is still
 //! coalesced into a synthetic one-off `Paragraph` node (`collect_stray_inline_run`), rather than
 //! silently dropped — see `BlockKind::ListItem`'s own doc comment for why leaving it unrepresented
 //! was a real gap, not a scope choice: without *some* leaf block covering that text, there would be
-//! nothing for a future renderer built on `Doc` to read the item's own content from at all.
+//! nothing for a future renderer built on `Doc` to read the item's own content from at all. That
+//! synthetic `Paragraph` gets an `inline` range the same way a real one does — see
+//! `collect_stray_inline_run`'s own doc comment for exactly which events it spans.
 //!
-//! `#![allow(dead_code)]`: nothing outside this module's own `#[cfg(test)]` tests, or the equally
+//! `#![allow(dead_code)]`: nothing outside this module's own `#[cfg(test)]` tests, the equally
 //! `#[cfg(test)]`-gated `md_model_snapshot_tests` (in `src/app/`, a sibling module that reuses this
 //! one's `pub(crate)` items — `parse_options`, `is_stray_inline_leaf`, `is_unmodeled_container_tag`
-//! — for its own independent completeness cross-check), calls into it yet (see above) — a plain,
-//! non-test build has no path from any renderer to `Doc::parse`, so every item here is legitimately
-//! dead code in that configuration. Removing this allow is part of whichever future change actually
-//! wires a caller in.
+//! — for its own independent completeness cross-check), or `render.rs` (see above — itself unwired
+//! into any *preview* path), calls into any of this yet — a plain, non-test build has no path from
+//! any preview to `Doc::parse`, so every item here is legitimately dead code in that configuration.
+//! Removing this allow is part of whichever future change actually wires a preview caller in.
 #![allow(dead_code)]
 
 use std::ops::Range;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
-/// A parsed document: its top-level blocks, in source order.
+/// A parsed document: its top-level blocks, in source order, plus the single event stream
+/// `Doc::parse` walked to build them.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Doc {
+pub(crate) struct Doc<'a> {
+    /// The parser's own event stream, in source order, exactly as `Doc::parse`'s one walk consumed
+    /// it (see `Walker::next`) — every `Event`/byte-range pair pulldown-cmark reported for the
+    /// *whole* document, not merely the ones some `Block` below happens to reference. A leaf block
+    /// whose own content is purely inline (`BlockKind::Heading`/`BlockKind::Paragraph`) names its
+    /// own slice of this by *index* range (`inline`) rather than holding a copy of it, the same way
+    /// `BlockKind::CodeBlock` names its content by *byte* range (`body_spans`) into `src` instead of
+    /// copying it — `doc.events[block_inline_range]` is exactly the slice a renderer needs, with no
+    /// second parse of any kind (see the module doc comment's "Why this exists" section for why that
+    /// matters: a per-block re-parse cannot resolve a reference-style link whose definition lives in
+    /// a different block, among other things a whole-document parse gets right "for free").
+    pub events: Vec<(Event<'a>, Range<usize>)>,
     pub blocks: Vec<Block>,
 }
 
@@ -83,8 +120,41 @@ pub(crate) struct Block {
 pub(crate) enum BlockKind {
     Heading {
         level: u8,
+        /// Index range into `Doc.events` for this heading's own inline content: every event
+        /// strictly *between* its `Start(Heading)` and matching `End(Heading)`, in source order,
+        /// with **neither** endpoint included — there is nothing left in this slice for a reader to
+        /// skip past; it is exactly what a fresh inline walk of this heading's own text would
+        /// report (see `render.rs`'s `render_heading`, the one caller today). Always contained in
+        /// `0..Doc.events.len()` and never decreasing; empty for a heading with no inline content at
+        /// all. Computed by `parse_container`'s own `Tag::Heading` arm — see that call site for the
+        /// exact bookkeeping (`Walker::pos`, read once before and once after the content is
+        /// consumed).
+        inline: Range<usize>,
+        /// `{#id .class key=value}` heading-attribute syntax
+        /// (`Options::ENABLE_HEADING_ATTRIBUTES`), read straight off `Tag::Heading`'s own fields and
+        /// converted to owned `String`s so `BlockKind` itself never needs `Doc`'s own lifetime —
+        /// `None`/empty exactly when the source used none, matching pulldown-cmark's own convention.
+        id: Option<String>,
+        classes: Vec<String>,
+        /// The first item of each tuple is the attribute name, the second (if present) its value —
+        /// matching `Tag::Heading.attrs`'s own shape exactly.
+        attrs: Vec<(String, Option<String>)>,
     },
-    Paragraph,
+    /// A paragraph of inline content — real (pulldown-cmark reports one for a block quote's own
+    /// text, a *loose* list item's, ...) or synthetic (`collect_stray_inline_run`'s one-off node for
+    /// a *tight* list item's own inline text, which pulldown-cmark reports with no enclosing
+    /// `Paragraph` at all — see that function's own doc comment, and `BlockKind::ListItem`'s).
+    Paragraph {
+        /// Same convention as `Heading.inline` above for a real paragraph — the events strictly
+        /// between its `Start`/matching `End`, excluding both, and (for a loose list item's *first*
+        /// paragraph specifically) excluding its own leading `Event::TaskListMarker` too, if it has
+        /// one (see `parse_item_task_and_children`'s own doc comment for why that marker is
+        /// recorded on `ListItem.task` instead, and never inside any paragraph's own `inline` range).
+        /// For the synthetic case, exactly the events `collect_stray_inline_run` itself consumed —
+        /// there is no wrapping `Start`/`End` pair to exclude in the first place, since
+        /// pulldown-cmark never reported one.
+        inline: Range<usize>,
+    },
     /// A fenced (```` ``` ```` / `~~~`) or indented (4+ column) code block.
     CodeBlock {
         /// The fence's info string verbatim (e.g. `"rust"`, or `"rust {.line-numbers}"`), matching
@@ -157,15 +227,11 @@ pub(crate) enum BlockKind {
     /// item's — is still represented here, as a synthetic `Paragraph` `parse_blocks` builds on the
     /// fly (`collect_stray_inline_run`) spanning exactly that inline run, not simply absent the way
     /// an earlier version of this model left it; see that function's own doc comment.
-    ListItem {
-        task: Option<Task>,
-    },
+    ListItem { task: Option<Task> },
     /// A block quote. `alert` is `Some` when the quote's first line matches GitHub's `> [!TYPE]`
     /// alert-header syntax, decided by calling the render pipeline's own `parse_alert_header` on
     /// that line — not a second classifier of this module's own (see `alert_kind_of`).
-    Quote {
-        alert: Option<AlertKind>,
-    },
+    Quote { alert: Option<AlertKind> },
     /// A GFM table. `aligns` is the delimiter row's per-column alignment, straight from
     /// pulldown-cmark (`Alignment::None` for a column with no `:`, matching CommonMark — *not*
     /// the render pipeline's own `ColAlign`, which is a display-time choice with no "unspecified"
@@ -197,9 +263,7 @@ pub(crate) enum BlockKind {
     /// `</details>` are three separate top-level blocks here. Reconstructing `split_details`'s
     /// higher-level "one folded block" view from these, if a future caller needs it, is a
     /// consumer-side concern — see the module doc comment on scope.
-    Html {
-        tag: Option<String>,
-    },
+    Html { tag: Option<String> },
     /// A thematic break (`---` / `***` / `___`).
     ThematicBreak,
 }
@@ -247,19 +311,68 @@ pub(crate) struct Task {
 /// a callout box: adding a sixth alert type only ever means editing one enum.
 pub(crate) use super::AlertKind;
 
-/// The `pulldown-cmark` walk this model's traversal is a thin, stateful wrapper over.
-type Events<'a> = std::iter::Peekable<pulldown_cmark::OffsetIter<'a>>;
+/// The single walk `Doc::parse` performs over `src` (see the module doc comment: exactly one
+/// `Parser::new_ext` call for the whole document, never a second one for any substring of it).
+/// Wraps pulldown-cmark's own `Peekable<OffsetIter>` — `peek`/`next` behave identically to that
+/// type's own methods from every call site's point of view, which is why every block-parsing
+/// function below barely changed shape when this replaced a plain `Peekable<OffsetIter>` alias —
+/// and additionally records, in `events`, a clone of every event `next()` actually consumes (never
+/// one merely `peek`ed at and left alone). `events` becomes `Doc.events` once parsing finishes.
+/// `pos()`, read once before and once after a leaf block's own inline content is consumed, is how
+/// `BlockKind::Heading`/`BlockKind::Paragraph` — and the tight-list-item stray-run case, see
+/// `collect_stray_inline_run` — each compute which slice of it is theirs; see those construction
+/// sites for the exact convention each one uses (which markers, if any, a block's own `inline`
+/// range does or does not include).
+struct Walker<'a> {
+    iter: std::iter::Peekable<pulldown_cmark::OffsetIter<'a>>,
+    events: Vec<(Event<'a>, Range<usize>)>,
+}
 
-impl Doc {
+impl<'a> Walker<'a> {
+    fn peek(&mut self) -> Option<&(Event<'a>, Range<usize>)> {
+        self.iter.peek()
+    }
+
+    /// Consumes and returns the next event — identical, from the caller's point of view, to
+    /// `Peekable::next` — but first appends a clone of it to `self.events`. Cheap, not merely
+    /// convenient: `Event`/`Range<usize>` are both `Clone`, and every event this walk ever sees
+    /// borrows from `src` via `CowStr::Borrowed` (a fresh `Parser`, never a second one over a
+    /// substring — see the module doc comment), so cloning one copies a couple of machine words,
+    /// never allocates.
+    fn next(&mut self) -> Option<(Event<'a>, Range<usize>)> {
+        let item = self.iter.next()?;
+        self.events.push(item.clone());
+        Some(item)
+    }
+
+    /// The index the *next* `next()` call will record its event at — equivalently, how many events
+    /// have been consumed (and recorded) so far. See the struct's own doc comment for how a leaf
+    /// block uses two readings of this (one before, one after consuming its own inline content) to
+    /// compute an `inline: Range<usize>` into `Doc.events`.
+    fn pos(&self) -> usize {
+        self.events.len()
+    }
+}
+
+impl<'a> Doc<'a> {
     /// Parses `src` — which the caller is responsible for having already run through konoma's own
     /// source pre-passes if it wants the result to match what the screen shows; see the module doc
-    /// comment — into a block tree.
-    pub(crate) fn parse(src: &str) -> Doc {
-        let mut events = Parser::new_ext(src, parse_options())
-            .into_offset_iter()
-            .peekable();
+    /// comment — into a block tree, walking pulldown-cmark's own event stream for the whole document
+    /// exactly once (`Walker`). Every leaf block whose own content is purely inline
+    /// (`BlockKind::Heading`/`BlockKind::Paragraph`) records where its share of that single stream
+    /// sits, by index range, rather than being handed a copy of it or (as an earlier version of the
+    /// renderer built on this model did) needing to re-parse its own byte range separately later.
+    pub(crate) fn parse(src: &'a str) -> Doc<'a> {
+        let mut w = Walker {
+            iter: Parser::new_ext(src, parse_options())
+                .into_offset_iter()
+                .peekable(),
+            events: Vec::new(),
+        };
+        let blocks = parse_blocks(&mut w, src);
         Doc {
-            blocks: parse_blocks(&mut events, src),
+            events: w.events,
+            blocks,
         }
     }
 }
@@ -330,14 +443,19 @@ pub(crate) fn parse_options() -> Options {
 /// every `Start` this loop sees — whether routed to `parse_container` or folded into a stray run —
 /// is fully consumed (recursively, down to its own matching `End`) before the loop looks at the
 /// next event.
-fn parse_blocks(events: &mut Events, src: &str) -> Vec<Block> {
+fn parse_blocks(events: &mut Walker, src: &str) -> Vec<Block> {
     let mut out = Vec::new();
     while let Some((ev, range)) = events.next() {
         match ev {
             Event::End(_) => return out,
             Event::Start(tag) if is_inline_start_tag(&tag) => {
+                // The `next()` call above already recorded this `Start(tag)` — it is the stray
+                // run's own first event, so `events.pos() - 1` (its index) is where the run's
+                // `inline` range starts; see `collect_stray_inline_run`'s own doc comment.
+                let inline_start = events.pos() - 1;
                 let run = collect_stray_inline_run((Event::Start(tag), range), events);
-                out.push(leaf(BlockKind::Paragraph, run));
+                let inline = inline_start..events.pos();
+                out.push(leaf(BlockKind::Paragraph { inline }, run));
             }
             Event::Start(tag) => {
                 if let Some(block) = parse_container(tag, range, events, src) {
@@ -350,8 +468,10 @@ fn parse_blocks(events: &mut Events, src: &str) -> Vec<Block> {
                 children: Vec::new(),
             }),
             other if is_stray_inline_leaf(&other) => {
+                let inline_start = events.pos() - 1;
                 let run = collect_stray_inline_run((other, range), events);
-                out.push(leaf(BlockKind::Paragraph, run));
+                let inline = inline_start..events.pos();
+                out.push(leaf(BlockKind::Paragraph { inline }, run));
             }
             // `Event::TaskListMarker` reaching this loop at all (rather than being consumed by
             // `parse_item_task_and_children`, the only place that ever looks for one, at one of
@@ -372,15 +492,39 @@ fn parse_blocks(events: &mut Events, src: &str) -> Vec<Block> {
 /// for a construct this model does not represent (see the module doc comment on scope) after still
 /// fully consuming and discarding its subtree, so the caller's stream position is unaffected either
 /// way.
-fn parse_container(tag: Tag, range: Range<usize>, events: &mut Events, src: &str) -> Option<Block> {
+fn parse_container(tag: Tag, range: Range<usize>, events: &mut Walker, src: &str) -> Option<Block> {
     match tag {
         Tag::Paragraph => {
+            let inline_start = events.pos();
             skip_inline_to(events, TagEnd::Paragraph);
-            Some(leaf(BlockKind::Paragraph, range))
+            // `skip_inline_to` always returns having just consumed the matching `End` as the very
+            // last event (see its own doc comment) — `events.pos() - 1` is that `End`'s own index,
+            // so this excludes it from the paragraph's own `inline` range.
+            let inline = inline_start..events.pos() - 1;
+            Some(leaf(BlockKind::Paragraph { inline }, range))
         }
-        Tag::Heading { level, .. } => {
+        Tag::Heading {
+            level,
+            id,
+            classes,
+            attrs,
+        } => {
+            let inline_start = events.pos();
             skip_inline_to(events, TagEnd::Heading(level));
-            Some(leaf(BlockKind::Heading { level: level as u8 }, range))
+            let inline = inline_start..events.pos() - 1;
+            Some(leaf(
+                BlockKind::Heading {
+                    level: level as u8,
+                    inline,
+                    id: id.map(|c| c.into_string()),
+                    classes: classes.into_iter().map(|c| c.into_string()).collect(),
+                    attrs: attrs
+                        .into_iter()
+                        .map(|(k, v)| (k.into_string(), v.map(|v| v.into_string())))
+                        .collect(),
+                },
+                range,
+            ))
         }
         Tag::CodeBlock(kind) => {
             let (fenced, lang) = match kind {
@@ -557,7 +701,11 @@ pub(crate) fn is_stray_inline_leaf(ev: &Event) -> bool {
 
 /// Builds a "stray inline run"'s byte range — see `parse_blocks`'s own doc comment for when one
 /// starts — given `first`, the run's own first event, **already consumed** by `parse_blocks`'s
-/// loop (so this never re-peeks it; `first.1.start` is the run's own starting offset). Balances
+/// loop (so this never re-peeks it; `first.1.start` is the run's own starting offset). The run's
+/// `inline` *event-index* range (the synthetic `Paragraph`'s own share of `Doc.events`) is computed
+/// by the caller instead, from `Walker::pos()` read before and after this call — not here, since
+/// `first` was already consumed (and recorded) before this function was ever entered, so this
+/// function alone cannot see where the run's own first index actually was. Balances
 /// `first` exactly the way the loop below balances every further event it consumes itself: a leaf
 /// (`is_stray_inline_leaf`) needs nothing further, but the `Start` of a further inline construct
 /// (`is_inline_start_tag` — `**bold**`, a link, an image, ...) still has its own body sitting
@@ -585,7 +733,7 @@ pub(crate) fn is_stray_inline_leaf(ev: &Event) -> bool {
 /// (`"a"`, no newline) — there is no wrapping tag here for pulldown-cmark to have assigned that
 /// wider range to in the first place, only the leaf events themselves, whose own ranges never
 /// include it; see `tight_list_item_gets_a_synthetic_paragraph_child_loose_item_gets_a_real_one`.
-fn collect_stray_inline_run(first: (Event<'_>, Range<usize>), events: &mut Events) -> Range<usize> {
+fn collect_stray_inline_run(first: (Event<'_>, Range<usize>), events: &mut Walker) -> Range<usize> {
     let (first_ev, first_range) = first;
     let start = first_range.start;
     let mut end = first_range.end;
@@ -615,7 +763,7 @@ fn collect_stray_inline_run(first: (Event<'_>, Range<usize>), events: &mut Event
 /// mistaken for the enclosing one's own close. Used for every construct whose CommonMark content is
 /// purely inline and this model does not represent as nested blocks: a heading's or paragraph's
 /// text, and a table cell's.
-fn skip_inline_to(events: &mut Events, end: TagEnd) {
+fn skip_inline_to(events: &mut Walker, end: TagEnd) {
     while let Some((ev, _)) = events.next() {
         match ev {
             Event::Start(t) => skip_inline_to(events, t.to_end()),
@@ -635,7 +783,7 @@ fn skip_inline_to(events: &mut Events, end: TagEnd) {
 /// * **Loose item** (`- [ ] a\n\n- b`): the marker instead sits *inside* the item's own first
 ///   `Paragraph` — pulldown-cmark still omits nothing, but wraps the item's text in a `Paragraph`
 ///   (as any loose item's is) and reports the marker as that paragraph's own first inline event,
-///   ahead of its `Text`. Seeing it therefore means consuming `Start(Paragraph)` first — `Events` is
+///   ahead of its `Text`. Seeing it therefore means consuming `Start(Paragraph)` first — `Walker` is
 ///   only one-deep peekable, so there is no way to look two events ahead without consuming the
 ///   first — which means this function has to build that first `Paragraph` block itself (identically
 ///   to `parse_container`'s own `Tag::Paragraph` arm) rather than being able to hand `Start`
@@ -646,12 +794,18 @@ fn skip_inline_to(events: &mut Events, end: TagEnd) {
 /// reached the same way) parses its own marker through its own, independent call to this same
 /// function — so there is no path by which an outer item could mistake an inner one's marker, or an
 /// inner one's first paragraph, for its own.
-fn parse_item_task_and_children(events: &mut Events, src: &str) -> (Option<Task>, Vec<Block>) {
+fn parse_item_task_and_children(events: &mut Walker, src: &str) -> (Option<Task>, Vec<Block>) {
     if matches!(events.peek(), Some((Event::Start(Tag::Paragraph), _))) {
         let (_, para_range) = events.next().expect("peeked Some above");
         let task = take_task_marker(events, src);
+        // `pos()` is read *after* `take_task_marker` — a loose item's own leading marker, if any,
+        // has already been consumed and excluded by this point, matching `Task::state_at`'s own
+        // doc comment: those bytes sit in the item's marker text, not inside its paragraph's
+        // content.
+        let inline_start = events.pos();
         skip_inline_to(events, TagEnd::Paragraph);
-        let mut children = vec![leaf(BlockKind::Paragraph, para_range)];
+        let inline = inline_start..events.pos() - 1;
+        let mut children = vec![leaf(BlockKind::Paragraph { inline }, para_range)];
         children.extend(parse_blocks(events, src)); // also consumes End(Item)
         return (task, children);
     }
@@ -667,7 +821,7 @@ fn parse_item_task_and_children(events: &mut Events, src: &str) -> (Option<Task>
 /// present at all, is always the very next event at whichever of those two the item's own shape
 /// calls for; see that function's own doc comment for why the two positions exist, and `Task`'s doc
 /// comment for why a marker can only ever appear at one of them, never both, never neither.
-fn take_task_marker(events: &mut Events, src: &str) -> Option<Task> {
+fn take_task_marker(events: &mut Walker, src: &str) -> Option<Task> {
     if !matches!(events.peek(), Some((Event::TaskListMarker(_), _))) {
         return None;
     }
@@ -691,7 +845,7 @@ fn take_task_marker(events: &mut Events, src: &str) -> Option<Task> {
 /// empty code block emits no `Event::Text` at all, so this returns an empty `Vec` for one — there is
 /// no position to anchor a placeholder range on that would mean anything once the content is a list
 /// rather than a single interval, so none is invented.
-fn collect_code_body_spans(events: &mut Events) -> Vec<Range<usize>> {
+fn collect_code_body_spans(events: &mut Walker) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
     while let Some((ev, range)) = events.next() {
         match ev {
@@ -729,7 +883,7 @@ pub(crate) fn code_body_text(body_spans: &[Range<usize>], src: &str) -> String {
 /// exactly one header row followed by zero or more body rows, and pulldown-cmark's own event
 /// stream (one `TableHead`, then any number of `TableRow`s, all inside one `Table`) mirrors that
 /// directly, so no extra bookkeeping is needed to tell them apart.
-fn collect_table_rows(events: &mut Events) -> Vec<Vec<Range<usize>>> {
+fn collect_table_rows(events: &mut Walker) -> Vec<Vec<Range<usize>>> {
     let mut rows = Vec::new();
     while let Some((ev, _)) = events.next() {
         match ev {
@@ -747,7 +901,7 @@ fn collect_table_rows(events: &mut Events) -> Vec<Vec<Range<usize>>> {
 /// `TableRow`), collecting each cell's byte range. Cell content is inline (see `BlockKind::Table`'s
 /// doc comment), so — like a paragraph or heading — it is walked past via `skip_inline_to`, not
 /// turned into a nested `Block`.
-fn collect_row_cells(events: &mut Events, end: TagEnd) -> Vec<Range<usize>> {
+fn collect_row_cells(events: &mut Walker, end: TagEnd) -> Vec<Range<usize>> {
     let mut cells = Vec::new();
     while let Some((ev, range)) = events.next() {
         match ev {
@@ -766,7 +920,7 @@ fn collect_row_cells(events: &mut Events, end: TagEnd) -> Vec<Range<usize>> {
 /// Consumes an `HtmlBlock`'s `Event::Html` lines up to and including its own `End(HtmlBlock)`,
 /// then reads a best-effort tag name off the block's own opening line — see `BlockKind::Html`'s
 /// doc comment for exactly what this does and does not distinguish.
-fn collect_html_tag(events: &mut Events, block_range: &Range<usize>, src: &str) -> Option<String> {
+fn collect_html_tag(events: &mut Walker, block_range: &Range<usize>, src: &str) -> Option<String> {
     while let Some((ev, _)) = events.next() {
         match ev {
             Event::End(TagEnd::HtmlBlock) => break,
@@ -820,19 +974,47 @@ fn alert_kind_of(src: &str, range: &Range<usize>) -> Option<AlertKind> {
 mod tests {
     use super::*;
 
+    /// Concatenates every `Event::Text`/`Event::Code`/`Event::SoftBreak`(→ `" "`)/
+    /// `Event::HardBreak`(→ `"\n"`) payload in `doc.events[inline]`, in order — a minimal,
+    /// style-blind reconstruction, good enough for a unit test to confirm a leaf's own `inline`
+    /// range names the right slice of `Doc.events` (and, implicitly, that it excludes whatever it
+    /// is supposed to — a task marker, the block's own wrapping `Start`/`End` — since any of those
+    /// leaking in would show up here as extra text). `render.rs`'s own diff harness is the
+    /// exhaustive, style-aware check on top of this; this helper only needs to catch "wrong slice
+    /// entirely" at the unit-test level.
+    fn inline_plain_text(doc: &Doc<'_>, inline: &Range<usize>) -> String {
+        let mut s = String::new();
+        for (ev, _) in &doc.events[inline.clone()] {
+            match ev {
+                Event::Text(t) => s.push_str(t),
+                Event::Code(c) => s.push_str(c),
+                Event::SoftBreak => s.push(' '),
+                Event::HardBreak => s.push('\n'),
+                _ => {}
+            }
+        }
+        s
+    }
+
     // ---- construction sanity: one focused case per construct -------------------------------
 
     #[test]
     fn heading_and_paragraph_are_leaves_with_no_children() {
         let doc = Doc::parse("# Title\n\nbody\n");
         assert_eq!(doc.blocks.len(), 2);
-        assert!(matches!(
-            doc.blocks[0].kind,
-            BlockKind::Heading { level: 1 }
-        ));
+        let BlockKind::Heading {
+            level: 1, inline, ..
+        } = &doc.blocks[0].kind
+        else {
+            panic!("expected a level-1 heading")
+        };
+        assert_eq!(inline_plain_text(&doc, inline), "Title");
         assert!(doc.blocks[0].children.is_empty());
         assert_eq!(doc.blocks[0].src, 0..8);
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Paragraph));
+        let BlockKind::Paragraph { inline } = &doc.blocks[1].kind else {
+            panic!("expected a paragraph")
+        };
+        assert_eq!(inline_plain_text(&doc, inline), "body");
         assert_eq!(doc.blocks[1].src, 9..14);
     }
 
@@ -848,11 +1030,79 @@ mod tests {
         ] {
             let src = format!("{marker} h\n");
             let doc = Doc::parse(&src);
-            let BlockKind::Heading { level } = doc.blocks[0].kind else {
+            let BlockKind::Heading { level, inline, .. } = &doc.blocks[0].kind else {
                 panic!("expected a heading for {marker:?}")
             };
-            assert_eq!(level, n, "marker {marker:?}");
+            assert_eq!(*level, n, "marker {marker:?}");
+            assert_eq!(inline_plain_text(&doc, inline), "h");
         }
+    }
+
+    #[test]
+    fn heading_attributes_are_captured_as_owned_data() {
+        // `{#id .class key=value}` heading-attribute syntax used to only ever reach `render.rs` by
+        // re-parsing the heading's own byte range a second time (`Tag::Heading`'s `id`/`classes`/
+        // `attrs` fields) — `Doc::parse` now captures the exact same data itself, converted to owned
+        // `String`s, so a caller never needs a second parse to read it.
+        let doc = Doc::parse("## Custom Heading {#custom-id .note lang=en}\n");
+        let BlockKind::Heading {
+            id,
+            classes,
+            attrs,
+            inline,
+            ..
+        } = &doc.blocks[0].kind
+        else {
+            panic!("expected a heading")
+        };
+        assert_eq!(id.as_deref(), Some("custom-id"));
+        assert_eq!(classes, &["note".to_string()]);
+        assert_eq!(attrs, &[("lang".to_string(), Some("en".to_string()))]);
+        // The attribute block itself is not part of the heading's own inline *content* — it is a
+        // separate field pulldown-cmark reports on `Tag::Heading` itself, not an inline event.
+        assert_eq!(inline_plain_text(&doc, inline), "Custom Heading");
+    }
+
+    #[test]
+    fn heading_with_no_attribute_syntax_has_none_and_empty() {
+        let doc = Doc::parse("## Plain\n");
+        let BlockKind::Heading {
+            id, classes, attrs, ..
+        } = &doc.blocks[0].kind
+        else {
+            panic!("expected a heading")
+        };
+        assert_eq!(*id, None);
+        assert!(classes.is_empty());
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn reference_link_with_definition_in_a_different_block_resolves_across_the_whole_document() {
+        // The whole point of `Doc::parse` walking the document once instead of block-by-block: a
+        // resolved reference link's label becomes an `Event::Text` inside a real `Tag::Link`, not
+        // literal bracket text, only if the parser has already seen the `[ref]: url` definition
+        // (here, in the *next* top-level block) by the time it reaches this paragraph — something a
+        // per-block re-parse (an earlier version of `render.rs`) could never see, because a link
+        // reference definition contributes no events of its own to any block's range at all (see
+        // `md_render_diff_tests`'s own module doc comment).
+        let doc = Doc::parse("See [the docs][ref] here.\n\n[ref]: https://example.com/docs\n");
+        let BlockKind::Paragraph { inline } = &doc.blocks[0].kind else {
+            panic!("expected a paragraph")
+        };
+        assert_eq!(inline_plain_text(&doc, inline), "See the docs here.");
+
+        // Control: a dangling reference (no definition anywhere) reports the literal bracket text
+        // instead of a `Link`'s label — this reconstruction shows exactly that difference, rather
+        // than merely asserting the two cases differ.
+        let dangling = Doc::parse("See [the docs][missing] here.\n");
+        let BlockKind::Paragraph { inline } = &dangling.blocks[0].kind else {
+            panic!("expected a paragraph")
+        };
+        assert_eq!(
+            inline_plain_text(&dangling, inline),
+            "See [the docs][missing] here."
+        );
     }
 
     #[test]
@@ -947,7 +1197,10 @@ mod tests {
         let tight = Doc::parse(src);
         assert_eq!(tight.blocks[0].children[0].children.len(), 1);
         let synthetic = &tight.blocks[0].children[0].children[0];
-        assert!(matches!(synthetic.kind, BlockKind::Paragraph));
+        let BlockKind::Paragraph { inline } = &synthetic.kind else {
+            panic!("expected a synthetic paragraph")
+        };
+        assert_eq!(inline_plain_text(&tight, inline), "a");
         assert_eq!(&src[synthetic.src.clone()], "a");
 
         // Loose item: pulldown-cmark itself wraps the text in a real `Paragraph`, so there is no
@@ -960,7 +1213,10 @@ mod tests {
         let loose = Doc::parse(loose_src);
         assert_eq!(loose.blocks[0].children[0].children.len(), 1);
         let real = &loose.blocks[0].children[0].children[0];
-        assert!(matches!(real.kind, BlockKind::Paragraph));
+        let BlockKind::Paragraph { inline } = &real.kind else {
+            panic!("expected a real paragraph")
+        };
+        assert_eq!(inline_plain_text(&loose, inline), "a");
         assert_eq!(&loose_src[real.src.clone()], "a\n");
     }
 
@@ -1002,8 +1258,12 @@ mod tests {
         let t = task.expect("expected the outer (loose) item's task marker to be captured");
         assert_eq!((t.state, t.state_at), (' ', 3));
         // The item's own first child is still its real `Paragraph` (loose items get one) — the
-        // marker being captured on the side does not change that.
-        assert!(matches!(outer.children[0].kind, BlockKind::Paragraph));
+        // marker being captured on the side does not change that, and the marker's own three bytes
+        // (`[`, the state char, `]`) must not leak into the paragraph's own `inline` range either.
+        let BlockKind::Paragraph { inline } = &outer.children[0].kind else {
+            panic!("expected the loose item's own paragraph")
+        };
+        assert_eq!(inline_plain_text(&doc, inline), "outer");
 
         // The nested item's own marker (necessarily a *tight* one — a lone item can't itself be
         // loose) is captured too, with no leakage between the outer item's own marker lookup and
@@ -1035,11 +1295,17 @@ mod tests {
         let item = &doc.blocks[0].children[0];
         assert_eq!(item.children.len(), 1);
         let synthetic = &item.children[0];
-        assert!(matches!(synthetic.kind, BlockKind::Paragraph));
+        let BlockKind::Paragraph { inline } = &synthetic.kind else {
+            panic!("expected a synthetic paragraph")
+        };
         assert_eq!(
             &src[synthetic.src.clone()],
             "**bold** and *em* and `code` end"
         );
+        // `collect_stray_inline_run`'s own event-desync bug (see above) would have corrupted this
+        // range too — the plain-text reconstruction from `doc.events[inline]` is a second, coarser
+        // proof the run's own events line up correctly, on top of the byte-range check above.
+        assert_eq!(inline_plain_text(&doc, inline), "bold and em and code end");
     }
 
     #[test]
@@ -1182,7 +1448,10 @@ mod tests {
         // `tight_list_item_gets_a_synthetic_paragraph_child_loose_item_gets_a_real_one` — not
         // flattened into, or dropped in favor of, the nested list either way.
         assert_eq!(outer_item.children.len(), 2);
-        assert!(matches!(outer_item.children[0].kind, BlockKind::Paragraph));
+        assert!(matches!(
+            outer_item.children[0].kind,
+            BlockKind::Paragraph { .. }
+        ));
         assert!(matches!(
             outer_item.children[1].kind,
             BlockKind::List { .. }
@@ -1212,6 +1481,10 @@ mod tests {
         let src = "# 見出し\n\n```rust\nfn 関数() {}\n```\n";
         let doc = Doc::parse(src);
         assert_eq!(&src[doc.blocks[0].src.clone()], "# 見出し\n");
+        let BlockKind::Heading { inline, .. } = &doc.blocks[0].kind else {
+            panic!("expected a heading")
+        };
+        assert_eq!(inline_plain_text(&doc, inline), "見出し");
         let BlockKind::CodeBlock { body_spans, .. } = &doc.blocks[1].kind else {
             panic!("expected a code block")
         };
@@ -1232,13 +1505,17 @@ mod tests {
     /// every range lands on char boundaries and inside the input; siblings are in non-decreasing,
     /// non-overlapping source order; every child's range is contained in its parent's; a
     /// `CodeBlock`'s `body_spans` are each contained in its own `src`, land on char boundaries, and
-    /// are themselves in non-decreasing, non-overlapping order; and a `ListItem`'s `Task`, if any,
-    /// has its bracket invariant (`state_at`'s doc comment) hold. Returns every violation found
-    /// (empty on success) rather than asserting inline, so one test run reports everything wrong at
-    /// once instead of stopping at the first failure.
+    /// are themselves in non-decreasing, non-overlapping order; a `Heading`/`Paragraph`'s own
+    /// `inline` index range is well-formed and inside `[0, events_len]` (`events_len` is
+    /// `Doc.events.len()` for the whole document this block came from — every `inline` range, at any
+    /// nesting depth, indexes into that same single `Vec`, not a per-block one); and a `ListItem`'s
+    /// `Task`, if any, has its bracket invariant (`state_at`'s doc comment) hold. Returns every
+    /// violation found (empty on success) rather than asserting inline, so one test run reports
+    /// everything wrong at once instead of stopping at the first failure.
     fn check_invariants(
         blocks: &[Block],
         src: &str,
+        events_len: usize,
         parent: Option<&Range<usize>>,
         path: &str,
         out: &mut Vec<String>,
@@ -1317,7 +1594,22 @@ mod tests {
                     ));
                 }
             }
-            check_invariants(&b.children, src, Some(&b.src), &here, out);
+            let inline = match &b.kind {
+                BlockKind::Heading { inline, .. } => Some(inline),
+                BlockKind::Paragraph { inline } => Some(inline),
+                _ => None,
+            };
+            if let Some(inline) = inline {
+                if inline.start > inline.end {
+                    out.push(format!("{here}: inline.start > inline.end ({inline:?})"));
+                } else if inline.end > events_len {
+                    out.push(format!(
+                        "{here}: inline.end {} past events_len {events_len}",
+                        inline.end
+                    ));
+                }
+            }
+            check_invariants(&b.children, src, events_len, Some(&b.src), &here, out);
             prev_end = Some(b.src.end);
         }
     }
@@ -1371,7 +1663,14 @@ mod tests {
         let mut violations = Vec::new();
         for (name, src) in all_corpus_texts() {
             let doc = Doc::parse(&src);
-            check_invariants(&doc.blocks, &src, None, &name, &mut violations);
+            check_invariants(
+                &doc.blocks,
+                &src,
+                doc.events.len(),
+                None,
+                &name,
+                &mut violations,
+            );
         }
         assert!(
             violations.is_empty(),
@@ -1407,7 +1706,14 @@ mod tests {
             checked += 1;
             let pre = preprocess_default(&raw);
             let doc = Doc::parse(&pre);
-            check_invariants(&doc.blocks, &pre, None, name, &mut violations);
+            check_invariants(
+                &doc.blocks,
+                &pre,
+                doc.events.len(),
+                None,
+                name,
+                &mut violations,
+            );
         }
         if checked == 0 {
             eprintln!("model_invariants_hold_across_the_sample_md_files: no samples/*.md found (published-crate build?) — skipping");
