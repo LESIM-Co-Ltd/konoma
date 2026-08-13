@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-13
+
 ### Added
 - **Previews that scroll now show where you are and how much is left.** A scrollbar thumb rides the
   frame's right border — its length is the share of the document currently on screen, so a long file
@@ -1739,7 +1741,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...v0.24.0
 [0.23.9]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.8...v0.23.9
