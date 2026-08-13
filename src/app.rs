@@ -5738,3 +5738,8 @@ fn collect_scan(
 
 #[cfg(test)]
 mod tests;
+// Golden-snapshot safety net for Markdown rendering (see the module doc comment there) — a
+// separate file/module from `tests` since it is a standalone corpus-dump harness, not a bag of
+// `#[test]` functions exercising `App` behavior.
+#[cfg(test)]
+mod md_snapshot_tests;
