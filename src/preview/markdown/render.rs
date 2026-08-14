@@ -73,17 +73,31 @@
 //! ## How inline content is rendered
 //!
 //! Not by calling into `pulldown-cmark` at all — and, since this file was rewritten for the
-//! `md-block-walk` refactor, **not by re-parsing anything either**: a `Heading`'s or `Paragraph`'s
-//! own inline events are read straight out of `Doc.events` (see `model::Doc`'s own doc comment), by
-//! the index range `Doc::parse` already recorded for that exact block (`BlockKind::Heading.inline` /
-//! `BlockKind::Paragraph.inline` — every inline-content call site's own first argument is exactly
-//! that slice). `Doc::parse` walks `src` **once**, as a whole document, so a reference-style link
-//! (`[text][ref]`) whose `[ref]: url` definition lives in a *different* top-level block resolves
-//! correctly here — the accepted-gap category an earlier, per-block-re-parsing version of this file
-//! had to document (and `md_render_diff_tests` had to carve a dedicated, unlisted pin around) no
-//! longer exists at all; see `crate::preview::markdown::inline_corpus`'s own doc comment for the
-//! structural proof, and `model::Doc.events`'s doc comment for why a single walk gets this "for
-//! free".
+//! `md-block-walk` refactor, **not by re-parsing anything either**, with one narrow, deliberate
+//! exception (see below): a `Heading`'s or `Paragraph`'s own inline events are read straight out of
+//! `Doc.events` (see `model::Doc`'s own doc comment), by the index range `Doc::parse` already
+//! recorded for that exact block (`BlockKind::Heading.inline` / `BlockKind::Paragraph.inline` —
+//! every inline-content call site's own first argument is exactly that slice). `Doc::parse` walks
+//! `src` **once**, as a whole document, so a reference-style link (`[text][ref]`) whose `[ref]: url`
+//! definition lives in a *different* top-level block resolves correctly here — the accepted-gap
+//! category an earlier, per-block-re-parsing version of this file had to document (and
+//! `md_render_diff_tests` had to carve a dedicated, unlisted pin around) no longer exists at all; see
+//! `crate::preview::markdown::inline_corpus`'s own doc comment for the structural proof, and
+//! `model::Doc.events`'s doc comment for why a single walk gets this "for free".
+//!
+//! **The one exception**: `render_details_from_model`, for a `<details>` block whose body could not
+//! be represented as real `Block::children` in the first place (`model::BlockKind::Details.glued_body`
+//! — a `<summary>`/body/close all glued into one raw, literal `Html` leaf by CommonMark's own
+//! HTML-block grammar, no blank line anywhere to have split any of it into finer structure for
+//! `Doc::parse`'s one walk to have reported). There is no substring of the *already-recorded*
+//! `Doc.events` this body's content could be read from — it was never tokenized as Markdown at all,
+//! the first time — so this one function does its own fresh, isolated `Doc::parse` over just that raw
+//! byte range, renders it immediately into plain `Line`s (via the ordinary `render_bar_prefixed_body`
+//! path, the same one a well-formed `<details>`'s real `children` render through), and never touches
+//! the *outer* `Doc`/`events` this file's every other function reads from — see that function's own
+//! doc comment for the mechanism, and why keeping the isolated parse's own output fully self-contained
+//! (rendered lines only, nothing indexed by anything outside itself) is what keeps this exception from
+//! reopening the reference-link gap the rest of this section describes closing.
 //!
 //! What this file *does* reimplement is the handful of `tui_markdown::TextWriter` methods that
 //! matter for the block kinds this pass covers (see the pinned `tui-markdown = "0.3.7"` dependency's
@@ -400,20 +414,23 @@ pub(crate) fn render_doc(
                 body_spans,
                 ctx.extract_here,
             ),
-            BlockKind::Details { open_attr, summary } => {
-                match contains_unsupported(&block.children, false) {
-                    Some(bad) => unsupported.push(bad),
-                    None => render_details_from_model(
-                        &mut w,
-                        doc,
-                        src,
-                        *open_attr,
-                        summary,
-                        &block.children,
-                        ctx,
-                    ),
-                }
-            }
+            BlockKind::Details {
+                open_attr,
+                summary,
+                glued_body,
+            } => match contains_unsupported(&block.children, false) {
+                Some(bad) => unsupported.push(bad),
+                None => render_details_from_model(
+                    &mut w,
+                    doc,
+                    src,
+                    *open_attr,
+                    summary,
+                    &block.children,
+                    glued_body.clone(),
+                    ctx,
+                ),
+            },
             // Never reachable at the top level — a `ListItem` only ever exists as a `List`'s own
             // child (see `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every
             // one of those itself before this loop ever sees it. Matched defensively all the same,
@@ -1669,6 +1686,19 @@ fn walk_inline_math<'a>(
         prev_end = Some(range.end);
         match ev {
             Event::Text(t) => {
+                if let Some((closer, body_start)) = multiline_math_opener(src, &range) {
+                    render_multiline_display_math(
+                        w,
+                        events,
+                        pending.take(),
+                        t,
+                        body_start,
+                        closer,
+                        src,
+                        &mut prev_end,
+                    );
+                    continue;
+                }
                 if let Some((display, closer)) = backslash_math_opener(gap, &t) {
                     render_backslash_math(
                         w,
@@ -1747,6 +1777,132 @@ fn walk_inline_math<'a>(
     }
     if let Some(p) = pending.take() {
         render_text_with_math(w, &p, false);
+    }
+}
+
+/// The byte bounds of the whole physical source **line** containing `range` — from the byte right
+/// after the previous `'\n'` (or `0`, at the very start of `src`) through the byte right before the
+/// next `'\n'` (or `src.len()`, on the last, possibly unterminated line). Used by
+/// `multiline_math_opener`/`render_multiline_display_math` to ask "is this event's own *whole source
+/// line* — not merely its own event payload, which a differently-shaped call site could have handed a
+/// narrower range for — exactly `$$`/`\[`/`\]`", the identical question `markdown.rs`'s own
+/// `split_math` asks of a raw line (`bare.trim()`) before its own dedicated multi-line collection loop
+/// runs (see that function's own doc comment).
+fn line_bounds(src: &str, range: &Range<usize>) -> Range<usize> {
+    let start = src[..range.start].rfind('\n').map_or(0, |i| i + 1);
+    let end = src[range.end..]
+        .find('\n')
+        .map_or(src.len(), |i| range.end + i);
+    start..end
+}
+
+/// Whether `range`'s own whole physical source line, trimmed, is exactly `"$$"` or `"\["` — the
+/// **multi-line display math** opener `markdown.rs`'s own `split_math` recognizes as a shape distinct
+/// from (and checked *before*) its generic, single-line `scan_inline_math` (see that function's own
+/// doc comment: `"a line that is exactly $$ or \[ (collect to the matching close)"`). Returns the
+/// matching closer (`"$$"`/`"\]"`) and the byte offset, into `src`, right after this opener's own
+/// line — where `render_multiline_display_math`'s own body collection starts — mirroring
+/// `split_math`'s own `j = i + 1` (the *next* physical line, not this one).
+///
+/// This is the one shape `dollar_math_still_open`/`render_dollar_math_tail` cannot resolve on their
+/// own: `$$`/`\[` alone on a line is immediately followed, in `Doc.events`, by an `Event::SoftBreak`
+/// to the next line — and `render_dollar_math_tail`'s own growing-raw-slice loop deliberately treats
+/// *any* soft/hard break at `depth == 0` as a give-up boundary (matching `scan_inline_math`'s own,
+/// single-physical-line scope for the *generic* `$…$`/`$$…$$` shape it handles — see that function's
+/// own doc comment on why a soft break is a real, not merely defensive, stopping point there), so a
+/// `$$` that opens a *display* block spanning several physical lines was never reaching a closer at
+/// all: `render_dollar_math_tail` gave up on the very first break, replaying `$$` as ordinary literal
+/// text — losing the whole expression, not merely rendering it worse (a real regression this stage's
+/// own `KNOWN_MISMATCHES` doc comment already warns against cataloguing rather than fixing). Checked
+/// *before* `backslash_math_opener`/`dollar_math_still_open` in `walk_inline_math`'s own dispatch —
+/// order does not otherwise matter (the three triggers are mutually exclusive: a leading-backslash gap,
+/// an unresolved generic dollar-scan, and *this* whole-line-is-just-the-opener shape never overlap on
+/// the same event), but checking this one first keeps the narrower, better-matching-production
+/// mechanism from ever losing a race to the generic one.
+fn multiline_math_opener(src: &str, range: &Range<usize>) -> Option<(&'static str, usize)> {
+    let bounds = line_bounds(src, range);
+    let closer = match src[bounds.clone()].trim() {
+        "$$" => "$$",
+        "\\[" => "\\]",
+        _ => return None,
+    };
+    let body_start = if bounds.end < src.len() {
+        bounds.end + 1
+    } else {
+        bounds.end
+    };
+    Some((closer, body_start))
+}
+
+/// Consumes events starting right after `first_text` (whose own whole line `multiline_math_opener`
+/// already confirmed is just `$$`/`\[`, in `walk_inline_math`) until a **later** `Event::Text` whose
+/// own whole physical line, trimmed, equals `closer` — mirroring `markdown.rs`'s own dedicated
+/// multi-line collection loop in `split_math` (`while j < lines.len() { ... if bj.trim() == closer {
+/// found = true; break; } body.push_str(lines[j]); j += 1; }`) rather than the generic, single-line
+/// `render_dollar_math_tail`/`scan_inline_math` machinery, which cannot see past a soft/hard break at
+/// all (see `multiline_math_opener`'s own doc comment for why that gap exists and what this closes).
+///
+/// Every event this loop sees — `Text`, `Code`, `Start`/`End`, `SoftBreak`/`HardBreak` — is buffered
+/// into `fallback` and consumed unconditionally (the identical "just keep consuming, whatever the
+/// event kind" shape `render_dollar_math_tail`'s own loop already has, for the identical reason: see
+/// that function's own "Never stop mid-construct" section), and `depth` tracks whether the loop is
+/// currently inside an unfinished `Start`/`End` pair the same way — a `Text` event reached while
+/// `depth > 0` can never be *this* block's own closer line (its content is nested inside some other
+/// inline construct — emphasis, a link, ... — not a standalone line of its own), so `is_closer_line`
+/// only ever fires at `depth == 0`, the same guard `render_dollar_math_tail`'s own two exits share.
+///
+/// On success: the raw text strictly between `body_start` and the closer's own line start
+/// (`src[body_start..bounds.start]`, trimmed the same way `flush_math`'s own `latex.trim()` is — this
+/// function's caller, `render_math_slot`, receives already-trimmed LaTeX every other way it is ever
+/// reached too) is rendered as display math via `render_math_slot` — the identical function a
+/// single-line `$$…$$` lift already renders through, so a live `Picker` answering with a real raster
+/// image, a background render still in flight, or the raw-LaTeX-dimmed fallback all behave identically
+/// whether the expression happened to span one physical line or several.
+///
+/// On failure (events run out before a closer's own line ever turns up): `fallback` — starting from
+/// `first_text` itself — replays verbatim via `replay_events`, the identical "give the events back
+/// unchanged" fallback `render_dollar_math_tail`'s own doc comment already explains in full: a
+/// document that opens a `$$`/`\[` line and never closes it renders exactly as if this function had
+/// never intercepted it at all, not as a truncated or corrupted attempt.
+#[allow(clippy::too_many_arguments)] // mirrors render_dollar_math_tail's own identical allow — one call site (walk_inline_math), each argument its own distinct piece of state
+fn render_multiline_display_math<'a>(
+    w: &mut Writer<'_>,
+    events: &mut impl Iterator<Item = (Event<'a>, Range<usize>)>,
+    pending: Option<pulldown_cmark::CowStr<'a>>,
+    first_text: pulldown_cmark::CowStr<'a>,
+    body_start: usize,
+    closer: &str,
+    src: &str,
+    prev_end: &mut Option<usize>,
+) {
+    let mut fallback: Vec<Event<'a>> = vec![Event::Text(first_text)];
+    let mut depth: usize = 0;
+    loop {
+        let Some((ev, range)) = events.next() else {
+            if let Some(p) = pending {
+                render_text_with_math(w, &p, false);
+            }
+            replay_events(w, fallback);
+            return;
+        };
+        *prev_end = Some(range.end);
+        let bounds = line_bounds(src, &range);
+        let is_closer_line =
+            depth == 0 && matches!(&ev, Event::Text(_)) && src[bounds.clone()].trim() == closer;
+        match &ev {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        if is_closer_line {
+            let body = src[body_start.min(bounds.start)..bounds.start].trim();
+            if let Some(p) = pending {
+                render_text_with_math(w, &p, true);
+            }
+            render_math_slot(w, body, true);
+            return;
+        }
+        fallback.push(ev);
     }
 }
 
@@ -2717,6 +2873,34 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
 /// slice, `>`-prefix and all, would be a real, if different, degradation of its own, not an
 /// improvement worth reproducing).
 ///
+/// ## An `<img>`-only block is a standalone image, not tag-stripped text
+///
+/// Checked **first**, via `super::extract_block_image` — the identical function production's own
+/// `split_block_parts_masked` calls, per physical source line, to pull a standalone image out
+/// *before* `split_html_blocks` ever runs at all (see that pass's own module doc comment: image
+/// extraction happens first in production's pipeline, so a line like
+/// `<p align="center"><img src="x" alt="y"></p>` — optionally wrapped in layout tags such as `<p>`/
+/// `<a>`, `extract_html_img`'s own scope — never even reaches `split_html_blocks` as an `Html`
+/// construct to begin with). This file has no equivalent two-pass ordering (`Doc::parse` reads
+/// `Html`/`Image` block-vs-inline structure straight off the real parser, in one walk — see the
+/// module doc comment's own "How inline content is rendered" section) — reusing the *same* extraction
+/// function at the point this file *does* reach an `Html`-kind block reproduces the identical
+/// end result without needing a second, hand-rolled recognizer: `render_html_block`'s own naive,
+/// per-character tag-stripping has no concept of `<img>` at all (an image tag carries no text content
+/// of its own to survive stripping), so without this check the line would disappear from the output
+/// entirely — a real content loss (`samples/images.md`'s own HTML `<img>` section, the corpus case
+/// this closes), not merely a formatting difference, which is why this is checked unconditionally
+/// rather than folded into some `BEHAVIOR_DECISIONS`-tracked accepted gap. `extract_block_image`
+/// itself is line-based (`t.trim()`) but works unmodified on a **multi-line** `Html` block's own raw
+/// text too — `html_is_only_tags`' own char-by-char scan treats an embedded `'\n'` as ordinary
+/// whitespace, identically to a space, so a `<div>` opened and closed on separate physical lines with
+/// nothing but an `<img>` between them extracts exactly the same way a single-line one does. On a
+/// match, renders via `render_image_slot` — the same block-image renderer a standalone Markdown
+/// `![alt](url)` paragraph already goes through (`try_render_paragraph_as_image`) — and returns
+/// immediately, before ever calling `render_html_block`, since `render_image_slot`'s own trailing
+/// state (`needs_newline = false`/`after_math = true`/`fresh_boundary = true`) already matches this
+/// function's own unconditional exit state exactly (see both fields' own doc comments below).
+///
 /// No leading-blank-line check, matching `render_table_from_model`'s own (see that function's own doc
 /// comment) — `render_html_block`'s own output already ends with its own trailing blank line
 /// (`render_html_block`'s own final `if !out.is_empty() { out.push(Line::from("")) }`), so a second,
@@ -2728,6 +2912,10 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
 /// blank exactly.
 fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
     let raw = &src[block_src];
+    if let Some((alt, url)) = super::extract_block_image(raw) {
+        render_image_slot(w, &alt, &url);
+        return;
+    }
     for line in render_html_block(raw) {
         w.push_line(line);
     }
@@ -2831,9 +3019,20 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
         BlockKind::CodeBlock {
             lang, body_spans, ..
         } => render_code_block_dispatch(w, src, lang.as_deref(), body_spans, ctx.extract_here),
-        BlockKind::Details { open_attr, summary } => {
-            render_details_from_model(w, doc, src, *open_attr, summary, &block.children, ctx)
-        }
+        BlockKind::Details {
+            open_attr,
+            summary,
+            glued_body,
+        } => render_details_from_model(
+            w,
+            doc,
+            src,
+            *open_attr,
+            summary,
+            &block.children,
+            glued_body.clone(),
+            ctx,
+        ),
         BlockKind::Table { .. } => render_table_from_model(w, src, block.src.clone()),
         BlockKind::Html { .. } => render_html_block_from_model(w, src, block.src.clone()),
         // Never reachable — see the doc comment above.
@@ -3358,6 +3557,32 @@ fn trim_leading_header(children: &[Block], doc: &Doc<'_>, header_end: usize) -> 
 /// simply uses its own `open_attr` directly (no ordinal consumed, a plain marker style) — the exact
 /// `interactive` distinction `super::render_details`'s own doc comment documents in full, mirrored
 /// here via `super::details_marker_line`'s own identical parameter.
+///
+/// ## `glued_body` — the one place this file re-parses anything
+///
+/// `children` is always empty for a **glued** `<details>` block (`model::BlockKind::Details.glued_body`
+/// — see that field's own doc comment for exactly which shape this is): there was no separate sibling
+/// `Block` for `fold_details` to have found the body in, in the first place, because CommonMark's own
+/// HTML-block grammar glued the whole construct — open tag, `<summary>`, body, close tag — into one
+/// raw, literal `Html` leaf, with no blank line anywhere to have split any of it into finer structure
+/// for `Doc::parse`'s one whole-document walk to have reported. There is, structurally, no substring
+/// of the *already-recorded* `doc.events` this body's content could be read from (an HTML block's own
+/// interior is copied literally, per spec — no inline events were ever emitted for it at all), so
+/// `children.is_empty() && glued_body.is_some()` takes a different path: a **fresh, isolated**
+/// `Doc::parse` over `src[glued_body]` (an owned copy of that raw text — nothing here borrows from the
+/// *outer* `src`, so there is no lifetime entanglement with `doc.events`, this call's own arguments),
+/// rendered immediately through the ordinary `render_bar_prefixed_body` path — the same one a
+/// well-formed `<details>`'s own real `children` render through — with that isolated `Doc`/its own raw
+/// text standing in for `doc`/`src` for this **one** call. The isolated parse's own `blocks`/`events`
+/// are never touched again after this — nothing downstream of it is indexed by anything outside
+/// itself — so this stays a narrow, self-contained exception to the rest of this file's "never
+/// re-parses anything" promise (see the module doc comment's own note on this), not a reopening of it:
+/// a reference-style link whose definition happens to live *outside* this one glued body would not
+/// resolve inside the isolated re-parse (the identical gap a per-block re-parse used to have
+/// everywhere, before this file's own single-whole-document-walk rewrite — see the module doc
+/// comment's "How inline content is rendered" section), an acceptable, honestly-scoped cost for a
+/// shape CommonMark itself gives no finer structure to read in the first place.
+#[allow(clippy::too_many_arguments)] // mirrors render_dollar_math_tail's own identical allow — one call site (render_block's Details dispatch), each argument its own distinct piece of state
 fn render_details_from_model(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -3365,6 +3590,7 @@ fn render_details_from_model(
     open_attr: bool,
     summary: &str,
     children: &[Block],
+    glued_body: Option<Range<usize>>,
     ctx: BlockCtx,
 ) {
     let open = if ctx.details_interactive {
@@ -3373,8 +3599,18 @@ fn render_details_from_model(
         open_attr
     };
     w.push_line(details_marker_line(open, summary, ctx.details_interactive));
-    if open && !children.is_empty() {
-        render_bar_prefixed_body(w, doc, src, children, details_bar());
+    if open {
+        if !children.is_empty() {
+            render_bar_prefixed_body(w, doc, src, children, details_bar());
+        } else if let Some(range) = glued_body {
+            // Owned, not borrowed from `src`: `Doc::parse` needs a string that outlives this whole
+            // call, and this one's own text has nothing to do with the outer document's lifetime —
+            // see this function's own doc comment on why an isolated copy, not a slice of `src`, is
+            // the right shape here.
+            let body_src = src[range].to_string();
+            let nested = Doc::parse(&body_src);
+            render_bar_prefixed_body(w, &nested, &body_src, &nested.blocks, details_bar());
+        }
     }
     w.needs_newline = false;
     w.fresh_boundary = true;

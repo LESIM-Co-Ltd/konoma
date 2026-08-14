@@ -70,33 +70,32 @@
 //! rest of this list's own doc comment already documents in full, newly reachable now that a trailing
 //! GFM table in the same source no longer excludes the whole case.
 //!
-//! ### HTML `<img>` extraction (`KNOWN_MISMATCHES`)
+//! ### HTML `<img>` extraction (closed — history, not a live gap)
 //!
-//! `render::paragraph_as_block_image` only recognizes **Markdown** image syntax (`![alt](url)`,
+//! `render::paragraph_as_block_image` only ever recognized **Markdown** image syntax (`![alt](url)`,
 //! optionally link-wrapped) — the one shape its own doc comment names explicitly. Production's own
 //! `extract_block_image` additionally recognizes a standalone HTML `<img src=...>` tag (optionally
-//! wrapped in layout tags like `<p>`/`<a>` — `extract_html_img`), which this stage does not attempt at
-//! all: such a line is, structurally, an ordinary `Html` leaf here, and `render_html_block_from_model`
-//! simply strips its tags — an `<img>` tag has no text content of its own to survive that stripping, so
-//! the line disappears from the output entirely, where production shows a real "🖼 alt — url" fallback
-//! (`samples: images.md`, an `<img>` wrapped in a centered `<p>` with nothing else on its own line — the
-//! *simplest* shape `extract_html_img` recognizes; see the next section for why an `<img>` mixed into a
-//! larger, multi-element HTML construct is a different case entirely, not closed by extending this same
-//! gap). A genuinely closable gap — not yet implemented, not structurally precluded — so
-//! `KNOWN_MISMATCHES`, not `INTENDED_IMPROVEMENTS`.
+//! wrapped in layout tags like `<p>`/`<a>` — `extract_html_img`), which this stage used not to attempt
+//! at all: such a line was, structurally, an ordinary `Html` leaf here, and `render_html_block_from_\
+//! model` simply stripped its tags — an `<img>` tag has no text content of its own to survive that
+//! stripping, so the line disappeared from the output entirely, where production shows a real "🖼 alt —
+//! url" fallback (`samples: images.md`, an `<img>` wrapped in a centered `<p>` with nothing else on its
+//! own line — the *simplest* shape `extract_html_img` recognizes). Closed by having
+//! `render_html_block_from_model` call the identical `super::extract_block_image` production's own
+//! `split_block_parts_masked` calls, checked first, before ever falling through to tag-stripping (see
+//! that function's own doc comment) — reusing the extraction, not re-deriving a second one.
 //!
 //! ### Image extraction splitting an HTML block apart (`INTENDED_IMPROVEMENTS`)
 //!
 //! The "centered banner" family (`code_corpus`'s and `preprocess_corpus`'s several `"centered
 //! banner..."`/`"...br..."` cases, all drawn from real registry READMEs) is a **different** shape from
-//! the previous section, and not closed by ever implementing HTML `<img>` recognition the same way — a
-//! `<div align="center">…</div>` (or `<p align="center">…</p>`) wrapping several `<a>`/`<img>`/`<br>`
-//! elements and literal text (a `|` separator, say) is one, single `Html` block in this file's own
-//! model, and an `<img>` embedded *inside* a multi-element construct like that would never match a
-//! future, model-based "this whole block is nothing but one image" check either (the identical, narrow
-//! shape `paragraph_as_block_image` itself checks for a standalone Markdown image — see that function's
-//! own doc comment) — there being much more in the block than just an image is exactly what makes it
-//! *not* qualify.
+//! the previous section, and the fix above does not close it — a `<div align="center">…</div>` (or
+//! `<p align="center">…</p>`) wrapping *several* `<a>`/`<img>`/`<br>` elements and literal text (a `|`
+//! separator, say) is one, single `Html` block in this file's own model, and `extract_block_image`
+//! requires the **whole** block's own raw text to be nothing but tags (`html_is_only_tags`) — there
+//! being real, visible text (or more than one link) alongside the image is exactly what keeps a
+//! multi-element banner like this from qualifying, matching production's own identical, line-scoped
+//! "nothing else on this line" requirement, just applied to the whole block instead of one line.
 //!
 //! Production's own line-based `extract_block_image`, by contrast, has no concept of "which HTML block
 //! is this `<img>` line even inside of" at all — it runs over the raw source *before*
@@ -115,6 +114,18 @@
 //! no comparable two-pass, line-based splitting step to have this defect *in* — the identical
 //! "structurally cannot reproduce a real upstream bug" reasoning `INTENDED_IMPROVEMENTS`'s own doc
 //! comment already establishes for Category 1/2 below, now extended to this third mechanism.
+//!
+//! One family member (`"code_corpus: crlf centered banner with no <br> (registry: tinytemplate\
+//! README.md)"`) is **not** in this category any more, for a reason distinct from either of the two
+//! above: its own `<div>` wraps exactly one `<a>` wrapping exactly one `<img>` and nothing else —
+//! `html_is_only_tags` accepts that shape (an embedded `'\n'` between tags counts as ordinary
+//! whitespace, identically to a space — see `render_html_block_from_model`'s own doc comment), so the
+//! *whole*-block extraction the previous section closed also happens to close this one, not by
+//! reproducing production's own fragmenting-then-reassembling (which, for this particular banner,
+//! nets out to the identical single image line — no other content there for the fragmenting to
+//! garble), but by recognizing the same "nothing but this one image" shape a different way. Removed
+//! from `INTENDED_IMPROVEMENTS` below accordingly (confirmed directly: both sides now emit the
+//! identical eight lines).
 //!
 //! ### A GFM table swallowing a subsequent indented line (`BEHAVIOR_DECISIONS`)
 //!
@@ -146,27 +157,53 @@
 //! spec-vs-permissive-pre-pass disagreement, over a comment instead of an inline tag, filed here rather
 //! than duplicating a second, near-identical entry's worth of reasoning.
 //!
-//! ### A `<details>`/`<summary>` with no blank line before its own body (`BEHAVIOR_DECISIONS`)
+//! ### A `<details>`/`<summary>` with no blank line before its own body (closed — history, not a
+//! ### live gap)
 //!
 //! `"code_span_corpus: details/summary immediately followed by a fenced code block, no blank line"`,
-//! and the two `samples` cases it also affects (`markdown.md`/`markdown.ja.md`'s own `<details open>`
+//! and the two `samples` cases it also affected (`markdown.md`/`markdown.ja.md`'s own `<details open>`
 //! sections, each written with no blank line between `</summary>` and the paragraph right after it):
 //! CommonMark's own HTML-block continuation rule (type 6/7 — `<details>` is not one of the six special
 //! tags, so it is type 6, which continues to the next blank line) does not require a blank line to
 //! *start* a `<details>`'s own body — it requires one to *end the whole block*, tags included.
 //! Confirmed directly: `Doc::parse` on `"<details open>\n<summary>D</summary>\n\`x\` starts
-//! expanded.\n</details>\n"` (no blank line anywhere) reports one, single, **unfolded** `Html` leaf —
-//! `fold_details` never even gets a chance to run (see that function's own doc comment: it folds
-//! `<details>`'s opening tag with a *separate*, later sibling `Html` leaf for `</details>`, which this
-//! shape never produces at all, since pulldown-cmark's own grammar reads the whole thing as one block
-//! to begin with). Production's own hand-written `details_open_tag`/`is_details_close`-driven fold is,
-//! once again, deliberately more permissive than the spec — it does not require a blank line there
-//! either, matching konoma's own documented `<details>` UX intent (an interactive, always-foldable
-//! construct) rather than CommonMark's own stricter reading. The identical trade-off the module doc
-//! comment's own "Inline HTML that interrupts a paragraph" section already names for a different
-//! construct: matching production exactly would mean reproducing its own deviation from the spec, not
-//! closing a gap; matching the spec exactly would change how a real `<details>` block written this
-//! (common, terse) way actually renders. A product decision, not one this harness settles.
+//! expanded.\n</details>\n"` (no blank line anywhere) reports one, single `Html` leaf — no *separate*,
+//! later sibling `Html` leaf for `</details>` for `fold_details`'s own well-formed branch to have found
+//! a close among, since pulldown-cmark's own grammar reads the whole thing as one block to begin with.
+//!
+//! **This is closed, not a live gap**: `fold_details` no longer requires a separate sibling to fold —
+//! `glued_details_fold` (`model.rs`) recognizes the *unambiguous* instance of this same glued shape (no
+//! nested `<details>` glued in, no unrelated trailing content after the found close — see that
+//! function's own doc comment for exactly which cases still don't qualify, and why) and folds it into a
+//! real `BlockKind::Details`, storing the raw body's own byte range (`glued_body`) rather than a
+//! `children` list, since there is no finer block structure in `Doc.events` for one to point at (an
+//! HTML block's own interior is copied literally, per spec — no inline events were ever emitted for it
+//! at all). `render_details_from_model` (`render.rs`) renders that body via a fresh, isolated
+//! `Doc::parse` — the one narrow, documented exception to this file's "never re-parses anything"
+//! promise (see the module doc comment's own "How inline content is rendered" section) — immediately,
+//! into plain `Line`s, never spliced back into any `Doc`'s own tree. Confirmed directly: all three cases
+//! now render identically to production.
+//!
+//! Closing this **also exposed** a second, wholly unrelated bug in the two `samples` cases specifically
+//! (not `code_span_corpus`'s own case, which has no math in it at all): once the details fold stopped
+//! masking the *first* line each of those two files actually diverged on, the *next* one turned up much
+//! further down — a **multi-line** `$$…$$` display-math block (`"$$\n\\int_{-\\infty}^{\\infty} \
+//! e^{-x^2}\\,dx = \\sqrt{\\pi}\n$$\n"`) rendering as a genuinely empty line, not merely worse-looking
+//! text — `render_dollar_math_tail`'s own growing-raw-slice scan gives up the instant it sees a soft/
+//! hard break at `depth == 0` (by design — see that function's own doc comment on why a break is a real
+//! stopping point for the *generic*, single-physical-line `$…$`/`$$…$$` shape it handles), so a `$$`
+//! that opens a *display* block spanning several physical lines never reached a closer at all: the
+//! opening `$$` replayed as ordinary literal text, and the actual expression (on the line right after
+//! it) rendered as plain, unlifted prose with its own escapes silently stripped by pulldown-cmark's
+//! normal escape-processed dispatch (`\,` losing its own backslash) — a real bug (this stage's own
+//! `KNOWN_MISMATCHES` doc comment's own warning against cataloguing rather than fixing, precisely), not
+//! a gap in coverage. `markdown.rs`'s own `split_math` has a **dedicated** branch for exactly this shape
+//! — a line that is exactly `$$`/`\[` alone collects forward to a matching closer line, never touching
+//! the generic per-line scan at all (see that function's own doc comment: `"Multi-line display opener"`)
+//! — mirrored here by `multiline_math_opener`/`render_multiline_display_math` (`render.rs`), checked
+//! *first* in `walk_inline_math`'s own dispatch, before the generic dollar-math and backslash-math
+//! openers ever get a chance to give up on the first soft break. Confirmed directly: both `samples`
+//! cases now match production exactly, in full.
 //!
 //! ## Math (closed — history, not a live gap)
 //!
@@ -400,16 +437,17 @@ use crate::preview::markdown::ImagePlacement;
 /// start: most of this stage's job *is* measuring how many of these there are, honestly, not hiding
 /// them behind a passing test.
 ///
-/// The one remaining entry is the HTML `<img>`-extraction gap the module doc comment's own "HTML
-/// `<img>` extraction" section documents in full — this stage recognizes only Markdown image syntax
-/// (`![alt](url)`), not an HTML `<img>` tag; a future stage that teaches `paragraph_as_block_image`'s
-/// own model-based check to also recognize a standalone `Html` leaf containing nothing but one `<img>`
-/// (optionally layout-wrapped) closes it.
-const KNOWN_MISMATCHES: &[&str] = &[
-    // HTML `<img>` extraction (see the module doc comment's own "HTML `<img>` extraction" section) —
-    // this stage recognizes only Markdown `![alt](url)` syntax, never an HTML `<img>` tag.
-    "samples: images.md",
-];
+/// Empty today — the one entry this list ever held (the HTML `<img>`-extraction gap the module doc
+/// comment's own "HTML `<img>` extraction" section documents in full) is closed: `render_html_block_\
+/// from_model` (`render.rs`) now checks `super::extract_block_image` — the identical function
+/// production's own `split_block_parts_masked` calls — before falling back to plain tag-stripping, so
+/// an `Html` leaf that is nothing but a standalone (optionally layout-wrapped) `<img>` tag renders as
+/// a real block-image placement, matching production, not an empty line. Left declared, empty, rather
+/// than removed outright — the module doc comment's own "Two categories closed structurally" and
+/// "Math (closed — history, not a live gap)" sections already establish that precedent: a *future*
+/// regression back to reporting an `<img>`-only `Html` leaf as a bare empty line should read as "this
+/// got worse," not as a mystery this list has no memory of.
+const KNOWN_MISMATCHES: &[&str] = &[];
 
 /// **The two sides disagree about what CommonMark itself says, and neither is a bug.** Cases whose
 /// fully post-processed output does not match production because `render_doc` follows the real
@@ -450,13 +488,11 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
     // inline-tag entry above, over a comment instead. See the module doc comment's own "An HTML
     // comment's own real end condition" section.
     "code_corpus: an indented line swallowed by an HTML comment block is not code",
-    // A `<details>`/`<summary>` with no blank line before its own body folds in production (hand-
-    // written, permissive) but stays one unfolded `Html` leaf in `Doc::parse` (CommonMark's own HTML
-    // type-6 continuation rule needs a blank line to *end* the block, not to *start* the body). See
-    // the module doc comment's own "A `<details>`/`<summary>` with no blank line..." section.
-    "code_span_corpus: details/summary immediately followed by a fenced code block, no blank line",
-    "samples: markdown.md",
-    "samples: markdown.ja.md",
+    // The `<details>`/`<summary>`-with-no-blank-line entries that used to be here (the
+    // `code_span_corpus` case and the two `samples` files) are closed — see the module doc comment's
+    // own "A `<details>`/`<summary>` with no blank line before its own body (closed — history, not a
+    // live gap)" section for how, and for the separate, unrelated multi-line-math bug closing them
+    // exposed and fixed along the way.
 ];
 
 /// **`render_doc` is better than production on purpose, and is not expected to ever start matching
@@ -617,7 +653,10 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
     "code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md)",
     "code_corpus: centered banner whose <img> lines are cut out of it stays HTML",
     "code_corpus: centered banner with a bare <br> line in it (registry: raw-window-metal README.md)",
-    "code_corpus: crlf centered banner with no <br> (registry: tinytemplate README.md)",
+    // `"code_corpus: crlf centered banner with no <br> (registry: tinytemplate README.md)"` used to be
+    // here — see the module doc comment's own "Image extraction splitting an HTML block apart" section
+    // for why closing HTML `<img>` extraction happened to close this one family member too, even though
+    // the rest of this family stays open.
     "preprocess_corpus: bare br line inside an html block",
     "preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md)",
     "preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md)",

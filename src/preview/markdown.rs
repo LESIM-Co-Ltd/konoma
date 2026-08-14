@@ -4340,33 +4340,61 @@ fn details_mask(lines: &[&str], in_code: &[bool]) -> Vec<bool> {
     mask
 }
 
+/// The `(s, e)` byte-offset pair — into `inner` — of a well-formed `<summary>...</summary>` tag's own
+/// `<summary` and `</summary>` starts: present only when the former actually closes (a literal `>`
+/// somewhere in `[s, e)`) before the latter begins. The one place this search happens —
+/// `extract_summary_body`/`summary_tag_end` both call this rather than re-deriving the identical
+/// `<summary`/`</summary>` scan a second time (the same "one search, several thin callers" shape
+/// `details_block_close` already is for `split_details`/`structure_mask`/`details_mask`).
+fn summary_tag_bounds(inner: &str) -> Option<(usize, usize)> {
+    let lower = inner.to_ascii_lowercase();
+    let (s, e) = (lower.find("<summary")?, lower.find("</summary>")?);
+    // The `>` that closes the opening `<summary …>` tag must sit before `</summary>`. Bound the
+    // search to `[s, e)`: a malformed `<summary` with no `>` of its own would otherwise match the `>`
+    // inside `</summary>` (past `e`), giving an inverted slice range that panics further down. When
+    // the opening tag never closes, this reports "no summary" (`None`) — the caller falls back to
+    // treating the whole `inner` as the body.
+    (s < e && inner[s..e].contains('>')).then_some((s, e))
+}
+
 /// Pull the `<summary>` text and the remaining body out of a details block's inner content. Tags in
 /// the summary are stripped; the body keeps its Markdown. A missing summary yields an empty string
 /// (the renderer supplies a default label).
 fn extract_summary_body(inner: &str) -> (String, String) {
-    let lower = inner.to_ascii_lowercase();
-    if let (Some(s), Some(e)) = (lower.find("<summary"), lower.find("</summary>")) {
-        // The `>` that closes the opening `<summary …>` tag must sit before `</summary>`. Bound the
-        // search to `[s, e)`: a malformed `<summary` with no `>` of its own would otherwise match the
-        // `>` inside `</summary>` (past `e`), giving an inverted slice range that panics. When the
-        // opening tag never closes, fall back to no-summary (the whole inner becomes the body).
-        if s < e {
-            if let Some(gt) = inner[s..e].find('>') {
-                let sum = strip_inline_html_tags(inner[s + gt + 1..e].trim());
-                // Trim the blank lines around the body, **not** its indentation. `str::trim` also
-                // eats leading spaces, and when the body's first content is an indented code block
-                // those spaces *are* the block: the four columns disappeared and the code rendered as
-                // an ordinary paragraph, so the screen showed one code block fewer than the source
-                // had and `y c` was refused for the whole document (found while auditing this bug
-                // class, 2026-08; a `<details>` whose body starts with prose was unaffected, which is
-                // why it went unnoticed). A fenced block survives `trim` because its delimiter is not
-                // indentation-sensitive — only the indented kind is.
-                let body = trim_blank_lines(&inner[e + "</summary>".len()..]);
-                return (sum, body);
-            }
-        }
+    if let Some((s, e)) = summary_tag_bounds(inner) {
+        // `summary_tag_bounds` already confirmed a `>` sits somewhere in `[s, e)`.
+        let gt = inner[s..e]
+            .find('>')
+            .expect("summary_tag_bounds confirmed a '>' in this range");
+        let sum = strip_inline_html_tags(inner[s + gt + 1..e].trim());
+        // Trim the blank lines around the body, **not** its indentation. `str::trim` also eats
+        // leading spaces, and when the body's first content is an indented code block those spaces
+        // *are* the block: the four columns disappeared and the code rendered as an ordinary
+        // paragraph, so the screen showed one code block fewer than the source had and `y c` was
+        // refused for the whole document (found while auditing this bug class, 2026-08; a
+        // `<details>` whose body starts with prose was unaffected, which is why it went unnoticed). A
+        // fenced block survives `trim` because its delimiter is not indentation-sensitive — only the
+        // indented kind is.
+        let body = trim_blank_lines(&inner[e + "</summary>".len()..]);
+        return (sum, body);
     }
     (String::new(), inner.trim().to_string())
+}
+
+/// The byte offset, into `inner`, right after a well-formed `<summary>...</summary>` tag pair —
+/// `None` when `inner` has no such pair (matching `extract_summary_body`'s own "no summary"
+/// fallback: the caller should treat `inner` as the whole body, from byte `0`, in that case). Used by
+/// `model::glued_details_body_range` to compute the raw byte range of a **glued** `<details>` block's
+/// own body (see that function's own doc comment) — the identical boundary `extract_summary_body`'s
+/// own second return value is sliced from, before `trim_blank_lines` runs, but as an offset rather
+/// than an owned, trimmed `String`: a byte-range caller needs to know *where* the body starts in
+/// `inner`'s own coordinate space to slice a **different**, larger string (`model.rs`'s own whole-
+/// document `src`) by the identical amount, not read the trimmed text itself (the model's own
+/// `Doc::parse`, handed that byte range, does its own, real block-level parsing — see
+/// `BlockKind::Details.glued_body`'s own doc comment for why leading/trailing blank lines need no
+/// special handling there the way `trim_blank_lines` gives this function's own sibling).
+fn summary_tag_end(inner: &str) -> Option<usize> {
+    summary_tag_bounds(inner).map(|(_, e)| e + "</summary>".len())
 }
 
 /// Drop wholly blank lines from both ends of `s`, leaving the surviving lines' own indentation

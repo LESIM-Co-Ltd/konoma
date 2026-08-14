@@ -290,14 +290,17 @@ pub(crate) enum BlockKind {
     /// how to draw a raw `Html` leaf already reports the *whole* enclosing construct as out of scope
     /// rather than rendering something incomplete — see that function's own doc comment.
     Html { tag: Option<String> },
-    /// A **well-formed** `<details>` … `</details>` block, folded from the sibling `Html` leaves
-    /// `Doc::parse` itself would otherwise have produced for its opening and closing tags (see
-    /// `Html`'s own doc comment on exactly which shape qualifies, and `fold_details` for the
-    /// folding algorithm) — `Block::src` spans from the opening tag's own first byte through the
-    /// closing tag's own last byte (or through the end of input, when unclosed — matching
-    /// `split_details`'s own `close.unwrap_or(lines.len())` fallback), and `Block::children` is the
-    /// sibling blocks that sat between them, in source order — the block's own rendered body,
-    /// already structured, with no second parse of any substring needed to read it.
+    /// A `<details>` … `</details>` block, folded from what `Doc::parse` itself would otherwise have
+    /// reported for its opening and closing tags (see `Html`'s own doc comment on exactly which
+    /// shapes qualify, and `fold_details` for the folding algorithm). Two different shapes fold into
+    /// this one variant — see `glued_body`'s own doc comment for the second:
+    ///
+    /// * **Well-formed** (open tag, body, close tag each its own sibling `Html` leaf, blank-line
+    ///   separated): `Block::src` spans from the opening tag's own first byte through the closing
+    ///   tag's own last byte (or through the end of input, when unclosed — matching `split_details`'s
+    ///   own `close.unwrap_or(lines.len())` fallback), and `Block::children` is the sibling blocks
+    ///   that sat between them, in source order — the block's own rendered body, already structured,
+    ///   with no second parse of any substring needed to read it. `glued_body` is `None`.
     Details {
         /// The `open` HTML attribute this block's own `<details ...>` tag carried
         /// (`details_open_tag`'s own return value) — the document's own *declared* default, not a
@@ -313,6 +316,25 @@ pub(crate) enum BlockKind {
         /// Empty when the block has no `<summary>` tag at all, matching `extract_summary_body`'s own
         /// "no summary" fallback.
         summary: String,
+        /// Byte range, into `Doc::parse`'s own whole-document `src`, of this block's own **glued**
+        /// body — set only for the second, pathological shape `fold_details` also recognizes (see
+        /// `glued_details_fold`'s own doc comment for exactly which glued shapes qualify, and which
+        /// stay an ordinary, unfolded `Html` leaf instead): the open tag, its own `<summary>`, and its
+        /// own close all landed in the *same*, single, literal `Html` leaf (no blank line anywhere in
+        /// the whole construct — see `Html`'s own doc comment), so pulldown-cmark's one whole-document
+        /// walk never reported any block-level events for the body at all — an HTML block's own
+        /// interior is copied *literally*, per spec, so there is no finer structure in `Doc.events`
+        /// for `Block::children` to name a slice of, the way a well-formed `<details>`'s body always
+        /// can. `Block::children` is always empty exactly when this is `Some` (and never empty when
+        /// this is `None` for anything but a genuinely empty well-formed body) — `render.rs`'s own
+        /// `render_details_from_model` is the one reader, and does its own fresh, isolated
+        /// `Doc::parse` over `src[glued_body]` to render real Markdown structure for it (see that
+        /// function's own doc comment for why this is the one place this file's whole "no second
+        /// parse of any substring, ever" promise has a documented exception, and why it is safe: the
+        /// isolated re-parse's own output is *rendered* immediately, into plain `Line`s, never spliced
+        /// back into this `Doc`'s own `blocks`/`events` — nothing downstream of `Doc::parse` ever
+        /// reads a `Block`/index built from that second parse).
+        glued_body: Option<Range<usize>>,
     },
     /// A thematic break (`---` / `***` / `___`).
     ThematicBreak,
@@ -624,20 +646,38 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
             // own first line even though there is exactly one sibling here — confirmed directly:
             // `"<details>\n<summary>A</summary>\n<details>\n<summary>Nested</summary>\n</details>\n\
             // </details>\n"` parses as a *single* 89-byte `HtmlBlock`, not six). There is no
-            // `children` this function could build here without silently discarding that trailing
-            // content (this leaf's own summary line, a nested `<details>`, whatever else got glued
-            // in) — so this stays an ordinary, unfolded `Html` leaf, exactly as before this variant
-            // existed; see `Html`'s own doc comment on exactly this shape.
+            // `children` this function could build here the normal, no-second-parse way — but
+            // `glued_details_fold` (below) still recognizes the *unambiguous* instance of this shape
+            // (see its own doc comment for exactly which one) and folds it anyway, storing the raw
+            // body's own byte range for `render.rs`'s own isolated re-parse instead of a `children`
+            // list (`BlockKind::Details.glued_body`). Anything more ambiguous — a nested `<details>`
+            // glued into the same leaf, or unrelated content following the found close within it —
+            // stays an ordinary, unfolded `Html` leaf, exactly as before either variant existed; see
+            // `Html`'s own doc comment on exactly this shape.
             //
-            // The second half of this check matters even when `rest` is *not* empty: a glued block
-            // like the one above can still be followed by further, wholly unrelated siblings (a
-            // trailing paragraph, a footnote section `process_footnotes` appended, ...) — without
-            // this check, `close_pos` below would never find this leaf's own (already-consumed)
-            // `</details>` among `rest` at all, and the "unclosed" fallback would swallow every one
-            // of those unrelated siblings as if they were this block's own body (confirmed directly:
-            // `code_span_corpus`'s own "details/summary immediately followed by a fenced code block,
-            // no blank line" case, whose `src` appends a footnote section after an already-self-
-            // closed, glued `<details>` block).
+            // The second half of this check (`html_leaf_contains_its_own_close`) matters even when
+            // `rest` is *not* empty: a glued block like the one above can still be followed by
+            // further, wholly unrelated siblings (a trailing paragraph, a footnote section
+            // `process_footnotes` appended, ...) — without this check, `close_pos` below would never
+            // find this leaf's own (already-consumed) `</details>` among `rest` at all, and the
+            // "unclosed" fallback would swallow every one of those unrelated siblings as if they were
+            // this block's own body (confirmed directly: `code_span_corpus`'s own "details/summary
+            // immediately followed by a fenced code block, no blank line" case, whose `src` appends a
+            // footnote section after an already-self-closed, glued `<details>` block — and, since
+            // 2026-08, one `glued_details_fold` *does* fold, its trailing blank line keeping that
+            // footnote section correctly outside the found close's own line).
+            if let Some((summary, glued_body)) = glued_details_fold(src, &b) {
+                out.push(Block {
+                    kind: BlockKind::Details {
+                        open_attr,
+                        summary,
+                        glued_body: Some(glued_body),
+                    },
+                    src: b.src.clone(),
+                    children: Vec::new(),
+                });
+                continue;
+            }
             out.push(b);
             continue;
         }
@@ -669,7 +709,11 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
         let inner = &src[body_start.min(summary_end)..summary_end];
         let (summary, _body) = super::extract_summary_body(inner);
         out.push(Block {
-            kind: BlockKind::Details { open_attr, summary },
+            kind: BlockKind::Details {
+                open_attr,
+                summary,
+                glued_body: None,
+            },
             src: b.src.start..block_end,
             children,
         });
@@ -711,6 +755,84 @@ fn html_leaf_contains_its_own_close(src: &str, b: &Block) -> bool {
     text.lines()
         .skip(1)
         .any(|line| super::is_details_close(line.trim_end()))
+}
+
+/// Whether `b` — a glued `<details>` leaf `html_leaf_contains_its_own_close` has already confirmed
+/// contains its own close — is the **unambiguous** instance of that shape: the summary and
+/// `render.rs`'s own byte range for its isolated re-parse (`BlockKind::Details.glued_body`), when it
+/// is. `None` when it is not, leaving `fold_details` on its previous, safe fallback (an ordinary,
+/// unfolded `Html` leaf — see that function's own call site).
+///
+/// "Unambiguous" means both of the following hold, checked by scanning `b`'s own raw text one line at
+/// a time, starting right after its own first line (the `<details ...>` open tag itself):
+///
+/// * The **first** line matching `is_details_close` is also `b`'s own **last** line (mod a single
+///   trailing `'\n'`, or nothing at all — see the `after_close` check below) — no further, unrelated
+///   content follows the found close within the same glued leaf. Without this, truncating
+///   `Block::src` to end at that close (as this function's caller does) would silently orphan
+///   whatever bytes come after it — there is no sibling slot left to carry them.
+/// * No line strictly between the open tag and that close is **itself** a `<details ...>` open tag —
+///   no nested `<details>` glued into the same leaf. Without this, "first close wins" would hand the
+///   *inner* `<details>`'s own close to the *outer* tag (`</details>` on the line right after
+///   `<summary>Nested</summary>` in `"<details>\n<summary>A</summary>\n<details>\n\
+///   <summary>Nested</summary>\n</details>\n</details>\n"`, say — matching `split_details`'s own
+///   line-scan contract exactly, since it does not track nesting either), which this function
+///   deliberately does not attempt to resolve: see `glued_details_with_no_blank_line_anywhere_stays_\
+///   an_unfolded_html_leaf`, still pinned exactly this way, for why an ambiguous glued shape like that
+///   one stays an unfolded `Html` leaf rather than folding into something that would misrepresent
+///   which `</details>` actually belongs to which `<details>`.
+///
+/// Both checks are read straight off a literal line-by-line scan of `b.src`'s own raw text, the
+/// identical predicates (`super::is_details_close`/`super::details_open_tag`) `html_leaf_contains_\
+/// its_own_close`/`fold_details`'s own well-formed branch already use — not a third, competing
+/// classifier.
+///
+/// The returned range excludes the `<summary>...</summary>` tag itself (found the same way
+/// `super::extract_summary_body` finds it, via `super::summary_tag_end` — the offset-returning
+/// sibling of the same search, so the two can never disagree about where the summary ends and the
+/// body begins) — a caller re-parsing `src[range]` in isolation must never see that tag a second
+/// time, or the summary text would render twice (once as this block's own fold marker, again as the
+/// re-parsed body's first line of literal text). Unlike `extract_summary_body`'s own `body` (its
+/// second return value), this range is **not** blank-line-trimmed: a leading or trailing blank line
+/// left inside it changes nothing about the block-level structure a fresh `Doc::parse` reads back —
+/// CommonMark itself already treats leading/trailing blank lines as no content at all, the same way
+/// `trim_blank_lines` removes them for `extract_summary_body`'s own, differently-purposed `body`
+/// string — so there is no byte-offset equivalent of that trim to compute here.
+fn glued_details_fold(src: &str, b: &Block) -> Option<(String, Range<usize>)> {
+    let body_start = line_after(src, b.src.start);
+    let scan = &src[body_start..b.src.end];
+    let mut close: Option<(usize, usize)> = None; // (start, end) absolute into `src`; `end` excludes any trailing '\n'
+    let mut nested = false;
+    let mut pos = 0usize; // offset within `scan`
+    loop {
+        let rel_end = scan[pos..].find('\n').map_or(scan.len(), |i| pos + i);
+        let line = &scan[pos..rel_end];
+        if super::is_details_close(line) {
+            close = Some((body_start + pos, body_start + rel_end));
+            break;
+        }
+        if super::details_open_tag(line).is_some() {
+            nested = true;
+        }
+        if rel_end >= scan.len() {
+            break; // ran off the end of `b.src` with no close found
+        }
+        pos = rel_end + 1;
+    }
+    let (close_start, close_end) = close?;
+    if nested {
+        return None;
+    }
+    // Nothing but whitespace (a lone trailing '\n', most commonly, or nothing at all) may follow the
+    // found close within this same leaf — anything else is unrelated trailing content this function
+    // has no sibling slot to hand back to `fold_details`'s own caller.
+    if !src[close_end..b.src.end].trim().is_empty() {
+        return None;
+    }
+    let inner = &src[body_start..close_start];
+    let (summary, _body) = super::extract_summary_body(inner);
+    let body_off = super::summary_tag_end(inner).unwrap_or(0);
+    Some((summary, (body_start + body_off)..close_start))
 }
 
 /// The byte position right after the next `'\n'` at or after `start` — `src.len()` if there is
@@ -1697,7 +1819,10 @@ mod tests {
         // `BlockKind::Html`'s own doc comment) — but `parse_blocks` now folds all three into one
         // `Details` container before handing the sibling list back to any caller.
         assert_eq!(doc.blocks.len(), 1, "folded into a single Details block");
-        let BlockKind::Details { open_attr, summary } = &doc.blocks[0].kind else {
+        let BlockKind::Details {
+            open_attr, summary, ..
+        } = &doc.blocks[0].kind
+        else {
             panic!("expected a Details block: {:?}", doc.blocks[0].kind)
         };
         assert!(!open_attr, "no `open` attribute on the tag");

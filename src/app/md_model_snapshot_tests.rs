@@ -148,8 +148,18 @@ fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> S
             s
         }
         BlockKind::Html { tag } => format!("Html{{tag={tag:?}}}"),
-        BlockKind::Details { open_attr, summary } => {
-            format!("Details{{open_attr={open_attr}, summary={summary:?}}}")
+        BlockKind::Details {
+            open_attr,
+            summary,
+            glued_body,
+        } => {
+            let gb = match glued_body {
+                Some(r) => format!("Some({}:{})", fmt_range(r), snippet(&src[r.clone()])),
+                None => "None".to_string(),
+            };
+            format!(
+                "Details{{open_attr={open_attr}, summary={summary:?}, glued_body={gb}}}"
+            )
         }
         BlockKind::ThematicBreak => "ThematicBreak".to_string(),
     }
