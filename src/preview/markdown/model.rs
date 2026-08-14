@@ -974,6 +974,47 @@ fn alert_kind_of(src: &str, range: &Range<usize>) -> Option<AlertKind> {
 mod tests {
     use super::*;
 
+    /// Pins the exact, asymmetric byte range `render.rs`'s own `render_paragraph_math` doc comment
+    /// cites as the reason a quoted paragraph's text is never scanned for math directly from
+    /// `Block.src`: a quoted `Paragraph`'s own range excludes the `>` marker on its *first* line
+    /// (`Paragraph`'s own `src.start` lands right after it) but *includes* it on every continuation
+    /// line (the range simply runs to the end of whatever pulldown-cmark last consumed, markers and
+    /// all) — so a naive line-based `>`-prefix check over that one range would misjudge the first
+    /// line every time.
+    #[test]
+    fn quoted_paragraph_src_range_excludes_the_first_lines_marker_but_not_a_continuation_lines() {
+        let src = "> hello $x$ world\n> line2\n";
+        let doc = Doc::parse(src);
+        let BlockKind::Quote { .. } = &doc.blocks[0].kind else {
+            panic!("expected a top-level quote: {:?}", doc.blocks[0].kind);
+        };
+        assert_eq!(doc.blocks[0].children.len(), 1);
+        let child = &doc.blocks[0].children[0];
+        assert!(matches!(&child.kind, BlockKind::Paragraph { .. }));
+        assert_eq!(&src[child.src.clone()], "hello $x$ world\n> line2\n");
+    }
+
+    /// Pins the tight list item counterpart: unlike a quote, a list marker is never repeated on a
+    /// continuation line, so a **synthetic** first paragraph's own range (`collect_stray_inline_run`)
+    /// never includes any container marker at all — no asymmetry to guard against there, which is
+    /// exactly why `render.rs`'s own `walk_inline_math` is safe to scan a list item's first child
+    /// directly (see that module's own doc comment on `render_doc`'s `math_here` for the contrast).
+    #[test]
+    fn tight_list_items_synthetic_first_paragraph_never_includes_the_bullet_marker() {
+        let src = "- item $x$ here\n- second\n";
+        let doc = Doc::parse(src);
+        let BlockKind::List { .. } = &doc.blocks[0].kind else {
+            panic!("expected a top-level list: {:?}", doc.blocks[0].kind);
+        };
+        assert_eq!(doc.blocks[0].children.len(), 2);
+        let BlockKind::ListItem { .. } = &doc.blocks[0].children[0].kind else {
+            panic!("expected the first list item");
+        };
+        let first_child = &doc.blocks[0].children[0].children[0];
+        assert!(matches!(&first_child.kind, BlockKind::Paragraph { .. }));
+        assert_eq!(&src[first_child.src.clone()], "item $x$ here");
+    }
+
     /// Concatenates every `Event::Text`/`Event::Code`/`Event::SoftBreak`(→ `" "`)/
     /// `Event::HardBreak`(→ `"\n"`) payload in `doc.events[inline]`, in order — a minimal,
     /// style-blind reconstruction, good enough for a unit test to confirm a leaf's own `inline`

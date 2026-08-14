@@ -9,19 +9,15 @@
 //!
 //! ## Expected mismatch categories (this stage)
 //!
-//! Even restricted to Heading/Paragraph/ThematicBreak-only documents, a couple of things are known,
-//! accepted gaps at this stage rather than bugs to chase down — see [`render_case_new`]'s callers for
-//! where each one comes from:
+//! Even restricted to Heading/Paragraph/ThematicBreak/List/Quote-only documents, one thing is a known,
+//! accepted gap at this stage rather than a bug to chase down — see [`render_case_new`]'s callers for
+//! where it comes from:
 //!
 //! * **Standalone block-level images.** A paragraph whose entire content is `![alt](url)` is
 //!   intercepted by the production pipeline *before* tui-markdown ever sees it (`split_block_parts`),
 //!   becoming a reserved-row image placement — not "alt text as a plain paragraph", which is what
 //!   `render::render_doc`'s inline-only `Image` handling produces (see that module's own doc comment:
 //!   block-level image extraction is out of scope for this stage).
-//! * **Inline LaTeX math.** `md_snapshot_tests::render_case` always renders with math extraction "on"
-//!   (`math_on: true`), lifting `$…$`/`$$…$$` onto their own reserved-row placeholder before
-//!   tui-markdown ever sees them. The block model has no concept of math extraction at all (it is not
-//!   a `BlockKind`), so `render::render_doc` renders a `$…$` run as literal text.
 //!
 //! Two *further* categories used to apply here — both artifacts of `render::render_doc` re-parsing
 //! each `Heading`/`Paragraph`'s own byte range in isolation rather than reading from a single
@@ -36,11 +32,22 @@
 //! specifically was proven to resolve, and [`markdown_render_diff_report`]'s own numbers below for
 //! the (lack of) fallout from the second, broader category.
 //!
+//! A *third* former category, **inline LaTeX math**, is gone the same structural way as of
+//! `render::render_paragraph_math` (see that function's own doc comment): `render_doc` now takes the
+//! same `math_slot`/`math_on` arguments `render_markdown_with_images` does, reusing that function's
+//! own `scan_inline_math`/`math_url` (no second math detector) to lift `$…$`/`$$…$$`/`\(…\)`/`\[…\]`
+//! out of a top-level paragraph's own text onto its own placeholder line(s), matching production line
+//! for line, span for span — see that function's own doc comment for the "before text / math
+//! placeholder / after text" mechanism and why it needs to reproduce a *fresh reparse boundary* at
+//! every lift point (not merely "insert a line").
+//!
 //! Every mismatch this module actually observes is recorded in [`KNOWN_MISMATCHES`], by case name,
 //! filled in from a real run of this harness (not asserted to be empty from the start — see the task
 //! this module was built for). [`markdown_render_diff_report`] fails only when a *new*, previously
 //! unlisted mismatch appears among the cases this stage claims to support — a regression in
-//! `render::render_doc` itself, not a gap this stage already knows about and accepts.
+//! `render::render_doc` itself, not a gap this stage already knows about and accepts, and not one of
+//! [`INTENDED_IMPROVEMENTS`] either (see that list's own doc comment — a *different* kind of expected
+//! difference: not a gap, an improvement).
 
 use std::fmt::Write as _;
 
@@ -53,21 +60,48 @@ use super::*;
 
 /// Cases (by the same `"corpus: name"` label `all_cases()` reports) whose entire top-level block set
 /// is one `render::render_doc` claims to support (`unsupported` is empty), but whose fully
-/// post-processed output still does not match the production pipeline's — see the module doc comment
-/// for the categories these fall into. Filled in from an actual run of
-/// [`markdown_render_diff_report`] (see its own `--nocapture` output), not asserted empty from the
-/// start: most of this stage's job *is* measuring how many of these there are, honestly, not hiding
-/// them behind a passing test.
-const KNOWN_MISMATCHES: &[&str] = &[
-    // All three are the "inline LaTeX math" gap the module doc comment names: `md_snapshot_tests`
-    // renders with math extraction always on, lifting `$$x$$`/`\(x\)`/`\[x\]` onto their own
-    // reserved-row placeholder before tui-markdown ever sees the run; `render::render_doc` has no
-    // concept of math extraction at all (it is not a `BlockKind`), so it renders the second
-    // occurrence in each of these cases (the one *outside* the leading code span) as literal text
-    // glued onto the same line instead of a placeholder on its own row.
-    "code_span_corpus: bracket math inside and outside",
-    "code_span_corpus: display math inside and outside",
-    "code_span_corpus: paren math inside and outside",
+/// post-processed output still does not match the production pipeline's, and where that mismatch is a
+/// **gap in this stage** — not a deliberate, permanent improvement (see [`INTENDED_IMPROVEMENTS`] for
+/// that other kind). Filled in from an actual run of [`markdown_render_diff_report`] (see its own
+/// `--nocapture` output), not asserted empty from the start: most of this stage's job *is* measuring
+/// how many of these there are, honestly, not hiding them behind a passing test. Currently empty —
+/// the one gap this list used to carry (inline LaTeX math) is closed; see the module doc comment.
+const KNOWN_MISMATCHES: &[&str] = &[];
+
+/// Cases whose fully post-processed output does not match production **on purpose** — not a gap in
+/// this stage (see [`KNOWN_MISMATCHES`] for that), but this stage's own *improvement* over a real
+/// upstream crash the production pipeline only partially recovers from. Kept in a list separate from
+/// `KNOWN_MISMATCHES`, deliberately, because the two are not the same kind of "expected mismatch": a
+/// `KNOWN_MISMATCHES` entry is something to eventually close (`render_doc` still has a gap);
+/// an `INTENDED_IMPROVEMENTS` entry is not expected to *ever* start matching — the day it does,
+/// something regressed `render_doc` back down to reproducing production's own bug, not fixed a gap.
+///
+/// ## The mechanism (verified directly, not merely quoted from the corpus comment)
+///
+/// Real, upstream `tui-markdown` (`tui-markdown-0.3.7`/`0.3.8`, the pinned dependency) panics parsing
+/// a **loose** list item that has a task marker — the doc comment on `render.rs`'s own former
+/// `contains_unsupported`'s `"LooseTask"` arm (now removed — see that function's own doc comment)
+/// names the panic exactly. `render_text_block_safe` catches that panic and, rather than degrading the
+/// *whole* segment to plain text, bisects it at the nearest blank line outside a fence and *retries
+/// each half independently* (see that function's own doc comment) — for both cases below, the split
+/// lands exactly on the blank line CommonMark itself used to decide the list is loose in the first
+/// place, so each half is now a **single-item list with no blank line inside it at all**, which
+/// CommonMark's own tight/loose rule makes *tight* — a shape that does not panic. So the *specific*
+/// claim "production degrades to plain text" is not quite what was directly observed here: each half
+/// still decorates normally (task-marker icon, styling, all present) — what actually differs is that
+/// bisection has silently turned one **loose** list (its own items' markers landing on their own line,
+/// separate from their bullet — see `render_item`'s own doc comment for exactly why) into *two
+/// independent tight one-item lists* glued back together, each rendered as if its marker and text
+/// shared one line. `render::render_doc` does not re-parse at all (see its own module doc comment) and
+/// so never desyncs the list this way — it draws the one, real, loose list tui-markdown itself would
+/// draw if asked to (crash aside), matching `Writer`'s own reimplementation of `TextWriter`'s real
+/// (if visually surprising) loose-item layout faithfully. Confirmed directly: calling the production
+/// pipeline's own `render_md_segment`/`split_block_for_retry` on each of these two sources shows the
+/// whole-text parse panicking (caught) and *both* bisected halves parsing (and decorating) cleanly on
+/// their own.
+const INTENDED_IMPROVEMENTS: &[&str] = &[
+    "list_corpus: task item inside a loose list",
+    "task_corpus: a real task at a list item's own indentation is still a real task",
 ];
 
 /// Renders `src` through `render::render_doc` (the block-model renderer under test) and the exact
@@ -104,15 +138,24 @@ fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static
         Vec::new()
     };
 
+    // Same fixed-answer math slot `md_snapshot_tests::render_case` itself uses (see that function's
+    // own doc comment): no live `Picker` in a unit test, so every expression "renders" to its raw-LaTeX
+    // fallback — extraction and placement logic is still exercised end to end, just not the
+    // picker-dependent raster step. `math_on: true` matches the default `math = "image"` config.
+    let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
+
     let pre_src = pre_src_for(cfg, src);
     let doc = crate::preview::markdown::model::Doc::parse(&pre_src);
     let out = crate::preview::markdown::render::render_doc(
         &doc,
+        &pre_src,
         SNAPSHOT_WIDTH,
         code,
         theme,
         icons,
         &tasks,
+        &math_slot,
+        true,
     );
 
     let mut lines = fm_lines;
@@ -184,9 +227,12 @@ fn run_case(cfg: &Config, src: &str) -> (Outcome, Vec<Line<'static>>, Vec<Line<'
 
 /// Runs every case in the parity corpus through both renderers and prints an honest tally — see the
 /// module doc comment for the report's exact shape and what each mismatch category means. Fails only
-/// when a case not already in [`KNOWN_MISMATCHES`] mismatches; a case *in* `KNOWN_MISMATCHES` that
-/// now matches is reported (via `--nocapture`) as a stale entry, not a failure — this stage's job is
-/// to measure honestly, and a shrinking mismatch list is progress, not something to guard against.
+/// when a case not already in [`KNOWN_MISMATCHES`] *or* [`INTENDED_IMPROVEMENTS`] mismatches; a case
+/// in either list that now matches is reported (via `--nocapture`) as a stale entry, not a failure —
+/// this stage's job is to measure honestly, and a shrinking mismatch list is progress, not something
+/// to guard against. The two lists are tracked (and reported) separately throughout — see their own
+/// doc comments for why conflating them would hide the distinction that is the whole point of having
+/// both: one is a gap, the other is not.
 #[test]
 fn markdown_render_diff_report() {
     let cfg = Config::default();
@@ -201,19 +247,18 @@ fn markdown_render_diff_report() {
     let mut matched = 0usize;
     let mut mismatched: Vec<(String, String)> = Vec::new(); // (case name, diagnostic)
     let mut seen_known: Vec<&'static str> = Vec::new();
+    let mut seen_improvements: Vec<&'static str> = Vec::new();
 
     for (name, src) in &cases {
         let (outcome, _old, _new) = run_case(&cfg, src);
         match outcome {
             Outcome::Unsupported => unsupported += 1,
             Outcome::Match => {
-                if KNOWN_MISMATCHES.contains(&name.as_str()) {
-                    seen_known.push(
-                        KNOWN_MISMATCHES
-                            .iter()
-                            .find(|k| **k == name.as_str())
-                            .unwrap(),
-                    );
+                if let Some(k) = KNOWN_MISMATCHES.iter().find(|k| **k == name.as_str()) {
+                    seen_known.push(k);
+                }
+                if let Some(k) = INTENDED_IMPROVEMENTS.iter().find(|k| **k == name.as_str()) {
+                    seen_improvements.push(k);
                 }
                 matched += 1;
             }
@@ -222,33 +267,58 @@ fn markdown_render_diff_report() {
     }
 
     let supported = cases.len() - unsupported;
+    let known_count = mismatched
+        .iter()
+        .filter(|(n, _)| KNOWN_MISMATCHES.contains(&n.as_str()))
+        .count();
+    let improvement_count = mismatched
+        .iter()
+        .filter(|(n, _)| INTENDED_IMPROVEMENTS.contains(&n.as_str()))
+        .count();
+    let new_count = mismatched.len() - known_count - improvement_count;
 
     eprintln!("=== new-renderer diff report ===");
     eprintln!("  total cases: {}", cases.len());
     eprintln!("  unsupported (outside this stage's block-kind coverage): {unsupported}");
     eprintln!("  supported (this stage claims to cover): {supported}");
     eprintln!("    exact match: {matched}");
-    eprintln!("    mismatch: {}", mismatched.len());
+    eprintln!(
+        "    mismatch: {} (known gaps: {known_count}, intended improvements: {improvement_count}, NEW: {new_count})",
+        mismatched.len()
+    );
     if !mismatched.is_empty() {
         eprintln!("  mismatches (case, first differing line):");
         for (name, diag) in &mismatched {
-            let known = if KNOWN_MISMATCHES.contains(&name.as_str()) {
+            let label = if KNOWN_MISMATCHES.contains(&name.as_str()) {
                 "known"
+            } else if INTENDED_IMPROVEMENTS.contains(&name.as_str()) {
+                "improvement"
             } else {
                 "NEW"
             };
-            eprintln!("  - [{known}] {name}");
+            eprintln!("  - [{label}] {name}");
             eprint!("{diag}");
         }
     }
-    let stale: Vec<&&str> = KNOWN_MISMATCHES
+    let stale_known: Vec<&&str> = KNOWN_MISMATCHES
         .iter()
         .filter(|k| !seen_known.contains(k))
         .filter(|k| !mismatched.iter().any(|(n, _)| n == **k))
         .collect();
-    if !stale.is_empty() {
+    if !stale_known.is_empty() {
         eprintln!("  stale KNOWN_MISMATCHES entries (not found among this run's cases at all — corpus renamed/removed?):");
-        for k in &stale {
+        for k in &stale_known {
+            eprintln!("  - {k}");
+        }
+    }
+    let stale_improvements: Vec<&&str> = INTENDED_IMPROVEMENTS
+        .iter()
+        .filter(|k| !seen_improvements.contains(k))
+        .filter(|k| !mismatched.iter().any(|(n, _)| n == **k))
+        .collect();
+    if !stale_improvements.is_empty() {
+        eprintln!("  stale INTENDED_IMPROVEMENTS entries (not found among this run's cases at all — corpus renamed/removed?):");
+        for k in &stale_improvements {
             eprintln!("  - {k}");
         }
     }
@@ -257,14 +327,15 @@ fn markdown_render_diff_report() {
     let new_mismatches: Vec<&str> = mismatched
         .iter()
         .map(|(n, _)| n.as_str())
-        .filter(|n| !KNOWN_MISMATCHES.contains(n))
+        .filter(|n| !KNOWN_MISMATCHES.contains(n) && !INTENDED_IMPROVEMENTS.contains(n))
         .collect();
     assert!(
         new_mismatches.is_empty(),
         "{} new (unlisted) mismatch(es) between render::render_doc and the production renderer: {:?}\n\
          If this is an intentional, understood gap (see this module's own doc comment for the \
-         accepted categories), add the case name(s) to KNOWN_MISMATCHES. If it is a real bug in \
-         render_doc, fix it instead of listing it.",
+         accepted categories), add the case name(s) to KNOWN_MISMATCHES; if it is a deliberate \
+         improvement over a real upstream bug (see INTENDED_IMPROVEMENTS's own doc comment), add it \
+         there instead. If it is a real bug in render_doc, fix it instead of listing it.",
         new_mismatches.len(),
         new_mismatches
     );

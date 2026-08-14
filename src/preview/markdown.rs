@@ -13421,6 +13421,130 @@ pub(crate) mod inline_corpus {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod list_corpus {
+    /// Documents exercising the **list and block-quote** surface of Markdown — bullet/ordered
+    /// markers, tight vs. loose items, nesting (of either kind inside the other, and each inside
+    /// itself), headings/rules inside a quote, task-list checkboxes, CJK, and a handful of edges.
+    /// Sibling of `task_corpus`/`code_corpus`/`inline_corpus`, and built the same way: from the case
+    /// split CommonMark/GFM's own grammar implies for these constructs, not from a list of bugs
+    /// already met — see `preprocess_corpus`'s own doc comment for why that distinction matters.
+    ///
+    /// Why this axis needed its own corpus (2026-08, the `md-block-walk` refactor's `List`/`Quote`
+    /// stage): none of the existing corpora contains so much as a single `-` bullet or `>` quote
+    /// marker — the same gap `inline_corpus`'s own doc comment already documents for emphasis/links/
+    /// headings, one construct family later. A renderer that gets, say, nesting indentation wrong
+    /// could ship with every *other* corpus reporting a clean pass, for the identical reason: nothing
+    /// in them ever exercises a nested list at all.
+    ///
+    /// One shape below is deliberately expected to come back **unsupported**, not matched: **a
+    /// task-list item inside a *loose* list** (`"task item inside a loose list"`). `render.rs`'s own
+    /// `contains_unsupported` screens this one out on purpose, before `render_doc` ever draws a line
+    /// of it — see that function's own `"LooseTask"` arm for exactly why: a loose item's own task
+    /// marker always lands on a fresh, empty line, and splicing it in there
+    /// (`Writer::task_list_marker`) panics — `insertion index (is 1) should be <= len (is 0)` — the
+    /// *identical* crash real tui-markdown 0.3.7/0.3.8 has for this exact shape (confirmed
+    /// empirically while building this corpus, and independently by `task_corpus`'s own "a real task
+    /// at a list item's own indentation is still a real task" case, whose *outer* item is loose too;
+    /// see `loose_list_task_item_does_not_panic`, elsewhere in this file, for how production itself
+    /// survives the identical crash — via `render_text_block_safe`'s own `catch_unwind` and
+    /// bisect-and-retry, a recovery layer *above* tui-markdown that this stage does not reimplement;
+    /// see the module doc comment on `render.rs` for why matching *that* is out of scope here).
+    /// Reporting the shape unsupported, rather than either reproducing the crash or inventing some
+    /// third, non-panicking rendering neither real renderer ever actually shows, is this stage's own
+    /// version of the "degrade, never crash" choice `CLAUDE.md`'s principle #3 asks for everywhere
+    /// else in this codebase.
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            // ---- bullets: - / * / + ----
+            ("unordered bullet dash", "- a\n- b\n"),
+            ("unordered bullet star", "* a\n* b\n"),
+            ("unordered bullet plus", "+ a\n+ b\n"),
+            // ---- ordered: delimiter, start number, mid-list gaps ----
+            ("ordered dot delimiter", "1. a\n2. b\n"),
+            ("ordered paren delimiter", "1) a\n2) b\n"),
+            ("ordered list does not start at one", "5. a\n6. b\n7. c\n"),
+            (
+                "ordered list source numbers skip midway are still auto-numbered",
+                "1. a\n5. b\n9. c\n",
+            ),
+            // ---- tight vs. loose, and a multi-paragraph item ----
+            ("tight unordered list two items", "- a\n- b\n"),
+            ("loose unordered list two items", "- a\n\n- b\n"),
+            ("tight ordered list two items", "1. a\n2. b\n"),
+            ("loose ordered list two items", "1. a\n\n2. b\n"),
+            (
+                "loose item has two paragraphs of its own",
+                "- a\n\n  b\n- c\n",
+            ),
+            // ---- nesting: depth, and mixed bullet/ordered ----
+            ("nested bullet two levels", "- a\n  - b\n"),
+            ("nested bullet three levels", "- a\n  - b\n    - c\n"),
+            (
+                "ordered list nested inside an unordered one",
+                "- a\n  1. b\n  2. c\n",
+            ),
+            (
+                "unordered list nested inside an ordered one",
+                "1. a\n   - b\n   - c\n",
+            ),
+            // ---- list <-> quote nesting, either direction, and quote-in-quote ----
+            ("quote containing a list", "> - a\n> - b\n"),
+            (
+                "list containing a quote in its own item",
+                "- a\n\n  > quoted\n- b\n",
+            ),
+            (
+                "block quote can interrupt a tight item's own paragraph with no blank line",
+                "- a\n  > quoted\n",
+            ),
+            ("nested quotes two levels", "> a\n>> b\n"),
+            // ---- headings / rules inside a quote (decorate_md_lines does not special-case a
+            // prefixed line — see render.rs's own module doc comment — so both renderers are
+            // expected to show the same, un-decorated "> # ..."/"> ---" text) ----
+            ("quote containing a heading", "> # Title\n> body\n"),
+            (
+                "quote containing a thematic break",
+                "> above\n>\n> ---\n>\n> below\n",
+            ),
+            // ---- checkboxes: unchecked/checked, bullet variants, ordered, nested, loose ----
+            ("tight unordered task unchecked", "- [ ] a\n"),
+            ("tight unordered task checked lowercase", "- [x] a\n"),
+            (
+                "tight unordered task checked uppercase collapses to lowercase x",
+                "- [X] a\n",
+            ),
+            ("tight star-bullet task", "* [ ] a\n"),
+            ("tight plus-bullet task", "+ [ ] a\n"),
+            ("tight ordered task list", "1. [ ] a\n2. [x] b\n"),
+            (
+                "task item nested under a tight item",
+                "- [ ] a\n  - [x] b\n",
+            ),
+            ("task item inside a loose list", "- a\n\n- [ ] b\n"),
+            // ---- CJK ----
+            (
+                "cjk tight unordered list items",
+                "- 最初の項目\n- 二番目の項目\n",
+            ),
+            ("cjk ordered list items", "1. 最初\n2. 二番目\n"),
+            ("cjk task item", "- [ ] 買い物に行く\n"),
+            ("cjk quote", "> これは引用です。\n"),
+            // ---- edges: empty item, single item, list next to a paragraph ----
+            ("single-item list", "- only\n"),
+            ("empty list item followed by a real one", "- \n- b\n"),
+            (
+                "list followed by a paragraph after a blank line",
+                "- a\n- b\n\nafter.\n",
+            ),
+            (
+                "paragraph followed by a list after a blank line",
+                "before.\n\n- a\n- b\n",
+            ),
+        ]
+    }
+}
+
 /// Parity between what the renderer draws and what the source scanners find, measured **the way the
 /// application actually wires them** — the renderer over the preprocessed text, each scanner over
 /// the text its production call site really reads.

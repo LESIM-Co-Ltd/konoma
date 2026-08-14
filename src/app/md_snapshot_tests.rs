@@ -107,6 +107,9 @@ pub(super) fn all_cases() -> Vec<(String, String)> {
     for (name, src) in crate::preview::markdown::inline_corpus::cases() {
         v.push((format!("inline_corpus: {name}"), src.to_string()));
     }
+    for (name, src) in crate::preview::markdown::list_corpus::cases() {
+        v.push((format!("list_corpus: {name}"), src.to_string()));
+    }
     for name in SAMPLE_FILES {
         if let Some(src) = sample_src(name) {
             v.push((format!("samples: {name}"), src));

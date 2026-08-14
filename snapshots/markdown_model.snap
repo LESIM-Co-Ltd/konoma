@@ -1585,6 +1585,310 @@ Paragraph{inline=1..2:"word 通常のテキスト word 通常のテキスト wor
 === inline_corpus: whitespace-only line produces no block ===
 -- BLOCKS (0) --
 
+=== list_corpus: block quote can interrupt a tight item's own paragraph with no blank line ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..15 text="- a\n  > quoted\n"
+  ListItem{task=None} src=0..15 text="- a\n  > quoted\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+    Quote{alert=None} src=6..15 text="> quoted\n"
+      Paragraph{inline=5..6:"quoted"} src=8..15 text="quoted\n"
+
+=== list_corpus: cjk ordered list items ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..23 text="1. 最初\n2. 二番目\n"
+  ListItem{task=None} src=0..10 text="1. 最初\n"
+    Paragraph{inline=2..3:"最初"} src=3..9 text="最初"
+  ListItem{task=None} src=10..23 text="2. 二番目\n"
+    Paragraph{inline=5..6:"二番目"} src=13..22 text="二番目"
+
+=== list_corpus: cjk quote ===
+-- BLOCKS (1) --
+Quote{alert=None} src=0..27 text="> これは引用です。\n"
+  Paragraph{inline=2..3:"これは引用です。"} src=2..27 text="これは引用です。\n"
+
+=== list_corpus: cjk task item ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..25 text="- [ ] 買い物に行く\n"
+  ListItem{task=Some(state=' ', state_at=3)} src=0..25 text="- [ ] 買い物に行く\n"
+    Paragraph{inline=3..4:"買い物に行く"} src=6..24 text="買い物に行く"
+
+=== list_corpus: cjk tight unordered list items ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..39 text="- 最初の項目\n- 二番目の項目\n"
+  ListItem{task=None} src=0..18 text="- 最初の項目\n"
+    Paragraph{inline=2..3:"最初の項目"} src=2..17 text="最初の項目"
+  ListItem{task=None} src=18..39 text="- 二番目の項目\n"
+    Paragraph{inline=5..6:"二番目の項目"} src=20..38 text="二番目の項目"
+
+=== list_corpus: empty list item followed by a real one ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..7 text="- \n- b\n"
+  ListItem{task=None} src=0..3 text="- \n"
+  ListItem{task=None} src=3..7 text="- b\n"
+    Paragraph{inline=4..5:"b"} src=5..6 text="b"
+
+=== list_corpus: list containing a quote in its own item ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..20 text="- a\n\n  > quoted\n- b\n"
+  ListItem{task=None} src=0..16 text="- a\n\n  > quoted\n"
+    Paragraph{inline=3..4:"a"} src=2..4 text="a\n"
+    Quote{alert=None} src=7..16 text="> quoted\n"
+      Paragraph{inline=7..8:"quoted"} src=9..16 text="quoted\n"
+  ListItem{task=None} src=16..20 text="- b\n"
+    Paragraph{inline=13..14:"b"} src=18..20 text="b\n"
+
+=== list_corpus: list followed by a paragraph after a blank line ===
+-- BLOCKS (2) --
+List{ordered=false, start=None} src=0..9 text="- a\n- b\n\n"
+  ListItem{task=None} src=0..4 text="- a\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+  ListItem{task=None} src=4..9 text="- b\n\n"
+    Paragraph{inline=5..6:"b"} src=6..7 text="b"
+Paragraph{inline=9..10:"after."} src=9..16 text="after.\n"
+
+=== list_corpus: loose item has two paragraphs of its own ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..13 text="- a\n\n  b\n- c\n"
+  ListItem{task=None} src=0..9 text="- a\n\n  b\n"
+    Paragraph{inline=3..4:"a"} src=2..4 text="a\n"
+    Paragraph{inline=6..7:"b"} src=7..9 text="b\n"
+  ListItem{task=None} src=9..13 text="- c\n"
+    Paragraph{inline=11..12:"c"} src=11..13 text="c\n"
+
+=== list_corpus: loose ordered list two items ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..11 text="1. a\n\n2. b\n"
+  ListItem{task=None} src=0..6 text="1. a\n\n"
+    Paragraph{inline=3..4:"a"} src=3..5 text="a\n"
+  ListItem{task=None} src=6..11 text="2. b\n"
+    Paragraph{inline=8..9:"b"} src=9..11 text="b\n"
+
+=== list_corpus: loose unordered list two items ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..9 text="- a\n\n- b\n"
+  ListItem{task=None} src=0..5 text="- a\n\n"
+    Paragraph{inline=3..4:"a"} src=2..4 text="a\n"
+  ListItem{task=None} src=5..9 text="- b\n"
+    Paragraph{inline=8..9:"b"} src=7..9 text="b\n"
+
+=== list_corpus: nested bullet three levels ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..18 text="- a\n  - b\n    - c\n"
+  ListItem{task=None} src=0..18 text="- a\n  - b\n    - c\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+    List{ordered=false, start=None} src=6..18 text="- b\n    - c\n"
+      ListItem{task=None} src=6..18 text="- b\n    - c\n"
+        Paragraph{inline=5..6:"b"} src=8..9 text="b"
+        List{ordered=false, start=None} src=14..18 text="- c\n"
+          ListItem{task=None} src=14..18 text="- c\n"
+            Paragraph{inline=8..9:"c"} src=16..17 text="c"
+
+=== list_corpus: nested bullet two levels ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..10 text="- a\n  - b\n"
+  ListItem{task=None} src=0..10 text="- a\n  - b\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+    List{ordered=false, start=None} src=6..10 text="- b\n"
+      ListItem{task=None} src=6..10 text="- b\n"
+        Paragraph{inline=5..6:"b"} src=8..9 text="b"
+
+=== list_corpus: nested quotes two levels ===
+-- BLOCKS (1) --
+Quote{alert=None} src=0..9 text="> a\n>> b\n"
+  Paragraph{inline=2..3:"a"} src=2..4 text="a\n"
+  Quote{alert=None} src=5..9 text="> b\n"
+    Paragraph{inline=6..7:"b"} src=7..9 text="b\n"
+
+=== list_corpus: ordered dot delimiter ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..10 text="1. a\n2. b\n"
+  ListItem{task=None} src=0..5 text="1. a\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+  ListItem{task=None} src=5..10 text="2. b\n"
+    Paragraph{inline=5..6:"b"} src=8..9 text="b"
+
+=== list_corpus: ordered list does not start at one ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(5)} src=0..15 text="5. a\n6. b\n7. c\n"
+  ListItem{task=None} src=0..5 text="5. a\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+  ListItem{task=None} src=5..10 text="6. b\n"
+    Paragraph{inline=5..6:"b"} src=8..9 text="b"
+  ListItem{task=None} src=10..15 text="7. c\n"
+    Paragraph{inline=8..9:"c"} src=13..14 text="c"
+
+=== list_corpus: ordered list nested inside an unordered one ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..18 text="- a\n  1. b\n  2. c\n"
+  ListItem{task=None} src=0..18 text="- a\n  1. b\n  2. c\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+    List{ordered=true, start=Some(1)} src=6..18 text="1. b\n  2. c\n"
+      ListItem{task=None} src=6..11 text="1. b\n"
+        Paragraph{inline=5..6:"b"} src=9..10 text="b"
+      ListItem{task=None} src=13..18 text="2. c\n"
+        Paragraph{inline=8..9:"c"} src=16..17 text="c"
+
+=== list_corpus: ordered list source numbers skip midway are still auto-numbered ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..15 text="1. a\n5. b\n9. c\n"
+  ListItem{task=None} src=0..5 text="1. a\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+  ListItem{task=None} src=5..10 text="5. b\n"
+    Paragraph{inline=5..6:"b"} src=8..9 text="b"
+  ListItem{task=None} src=10..15 text="9. c\n"
+    Paragraph{inline=8..9:"c"} src=13..14 text="c"
+
+=== list_corpus: ordered paren delimiter ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..10 text="1) a\n2) b\n"
+  ListItem{task=None} src=0..5 text="1) a\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+  ListItem{task=None} src=5..10 text="2) b\n"
+    Paragraph{inline=5..6:"b"} src=8..9 text="b"
+
+=== list_corpus: paragraph followed by a list after a blank line ===
+-- BLOCKS (2) --
+Paragraph{inline=1..2:"before."} src=0..8 text="before.\n"
+List{ordered=false, start=None} src=9..17 text="- a\n- b\n"
+  ListItem{task=None} src=9..13 text="- a\n"
+    Paragraph{inline=5..6:"a"} src=11..12 text="a"
+  ListItem{task=None} src=13..17 text="- b\n"
+    Paragraph{inline=8..9:"b"} src=15..16 text="b"
+
+=== list_corpus: quote containing a heading ===
+-- BLOCKS (1) --
+Quote{alert=None} src=0..17 text="> # Title\n> body\n"
+  Heading{level=1, inline=2..3:"Title", id=None, classes=[], attrs=[]} src=2..10 text="# Title\n"
+  Paragraph{inline=5..6:"body"} src=12..17 text="body\n"
+
+=== list_corpus: quote containing a list ===
+-- BLOCKS (1) --
+Quote{alert=None} src=0..12 text="> - a\n> - b\n"
+  List{ordered=false, start=None} src=2..12 text="- a\n> - b\n"
+    ListItem{task=None} src=2..6 text="- a\n"
+      Paragraph{inline=3..4:"a"} src=4..5 text="a"
+    ListItem{task=None} src=8..12 text="- b\n"
+      Paragraph{inline=6..7:"b"} src=10..11 text="b"
+
+=== list_corpus: quote containing a thematic break ===
+-- BLOCKS (1) --
+Quote{alert=None} src=0..26 text="> above\n>\n> ---\n>\n> below\n"
+  Paragraph{inline=2..3:"above"} src=2..8 text="above\n"
+  ThematicBreak src=12..16 text="---\n"
+  Paragraph{inline=6..7:"below"} src=20..26 text="below\n"
+
+=== list_corpus: single-item list ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..7 text="- only\n"
+  ListItem{task=None} src=0..7 text="- only\n"
+    Paragraph{inline=2..3:"only"} src=2..6 text="only"
+
+=== list_corpus: task item inside a loose list ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..13 text="- a\n\n- [ ] b\n"
+  ListItem{task=None} src=0..5 text="- a\n\n"
+    Paragraph{inline=3..4:"a"} src=2..4 text="a\n"
+  ListItem{task=Some(state=' ', state_at=8)} src=5..13 text="- [ ] b\n"
+    Paragraph{inline=9..10:"b"} src=11..13 text="b\n"
+
+=== list_corpus: task item nested under a tight item ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..18 text="- [ ] a\n  - [x] b\n"
+  ListItem{task=Some(state=' ', state_at=3)} src=0..18 text="- [ ] a\n  - [x] b\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+    List{ordered=false, start=None} src=10..18 text="- [x] b\n"
+      ListItem{task=Some(state='x', state_at=13)} src=10..18 text="- [x] b\n"
+        Paragraph{inline=7..8:"b"} src=16..17 text="b"
+
+=== list_corpus: tight ordered list two items ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..10 text="1. a\n2. b\n"
+  ListItem{task=None} src=0..5 text="1. a\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+  ListItem{task=None} src=5..10 text="2. b\n"
+    Paragraph{inline=5..6:"b"} src=8..9 text="b"
+
+=== list_corpus: tight ordered task list ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..18 text="1. [ ] a\n2. [x] b\n"
+  ListItem{task=Some(state=' ', state_at=4)} src=0..9 text="1. [ ] a\n"
+    Paragraph{inline=3..4:"a"} src=7..8 text="a"
+  ListItem{task=Some(state='x', state_at=13)} src=9..18 text="2. [x] b\n"
+    Paragraph{inline=7..8:"b"} src=16..17 text="b"
+
+=== list_corpus: tight plus-bullet task ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="+ [ ] a\n"
+  ListItem{task=Some(state=' ', state_at=3)} src=0..8 text="+ [ ] a\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: tight star-bullet task ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="* [ ] a\n"
+  ListItem{task=Some(state=' ', state_at=3)} src=0..8 text="* [ ] a\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: tight unordered list two items ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="- a\n- b\n"
+  ListItem{task=None} src=0..4 text="- a\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+  ListItem{task=None} src=4..8 text="- b\n"
+    Paragraph{inline=5..6:"b"} src=6..7 text="b"
+
+=== list_corpus: tight unordered task checked lowercase ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="- [x] a\n"
+  ListItem{task=Some(state='x', state_at=3)} src=0..8 text="- [x] a\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: tight unordered task checked uppercase collapses to lowercase x ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="- [X] a\n"
+  ListItem{task=Some(state='X', state_at=3)} src=0..8 text="- [X] a\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: tight unordered task unchecked ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="- [ ] a\n"
+  ListItem{task=Some(state=' ', state_at=3)} src=0..8 text="- [ ] a\n"
+    Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: unordered bullet dash ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="- a\n- b\n"
+  ListItem{task=None} src=0..4 text="- a\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+  ListItem{task=None} src=4..8 text="- b\n"
+    Paragraph{inline=5..6:"b"} src=6..7 text="b"
+
+=== list_corpus: unordered bullet plus ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="+ a\n+ b\n"
+  ListItem{task=None} src=0..4 text="+ a\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+  ListItem{task=None} src=4..8 text="+ b\n"
+    Paragraph{inline=5..6:"b"} src=6..7 text="b"
+
+=== list_corpus: unordered bullet star ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..8 text="* a\n* b\n"
+  ListItem{task=None} src=0..4 text="* a\n"
+    Paragraph{inline=2..3:"a"} src=2..3 text="a"
+  ListItem{task=None} src=4..8 text="* b\n"
+    Paragraph{inline=5..6:"b"} src=6..7 text="b"
+
+=== list_corpus: unordered list nested inside an ordered one ===
+-- BLOCKS (1) --
+List{ordered=true, start=Some(1)} src=0..19 text="1. a\n   - b\n   - c\n"
+  ListItem{task=None} src=0..19 text="1. a\n   - b\n   - c\n"
+    Paragraph{inline=2..3:"a"} src=3..4 text="a"
+    List{ordered=false, start=None} src=8..19 text="- b\n   - c\n"
+      ListItem{task=None} src=8..12 text="- b\n"
+        Paragraph{inline=5..6:"b"} src=10..11 text="b"
+      ListItem{task=None} src=15..19 text="- c\n"
+        Paragraph{inline=8..9:"c"} src=17..18 text="c"
+
 === preprocess_corpus: alert with a fence and a continued def after it ===
 -- BLOCKS (4) --
 Quote{alert=Some(Note)} src=0..29 text="> [!NOTE]\n> ```\n> code\n> ```\n"

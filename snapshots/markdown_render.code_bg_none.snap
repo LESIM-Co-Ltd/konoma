@@ -5911,6 +5911,647 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== list_corpus: block quote can interrupt a tight item's own paragraph with no blank line ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "quoted"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: cjk ordered list items ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "最初"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "二番目"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: cjk quote ===
+-- LINES (1) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "これは引用です。"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: cjk task item ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "買い物に行く"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state=' '
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
+=== list_corpus: cjk tight unordered list items ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "最初の項目"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "二番目の項目"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: empty list item followed by a real one ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: list containing a quote in its own item ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "quoted"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: list followed by a paragraph after a blank line ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "after."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: loose item has two paragraphs of its own ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "b"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: loose ordered list two items ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: loose unordered list two items ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: nested bullet three levels ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "        - "
+  s01 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: nested bullet two levels ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: nested quotes two levels ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- ">"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: ordered dot delimiter ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: ordered list does not start at one ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "5. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "6. "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "7. "
+  s01 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: ordered list nested inside an unordered one ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "    1. "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "    2. "
+  s01 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: ordered list source numbers skip midway are still auto-numbered ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "3. "
+  s01 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: ordered paren delimiter ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: paragraph followed by a list after a blank line ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "before."
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: quote containing a heading ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "# "
+  s03 fg=-,bg=-,mod=- "Title"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "body"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: quote containing a list ===
+-- LINES (2) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "- "
+  s03 fg=-,bg=-,mod=- "a"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "- "
+  s03 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: quote containing a thematic break ===
+-- LINES (5) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "above"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "---"
+L0003 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+L0004 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "below"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: single-item list ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "only"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: task item inside a loose list ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0002 state_off=0003 state=' '
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Task{state=' '}
+
+=== list_corpus: task item nested under a tight item ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
+  s01 fg=cyan,bg=-,mod=B "\u{f046} "
+  s02 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (2) --
+  t00 line=0000 state_off=0003 state=' '
+  t01 line=0001 state_off=0005 state='x'
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (2) --
+  m00 line=0000 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state='x'}
+
+=== list_corpus: tight ordered list two items ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: tight ordered task list ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "[ ] "
+  s02 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "2. "
+  s01 fg=-,bg=-,mod=- "[x] "
+  s02 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: tight plus-bullet task ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state=' '
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
+=== list_corpus: tight star-bullet task ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state=' '
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
+=== list_corpus: tight unordered list two items ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: tight unordered task checked lowercase ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f046} "
+  s02 fg=-,bg=-,mod=- "a"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state='x'
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state='x'}
+
+=== list_corpus: tight unordered task checked uppercase collapses to lowercase x ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f046} "
+  s02 fg=-,bg=-,mod=- "a"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state='X'
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state='x'}
+
+=== list_corpus: tight unordered task unchecked ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (1) --
+  t00 line=0000 state_off=0003 state=' '
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
+=== list_corpus: unordered bullet dash ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: unordered bullet plus ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: unordered bullet star ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: unordered list nested inside an ordered one ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+  s01 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
+  s01 fg=-,bg=-,mod=- "b"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
+  s01 fg=-,bg=-,mod=- "c"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === preprocess_corpus: alert with a fence and a continued def after it ===
 -- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
