@@ -4114,18 +4114,26 @@ fn split_alerts(run: &SourceRun) -> Vec<AlertPart> {
     parts
 }
 
-/// Render a GitHub alert as a colored callout box: a header (`icon Label` in the type's color, bold)
-/// and the Markdown body, every line carrying a colored left bar (`▌`). The body goes through
-/// [`render_md_body_nested`] (not the top-level [`render_md_text`]), so links, code, lists, a
-/// nested alert, and a `<details>` block (rendered statically — see that function's doc comment)
-/// inside an alert all work.
-fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
+/// The colored `▌ ` left-bar span every alert body line carries, in `color` (`kind.color()` for
+/// whichever [`AlertKind`] is being drawn) — shared by [`render_alert`]'s own per-line prefixing and
+/// [`alert_header_line`]'s own leading span, and by `render::render_alert_from_model` (the
+/// block-model renderer's own alert support), which prefixes each *recursively rendered* body line
+/// with the identical span rather than a second, hand-copied `Span::styled("▌ ", ..)` literal.
+fn alert_bar(color: Color) -> Span<'static> {
+    Span::styled("▌ ".to_string(), Style::new().fg(color))
+}
+
+/// The header line of a GitHub-alert callout — `▌` bar, optional Nerd Font icon, and the bold,
+/// colored label (`kind.label()`, plus an Obsidian-style trailing title when `title` is non-empty:
+/// `"Note — My title"`) — split out of [`render_alert`] so `render::render_alert_from_model` (the
+/// block-model renderer's own alert support) can build the identical header line without a second,
+/// hand-copied construction of it: only the *body* differs between the two callers (this module's
+/// own string-based, re-parsing recursion vs. the block model's own tree-walking one), never the
+/// bar/icon/label decision itself — see that function's own doc comment.
+fn alert_header_line(kind: AlertKind, title: &str, icons: bool) -> Line<'static> {
     let color = kind.color();
-    let bar = || Span::styled("▌ ".to_string(), Style::new().fg(color));
-    let mut out = Vec::new();
-    // Header: bar + optional icon + label (+ optional Obsidian-style title), all in the alert color.
-    let mut header = vec![bar()];
-    if ctx.icons {
+    let mut header = vec![alert_bar(color)];
+    if icons {
         header.push(Span::styled(
             format!("{} ", kind.icon()),
             Style::new().fg(color),
@@ -4140,7 +4148,17 @@ fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> 
         label,
         Style::new().fg(color).add_modifier(Modifier::BOLD),
     ));
-    out.push(Line::from(header));
+    Line::from(header)
+}
+
+/// Render a GitHub alert as a colored callout box: a header (`icon Label` in the type's color, bold)
+/// and the Markdown body, every line carrying a colored left bar (`▌`). The body goes through
+/// [`render_md_body_nested`] (not the top-level [`render_md_text`]), so links, code, lists, a
+/// nested alert, and a `<details>` block (rendered statically — see that function's doc comment)
+/// inside an alert all work.
+fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> Vec<Line<'static>> {
+    let color = kind.color();
+    let mut out = vec![alert_header_line(kind, title, ctx.icons)];
     // Body via the shared pipeline (width reduced by the 2-col bar), each line bar-prefixed.
     let inner_ctx = MdRenderCtx {
         width: ctx.width.saturating_sub(2),
@@ -4157,7 +4175,7 @@ fn render_alert(kind: AlertKind, title: &str, body: &str, ctx: &MdRenderCtx) -> 
     );
     for bl in body_lines {
         let style = bl.style;
-        let mut spans = vec![bar()];
+        let mut spans = vec![alert_bar(color)];
         spans.extend(bl.spans);
         out.push(Line::from(spans).style(style));
     }
@@ -4425,14 +4443,12 @@ pub(crate) fn is_details_body_line(line: &Line<'_>) -> bool {
 /// `build_md_items`'s on-screen span count can never include it and drift out of step with
 /// `collect_details_open`'s source-order count (which likewise never counts it) — see
 /// `render_md_body_nested`'s doc comment for the full reasoning.
-fn render_details(
-    open: bool,
-    summary: &str,
-    body: &str,
-    interactive: bool,
-    ctx: &MdRenderCtx,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
+/// The `▾`/`▸` summary marker line for a `<details>` block — split out of [`render_details`] so
+/// `render::render_details_from_model` (the block-model renderer's own `<details>` support) can
+/// build the identical marker line without a second, hand-copied construction of it: only the
+/// *body* differs between the two callers, never the arrow/label/`interactive`-style decision — see
+/// [`render_details`]'s own doc comment for what `interactive` means and why it exists.
+fn details_marker_line(open: bool, summary: &str, interactive: bool) -> Line<'static> {
     let arrow = if open { '▾' } else { '▸' };
     let label = if summary.trim().is_empty() {
         "Details"
@@ -4444,12 +4460,29 @@ fn render_details(
     } else {
         Style::new().fg(Color::Cyan)
     };
-    out.push(Line::from(vec![
+    Line::from(vec![
         Span::styled(format!("{arrow} "), marker_style),
         Span::styled(label.to_string(), Style::new().add_modifier(Modifier::BOLD)),
-    ]));
+    ])
+}
+
+/// The `▏ ` left-bar span an **open** `<details>` body's every line carries, in the same
+/// `TABLE_BORDER_FG` color [`render_details`]'s own body-prefixing and [`is_details_body_line`]'s
+/// own detection both already use — shared with `render::render_details_from_model` for the
+/// identical reason [`alert_bar`] is.
+fn details_bar() -> Span<'static> {
+    Span::styled("▏ ".to_string(), Style::new().fg(TABLE_BORDER_FG))
+}
+
+fn render_details(
+    open: bool,
+    summary: &str,
+    body: &str,
+    interactive: bool,
+    ctx: &MdRenderCtx,
+) -> Vec<Line<'static>> {
+    let mut out = vec![details_marker_line(open, summary, interactive)];
     if open && !body.trim().is_empty() {
-        let bar = || Span::styled("▏ ".to_string(), Style::new().fg(TABLE_BORDER_FG));
         let inner_ctx = MdRenderCtx {
             width: ctx.width.saturating_sub(2),
             ..*ctx
@@ -4465,7 +4498,7 @@ fn render_details(
         );
         for bl in body_lines {
             let style = bl.style;
-            let mut spans = vec![bar()];
+            let mut spans = vec![details_bar()];
             spans.extend(bl.spans);
             out.push(Line::from(spans).style(style));
         }

@@ -126,7 +126,9 @@ fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> S
             "ListItem{{task=Some(state={:?}, state_at={})}}",
             t.state, t.state_at
         ),
-        BlockKind::Quote { alert } => format!("Quote{{alert={alert:?}}}"),
+        BlockKind::Quote { alert, alert_title } => {
+            format!("Quote{{alert={alert:?}, alert_title={alert_title:?}}}")
+        }
         BlockKind::Table { aligns, rows } => {
             let mut s = format!("Table{{aligns={aligns:?}, rows=[");
             for (ri, row) in rows.iter().enumerate() {
@@ -146,6 +148,9 @@ fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> S
             s
         }
         BlockKind::Html { tag } => format!("Html{{tag={tag:?}}}"),
+        BlockKind::Details { open_attr, summary } => {
+            format!("Details{{open_attr={open_attr}, summary={summary:?}}}")
+        }
         BlockKind::ThematicBreak => "ThematicBreak".to_string(),
     }
 }
@@ -344,6 +349,17 @@ fn scan_reference_events(src: &str) -> ReferenceEvents {
 /// container's own range always spans its descendant content by construction (it has to, to
 /// contain its children) *whether or not* the model actually built a leaf block for any of it —
 /// exactly the shape of both real gaps this invariant was written to catch.
+///
+/// `Details` is a container too (it has `children`), but is not excluded the same blanket way:
+/// unlike `List`/`Quote` — whose own `.src` is *exactly* the union of their children's ranges, with
+/// nothing left over — a `Details` block's own `.src` also covers its opening `<details ...>` tag
+/// line (and, when closed, the standalone `</details>` line too), neither of which is represented by
+/// any child at all (see `model::fold_details`'s own doc comment: that text becomes `summary`/
+/// `open_attr` instead, consumed rather than kept as a modeled leaf). Those tag lines still report
+/// real `Event::Html` events this check has to account for, so `details_tag_ranges` reports exactly
+/// the two slivers of `.src` outside whatever `children` spans — never the *whole* `.src` (which
+/// would reintroduce the same "trivially passes" hole this function's own doc comment above warns
+/// against, for the *body* portion `children` is supposed to be covering on its own).
 fn leaf_ranges(blocks: &[Block], out: &mut Vec<Range<usize>>) {
     for b in blocks {
         let is_leaf = matches!(
@@ -358,8 +374,36 @@ fn leaf_ranges(blocks: &[Block], out: &mut Vec<Range<usize>>) {
         if is_leaf {
             out.push(b.src.clone());
         }
+        if matches!(b.kind, BlockKind::Details { .. }) {
+            out.extend(details_tag_ranges(b));
+        }
         leaf_ranges(&b.children, out);
     }
+}
+
+/// The parts of a `Details` block's own `.src` that its `children` do **not** span — its opening
+/// `<details ...>` tag's own line(s), and, when closed, the standalone `</details>` line — see
+/// `leaf_ranges`'s own doc comment for why these need reporting here at all. Relies on `children`
+/// being in non-decreasing, non-overlapping source order (a model invariant, checked elsewhere by
+/// `model::tests::check_invariants`) to compute the two slivers as plain range subtraction, without
+/// needing to know line boundaries itself.
+fn details_tag_ranges(b: &Block) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    match (b.children.first(), b.children.last()) {
+        (Some(first), Some(last)) => {
+            if b.src.start < first.src.start {
+                out.push(b.src.start..first.src.start);
+            }
+            if last.src.end < b.src.end {
+                out.push(last.src.end..b.src.end);
+            }
+        }
+        // No children at all (an empty, self-closing-ish `<details></details>` with nothing in
+        // between, or one whose own tag line already carried everything — see `fold_details`'s own
+        // "nothing follows this open tag" branch) — the *whole* range is tag text.
+        _ => out.push(b.src.clone()),
+    }
+    out
 }
 
 /// Every `Task::state_at` recorded anywhere in `blocks`, gathered recursively.

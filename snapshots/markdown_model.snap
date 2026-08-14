@@ -58,16 +58,15 @@ List{ordered=false, start=None} src=0..59 text="- item\n  ```rust\n  let x = 1;\
     Paragraph{inline=14..15:"b"} src=57..58 text="b"
 
 === code_corpus: a details block after a fence whose closing line has trailing text ===
--- BLOCKS (4) --
+-- BLOCKS (2) --
 List{ordered=false, start=None} src=0..53 text="- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n- next\n\n"
   ListItem{task=None} src=0..45 text="- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n"
     Paragraph{inline=3..4:"item"} src=2..7 text="item\n"
     CodeBlock{lang=Some("rust"), fenced=true, body_spans=[20..31:"let x = 1;\n", 33..45:"``` (note)\n\n"], text="let x = 1;\n``` (note)\n"} src=10..45 text="```rust\n  let x = 1;\n  ``` (note)\n\n"
   ListItem{task=None} src=45..53 text="- next\n\n"
     Paragraph{inline=12..13:"next"} src=47..52 text="next\n"
-Html{tag=Some("details")} src=53..89 text="<details open>\n<summary>S</summary>\n"
-Paragraph{inline=21..22:"body"} src=90..95 text="body\n"
-Html{tag=Some("details")} src=96..107 text="</details>\n"
+Details{open_attr=true, summary="S"} src=53..107 text="<details open>\n<summary>S</summary>\n\nbody\n\n</details>\n"
+  Paragraph{inline=21..22:"body"} src=90..95 text="body\n"
 
 === code_corpus: a fence in a list item, then a real top-level fence after the list ends ===
 -- BLOCKS (3) --
@@ -119,7 +118,7 @@ List{ordered=true, start=Some(1)} src=0..63 text="1. Diagram:\n\n    ```mermaid\
 
 === code_corpus: a plain (non-alert) block quote wrapping a fence is not detected by either side ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..20 text="> para\n>\n>     code\n"
+Quote{alert=None, alert_title=""} src=0..20 text="> para\n>\n>     code\n"
   Paragraph{inline=2..3:"para"} src=2..7 text="para\n"
   CodeBlock{lang=None, fenced=false, body_spans=[15..20:"code\n"], text="code"} src=15..20 text="code\n"
 
@@ -174,7 +173,7 @@ List{ordered=false, start=None} src=0..53 text="- item\n\n  ```rust\n  let x = 1
     CodeBlock{lang=Some("rust"), fenced=true, body_spans=[20..31:"let x = 1;\n", 33..45:"``` (note)\n\n"], text="let x = 1;\n``` (note)\n"} src=10..45 text="```rust\n  let x = 1;\n  ``` (note)\n\n"
   ListItem{task=None} src=45..53 text="- next\n\n"
     Paragraph{inline=12..13:"next"} src=47..52 text="next\n"
-Quote{alert=Some(Note)} src=53..70 text="> [!NOTE]\n> body\n"
+Quote{alert=Some(Note), alert_title=""} src=53..70 text="> [!NOTE]\n> body\n"
   Paragraph{inline=18..23:"[!NOTE] body"} src=55..70 text="[!NOTE]\n> body\n"
 
 === code_corpus: an alert inside a list item ===
@@ -182,7 +181,7 @@ Quote{alert=Some(Note)} src=53..70 text="> [!NOTE]\n> body\n"
 List{ordered=false, start=None} src=0..50 text="- item\n\n  > [!NOTE]\n  > ```sh\n  > echo hi\n  > ```\n"
   ListItem{task=None} src=0..50 text="- item\n\n  > [!NOTE]\n  > ```sh\n  > echo hi\n  > ```\n"
     Paragraph{inline=3..4:"item"} src=2..7 text="item\n"
-    Quote{alert=Some(Note)} src=10..50 text="> [!NOTE]\n  > ```sh\n  > echo hi\n  > ```\n"
+    Quote{alert=Some(Note), alert_title=""} src=10..50 text="> [!NOTE]\n  > ```sh\n  > echo hi\n  > ```\n"
       Paragraph{inline=7..10:"[!NOTE]"} src=12..20 text="[!NOTE]\n"
       CodeBlock{lang=Some("sh"), fenced=true, body_spans=[34..42:"echo hi\n"], text="echo hi"} src=24..49 text="```sh\n  > echo hi\n  > ```"
 
@@ -205,7 +204,7 @@ CodeBlock{lang=None, fenced=false, body_spans=[25..35:"code here\n"], text="code
 List{ordered=false, start=None} src=0..38 text="- item\n\n  > ```sh\n  > echo hi\n  > ```\n"
   ListItem{task=None} src=0..38 text="- item\n\n  > ```sh\n  > echo hi\n  > ```\n"
     Paragraph{inline=3..4:"item"} src=2..7 text="item\n"
-    Quote{alert=None} src=10..38 text="> ```sh\n  > echo hi\n  > ```\n"
+    Quote{alert=None, alert_title=""} src=10..38 text="> ```sh\n  > echo hi\n  > ```\n"
       CodeBlock{lang=Some("sh"), fenced=true, body_spans=[22..30:"echo hi\n"], text="echo hi"} src=12..37 text="```sh\n  > echo hi\n  > ```"
 
 === code_corpus: block quote nested inside a list item, wrapping an indented block ===
@@ -213,7 +212,7 @@ List{ordered=false, start=None} src=0..38 text="- item\n\n  > ```sh\n  > echo hi
 List{ordered=false, start=None} src=0..37 text="- item\n\n  > quoted:\n  >\n  >     code\n"
   ListItem{task=None} src=0..37 text="- item\n\n  > quoted:\n  >\n  >     code\n"
     Paragraph{inline=3..4:"item"} src=2..7 text="item\n"
-    Quote{alert=None} src=10..37 text="> quoted:\n  >\n  >     code\n"
+    Quote{alert=None, alert_title=""} src=10..37 text="> quoted:\n  >\n  >     code\n"
       Paragraph{inline=7..8:"quoted:"} src=12..20 text="quoted:\n"
       CodeBlock{lang=None, fenced=false, body_spans=[32..37:"code\n"], text="code"} src=32..37 text="code\n"
 
@@ -263,7 +262,7 @@ List{ordered=false, start=None} src=0..27 text="- outer\n  - [ ] inner task\n"
 
 === code_corpus: checkbox inside a plain block quote ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..20 text="> - [ ] quoted task\n"
+Quote{alert=None, alert_title=""} src=0..20 text="> - [ ] quoted task\n"
   List{ordered=false, start=None} src=2..20 text="- [ ] quoted task\n"
     ListItem{task=Some(state=' ', state_at=5)} src=2..20 text="- [ ] quoted task\n"
       Paragraph{inline=4..5:"quoted task"} src=8..19 text="quoted task"
@@ -320,13 +319,13 @@ Table{aligns=[None, None], rows=[[77..80:" a ", 81..84:" b "], [97..100:" 1 ", 1
 
 === code_corpus: closing line with trailing text inside a block quote ===
 -- BLOCKS (2) --
-Quote{alert=None} src=0..36 text="> ```rust\n> let x = 1;\n> ``` (note)\n"
+Quote{alert=None, alert_title=""} src=0..36 text="> ```rust\n> let x = 1;\n> ``` (note)\n"
   CodeBlock{lang=Some("rust"), fenced=true, body_spans=[12..23:"let x = 1;\n", 25..36:"``` (note)\n"], text="let x = 1;\n``` (note)"} src=2..36 text="```rust\n> let x = 1;\n> ``` (note)\n"
 Table{aligns=[None, None], rows=[[38..41:" a ", 42..45:" b "], [58..61:" 1 ", 62..65:" 2 "]]} src=37..67 text="| a | b |\n|---|---|\n| 1 | 2 |\n"
 
 === code_corpus: closing line with trailing text inside a list item inside a block quote ===
 -- BLOCKS (2) --
-Quote{alert=None} src=0..53 text="> - item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n"
+Quote{alert=None, alert_title=""} src=0..53 text="> - item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n"
   List{ordered=false, start=None} src=2..53 text="- item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n"
     ListItem{task=None} src=2..53 text="- item\n>\n>   ```rust\n>   let x = 1;\n>   ``` (note)\n"
       Paragraph{inline=4..5:"item"} src=4..9 text="item\n"
@@ -393,17 +392,16 @@ Paragraph{inline=1..2:"para"} src=0..5 text="para\n"
 CodeBlock{lang=None, fenced=false, body_spans=[10..19:"indented\n", 23..30:"second\n"], text="indented\nsecond"} src=10..30 text="indented\n    second\n"
 
 === code_corpus: everything ===
--- BLOCKS (9) --
+-- BLOCKS (6) --
 Heading{level=1, inline=1..2:"Doc", id=None, classes=[], attrs=[]} src=0..6 text="# Doc\n"
 Paragraph{inline=4..5:"intro"} src=7..13 text="intro\n"
 CodeBlock{lang=None, fenced=false, body_spans=[18..37:"top level indented\n"], text="top level indented"} src=18..37 text="top level indented\n"
-Quote{alert=Some(Note)} src=38..80 text="> [!NOTE]\n> body\n>\n>     indented in note\n"
+Quote{alert=Some(Note), alert_title=""} src=38..80 text="> [!NOTE]\n> body\n>\n>     indented in note\n"
   Paragraph{inline=11..16:"[!NOTE] body"} src=40..55 text="[!NOTE]\n> body\n"
   CodeBlock{lang=None, fenced=false, body_spans=[63..80:"indented in note\n"], text="indented in note"} src=63..80 text="indented in note\n"
-Html{tag=Some("details")} src=81..120 text="<details open>\n<summary>More</summary>\n"
-Paragraph{inline=26..27:"detail para"} src=121..133 text="detail para\n"
-CodeBlock{lang=None, fenced=false, body_spans=[138..158:"indented in details\n"], text="indented in details"} src=138..158 text="indented in details\n"
-Html{tag=Some("details")} src=159..170 text="</details>\n"
+Details{open_attr=true, summary="More"} src=81..170 text="<details open>\n<summary>More</summary>\n\ndetail para\n\n    indented in details\n\n</"…
+  Paragraph{inline=26..27:"detail para"} src=121..133 text="detail para\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[138..158:"indented in details\n"], text="indented in details"} src=138..158 text="indented in details\n"
 CodeBlock{lang=Some("rust"), fenced=true, body_spans=[179..198:"fn real_fence() {}\n"], text="fn real_fence() {}"} src=171..201 text="```rust\nfn real_fence() {}\n```"
 
 === code_corpus: fence at a bullet item's own content column ===
@@ -444,7 +442,7 @@ List{ordered=false, start=None} src=0..50 text="- outer\n  - inner:\n\n    ```sh
 
 === code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line) ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..36 text="> quoted:\n>\n> ```sh\n> echo hi\n> ```\n"
+Quote{alert=None, alert_title=""} src=0..36 text="> quoted:\n>\n> ```sh\n> echo hi\n> ```\n"
   Paragraph{inline=2..3:"quoted:"} src=2..10 text="quoted:\n"
   CodeBlock{lang=Some("sh"), fenced=true, body_spans=[22..30:"echo hi\n"], text="echo hi"} src=14..35 text="```sh\n> echo hi\n> ```"
 
@@ -504,25 +502,23 @@ Heading{level=2, inline=1..2:"Usage", id=None, classes=[], attrs=[]} src=0..9 te
 CodeBlock{lang=None, fenced=false, body_spans=[13..29:"npm install foo\n"], text="npm install foo"} src=13..29 text="npm install foo\n"
 
 === code_corpus: indented block nested inside a closed details is not counted ===
--- BLOCKS (5) --
-Html{tag=Some("details")} src=0..31 text="<details>\n<summary>S</summary>\n"
-Paragraph{inline=5..6:"para"} src=32..37 text="para\n"
-CodeBlock{lang=None, fenced=false, body_spans=[42..49:"hidden\n"], text="hidden"} src=42..49 text="hidden\n"
-Html{tag=Some("details")} src=50..61 text="</details>\n"
+-- BLOCKS (2) --
+Details{open_attr=false, summary="S"} src=0..61 text="<details>\n<summary>S</summary>\n\npara\n\n    hidden\n\n</details>\n"
+  Paragraph{inline=5..6:"para"} src=32..37 text="para\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[42..49:"hidden\n"], text="hidden"} src=42..49 text="hidden\n"
 CodeBlock{lang=None, fenced=true, body_spans=[66..71:"real\n"], text="real"} src=62..74 text="```\nreal\n```"
 
 === code_corpus: indented block nested inside an open alert ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..43 text="> [!NOTE]\n> para\n>\n>     indented in alert\n"
+Quote{alert=Some(Note), alert_title=""} src=0..43 text="> [!NOTE]\n> para\n>\n>     indented in alert\n"
   Paragraph{inline=2..7:"[!NOTE] para"} src=2..17 text="[!NOTE]\n> para\n"
   CodeBlock{lang=None, fenced=false, body_spans=[25..43:"indented in alert\n"], text="indented in alert"} src=25..43 text="indented in alert\n"
 
 === code_corpus: indented block nested inside an open details ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-Paragraph{inline=5..6:"para"} src=37..42 text="para\n"
-CodeBlock{lang=None, fenced=false, body_spans=[47..67:"indented in details\n"], text="indented in details"} src=47..67 text="indented in details\n"
-Html{tag=Some("details")} src=68..79 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..79 text="<details open>\n<summary>S</summary>\n\npara\n\n    indented in details\n\n</details>\n"
+  Paragraph{inline=5..6:"para"} src=37..42 text="para\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[47..67:"indented in details\n"], text="indented in details"} src=47..67 text="indented in details\n"
 
 === code_corpus: indented block whose content is a <details> tag ===
 -- BLOCKS (2) --
@@ -627,7 +623,7 @@ List{ordered=false, start=None} src=0..41 text="- item text\n    still the same 
 
 === code_corpus: list item fence nested inside a plain block quote, with an inline-code continuation — masked by the pre-existing block-quote non-detection, not the glue defect ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..53 text="> - item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n"
+Quote{alert=None, alert_title=""} src=0..53 text="> - item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n"
   List{ordered=false, start=None} src=2..53 text="- item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n"
     ListItem{task=None} src=2..53 text="- item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n"
       Paragraph{inline=3..4:"item:"} src=4..9 text="item:"
@@ -969,7 +965,7 @@ List{ordered=true, start=Some(1)} src=55..63 text="1. note\n"
 
 === code_span_corpus: indented code block inside a blockquote ===
 -- BLOCKS (4) --
-Quote{alert=None} src=0..28 text=">     [^1] <kbd>K</kbd> $x$\n"
+Quote{alert=None, alert_title=""} src=0..28 text=">     [^1] <kbd>K</kbd> $x$\n"
   CodeBlock{lang=None, fenced=false, body_spans=[6..28:"[^1] <kbd>K</kbd> $x$\n"], text="[^1] <kbd>K</kbd> $x$"} src=6..28 text="[^1] <kbd>K</kbd> $x$\n"
 Paragraph{inline=6..9:"out ¹ K $x$"} src=29..44 text="out ¹ `K` $x$\n"
 ThematicBreak src=46..50 text="---\n"
@@ -1590,7 +1586,7 @@ Paragraph{inline=1..2:"word 通常のテキスト word 通常のテキスト wor
 List{ordered=false, start=None} src=0..15 text="- a\n  > quoted\n"
   ListItem{task=None} src=0..15 text="- a\n  > quoted\n"
     Paragraph{inline=2..3:"a"} src=2..3 text="a"
-    Quote{alert=None} src=6..15 text="> quoted\n"
+    Quote{alert=None, alert_title=""} src=6..15 text="> quoted\n"
       Paragraph{inline=5..6:"quoted"} src=8..15 text="quoted\n"
 
 === list_corpus: cjk ordered list items ===
@@ -1603,7 +1599,7 @@ List{ordered=true, start=Some(1)} src=0..23 text="1. 最初\n2. 二番目\n"
 
 === list_corpus: cjk quote ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..27 text="> これは引用です。\n"
+Quote{alert=None, alert_title=""} src=0..27 text="> これは引用です。\n"
   Paragraph{inline=2..3:"これは引用です。"} src=2..27 text="これは引用です。\n"
 
 === list_corpus: cjk task item ===
@@ -1632,7 +1628,7 @@ List{ordered=false, start=None} src=0..7 text="- \n- b\n"
 List{ordered=false, start=None} src=0..20 text="- a\n\n  > quoted\n- b\n"
   ListItem{task=None} src=0..16 text="- a\n\n  > quoted\n"
     Paragraph{inline=3..4:"a"} src=2..4 text="a\n"
-    Quote{alert=None} src=7..16 text="> quoted\n"
+    Quote{alert=None, alert_title=""} src=7..16 text="> quoted\n"
       Paragraph{inline=7..8:"quoted"} src=9..16 text="quoted\n"
   ListItem{task=None} src=16..20 text="- b\n"
     Paragraph{inline=13..14:"b"} src=18..20 text="b\n"
@@ -1694,9 +1690,9 @@ List{ordered=false, start=None} src=0..10 text="- a\n  - b\n"
 
 === list_corpus: nested quotes two levels ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..9 text="> a\n>> b\n"
+Quote{alert=None, alert_title=""} src=0..9 text="> a\n>> b\n"
   Paragraph{inline=2..3:"a"} src=2..4 text="a\n"
-  Quote{alert=None} src=5..9 text="> b\n"
+  Quote{alert=None, alert_title=""} src=5..9 text="> b\n"
     Paragraph{inline=6..7:"b"} src=7..9 text="b\n"
 
 === list_corpus: ordered dot delimiter ===
@@ -1757,13 +1753,13 @@ List{ordered=false, start=None} src=9..17 text="- a\n- b\n"
 
 === list_corpus: quote containing a heading ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..17 text="> # Title\n> body\n"
+Quote{alert=None, alert_title=""} src=0..17 text="> # Title\n> body\n"
   Heading{level=1, inline=2..3:"Title", id=None, classes=[], attrs=[]} src=2..10 text="# Title\n"
   Paragraph{inline=5..6:"body"} src=12..17 text="body\n"
 
 === list_corpus: quote containing a list ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..12 text="> - a\n> - b\n"
+Quote{alert=None, alert_title=""} src=0..12 text="> - a\n> - b\n"
   List{ordered=false, start=None} src=2..12 text="- a\n> - b\n"
     ListItem{task=None} src=2..6 text="- a\n"
       Paragraph{inline=3..4:"a"} src=4..5 text="a"
@@ -1772,7 +1768,7 @@ Quote{alert=None} src=0..12 text="> - a\n> - b\n"
 
 === list_corpus: quote containing a thematic break ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..26 text="> above\n>\n> ---\n>\n> below\n"
+Quote{alert=None, alert_title=""} src=0..26 text="> above\n>\n> ---\n>\n> below\n"
   Paragraph{inline=2..3:"above"} src=2..8 text="above\n"
   ThematicBreak src=12..16 text="---\n"
   Paragraph{inline=6..7:"below"} src=20..26 text="below\n"
@@ -1891,7 +1887,7 @@ List{ordered=true, start=Some(1)} src=0..19 text="1. a\n   - b\n   - c\n"
 
 === preprocess_corpus: alert with a fence and a continued def after it ===
 -- BLOCKS (4) --
-Quote{alert=Some(Note)} src=0..29 text="> [!NOTE]\n> ```\n> code\n> ```\n"
+Quote{alert=Some(Note), alert_title=""} src=0..29 text="> [!NOTE]\n> ```\n> code\n> ```\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   CodeBlock{lang=None, fenced=true, body_spans=[18..23:"code\n"], text="code"} src=12..28 text="```\n> code\n> ```"
 Paragraph{inline=11..12:"Ref¹."} src=30..37 text="Ref¹.\n"
@@ -1935,7 +1931,7 @@ CodeBlock{lang=None, fenced=true, body_spans=[18..23:"code\n"], text="code"} src
 
 === preprocess_corpus: br ending an alert early above a fence ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..77 text="> [!NOTE]\n> Some prose with   \n>  inline text.\n>\n> ```\n> code line one\n> ```\n"
+Quote{alert=Some(Note), alert_title=""} src=0..77 text="> [!NOTE]\n> Some prose with   \n>  inline text.\n>\n> ```\n> code line one\n> ```\n"
   Paragraph{inline=2..9:"[!NOTE] Some prose with\ninline text."} src=2..47 text="[!NOTE]\n> Some prose with   \n>  inline text.\n"
   CodeBlock{lang=None, fenced=true, body_spans=[57..71:"code line one\n"], text="code line one"} src=51..76 text="```\n> code line one\n> ```"
 
@@ -1972,7 +1968,7 @@ List{ordered=false, start=None} src=0..25 text="- outer\n  - inner  \ntail\n"
 
 === preprocess_corpus: br inside a quote ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..18 text="> quoted  \n> tail\n"
+Quote{alert=None, alert_title=""} src=0..18 text="> quoted  \n> tail\n"
   Paragraph{inline=2..5:"quoted\ntail"} src=2..18 text="quoted  \n> tail\n"
 
 === preprocess_corpus: br inside a table cell ===
@@ -1981,14 +1977,13 @@ Table{aligns=[None, None], rows=[[1..4:" a ", 5..8:" b "], [25..30:" x y ", 31..
 
 === preprocess_corpus: br inside an alert ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..28 text="> [!NOTE]\n> quoted  \n> tail\n"
+Quote{alert=Some(Note), alert_title=""} src=0..28 text="> [!NOTE]\n> quoted  \n> tail\n"
   Paragraph{inline=2..9:"[!NOTE] quoted\ntail"} src=2..28 text="[!NOTE]\n> quoted  \n> tail\n"
 
 === preprocess_corpus: br inside an open details ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-Paragraph{inline=5..8:"prose\ntail"} src=37..50 text="prose  \ntail\n"
-Html{tag=Some("details")} src=51..62 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..62 text="<details open>\n<summary>S</summary>\n\nprose  \ntail\n\n</details>\n"
+  Paragraph{inline=5..8:"prose\ntail"} src=37..50 text="prose  \ntail\n"
 
 === preprocess_corpus: br inside indented code is literal ===
 -- BLOCKS (2) --
@@ -2051,7 +2046,7 @@ List{ordered=true, start=Some(1)} src=20..36 text="1. note\n   more\n"
 
 === preprocess_corpus: checkbox in an alert plus a continued def ===
 -- BLOCKS (4) --
-Quote{alert=Some(Note)} src=0..23 text="> [!NOTE]\n> - [ ] task\n"
+Quote{alert=Some(Note), alert_title=""} src=0..23 text="> [!NOTE]\n> - [ ] task\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   List{ordered=false, start=None} src=12..23 text="- [ ] task\n"
     ListItem{task=Some(state=' ', state_at=15)} src=12..23 text="- [ ] task\n"
@@ -2101,10 +2096,9 @@ List{ordered=true, start=Some(1)} src=87..107 text="1. 注記\n   続き\n"
     Paragraph{inline=14..17:"注記 続き"} src=90..106 text="注記\n   続き"
 
 === preprocess_corpus: closed details with a fence and a continued def ===
--- BLOCKS (6) --
-Html{tag=Some("details")} src=0..31 text="<details>\n<summary>S</summary>\n"
-CodeBlock{lang=None, fenced=true, body_spans=[36..41:"code\n"], text="code"} src=32..44 text="```\ncode\n```"
-Html{tag=Some("details")} src=46..57 text="</details>\n"
+-- BLOCKS (4) --
+Details{open_attr=false, summary="S"} src=0..57 text="<details>\n<summary>S</summary>\n\n```\ncode\n```\n\n</details>\n"
+  CodeBlock{lang=None, fenced=true, body_spans=[36..41:"code\n"], text="code"} src=32..44 text="```\ncode\n```"
 Paragraph{inline=11..12:"Ref¹."} src=58..65 text="Ref¹.\n"
 ThematicBreak src=67..71 text="---\n"
 List{ordered=true, start=Some(1)} src=72..89 text="1. first\n   more\n"
@@ -2187,7 +2181,7 @@ List{ordered=true, start=Some(1)} src=32..49 text="1. first\n   more\n"
 
 === preprocess_corpus: continued def inside a quote ===
 -- BLOCKS (3) --
-Quote{alert=None} src=0..9 text="> Ref¹.\n"
+Quote{alert=None, alert_title=""} src=0..9 text="> Ref¹.\n"
   Paragraph{inline=2..3:"Ref¹."} src=2..9 text="Ref¹.\n"
 ThematicBreak src=11..15 text="---\n"
 List{ordered=true, start=Some(1)} src=16..33 text="1. first\n   more\n"
@@ -2372,16 +2366,14 @@ List{ordered=true, start=Some(1)} src=14..31 text="1. first\n   more\n"
     Paragraph{inline=6..9:"first more"} src=17..30 text="first\n   more"
 
 === preprocess_corpus: open details whose body starts with indented code ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-CodeBlock{lang=None, fenced=false, body_spans=[41..55:"indented line\n"], text="indented line"} src=41..55 text="indented line\n"
-Html{tag=Some("details")} src=56..67 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..67 text="<details open>\n<summary>S</summary>\n\n    indented line\n\n</details>\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[41..55:"indented line\n"], text="indented line"} src=41..55 text="indented line\n"
 
 === preprocess_corpus: open details with a fence and a continued def ===
--- BLOCKS (6) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-CodeBlock{lang=None, fenced=true, body_spans=[41..46:"code\n"], text="code"} src=37..49 text="```\ncode\n```"
-Html{tag=Some("details")} src=51..62 text="</details>\n"
+-- BLOCKS (4) --
+Details{open_attr=true, summary="S"} src=0..62 text="<details open>\n<summary>S</summary>\n\n```\ncode\n```\n\n</details>\n"
+  CodeBlock{lang=None, fenced=true, body_spans=[41..46:"code\n"], text="code"} src=37..49 text="```\ncode\n```"
 Paragraph{inline=11..12:"Ref¹."} src=63..70 text="Ref¹.\n"
 ThematicBreak src=72..76 text="---\n"
 List{ordered=true, start=Some(1)} src=77..94 text="1. first\n   more\n"
@@ -2389,11 +2381,10 @@ List{ordered=true, start=Some(1)} src=77..94 text="1. first\n   more\n"
     Paragraph{inline=16..19:"first more"} src=80..93 text="first\n   more"
 
 === preprocess_corpus: open details with prose before indented code ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-Paragraph{inline=5..6:"prose first."} src=37..50 text="prose first.\n"
-CodeBlock{lang=None, fenced=false, body_spans=[55..69:"indented line\n"], text="indented line"} src=55..69 text="indented line\n"
-Html{tag=Some("details")} src=70..81 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..81 text="<details open>\n<summary>S</summary>\n\nprose first.\n\n    indented line\n\n</details>"…
+  Paragraph{inline=5..6:"prose first."} src=37..50 text="prose first.\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[55..69:"indented line\n"], text="indented line"} src=55..69 text="indented line\n"
 
 === preprocess_corpus: paired tag inside a fence is literal ===
 -- BLOCKS (1) --
@@ -2589,7 +2580,7 @@ List{ordered=false, start=None} src=1138..1171 text="- [missing](./does-not-exis
     Paragraph{inline=166..169:"missing"} src=1140..1170 text="[missing](./does-not-exist.md)"
 
 === samples: markdown.ja.md ===
--- BLOCKS (49) --
+-- BLOCKS (47) --
 Heading{level=1, inline=1..2:"Markdown プレビューのデモ", id=None, classes=[], attrs=[]} src=0..36 text="# Markdown プレビューのデモ\n"
 Paragraph{inline=4..19:"これは 太字 と 斜体 と inline code、そして リンク の例です。"} src=37..150 text="これは **太字** と *斜体* と `inline code`、そして [リンク](https://example.com) の例です。\n"
 Heading{level=2, inline=21..22:"リスト", id=None, classes=[], attrs=[]} src=151..164 text="## リスト\n"
@@ -2607,7 +2598,7 @@ List{ordered=true, start=Some(1)} src=211..246 text="1. 番号付き1\n2. 番号
   ListItem{task=None} src=228..246 text="2. 番号付き2\n\n"
     Paragraph{inline=41..42:"番号付き2"} src=231..244 text="番号付き2"
 Heading{level=2, inline=45..46:"引用とコード", id=None, classes=[], attrs=[]} src=246..268 text="## 引用とコード\n"
-Quote{alert=None} src=269..375 text="> 引用ブロック。lightline 的な軽量プレビューでも装飾が効くことを確認する。\n"
+Quote{alert=None, alert_title=""} src=269..375 text="> 引用ブロック。lightline 的な軽量プレビューでも装飾が効くことを確認する。\n"
   Paragraph{inline=49..50:"引用ブロック。lightline 的な軽量プレビューでも装飾が効くことを確認する。"} src=271..375 text="引用ブロック。lightline 的な軽量プレビューでも装飾が効くことを確認する。\n"
 CodeBlock{lang=Some("rust"), fenced=true, body_spans=[384..477:"fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}\n"], text="fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"} src=376..480 text="```rust\nfn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"…
 Heading{level=2, inline=56..57:"表", id=None, classes=[], attrs=[]} src=482..489 text="## 表\n"
@@ -2626,22 +2617,21 @@ List{ordered=false, start=None} src=1013..1235 text="- [ ] 未完了タスク（
 Paragraph{inline=174..191:"チェックボックスは操作できる: Tab でフォーカス（リンクと同じ巡回）→ Space か Enter で トグル＝このファイルに書き戻る。[ui] md_ta"…} src=1235..1551 text="チェックボックスは操作できる: `Tab` でフォーカス（リンクと同じ巡回）→ `Space` か `Enter` で\nトグル＝このファイルに書き戻る。`[ui"…
 Heading{level=2, inline=193..194:"HTML ブロック", id=None, classes=[], attrs=[]} src=1552..1573 text="## HTML ブロック\n"
 Paragraph{inline=196..216:"<details> は折りたたみセクションになる: ▸/▾ のマーカー付きで、Tab で要約行に フォーカス → Space か Enter で開閉。既定は G"…} src=1574..1851 text="`<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に\nフォーカス → `Space` か `Ente"…
-Html{tag=Some("details")} src=1852..2035 text="<details>\n<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>\n中身は Markdown と"…
-List{ordered=false, start=None} src=2036..2093 text="- 折りたたみの中の項目\n- もう一つの項目\n"
-  ListItem{task=None} src=2036..2069 text="- 折りたたみの中の項目\n"
-    Paragraph{inline=224..225:"折りたたみの中の項目"} src=2038..2068 text="折りたたみの中の項目"
-  ListItem{task=None} src=2069..2093 text="- もう一つの項目\n"
-    Paragraph{inline=227..228:"もう一つの項目"} src=2071..2092 text="もう一つの項目"
-Html{tag=Some("details")} src=2093..2104 text="</details>\n"
+Details{open_attr=false, summary="閉じた details（クリックで開く相当・Tab→Space で開く）"} src=1852..2104 text="<details>\n<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>\n中身は Markdown と"…
+  List{ordered=false, start=None} src=2036..2093 text="- 折りたたみの中の項目\n- もう一つの項目\n"
+    ListItem{task=None} src=2036..2069 text="- 折りたたみの中の項目\n"
+      Paragraph{inline=224..225:"折りたたみの中の項目"} src=2038..2068 text="折りたたみの中の項目"
+    ListItem{task=None} src=2069..2093 text="- もう一つの項目\n"
+      Paragraph{inline=227..228:"もう一つの項目"} src=2071..2092 text="もう一つの項目"
 Html{tag=Some("details")} src=2105..2302 text="<details open>\n<summary>open 属性つき details（最初から開いている）</summary>\n`<details open>` "…
 Html{tag=None} src=2303..2358 text="<!-- この HTML コメントは表示されない -->\n"
 Heading{level=2, inline=243..244:"アラート（GitHub 形式）", id=None, classes=[], attrs=[]} src=2359..2394 text="## アラート（GitHub 形式）\n"
 Paragraph{inline=246..250:"> [!TYPE] の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（[ui] md_alerts）。"} src=2395..2523 text="`> [!TYPE]` の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（`[ui] md_alerts`）。\n"
-Quote{alert=Some(Note)} src=2524..2630 text="> [!NOTE]\n> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma\n"
+Quote{alert=Some(Note), alert_title=""} src=2524..2630 text="> [!NOTE]\n> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma\n"
   Paragraph{inline=253..258:"[!NOTE] 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma"} src=2526..2630 text="[!NOTE]\n> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma\n"
-Quote{alert=Some(Tip)} src=2631..2752 text="> [!TIP] 独自タイトル\n> ヒント。本文の中では **装飾** も [リンク](images.md) も普通に効く。\n"
+Quote{alert=Some(Tip), alert_title="独自タイトル"} src=2631..2752 text="> [!TIP] 独自タイトル\n> ヒント。本文の中では **装飾** も [リンク](images.md) も普通に効く。\n"
   Paragraph{inline=262..276:"[!TIP] 独自タイトル ヒント。本文の中では 装飾 も リンク も普通に効く。"} src=2633..2752 text="[!TIP] 独自タイトル\n> ヒント。本文の中では **装飾** も [リンク](images.md) も普通に効く。\n"
-Quote{alert=Some(Warning)} src=2753..2853 text="> [!WARNING]\n> 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。\n"
+Quote{alert=Some(Warning), alert_title=""} src=2753..2853 text="> [!WARNING]\n> 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。\n"
   Paragraph{inline=280..285:"[!WARNING] 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。"} src=2755..2853 text="[!WARNING]\n> 5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。\n"
 Heading{level=2, inline=288..289:"自動リンクと絵文字", id=None, classes=[], attrs=[]} src=2854..2885 text="## 自動リンクと絵文字\n"
 Paragraph{inline=291..302:"裸の URL・メールは自動でリンクになる（[ui] md_autolink）: https://example.com や www.rust-lang.org "…} src=2886..3251 text="裸の URL・メールは自動でリンクになる（`[ui] md_autolink`）: https://example.com や www.rust-lang.or"…
@@ -2666,7 +2656,7 @@ List{ordered=true, start=Some(1)} src=5439..5509 text="1. これが脚注の定�
     Paragraph{inline=423..424:"これが脚注の定義。文書のどこに書いてもよい。"} src=5442..5508 text="これが脚注の定義。文書のどこに書いてもよい。"
 
 === samples: markdown.md ===
--- BLOCKS (49) --
+-- BLOCKS (47) --
 Heading{level=1, inline=1..2:"Markdown preview demo", id=None, classes=[], attrs=[]} src=0..24 text="# Markdown preview demo\n"
 Paragraph{inline=4..19:"This shows bold, italic, inline code, and a link."} src=25..106 text="This shows **bold**, *italic*, `inline code`, and a [link](https://example.com)."…
 Heading{level=2, inline=21..22:"Lists", id=None, classes=[], attrs=[]} src=107..116 text="## Lists\n"
@@ -2684,7 +2674,7 @@ List{ordered=true, start=Some(1)} src=150..179 text="1. Numbered 1\n2. Numbered 
   ListItem{task=None} src=164..179 text="2. Numbered 2\n\n"
     Paragraph{inline=41..42:"Numbered 2"} src=167..177 text="Numbered 2"
 Heading{level=2, inline=45..46:"Quotes and code", id=None, classes=[], attrs=[]} src=179..198 text="## Quotes and code\n"
-Quote{alert=None} src=199..260 text="> A blockquote. Styling works even in a lightweight preview.\n"
+Quote{alert=None, alert_title=""} src=199..260 text="> A blockquote. Styling works even in a lightweight preview.\n"
   Paragraph{inline=49..50:"A blockquote. Styling works even in a lightweight preview."} src=201..260 text="A blockquote. Styling works even in a lightweight preview.\n"
 CodeBlock{lang=Some("rust"), fenced=true, body_spans=[269..356:"fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg"…], text="fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg"…} src=261..359 text="```rust\nfn main() {\n    let msg = \"syntect highlighting should work\";\n    printl"…
 Heading{level=2, inline=56..57:"Tables", id=None, classes=[], attrs=[]} src=361..371 text="## Tables\n"
@@ -2703,22 +2693,21 @@ List{ordered=false, start=None} src=876..1035 text="- [ ] An open task (rendered
 Paragraph{inline=174..189:"Checkboxes are interactive: Tab to focus (same cycle as links), then Space or En"…} src=1035..1266 text="Checkboxes are interactive: `Tab` to focus (same cycle as links), then `Space` o"…
 Heading{level=2, inline=191..192:"HTML blocks", id=None, classes=[], attrs=[]} src=1267..1282 text="## HTML blocks\n"
 Paragraph{inline=194..214:"<details> becomes a collapsible section with a ▸/▾ marker: Tab focuses the summa"…} src=1283..1528 text="`<details>` becomes a collapsible section with a `▸`/`▾` marker: `Tab` focuses t"…
-Html{tag=Some("details")} src=1529..1687 text="<details>\n<summary>Closed details (like \"click to expand\" — open with Tab→Space)"…
-List{ordered=false, start=None} src=1688..1729 text="- an item inside the fold\n- another item\n"
-  ListItem{task=None} src=1688..1714 text="- an item inside the fold\n"
-    Paragraph{inline=222..223:"an item inside the fold"} src=1690..1713 text="an item inside the fold"
-  ListItem{task=None} src=1714..1729 text="- another item\n"
-    Paragraph{inline=225..226:"another item"} src=1716..1728 text="another item"
-Html{tag=Some("details")} src=1729..1740 text="</details>\n"
+Details{open_attr=false, summary="Closed details (like \"click to expand\" — open with Tab→Space)"} src=1529..1740 text="<details>\n<summary>Closed details (like \"click to expand\" — open with Tab→Space)"…
+  List{ordered=false, start=None} src=1688..1729 text="- an item inside the fold\n- another item\n"
+    ListItem{task=None} src=1688..1714 text="- an item inside the fold\n"
+      Paragraph{inline=222..223:"an item inside the fold"} src=1690..1713 text="an item inside the fold"
+    ListItem{task=None} src=1714..1729 text="- another item\n"
+      Paragraph{inline=225..226:"another item"} src=1716..1728 text="another item"
 Html{tag=Some("details")} src=1741..1913 text="<details open>\n<summary>Details with the open attribute (expanded from the start"…
 Html{tag=None} src=1914..1954 text="<!-- This HTML comment is not shown -->\n"
 Heading{level=2, inline=241..242:"Alerts (GitHub-style)", id=None, classes=[], attrs=[]} src=1955..1980 text="## Alerts (GitHub-style)\n"
 Paragraph{inline=244..249:"A > [!TYPE] blockquote renders as a colored callout box (icon + label) ([ui] md_"…} src=1981..2074 text="A `> [!TYPE]` blockquote renders as a colored callout box (icon + label) (`[ui] "…
-Quote{alert=Some(Note)} src=2075..2176 text="> [!NOTE]\n> Supplementary info. A bare URL is autolinked too: https://github.com"…
+Quote{alert=Some(Note), alert_title=""} src=2075..2176 text="> [!NOTE]\n> Supplementary info. A bare URL is autolinked too: https://github.com"…
   Paragraph{inline=252..257:"[!NOTE] Supplementary info. A bare URL is autolinked too: https://github.com/LES"…} src=2077..2176 text="[!NOTE]\n> Supplementary info. A bare URL is autolinked too: https://github.com/L"…
-Quote{alert=Some(Tip)} src=2177..2270 text="> [!TIP] Custom title\n> A tip. **Styling** and [links](images.md) work normally "…
+Quote{alert=Some(Tip), alert_title="Custom title"} src=2177..2270 text="> [!TIP] Custom title\n> A tip. **Styling** and [links](images.md) work normally "…
   Paragraph{inline=261..275:"[!TIP] Custom title A tip. Styling and links work normally in the body."} src=2179..2270 text="[!TIP] Custom title\n> A tip. **Styling** and [links](images.md) work normally in"…
-Quote{alert=Some(Warning)} src=2271..2364 text="> [!WARNING]\n> Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some ali"…
+Quote{alert=Some(Warning), alert_title=""} src=2271..2364 text="> [!WARNING]\n> Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some ali"…
   Paragraph{inline=279..284:"[!WARNING] Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some aliases"…} src=2273..2364 text="[!WARNING]\n> Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some alias"…
 Heading{level=2, inline=287..288:"Autolinks and emoji", id=None, classes=[], attrs=[]} src=2365..2388 text="## Autolinks and emoji\n"
 Paragraph{inline=290..301:"Bare URLs and emails become links ([ui] md_autolink): https://example.com or www"…} src=2389..2666 text="Bare URLs and emails become links (`[ui] md_autolink`): https://example.com or w"…
@@ -2905,31 +2894,27 @@ List{ordered=false, start=None} src=5281..5307 text="- [ ] Done! Enjoy konoma.\n
     Paragraph{inline=439..440:"Done! Enjoy konoma."} src=5287..5306 text="Done! Enjoy konoma."
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..35 text="<details>\n<summary>Outer</summary>\n"
-Quote{alert=Some(Note)} src=36..129 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply hidden\n>\n"…
-  Paragraph{inline=6..9:"[!NOTE]"} src=38..46 text="[!NOTE]\n"
-  Html{tag=Some("details")} src=48..90 text="<details open>\n> <summary>Inner</summary>\n"
-  List{ordered=false, start=None} src=94..116 text="- [ ] deeply hidden\n>\n"
-    ListItem{task=Some(state=' ', state_at=97)} src=94..116 text="- [ ] deeply hidden\n>\n"
-      Paragraph{inline=17..18:"deeply hidden"} src=100..113 text="deeply hidden"
-  Html{tag=Some("details")} src=118..129 text="</details>\n"
-Html{tag=Some("details")} src=130..141 text="</details>\n"
+-- BLOCKS (2) --
+Details{open_attr=false, summary="Outer"} src=0..141 text="<details>\n<summary>Outer</summary>\n\n> [!NOTE]\n> <details open>\n> <summary>Inner<"…
+  Quote{alert=Some(Note), alert_title=""} src=36..129 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply hidden\n>\n"…
+    Paragraph{inline=6..9:"[!NOTE]"} src=38..46 text="[!NOTE]\n"
+    Details{open_attr=true, summary="Inner"} src=48..129 text="<details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply hidden\n>\n> </details>"…
+      List{ordered=false, start=None} src=94..116 text="- [ ] deeply hidden\n>\n"
+        ListItem{task=Some(state=' ', state_at=97)} src=94..116 text="- [ ] deeply hidden\n>\n"
+          Paragraph{inline=17..18:"deeply hidden"} src=100..113 text="deeply hidden"
 List{ordered=false, start=None} src=142..153 text="- [ ] real\n"
   ListItem{task=Some(state=' ', state_at=145)} src=142..153 text="- [ ] real\n"
     Paragraph{inline=30..31:"real"} src=148..152 text="real"
 
 === task_corpus: a details nested inside an alert nested inside an open details shows everything ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..40 text="<details open>\n<summary>Outer</summary>\n"
-Quote{alert=Some(Note)} src=41..133 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply shown\n>\n>"…
-  Paragraph{inline=6..9:"[!NOTE]"} src=43..51 text="[!NOTE]\n"
-  Html{tag=Some("details")} src=53..95 text="<details open>\n> <summary>Inner</summary>\n"
-  List{ordered=false, start=None} src=99..120 text="- [ ] deeply shown\n>\n"
-    ListItem{task=Some(state=' ', state_at=102)} src=99..120 text="- [ ] deeply shown\n>\n"
-      Paragraph{inline=17..18:"deeply shown"} src=105..117 text="deeply shown"
-  Html{tag=Some("details")} src=122..133 text="</details>\n"
-Html{tag=Some("details")} src=134..145 text="</details>\n"
+-- BLOCKS (2) --
+Details{open_attr=true, summary="Outer"} src=0..145 text="<details open>\n<summary>Outer</summary>\n\n> [!NOTE]\n> <details open>\n> <summary>I"…
+  Quote{alert=Some(Note), alert_title=""} src=41..133 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply shown\n>\n>"…
+    Paragraph{inline=6..9:"[!NOTE]"} src=43..51 text="[!NOTE]\n"
+    Details{open_attr=true, summary="Inner"} src=53..133 text="<details open>\n> <summary>Inner</summary>\n>\n> - [ ] deeply shown\n>\n> </details>\n"
+      List{ordered=false, start=None} src=99..120 text="- [ ] deeply shown\n>\n"
+        ListItem{task=Some(state=' ', state_at=102)} src=99..120 text="- [ ] deeply shown\n>\n"
+          Paragraph{inline=17..18:"deeply shown"} src=105..117 text="deeply shown"
 List{ordered=false, start=None} src=146..157 text="- [ ] real\n"
   ListItem{task=Some(state=' ', state_at=149)} src=146..157 text="- [ ] real\n"
     Paragraph{inline=30..31:"real"} src=152..156 text="real"
@@ -2945,7 +2930,7 @@ List{ordered=false, start=None} src=0..47 text="- [ ] outer\n\n  - [ ] nested at
 
 === task_corpus: alert CAUTION ===
 -- BLOCKS (1) --
-Quote{alert=Some(Caution)} src=0..23 text="> [!CAUTION]\n> - [ ] a\n"
+Quote{alert=Some(Caution), alert_title=""} src=0..23 text="> [!CAUTION]\n> - [ ] a\n"
   Paragraph{inline=2..5:"[!CAUTION]"} src=2..13 text="[!CAUTION]\n"
   List{ordered=false, start=None} src=15..23 text="- [ ] a\n"
     ListItem{task=Some(state=' ', state_at=18)} src=15..23 text="- [ ] a\n"
@@ -2953,7 +2938,7 @@ Quote{alert=Some(Caution)} src=0..23 text="> [!CAUTION]\n> - [ ] a\n"
 
 === task_corpus: alert IMPORTANT ===
 -- BLOCKS (1) --
-Quote{alert=Some(Important)} src=0..25 text="> [!IMPORTANT]\n> - [ ] a\n"
+Quote{alert=Some(Important), alert_title=""} src=0..25 text="> [!IMPORTANT]\n> - [ ] a\n"
   Paragraph{inline=2..5:"[!IMPORTANT]"} src=2..15 text="[!IMPORTANT]\n"
   List{ordered=false, start=None} src=17..25 text="- [ ] a\n"
     ListItem{task=Some(state=' ', state_at=20)} src=17..25 text="- [ ] a\n"
@@ -2961,7 +2946,7 @@ Quote{alert=Some(Important)} src=0..25 text="> [!IMPORTANT]\n> - [ ] a\n"
 
 === task_corpus: alert NOTE ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..20 text="> [!NOTE]\n> - [ ] a\n"
+Quote{alert=Some(Note), alert_title=""} src=0..20 text="> [!NOTE]\n> - [ ] a\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   List{ordered=false, start=None} src=12..20 text="- [ ] a\n"
     ListItem{task=Some(state=' ', state_at=15)} src=12..20 text="- [ ] a\n"
@@ -2969,7 +2954,7 @@ Quote{alert=Some(Note)} src=0..20 text="> [!NOTE]\n> - [ ] a\n"
 
 === task_corpus: alert TIP ===
 -- BLOCKS (1) --
-Quote{alert=Some(Tip)} src=0..29 text="> [!TIP]\n> - [ ] a\n> - [x] b\n"
+Quote{alert=Some(Tip), alert_title=""} src=0..29 text="> [!TIP]\n> - [ ] a\n> - [x] b\n"
   Paragraph{inline=2..5:"[!TIP]"} src=2..9 text="[!TIP]\n"
   List{ordered=false, start=None} src=11..29 text="- [ ] a\n> - [x] b\n"
     ListItem{task=Some(state=' ', state_at=14)} src=11..19 text="- [ ] a\n"
@@ -2979,35 +2964,33 @@ Quote{alert=Some(Tip)} src=0..29 text="> [!TIP]\n> - [ ] a\n> - [x] b\n"
 
 === task_corpus: alert WARNING ===
 -- BLOCKS (1) --
-Quote{alert=Some(Warning)} src=0..23 text="> [!WARNING]\n> - [x] a\n"
+Quote{alert=Some(Warning), alert_title=""} src=0..23 text="> [!WARNING]\n> - [x] a\n"
   Paragraph{inline=2..5:"[!WARNING]"} src=2..13 text="[!WARNING]\n"
   List{ordered=false, start=None} src=15..23 text="- [x] a\n"
     ListItem{task=Some(state='x', state_at=18)} src=15..23 text="- [x] a\n"
       Paragraph{inline=9..10:"a"} src=21..22 text="a"
 
 === task_corpus: alert nested inside a closed details hides its task ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..31 text="<details>\n<summary>S</summary>\n"
-Quote{alert=Some(Note)} src=32..57 text="> [!NOTE]\n> - [ ] hidden\n"
-  Paragraph{inline=6..9:"[!NOTE]"} src=34..42 text="[!NOTE]\n"
-  List{ordered=false, start=None} src=44..57 text="- [ ] hidden\n"
-    ListItem{task=Some(state=' ', state_at=47)} src=44..57 text="- [ ] hidden\n"
-      Paragraph{inline=13..14:"hidden"} src=50..56 text="hidden"
-Html{tag=Some("details")} src=58..69 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=false, summary="S"} src=0..69 text="<details>\n<summary>S</summary>\n\n> [!NOTE]\n> - [ ] hidden\n\n</details>\n"
+  Quote{alert=Some(Note), alert_title=""} src=32..57 text="> [!NOTE]\n> - [ ] hidden\n"
+    Paragraph{inline=6..9:"[!NOTE]"} src=34..42 text="[!NOTE]\n"
+    List{ordered=false, start=None} src=44..57 text="- [ ] hidden\n"
+      ListItem{task=Some(state=' ', state_at=47)} src=44..57 text="- [ ] hidden\n"
+        Paragraph{inline=13..14:"hidden"} src=50..56 text="hidden"
 
 === task_corpus: alert nested inside an open details shows its task ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-Quote{alert=Some(Note)} src=37..61 text="> [!NOTE]\n> - [ ] shown\n"
-  Paragraph{inline=6..9:"[!NOTE]"} src=39..47 text="[!NOTE]\n"
-  List{ordered=false, start=None} src=49..61 text="- [ ] shown\n"
-    ListItem{task=Some(state=' ', state_at=52)} src=49..61 text="- [ ] shown\n"
-      Paragraph{inline=13..14:"shown"} src=55..60 text="shown"
-Html{tag=Some("details")} src=62..73 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..73 text="<details open>\n<summary>S</summary>\n\n> [!NOTE]\n> - [ ] shown\n\n</details>\n"
+  Quote{alert=Some(Note), alert_title=""} src=37..61 text="> [!NOTE]\n> - [ ] shown\n"
+    Paragraph{inline=6..9:"[!NOTE]"} src=39..47 text="[!NOTE]\n"
+    List{ordered=false, start=None} src=49..61 text="- [ ] shown\n"
+      ListItem{task=Some(state=' ', state_at=52)} src=49..61 text="- [ ] shown\n"
+        Paragraph{inline=13..14:"shown"} src=55..60 text="shown"
 
 === task_corpus: alert nested list ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..32 text="> [!NOTE]\n> - [ ] a\n>   - [ ] b\n"
+Quote{alert=Some(Note), alert_title=""} src=0..32 text="> [!NOTE]\n> - [ ] a\n>   - [ ] b\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   List{ordered=false, start=None} src=12..32 text="- [ ] a\n>   - [ ] b\n"
     ListItem{task=Some(state=' ', state_at=15)} src=12..32 text="- [ ] a\n>   - [ ] b\n"
@@ -3018,7 +3001,7 @@ Quote{alert=Some(Note)} src=0..32 text="> [!NOTE]\n> - [ ] a\n>   - [ ] b\n"
 
 === task_corpus: alert then plain ===
 -- BLOCKS (2) --
-Quote{alert=Some(Note)} src=0..21 text="> [!NOTE]\n> - [ ] in\n"
+Quote{alert=Some(Note), alert_title=""} src=0..21 text="> [!NOTE]\n> - [ ] in\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   List{ordered=false, start=None} src=12..21 text="- [ ] in\n"
     ListItem{task=Some(state=' ', state_at=15)} src=12..21 text="- [ ] in\n"
@@ -3029,7 +3012,7 @@ List{ordered=false, start=None} src=22..32 text="- [ ] out\n"
 
 === task_corpus: alert titled ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..29 text="> [!NOTE] My title\n> - [ ] a\n"
+Quote{alert=Some(Note), alert_title="My title"} src=0..29 text="> [!NOTE] My title\n> - [ ] a\n"
   Paragraph{inline=2..6:"[!NOTE] My title"} src=2..19 text="[!NOTE] My title\n"
   List{ordered=false, start=None} src=21..29 text="- [ ] a\n"
     ListItem{task=Some(state=' ', state_at=24)} src=21..29 text="- [ ] a\n"
@@ -3037,15 +3020,14 @@ Quote{alert=Some(Note)} src=0..29 text="> [!NOTE] My title\n> - [ ] a\n"
 
 === task_corpus: an alert nested inside a details nested inside an alert, all open, shows the task ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..106 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> > [!TIP]\n> > - [ ] tri"…
+Quote{alert=Some(Note), alert_title=""} src=0..106 text="> [!NOTE]\n> <details open>\n> <summary>Inner</summary>\n>\n> > [!TIP]\n> > - [ ] tri"…
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
-  Html{tag=Some("details")} src=12..54 text="<details open>\n> <summary>Inner</summary>\n"
-  Quote{alert=Some(Tip)} src=58..91 text="> [!TIP]\n> > - [ ] triple-nested\n"
-    Paragraph{inline=12..15:"[!TIP]"} src=60..67 text="[!TIP]\n"
-    List{ordered=false, start=None} src=71..91 text="- [ ] triple-nested\n"
-      ListItem{task=Some(state=' ', state_at=74)} src=71..91 text="- [ ] triple-nested\n"
-        Paragraph{inline=19..20:"triple-nested"} src=77..90 text="triple-nested"
-  Html{tag=Some("details")} src=95..106 text="</details>\n"
+  Details{open_attr=true, summary="Inner"} src=12..106 text="<details open>\n> <summary>Inner</summary>\n>\n> > [!TIP]\n> > - [ ] triple-nested\n>"…
+    Quote{alert=Some(Tip), alert_title=""} src=58..91 text="> [!TIP]\n> > - [ ] triple-nested\n"
+      Paragraph{inline=12..15:"[!TIP]"} src=60..67 text="[!TIP]\n"
+      List{ordered=false, start=None} src=71..91 text="- [ ] triple-nested\n"
+        ListItem{task=Some(state=' ', state_at=74)} src=71..91 text="- [ ] triple-nested\n"
+          Paragraph{inline=19..20:"triple-nested"} src=77..90 text="triple-nested"
 
 === task_corpus: an indented paragraph inside a list item is not a task even if it starts with a dash ===
 -- BLOCKS (1) --
@@ -3089,59 +3071,53 @@ List{ordered=false, start=None} src=0..16 text="- [ ] a\n- [x] b\n"
     Paragraph{inline=7..8:"b"} src=14..15 text="b"
 
 === task_corpus: details closed ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..31 text="<details>\n<summary>S</summary>\n"
-List{ordered=false, start=None} src=32..46 text="- [ ] hidden\n\n"
-  ListItem{task=Some(state=' ', state_at=35)} src=32..46 text="- [ ] hidden\n\n"
-    Paragraph{inline=7..8:"hidden"} src=38..44 text="hidden"
-Html{tag=Some("details")} src=46..57 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=false, summary="S"} src=0..57 text="<details>\n<summary>S</summary>\n\n- [ ] hidden\n\n</details>\n"
+  List{ordered=false, start=None} src=32..46 text="- [ ] hidden\n\n"
+    ListItem{task=Some(state=' ', state_at=35)} src=32..46 text="- [ ] hidden\n\n"
+      Paragraph{inline=7..8:"hidden"} src=38..44 text="hidden"
 
 === task_corpus: details closed then plain ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..31 text="<details>\n<summary>S</summary>\n"
-List{ordered=false, start=None} src=32..46 text="- [ ] hidden\n\n"
-  ListItem{task=Some(state=' ', state_at=35)} src=32..46 text="- [ ] hidden\n\n"
-    Paragraph{inline=7..8:"hidden"} src=38..44 text="hidden"
-Html{tag=Some("details")} src=46..57 text="</details>\n"
+-- BLOCKS (2) --
+Details{open_attr=false, summary="S"} src=0..57 text="<details>\n<summary>S</summary>\n\n- [ ] hidden\n\n</details>\n"
+  List{ordered=false, start=None} src=32..46 text="- [ ] hidden\n\n"
+    ListItem{task=Some(state=' ', state_at=35)} src=32..46 text="- [ ] hidden\n\n"
+      Paragraph{inline=7..8:"hidden"} src=38..44 text="hidden"
 List{ordered=false, start=None} src=58..70 text="- [ ] after\n"
   ListItem{task=Some(state=' ', state_at=61)} src=58..70 text="- [ ] after\n"
     Paragraph{inline=16..17:"after"} src=64..69 text="after"
 
 === task_corpus: details nested inside an alert, closed, hides its task ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..77 text="> [!NOTE]\n> <details>\n> <summary>S</summary>\n>\n> - [ ] hidden\n>\n> </details>\n"
+Quote{alert=Some(Note), alert_title=""} src=0..77 text="> [!NOTE]\n> <details>\n> <summary>S</summary>\n>\n> - [ ] hidden\n>\n> </details>\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
-  Html{tag=Some("details")} src=12..45 text="<details>\n> <summary>S</summary>\n"
-  List{ordered=false, start=None} src=49..64 text="- [ ] hidden\n>\n"
-    ListItem{task=Some(state=' ', state_at=52)} src=49..64 text="- [ ] hidden\n>\n"
-      Paragraph{inline=13..14:"hidden"} src=55..61 text="hidden"
-  Html{tag=Some("details")} src=66..77 text="</details>\n"
+  Details{open_attr=false, summary="S"} src=12..77 text="<details>\n> <summary>S</summary>\n>\n> - [ ] hidden\n>\n> </details>\n"
+    List{ordered=false, start=None} src=49..64 text="- [ ] hidden\n>\n"
+      ListItem{task=Some(state=' ', state_at=52)} src=49..64 text="- [ ] hidden\n>\n"
+        Paragraph{inline=13..14:"hidden"} src=55..61 text="hidden"
 
 === task_corpus: details nested inside an alert, open, shows its task ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..81 text="> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n> - [ ] shown\n>\n> </details>"…
+Quote{alert=Some(Note), alert_title=""} src=0..81 text="> [!NOTE]\n> <details open>\n> <summary>S</summary>\n>\n> - [ ] shown\n>\n> </details>"…
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
-  Html{tag=Some("details")} src=12..50 text="<details open>\n> <summary>S</summary>\n"
-  List{ordered=false, start=None} src=54..68 text="- [ ] shown\n>\n"
-    ListItem{task=Some(state=' ', state_at=57)} src=54..68 text="- [ ] shown\n>\n"
-      Paragraph{inline=13..14:"shown"} src=60..65 text="shown"
-  Html{tag=Some("details")} src=70..81 text="</details>\n"
+  Details{open_attr=true, summary="S"} src=12..81 text="<details open>\n> <summary>S</summary>\n>\n> - [ ] shown\n>\n> </details>\n"
+    List{ordered=false, start=None} src=54..68 text="- [ ] shown\n>\n"
+      ListItem{task=Some(state=' ', state_at=57)} src=54..68 text="- [ ] shown\n>\n"
+        Paragraph{inline=13..14:"shown"} src=60..65 text="shown"
 
 === task_corpus: details open ===
--- BLOCKS (3) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-List{ordered=false, start=None} src=37..50 text="- [ ] shown\n\n"
-  ListItem{task=Some(state=' ', state_at=40)} src=37..50 text="- [ ] shown\n\n"
-    Paragraph{inline=7..8:"shown"} src=43..48 text="shown"
-Html{tag=Some("details")} src=50..61 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..61 text="<details open>\n<summary>S</summary>\n\n- [ ] shown\n\n</details>\n"
+  List{ordered=false, start=None} src=37..50 text="- [ ] shown\n\n"
+    ListItem{task=Some(state=' ', state_at=40)} src=37..50 text="- [ ] shown\n\n"
+      Paragraph{inline=7..8:"shown"} src=43..48 text="shown"
 
 === task_corpus: details open then plain ===
--- BLOCKS (4) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-List{ordered=false, start=None} src=37..50 text="- [ ] shown\n\n"
-  ListItem{task=Some(state=' ', state_at=40)} src=37..50 text="- [ ] shown\n\n"
-    Paragraph{inline=7..8:"shown"} src=43..48 text="shown"
-Html{tag=Some("details")} src=50..61 text="</details>\n"
+-- BLOCKS (2) --
+Details{open_attr=true, summary="S"} src=0..61 text="<details open>\n<summary>S</summary>\n\n- [ ] shown\n\n</details>\n"
+  List{ordered=false, start=None} src=37..50 text="- [ ] shown\n\n"
+    ListItem{task=Some(state=' ', state_at=40)} src=37..50 text="- [ ] shown\n\n"
+      Paragraph{inline=7..8:"shown"} src=43..48 text="shown"
 List{ordered=false, start=None} src=62..74 text="- [ ] after\n"
   ListItem{task=Some(state=' ', state_at=65)} src=62..74 text="- [ ] after\n"
     Paragraph{inline=16..17:"after"} src=68..73 text="after"
@@ -3156,12 +3132,12 @@ List{ordered=false, start=None} src=0..24 text="- [ ] **bold** and *em*\n"
 -- BLOCKS (0) --
 
 === task_corpus: everything ===
--- BLOCKS (9) --
+-- BLOCKS (7) --
 Heading{level=1, inline=1..2:"Doc", id=None, classes=[], attrs=[]} src=0..6 text="# Doc\n"
 List{ordered=false, start=None} src=7..18 text="- [ ] top\n\n"
   ListItem{task=Some(state=' ', state_at=10)} src=7..18 text="- [ ] top\n\n"
     Paragraph{inline=6..7:"top"} src=13..16 text="top"
-Quote{alert=Some(Note)} src=18..67 text="> [!NOTE] Heads up\n> - [ ] in alert\n> - [x] done\n"
+Quote{alert=Some(Note), alert_title="Heads up"} src=18..67 text="> [!NOTE] Heads up\n> - [ ] in alert\n> - [x] done\n"
   Paragraph{inline=11..15:"[!NOTE] Heads up"} src=20..37 text="[!NOTE] Heads up\n"
   List{ordered=false, start=None} src=39..67 text="- [ ] in alert\n> - [x] done\n"
     ListItem{task=Some(state=' ', state_at=42)} src=39..54 text="- [ ] in alert\n"
@@ -3170,11 +3146,10 @@ Quote{alert=Some(Note)} src=18..67 text="> [!NOTE] Heads up\n> - [ ] in alert\n>
       Paragraph{inline=23..24:"done"} src=62..66 text="done"
 Table{aligns=[None, None], rows=[[69..72:" a ", 73..76:" b "], [89..92:" 1 ", 93..96:" 2 "]]} src=68..98 text="| a | b |\n|---|---|\n| 1 | 2 |\n"
 CodeBlock{lang=None, fenced=true, body_spans=[103..116:"- [ ] fenced\n"], text="- [ ] fenced"} src=99..119 text="```\n- [ ] fenced\n```"
-Html{tag=Some("details")} src=121..155 text="<details>\n<summary>More</summary>\n"
-List{ordered=false, start=None} src=156..173 text="- [ ] collapsed\n\n"
-  ListItem{task=Some(state=' ', state_at=159)} src=156..173 text="- [ ] collapsed\n\n"
-    Paragraph{inline=55..56:"collapsed"} src=162..171 text="collapsed"
-Html{tag=Some("details")} src=173..184 text="</details>\n"
+Details{open_attr=false, summary="More"} src=121..184 text="<details>\n<summary>More</summary>\n\n- [ ] collapsed\n\n</details>\n"
+  List{ordered=false, start=None} src=156..173 text="- [ ] collapsed\n\n"
+    ListItem{task=Some(state=' ', state_at=159)} src=156..173 text="- [ ] collapsed\n\n"
+      Paragraph{inline=55..56:"collapsed"} src=162..171 text="collapsed"
 List{ordered=false, start=None} src=185..198 text="- [x] bottom\n"
   ListItem{task=Some(state='x', state_at=188)} src=185..198 text="- [x] bottom\n"
     Paragraph{inline=64..65:"bottom"} src=191..197 text="bottom"
@@ -3316,7 +3291,7 @@ List{ordered=false, start=None} src=18..29 text="- [ ] task\n"
 
 === task_corpus: plain blockquote ===
 -- BLOCKS (1) --
-Quote{alert=None} src=0..15 text="> - [ ] quoted\n"
+Quote{alert=None, alert_title=""} src=0..15 text="> - [ ] quoted\n"
   List{ordered=false, start=None} src=2..15 text="- [ ] quoted\n"
     ListItem{task=Some(state=' ', state_at=5)} src=2..15 text="- [ ] quoted\n"
       Paragraph{inline=4..5:"quoted"} src=8..14 text="quoted"
@@ -3334,7 +3309,7 @@ List{ordered=false, start=None} src=0..16 text="- [ ] a\n- [x] b\n"
 List{ordered=false, start=None} src=0..11 text="- [ ] out\n\n"
   ListItem{task=Some(state=' ', state_at=3)} src=0..11 text="- [ ] out\n\n"
     Paragraph{inline=3..4:"out"} src=6..9 text="out"
-Quote{alert=Some(Note)} src=11..32 text="> [!NOTE]\n> - [ ] in\n"
+Quote{alert=Some(Note), alert_title=""} src=11..32 text="> [!NOTE]\n> - [ ] in\n"
   Paragraph{inline=8..11:"[!NOTE]"} src=13..21 text="[!NOTE]\n"
   List{ordered=false, start=None} src=23..32 text="- [ ] in\n"
     ListItem{task=Some(state=' ', state_at=26)} src=23..32 text="- [ ] in\n"
@@ -3419,7 +3394,7 @@ List{ordered=false, start=None} src=22..33 text="- [ ] real\n"
 
 === task_corpus: task-lookalike inside an indented block nested in an alert stays literal ===
 -- BLOCKS (1) --
-Quote{alert=Some(Note)} src=0..51 text="> [!NOTE]\n> para\n>\n>     - [ ] fake\n>\n> - [ ] real\n"
+Quote{alert=Some(Note), alert_title=""} src=0..51 text="> [!NOTE]\n> para\n>\n>     - [ ] fake\n>\n> - [ ] real\n"
   Paragraph{inline=2..7:"[!NOTE] para"} src=2..17 text="[!NOTE]\n> para\n"
   CodeBlock{lang=None, fenced=false, body_spans=[25..36:"- [ ] fake\n"], text="- [ ] fake"} src=25..36 text="- [ ] fake\n"
   List{ordered=false, start=None} src=40..51 text="- [ ] real\n"
@@ -3427,23 +3402,22 @@ Quote{alert=Some(Note)} src=0..51 text="> [!NOTE]\n> para\n>\n>     - [ ] fake\n
       Paragraph{inline=14..15:"real"} src=46..50 text="real"
 
 === task_corpus: task-lookalike inside an indented block nested in an open details stays literal ===
--- BLOCKS (5) --
-Html{tag=Some("details")} src=0..36 text="<details open>\n<summary>S</summary>\n"
-Paragraph{inline=5..6:"para"} src=37..42 text="para\n"
-CodeBlock{lang=None, fenced=false, body_spans=[47..58:"- [ ] fake\n"], text="- [ ] fake"} src=47..58 text="- [ ] fake\n"
-List{ordered=false, start=None} src=59..71 text="- [ ] real\n\n"
-  ListItem{task=Some(state=' ', state_at=62)} src=59..71 text="- [ ] real\n\n"
-    Paragraph{inline=13..14:"real"} src=65..69 text="real"
-Html{tag=Some("details")} src=71..82 text="</details>\n"
+-- BLOCKS (1) --
+Details{open_attr=true, summary="S"} src=0..82 text="<details open>\n<summary>S</summary>\n\npara\n\n    - [ ] fake\n\n- [ ] real\n\n</details"…
+  Paragraph{inline=5..6:"para"} src=37..42 text="para\n"
+  CodeBlock{lang=None, fenced=false, body_spans=[47..58:"- [ ] fake\n"], text="- [ ] fake"} src=47..58 text="- [ ] fake\n"
+  List{ordered=false, start=None} src=59..71 text="- [ ] real\n\n"
+    ListItem{task=Some(state=' ', state_at=62)} src=59..71 text="- [ ] real\n\n"
+      Paragraph{inline=13..14:"real"} src=65..69 text="real"
 
 === task_corpus: two alerts ===
 -- BLOCKS (2) --
-Quote{alert=Some(Note)} src=0..20 text="> [!NOTE]\n> - [ ] a\n"
+Quote{alert=Some(Note), alert_title=""} src=0..20 text="> [!NOTE]\n> - [ ] a\n"
   Paragraph{inline=2..5:"[!NOTE]"} src=2..10 text="[!NOTE]\n"
   List{ordered=false, start=None} src=12..20 text="- [ ] a\n"
     ListItem{task=Some(state=' ', state_at=15)} src=12..20 text="- [ ] a\n"
       Paragraph{inline=9..10:"a"} src=18..19 text="a"
-Quote{alert=Some(Tip)} src=21..40 text="> [!TIP]\n> - [ ] b\n"
+Quote{alert=Some(Tip), alert_title=""} src=21..40 text="> [!TIP]\n> - [ ] b\n"
   Paragraph{inline=15..18:"[!TIP]"} src=23..30 text="[!TIP]\n"
   List{ordered=false, start=None} src=32..40 text="- [ ] b\n"
     ListItem{task=Some(state=' ', state_at=35)} src=32..40 text="- [ ] b\n"

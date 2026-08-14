@@ -7,24 +7,46 @@
 //!
 //! ## Scope (this pass)
 //!
-//! `Heading`, `Paragraph`, `ThematicBreak`, `List`/`ListItem`, `Quote{alert: None}`, and now
-//! `CodeBlock` (fenced or indented, at any depth this pass otherwise covers — top level, inside a
-//! list item, inside a quote; see `render_code_block`'s own doc comment) — plus their inline content:
-//! emphasis, strong, strikethrough, inline code, links, images (alt text only), soft/hard breaks, and
-//! super/subscript. `Quote{alert: Some(_)}` (a GitHub alert — konoma's own `render_alert`, not
-//! tui-markdown's, draws those; see `render_markdown_tasks_opts`'s own `alerts` branch) and the two
-//! remaining `BlockKind`s a `Doc` can contain (`Table`/`Html`) are recorded in
-//! `RenderOut::unsupported` and produce **no output at all** — not even their own inline content, if
-//! a block this pass *does* cover happens to nest one of them (a table three levels down inside a
-//! list item, say). Rendering only the *rest* of that container, working around the one nested piece
-//! it cannot draw, would produce something the production renderer never draws (a list with a hole in
-//! the middle of it), and the diff harness would have no way to tell that apart from an actual match —
-//! so `contains_unsupported` walks a `List`'s or `Quote`'s *entire* subtree before rendering a single
-//! line of it, and the whole thing is reported unsupported (under whichever nested kind's name it
-//! actually found) the moment either of those two turns up anywhere inside it, at any depth. Reporting
-//! the container as unsupported and skipping the whole subtree is the honest choice for a skeleton
-//! stage; `render_doc` therefore only ever draws lines for a `List`/`Quote` whose entire contents this
-//! pass already knows how to render.
+//! `Heading`, `Paragraph`, `ThematicBreak`, `List`/`ListItem`, `Quote` (plain **or** an alert —
+//! `alert: Some(_)`), `Details`, and `CodeBlock` (fenced or indented, at any depth this pass
+//! otherwise covers — top level, inside a list item, inside a quote; see `render_code_block`'s own
+//! doc comment) — plus their inline content: emphasis, strong, strikethrough, inline code, links,
+//! images (alt text only), soft/hard breaks, and super/subscript. A GitHub alert
+//! (`Quote { alert: Some(_), .. }`) is drawn via `render_alert_from_model`, which reuses
+//! `markdown.rs`'s own `alert_header_line`/`alert_bar` for the header/left-bar decoration — the same
+//! callout box `render_alert` draws, just with the *body* rendered from this file's own tree
+//! (`Block.children`) instead of a re-parsed string; see that function's own doc comment. A
+//! `Details` block is drawn the identical way, via `render_details_from_model` and
+//! `markdown.rs`'s own `details_marker_line`/`details_bar`. The one remaining `BlockKind` a `Doc`
+//! can contain (`Table`/`Html`) is recorded in `RenderOut::unsupported` and produces **no output at
+//! all** — not even its own inline content, if a block this pass *does* cover happens to nest one of
+//! them (a table three levels down inside a list item, say). Rendering only the *rest* of that
+//! container, working around the one nested piece it cannot draw, would produce something the
+//! production renderer never draws (a list with a hole in the middle of it), and the diff harness
+//! would have no way to tell that apart from an actual match — so `contains_unsupported` walks a
+//! `List`/`Quote`/`Details`'s *entire* subtree before rendering a single line of it, and the whole
+//! thing is reported unsupported (under whichever nested kind's own name it actually found) the
+//! moment a `Table`/`Html` turns up anywhere inside it, at any depth. Reporting the container as
+//! unsupported and skipping the whole subtree is the honest choice for a skeleton stage; `render_doc`
+//! therefore only ever draws lines for a `List`/`Quote`/`Details` whose entire contents this pass
+//! already knows how to render.
+//!
+//! ## Alert/`<details>` interactivity — `BlockCtx.details_interactive`
+//!
+//! `markdown.rs`'s own pipeline draws a `Details` block's summary marker two different ways
+//! (`render_details`'s own `interactive` parameter) depending on *where* it was found:
+//! **interactively** (consuming a slot from the document-wide Tab-toggle ordinal sequence,
+//! `next_details_open`, and drawing the marker in `details_marker_style()` — the Tab-focus sentinel)
+//! only at the single top-level entry point (`render_md_text`); **statically** (using the tag's own
+//! `open` attribute directly, no ordinal consumed, a plain marker style) everywhere else — inside a
+//! GitHub alert's own body or another `Details` block's own body, at any nesting depth — see
+//! `render_md_body_nested`'s own doc comment for the full reasoning. `BlockCtx.details_interactive`
+//! is this file's own mirror of that same distinction, threaded down through every recursive block
+//! dispatcher (`render_block`/`render_list`/`render_item`/`render_quote`) alongside `math_here` —
+//! `true` only at `render_doc`'s own top-level dispatch, forced `false`, permanently, by
+//! `render_alert_from_model`/`render_details_from_model` for their own `children` (never by plain
+//! `render_quote`, whose own children are still reached by the *same* top-level scan production's
+//! `split_details` performs — see `render_quote`'s own doc comment).
 //!
 //! A list item nested *inside* a code block, table, or HTML block is not a concern the other
 //! direction either — those three are leaves with no `Block::children` of their own (see
@@ -111,10 +133,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet;
 
-use super::model::{code_body_text, Block, BlockKind, Doc, Task};
+use super::model::{code_body_text, AlertKind, Block, BlockKind, Doc, Task};
 use super::{
-    code_header, decorate_headings_and_extras, gutter_span, highlight_body, image_loading_line,
-    math_placeholder_lines, math_raw_lines, math_url, pad_to_width, scan_inline_math, CodeStyle,
+    alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
+    details_marker_line, gutter_span, highlight_body, image_loading_line, math_placeholder_lines,
+    math_raw_lines, math_url, next_details_open, pad_to_width, scan_inline_math, CodeStyle,
     ImagePlacement, KonomaStyles, MathPart, MathSlot, SourceRun,
 };
 
@@ -129,6 +152,30 @@ pub(crate) struct RenderOut {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<ImagePlacement>,
     pub unsupported: Vec<&'static str>,
+}
+
+/// Two independent "how deep in the tree am I, and does it still apply" flags every recursive block
+/// dispatcher (`render_block`/`render_list`/`render_item`/`render_quote`, and the two container
+/// renderers this pass adds for a GitHub alert/`<details>` — `render_alert_from_model`/
+/// `render_details_from_model`) has to thread down together — bundled into one small `Copy` struct,
+/// rather than two adjacent `bool` parameters, for the same reason `markdown.rs`'s own `MdRenderCtx`
+/// bundles same-typed positional arguments: two `bool`s next to each other at a call site is exactly
+/// the kind of silent-swap footgun a named field turns into a compile error instead.
+#[derive(Clone, Copy)]
+struct BlockCtx {
+    /// Whether LaTeX math lifting is still active at this position — unchanged in meaning from
+    /// before this pass added alert/`<details>` support (see the module doc comment's own, larger
+    /// doc comment on `render_doc`): `false` inside *any* `Quote`'s own children, alert or not
+    /// (`render_quote` forces it, the same way it already did before `Quote { alert: Some(_), .. }`
+    /// existed at all — production's own `structure_mask` excludes a blockquote's own lines from
+    /// math lifting regardless of whether it turns out to be a plain quote or an alert), and inside
+    /// a `Details` block's own children too (`render_details_from_model` forces it — production
+    /// never lifts math out of a `<details>` body either, for the identical `structure_mask` reason).
+    math_here: bool,
+    /// Whether a `Details` block reached at this position should consume the document-wide
+    /// Tab-toggle ordinal sequence (`super::next_details_open`) — see the module doc comment's own
+    /// "Alert/`<details>` interactivity" section for the full contract this mirrors.
+    details_interactive: bool,
 }
 
 /// Renders every top-level block in `doc` this file's own scope covers (see the module doc comment),
@@ -192,8 +239,12 @@ pub(crate) fn render_doc(
     // Whether math lifting applies at all, at the *top* of the tree — `render_doc`'s own dispatch is
     // never inside a `Quote`, so this is simply "was `math_on` set", the same answer `math.is_some()`
     // would give; computed once, ahead of `w`'s own construction (which moves `math` into it), so
-    // nothing below needs to keep re-deriving `w.math.is_some()`.
-    let math_here = math.is_some();
+    // nothing below needs to keep re-deriving `w.math.is_some()`. `details_interactive: true` is the
+    // *other* half of the identical "top of the tree" reasoning — see `BlockCtx`'s own doc comment.
+    let ctx = BlockCtx {
+        math_here: math.is_some(),
+        details_interactive: true,
+    };
     let mut w = Writer {
         lines: Vec::new(),
         inline_styles: Vec::new(),
@@ -205,10 +256,13 @@ pub(crate) fn render_doc(
         needs_newline: false,
         math,
         after_math: false,
+        fresh_boundary: false,
         pending_para_start: None,
         code,
         theme: theme.to_string(),
         width,
+        icons,
+        tasks,
     };
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
@@ -233,28 +287,54 @@ pub(crate) fn render_doc(
                     doc,
                     src,
                     inline.clone(),
-                    math_here,
+                    ctx.math_here,
                     block.src.start,
                 );
             }
             BlockKind::ThematicBreak => render_rule(&mut w),
             BlockKind::List { start, .. } => match contains_unsupported(&block.children) {
                 Some(bad) => unsupported.push(bad),
-                None => render_list(&mut w, doc, src, *start, &block.children, math_here),
+                None => render_list(&mut w, doc, src, *start, &block.children, ctx),
             },
-            BlockKind::Quote { alert: None } => match contains_unsupported(&block.children) {
+            BlockKind::Quote { alert: None, .. } => match contains_unsupported(&block.children) {
                 Some(bad) => unsupported.push(bad),
-                None => render_quote(&mut w, doc, src, &block.children),
+                None => render_quote(&mut w, doc, src, &block.children, ctx),
             },
-            // GitHub alerts (`> [!NOTE]` …) are konoma's own `render_alert`, not tui-markdown's — see
-            // the module doc comment. Left unsupported rather than drawn as a plain quote: an alert's
-            // colored callout box is a wholly different shape from anything `Writer` produces, so
-            // rendering the alert's body as an ordinary blockquote here would be a *third*, silently
-            // wrong rendering, not a faithful stand-in for either side.
-            BlockKind::Quote { alert: Some(_) } => unsupported.push("Quote"),
+            // A GitHub alert — konoma's own `render_alert_from_model`, reusing `markdown.rs`'s own
+            // `alert_header_line`/`alert_bar` for the header/bar decoration; see the module doc
+            // comment's own "Scope" section.
+            BlockKind::Quote {
+                alert: Some(kind),
+                alert_title,
+            } => match contains_unsupported(&block.children) {
+                Some(bad) => unsupported.push(bad),
+                None => render_alert_from_model(
+                    &mut w,
+                    doc,
+                    src,
+                    *kind,
+                    alert_title,
+                    &block.children,
+                    block.src.start,
+                ),
+            },
             BlockKind::CodeBlock {
                 lang, body_spans, ..
             } => render_code_block(&mut w, src, lang.as_deref(), body_spans),
+            BlockKind::Details { open_attr, summary } => {
+                match contains_unsupported(&block.children) {
+                    Some(bad) => unsupported.push(bad),
+                    None => render_details_from_model(
+                        &mut w,
+                        doc,
+                        src,
+                        *open_attr,
+                        summary,
+                        &block.children,
+                        ctx,
+                    ),
+                }
+            }
             // Never reachable at the top level — a `ListItem` only ever exists as a `List`'s own
             // child (see `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every
             // one of those itself before this loop ever sees it. Matched defensively all the same,
@@ -278,21 +358,26 @@ pub(crate) fn render_doc(
     }
 }
 
-/// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body, or (recursively) either of
-/// those nested arbitrarily deep inside more `List`/`Quote` nesting — contains, anywhere inside it, a
-/// block kind this pass does not render at all: a `Table`, an `Html` block, or a GitHub-alert `Quote`
-/// (`alert: Some(_)`; see `render_doc`'s own `Quote` arm for why that one specifically is out of scope
-/// here too, not merely deferred like the other two). `CodeBlock` used to be a third name this
-/// function screened out — see `render_code_block`'s own doc comment for why a `CodeBlock` no longer
-/// needs this treatment at all, at any nesting depth, quote included.
+/// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body (alert or not), a
+/// `Details`'s own body, or (recursively) any of those nested arbitrarily deep inside more of the
+/// same — contains, anywhere inside it, a block kind this pass does not render at all: a `Table` or
+/// an `Html` block (the one remaining `BlockKind` a `Doc` can contain that has no renderer here — see
+/// the module doc comment's own "Scope" section). `CodeBlock`, and (as of this pass) `Quote { alert:
+/// Some(_), .. }`/`Details`, used to be names this function screened out too — see
+/// `render_code_block`'s own doc comment for why a `CodeBlock` no longer needs this treatment at all,
+/// at any nesting depth, quote included, and the module doc comment for the identical reasoning now
+/// extended to an alert/`<details>`: both have real renderers now, so they recurse into their own
+/// `children` here (checking for a *still*-unsupported `Table`/`Html` nested inside *them*) the same
+/// way `List`/plain-`Quote` already do, rather than being reported unsupported outright.
+///
 /// Returns the *first* such kind's name found, in document order, for the caller (`render_doc`'s own
 /// top-level dispatch, or a nested recursive call from this same function walking back up) to record
 /// in `RenderOut::unsupported` — the exact same reporting a *directly* unsupported top-level block
 /// already gets, just discovered one or more levels deeper. This is what keeps `render_doc`'s own
 /// "report the container as unsupported and skip the whole subtree" choice (see the module doc
-/// comment) honest for `List`/`Quote`: a three-item list with a table buried in the third item's own
-/// nested sublist is not partially rendered with a hole where that block would have gone — the whole
-/// list, all three items, is skipped, called out under whichever nested kind's own name
+/// comment) honest for `List`/`Quote`/`Details`: a three-item list with a table buried in the third
+/// item's own nested sublist is not partially rendered with a hole where that block would have gone —
+/// the whole list, all three items, is skipped, called out under whichever nested kind's own name
 /// `contains_unsupported` actually found, exactly like a bare top-level `Table` always has been.
 ///
 /// A **loose list item that has a task marker** used to be excluded here too, under a synthetic
@@ -304,23 +389,23 @@ pub(crate) fn render_doc(
 /// renders (matching tui-markdown's own real, if visually surprising, layout for it — see
 /// `render_item`'s own doc comment) instead of being reported unsupported.
 ///
-/// A leaf kind with no `Block::children` of its own (`Heading`/`Paragraph`/`ThematicBreak`, and the
-/// three `BlockKind` variants this function itself is checking for) never recurses — there is nothing
-/// further to walk under any of them (see `model::Block.children`'s own doc comment: "Empty for every
-/// leaf kind").
+/// A leaf kind with no `Block::children` of its own (`Heading`/`Paragraph`/`ThematicBreak`/
+/// `CodeBlock`, and the two `BlockKind` variants this function itself is checking for) never
+/// recurses — there is nothing further to walk under any of them (see `model::Block.children`'s own
+/// doc comment: "Empty for every leaf kind").
 fn contains_unsupported(blocks: &[Block]) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
             BlockKind::Table { .. } => return Some("Table"),
             BlockKind::Html { .. } => return Some("Html"),
-            BlockKind::Quote { alert: Some(_) } => return Some("Quote"),
             BlockKind::Heading { .. }
             | BlockKind::Paragraph { .. }
             | BlockKind::ThematicBreak
             | BlockKind::CodeBlock { .. } => {}
             BlockKind::ListItem { .. }
             | BlockKind::List { .. }
-            | BlockKind::Quote { alert: None } => {
+            | BlockKind::Quote { .. }
+            | BlockKind::Details { .. } => {
                 if let Some(bad) = contains_unsupported(&b.children) {
                     return Some(bad);
                 }
@@ -406,6 +491,33 @@ struct Writer<'m> {
     needs_newline: bool,
     math: Option<MathCtx<'m>>,
     after_math: bool,
+    /// Whether the very last thing pushed onto `self.lines` was the end of a GitHub alert or
+    /// `Details` block — `render_alert_from_model`/`render_details_from_model` are the *only* two
+    /// places that set this `true`, on their own way out, alongside `needs_newline = false` (see
+    /// either's own doc comment for why both: whatever renders next is exactly as if a brand-new
+    /// `Writer` had just started, since production's own next fragment, if any, really is rendered
+    /// by a brand-new `tui_markdown::TextWriter` — the identical "fresh reparse boundary"
+    /// `render_math_slot`'s own doc comment already documents in full for a lifted math expression).
+    ///
+    /// `needs_newline = false` alone reproduces that boundary for every *other* block-rendering
+    /// function in this file, all of which gate their own leading blank-line push on it — except
+    /// `render_code_block`, whose own leading-blank check (`if !w.lines.is_empty() { .. }`, mirroring
+    /// real `TextWriter::start_codeblock`) is deliberately **not** gated on `needs_newline` at all —
+    /// see that function's own doc comment for exactly why not (a fence gets its separator even when
+    /// `needs_newline` happens to be `false` for an unrelated reason, e.g. a tight list item's own
+    /// bare content). That same "unconditional as long as *something* already rendered" check is
+    /// exactly what mistakes an alert's/`Details`'s own already-rendered lines, still sitting in the
+    /// *shared* `w.lines`, for "something precedes this fence within the *same* segment" — which
+    /// production's own, `w.lines`-per-segment tui-markdown reality never sees at all (confirmed
+    /// directly: `code_corpus`'s own "indented block nested inside a closed details is not counted"
+    /// and "everything" cases both show a fence immediately after a closed `Details`/an alert with no
+    /// blank row between them, exactly the same way a fence right after a lifted math expression, or
+    /// as the very first thing in the whole document, gets none). `render_code_block` is the only
+    /// site that has to consult this flag for that reason; `push_line` clears it unconditionally,
+    /// first thing, the same way it already clears `after_math` — so, like that flag, no other
+    /// block-rendering function needs any awareness of it at all (each already calls `push_line`
+    /// itself before returning).
+    fresh_boundary: bool,
     /// A math-lifting paragraph's own leading-blank-line convention, deferred rather than applied
     /// eagerly — `Some(needs_newline_before)` from the moment `render_paragraph_math`/`render_item`
     /// (its own tight/loose-item-first-child special case) starts walking a paragraph whose text
@@ -472,6 +584,18 @@ struct Writer<'m> {
     /// reads it directly (see that function's own doc comment on why the *quote-prefix* width still
     /// has to be subtracted from it there, but list nesting never does).
     width: u16,
+    /// `render_doc`'s own incoming `icons` flag, unchanged for the whole render — read by
+    /// `render_alert_from_model` for its own header line's optional Nerd Font icon (`super::
+    /// alert_header_line`'s own `icons` parameter), the identical `ctx.icons` `markdown.rs`'s
+    /// `render_alert` reads off `MdRenderCtx`. `Copy`, so reading it never needs a reborrow.
+    icons: bool,
+    /// `render_doc`'s own incoming `tasks` slice, unchanged for the whole render — read by
+    /// `render_bar_prefixed_body`, which needs it to run `super::decorate_headings_and_extras` over
+    /// an alert's/`Details`'s own body **before** the bar gets prepended to each line; see that
+    /// function's own doc comment for why. Borrowed with this struct's own `'m` lifetime (the same
+    /// one `math: Option<MathCtx<'m>>` already uses) rather than owned, since `render_doc`'s own
+    /// `tasks: &[char]` parameter already outlives the whole call.
+    tasks: &'m [char],
 }
 
 impl<'m> Writer<'m> {
@@ -504,6 +628,7 @@ impl<'m> Writer<'m> {
     /// shape.
     fn push_line(&mut self, line: Line<'static>) {
         self.after_math = false;
+        self.fresh_boundary = false;
         let style = self.line_styles.last().copied().unwrap_or_default();
         let mut line = line.patch_style(style);
         if !self.line_prefixes.is_empty() {
@@ -1640,6 +1765,13 @@ fn render_rule(w: &mut Writer<'_>) {
 /// unconditional reset right before dispatching an item's first child) even though real tui-markdown
 /// still draws one.
 ///
+/// The one further exception, `w.fresh_boundary` (see that field's own doc comment): a fence
+/// directly following a GitHub alert or a `Details` block gets **no** leading blank row, even though
+/// `w.lines` is (correctly) non-empty by then — production's own next fragment there is a brand-new,
+/// independent `tui_markdown::TextWriter` whose own `!self.text.lines.is_empty()` reads `false`
+/// (nothing precedes the fence *within that fragment*), the identical "fresh reparse boundary" a
+/// lifted math expression already reproduces via `after_math`.
+///
 /// ## The width used for the header/body/padding band
 ///
 /// `w.width` (`render_doc`'s own incoming column count), reduced by whatever quote-prefix width is
@@ -1672,7 +1804,7 @@ fn render_code_block(
     lang: Option<&str>,
     body_spans: &[Range<usize>],
 ) {
-    if !w.lines.is_empty() {
+    if !w.lines.is_empty() && !w.fresh_boundary {
         w.push_blank_line();
     }
     let content_w = (w.width as usize).saturating_sub(w.prefix_width());
@@ -1719,17 +1851,19 @@ fn render_code_block(
 /// list item after the first. Mirrors `TextWriter::start_tag`'s own top-level dispatch for the block
 /// kinds this pass covers.
 ///
-/// `Quote{alert: Some(_)}`/`Table`/`Html` never legitimately reach this function: every caller that
-/// walks into a `List`'s or `Quote`'s own children only does so after `contains_unsupported` has
-/// already confirmed none of those three appear anywhere in that subtree (see `render_doc`'s own
-/// dispatch, and that function's own doc comment) — so encountering one here would mean a bug
-/// upstream of this file, not merely input a smaller local check failed to reject. `ListItem` never
-/// legitimately reaches this function either — it only ever exists as a `List`'s own child (see
+/// `Table`/`Html` never legitimately reach this function: every caller that walks into a
+/// `List`/`Quote`/`Details`'s own children only does so after `contains_unsupported` has already
+/// confirmed neither appears anywhere in that subtree (see `render_doc`'s own dispatch, and that
+/// function's own doc comment) — so encountering one here would mean a bug upstream of this file,
+/// not merely input a smaller local check failed to reject. `ListItem` never legitimately reaches
+/// this function either — it only ever exists as a `List`'s own child (see
 /// `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every one of those itself.
 /// Matched defensively (silently rendering nothing further) rather than assumed unreachable all the
 /// same, so a bug elsewhere degrades to "this one block goes missing" instead of a panic — principle
-/// #3 (`CLAUDE.md`). `CodeBlock` *does* legitimately reach here now (`contains_unsupported` no longer
-/// screens it out — see that function's own doc comment) — `render_code_block` draws it.
+/// #3 (`CLAUDE.md`). `CodeBlock`, `Quote { alert: Some(_), .. }`, and `Details` *do* legitimately
+/// reach here (`contains_unsupported` no longer screens any of the three out — see that function's
+/// own doc comment) — `render_code_block`/`render_alert_from_model`/`render_details_from_model` draw
+/// them.
 ///
 /// The `Paragraph` arm is not a single, unconditional dispatch the way it looks from `render_doc`'s
 /// own top-level loop (where a `Paragraph` is *always* real — see `is_real_paragraph`'s own doc
@@ -1741,12 +1875,12 @@ fn render_code_block(
 /// `ThematicBreak` interrupts one bare paragraph with another lazily continuing right after it, no
 /// blank line either side).
 ///
-/// `math_here` is simply threaded through to whichever of `render_paragraph_dispatch`/
-/// `render_bare_paragraph`/`render_list` this block turns out to need it — see `render_doc`'s own doc
-/// comment for what it means and `render_quote`'s own call site below for the one place a caller of
-/// this function does *not* pass its own value through unchanged (a `Quote`'s own children never get
-/// it, regardless of what this function itself received).
-fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, math_here: bool) {
+/// `ctx` is simply threaded through to whichever of `render_paragraph_dispatch`/
+/// `render_bare_paragraph`/`render_list`/`render_details_from_model` this block turns out to need it
+/// — see `BlockCtx`'s own doc comment for what each of its two fields means, and `render_quote`'s own
+/// call site below (and `render_alert_from_model`/`render_details_from_model`'s own bodies) for where
+/// a caller does *not* pass its own value through unchanged.
+fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx: BlockCtx) {
     match &block.kind {
         BlockKind::Heading {
             level,
@@ -1764,20 +1898,40 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, mat
         }
         BlockKind::Paragraph { inline } => {
             if is_real_paragraph(src, block) {
-                render_paragraph_dispatch(w, doc, src, inline.clone(), math_here, block.src.start);
+                render_paragraph_dispatch(
+                    w,
+                    doc,
+                    src,
+                    inline.clone(),
+                    ctx.math_here,
+                    block.src.start,
+                );
             } else {
-                render_bare_paragraph(w, doc, src, inline.clone(), math_here, block.src.start);
+                render_bare_paragraph(w, doc, src, inline.clone(), ctx.math_here, block.src.start);
             }
         }
         BlockKind::ThematicBreak => render_rule(w),
-        BlockKind::List { start, .. } => {
-            render_list(w, doc, src, *start, &block.children, math_here)
-        }
-        BlockKind::Quote { alert: None } => render_quote(w, doc, src, &block.children),
+        BlockKind::List { start, .. } => render_list(w, doc, src, *start, &block.children, ctx),
+        BlockKind::Quote { alert: None, .. } => render_quote(w, doc, src, &block.children, ctx),
+        BlockKind::Quote {
+            alert: Some(kind),
+            alert_title,
+        } => render_alert_from_model(
+            w,
+            doc,
+            src,
+            *kind,
+            alert_title,
+            &block.children,
+            block.src.start,
+        ),
         BlockKind::CodeBlock {
             lang, body_spans, ..
         } => render_code_block(w, src, lang.as_deref(), body_spans),
-        BlockKind::Quote { alert: Some(_) } | BlockKind::Table { .. } | BlockKind::Html { .. } => {}
+        BlockKind::Details { open_attr, summary } => {
+            render_details_from_model(w, doc, src, *open_attr, summary, &block.children, ctx)
+        }
+        BlockKind::Table { .. } | BlockKind::Html { .. } => {}
         // Never reachable — see the doc comment above.
         BlockKind::ListItem { .. } => {}
     }
@@ -1806,7 +1960,7 @@ fn render_list(
     src: &str,
     start: Option<u64>,
     items: &[Block],
-    math_here: bool,
+    ctx: BlockCtx,
 ) {
     if w.list_indices.is_empty() && w.needs_newline {
         w.push_blank_line();
@@ -1814,7 +1968,7 @@ fn render_list(
     w.list_indices.push(start);
     for item in items {
         if let BlockKind::ListItem { task } = &item.kind {
-            render_item(w, doc, src, *task, &item.children, math_here);
+            render_item(w, doc, src, *task, &item.children, ctx);
         }
         // A `List`'s own children are always `ListItem`s (see `model::parse_container`'s own
         // `Tag::List` arm) — the `if let` above is not a lossy filter of some other shape, only the
@@ -1909,7 +2063,7 @@ fn render_item(
     src: &str,
     task: Option<Task>,
     children: &[Block],
-    math_here: bool,
+    ctx: BlockCtx,
 ) {
     // start_item(): a fresh physical line, unconditionally, carrying the item's own marker.
     w.push_line(Line::default());
@@ -1933,7 +2087,7 @@ fn render_item(
             // `loose_first` just opened above (loose) — never a *second* blank-line push of its
             // own; that is exactly what distinguishes this from `render_paragraph`, which this
             // call deliberately bypasses for the item's own first child.
-            if math_here {
+            if ctx.math_here {
                 walk_inline_math(
                     &mut events_iter_ranged(&doc.events[inline.clone()]),
                     w,
@@ -1957,12 +2111,12 @@ fn render_item(
             // what caught this.
             w.needs_newline = loose_first && !w.after_math;
         } else {
-            render_block(first, w, doc, src, math_here);
+            render_block(first, w, doc, src, ctx);
         }
         rest = &children[1..];
     }
     for child in rest {
-        render_block(child, w, doc, src, math_here);
+        render_block(child, w, doc, src, ctx);
     }
 }
 
@@ -2105,15 +2259,17 @@ fn push_item_marker(w: &mut Writer<'_>) {
     w.push_span(span);
 }
 
-/// Renders a `Quote{alert: None}` block's own body into `w`, in place — mirrors
+/// Renders a **plain** `Quote { alert: None, .. }` block's own body into `w`, in place — mirrors
 /// `TextWriter::start_blockquote`/`end_blockquote` wrapped around a normal walk of the quote's own
 /// children (`render_block`, the same generic dispatcher a list item's non-first children go
 /// through — a quote's own body can contain any of `Heading`/`Paragraph`/`ThematicBreak`/`List`/
-/// a further nested `Quote`, all of which get the same `>`-prefix treatment via `Writer::push_line`;
-/// see this module's own `Writer` doc comment). A nested `Quote` reached this way (`>>`) simply
-/// recurses into this same function again, pushing a *second* `>` onto `w.line_prefixes`.
+/// a further nested `Quote`/`Details`, all of which get the same `>`-prefix treatment via
+/// `Writer::push_line`; see this module's own `Writer` doc comment). A nested `Quote` reached this
+/// way (`>>`) simply recurses into this same function again, pushing a *second* `>` onto
+/// `w.line_prefixes`. A GitHub alert (`Quote { alert: Some(_), .. }`) never reaches this function at
+/// all — see `render_alert_from_model`, this function's own sibling for that shape.
 ///
-/// Always calls `render_block` with `math_here: false`, regardless of whatever value was in scope for
+/// Always calls `render_block` with `math_here: false`, regardless of whatever value was in `ctx` for
 /// *this* quote — production never lifts math out of a blockquote's own text at all (`structure_mask`'s
 /// own exclusion; see `render_paragraph_math`'s own doc comment), so nothing this function dispatches
 /// to, however many more `List`s or nested `Quote`s that subtree goes on to contain, should ever end
@@ -2121,19 +2277,285 @@ fn push_item_marker(w: &mut Writer<'_>) {
 /// time this function's own exit runs (nothing in its own subtree can have set it) — so, unlike
 /// `render_list`'s own exit, this one stays the plain, unconditional `needs_newline = true` `TextWriter`
 /// itself always uses for `end_blockquote`.
-fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]) {
+///
+/// `details_interactive`, by contrast, is **propagated unchanged** to `children` (not forced) — a
+/// plain quote's own body is still reached through the *same* top-level scan production's
+/// `split_details` performs on the whole segment (unlike a GitHub alert's or a `Details` block's own
+/// body, each of which gets its own, independent re-parse through `render_md_body_nested` — see
+/// `BlockCtx.details_interactive`'s own doc comment): a `Details` block nested inside a plain quote
+/// (reached at the *top* level, i.e. `ctx.details_interactive` still `true` coming in) is exactly as
+/// interactive as one sitting directly at the top level.
+fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block], ctx: BlockCtx) {
     if w.needs_newline {
         w.push_blank_line();
         w.needs_newline = false;
     }
     w.line_prefixes.push(Span::raw(">"));
     w.line_styles.push(w.styles.blockquote());
+    let child_ctx = BlockCtx {
+        math_here: false,
+        details_interactive: ctx.details_interactive,
+    };
     for child in children {
-        render_block(child, w, doc, src, false);
+        render_block(child, w, doc, src, child_ctx);
     }
     w.line_prefixes.pop();
     w.line_styles.pop();
     w.needs_newline = true;
+}
+
+/// Renders a GitHub alert (`Quote { alert: Some(kind), alert_title }`) into `w`, in place — the
+/// header line via `super::alert_header_line` (identical color/icon/label decision `markdown.rs`'s
+/// own `render_alert` uses, see that function's own doc comment for why this is shared rather than
+/// re-derived), the body via [`render_bar_prefixed_body`] with `super::alert_bar(kind.color())` as
+/// the bar. `render_alert`'s own header line, in production, is simply appended directly onto
+/// whatever `Vec<Line>` the caller handed it (`render_markdown_tasks_opts`'s own
+/// `out.extend(render_alert(..))`) — no leading-blank-line check of any kind, regardless of what
+/// `needs_newline`-equivalent state the *previous* segment happened to end in (`split_alerts` peels
+/// the alert into its own, independent fragment; nothing carries across that boundary) — so this
+/// function does not check `w.needs_newline` before pushing the header either, and leaves it `false`
+/// on the way out (not `true`): matching that same "fresh reparse boundary" contract
+/// `render_math_slot`'s own doc comment already documents in full for a lifted math expression —
+/// whatever renders *next* is exactly as if a brand-new `Writer` had just started, since production's
+/// own next fragment (if any) is rendered by a brand-new `tui_markdown::TextWriter` too.
+///
+/// Does **not** take a `BlockCtx`: nothing about this function's *own* rendering depends on either of
+/// its two fields, and `children` always gets a freshly forced one regardless of what the caller had
+/// in scope — see [`render_bar_prefixed_body`]'s own doc comment for exactly what gets forced and
+/// why (both `math_here` and `details_interactive`, unconditionally, matching production's own
+/// `render_md_body_nested` — the single body-rendering entry point both an alert's and a `Details`
+/// block's own body funnel through).
+fn render_alert_from_model(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    kind: AlertKind,
+    title: &str,
+    children: &[Block],
+    quote_src_start: usize,
+) {
+    w.push_line(alert_header_line(kind, title, w.icons));
+    let header_end = line_after(src, quote_src_start);
+    let trimmed = trim_leading_header(children, doc, header_end);
+    render_bar_prefixed_body(w, doc, src, &trimmed, alert_bar(kind.color()));
+    w.needs_newline = false;
+    w.fresh_boundary = true;
+}
+
+/// The byte position right after the next `'\n'` at or after `start` — `src.len()` if there is
+/// none. Mirrors `model::line_after` exactly (not reused directly: that one is private to the
+/// model module, and this file's own use is a one-liner) — used by `render_alert_from_model` to
+/// find where a GitHub alert's own header line (`"> [!NOTE] title\n"`, or, once a `Quote`'s own `>`
+/// markers are logically stripped, just `"[!NOTE] title\n"`) ends within `src`, so
+/// `trim_leading_header` knows which of the quote's own parsed `children` — or which *part* of
+/// one — is actually the header line's own text, not the alert's real body.
+fn line_after(src: &str, start: usize) -> usize {
+    match src[start..].find('\n') {
+        Some(off) => start + off + 1,
+        None => src.len(),
+    }
+}
+
+/// Trims a GitHub alert's own header-line text out of its `Quote`'s already-parsed `children` —
+/// needed because, unlike `<details>` (a real CommonMark HTML block, whose own opening tag is a
+/// *separate* sibling `Doc::parse` never folds into the body — see `model::fold_details`'s own doc
+/// comment), `> [!NOTE] title` is not real CommonMark syntax at all: pulldown-cmark parses a
+/// `Quote`'s body exactly the way it would any other blockquote, with the literal text `"[!NOTE]
+/// title"` becoming part of (or all of) that body's own **first** block, right alongside whatever
+/// real content follows it. Without this trim, that literal header text renders a second time,
+/// verbatim, as the alert's own first body line, directly underneath the *already*-decorated header
+/// `alert_header_line` just drew — confirmed directly against every alert case in the parity corpus
+/// before this function existed (`task_corpus: alert NOTE` and its siblings, each showing e.g.
+/// `["[", "!NOTE", "]"]` as a spurious extra line).
+///
+/// `header_end` is the byte position right after the header's own physical source line (see
+/// `line_after`) — everything in `children` **before** that position is the header's own text, not
+/// body content. Three shapes, in the order this function checks for them:
+///
+/// * A child whose own `src.end <= header_end` is **entirely** the header line (a common shape: the
+///   header interrupts nothing and forms its own complete leading `Paragraph`, e.g. `"[!NOTE]"`
+///   followed by a `List` that CommonMark's own "a list can interrupt a paragraph" rule starts
+///   fresh right after it) — dropped outright.
+/// * A child whose own `src.start >= header_end` starts cleanly *after* the header line — kept
+///   unmodified, and so is everything after it (nothing earlier in `children` could ever need
+///   trimming once one child has already cleared the boundary, since blocks are in non-decreasing
+///   source order).
+/// * A child that straddles the boundary — only a `Paragraph` can (CommonMark's lazy-continuation
+///   rule joins the header's own text and the next line into *one* paragraph, via a `SoftBreak`,
+///   whenever nothing about that next line starts a new block on its own — e.g. `"[!NOTE]\nSome
+///   prose."` with no blank line between them) — has its own `inline` event range trimmed to start
+///   at the first event landing at or after `header_end`, additionally skipping any leading
+///   `SoftBreak`/`HardBreak` right at that position so the body's own first line doesn't open with
+///   a stray leading space. A non-`Paragraph` child cannot legitimately straddle this boundary at
+///   all (every other block kind always starts fresh at its own line's beginning) — kept unmodified
+///   rather than dropped, as a defensive fallback (principle #3, `CLAUDE.md`): degrading to "renders
+///   the header's own text once more than it should" is safer than discarding real content this
+///   function was never actually tested against losing.
+fn trim_leading_header(children: &[Block], doc: &Doc<'_>, header_end: usize) -> Vec<Block> {
+    for (i, b) in children.iter().enumerate() {
+        if b.src.end <= header_end {
+            continue; // entirely the header line — drop it, keep scanning for the real body
+        }
+        if b.src.start >= header_end {
+            return children[i..].to_vec(); // starts cleanly after the header — keep as-is
+        }
+        // Straddles the boundary.
+        let mut out = Vec::with_capacity(children.len() - i);
+        if let BlockKind::Paragraph { inline } = &b.kind {
+            let mut start = inline.start;
+            while start < inline.end {
+                let (ev, r) = &doc.events[start];
+                if r.start < header_end || matches!(ev, Event::SoftBreak | Event::HardBreak) {
+                    start += 1;
+                } else {
+                    break;
+                }
+            }
+            out.push(Block {
+                kind: BlockKind::Paragraph {
+                    inline: start..inline.end,
+                },
+                src: header_end..b.src.end,
+                children: Vec::new(),
+            });
+        } else {
+            out.push(b.clone());
+        }
+        out.extend_from_slice(&children[i + 1..]);
+        return out;
+    }
+    Vec::new()
+}
+
+/// Renders a `Details` block into `w`, in place — the summary marker line via
+/// `super::details_marker_line`, the body (when open) via [`render_bar_prefixed_body`] with
+/// `super::details_bar()` as the bar. Mirrors `render_alert_from_model`'s own doc comment on why
+/// there is no leading-blank-line check here either, and why `w.needs_newline` ends up `false`, not
+/// `true`, on the way out (the identical "fresh reparse boundary" production's own
+/// `split_details`/`render_details` produce, this time for a `<details>` block instead of an alert).
+///
+/// `ctx.details_interactive` decides, for *this* block specifically (not its children, which
+/// `render_bar_prefixed_body` always forces `false` regardless — see that function's own doc
+/// comment): whether it consumes a slot from the document-wide Tab-toggle ordinal sequence
+/// (`super::next_details_open(open_attr)`, and draws the marker in the Tab-focus sentinel style) or
+/// simply uses its own `open_attr` directly (no ordinal consumed, a plain marker style) — the exact
+/// `interactive` distinction `super::render_details`'s own doc comment documents in full, mirrored
+/// here via `super::details_marker_line`'s own identical parameter.
+fn render_details_from_model(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    open_attr: bool,
+    summary: &str,
+    children: &[Block],
+    ctx: BlockCtx,
+) {
+    let open = if ctx.details_interactive {
+        next_details_open(open_attr)
+    } else {
+        open_attr
+    };
+    w.push_line(details_marker_line(open, summary, ctx.details_interactive));
+    if open && !children.is_empty() {
+        render_bar_prefixed_body(w, doc, src, children, details_bar());
+    }
+    w.needs_newline = false;
+    w.fresh_boundary = true;
+}
+
+/// Shared body-rendering half of `render_alert_from_model`/`render_details_from_model`: renders
+/// `children` into a **fresh, independent** sub-`Writer` — mirroring production's own
+/// `render_md_body_nested`, which computes an alert's/`Details`'s own body in complete isolation
+/// (a fresh `Vec<Line>`, a fresh `tui_markdown::TextWriter` underneath it) before splicing a bar
+/// prefix onto every resulting line and appending the result to the *caller's* own output — see
+/// `render_alert`/`render_details`'s own bodies in `markdown.rs` for the exact shape this mirrors:
+/// `let mut body_lines = Vec::new(); render_md_body_nested(&mut body_lines, .., &inner_ctx); for bl
+/// in body_lines { let mut spans = vec![bar()]; spans.extend(bl.spans); out.push(..) }`.
+///
+/// The sub-`Writer` starts with every piece of *positional* state reset (`lines`/`list_indices`/
+/// `line_prefixes`/`line_styles`/`needs_newline`/`pending_para_start`/`after_math`, all fresh or
+/// `false`) — a body is a standalone construct, not a continuation of whatever came before the
+/// alert/`<details>` — but **inherits** `w`'s own `styles`/`code`/`theme`/`icons` (display
+/// configuration, not position) and renders at `w.width - 2` (the same two columns
+/// `render_alert`/`render_details` reserve for the bar). `math: None`: production never lifts math
+/// inside either body (`structure_mask`'s own exclusion — the same reason `render_quote` forces
+/// `math_here: false` for a plain quote's own children), so there is nothing to share across the
+/// isolation boundary; `BlockCtx { math_here: false, details_interactive: false }` is what `children`
+/// actually renders with, unconditionally, regardless of what was in scope at the call site — see
+/// `render_details_from_model`'s own doc comment for why *this* block's own interactivity is a
+/// separate question from its children's.
+///
+/// Once the sub-`Writer` finishes, its own resulting lines are run through
+/// `super::decorate_headings_and_extras` — **before** `bar` gets prepended to any of them — the
+/// identical `decorate_md_lines` call `render_text_block_safe` (in `markdown.rs`) already makes
+/// for *every* text segment, including one that turns out to be an alert's/`<details>`'s own body:
+/// `render_md_body_nested` is only ever reached from inside `render_alert`/`render_details`, and it
+/// still funnels a plain-text run through `render_md_text_inner` → `render_text_block_safe`, which
+/// decorates that segment's own lines *before* `render_alert`/`render_details`'s own caller-side
+/// loop ever prepends the bar to them. Task-checkbox recognition specifically (`replace_task_checkbox`
+/// → `task_prefix_state`) only ever matches a line whose *own, trimmed* text starts with a bullet —
+/// a `▌ `/`▏ ` bar prepended first would permanently hide every checkbox inside an alert/`<details>`
+/// body from that check (confirmed directly: without this call here, `render_doc`'s own single,
+/// top-level `decorate_headings_and_extras` pass — which only ever runs *after* every bar is already
+/// in place — never converts one). Heading decoration is not at risk of running twice because of
+/// this *extra* call: `decorate_headings`'s own `heading_level` reads `line.spans.first()` and
+/// requires no leading span at all (see the module doc comment's own note on this), so the *later*,
+/// outer pass (`render_doc`'s own, over the *already* bar-prefixed `w.lines`) simply never matches
+/// these lines a second time — this call is the only chance heading decoration (or task-checkbox
+/// conversion) ever gets for content reached this way, exactly mirroring why `render_alert`/
+/// `render_details` decorate their own body *before* bar-prefixing it too.
+///
+/// Each (now fully decorated) line then gets `bar` prepended onto its spans (its own style preserved
+/// via `Line::from(spans).style(bl.style)`, exactly like production's own loop) and is pushed into
+/// the **outer**, shared `w` via `w.push_line` — not a direct `w.lines.push` — so a nested
+/// alert/`<details>` (this function called recursively, through `render_block`'s own dispatch, from
+/// *inside* another alert's/`<details>`'s own body) gets its own bar layered on top of the inner
+/// one's the same way a real, doubly-nested `> >` quote gets two `>` spans (production's own
+/// recursive `render_alert`/`render_details` produce the identical layering, one bar prepended per
+/// nesting level, from the inside out) — and so that an alert/`<details>` nested inside a **plain**
+/// `Quote` still gets that quote's own `>` prefix applied on top, via the outer `w`'s own
+/// `line_prefixes`.
+fn render_bar_prefixed_body(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    children: &[Block],
+    bar: Span<'static>,
+) {
+    let mut inner = Writer {
+        lines: Vec::new(),
+        inline_styles: Vec::new(),
+        link: None,
+        styles: w.styles,
+        list_indices: Vec::new(),
+        line_prefixes: Vec::new(),
+        line_styles: Vec::new(),
+        needs_newline: false,
+        math: None,
+        after_math: false,
+        fresh_boundary: false,
+        pending_para_start: None,
+        code: w.code,
+        theme: w.theme.clone(),
+        width: w.width.saturating_sub(2),
+        icons: w.icons,
+        tasks: w.tasks,
+    };
+    let body_ctx = BlockCtx {
+        math_here: false,
+        details_interactive: false,
+    };
+    for child in children {
+        render_block(child, &mut inner, doc, src, body_ctx);
+    }
+    let decorated =
+        decorate_headings_and_extras(inner.lines, inner.width, inner.icons, inner.tasks);
+    for line in decorated {
+        let style = line.style;
+        let mut spans = vec![bar.clone()];
+        spans.extend(line.spans);
+        w.push_line(Line::from(spans).style(style));
+    }
 }
 
 #[cfg(test)]
@@ -2162,10 +2584,24 @@ mod tests {
             needs_newline: false,
             math: None,
             after_math: false,
+            fresh_boundary: false,
             pending_para_start: None,
             code: CodeStyle::default(),
             theme: String::new(),
             width: 80,
+            icons: false,
+            tasks: super::super::DEFAULT_TASK_STATES,
+        }
+    }
+
+    /// `BlockCtx` with math off and `Details` interactive — the shape a fresh top-level render
+    /// starts with (see `render_doc`'s own construction of `ctx`); most of this module's own tests
+    /// have no math or `<details>` case to exercise either flag's *other* value, so this is the
+    /// default every test below reaches for unless a test's own doc comment says otherwise.
+    fn fresh_ctx() -> BlockCtx {
+        BlockCtx {
+            math_here: false,
+            details_interactive: true,
         }
     }
 
@@ -2305,7 +2741,7 @@ mod tests {
             src,
             *task,
             &doc.blocks[0].children[0].children,
-            false,
+            fresh_ctx(),
         );
         let rendered: Vec<String> = w
             .lines
@@ -2508,5 +2944,251 @@ mod tests {
                 out.lines
             );
         }
+    }
+
+    /// Direct assertion on `render_doc`'s own output for a GitHub alert — header (bar, icon, color,
+    /// label with its Obsidian-style title) and a **recursively rendered** body (a tight list, not a
+    /// literal string), every body line carrying the alert's own colored bar. Deliberately checked
+    /// here, on `render_doc`'s own output, rather than only through `md_render_diff_tests`'s parity
+    /// harness: `alert_header_line`/`alert_bar` are *shared* with `markdown.rs`'s own `render_alert`
+    /// (see `render_alert_from_model`'s own doc comment for why), so a wrong color/icon/label/bar
+    /// there would break both renderers identically and the parity harness would keep reporting a
+    /// match — this test is what actually exercises this file's own call site.
+    #[test]
+    fn alert_header_bar_icon_label_and_recursive_body_render_from_the_model() {
+        crate::preview::markdown::set_details_open(Vec::new());
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let src = "> [!TIP] Hey\n> - a\n> - b\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            true, // icons on, so the header's own Nerd Font glyph is checked too
+            &[' ', 'x'],
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let color = Color::Green; // AlertKind::Tip's own color
+        assert_eq!(
+            out.lines.first(),
+            Some(&Line::from(vec![
+                Span::styled("▌ ".to_string(), Style::new().fg(color)),
+                Span::styled("\u{f0eb} ".to_string(), Style::new().fg(color)),
+                Span::styled(
+                    "Tip — Hey".to_string(),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD)
+                ),
+            ])),
+            "header line (bar/icon/color/label+title): {:?}",
+            out.lines
+        );
+        assert_eq!(
+            out.lines.len(),
+            3,
+            "header + two recursively rendered list-item body lines: {:?}",
+            out.lines
+        );
+        let bar = Span::styled("▌ ".to_string(), Style::new().fg(color));
+        for (i, want_tail) in [(1, "- a"), (2, "- b")] {
+            assert_eq!(
+                out.lines[i].spans.first(),
+                Some(&bar),
+                "line {i} does not open with the alert's own bar: {:?}",
+                out.lines[i]
+            );
+            let joined: String = out.lines[i]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(
+                joined,
+                format!("▌ {want_tail}"),
+                "line {i}: the body's own list item was not recursively rendered: {:?}",
+                out.lines[i]
+            );
+        }
+    }
+
+    /// Direct assertion on `render_doc`'s own output for a `Details` block — marker line (`▾`/`▸`,
+    /// the Tab-focus sentinel style, the summary label), and (when open) a **recursively rendered**
+    /// body, every body line carrying the `▏` bar in `TABLE_BORDER_FG`. Mirrors the alert test above
+    /// (see its own doc comment for why direct assertions here, not just the parity harness, matter
+    /// for the *shared* decoration functions).
+    #[test]
+    fn details_marker_style_bar_and_recursive_body_render_from_the_model() {
+        crate::preview::markdown::set_details_open(Vec::new());
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let src = "<details open>\n<summary>More</summary>\n\n- x\n- y\n\n</details>\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        // The sentinel style is hardcoded here, deliberately, rather than obtained by calling
+        // `super::details_marker_style()` — that would make this assertion compare the shared
+        // function's own output against itself, silently passing even if that function's own
+        // color/modifiers were wrong (confirmed directly: this test still passed when
+        // `details_marker_style`'s own color was corrupted to `Magenta`, before this fix — the
+        // exact "shared code, both sides identical" blind spot this test otherwise exists to close).
+        let sentinel_style = Style::new()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+        assert_eq!(
+            out.lines.first(),
+            Some(&Line::from(vec![
+                Span::styled("▾ ".to_string(), sentinel_style),
+                Span::styled(
+                    "More".to_string(),
+                    Style::new().add_modifier(Modifier::BOLD)
+                ),
+            ])),
+            "marker line (arrow/sentinel style/summary label): {:?}",
+            out.lines
+        );
+        assert_eq!(
+            out.lines.len(),
+            3,
+            "marker + two recursively rendered list-item body lines: {:?}",
+            out.lines
+        );
+        let bar = Span::styled("▏ ".to_string(), Style::new().fg(Color::Rgb(90, 98, 120)));
+        for (i, want_tail) in [(1, "- x"), (2, "- y")] {
+            assert_eq!(
+                out.lines[i].spans.first(),
+                Some(&bar),
+                "line {i} does not open with the details block's own bar: {:?}",
+                out.lines[i]
+            );
+            let joined: String = out.lines[i]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(
+                joined,
+                format!("▏ {want_tail}"),
+                "line {i}: the body's own list item was not recursively rendered: {:?}",
+                out.lines[i]
+            );
+        }
+    }
+
+    /// A **closed** `Details` block (no `open` attribute, and `set_details_open` seeds nothing —
+    /// see `render_details_from_model`'s own doc comment for `open`'s two possible sources) renders
+    /// *only* its own marker line — its body must not appear at all, the same information-disclosure
+    /// concern `markdown.rs`'s own `alert_inside_closed_details_is_not_leaked` test guards for the
+    /// string-based pipeline.
+    #[test]
+    fn details_closed_state_hides_its_body() {
+        crate::preview::markdown::set_details_open(Vec::new());
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let src = "<details>\n<summary>S</summary>\n\nSECRET\n\n</details>\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "a closed details block draws only its own marker line: {:?}",
+            out.lines
+        );
+        let joined: String = out.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !joined.contains("SECRET"),
+            "closed details leaked its body: {joined:?}"
+        );
+    }
+
+    /// A `Details` block reached only through a GitHub alert's own body renders **statically** — it
+    /// does not consume a slot from the document-wide Tab-toggle ordinal sequence
+    /// (`super::next_details_open`), so a *real*, top-level `Details` block that follows it still
+    /// gets the ordinal slot `set_details_open` actually meant for it. Mirrors
+    /// `markdown.rs`'s own `nested_details_do_not_drift_later_block_open_state` test, this time
+    /// checking `render_doc`'s own output rather than `collect_details_open`'s count.
+    #[test]
+    fn details_nested_inside_an_alert_does_not_consume_the_top_level_ordinal() {
+        // Slot 0 is the *only* real top-level `Details` block below (the alert's own nested one is
+        // not supposed to be counted at all) — seeded closed, opposite its own `open` attribute, so
+        // a wrongly-consumed slot would be directly observable as the wrong body showing up.
+        crate::preview::markdown::set_details_open(vec![false]);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let src = "> [!NOTE]\n> <details open>\n> <summary>Nested</summary>\n>\n> shown\n>\n> </details>\n\n\
+                   <details open>\n<summary>Real</summary>\n\nSECRET\n\n</details>\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let joined_all: Vec<String> = out
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            joined_all.iter().any(|l| l.contains("shown")),
+            "the alert-nested details is rendered statically, honoring its own `open` attribute \
+             directly (never consuming an ordinal slot) — it must still show its body: {joined_all:?}"
+        );
+        assert!(
+            !joined_all.iter().any(|l| l.contains("SECRET")),
+            "the one real top-level details block must land on ordinal slot 0 (seeded closed) — \
+             if the alert-nested one had wrongly consumed that slot instead, this block would fall \
+             back to its own `open` attribute (`true`) and leak SECRET: {joined_all:?}"
+        );
     }
 }

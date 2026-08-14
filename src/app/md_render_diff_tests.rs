@@ -55,9 +55,11 @@
 //!   container's content column, which production therefore also draws as plain code, still matches
 //!   (module scope, not a gap in `render_code_block`'s own content reconstruction). Both of these are
 //!   closed the same way, by a **future** stage: the one that teaches `render_doc` to draw konoma's own
-//!   *structural* extras straight from the model — tables, GitHub alerts, `<details>`, block images,
-//!   mermaid/math diagrams — the same family `markdown.rs`'s own `split_segments`/`split_tables`/
-//!   `split_alerts`/`split_details`/`split_math` intercepts today, ahead of tui-markdown, for production.
+//!   remaining *structural* extras straight from the model — tables, block images, mermaid/math
+//!   diagrams — the same family `markdown.rs`'s own `split_segments`/`split_tables`/`split_math`
+//!   intercepts today, ahead of tui-markdown, for production. (GitHub alerts and `<details>` blocks,
+//!   the other two members of that family, are no longer in this category — see `render.rs`'s own
+//!   module doc comment for `render::render_alert_from_model`/`render::render_details_from_model`.)
 //!
 //! ## Math (closed — history, not a live gap)
 //!
@@ -140,6 +142,39 @@
 //! `split_html_blocks`-equivalent pass before it can be, or ships as a deliberate, documented behavior
 //! change — belongs to whoever makes that wiring decision, not to this diff harness; tracked in
 //! [`BEHAVIOR_DECISIONS`] rather than [`KNOWN_MISMATCHES`] for exactly that reason.
+//!
+//! ## A GitHub alert's own flat, pre-parse extraction can change a surrounding list's tight/loose
+//! ## shape (`BEHAVIOR_DECISIONS`)
+//!
+//! **A GitHub alert (`> [!TYPE]`) sitting inside a list item, alongside other sibling content in
+//! that same item, can make production render the item *tight* while `render_doc` — following real
+//! CommonMark structure — renders it *loose*, and neither side is a bug.** `markdown.rs`'s own
+//! `split_alerts` runs over the **whole** top-level segment's raw text, line by line, *before*
+//! tui-markdown (or `Doc::parse`) ever sees any of it — and it has no concept of list-item nesting at
+//! all: it simply deletes the `>`-prefixed alert lines from the middle of the text, wherever they
+//! happen to sit. For `"- item\n\n  > [!NOTE]\n  > ```sh\n  > echo hi\n  > ```\n"`, that leaves
+//! tui-markdown with effectively `"- item\n\n"` to parse — a **single-item list whose only block is
+//! one paragraph**, which CommonMark's own tight/loose rule makes tight (no second, blank-line-separated
+//! block remains inside the item once the alert is gone) — so `"item"`'s own text lands on the very
+//! same row as the `"- "` marker (confirmed directly: `code_corpus`'s own "an alert inside a list
+//! item" case, `old[0] = ["- ", "item"]`, one line). `Doc::parse` never performs this kind of
+//! string-level deletion at all (see the module doc comment's own "no re-parsing" invariant) — it
+//! reads the **real** source structure, where the item genuinely *does* contain two block-level
+//! children (the paragraph and the alert quote) separated by a blank line, which CommonMark's own
+//! rule makes **loose** — so `render_item`'s own loose-first convention puts `"item"` on its own row,
+//! one below the marker.
+//!
+//! This is not "a gap in this stage" (see [`KNOWN_MISMATCHES`]: `render_doc` already draws the alert
+//! itself correctly, via `render::render_alert_from_model` — the *list item surrounding it* is what
+//! differs) and not an improvement either (see [`INTENDED_IMPROVEMENTS`]: production's own shape here
+//! is not a bug, it is simply a side effect of extracting the alert before any list parsing happens
+//! at all) — it is the identical kind of disagreement the "Inline HTML that interrupts a paragraph"
+//! section above already tracks here, just triggered by `split_alerts`'s own flat extraction instead
+//! of `split_html_blocks`'s own permissive one. Resolving it — teaching `render_doc` to mimic
+//! production's own pre-parse deletion (which would mean building a *second*, string-level pass that
+//! violates this file's whole "read structure once, from the real parser" premise) or leaving
+//! production to catch up to real CommonMark structure instead — is a product decision, not something
+//! this harness can settle by picking a side.
 //!
 //! ## Two categories closed structurally, not merely observed
 //!
@@ -230,6 +265,11 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
     // interrupt a paragraph). See the module doc comment's own "Inline HTML that interrupts a
     // paragraph" section for the full trade-off.
     "code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph",
+    // `split_alerts`'s own flat, pre-parse deletion of a `> [!TYPE]` alert's lines changes the
+    // surrounding list item's own tight/loose shape before tui-markdown ever sees it (production:
+    // tight, one block left in the item; `render_doc`: loose, the real two-block structure). See the
+    // module doc comment's own "A GitHub alert's own flat, pre-parse extraction..." section.
+    "code_corpus: an alert inside a list item",
 ];
 
 /// **`render_doc` is better than production on purpose, and is not expected to ever start matching
@@ -327,8 +367,10 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
     "code_corpus: KNOWN FAILURE: same glue, with an unrelated real fence following later in the document",
     "code_corpus: a checkbox after a fence whose closing line has trailing text (list ended by a paragraph)",
     "code_corpus: a checkbox after a fence whose closing line has trailing text (tight list)",
+    "code_corpus: a details block after a fence whose closing line has trailing text",
     "code_corpus: a fence-lookalike indented 4 columns is the literal content of an indented code block",
     "code_corpus: a heading and a real fence after a fence whose closing line has trailing text",
+    "code_corpus: an alert after a fence whose closing line has trailing text",
     "code_corpus: a mermaid fence indented 4 columns is left in the text and drawn as ordinary code",
     "code_corpus: a shorter closing line does not close a longer fence",
     "code_corpus: a tilde closing line does not close a backtick fence",
