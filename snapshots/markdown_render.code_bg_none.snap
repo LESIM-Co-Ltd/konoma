@@ -3223,6 +3223,48 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== code_span_corpus: a never-closing dollar sign followed by an unrelated link does not crash ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "It costs $50 "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} a link"
+  s02 fg=-,bg=-,mod=- " more."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Link{target="url"}
+
+=== code_span_corpus: a never-closing dollar sign followed by markup containing a line break does not crash ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "It costs $50 "
+  s01 fg=-,bg=-,mod=I "italic"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=I "break"
+  s04 fg=-,bg=-,mod=- " more."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: a never-closing dollar sign followed by unrelated bold markup does not crash ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "It costs $50 "
+  s01 fg=-,bg=-,mod=B "bold"
+  s02 fg=-,bg=-,mod=- " text."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === code_span_corpus: a span may contain a lone backtick ===
 -- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -3724,6 +3766,87 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== code_span_corpus: escaped comma at the very start of display math content ($$\,ab$$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ \\,ab $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped comma between cjk characters inside display math ($$あ\,い$$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ あ\\,い $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped comma inside backslash-bracket display math (\[a\,b\]) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ a\\,b $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped comma inside backslash-paren inline math (\(a\,b\)) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$a\\,b$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped comma inside display math ($$a\,b$$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ a\\,b $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped comma right before the closing delimiter of display math ($$ab\,$$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ ab\\, $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped currency dollars mixed with an unrelated escape elsewhere render literally, not as math ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "cost "
+  s01 fg=-,bg=-,mod=- "$5 and "
+  s02 fg=-,bg=-,mod=- "$10 for "
+  s03 fg=-,bg=-,mod=- "*not italic"
+  s04 fg=-,bg=-,mod=- "*."
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === code_span_corpus: escaped emoji before a span ===
 -- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -3749,6 +3872,42 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== code_span_corpus: escaped math inside an inline code span stays literal; the same shape outside is lifted ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=white,bg=-,mod=- "$$a\\,b$$"
+  s01 fg=-,bg=-,mod=- " and"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ c\\,d $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped math resolves across an intervening inline code span ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ a\\,b `x` c\\_d $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped math resolves across intervening nested markup ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ a\\,b **c** d\\_e $$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === code_span_corpus: escaped multibyte char before a span ===
 -- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -3767,6 +3926,28 @@ L0005 style=fg=-,bg=-,mod=- align=-
 L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped percent inside inline math ($a\%b$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$a\\%b$"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== code_span_corpus: escaped underscore inside display math ($$a\_b$$) ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$$ a\\_b $$"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --

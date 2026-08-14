@@ -1675,8 +1675,21 @@ fn walk_inline_math<'a>(
                         events,
                         pending.take(),
                         t,
+                        range.clone(),
                         display,
                         closer,
+                        src,
+                        &mut prev_end,
+                    );
+                    continue;
+                }
+                if dollar_math_still_open(&t) {
+                    render_dollar_math_tail(
+                        w,
+                        events,
+                        pending.take(),
+                        t,
+                        range.clone(),
                         src,
                         &mut prev_end,
                     );
@@ -1810,19 +1823,49 @@ fn backslash_math_opener(gap: Option<&str>, t: &str) -> Option<(bool, char)> {
 /// Any text trailing the closer *within that same event's own payload* (`"] more text"`) is handed to
 /// `render_text_with_math` unchanged (`trailing_lift: false`) — not exercised by the parity corpus (no
 /// case this function's own math-lifting half handles has anything trailing its own closer).
+///
+/// ## Content: a raw `src` slice, never an accumulation of escape-processed event payloads
+///
+/// `content_start` — `first_range.start + opener.len_utf8()`, the byte position *right after* the
+/// opening bracket/paren, in `src` itself — and, once the closer is found, `range.start - 1` (the
+/// closer *character*'s own position, minus the one ASCII byte the `gap == Some("\\")` check just
+/// confirmed sits immediately before it — the closer's own escaping backslash, which belongs to the
+/// closer delimiter `\)`/`\]` itself, never to the content) bound the math content as one direct
+/// `&src[content_start..range.start - 1]` slice. This matters whenever the content itself holds a
+/// backslash-escaped ASCII punctuation character (`` \(a\,b\) ``, say — CommonMark treats `\`
+/// followed by *any* ASCII punctuation as an escape, not a notation this file's own math extension
+/// owns, so this is unremarkable, ordinary LaTeX): an earlier version of this function accumulated
+/// `content` by `push_str`-ing each intervening `Event::Text`'s own **already escape-processed**
+/// payload instead (`content.push_str(t)`) — correct for the *opener*/*closer* detection itself
+/// (`backslash_math_opener`'s own gap-based check does not need the content at all), but silently
+/// **dropped every backslash the content's own internal escape(s) had** — `\(a\,b\)` accumulated as
+/// `"a,b"`, not `"a\,b"` — a real, confirmed mismatch against production's own `collect_math_exprs`
+/// (`code_span_corpus`'s own `math` field, and `math_url`, both computed straight off `src`), never
+/// exercised by the parity corpus before it grew a case with an escape *inside* the expression itself
+/// (every existing case — `y` — has none). The raw slice sidesteps the whole class of bug the same way
+/// `render_dollar_math_tail`'s own doc comment explains for `$…$`/`$$…$$`: **`src` never had the
+/// backslash stripped out of it at all** — only the *event stream* pulldown-cmark's own escape
+/// handling produced does — so reading the content directly from `src`, bounded by two already-known
+/// byte positions, reproduces it byte-for-byte, with no reconstruction (and so no possibility of
+/// silently dropping anything) needed. Safe even across an intervening `Event::Code` (an inline code
+/// span embedded inside the math content, e.g. `` \(a `x` b\) `` — not exercised by the parity corpus,
+/// but not excluded by this function's own detection loop either): `range.start`/`range.end` are raw
+/// byte positions regardless of what kind of event they belong to, so the slice still reconstructs the
+/// content verbatim, backticks included, exactly as `scan_inline_math`'s own raw-text scan would.
 #[allow(clippy::too_many_arguments)] // one call site (walk_inline_math); each argument is its own distinct, already-computed piece of state — bundling any subset into a struct would only rename the same eight pieces of information, not reduce them
 fn render_backslash_math<'a>(
     w: &mut Writer<'_>,
     events: &mut impl Iterator<Item = (Event<'a>, Range<usize>)>,
     pending: Option<pulldown_cmark::CowStr<'a>>,
     first_text: pulldown_cmark::CowStr<'a>,
+    first_range: Range<usize>,
     display: bool,
     closer: char,
     src: &str,
     prev_end: &mut Option<usize>,
 ) {
     let opener = if display { '[' } else { '(' };
-    let mut content = first_text[opener.len_utf8()..].to_string();
+    let content_start = first_range.start + opener.len_utf8();
     let mut fallback: Vec<Event<'a>> = vec![Event::Text(first_text)];
     loop {
         let Some((ev, range)) = events.next() else {
@@ -1840,6 +1883,12 @@ fn render_backslash_math<'a>(
                 if let Some(p) = pending {
                     render_text_with_math(w, &p, true);
                 }
+                // `range.start` is the closer *character*'s own position — but the `gap == Some("\\")`
+                // check just above confirms the one byte immediately before it is the closer's own
+                // escaping backslash (ASCII, always exactly one byte), which belongs to the closer
+                // delimiter `\)`/`\]` itself, never to the content — excluded here (`- 1`) the same
+                // way `opener.len_utf8()` is added, not subtracted, on `content_start`'s own side.
+                let content = &src[content_start..range.start - 1];
                 render_math_slot(w, content.trim(), display);
                 let rest = &t[closer.len_utf8()..];
                 if !rest.is_empty() {
@@ -1851,7 +1900,6 @@ fn render_backslash_math<'a>(
                 }
                 return;
             }
-            content.push_str(t);
         }
         fallback.push(ev);
         if is_break {
@@ -1898,6 +1946,244 @@ fn replay_events<'a>(w: &mut Writer<'_>, events: Vec<Event<'a>>) {
             }
             // Mirrors `walk_inline`'s own defensive catch-all — see that function's own doc comment.
             _ => {}
+        }
+    }
+}
+
+/// Whether `t` (a plain `Event::Text` payload, *not* itself a backslash-math opener —
+/// `backslash_math_opener` is always checked first at the one call site, in `walk_inline_math`) still
+/// has a dollar-math span open at its own end once `scan_inline_math` has scanned it in full — the
+/// dollar analogue of what `backslash_math_opener` answers for `\(`/`\[`, but reusing
+/// `scan_inline_math` itself (see the module doc comment's own "no second math detector") rather than
+/// a hand-rolled gap check, because `$…$`/`$$…$$` cannot be recognized the same narrow way: the opener
+/// is not necessarily this event's own very first character (arbitrary literal text can precede it
+/// within the same payload — `` "intro text $$a" `` — see `render_dollar_math_tail`'s own doc comment
+/// for how that leading text still renders correctly once the span resolves), so there is no fixed
+/// byte offset to gap-check against the way `backslash_math_opener`'s own `t.chars().next()` does.
+///
+/// `scan_inline_math`'s own accumulation buffer (`buf`, the trailing fragment it hands back once `t`
+/// is exhausted) is, provably, an exact byte-for-byte **suffix** of `t` itself: every branch of its own
+/// scan either `push_str`s the identical source slice it just consumed or, for the one single-byte
+/// fallback (`buf.push('$'); i += 1;`, an attempted `$$`/`$` that failed its own `find_close`/
+/// `find_inline_dollar` check), pushes exactly the one byte at the position it just advanced past — so
+/// `buf`'s own content, at every point, is *literally* `t`'s own bytes, never a reconstruction — and
+/// `flush_math` only ever *clears* `buf` (on a real match), never edits it in place. `buf` containing a
+/// live, un-escaped `$` character at all — not merely being non-empty, since `scan_inline_math` already
+/// degrades an *ordinary* trailing literal fragment (no `$` in it at all) to a plain, untouched
+/// `MathPart::Text` the same way it always has — is the one signal that distinguishes "this event's own
+/// text alone gave up on a `$`/`$$` it saw but could not close" (the shape this function exists to
+/// catch) from "there is nothing math-shaped in this text at all" (the overwhelmingly common case,
+/// where nothing about `walk_inline_math`'s own dispatch should change).
+///
+/// Whether that trailing `$` is a **genuine** escape-split math opener (`` "$$a" `` from `` $$a\,b$$
+/// ``, this function's own reason for existing) or an **ordinary**, never-closing literal one (`` "It
+/// costs $50." ``, ordinary currency prose with nothing else remotely math-shaped anywhere near it) is
+/// not decided here at all — both look identical from inside `t` alone, the same ambiguity
+/// `backslash_math_opener`'s own doc comment already documents for an escaped bracket that turns out
+/// not to be math either. `render_dollar_math_tail` is where that gets resolved, the same way
+/// `render_backslash_math` resolves its own identical ambiguity: by looking for a closer, and — if one
+/// never turns up — giving the events back unchanged rather than guessing.
+fn dollar_math_still_open(t: &str) -> bool {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut mask = Vec::new();
+    scan_inline_math(t, &mut parts, &mut buf, &mut mask);
+    buf.contains('$')
+}
+
+/// The dollar-delimited (`$…$`/`$$…$$`) analogue of `render_backslash_math` — accumulates events
+/// starting from `first_text` (whose own trailing `$`/`$$` `dollar_math_still_open` just flagged as
+/// unresolved) until either a raw re-scan finds a closer or the attempt is given up on. Mirrors that
+/// function's own two-exit shape (closer found; ran out of events, or hit a line-scoping break) and its
+/// own `pending`/`fallback`/`replay_events` machinery — see `render_backslash_math`'s own doc comment
+/// for the shared reasoning behind each of those (particularly "Why 'no closer found' is a *real*, not
+/// merely defensive, case", which applies here identically: an ordinary, never-closing currency `$` is
+/// indistinguishable from a genuine opener until a closer either turns up or does not) — but, unlike
+/// that function, does **not** gate which events it is willing to consume at all: every event this loop
+/// sees (`Text`, `Code`, `Start`/`End`, `SoftBreak`/`HardBreak`) is buffered into `fallback` and folded
+/// into the growing raw slice, the identical "just keep consuming, event by event, until a break or the
+/// events run out" shape `render_backslash_math`'s own loop already has (it never special-cases
+/// `Start`/`Code` either — see that function's own doc comment). What *is* specific to this function is
+/// the "closer found" test itself (`Why this cannot be a single gap+char check`, below) and a
+/// depth-tracking guard neither `render_backslash_math` nor `walk_inline_math`'s own dispatch needs
+/// (`Never stop mid-construct`, below, on the crash a version of this function without it actually hit).
+///
+/// ## Why this cannot be a single gap+char check the way `backslash_math_opener` is
+///
+/// `\(`/`\[` are recognized by a **fixed, narrow** shape — gap `"\\"`, immediately followed by a
+/// specific opening character, always this event's own very first byte (`backslash_math_opener`'s own
+/// doc comment) — so `render_backslash_math` only ever needs to watch, event by event, for the mirror
+/// image: gap `"\\"` immediately followed by the specific closer. `$…$`/`$$…$$` has no such fixed
+/// shape at either end: the opener can sit anywhere inside `t`'s own text (arbitrary literal content
+/// may precede it — `` "intro text $$a" ``), and the closer is not one specific *character* to
+/// gap-check for but the same **substring search** `scan_inline_math`'s own `find_close`/
+/// `find_inline_dollar` already perform. Re-running `scan_inline_math` itself — on a **raw** (never
+/// escape-processed) slice of `src` that grows to cover every event consumed so far, each time through
+/// the loop below — is what reuses that existing logic rather than re-deriving a second, narrower
+/// version of it: the same "no second math detector" principle `render_paragraph_math`'s own doc
+/// comment states for the single-event case, extended across however many event boundaries this one
+/// has to cross.
+///
+/// ## Raw slicing: why the growing slice is always safe, and why it does not over-match
+///
+/// The slice re-scanned each time through the loop is `&src[first_range.start..end]` — **raw** `src`,
+/// never a concatenation of escape-processed event payloads — for the identical reason
+/// `render_backslash_math`'s own content is now computed the same way (see that function's own doc
+/// comment): the backslash a `` \, ``/`` \_ ``/... escape inside the math content needs to survive is
+/// not part of *any* individual event's own range at all, only of `src` itself, between two already-
+/// known byte positions. `end` grows monotonically (`end.max(range.end)`, never a bare assignment —
+/// see "Never stop mid-construct" for why a bare one is unsound) and the loop checks for resolution
+/// (`depth == 0 && !buf.contains('$')`) after *every* event, so it never reads or renders more of `src`
+/// than the shortest span that actually closes the dollar span — a later paragraph, or even a later
+/// *sentence*, can never leak into this scan by growing past its own real closer. Whether raw slicing
+/// itself is ever *unsafe* — leaking a backslash from some *other*, unrelated escape into rendered
+/// output — depends entirely on which of the two exits below fires, not on how far growth went to get
+/// there: the "closer found" exit renders straight from *this* raw slice (correct — the content genuinely
+/// does span everything between the real opener and the real closer, arbitrary intervening markup
+/// included, the identical way production's own raw-source `scan_inline_math` already treats such markup
+/// as ordinary literal characters); the "give up" exit never renders from the raw slice at all — see
+/// that exit's own explanation below for why.
+///
+/// On the "closer found" exit, the re-scanned `parts` may include real literal text *before* the
+/// match too (`` "intro text " `` from `` "intro text $$a\,b$$" ``, say) — `scan_inline_math`'s own
+/// `flush_math` produces that the same way it always has, from *this* raw slice, so no separate
+/// handling is needed for it: `render_math_parts` renders the whole resolved list — literal fragments
+/// and the lift together — in one pass, with the same `idx`-based trim rules `render_text_with_math`
+/// itself uses (`render_math_parts`'s own doc comment). Any further trailing fragment `scan_inline_math`
+/// leaves behind on *this* pass (now confirmed `$`-free, or it would not have stopped growing) is
+/// rendered immediately too (`trailing_lift: false`) rather than deferred as a fresh `pending` for the
+/// outer walk — the identical simplification `render_backslash_math`'s own doc comment already accepts
+/// for "text trailing the closer within that same event's own payload" (not exercised by the parity
+/// corpus either way).
+///
+/// On "give up" (ran out of events, or hit a top-level line-scoping break — see "Never stop
+/// mid-construct" for why *top-level* matters), `fallback` — buffered here the identical way
+/// `render_backslash_math`'s own is, starting from `first_text` itself — is replayed verbatim via
+/// `replay_events`, so every buffered event (including `first_text`) renders through its own normal,
+/// escape-*processed* dispatch, exactly as if `dollar_math_still_open` had never fired at all: this is
+/// what keeps an ordinary, never-closing `$` (currency prose, however much unrelated markup or however
+/// many unrelated escapes follow it before this loop finally gives up) rendering identically to before
+/// this function existed — `replay_events`'s own `Event::Text(t) => render_text_with_math(w, &t,
+/// false)` arm renders each buffered event's own **escape-processed** payload, never the raw slice this
+/// function scanned to look for a closer, so nothing pulled into a failed growth attempt (an unrelated
+/// `` \*escape\* ``, an ordinary `**bold**`, ...) can ever leak a stray literal backslash — or stray
+/// markup-as-literal-text — onto the screen.
+///
+/// ## Never stop mid-construct
+///
+/// Neither exit above may fire while `depth > 0` — i.e. after this loop has consumed a `Start` but not
+/// yet its own matching `End`. Stopping there is a real, confirmed crash this depth guard exists to
+/// close, not a merely theoretical concern: `Event::Start`'s own `range` already spans its *entire*
+/// nested content (confirmed directly — parsing `"**bold**"` alone reports `Start(Strong)`/
+/// `End(Strong)` both spanning the *whole* `0..8`, while the nested `Text("bold")` in between reports
+/// its own, narrower `2..6`), so a version of this loop that gave up the instant a non-continuing event
+/// turned up (buffering only that one `Start` into `fallback`, then returning) left `Text("bold")`/
+/// `End(Strong)` **still sitting, unconsumed, in the very same `events` iterator**
+/// `walk_inline_math`'s own outer loop keeps driving once this function returns — whose own next
+/// `range.start` is now *behind* `end`/`prev_end`, which this loop had already advanced past via the
+/// `Start`'s own wide range alone. `&src[prev_end..next.start]` panics the moment that happens ("byte
+/// range starts at X but ends at Y", `X > Y`) — reproduced directly, before this guard existed, by
+/// `` "It costs $50 **bold** text.\n" `` (ordinary prose; no escape anywhere near the `Start`/`End` pair
+/// at all — `$50` alone is what makes `dollar_math_still_open` trigger, per that function's own doc
+/// comment on how broad its own trigger condition deliberately is). Waiting for `depth` to return to
+/// `0` mirrors how `render_backslash_math`'s own loop achieves the identical safety *implicitly*, simply
+/// by never special-casing `Start`/`End` at all and so never stopping partway through either — the same
+/// property this loop now has explicitly, via `depth`, because — unlike `render_backslash_math`, which
+/// only ever needs to scan for one specific closer *character* — this loop's own "found a closer" check
+/// (a full `scan_inline_math` re-scan) has to run *somewhere*, and running it right after consuming a
+/// `Start` but before its `End` is exactly the state this guard rules out.
+#[allow(clippy::too_many_arguments)] // mirrors render_backslash_math's own identical allow — one call site (walk_inline_math), each argument its own distinct piece of state
+fn render_dollar_math_tail<'a>(
+    w: &mut Writer<'_>,
+    events: &mut impl Iterator<Item = (Event<'a>, Range<usize>)>,
+    pending: Option<pulldown_cmark::CowStr<'a>>,
+    first_text: pulldown_cmark::CowStr<'a>,
+    first_range: Range<usize>,
+    src: &str,
+    prev_end: &mut Option<usize>,
+) {
+    let mut end = first_range.end;
+    let mut fallback: Vec<Event<'a>> = vec![Event::Text(first_text)];
+    // Tracks whether the event just consumed sits inside an unfinished `Start`/`End` pair this loop
+    // has itself already started consuming (never negative — a paragraph's own inline event range is
+    // always balanced, by construction; `checked_sub`/`saturating_sub` would silently paper over a
+    // real desync instead of surfacing it, so plain arithmetic is used and the loop simply cannot
+    // decrement past zero given that invariant). See "Never stop mid-construct" below for why this
+    // exists at all.
+    let mut depth: usize = 0;
+    loop {
+        let raw = &src[first_range.start..end];
+        let mut parts: Vec<MathPart> = Vec::new();
+        let mut buf = String::new();
+        let mut mask: Vec<bool> = Vec::new();
+        scan_inline_math(raw, &mut parts, &mut buf, &mut mask);
+        if depth == 0 && !buf.contains('$') {
+            // Resolved: either a real closer turned up somewhere in the growing raw slice, or growth
+            // stopped because the (now fully re-scanned) text genuinely has no `$` left in it at all.
+            // Either way, `parts`/`buf` are this pass's own correct, final answer — render them. Gated
+            // on `depth == 0` for the identical reason the "keep growing" branch below is — see "Never
+            // stop mid-construct".
+            let pending_trailing_lift = matches!(parts.first(), Some(MathPart::Math { .. }));
+            if let Some(p) = pending {
+                render_text_with_math(w, &p, pending_trailing_lift);
+            }
+            if !buf.is_empty() {
+                mask.push(false);
+                parts.push(MathPart::Text(SourceRun::new(buf, mask)));
+            }
+            render_math_parts(w, parts, false);
+            return;
+        }
+        let Some((ev, range)) = events.next() else {
+            if let Some(p) = pending {
+                render_text_with_math(w, &p, false);
+            }
+            replay_events(w, fallback);
+            return;
+        };
+        *prev_end = Some(range.end);
+        // `end` grows to the *widest* extent seen so far, never merely the latest event's own — a
+        // `Start`'s own range already spans its *entire* nested content (confirmed directly: parsing
+        // `"**bold**"` alone reports `Start(Strong)`/`End(Strong)` both spanning `0..8`, the whole
+        // thing, while the nested `Text("bold")` in between reports its own, narrower `2..6`), so the
+        // very next event's own `range.end` can be *smaller* than `end` already is — `.max`, not a
+        // bare assignment, keeps the raw slice from ever shrinking back and silently dropping bytes it
+        // already decided to include.
+        end = end.max(range.end);
+        let is_break = matches!(ev, Event::SoftBreak | Event::HardBreak);
+        match &ev {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        fallback.push(ev);
+        // ## Never stop mid-construct
+        //
+        // Neither exit above (`depth == 0 && !buf.contains('$')` above; `is_break` here) may fire while
+        // `depth > 0` — i.e. after this loop has itself consumed a `Start` but not yet its own matching
+        // `End`. Stopping there — the crash this comment exists to explain, not merely guard against —
+        // would leave that `End` (and everything between it and the `Start`, however much nested
+        // content that is) *still sitting, unconsumed, in the very same `events` iterator*
+        // `walk_inline_math`'s own outer loop keeps driving once this function returns: its own next
+        // `range.start` would be *behind* `end`/`prev_end`, which this loop has already advanced past
+        // via the `Start`'s own wide range — exactly the "byte range starts at X but ends at Y" panic
+        // `&src[prev_end..next.start]` produces the moment `X > Y`. Confirmed directly, before this
+        // depth guard existed: `"It costs $50 **bold** text.\n"` — ordinary prose, no escape anywhere
+        // near the `Start`/`End` pair at all — panicked here, because giving up the instant a `Start`
+        // event turned up (this loop's own first version: `extendable = gap == "\\" && matches!(ev,
+        // Event::Text(_))`, `false` for `Event::Start` unconditionally) buffered only the lone `Start`
+        // into `fallback` and returned, leaving `Text("bold")`/`End(Strong)` orphaned. Waiting for
+        // `depth` to return to `0` (mirroring how `render_backslash_math`'s own loop achieves the
+        // identical safety *implicitly*, by never special-casing `Start`/`End` at all and so never
+        // stopping on one either) closes this structurally, not just for `Strong` — any inline
+        // construct at all (`Emphasis`, `Link`, nested combinations of either) shares the same
+        // wide-`Start`-range shape and so needs the identical protection.
+        if is_break && depth == 0 {
+            if let Some(p) = pending {
+                render_text_with_math(w, &p, false);
+            }
+            replay_events(w, fallback);
+            return;
         }
     }
 }
@@ -2005,35 +2291,45 @@ fn render_text_with_math(w: &mut Writer<'_>, text: &str, trailing_lift: bool) {
             mask.push(false);
             parts.push(MathPart::Text(SourceRun::new(buf, mask)));
         }
-        let n = parts.len();
         let is_last_line = i + 1 == line_count;
-        for (idx, part) in parts.into_iter().enumerate() {
-            match part {
-                MathPart::Text(run) => {
-                    let mut t = run.text().to_string();
-                    if idx > 0 {
-                        t = t.trim_start_matches([' ', '\t']).to_string();
-                    }
-                    let last_frag_on_last_line = is_last_line && idx + 1 == n;
-                    if idx + 1 < n || (trailing_lift && last_frag_on_last_line) {
-                        t = t.trim_end_matches([' ', '\t']).to_string();
-                    }
-                    if t.is_empty() {
-                        continue;
-                    }
-                    ensure_fresh_after_math(w);
-                    let style = w.cur_style();
-                    w.push_span(Span::styled(t, style));
+        render_math_parts(w, parts, trailing_lift && is_last_line);
+    }
+}
+
+/// The per-fragment rendering loop `render_text_with_math` itself drives, over one physical line's
+/// worth of already-`scan_inline_math`-produced `parts` — extracted so `render_dollar_math_tail` (an
+/// event-**spanning** group's own resolved parts, not confined to one `Event::Text`'s own payload) can
+/// share the identical trim/dispatch logic rather than a second, hand-copied near-duplicate of it. See
+/// `render_text_with_math`'s own doc comment ("Trimming: reproducing what an independent re-parse does
+/// to a fragment's own edges") for exactly what `trailing_lift` means and why the `idx`-based trim
+/// rules below are correct; unchanged here, verbatim, from that function's own former inline loop.
+fn render_math_parts(w: &mut Writer<'_>, parts: Vec<MathPart>, trailing_lift: bool) {
+    let n = parts.len();
+    for (idx, part) in parts.into_iter().enumerate() {
+        match part {
+            MathPart::Text(run) => {
+                let mut t = run.text().to_string();
+                if idx > 0 {
+                    t = t.trim_start_matches([' ', '\t']).to_string();
                 }
-                MathPart::Math { latex, display } => {
-                    // Unlike a `MathPart::Text` fragment, a lift never opens a fresh-paragraph
-                    // boundary of its own first — production appends its own placeholder line(s)
-                    // directly, with no gap check of any kind, regardless of what came immediately
-                    // before it (verified directly: `code_span_corpus`'s own cases show the math
-                    // placeholder line landing right after the preceding text line, never a blank
-                    // line apart from it).
-                    render_math_slot(w, &latex, display);
+                if idx + 1 < n || (trailing_lift && idx + 1 == n) {
+                    t = t.trim_end_matches([' ', '\t']).to_string();
                 }
+                if t.is_empty() {
+                    continue;
+                }
+                ensure_fresh_after_math(w);
+                let style = w.cur_style();
+                w.push_span(Span::styled(t, style));
+            }
+            MathPart::Math { latex, display } => {
+                // Unlike a `MathPart::Text` fragment, a lift never opens a fresh-paragraph
+                // boundary of its own first — production appends its own placeholder line(s)
+                // directly, with no gap check of any kind, regardless of what came immediately
+                // before it (verified directly: `code_span_corpus`'s own cases show the math
+                // placeholder line landing right after the preceding text line, never a blank
+                // line apart from it).
+                render_math_slot(w, &latex, display);
             }
         }
     }
@@ -4353,25 +4649,33 @@ mod tests {
     /// independent comparison in the first place). Compares against `collect_math_exprs` — production's
     /// own real extraction, called directly, never a hand-copied re-derivation.
     ///
-    /// **Not** a case with a backslash-escaped ASCII punctuation character inside the expression
-    /// (`` $$a\_b$$ ``/`` $$a\,b$$ ``/`` $$a\*b$$ ``, say) — that is a real, separate, *pre-existing*
-    /// gap this test deliberately does not exercise: CommonMark's own inline grammar treats `\` +
-    /// ASCII punctuation as an escape, so pulldown-cmark reports the escaped character as its own,
-    /// separate `Event::Text` (splitting what `scan_inline_math`'s own line-based, pre-parse
-    /// `collect_math_exprs` sees as one unbroken run of characters into several inline events),
-    /// and `walk_inline_math`'s own per-event drive of that same scanner loses the still-open `$$`
-    /// across that split — confirmed directly (`collect_math_exprs` still finds one expression;
-    /// `render_doc`'s own `out.images` comes back empty, `out.unsupported` still empty too — the
-    /// expression is silently left as ordinary, unlifted text, not flagged unsupported). Out of scope
-    /// for *this* test (which checks `url` correctness once extraction has already succeeded, not
-    /// extraction's own robustness) and not caught by `md_render_diff_tests`'s corpus either (no
-    /// existing case combines math with an escaped mid-expression character) — filed here as a
-    /// pointer for whoever picks it up next, not fixed by this pass.
+    /// **Includes** a backslash-escaped ASCII punctuation character inside the expression (`` $$a\_b$$
+    /// ``/`` $$a\,b$$ ``, `` \(a\,b\) ``) — this **used to be** a real, separate gap this test
+    /// deliberately did not exercise: CommonMark's own inline grammar treats `\` + ASCII punctuation as
+    /// an escape, so pulldown-cmark reports the escaped character as its own, separate `Event::Text`
+    /// (splitting what `scan_inline_math`'s own line-based, pre-parse `collect_math_exprs` sees as one
+    /// unbroken run of characters into several inline events) — `walk_inline_math`'s own per-event drive
+    /// of that same scanner used to lose the still-open `$$` across that split (confirmed directly, at
+    /// the time: `collect_math_exprs` still found one expression; `render_doc`'s own `out.images` came
+    /// back empty, `out.unsupported` still empty too — the expression silently left as ordinary,
+    /// unlifted text, not flagged unsupported), and separately, `\(…\)`/`\[…\]`'s own content —
+    /// accumulated back then by `push_str`-ing each intervening event's own **already escape-processed**
+    /// payload — silently dropped the escape's own backslash entirely (`\(a\,b\)` became `"a,b"`, not
+    /// `"a\,b"`). Both closed constructively in `render_dollar_math_tail`/`render_backslash_math` — see
+    /// each function's own doc comment for the fix (event-spanning re-scan over a growing **raw** `src`
+    /// slice, never an accumulation of escape-processed event payloads) — and pinned end to end, not just
+    /// at the URL level, by `md_render_diff_tests`'s own corpus (`code_span_corpus`'s escaped-math
+    /// cases, gated in `markdown_render_diff_report`).
     #[test]
     fn math_url_matches_production_for_the_same_expression() {
         for (src, display) in [
             ("inline $x^2$ math\n", false),
             ("$$\\int_0^1 x dx$$\n", true),
+            ("$$a\\,b$$\n", true),
+            ("$$a\\_b$$\n", true),
+            ("$a\\%b$\n", false),
+            ("\\(a\\,b\\)\n", false),
+            ("\\[a\\,b\\]\n", true),
         ] {
             let prod = crate::preview::markdown::collect_math_exprs(src);
             assert_eq!(prod.len(), 1, "src: {src:?}, exprs: {prod:?}");
@@ -4411,6 +4715,298 @@ mod tests {
                 out.images[0].url, want,
                 "src: {src:?} — render_doc's own math URL ({:?}) must match production's \
                  math_url(latex, display) ({want:?}) exactly, byte for byte",
+                out.images[0].url
+            );
+        }
+    }
+
+    /// Regression for the two bugs `math_url_matches_production_for_the_same_expression`'s own doc
+    /// comment now records as fixed — but checked here at the `lines`/`unsupported` level instead of
+    /// just `url`, since a wrong `url` and a *dropped* lift look identical from that test's own
+    /// `images.len() == 1` assertion alone (both would have failed it, for different reasons, before
+    /// either fix — this test pins the *shape* of the fix, not merely its end result).
+    ///
+    /// `$$a\,b$$` alone (the module doc comment's own minimal repro): before `render_dollar_math_tail`
+    /// existed, this rendered as two *literal* spans — `"$$a"` and `",b$$"` — one per
+    /// escape-split `Event::Text`, `out.images` empty, `out.unsupported` still empty (silently wrong,
+    /// not flagged). Reverting `render_dollar_math_tail`'s own "still open" trigger
+    /// (`walk_inline_math`'s `if dollar_math_still_open(&t) { ... }` arm) back out — the smallest change
+    /// that reproduces the pre-fix behavior — makes this assertion fail exactly that way.
+    #[test]
+    fn escaped_dollar_math_lifts_instead_of_rendering_as_two_literal_fragments() {
+        let src = "$$a\\,b$$\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "mermaid",
+            &math_slot,
+            true,
+        );
+        assert!(out.unsupported.is_empty(), "src: {src:?}");
+        assert_eq!(
+            out.lines,
+            vec![Line::from(Span::from("$$ a\\,b $$").dim())],
+            "an escape-split `$$…$$` must still lift as one placeholder, not fall through as two \
+             literal text fragments (`\"$$a\"`/`\",b$$\"`) around the event boundary the escape causes: \
+             {:?}",
+            out.lines
+        );
+    }
+
+    /// The backslash-math analogue: before `render_backslash_math`'s own content was computed as a raw
+    /// `src` slice, `\(a\,b\)` *did* lift (the opener/closer detection never depended on content at
+    /// all), but with the wrong content — `"a,b"`, the escape's own backslash silently dropped by the
+    /// old `content.push_str(t)` accumulation (`t` being pulldown-cmark's own **already
+    /// escape-processed** event payload, which never had the backslash to begin with). Reverting
+    /// `content_start`/`&src[content_start..range.start - 1]` back to that old accumulation makes this
+    /// assertion fail with `"a,b"` instead.
+    #[test]
+    fn escaped_backslash_math_content_keeps_the_escapes_own_backslash() {
+        for (src, want_display) in [("\\(a\\,b\\)\n", false), ("\\[a\\,b\\]\n", true)] {
+            let prod = crate::preview::markdown::collect_math_exprs(src);
+            assert_eq!(
+                prod,
+                vec![("a\\,b".to_string(), want_display)],
+                "src: {src:?}"
+            );
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Raw;
+            let out = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            let want_dim = if want_display {
+                "$$ a\\,b $$"
+            } else {
+                "$a\\,b$"
+            };
+            assert_eq!(
+                out.lines,
+                vec![Line::from(Span::from(want_dim).dim())],
+                "src: {src:?} — the lifted expression's own content must keep the internal escape's \
+                 backslash, matching collect_math_exprs's own raw-source extraction exactly: {:?}",
+                out.lines
+            );
+        }
+    }
+
+    /// Detection-power/no-regression pair for `dollar_math_still_open`'s own trigger condition, which
+    /// is deliberately *broader* than "this is actually math" (any leftover, un-escaped `$` at all —
+    /// including one that will never close, like ordinary currency prose) — see that function's own doc
+    /// comment. Both cases below already rendered correctly *before* `render_dollar_math_tail` existed
+    /// (there was nothing to fix here); what this test actually pins is that routing them through the
+    /// new "maybe extend" path anyway does not introduce a regression — in particular, that the "give
+    /// up" exit replays each buffered event through its own normal, escape-*processed* dispatch
+    /// (`replay_events`), never rendering the growing **raw** slice it used to look for a closer in,
+    /// which would otherwise leak a stray literal backslash from an unrelated escape pulled into the
+    /// same escape-joined chain purely because the gap before it happened to be `"\\"` too.
+    #[test]
+    fn a_dollar_that_never_closes_still_renders_literally_even_with_unrelated_escapes_nearby() {
+        for src in [
+            // No other escape in the document at all — the simplest "give up" shape.
+            "It costs $50 for the widget.\n",
+            // The escape that keeps `dollar_math_still_open` triggering (`\$`, itself never an opener —
+            // `scan_inline_math`'s own escape branch never re-examines the `$` it is attached to) sits
+            // right next to a second, wholly unrelated escape (`\*`) chained onto the very same
+            // "still open" growth attempt — the shape most likely to leak a stray backslash if the
+            // give-up path ever rendered from the raw slice instead of replaying the original events.
+            "cost \\$5 and \\$10 for \\*not italic\\*.\n",
+        ] {
+            let prod = crate::preview::markdown::collect_math_exprs(src);
+            assert!(prod.is_empty(), "src: {src:?}, exprs: {prod:?}");
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Raw;
+            let out = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            assert!(
+                out.images.is_empty(),
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            let rendered: String = out
+                .lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(
+                !rendered.contains('\\'),
+                "src: {src:?} — no backslash should ever reach the screen for an escape that is not \
+                 part of a real lift, whether the escape sits *inside* the never-closing dollar span's \
+                 own reach or somewhere else entirely: {rendered:?}"
+            );
+        }
+    }
+
+    /// Regression for a real, confirmed panic `render_dollar_math_tail`'s own "Never stop mid-construct"
+    /// doc comment records the discovery of: `dollar_math_still_open`'s own trigger condition fires for
+    /// **any** ordinary, never-closing `$` (currency prose, no escape needed at all — unlike the previous
+    /// test, which specifically targets the escape-chain angle) — and an early version of this loop gave
+    /// up the instant a non-continuing event turned up, which crashes the moment that event is a
+    /// `Start(tag)` whose own `range` spans further than the *individual* nested events
+    /// `walk_inline_math`'s own outer loop still has left to consume once this function returns
+    /// (`"byte range starts at X but ends at Y"`, confirmed directly for `` "It costs $50 **bold**
+    /// text.\n" `` — ordinary prose, no escape anywhere near the `Start`/`End` pair at all). Reverting
+    /// the `depth`-tracked "never stop mid-construct" guard back to unconditional exits — the smallest
+    /// change that reproduces the pre-fix behavior — panics on every case below.
+    ///
+    /// Each case's own expected `lines` is exactly what `render_doc` already produces for the identical
+    /// text with its `$…` prefix removed (confirmed by hand, not merely asserted): this pins not just
+    /// "does not panic" but "renders identically to as if `dollar_math_still_open` had never fired at
+    /// all" — bold/link/emphasis styling intact, an interior `SoftBreak` still rendered as one, no
+    /// backslash or dropped span anywhere.
+    #[test]
+    fn dollar_that_never_closes_does_not_panic_when_unrelated_markup_follows() {
+        for (src, want) in [
+            (
+                "It costs $50 **bold** text.\n",
+                vec![Line::from_iter([
+                    Span::from("It costs $50 "),
+                    Span::from("bold").bold(),
+                    Span::from(" text."),
+                ])],
+            ),
+            (
+                "It costs $50 *italic\nbreak* more.\n",
+                vec![Line::from_iter([
+                    Span::from("It costs $50 "),
+                    Span::from("italic").italic(),
+                    Span::from(" "),
+                    Span::from("break").italic(),
+                    Span::from(" more."),
+                ])],
+            ),
+            (
+                "It costs $50 [a link](url) more.\n",
+                vec![Line::from_iter([
+                    Span::from("It costs $50 "),
+                    Span::from("a link"),
+                    Span::from(" ("),
+                    Span::from("url").blue().underlined(),
+                    Span::from(")"),
+                    Span::from(" more."),
+                ])],
+            ),
+        ] {
+            let prod = crate::preview::markdown::collect_math_exprs(src);
+            assert!(prod.is_empty(), "src: {src:?}, exprs: {prod:?}");
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Raw;
+            let out = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            assert!(
+                out.images.is_empty(),
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            assert_eq!(
+                out.lines, want,
+                "src: {src:?} — must render exactly as if the never-closing `$` had never triggered \
+                 `render_dollar_math_tail` at all: {:?}",
+                out.lines
+            );
+        }
+    }
+
+    /// The flip side of the panic regression above: once `render_dollar_math_tail` no longer gives up
+    /// the instant a non-`Text` event turns up, a dollar-math span whose real closer sits *past* an
+    /// intervening inline code span or nested markup construct now resolves correctly too — matching
+    /// production's own raw-source `collect_math_exprs`, which has always treated such markup as
+    /// ordinary literal characters (it runs before tui-markdown ever interprets any of it). Not required
+    /// by the escape-splitting bug this task set out to fix, but a direct, confirmed consequence of the
+    /// crash fix above, pinned here so a future regression back to the narrower (and crash-prone)
+    /// "only ever grow across an escape-joined `Event::Text`" condition shows up as a real test failure,
+    /// not merely as this doc comment's own unverified claim.
+    #[test]
+    fn dollar_math_resolves_across_an_intervening_code_span_or_nested_markup() {
+        for src in ["$$a\\,b `x` c\\_d$$\n", "$$a\\,b **c** d\\_e$$\n"] {
+            let prod = crate::preview::markdown::collect_math_exprs(src);
+            assert_eq!(prod.len(), 1, "src: {src:?}, exprs: {prod:?}");
+            let (latex, display) = &prod[0];
+            let want_url = crate::preview::markdown::math_url(latex, *display);
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+            let out = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            assert_eq!(
+                out.images.len(),
+                1,
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            assert_eq!(
+                out.images[0].url, want_url,
+                "src: {src:?} — must resolve to production's own math_url exactly, byte for byte, \
+                 even though a code span/nested markup construct sits between the escape and the real \
+                 closer: {:?}",
                 out.images[0].url
             );
         }

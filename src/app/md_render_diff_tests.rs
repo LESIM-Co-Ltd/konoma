@@ -221,6 +221,52 @@
 //! rather than removed outright, since a *future* regression back to the old, buggy shape should read as
 //! "this got worse," not as a mystery.
 //!
+//! ### A third round: a backslash-escaped ASCII punctuation character *inside* the math content itself
+//!
+//! A later, separate pair of bugs (found once the corpus grew a case that combines math with an escape
+//! *inside* the expression — `` $$a\,b$$ ``/`` \(a\,b\) ``, ordinary LaTeX, `\` before *any* ASCII
+//! punctuation being CommonMark's own generic escape syntax, not a notation this file's own math
+//! extension owns): the escape's own backslash is never part of *any* individual `Event::Text`'s own
+//! range (pulldown-cmark's escape handling strips it out, splitting what was one unbroken run of raw
+//! `src` into several separate events — the identical mechanism `backslash_math_opener`'s own doc
+//! comment already documents for a leading `\(`/`\[`, now recurring *inside* an already-opened span).
+//! `$…$`/`$$…$$` lost the still-open span entirely across such a split (`walk_inline_math`'s own
+//! per-event `scan_inline_math` call could never see the closer, which landed in a later, separate
+//! event — the expression fell through as ordinary, unlifted literal text, `out.images` empty,
+//! `out.unsupported` still empty too — silently wrong, not flagged); `\(…\)`/`\[…\]` — already
+//! event-spanning, unlike `$…$`/`$$…$$` — still lifted, but its own content, accumulated by
+//! `push_str`-ing each intervening event's own **already escape-processed** payload, silently dropped
+//! the escape's own backslash (`\(a\,b\)` became `"a,b"`, not `"a\,b"` — a real, confirmed mismatch
+//! against production's own `collect_math_exprs`, which works from raw `src` and never had this
+//! problem). Both fixed constructively, in `render.rs`: `render_dollar_math_tail` (new — re-runs
+//! `scan_inline_math` itself over a growing **raw** `src` slice, one more event at a time, until either
+//! a closer resolves it or the attempt is given up on and every buffered event replays through its own
+//! normal, escape-processed dispatch) and `render_backslash_math` (its own content is now a direct raw
+//! `src` slice too, bounded by two already-known byte positions, rather than an accumulation) — see each
+//! function's own doc comment for the full mechanism. Pinned by `code_span_corpus`'s own escaped-math
+//! cases (gated here, in this same report) and by `render.rs`'s own `mod tests`
+//! (`escaped_dollar_math_lifts_instead_of_rendering_as_two_literal_fragments`/
+//! `escaped_backslash_math_content_keeps_the_escapes_own_backslash`/
+//! `a_dollar_that_never_closes_still_renders_literally_even_with_unrelated_escapes_nearby`) — recorded
+//! here as history for the identical reason the first two bugs are, immediately above.
+//!
+//! `render_dollar_math_tail`'s own first version gated growth on `gap == "\\"` specifically — narrower
+//! than the shape it shipped with — which hid a **real, confirmed panic**: `dollar_math_still_open`'s
+//! own trigger condition fires for *any* never-closing `$` (ordinary currency prose, no escape needed at
+//! all — not just the escape-splitting shape this section is otherwise about), and giving up the instant
+//! a non-continuing event turned up crashed the moment that event was a `Start(tag)` (bold/italic/link)
+//! whose own `range` spans past the individual nested events still left in the shared iterator —
+//! `` "It costs $50 **bold** text.\n" `` panicked with `"byte range starts at X but ends at Y"`. Closed
+//! by widening growth to consume *any* event (mirroring how `render_backslash_math`'s own loop already
+//! avoids this, simply by never special-casing `Start`/`End` at all) and tracking nesting depth so
+//! neither exit fires mid-construct — see `render_dollar_math_tail`'s own "Never stop mid-construct" doc
+//! comment for the exact mechanism. Pinned by `code_span_corpus`'s own three "does not crash" cases
+//! (gated here too) and `render.rs`'s own
+//! `dollar_that_never_closes_does_not_panic_when_unrelated_markup_follows`/
+//! `dollar_math_resolves_across_an_intervening_code_span_or_nested_markup` — the latter also records the
+//! resulting improvement (a dollar-math span may now resolve across an intervening code span or nested
+//! markup, matching production's own markup-blind raw-source scan).
+//!
 //! ## Inline HTML that interrupts a paragraph (`BEHAVIOR_DECISIONS`)
 //!
 //! **Inline HTML that interrupts a paragraph in a way production's own hand-written `split_html_blocks`

@@ -10491,6 +10491,169 @@ pub(crate) mod code_span_corpus {
                 "    \\[x\\]\n\n\\[y\\]\n",
                 &[("y", true)],
             ),
+            // ---- Math containing a backslash-escaped ASCII punctuation character (`` \, ``/`` \_ ``/
+            // `` \% ``, CommonMark's own generic escape syntax for *any* ASCII punctuation, not a
+            // notation this file's own math extension owns — so this is ordinary, unremarkable LaTeX,
+            // `\,` a thin space and `\_`/`\%` literal underscore/percent). `collect_math_exprs` (this
+            // corpus's own `math` field, checked byte for byte by `code_spans_are_literal_in_every_
+            // source_pass`) works from raw `src` directly and has always handled these correctly —
+            // `scan_inline_math`'s own escape handling (`b'\\' if i + 1 < n`) keeps the backslash
+            // literally in its accumulation buffer regardless of what character follows it. The
+            // *rendering* side (`render.rs`'s `render_doc`, an independent pulldown-cmark-event-driven
+            // pipeline `md_render_diff_tests`'s own `markdown_render_diff_report` compares against this
+            // exact corpus) does not share that same robustness for free: pulldown-cmark's own escape
+            // handling splits an `Event::Text` at *every* backslash-escape point (confirmed directly —
+            // see `render.rs`'s own `render_dollar_math_tail`/`backslash_math_opener` doc comments for
+            // the exact byte ranges), so a math span with an escape inside it never appears whole within
+            // any *single* event's own payload — a real, confirmed bug this corpus exists to pin against
+            // regressing back to (`render_dollar_math_tail`/`render_backslash_math`'s own raw-`src`-slice
+            // fix; before it, every one of these cases rendered as unlifted literal text for `$…$`/
+            // `$$…$$`, or lost the escape's own backslash entirely for `\(…\)`/`\[…\]`).
+            case(
+                "escaped comma inside display math ($$a\\,b$$)",
+                "$$a\\,b$$\n",
+                "$$a\\,b$$\n",
+                "$$a\\,b$$\n",
+                &[("a\\,b", true)],
+            ),
+            case(
+                "escaped underscore inside display math ($$a\\_b$$)",
+                "$$a\\_b$$\n",
+                "$$a\\_b$$\n",
+                "$$a\\_b$$\n",
+                &[("a\\_b", true)],
+            ),
+            case(
+                "escaped percent inside inline math ($a\\%b$)",
+                "$a\\%b$\n",
+                "$a\\%b$\n",
+                "$a\\%b$\n",
+                &[("a\\%b", false)],
+            ),
+            case(
+                "escaped comma inside backslash-paren inline math (\\(a\\,b\\))",
+                "\\(a\\,b\\)\n",
+                "\\(a\\,b\\)\n",
+                "\\(a\\,b\\)\n",
+                &[("a\\,b", false)],
+            ),
+            case(
+                "escaped comma inside backslash-bracket display math (\\[a\\,b\\])",
+                "\\[a\\,b\\]\n",
+                "\\[a\\,b\\]\n",
+                "\\[a\\,b\\]\n",
+                &[("a\\,b", true)],
+            ),
+            // The escape is the *very first* thing inside the delimiters — the opening `$$` and the
+            // escape's own backslash are adjacent, with nothing else between them (so the pulldown-cmark
+            // event boundary the escape causes sits right at the content's own start, not somewhere
+            // partway through it).
+            case(
+                "escaped comma at the very start of display math content ($$\\,ab$$)",
+                "$$\\,ab$$\n",
+                "$$\\,ab$$\n",
+                "$$\\,ab$$\n",
+                &[("\\,ab", true)],
+            ),
+            // The mirror image: the escape is the *very last* thing before the closing `$$`.
+            case(
+                "escaped comma right before the closing delimiter of display math ($$ab\\,$$)",
+                "$$ab\\,$$\n",
+                "$$ab\\,$$\n",
+                "$$ab\\,$$\n",
+                &[("ab\\,", true)],
+            ),
+            // CJK either side of the escape — same multibyte-safety concern
+            // `code_span_corpus`'s own "cjk"/"escaped multibyte" cases already pin for the *opener*/
+            // *closer* detection itself (`utf8_len`-based advancing, never a fixed byte count).
+            case(
+                "escaped comma between cjk characters inside display math ($$あ\\,い$$)",
+                "$$あ\\,い$$\n",
+                "$$あ\\,い$$\n",
+                "$$あ\\,い$$\n",
+                &[("あ\\,い", true)],
+            ),
+            // Negative: the identical escaped-math-looking text sitting inside an inline code span must
+            // stay literal, never lifted — mirrors `verbatim`'s own "protected inside a span, still
+            // converts on a control line right outside it" shape, but for an escape-bearing expression
+            // specifically (a plain, escape-free `$x$` already has this property pinned by every
+            // `verbatim`/`no_span` case above; this one confirms the *escaped* shape does not somehow
+            // leak through the code-span boundary via the very mechanism that lets it survive an
+            // ordinary `Event::Text` boundary split).
+            case(
+                "escaped math inside an inline code span stays literal; the same shape outside is lifted",
+                "`$$a\\,b$$` and $$c\\,d$$\n",
+                "`$$a\\,b$$` and $$c\\,d$$\n",
+                "`$$a\\,b$$` and $$c\\,d$$\n",
+                &[("c\\,d", true)],
+            ),
+            // Robustness, not required by any known bug: a *fully* escaped `\$` (CommonMark's own
+            // generic escape of the dollar sign itself, `code_span_corpus`'s sibling `inline_corpus`
+            // module already pins as "not math" for `collect_math_exprs`) still leaves a literal `$`
+            // character inside `scan_inline_math`'s own accumulation buffer (the backslash is kept, not
+            // stripped — see `scan_inline_math`'s own doc comment) — which is exactly the signal
+            // `render.rs`'s own `dollar_math_still_open` probe reacts to, even though nothing here is
+            // *actually* an unresolved opener at all. Combined with unrelated escaped asterisks
+            // (`\*not italic\*`) elsewhere in the very same paragraph — pulled into the same
+            // escape-joined chain `render_dollar_math_tail`'s own growth loop follows — this is the
+            // shape most likely to regress into showing a stray literal backslash if that growth loop
+            // ever renders its own "give up" fallback from the *raw* (backslash-preserved) slice instead
+            // of replaying the original, escape-processed events (see that function's own doc comment,
+            // "give up", for exactly why it must not).
+            case(
+                "escaped currency dollars mixed with an unrelated escape elsewhere render literally, not as math",
+                "cost \\$5 and \\$10 for \\*not italic\\*.\n",
+                "cost \\$5 and \\$10 for \\*not italic\\*.\n",
+                "cost \\$5 and \\$10 for \\*not italic\\*.\n",
+                &[],
+            ),
+            // A real, confirmed panic found while fixing the escape-splitting bug above (not itself an
+            // escape case at all — `dollar_math_still_open`'s own trigger condition is deliberately
+            // broad enough to fire for *any* never-closing `$`, escape or not): `render_dollar_math_tail`
+            // used to give up the instant a non-continuing event turned up, which crashed the moment
+            // that event was a `Start(tag)` (bold/italic/link, any of them) whose own `range` spans
+            // *past* the individual nested events still left to consume — see that function's own "Never
+            // stop mid-construct" doc comment for the exact mechanism and byte ranges. Three shapes:
+            // ordinary nesting, nesting with an interior line break, and a link.
+            case(
+                "a never-closing dollar sign followed by unrelated bold markup does not crash",
+                "It costs $50 **bold** text.\n",
+                "It costs $50 **bold** text.\n",
+                "It costs $50 **bold** text.\n",
+                &[],
+            ),
+            case(
+                "a never-closing dollar sign followed by markup containing a line break does not crash",
+                "It costs $50 *italic\nbreak* more.\n",
+                "It costs $50 *italic\nbreak* more.\n",
+                "It costs $50 *italic\nbreak* more.\n",
+                &[],
+            ),
+            case(
+                "a never-closing dollar sign followed by an unrelated link does not crash",
+                "It costs $50 [a link](url) more.\n",
+                "It costs $50 [a link](url) more.\n",
+                "It costs $50 [a link](url) more.\n",
+                &[],
+            ),
+            // The flip side of the panic fix: a dollar-math span whose real closer sits past an
+            // intervening inline code span, or past nested markup, now resolves correctly too — matching
+            // production's own raw-source `collect_math_exprs`, which has always treated such markup as
+            // ordinary literal characters (it runs before tui-markdown ever interprets any of it).
+            case(
+                "escaped math resolves across an intervening inline code span",
+                "$$a\\,b `x` c\\_d$$\n",
+                "$$a\\,b `x` c\\_d$$\n",
+                "$$a\\,b `x` c\\_d$$\n",
+                &[("a\\,b `x` c\\_d", true)],
+            ),
+            case(
+                "escaped math resolves across intervening nested markup",
+                "$$a\\,b **c** d\\_e$$\n",
+                "$$a\\,b **c** d\\_e$$\n",
+                "$$a\\,b **c** d\\_e$$\n",
+                &[("a\\,b **c** d\\_e", true)],
+            ),
             // The other reason `literal_code_mask` exists at all (see its own doc comment): a fence
             // with no blank line between it and a preceding `<summary>…</summary>` line is one thing
             // `code_block_mask` alone gets *wrong* (it reads the whole thing as one HTML block) and

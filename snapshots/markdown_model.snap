@@ -758,6 +758,18 @@ List{ordered=true, start=Some(4)} src=0..141 text="   4. Redistribution. You may
 -- BLOCKS (1) --
 Paragraph{inline=1..4:"press X now"} src=0..16 text="`press `X` now`\n"
 
+=== code_span_corpus: a never-closing dollar sign followed by an unrelated link does not crash ===
+-- BLOCKS (1) --
+Paragraph{inline=1..6:"It costs $50 a link more."} src=0..33 text="It costs $50 [a link](url) more.\n"
+
+=== code_span_corpus: a never-closing dollar sign followed by markup containing a line break does not crash ===
+-- BLOCKS (1) --
+Paragraph{inline=1..8:"It costs $50 italic break more."} src=0..34 text="It costs $50 *italic\nbreak* more.\n"
+
+=== code_span_corpus: a never-closing dollar sign followed by unrelated bold markup does not crash ===
+-- BLOCKS (1) --
+Paragraph{inline=1..6:"It costs $50 bold text."} src=0..28 text="It costs $50 **bold** text.\n"
+
 === code_span_corpus: a span may contain a lone backtick ===
 -- BLOCKS (4) --
 Paragraph{inline=1..4:"a [^1] <kbd>K</kbd> $x$ ` tail b"} src=0..37 text="a ``[^1] <kbd>K</kbd> $x$ ` tail`` b\n"
@@ -912,6 +924,34 @@ List{ordered=true, start=Some(1)} src=41..49 text="1. note\n"
   ListItem{task=None} src=41..49 text="1. note\n"
     Paragraph{inline=17..18:"note"} src=44..48 text="note"
 
+=== code_span_corpus: escaped comma at the very start of display math content ($$\,ab$$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$$,ab$$"} src=0..9 text="$$\\,ab$$\n"
+
+=== code_span_corpus: escaped comma between cjk characters inside display math ($$あ\,い$$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$$あ,い$$"} src=0..13 text="$$あ\\,い$$\n"
+
+=== code_span_corpus: escaped comma inside backslash-bracket display math (\[a\,b\]) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..4:"[a,b]"} src=0..9 text="\\[a\\,b\\]\n"
+
+=== code_span_corpus: escaped comma inside backslash-paren inline math (\(a\,b\)) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..4:"(a,b)"} src=0..9 text="\\(a\\,b\\)\n"
+
+=== code_span_corpus: escaped comma inside display math ($$a\,b$$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$$a,b$$"} src=0..9 text="$$a\\,b$$\n"
+
+=== code_span_corpus: escaped comma right before the closing delimiter of display math ($$ab\,$$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$$ab,$$"} src=0..9 text="$$ab\\,$$\n"
+
+=== code_span_corpus: escaped currency dollars mixed with an unrelated escape elsewhere render literally, not as math ===
+-- BLOCKS (1) --
+Paragraph{inline=1..6:"cost $5 and $10 for *not italic*."} src=0..38 text="cost \\$5 and \\$10 for \\*not italic\\*.\n"
+
 === code_span_corpus: escaped emoji before a span ===
 -- BLOCKS (4) --
 Paragraph{inline=1..4:"a \\🎉 [^1] <kbd>K</kbd> $x$ b"} src=0..34 text="a \\🎉 `[^1] <kbd>K</kbd> $x$` b\n"
@@ -921,6 +961,18 @@ List{ordered=true, start=Some(1)} src=57..65 text="1. note\n"
   ListItem{task=None} src=57..65 text="1. note\n"
     Paragraph{inline=13..14:"note"} src=60..64 text="note"
 
+=== code_span_corpus: escaped math inside an inline code span stays literal; the same shape outside is lifted ===
+-- BLOCKS (1) --
+Paragraph{inline=1..4:"$$a\\,b$$ and $$c,d$$"} src=0..24 text="`$$a\\,b$$` and $$c\\,d$$\n"
+
+=== code_span_corpus: escaped math resolves across an intervening inline code span ===
+-- BLOCKS (1) --
+Paragraph{inline=1..6:"$$a,b x c_d$$"} src=0..18 text="$$a\\,b `x` c\\_d$$\n"
+
+=== code_span_corpus: escaped math resolves across intervening nested markup ===
+-- BLOCKS (1) --
+Paragraph{inline=1..8:"$$a,b c d_e$$"} src=0..20 text="$$a\\,b **c** d\\_e$$\n"
+
 === code_span_corpus: escaped multibyte char before a span ===
 -- BLOCKS (4) --
 Paragraph{inline=1..4:"a \\あ [^1] <kbd>K</kbd> $x$ b"} src=0..33 text="a \\あ `[^1] <kbd>K</kbd> $x$` b\n"
@@ -929,6 +981,14 @@ ThematicBreak src=51..55 text="---\n"
 List{ordered=true, start=Some(1)} src=56..64 text="1. note\n"
   ListItem{task=None} src=56..64 text="1. note\n"
     Paragraph{inline=13..14:"note"} src=59..63 text="note"
+
+=== code_span_corpus: escaped percent inside inline math ($a\%b$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$a%b$"} src=0..7 text="$a\\%b$\n"
+
+=== code_span_corpus: escaped underscore inside display math ($$a\_b$$) ===
+-- BLOCKS (1) --
+Paragraph{inline=1..3:"$$a_b$$"} src=0..9 text="$$a\\_b$$\n"
 
 === code_span_corpus: fence holding an unclosed backtick ===
 -- BLOCKS (4) --
