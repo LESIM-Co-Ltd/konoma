@@ -149,11 +149,18 @@ pub(super) fn pre_src_for(cfg: &Config, src: &str) -> String {
 
 /// Everything one case renders to, over the app's real Markdown pipeline.
 ///
-/// `pub(super)`: `md_render_diff_tests` (a sibling module) reads `lines` back out of this as the
-/// "old renderer" side of its own comparison — see `render_case`'s own doc comment.
+/// `pub(super)`: `md_render_diff_tests` (a sibling module) reads `lines` **and** `images` back out of
+/// this as the "old renderer" side of its own comparison — see `render_case`'s own doc comment. Both
+/// fields carry the identical `pub(super)` visibility for the identical reason: neither is more or
+/// less "the production answer" than the other, and a diff harness that only ever looked at one of
+/// the two would have no way to notice a placement-only regression (wrong `url`/`line`/`cols`/`rows`)
+/// that leaves every rendered `Line` byte-for-byte unchanged — exactly the shape a wrong
+/// `ImagePlacement.url` is (the rendered placeholder rows look identical either way; only the
+/// synthetic cache key inside `url` differs) — see `run_case`'s own doc comment in
+/// `md_render_diff_tests` for where this is actually compared.
 pub(super) struct CaseRender {
     pub(super) lines: Vec<Line<'static>>,
-    images: Vec<crate::preview::markdown::ImagePlacement>,
+    pub(super) images: Vec<crate::preview::markdown::ImagePlacement>,
     items: Vec<MdItem>,
     anchors: Vec<(String, usize)>,
     code_blocks: Vec<String>,

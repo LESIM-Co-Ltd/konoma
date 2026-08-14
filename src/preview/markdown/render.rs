@@ -136,30 +136,33 @@ use tui_markdown::StyleSheet;
 use super::model::{code_body_text, AlertKind, Block, BlockKind, Doc, Task};
 use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
-    details_marker_line, gutter_span, highlight_body, image_loading_line, math_placeholder_lines,
-    math_raw_lines, math_url, next_details_open, pad_to_width, scan_inline_math, CodeStyle,
-    ImagePlacement, KonomaStyles, MathPart, MathSlot, SourceRun,
+    details_marker_line, gutter_span, highlight_body, image_loading_line, image_placeholder_lines,
+    image_text_fallback, is_mermaid_info, math_placeholder_lines, math_raw_lines, math_url,
+    mermaid_fence_url, mermaid_placeholder_lines, next_details_open, pad_to_width,
+    render_html_block, render_mermaid_block, render_table, scan_inline_math, CodeStyle,
+    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
-/// returns), any inline images placed (populated only by lifted LaTeX math whose `math_slot` answers
-/// `MathSlot::Image` — see `render_paragraph_math`; still always empty for block-level `![alt](url)`
-/// images, out of scope for this stage — see the module doc comment on scope), and the name of every
-/// top-level `BlockKind` this pass encountered but does not yet render (see `contains_unsupported`'s
-/// own doc comment for why a name recorded here can come from several levels deep inside a `List` or
-/// `Quote`, not only from a block sitting directly in `doc.blocks`).
+/// returns), every image/diagram/equation placement — a standalone `![alt](url)` paragraph, an
+/// extracted ```mermaid fence, and lifted LaTeX math (`math_slot` answering anything but
+/// `MathSlot::Raw`) all push into this one, shared `Vec`, exactly the way `render_markdown_with_images`
+/// itself returns a single, unified `placements` list regardless of which of the three produced each
+/// entry — and the name of every top-level `BlockKind` this pass encountered but does not yet render
+/// (see `contains_unsupported`'s own doc comment for why a name recorded here can come from several
+/// levels deep inside a `List` or `Quote`, not only from a block sitting directly in `doc.blocks`).
 pub(crate) struct RenderOut {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<ImagePlacement>,
     pub unsupported: Vec<&'static str>,
 }
 
-/// Two independent "how deep in the tree am I, and does it still apply" flags every recursive block
+/// Three independent "how deep in the tree am I, and does it still apply" flags every recursive block
 /// dispatcher (`render_block`/`render_list`/`render_item`/`render_quote`, and the two container
 /// renderers this pass adds for a GitHub alert/`<details>` — `render_alert_from_model`/
 /// `render_details_from_model`) has to thread down together — bundled into one small `Copy` struct,
-/// rather than two adjacent `bool` parameters, for the same reason `markdown.rs`'s own `MdRenderCtx`
-/// bundles same-typed positional arguments: two `bool`s next to each other at a call site is exactly
+/// rather than three adjacent `bool` parameters, for the same reason `markdown.rs`'s own `MdRenderCtx`
+/// bundles same-typed positional arguments: three `bool`s next to each other at a call site is exactly
 /// the kind of silent-swap footgun a named field turns into a compile error instead.
 #[derive(Clone, Copy)]
 struct BlockCtx {
@@ -171,7 +174,48 @@ struct BlockCtx {
     /// math lifting regardless of whether it turns out to be a plain quote or an alert), and inside
     /// a `Details` block's own children too (`render_details_from_model` forces it — production
     /// never lifts math out of a `<details>` body either, for the identical `structure_mask` reason).
+    ///
+    /// **Not the same question as `extract_here`, below, despite sharing an exclusion footprint for
+    /// `Quote`/alert/`Details`** — see that field's own doc comment for exactly where the two
+    /// diverge (`render_doc`'s own top-level construction, specifically) and why conflating them was
+    /// a real, confirmed bug in an earlier version of this pass: `math_here` starts `math.is_some()`
+    /// — `false` for the *entire* render whenever the caller passes `math_on: false` (`ui.math =
+    /// "text"`, say) — while `extract_here` starts unconditionally `true`. A version of this file
+    /// that reused this one field for both questions (a plain rename, no new field) left block-image
+    /// and mermaid-fence extraction silently *disabled* the moment `math_on` was `false`, even though
+    /// production's own `split_block_parts` extracts a standalone image or a ```mermaid fence
+    /// completely independently of whether math lifting is on at all — confirmed directly: a probe
+    /// with `math_on: false` rendered a standalone `![alt](url)` paragraph as plain inline alt text,
+    /// never calling `slot_of` at all, before this field was split out.
     math_here: bool,
+    /// Whether standalone block-image extraction (`![alt](url)` as a paragraph's *entire* content)
+    /// and top-level ```mermaid fence extraction are still active at this position. Shares its own
+    /// `Quote`/alert/`Details` exclusion footprint with `math_here` (`false` inside either, for the
+    /// identical reason — see that field's own doc comment for the shared mechanism), because
+    /// production's own flat, whole-document, pre-tui-markdown scans for each — `split_block_parts`'s
+    /// standalone-image line check (`extract_block_image`/`extract_md_img`) and its ```mermaid
+    /// fence-line check (`parse_fence`/`is_mermaid_info`) — are defeated by a blockquote's own
+    /// literal `>` prefix the identical way `split_math`'s own `structure_mask` exclusion is
+    /// (confirmed directly: `extract_md_img`'s own "prefix must be empty or exactly `[`" check
+    /// rejects `"> ![a](u)"` the same way `parse_fence`'s own "must open with `` ` `` or `~`" check
+    /// rejects `"> ```mermaid"`), and both are skipped, explicitly, inside an alert's or `<details>`'s
+    /// own independently-re-parsed body too — see `code_block_source_locs_inner`'s own
+    /// `in_alert_body` doc comment ("the block-level extraction pass (images, ```mermaid fences) runs
+    /// on the raw source, where an alert's lines still carry their `>` prefix and match nothing — so
+    /// inside an alert body it must be skipped here too, and a diagram there really is drawn as an
+    /// ordinary code block") and `split_block_parts`'s own module doc comment for the `<details>`-body
+    /// half of the same story. `List`/list-item nesting never forces this `false` (matching
+    /// `extract_block_image`'s own `.trim()`-based check, which tolerates any amount of *pure
+    /// indentation* — no marker character survives on a list item's own continuation lines the way a
+    /// quote's `>` does — see `push_item_marker`'s own doc comment for why a list item's marker
+    /// itself only ever occupies the item's very first line, never repeated on later ones the way a
+    /// blockquote's own prefix is).
+    ///
+    /// **Diverges from `math_here` at exactly one place**: `render_doc`'s own top-level construction
+    /// sets this unconditionally `true` (never `math.is_some()`) — see that field's own doc comment
+    /// for the bug this closes. Everywhere else the two are set identically, side by side, in lockstep
+    /// (`render_quote`'s `child_ctx`, `render_bar_prefixed_body`'s `body_ctx`).
+    extract_here: bool,
     /// Whether a `Details` block reached at this position should consume the document-wide
     /// Tab-toggle ordinal sequence (`super::next_details_open`) — see the module doc comment's own
     /// "Alert/`<details>` interactivity" section for the full contract this mirrors.
@@ -227,22 +271,42 @@ pub(crate) fn render_doc(
     theme: &str,
     icons: bool,
     tasks: &[char],
+    slot_of: &dyn Fn(&str) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> RenderOut {
     let styles = KonomaStyles { code_bg: code.bg };
-    let math = math_on.then(|| MathCtx {
+    let math = math_on.then_some(MathCtx {
         slot: math_slot,
         width,
-        images: Vec::new(),
     });
+    // `fences_on`: the identical probe `render_markdown_with_images` itself runs
+    // (`!matches!(mermaid_slot(""), MermaidSlot::Text)`) — whether a ```mermaid fence is extracted to
+    // a diagram placement at all, computed once for the whole render rather than re-probed at every
+    // fence (`split_block_parts`'s own doc comment: an empty string is indistinguishable from a real,
+    // empty fence body, so probing it *once*, up front, is also what keeps a genuinely empty fence
+    // from misreading the probe's own answer as its own slot — see `render_mermaid_slot`'s own doc
+    // comment for the empty-fence-body case this is not that).
+    let mermaid = MermaidCtx {
+        slot: mermaid_slot,
+        caption: mermaid_caption,
+        width,
+        fences_on: !matches!(mermaid_slot(""), MermaidSlot::Text),
+        ord: 0,
+    };
     // Whether math lifting applies at all, at the *top* of the tree — `render_doc`'s own dispatch is
     // never inside a `Quote`, so this is simply "was `math_on` set", the same answer `math.is_some()`
     // would give; computed once, ahead of `w`'s own construction (which moves `math` into it), so
-    // nothing below needs to keep re-deriving `w.math.is_some()`. `details_interactive: true` is the
-    // *other* half of the identical "top of the tree" reasoning — see `BlockCtx`'s own doc comment.
+    // nothing below needs to keep re-deriving `w.math.is_some()`. `extract_here: true` is
+    // *unconditional* — image/mermaid extraction is never gated by `math_on` in production either
+    // (see `BlockCtx.extract_here`'s own doc comment for the bug this distinction closes).
+    // `details_interactive: true` is the *other* half of the identical "top of the tree" reasoning —
+    // see `BlockCtx`'s own doc comment.
     let ctx = BlockCtx {
         math_here: math.is_some(),
+        extract_here: true,
         details_interactive: true,
     };
     let mut w = Writer {
@@ -255,9 +319,13 @@ pub(crate) fn render_doc(
         line_styles: Vec::new(),
         needs_newline: false,
         math,
+        mermaid,
+        slot_of,
+        images: Vec::new(),
         after_math: false,
         fresh_boundary: false,
         pending_para_start: None,
+        heading_rule_shift: 0,
         code,
         theme: theme.to_string(),
         width,
@@ -288,25 +356,30 @@ pub(crate) fn render_doc(
                     src,
                     inline.clone(),
                     ctx.math_here,
+                    ctx.extract_here,
                     block.src.start,
                 );
             }
             BlockKind::ThematicBreak => render_rule(&mut w),
-            BlockKind::List { start, .. } => match contains_unsupported(&block.children) {
+            BlockKind::List { start, .. } => match contains_unsupported(&block.children, false) {
                 Some(bad) => unsupported.push(bad),
                 None => render_list(&mut w, doc, src, *start, &block.children, ctx),
             },
-            BlockKind::Quote { alert: None, .. } => match contains_unsupported(&block.children) {
-                Some(bad) => unsupported.push(bad),
-                None => render_quote(&mut w, doc, src, &block.children, ctx),
-            },
+            BlockKind::Quote { alert: None, .. } => {
+                match contains_unsupported(&block.children, true) {
+                    Some(bad) => unsupported.push(bad),
+                    None => render_quote(&mut w, doc, src, &block.children, ctx),
+                }
+            }
             // A GitHub alert — konoma's own `render_alert_from_model`, reusing `markdown.rs`'s own
             // `alert_header_line`/`alert_bar` for the header/bar decoration; see the module doc
-            // comment's own "Scope" section.
+            // comment's own "Scope" section. An alert is still, structurally, a `Quote` (pulldown-cmark
+            // reports the identical `Tag::BlockQuote` either way — see `model::BlockKind::Quote`'s own
+            // doc comment) — so its own children get `in_quote: true` too, the same as a plain quote's.
             BlockKind::Quote {
                 alert: Some(kind),
                 alert_title,
-            } => match contains_unsupported(&block.children) {
+            } => match contains_unsupported(&block.children, true) {
                 Some(bad) => unsupported.push(bad),
                 None => render_alert_from_model(
                     &mut w,
@@ -320,9 +393,15 @@ pub(crate) fn render_doc(
             },
             BlockKind::CodeBlock {
                 lang, body_spans, ..
-            } => render_code_block(&mut w, src, lang.as_deref(), body_spans),
+            } => render_code_block_dispatch(
+                &mut w,
+                src,
+                lang.as_deref(),
+                body_spans,
+                ctx.extract_here,
+            ),
             BlockKind::Details { open_attr, summary } => {
-                match contains_unsupported(&block.children) {
+                match contains_unsupported(&block.children, false) {
                     Some(bad) => unsupported.push(bad),
                     None => render_details_from_model(
                         &mut w,
@@ -341,44 +420,84 @@ pub(crate) fn render_doc(
             // rather than assumed unreachable — see `render_block`'s own doc comment for why that
             // convention holds throughout this file.
             BlockKind::ListItem { .. } => unsupported.push("ListItem"),
-            // Exhaustive on purpose (matching this crate's own convention — see e.g.
-            // `md_snapshot_tests::fmt_item_kind`'s doc comment): a new `BlockKind` variant must be
-            // taught to this match rather than silently falling through as "unsupported" under a
-            // name nobody chose on purpose.
-            BlockKind::Table { .. } => unsupported.push("Table"),
-            BlockKind::Html { .. } => unsupported.push("Html"),
+            // A top-level `Table`/`Html` is never `in_quote` (the top level is never inside any
+            // `Quote` — see `contains_unsupported`'s own doc comment on the parameter), so both are
+            // always drawn here, never reported unsupported.
+            BlockKind::Table { .. } => render_table_from_model(&mut w, src, block.src.clone()),
+            BlockKind::Html { .. } => render_html_block_from_model(&mut w, src, block.src.clone()),
         }
     }
     let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
-    let images = w.math.map(|m| m.images).unwrap_or_default();
     RenderOut {
         lines,
-        images,
+        images: w.images,
         unsupported,
     }
 }
 
 /// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body (alert or not), a
 /// `Details`'s own body, or (recursively) any of those nested arbitrarily deep inside more of the
-/// same — contains, anywhere inside it, a block kind this pass does not render at all: a `Table` or
-/// an `Html` block (the one remaining `BlockKind` a `Doc` can contain that has no renderer here — see
-/// the module doc comment's own "Scope" section). `CodeBlock`, and (as of this pass) `Quote { alert:
-/// Some(_), .. }`/`Details`, used to be names this function screened out too — see
-/// `render_code_block`'s own doc comment for why a `CodeBlock` no longer needs this treatment at all,
-/// at any nesting depth, quote included, and the module doc comment for the identical reasoning now
-/// extended to an alert/`<details>`: both have real renderers now, so they recurse into their own
-/// `children` here (checking for a *still*-unsupported `Table`/`Html` nested inside *them*) the same
-/// way `List`/plain-`Quote` already do, rather than being reported unsupported outright.
+/// same — contains, anywhere inside it, a block kind this pass cannot safely render at *this*
+/// position: a `Table` or an `Html` block found **nested inside a `Quote`** (`in_quote`, below — see
+/// its own doc comment for exactly why quote nesting, specifically, is the one shape that breaks
+/// them). `CodeBlock`, and (as of an earlier pass) `Quote { alert: Some(_), .. }`/`Details`, used to
+/// be names this function screened out too — see `render_code_block`'s own doc comment for why a
+/// `CodeBlock` no longer needs this treatment at all, at any nesting depth, quote included, and the
+/// module doc comment for the identical reasoning now extended to an alert/`<details>`: all three
+/// have real renderers now, so they recurse into their own `children` here (checking for a *still*-
+/// unsupported `Table`/`Html` nested inside *them*) the same way `List`/plain-`Quote` already do,
+/// rather than being reported unsupported outright. `Table`/`Html` themselves are no longer
+/// *unconditionally* unsupported either, as of this pass — see `in_quote`'s own doc comment for
+/// exactly which nesting shapes now render (`render_table_from_model`/`render_html_block_from_model`)
+/// and which still don't.
+///
+/// `in_quote`: whether the walk reaching this call is currently *inside* a `Quote`'s own subtree (the
+/// call site itself is what sets this — `true` the moment `Quote { .. }`, below, recurses into its
+/// own `children`; unchanged for every other container kind). A `Table`/`Html` is reported
+/// unsupported **only** when found while this is `true` — because both are rendered from a *naive*
+/// whole-block slice of `Block.src` (`render_table_from_model`/`render_html_block_from_model`,
+/// reusing `markdown.rs`'s own line-based `render_table`/`render_html_block` directly, per the
+/// module doc comment's own "Scope" section on why that reuse — not a re-derivation — is the right
+/// choice for a table, a *self-contained* structure with no reference to any other block), and a
+/// blockquote's own `>` marker survives on **every continuation line** of anything nested inside it
+/// (the identical asymmetric-range property `render_paragraph_math`'s own doc comment already
+/// documents for a quoted paragraph — confirmed directly, the same way, for a `Table`: parsing
+/// `"> | a | b |\n> |---|---|\n> | 1 | 2 |\n"` reports the table's own `Block.src` slice as
+/// `"| a | b |\n> |---|---|\n> | 1 | 2 |\n"` — the *first* line's marker excluded, every later
+/// line's kept), which breaks both `render_table`'s own line-based delimiter/cell parsing (the
+/// `>`-prefixed delimiter row no longer matches `is_table_delimiter`'s own character set, so the
+/// whole table degrades to garbled literal rows) and `render_html_block`'s own tag-stripping (the
+/// `>` survives into the displayed text verbatim) the same naive way. `List`/`Details` nesting never
+/// has this problem at all — no marker character survives on a list item's own continuation lines
+/// the way a blockquote's own repeats (`BlockCtx.math_here`'s own doc comment covers the identical
+/// point for image/mermaid extraction's own line-based checks) and `<details>` adds no per-line
+/// marker to begin with — so neither ever sets `in_quote`, and a `Table`/`Html` reached purely
+/// through either renders correctly.
+///
+/// This mirrors production's own real, confirmed limitation for the identical shape (not a defect
+/// unique to this stage's own reuse choice): `split_tables`'s/`split_html_blocks`'s own raw-line
+/// scans are *equally* defeated by a quote-nested table's/HTML block's own `>`-prefixed continuation
+/// lines (`is_table_delimiter`'s own character set has no `>` in it at all; `is_html_block_start`
+/// reads `line.trim_start()`, which never strips one either) — a quote-nested table stays
+/// undetected, its pipe-delimited syntax rendered as literal wrapped text through tui-markdown
+/// instead of a real, box-drawn table; a quote-nested HTML block is silently dropped entirely
+/// (tui-markdown's own `Event::Html` handling, the very defect `split_html_blocks` exists to rescue
+/// from elsewhere — see that function's own doc comment — reaching exactly the case its own
+/// rescue cannot reach). Reporting the whole enclosing `Quote` unsupported here, rather than
+/// reproducing either of those two very different degradations, is the honest choice for this
+/// stage — the identical judgment call the module doc comment already makes for every other
+/// not-yet-covered shape.
 ///
 /// Returns the *first* such kind's name found, in document order, for the caller (`render_doc`'s own
 /// top-level dispatch, or a nested recursive call from this same function walking back up) to record
 /// in `RenderOut::unsupported` — the exact same reporting a *directly* unsupported top-level block
 /// already gets, just discovered one or more levels deeper. This is what keeps `render_doc`'s own
 /// "report the container as unsupported and skip the whole subtree" choice (see the module doc
-/// comment) honest for `List`/`Quote`/`Details`: a three-item list with a table buried in the third
-/// item's own nested sublist is not partially rendered with a hole where that block would have gone —
-/// the whole list, all three items, is skipped, called out under whichever nested kind's own name
-/// `contains_unsupported` actually found, exactly like a bare top-level `Table` always has been.
+/// comment) honest for `List`/`Quote`/`Details`: a three-item list with a quote-nested table buried
+/// in the third item's own nested sublist is not partially rendered with a hole where that block
+/// would have gone — the whole list, all three items, is skipped, called out under whichever nested
+/// kind's own name `contains_unsupported` actually found, exactly like a bare top-level quote-nested
+/// `Table` always has been.
 ///
 /// A **loose list item that has a task marker** used to be excluded here too, under a synthetic
 /// `"LooseTask"` name — not a real `BlockKind` variant at all — because that exact shape crashed
@@ -393,20 +512,23 @@ pub(crate) fn render_doc(
 /// `CodeBlock`, and the two `BlockKind` variants this function itself is checking for) never
 /// recurses — there is nothing further to walk under any of them (see `model::Block.children`'s own
 /// doc comment: "Empty for every leaf kind").
-fn contains_unsupported(blocks: &[Block]) -> Option<&'static str> {
+fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
-            BlockKind::Table { .. } => return Some("Table"),
-            BlockKind::Html { .. } => return Some("Html"),
+            BlockKind::Table { .. } if in_quote => return Some("Table"),
+            BlockKind::Html { .. } if in_quote => return Some("Html"),
+            BlockKind::Table { .. } | BlockKind::Html { .. } => {}
             BlockKind::Heading { .. }
             | BlockKind::Paragraph { .. }
             | BlockKind::ThematicBreak
             | BlockKind::CodeBlock { .. } => {}
-            BlockKind::ListItem { .. }
-            | BlockKind::List { .. }
-            | BlockKind::Quote { .. }
-            | BlockKind::Details { .. } => {
-                if let Some(bad) = contains_unsupported(&b.children) {
+            BlockKind::ListItem { .. } | BlockKind::List { .. } | BlockKind::Details { .. } => {
+                if let Some(bad) = contains_unsupported(&b.children, in_quote) {
+                    return Some(bad);
+                }
+            }
+            BlockKind::Quote { .. } => {
+                if let Some(bad) = contains_unsupported(&b.children, true) {
                     return Some(bad);
                 }
             }
@@ -490,6 +612,27 @@ struct Writer<'m> {
     line_styles: Vec<Style>,
     needs_newline: bool,
     math: Option<MathCtx<'m>>,
+    /// The mermaid-extraction context — unconditional (not `Option`, unlike `math`), since
+    /// production's own `mermaid_slot`/`mermaid_caption` are always-required parameters to
+    /// `render_markdown_with_images` too (whether extraction actually *fires* for a given fence is
+    /// `mermaid.fences_on`, computed once via the same probe production runs — see `render_doc`'s own
+    /// construction site).
+    mermaid: MermaidCtx<'m>,
+    /// `render_doc`'s own incoming `slot_of` — how the app wants a standalone block image
+    /// (`![alt](url)` as a paragraph's *entire* content) rendered; read by `render_image_slot`. Like
+    /// `mermaid`, unconditional: production's own block-image extraction (`split_block_parts`) is
+    /// never gated by anything analogous to `math_on`/mermaid's own `fences_on` probe — a qualifying
+    /// paragraph is *always* handed to `slot_of`, whatever it answers.
+    slot_of: &'m dyn Fn(&str) -> ImageSlot,
+    /// Every image/diagram/equation placement this render has produced so far — the one, shared
+    /// accumulator `RenderOut::images` reads from at the very end (see that field's own doc comment
+    /// on why math/mermaid/block-images all push into the *same* `Vec`, matching production's own
+    /// single, unified `placements` list). Owned directly on `Writer`, not nested inside `math` the
+    /// way an earlier version of this struct had it — mermaid and block-image placements have no
+    /// natural home inside `MathCtx` at all, and duplicating an `images: Vec<ImagePlacement>` field
+    /// on three separate context structs would just be three accumulators that all have to get
+    /// concatenated back together at the end anyway.
+    images: Vec<ImagePlacement>,
     after_math: bool,
     /// Whether the very last thing pushed onto `self.lines` was the end of a GitHub alert or
     /// `Details` block — `render_alert_from_model`/`render_details_from_model` are the *only* two
@@ -596,6 +739,46 @@ struct Writer<'m> {
     /// one `math: Option<MathCtx<'m>>` already uses) rather than owned, since `render_doc`'s own
     /// `tasks: &[char]` parameter already outlives the whole call.
     tasks: &'m [char],
+    /// How many extra lines `decorate_headings_and_extras`'s own `decorate_headings` pass — run
+    /// exactly **once**, over the *whole* document, right at the very end of `render_doc` — will
+    /// insert **before** whatever line index `self.lines.len()` currently reports, once that single
+    /// pass finally runs. Incremented by exactly `1` by `render_heading`, immediately after pushing
+    /// an H1/H2 heading's own line (the only shape `decorate_headings` ever adds a line for: a
+    /// full-width rule directly under a level-1/2 heading — see that function's own body).
+    ///
+    /// This exists because an `ImagePlacement`'s own `line` field has to name a row index in
+    /// `RenderOut::lines` — the *fully decorated* array a real preview overlay actually reads
+    /// positions from — but every placement is recorded *during* the walk, i.e. against
+    /// `self.lines.len()` **before** that single, whole-document decoration pass has run at all
+    /// (`render_image_slot`/`render_mermaid_slot`/`render_math_slot` all read `self.lines.len()` the
+    /// moment their own reserved rows are about to be pushed, the identical instant production
+    /// itself reads `out.len()` — see `render_markdown_with_images`'s own `BlockPart::Image`/
+    /// `BlockPart::Mermaid`/`BlockPart::Math` arms). Production never has this gap at all: it
+    /// decorates each Markdown *text* segment (`render_text_block_safe`'s own call to
+    /// `decorate_md_lines`) the moment that segment finishes, immediately, *before* moving on to the
+    /// next `BlockPart` — so by the time it reads `out.len()` for the next image/mermaid/math
+    /// placement, every heading rule any *earlier* segment might have inserted is already baked into
+    /// that count. This file's own `Writer`, by contrast, accumulates the *entire* document into one
+    /// `self.lines` and decorates it **once**, at the very end (`render_doc`'s own final
+    /// `decorate_headings_and_extras(w.lines, ..)` call) — so a placement recorded partway through
+    /// the walk has no way to know, at push time, how many rule lines *later* decoration will still
+    /// go on to insert **before** it, from headings that already rendered earlier in the very same
+    /// document. This field is exactly that missing count, tracked incrementally as the one thing
+    /// that *does* change `self.lines`'s own eventual length between "when a placement is recorded"
+    /// and "when decoration finally runs" (`decorate_extras`'s own thematic-break/checkbox passes
+    /// never change line *count* at all, only individual lines' own content — see `render_heading`'s
+    /// own doc comment for the one line this field does *not* need to track: a level 3–6 heading,
+    /// which `decorate_headings` strips its own leading `#` span from in place, adding no line).
+    ///
+    /// Not consulted for anything rendered *inside* an alert's or a `<details>`'s own body
+    /// (`render_bar_prefixed_body`'s own, fully independent sub-`Writer`, decorated in complete
+    /// isolation the moment that body finishes — see that function's own doc comment): a heading
+    /// reached there increments *that* sub-`Writer`'s own, freshly-zeroed copy of this field instead,
+    /// which is exactly correct, since no image/mermaid/math placement can ever originate inside one
+    /// in the first place (`BlockCtx.math_here` is forced `false` for every alert's/`Details`'s own
+    /// children unconditionally — see that field's own doc comment) — there is nothing on the
+    /// *outer* `Writer`'s own placements this inner counter would ever need to influence.
+    heading_rule_shift: usize,
 }
 
 impl<'m> Writer<'m> {
@@ -978,6 +1161,16 @@ fn events_iter<'a, 'e>(
 /// Renders one `Heading` block into `w`, in place — mirrors `TextWriter::start_heading`/
 /// `end_heading`. `inline` is `Doc.events[block's own inline range]`, read directly (no second parse
 /// — see the module doc comment).
+///
+/// Also maintains `w.heading_rule_shift` (see that field's own doc comment for the full mechanism):
+/// incremented by `1` for a level-1/2 heading whose own line is not currently quote-prefixed
+/// (`w.line_prefixes.is_empty()`) — exactly the condition under which `decorate_headings`'s own
+/// `heading_level` check will, later, actually recognize this line and insert a rule directly under
+/// it (see the module doc comment's own note on why a *quoted* heading gets none: `heading_level`
+/// requires the line's own first span to carry no leading prefix at all, which a `>`-prefixed line
+/// never does). A level 3–6 heading never increments this either way — `decorate_headings` only ever
+/// adds a line for level 1/2 (see that function's own body); levels 3–6 have their own leading `#`
+/// span stripped *in place*, changing no line count at all.
 fn render_heading(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -995,6 +1188,9 @@ fn render_heading(
     walk_inline(&mut events_iter(&doc.events[inline]), w, None);
     if let Some(suffix) = meta.to_suffix() {
         w.push_span(Span::styled(suffix, w.styles.heading_meta()));
+    }
+    if level <= 2 && w.line_prefixes.is_empty() {
+        w.heading_rule_shift += 1;
     }
     w.needs_newline = true;
 }
@@ -1017,32 +1213,218 @@ fn render_paragraph(w: &mut Writer<'_>, doc: &Doc<'_>, inline: Range<usize>) {
     w.needs_newline = true;
 }
 
-/// `math_slot`/`images`/`width` bundled together for `Writer::math` — the math analogue of
-/// `MdRenderCtx` (`markdown.rs`'s own bundling of same-shaped trailing arguments): keeps the
-/// `math_slot` closure and `width` next to the one, shared `images` accumulator `render_math_slot`
-/// pushes to, so `RenderOut::images` can collect it once `render_doc`'s own walk finishes, no matter
-/// how many math expressions the document lifts or how deep in a `List` a given one sits. Owned by
-/// `Writer` itself, not passed as a separate parameter — see that struct's own doc comment on `math`
-/// for why.
+/// `math_slot`/`width` bundled together for `Writer::math` — the math analogue of `MdRenderCtx`
+/// (`markdown.rs`'s own bundling of same-shaped trailing arguments). Owned by `Writer` itself, not
+/// passed as a separate parameter — see that struct's own doc comment on `math` for why. Placements
+/// `render_math_slot` produces push directly onto `Writer::images` (the one, shared accumulator every
+/// image/mermaid/math placement uses — see that field's own doc comment), not a copy held here.
 struct MathCtx<'a> {
     slot: &'a dyn Fn(&str, bool) -> MathSlot,
     width: u16,
-    images: Vec<ImagePlacement>,
 }
 
-/// Renders a `Paragraph` block into `w`, in place, choosing between `render_paragraph_math` (lifts any
-/// LaTeX math the paragraph's own text contains onto its own placeholder line(s)) and plain
-/// `render_paragraph` — the one call site every `Paragraph`-rendering path in this file (`render_doc`'s
-/// own top-level dispatch, `render_block`'s generic one, and `render_item`'s first-child special case
-/// — see `walk_inline_math`, its own analogous split) goes through, so the decision itself never gets
-/// duplicated. `math_here` is `render_block`/`render_list`/`render_item`'s own propagated answer to
-/// "is math lifting active at this position in the tree" (see `render_doc`'s own doc comment for how
-/// it starts `true` and gets forced `false` the moment a `Quote` is entered); `w.math.is_some()` is
-/// `render_doc`'s own `math_on` argument, unconditionally true or false for the *whole* render. Both
-/// have to hold — `math_here` alone is not enough on its own, since a caller could (in principle) call
-/// this function with `math_here: true` while `w.math` is `None` (`math_on` was never set at all) —
-/// though no call site in this file actually does; checked here all the same, once, rather than
-/// trusting every caller to have already combined the two correctly.
+/// `mermaid_slot`/`mermaid_caption`/`width`/`fences_on`/a running fence ordinal, bundled together for
+/// `Writer::mermaid` — the mermaid analogue of `MathCtx`. Unlike `math`, this is never `Option`: see
+/// `Writer::mermaid`'s own doc comment for why mermaid extraction's own "is it on at all" question is
+/// answered by `fences_on` (a probe result, computed once in `render_doc`) rather than by the
+/// presence/absence of the context struct itself.
+struct MermaidCtx<'a> {
+    slot: &'a dyn Fn(&str) -> MermaidSlot,
+    /// The pre-translated affordance text (`"Enter: full screen"` or its translated equivalent) —
+    /// `render_doc`'s own `mermaid_caption: &str` parameter, forwarded verbatim into
+    /// `super::mermaid_placeholder_lines`'s own identically-named parameter (see that function's own
+    /// doc comment for why the `"◇ mermaid"` prefix itself stays untranslated, as the Tab-focus
+    /// sentinel `is_mermaid_header_span` keys off).
+    caption: &'a str,
+    width: u16,
+    /// Whether extraction is on *at all*, for the whole document — the identical probe production's
+    /// own `render_markdown_with_images` runs (`!matches!(mermaid_slot(""), MermaidSlot::Text)`),
+    /// computed once by `render_doc` rather than re-probed at every fence (see that function's own
+    /// construction site for why: an empty string is otherwise indistinguishable from a real, empty
+    /// fence body — probing it once, up front, keeps a genuinely empty fence's own real slot answer
+    /// from ever being confused with this probe's).
+    fences_on: bool,
+    /// The running mermaid-fence ordinal (`ImagePlacement.fence_ord`) — mirrors production's own
+    /// `fence_ord` counter in `render_markdown_with_images` exactly: incremented by `1` every time a
+    /// fence *eligible* for extraction is encountered (`render_code_block_dispatch`'s own mermaid
+    /// branch — gated the identical way production's own `split_block_parts` is, see
+    /// `BlockCtx.math_here`'s own doc comment), **before** checking whether its own body is empty —
+    /// so an empty mermaid fence (which still falls back to the legacy text diagram, not a code
+    /// block) still consumes an ordinal slot, keeping later fences' own numbering in lockstep with
+    /// production's identical "increment first, check emptiness after" order (see
+    /// `render_mermaid_slot`'s own doc comment). A fence this file never even attempts to extract in
+    /// the first place — quote-nested, or reached while `fences_on` is `false` — never touches this
+    /// counter at all, exactly mirroring production's own `parse_fence`-based line scan never
+    /// recognizing one there either (see `BlockCtx.math_here`'s own doc comment).
+    ord: usize,
+}
+
+/// If `inline` (a `Paragraph`'s own event-index range into `doc.events` — see `model::Doc.events`'s
+/// own doc comment) represents nothing but a single standalone image — `![alt](url)`, optionally
+/// wrapped in a link (`[![alt](url)](href)`) — returns its `(alt, url)`. Mirrors `markdown.rs`'s own
+/// line-based `extract_md_img`'s scope for exactly this one shape (see that function's own doc
+/// comment): a paragraph whose *entire* content, and nothing more, is one image. The image's own
+/// `dest_url` is used, never the wrapping link's own `href` — matching `extract_md_img` exactly (that
+/// function's own doc comment: "Extract a Markdown `![alt](url)`, optionally wrapped in a
+/// `[ ... ](href)` link" — the link is recognized only to be *stepped past*, its own destination
+/// never read).
+///
+/// Reads straight from `doc.events` — never from `src[range]` — so, unlike `render_table_from_model`/
+/// `render_html_block_from_model`'s own naive whole-block slice, this has no quote-marker-survival
+/// concern at all (`Doc.events` never represents a container's own marker as an event to begin with;
+/// see `model::Doc.events`'s own doc comment). It is `BlockCtx.math_here`'s own value — not anything
+/// this function itself checks — that decides whether extraction is *eligible* at this position:
+/// production's own line-based `extract_block_image` still rejects a quote-nested standalone-image
+/// line outright (its own leading `>` defeats the "prefix must be empty or exactly `[`" check the
+/// same way it defeats `parse_fence`'s own fence-open check — see `BlockCtx.math_here`'s own doc
+/// comment for the full reasoning, and the confirmed, documented production behavior it cites), so
+/// matching that call site's own eligibility gate is what keeps this file's output aligned with
+/// production even though this function *could*, on its own, safely extract a quote-nested one too.
+///
+/// A multi-line paragraph whose *first* line alone is a standalone image, with more real content
+/// lazily continuing right after it (no blank line), is **not** extracted here — the model's own
+/// `inline` range covers the *whole* paragraph, so anything beyond the image's own `End(Image)`
+/// event fails this function's own "nothing but one image" check and it returns `None`, falling
+/// through to ordinary paragraph rendering (the image shown as inline alt-text, matching this file's
+/// own `Image` handling in `start_inline_tag`). Production's own line-based `extract_block_image`, by
+/// contrast, operates per *physical source line*, so it pulls the image's own line out as a
+/// standalone `BlockPart::Image` regardless of what a lazily-continued *next* line holds — a
+/// documented, narrow gap, not exercised by the parity corpus at the time this was written (see the
+/// module doc comment's own "Scope" section).
+fn paragraph_as_block_image(doc: &Doc<'_>, inline: &Range<usize>) -> Option<(String, String)> {
+    let events = &doc.events[inline.clone()];
+    let inner = match events.first() {
+        Some((Event::Start(Tag::Link { .. }), _)) => {
+            if !matches!(events.last(), Some((Event::End(TagEnd::Link), _))) {
+                return None;
+            }
+            &events[1..events.len() - 1]
+        }
+        _ => events,
+    };
+    let Some((Event::Start(Tag::Image { dest_url, .. }), _)) = inner.first() else {
+        return None;
+    };
+    if !matches!(inner.last(), Some((Event::End(TagEnd::Image), _))) {
+        return None;
+    }
+    let url = dest_url.to_string();
+    if url.is_empty() {
+        // Matches `extract_md_img`'s own `if url.is_empty() { return None; }` — an image with no
+        // destination at all is not extracted in production either.
+        return None;
+    }
+    let alt = image_alt_text(&inner[1..inner.len() - 1]);
+    Some((alt, url))
+}
+
+/// Plain-text reconstruction of one `Image`'s own alt-text content (`events` = everything strictly
+/// between its `Start`/`End`) — concatenates every `Event::Text`/`Event::Code` payload it contains
+/// (a soft/hard break becomes a single space, matching `Writer::soft_break`'s own literal-space
+/// rendering), dropping any inline styling (bold/italic/...) the alt text happens to carry. Mirrors
+/// how `markdown.rs`'s own `extract_md_img` reads alt text back from raw source: a literal substring
+/// between `![` and the first `]`, which likewise carries no styling of its own — Markdown image
+/// syntax has no mechanism for any.
+fn image_alt_text(events: &[(Event<'_>, Range<usize>)]) -> String {
+    let mut s = String::new();
+    for (ev, _) in events {
+        match ev {
+            Event::Text(t) => s.push_str(t),
+            Event::Code(c) => s.push_str(c),
+            Event::SoftBreak | Event::HardBreak => s.push(' '),
+            _ => {}
+        }
+    }
+    s
+}
+
+/// If `extract_eligible` and `inline` is a standalone block image (`paragraph_as_block_image`),
+/// renders it as one via `render_image_slot` and returns `true`; otherwise renders nothing and
+/// returns `false`, leaving the caller (`render_paragraph_dispatch`/`render_bare_paragraph`) to fall
+/// through to its own ordinary paragraph handling. The one shared checkpoint both of those functions'
+/// own `Paragraph` dispatch runs through first, so the "is this paragraph actually just an image"
+/// decision — and its own eligibility gate — never gets duplicated between them.
+fn try_render_paragraph_as_image(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    inline: &Range<usize>,
+    extract_eligible: bool,
+) -> bool {
+    if !extract_eligible {
+        return false;
+    }
+    let Some((alt, url)) = paragraph_as_block_image(doc, inline) else {
+        return false;
+    };
+    render_image_slot(w, &alt, &url);
+    true
+}
+
+/// Renders one block-level image placement into `w`, in place — the block-image analogue of
+/// `render_math_slot`, mirroring its own structure exactly: `w.slot_of(url)` decides between a real
+/// `Inline` placement (reserved rows + an `ImagePlacement`), a `Loading` line, or the `Unavailable`
+/// text fallback (`super::image_placeholder_lines`/`image_loading_line`/`image_text_fallback` — the
+/// identical three functions `render_markdown_with_images`'s own `BlockPart::Image` arm calls). No
+/// leading-blank-line check of any kind, matching production's own `out.extend(image_placeholder_lines
+/// (..))` — a standalone image (unlike an *ordinary* paragraph) is extracted *before* tui-markdown, or
+/// this file's own `render_paragraph`, ever sees any surrounding text at all, so nothing here owes the
+/// page a `start_paragraph`-style separator; see `render_math_slot`'s own doc comment (and
+/// `pending_para_start`'s) for the identical reasoning already established for a lifted math
+/// expression that is a paragraph's own *entire* content — a standalone image *always* is, by
+/// construction (`paragraph_as_block_image`'s own "nothing but one image" check), so it always gets
+/// this treatment, never the eager, two-part push `render_paragraph` still applies for real text.
+/// Sets `needs_newline = false`/`after_math = true` on the way out, the identical "fresh reparse
+/// boundary" a lifted math expression leaves behind — reused rather than a second, image-specific
+/// flag, since the two are the same mechanism for the same underlying reason (see `after_math`'s own
+/// doc comment).
+fn render_image_slot(w: &mut Writer<'_>, alt: &str, url: &str) {
+    let width = w.width;
+    match (w.slot_of)(url) {
+        ImageSlot::Inline { cols, rows } => {
+            let placement_line = w.lines.len() + w.heading_rule_shift;
+            w.lines
+                .extend(image_placeholder_lines(cols, rows, alt, width));
+            w.images.push(ImagePlacement {
+                url: url.to_string(),
+                alt: alt.to_string(),
+                line: placement_line,
+                cols,
+                rows,
+                fence_ord: None,
+            });
+        }
+        ImageSlot::Loading => w.lines.extend(image_loading_line(alt, url, width)),
+        ImageSlot::Unavailable => w.lines.extend(image_text_fallback(alt, url, width)),
+    }
+    w.needs_newline = false;
+    w.after_math = true;
+    // `render_code_block`'s own leading-blank-line check is gated on `fresh_boundary`, not
+    // `needs_newline` (see that function's own doc comment on why) — an image placement immediately
+    // followed by a fence, with nothing textual between them, needs this set too, or that fence would
+    // insert a spurious extra blank row production's own flat accumulation never does — see
+    // `render_table_from_model`'s own doc comment for the concrete corpus case (a table, not an
+    // image, but the identical mechanism) that caught this before this field was added here.
+    w.fresh_boundary = true;
+}
+
+/// Renders a `Paragraph` block into `w`, in place — first checking whether it is actually a
+/// standalone block image (`try_render_paragraph_as_image`, gated by `extract_here`), then choosing
+/// between `render_paragraph_math` (lifts any LaTeX math the paragraph's own text contains onto its
+/// own placeholder line(s)) and plain `render_paragraph` — the one call site every `Paragraph`-
+/// rendering path in this file (`render_doc`'s own top-level dispatch, `render_block`'s generic one,
+/// and `render_item`'s first-child special case — see `walk_inline_math`, its own analogous split)
+/// goes through, so neither decision ever gets duplicated. `math_here`/`extract_here` are
+/// `render_block`/`render_list`/`render_item`'s own propagated answers to "is math lifting"/"is
+/// image/mermaid extraction" active at this position in the tree (see `BlockCtx`'s own doc comment
+/// for why the two are separate fields, not one shared flag); `w.math.is_some()` is `render_doc`'s
+/// own `math_on` argument, unconditionally true or false for the *whole* render. Both `math_here` and
+/// `w.math.is_some()` have to hold for a math lift — `math_here` alone is not enough on its own,
+/// since a caller could (in principle) call this function with `math_here: true` while `w.math` is
+/// `None` (`math_on` was never set at all) — though no call site in this file actually does; checked
+/// here all the same, once, rather than trusting every caller to have already combined the two
+/// correctly. `extract_here` alone decides the image check — there is no analogous "is image
+/// extraction on at all" toggle to combine it with (`w.slot_of` is unconditional — see that field's
+/// own doc comment).
 ///
 /// `block_start`: the `Paragraph` `Block`'s own `src.start`, forwarded to `render_paragraph_math`
 /// (which needs it — see that function's own doc comment and `walk_inline_math`'s) — read, but not
@@ -1055,8 +1437,12 @@ fn render_paragraph_dispatch(
     src: &str,
     inline: Range<usize>,
     math_here: bool,
+    extract_here: bool,
     block_start: usize,
 ) {
+    if try_render_paragraph_as_image(w, doc, &inline, extract_here) {
+        return;
+    }
     if math_here && w.math.is_some() {
         render_paragraph_math(w, doc, src, inline, block_start);
     } else {
@@ -1685,19 +2071,22 @@ fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool) {
     let width = math.width;
     match slot {
         MathSlot::Image { cols, rows } => {
-            let placement_line = w.lines.len();
+            // `+ w.heading_rule_shift`: converts the *pre*-decoration row index this line is about
+            // to occupy into the row it will actually land on in `RenderOut::lines`, once
+            // `render_doc`'s own single, whole-document `decorate_headings_and_extras` pass has run
+            // — see that field's own doc comment for the full mechanism and why every placement in
+            // this file needs it.
+            let placement_line = w.lines.len() + w.heading_rule_shift;
             w.lines
                 .extend(math_placeholder_lines(cols, rows, width, display));
-            if let Some(math) = w.math.as_mut() {
-                math.images.push(ImagePlacement {
-                    url: math_url(latex, display),
-                    alt: "math".into(),
-                    line: placement_line,
-                    cols,
-                    rows,
-                    fence_ord: None,
-                });
-            }
+            w.images.push(ImagePlacement {
+                url: math_url(latex, display),
+                alt: "math".into(),
+                line: placement_line,
+                cols,
+                rows,
+                fence_ord: None,
+            });
         }
         MathSlot::Loading => {
             w.lines
@@ -1724,10 +2113,52 @@ fn render_rule(w: &mut Writer<'_>) {
     w.needs_newline = true;
 }
 
+/// Whether `lang`, `body_spans`, and `extract_eligible` together mean *this* `CodeBlock` should be
+/// diverted to a mermaid diagram placement (`render_mermaid_slot`) instead of being drawn as ordinary,
+/// syntax-highlighted code — the one call site both `render_doc`'s own top-level dispatch and
+/// `render_block`'s generic one go through, so a `CodeBlock`'s eligibility for extraction never gets
+/// decided twice, in two slightly different ways.
+///
+/// A fence diverts when **all three** hold: `extract_eligible` (`ctx.extract_here`'s own value — see
+/// that field's own doc comment for the full reasoning: production's own flat, line-based fence-open
+/// check, `parse_fence`, is defeated by a blockquote's own `>` prefix exactly the way
+/// `extract_block_image`'s is, and is explicitly skipped inside an alert's/`<details>`'s own
+/// independently-re-parsed body too — a mermaid fence reached there really is drawn as ordinary code
+/// in production, confirmed directly by `code_block_source_locs_inner`'s own `in_alert_body` doc
+/// comment and pinned by `code_block_scanner_counts_exactly_what_the_renderer_draws`'s own "mermaid
+/// inside an alert is a code block" case); `w.mermaid.fences_on` (mermaid extraction is on *at all*,
+/// for the whole document — the identical probe production runs, see `MermaidCtx::fences_on`'s own
+/// doc comment); and `is_mermaid_info(lang)` (the fence's own info string names it a mermaid fence —
+/// the identical classifier production's own `split_block_parts_masked` calls). Falls through to
+/// ordinary `render_code_block` whenever any one of the three does not hold — including, deliberately,
+/// a mermaid fence nested *deeper* than this file's own `Quote` exclusion alone would catch: a mermaid
+/// fence at a **list** item's own content column still diverts (list nesting never forces
+/// `extract_eligible` off — see `BlockCtx.extract_here`'s own doc comment), matching production's own
+/// identical, depth-insensitive `.trim()`-based line recognition for that shape. This same shape
+/// (`"a mermaid fence at an ordered item's content column is diverted to a diagram"`) can still
+/// *mismatch* the diff harness, though, for a wholly separate reason — production's own flat,
+/// pre-parse fence deletion changes the surrounding list item's own tight/loose shape (`render_doc`
+/// reads the real, loose structure) — see `md_render_diff_tests`'s own `BEHAVIOR_DECISIONS` list and
+/// its module doc comment's "The identical mechanism recurs for mermaid-fence extraction" paragraph.
+fn render_code_block_dispatch(
+    w: &mut Writer<'_>,
+    src: &str,
+    lang: Option<&str>,
+    body_spans: &[Range<usize>],
+    extract_eligible: bool,
+) {
+    if extract_eligible && w.mermaid.fences_on && is_mermaid_info(lang.unwrap_or("")) {
+        render_mermaid_slot(w, src, body_spans);
+    } else {
+        render_code_block(w, src, lang, body_spans);
+    }
+}
+
 /// Renders one `CodeBlock` — fenced or indented, at any nesting depth this file covers (top level,
-/// inside a list item, inside a quote — `render_block`'s own `CodeBlock` arm, and `render_doc`'s own
-/// top-level one, are this function's only two callers) — directly from the model's own
-/// `lang`/`body_spans`, reusing the exact building blocks production's own `flush_code_run` calls for
+/// inside a list item, inside a quote — `render_code_block_dispatch`, this function's only caller,
+/// reached from both `render_block`'s own `CodeBlock` arm and `render_doc`'s own top-level one) —
+/// directly from the model's own `lang`/`body_spans`, reusing the exact building blocks production's
+/// own `flush_code_run` calls for
 /// the identical shape: `code_header` for the language-badge row, `highlight_body` for the
 /// syntect-highlighted, gutter+background body rows, and `gutter_span`/`pad_to_width` for the bottom
 /// padding row.
@@ -1844,6 +2275,171 @@ fn render_code_block(
     w.needs_newline = true;
 }
 
+/// Renders one extracted ```mermaid fence into `w`, in place — the mermaid analogue of
+/// `render_math_slot`/`render_image_slot`, mirroring production's own `BlockPart::Mermaid` handling in
+/// `render_markdown_with_images` almost exactly. `code` (below) is this fence's own body,
+/// reconstructed via `model::code_body_text(body_spans, src)` — the identical reconstruction
+/// `render_code_block` itself already uses for an *ordinary* fence's own body, so a quote-nested
+/// mermaid fence's own per-line `>` markers are excluded the same way (see
+/// `model::BlockKind::CodeBlock.body_spans`'s own doc comment) — not that a quote-nested fence can
+/// actually reach this function at all today: `render_code_block_dispatch`'s own `extract_eligible`
+/// gate (`ctx.extract_here`) already keeps one from ever diverting here in the first place (see that
+/// function's own doc comment), matching production's *own* documented "mermaid inside an alert is a
+/// code block" behavior; `code_body_text`'s own quote-safety is simply not the reason this function
+/// itself needs to worry about it.
+///
+/// One byte-level detail this function has to correct for explicitly before hashing: `code_body_text`
+/// strips *at most one* trailing `\n` from the reconstructed body (see that function's own doc
+/// comment — its own contract, not incidental), while production's own `fence` variable
+/// (`split_block_parts_masked`'s own `mermaid: Option<String>` accumulator) keeps every line's own
+/// trailing `\n`, including the last — every content line the accumulator ever pushes comes from
+/// `src.split_inclusive('\n')`, and a mermaid fence's content lines are, by construction, never the
+/// last line of the document (the closing ` ``` ` line always follows), so a non-empty, successfully
+/// closed fence's own `fence` string *always* ends with exactly one `\n`. That makes "strip at most
+/// one, re-add exactly one" a lossless round trip, not a guess: `code` below is `code_body_text`'s own
+/// output with that one `\n` put back (`code_for_url`), confirmed directly against
+/// `collect_mermaid_fences`'s own real extraction for both a single-line body (`"A-->B\n"`) and one
+/// ending in several blank lines (`"A-->B\n\n\n"`) — see `mermaid_fence_url_matches_production_for_a_
+/// top_level_fence`'s own doc comment for the exact cases and why a *list-nested* fence is
+/// deliberately not among them (a different, pre-existing divergence — the list item's own content-
+/// column indentation, stripped from `body_spans` by the real parser but retained verbatim by
+/// production's own raw-line scan — that this fix does not, and structurally cannot, close; that
+/// specific corpus case is already `BEHAVIOR_DECISIONS`-tracked in `md_render_diff_tests` for an
+/// unrelated, `lines`-level reason of its own, so its own URL never needing to match separately does
+/// not go unnoticed). `render_mermaid_block` itself already normalizes the *rendered lines*'
+/// trailing-`\n` difference away internally (`code.trim_end_matches('\n')`, its own first statement),
+/// unaffected by this fix either way — `code` (unchanged, still `code_body_text`'s own trimmed
+/// output) is what still gets passed there and to `w.mermaid.slot`, only the *hash input* changes.
+///
+/// Increments `w.mermaid.ord` — the running fence ordinal `ImagePlacement.fence_ord` records —
+/// **before** checking whether `code` is empty, matching production's own `let ord = fence_ord;
+/// fence_ord += 1; if fence.trim().is_empty() { .. }` order exactly: a half-written ```mermaid fence
+/// with no body still consumes an ordinal slot, so a *later*, real fence's own numbering never shifts
+/// depending on whether an earlier, empty one happened to slot successfully (see `MermaidCtx::ord`'s
+/// own doc comment).
+///
+/// No leading-blank-line check, matching `render_image_slot`'s own (see that function's own doc
+/// comment for why): production's own mermaid placement is extracted the identical way, before
+/// tui-markdown ever sees any surrounding text, so nothing here owes the page a separator either.
+/// Sets `needs_newline = false`/`after_math = true`/`fresh_boundary = true` on the way out, same
+/// reasoning (see `render_image_slot`'s own doc comment on why `fresh_boundary` specifically matters
+/// too — `render_code_block`'s own leading-blank check reads it, not `needs_newline`), for every one
+/// of its own four exits (empty-fence fallback included).
+fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>]) {
+    let ord = w.mermaid.ord;
+    w.mermaid.ord += 1;
+    let code = code_body_text(body_spans, src);
+    let width = w.mermaid.width;
+    if code.trim().is_empty() {
+        w.lines.extend(render_mermaid_block(&code, width));
+        w.needs_newline = false;
+        w.after_math = true;
+        w.fresh_boundary = true;
+        return;
+    }
+    match (w.mermaid.slot)(&code) {
+        MermaidSlot::Image { cols, rows } => {
+            // `code` is `code_body_text`'s own output — one trailing `\n` short of what
+            // production's own `fence` accumulator would hash (see this function's own doc
+            // comment for why that gap is always exactly one `\n`, never more or less, for a
+            // non-empty fence reaching this arm at all). Put it back *only* for the hash input;
+            // `code` itself (used for rendering, and passed to `w.mermaid.slot` above) is
+            // untouched. Still calls production's own `mermaid_fence_url` directly — never a
+            // second, hand-rolled copy of its FNV-1a computation — on the corrected bytes.
+            let url = mermaid_fence_url(&format!("{code}\n"));
+            let mut ls = mermaid_placeholder_lines(cols, rows, width, w.mermaid.caption);
+            // The first entry is the caption line (a Tab-focus sentinel) — the reserved rows the
+            // placement overlays start right after it, matching production's own identical split.
+            w.lines.push(ls.remove(0));
+            let placement_line = w.lines.len() + w.heading_rule_shift;
+            w.images.push(ImagePlacement {
+                url,
+                alt: "mermaid".into(),
+                line: placement_line,
+                cols,
+                rows,
+                fence_ord: Some(ord),
+            });
+            w.lines.extend(ls);
+        }
+        MermaidSlot::Loading => w
+            .lines
+            .extend(image_loading_line("mermaid", "diagram", width)),
+        MermaidSlot::Text => w.lines.extend(render_mermaid_block(&code, width)),
+    }
+    w.needs_newline = false;
+    w.after_math = true;
+    // See `render_image_slot`'s own doc comment on why `fresh_boundary` (not just `needs_newline`)
+    // has to be set too — `render_code_block`'s own leading-blank check reads that flag specifically.
+    w.fresh_boundary = true;
+}
+
+/// Renders a `Table` block's own raw source directly into `w`, in place, by reusing `markdown.rs`'s
+/// own `render_table` (cell links, inline styling, alignment colons, CJK width, and the `\|` escape
+/// are all already correct there — not reimplemented) on a plain slice of `src`
+/// (`&src[block_src]`) — safe *because* a table is a self-contained structure with no reference to
+/// any other block (see `model::BlockKind::Table`'s own doc comment: every cell's own content is
+/// inline, walked past by the model, never turned into a nested `Block` this function would otherwise
+/// need to reach through the slice some other way). Only ever called for a `Table`
+/// `contains_unsupported` has already confirmed is not nested inside any `Quote` — see that
+/// function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead of
+/// handled here the same way, and for the confirmed `Block.src` slice that would result if it were
+/// not.
+///
+/// `w.width.saturating_sub(w.prefix_width())`: mirrors `render_code_block`'s own identical width
+/// reduction — defensive here, not load-bearing, since `w.prefix_width()` is always `0` at any
+/// position this function is actually reachable from (`contains_unsupported`'s own `in_quote`
+/// guarantee already rules out `w.line_prefixes` being non-empty here at all).
+///
+/// No leading-blank-line check and a "fresh reparse boundary" exit (`needs_newline = false; after_math
+/// = true; fresh_boundary = true`), matching `render_image_slot`'s/`render_mermaid_slot`'s own (see
+/// either's doc comment for why): production's own table placement (`MdPart::Table`) is likewise
+/// extracted before tui-markdown ever sees any surrounding text — `render_md_text_inner`'s own
+/// `out.extend(render_table(&raw, ..))` carries no separator logic of any kind either side of it.
+/// `fresh_boundary`, specifically, is what keeps a fence directly following a table (no blank line
+/// between them) from getting a spurious extra blank row of its own — confirmed directly:
+/// `task_corpus`'s own "everything" case (a GFM table immediately followed by a fence with no blank
+/// line) showed exactly this extra row before this field was set here.
+fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
+    let raw = &src[block_src];
+    let content_w = (w.width as usize).saturating_sub(w.prefix_width());
+    for line in render_table(raw, content_w as u16, w.icons) {
+        w.push_line(line);
+    }
+    w.needs_newline = false;
+    w.after_math = true;
+    w.fresh_boundary = true;
+}
+
+/// Renders an `Html` block's own raw source directly into `w`, in place, by reusing `markdown.rs`'s
+/// own `render_html_block` (tag-stripping, comment-dropping, entity-decoding) on a plain slice of
+/// `src` (`&src[block_src]`) — the identical function production's own `HtmlPart::Html(h) =>
+/// out.extend(render_html_block(&h))` calls. Only ever called for an `Html` block
+/// `contains_unsupported` has already confirmed is not nested inside any `Quote` — see that
+/// function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead
+/// (a quote-nested HTML block is silently *dropped entirely* in production — this file's own naive
+/// slice, `>`-prefix and all, would be a real, if different, degradation of its own, not an
+/// improvement worth reproducing).
+///
+/// No leading-blank-line check, matching `render_table_from_model`'s own (see that function's own doc
+/// comment) — `render_html_block`'s own output already ends with its own trailing blank line
+/// (`render_html_block`'s own final `if !out.is_empty() { out.push(Line::from("")) }`), so a second,
+/// separately-pushed one here would be a real, visible double blank row production never shows.
+/// `needs_newline = false`/`fresh_boundary = true` on the way out means whatever renders *next* does
+/// not add a leading blank line of its own either (`render_code_block`'s own leading-blank check
+/// reads `fresh_boundary` specifically, not `needs_newline` — see `render_table_from_model`'s own doc
+/// comment for the concrete case that caught this), matching that same already-baked-in trailing
+/// blank exactly.
+fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
+    let raw = &src[block_src];
+    for line in render_html_block(raw) {
+        w.push_line(line);
+    }
+    w.needs_newline = false;
+    w.after_math = true;
+    w.fresh_boundary = true;
+}
+
 /// The generic block dispatcher used for every position in this file's block tree that is **not** a
 /// `List`'s own item sequence (which `render_list` walks itself, since each one needs a marker built
 /// first — see `render_item`) or an item's own *first* child (which `render_item` special-cases for
@@ -1851,18 +2447,20 @@ fn render_code_block(
 /// list item after the first. Mirrors `TextWriter::start_tag`'s own top-level dispatch for the block
 /// kinds this pass covers.
 ///
-/// `Table`/`Html` never legitimately reach this function: every caller that walks into a
-/// `List`/`Quote`/`Details`'s own children only does so after `contains_unsupported` has already
-/// confirmed neither appears anywhere in that subtree (see `render_doc`'s own dispatch, and that
-/// function's own doc comment) — so encountering one here would mean a bug upstream of this file,
-/// not merely input a smaller local check failed to reject. `ListItem` never legitimately reaches
-/// this function either — it only ever exists as a `List`'s own child (see
-/// `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every one of those itself.
-/// Matched defensively (silently rendering nothing further) rather than assumed unreachable all the
-/// same, so a bug elsewhere degrades to "this one block goes missing" instead of a panic — principle
-/// #3 (`CLAUDE.md`). `CodeBlock`, `Quote { alert: Some(_), .. }`, and `Details` *do* legitimately
-/// reach here (`contains_unsupported` no longer screens any of the three out — see that function's
-/// own doc comment) — `render_code_block`/`render_alert_from_model`/`render_details_from_model` draw
+/// A **quote-nested** `Table`/`Html` never legitimately reaches this function: every caller that
+/// walks into a `List`/`Quote`/`Details`'s own children only does so after `contains_unsupported` has
+/// already confirmed no such block appears anywhere in that subtree (see `render_doc`'s own dispatch,
+/// and that function's own doc comment on `in_quote`) — a `List`/`Details`-nested one (never
+/// `in_quote`, so never screened out) *does* reach here, rendered by
+/// `render_table_from_model`/`render_html_block_from_model`, the identical two functions
+/// `render_doc`'s own top-level dispatch calls. `ListItem` never legitimately reaches this function
+/// either — it only ever exists as a `List`'s own child (see `model::BlockKind::ListItem`'s doc
+/// comment), and `render_list` unwraps every one of those itself. Matched defensively (silently
+/// rendering nothing further) rather than assumed unreachable all the same, so a bug elsewhere
+/// degrades to "this one block goes missing" instead of a panic — principle #3 (`CLAUDE.md`).
+/// `CodeBlock`, `Quote { alert: Some(_), .. }`, and `Details` *do* legitimately reach here
+/// (`contains_unsupported` no longer screens any of the three out — see that function's own doc
+/// comment) — `render_code_block_dispatch`/`render_alert_from_model`/`render_details_from_model` draw
 /// them.
 ///
 /// The `Paragraph` arm is not a single, unconditional dispatch the way it looks from `render_doc`'s
@@ -1904,10 +2502,19 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
                     src,
                     inline.clone(),
                     ctx.math_here,
+                    ctx.extract_here,
                     block.src.start,
                 );
             } else {
-                render_bare_paragraph(w, doc, src, inline.clone(), ctx.math_here, block.src.start);
+                render_bare_paragraph(
+                    w,
+                    doc,
+                    src,
+                    inline.clone(),
+                    ctx.math_here,
+                    ctx.extract_here,
+                    block.src.start,
+                );
             }
         }
         BlockKind::ThematicBreak => render_rule(w),
@@ -1927,11 +2534,12 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
         ),
         BlockKind::CodeBlock {
             lang, body_spans, ..
-        } => render_code_block(w, src, lang.as_deref(), body_spans),
+        } => render_code_block_dispatch(w, src, lang.as_deref(), body_spans, ctx.extract_here),
         BlockKind::Details { open_attr, summary } => {
             render_details_from_model(w, doc, src, *open_attr, summary, &block.children, ctx)
         }
-        BlockKind::Table { .. } | BlockKind::Html { .. } => {}
+        BlockKind::Table { .. } => render_table_from_model(w, src, block.src.clone()),
+        BlockKind::Html { .. } => render_html_block_from_model(w, src, block.src.clone()),
         // Never reachable — see the doc comment above.
         BlockKind::ListItem { .. } => {}
     }
@@ -2211,17 +2819,27 @@ fn is_real_paragraph(src: &str, block: &Block) -> bool {
 /// task this function was added for asks to fix. Fixing it generically here (rather than narrowly,
 /// only for a paragraph that happens to follow a `CodeBlock`) closes the `Heading`/`ThematicBreak`
 /// cases too, for free.
+///
+/// `extract_here` (added alongside `math_here`, not folded into it — see `BlockCtx`'s own doc
+/// comment): whether this bare paragraph's own raw line, having no container marker on it either (a
+/// bare paragraph is, by definition, never a list item's own *first* child — see this function's own
+/// doc comment above), is eligible for standalone block-image extraction the same way any other
+/// non-first paragraph is.
 fn render_bare_paragraph(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
     src: &str,
     inline: Range<usize>,
     math_here: bool,
+    extract_here: bool,
     block_start: usize,
 ) {
     if w.needs_newline {
         w.push_blank_line();
         w.needs_newline = false;
+    }
+    if try_render_paragraph_as_image(w, doc, &inline, extract_here) {
+        return;
     }
     if math_here {
         walk_inline_math(
@@ -2269,14 +2887,16 @@ fn push_item_marker(w: &mut Writer<'_>) {
 /// `w.line_prefixes`. A GitHub alert (`Quote { alert: Some(_), .. }`) never reaches this function at
 /// all — see `render_alert_from_model`, this function's own sibling for that shape.
 ///
-/// Always calls `render_block` with `math_here: false`, regardless of whatever value was in `ctx` for
-/// *this* quote — production never lifts math out of a blockquote's own text at all (`structure_mask`'s
-/// own exclusion; see `render_paragraph_math`'s own doc comment), so nothing this function dispatches
-/// to, however many more `List`s or nested `Quote`s that subtree goes on to contain, should ever end
-/// up scanning for it either. Because of that, `w.after_math` can never legitimately be `true` by the
-/// time this function's own exit runs (nothing in its own subtree can have set it) — so, unlike
-/// `render_list`'s own exit, this one stays the plain, unconditional `needs_newline = true` `TextWriter`
-/// itself always uses for `end_blockquote`.
+/// Always calls `render_block` with `math_here: false, extract_here: false`, regardless of whatever
+/// values were in `ctx` for *this* quote — production never lifts math out of a blockquote's own text
+/// at all (`structure_mask`'s own exclusion; see `render_paragraph_math`'s own doc comment), and never
+/// extracts a standalone image or a ```mermaid fence out of one either (`extract_block_image`'s/
+/// `parse_fence`'s own `>`-prefix rejection — see `BlockCtx.extract_here`'s own doc comment), so
+/// nothing this function dispatches to, however many more `List`s or nested `Quote`s that subtree goes
+/// on to contain, should ever end up scanning for either. Because of that, `w.after_math` can never
+/// legitimately be `true` by the time this function's own exit runs (nothing in its own subtree can
+/// have set it) — so, unlike `render_list`'s own exit, this one stays the plain, unconditional
+/// `needs_newline = true` `TextWriter` itself always uses for `end_blockquote`.
 ///
 /// `details_interactive`, by contrast, is **propagated unchanged** to `children` (not forced) — a
 /// plain quote's own body is still reached through the *same* top-level scan production's
@@ -2294,6 +2914,7 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
     w.line_styles.push(w.styles.blockquote());
     let child_ctx = BlockCtx {
         math_here: false,
+        extract_here: false,
         details_interactive: ctx.details_interactive,
     };
     for child in children {
@@ -2480,10 +3101,10 @@ fn render_details_from_model(
 /// `render_alert`/`render_details` reserve for the bar). `math: None`: production never lifts math
 /// inside either body (`structure_mask`'s own exclusion — the same reason `render_quote` forces
 /// `math_here: false` for a plain quote's own children), so there is nothing to share across the
-/// isolation boundary; `BlockCtx { math_here: false, details_interactive: false }` is what `children`
-/// actually renders with, unconditionally, regardless of what was in scope at the call site — see
-/// `render_details_from_model`'s own doc comment for why *this* block's own interactivity is a
-/// separate question from its children's.
+/// isolation boundary; `BlockCtx { math_here: false, extract_here: false, details_interactive: false
+/// }` is what `children` actually renders with, unconditionally, regardless of what was in scope at
+/// the call site — see `render_details_from_model`'s own doc comment for why *this* block's own
+/// interactivity is a separate question from its children's.
 ///
 /// Once the sub-`Writer` finishes, its own resulting lines are run through
 /// `super::decorate_headings_and_extras` — **before** `bar` gets prepended to any of them — the
@@ -2532,9 +3153,27 @@ fn render_bar_prefixed_body(
         line_styles: Vec::new(),
         needs_newline: false,
         math: None,
+        // `body_ctx.extract_here: false` (below) keeps both mermaid-fence extraction
+        // (`render_code_block_dispatch`) and standalone-image extraction
+        // (`try_render_paragraph_as_image`) from ever actually consulting `mermaid`/`slot_of` at all
+        // inside an alert's/`<details>`'s own body (production never extracts either there either —
+        // see `BlockCtx.extract_here`'s own doc comment) — so the exact values here are never read;
+        // `w.mermaid`'s own fields are simply copied over (cheap: two `&dyn Fn` references and a
+        // `bool`/`u16`) rather than inventing new, unused ones, and `ord: 0` needs no special value
+        // for the identical reason.
+        mermaid: MermaidCtx {
+            slot: w.mermaid.slot,
+            caption: w.mermaid.caption,
+            width: w.width.saturating_sub(2),
+            fences_on: w.mermaid.fences_on,
+            ord: 0,
+        },
+        slot_of: w.slot_of,
+        images: Vec::new(),
         after_math: false,
         fresh_boundary: false,
         pending_para_start: None,
+        heading_rule_shift: 0,
         code: w.code,
         theme: w.theme.clone(),
         width: w.width.saturating_sub(2),
@@ -2543,6 +3182,7 @@ fn render_bar_prefixed_body(
     };
     let body_ctx = BlockCtx {
         math_here: false,
+        extract_here: false,
         details_interactive: false,
     };
     for child in children {
@@ -2556,6 +3196,11 @@ fn render_bar_prefixed_body(
         spans.extend(line.spans);
         w.push_line(Line::from(spans).style(style));
     }
+    // Always empty today (see the `mermaid`/`slot_of` field comments above: `body_ctx.extract_here:
+    // false` keeps either extraction from ever firing here) — merged back defensively all the same,
+    // rather than silently dropped, so a future change to that exclusion can never lose a real
+    // placement by omission (principle #3, `CLAUDE.md`).
+    w.images.extend(inner.images);
 }
 
 #[cfg(test)]
@@ -2572,6 +3217,21 @@ mod tests {
     // own output.
     use ratatui::style::Stylize;
 
+    /// The no-op image slot every test below that has no images of its own to exercise reaches for —
+    /// `ImageSlot::Unavailable` (matching the diff harness's own `md_snapshot_tests::render_case`
+    /// choice for the identical reason: no live `Picker` exists in a unit test).
+    fn no_images(_: &str) -> ImageSlot {
+        ImageSlot::Unavailable
+    }
+
+    /// The no-op mermaid slot every test below that has no mermaid fences of its own to exercise
+    /// reaches for — `MermaidSlot::Text` disables extraction entirely (`fences_on` reads `false`),
+    /// matching this file's own pre-mermaid-support behavior (a mermaid-tagged fence draws as
+    /// ordinary code) for every test that predates this pass.
+    fn no_mermaid(_: &str) -> MermaidSlot {
+        MermaidSlot::Text
+    }
+
     fn fresh_writer() -> Writer<'static> {
         Writer {
             lines: Vec::new(),
@@ -2583,9 +3243,19 @@ mod tests {
             line_styles: Vec::new(),
             needs_newline: false,
             math: None,
+            mermaid: MermaidCtx {
+                slot: &no_mermaid,
+                caption: "Enter: full screen",
+                width: 80,
+                fences_on: false,
+                ord: 0,
+            },
+            slot_of: &no_images,
+            images: Vec::new(),
             after_math: false,
             fresh_boundary: false,
             pending_para_start: None,
+            heading_rule_shift: 0,
             code: CodeStyle::default(),
             theme: String::new(),
             width: 80,
@@ -2594,13 +3264,17 @@ mod tests {
         }
     }
 
-    /// `BlockCtx` with math off and `Details` interactive — the shape a fresh top-level render
-    /// starts with (see `render_doc`'s own construction of `ctx`); most of this module's own tests
-    /// have no math or `<details>` case to exercise either flag's *other* value, so this is the
-    /// default every test below reaches for unless a test's own doc comment says otherwise.
+    /// `BlockCtx` with math off, extraction on, and `Details` interactive — the shape a fresh
+    /// top-level render started with `math_on: false` has (see `render_doc`'s own construction of
+    /// `ctx`: `math_here: math.is_some()`, but `extract_here: true` unconditionally, regardless of
+    /// `math_on` — see `BlockCtx.extract_here`'s own doc comment for why the two are not the same
+    /// question); most of this module's own tests have no math/image/mermaid/`<details>` case to
+    /// exercise any of these flags' *other* value, so this is the default every test below reaches
+    /// for unless a test's own doc comment says otherwise.
     fn fresh_ctx() -> BlockCtx {
         BlockCtx {
             math_here: false,
+            extract_here: true,
             details_interactive: true,
         }
     }
@@ -2724,7 +3398,7 @@ mod tests {
         let src = "- [ ] outer\n\n  - [ ] nested at matching indent\n";
         let doc = Doc::parse(src);
         assert!(
-            contains_unsupported(&doc.blocks[0].children).is_none(),
+            contains_unsupported(&doc.blocks[0].children, false).is_none(),
             "the LooseTask exclusion should be gone"
         );
         let mut w = fresh_writer();
@@ -2796,6 +3470,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             true,
         );
@@ -2863,6 +3540,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             true,
         );
@@ -2885,6 +3565,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             true,
         );
@@ -2932,6 +3615,9 @@ mod tests {
                 "TwoDark",
                 false,
                 &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
                 &math_slot,
                 true,
             );
@@ -2969,6 +3655,9 @@ mod tests {
             "TwoDark",
             true, // icons on, so the header's own Nerd Font glyph is checked too
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             false,
         );
@@ -3039,6 +3728,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             false,
         );
@@ -3116,6 +3808,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             false,
         );
@@ -3166,6 +3861,9 @@ mod tests {
             "TwoDark",
             false,
             &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
             &math_slot,
             false,
         );
@@ -3190,5 +3888,531 @@ mod tests {
              if the alert-nested one had wrongly consumed that slot instead, this block would fall \
              back to its own `open` attribute (`true`) and leak SECRET: {joined_all:?}"
         );
+    }
+
+    // ---- Table/HTML/image/mermaid — direct assertions on render_doc's own output -----------------
+    //
+    // Mirrors the alert/details tests above: checked here, directly, rather than only through
+    // `md_render_diff_tests`'s parity harness, because `render_table`/`render_html_block` are *shared*
+    // with production (reused, not reimplemented — see `render_table_from_model`'s own doc comment) —
+    // a regression in either would break both sides of that comparison identically, and the parity
+    // harness would keep reporting a match. These tests pin known-good output directly, independent
+    // of whatever production happens to do, so they can actually catch such a regression.
+
+    use super::super::TABLE_BORDER_FG;
+
+    /// Table structure straight from the model: border characters, the header row's own
+    /// cyan+bold style, and per-column alignment (`:---` left / `:---:` center / `---:` right) — a
+    /// three-column table whose body row (`"1"`/`"2"`/`"3"`) is narrower than its own header
+    /// (`"a"`/`"bb"`/`"ccc"`) in the center/right columns specifically, so the padding distribution
+    /// is actually observable (a column with no padding at all would pass this test even with the
+    /// alignment logic entirely broken).
+    #[test]
+    fn table_renders_borders_header_style_and_column_alignment_from_the_model() {
+        let src = "| a | bb | ccc |\n|:---|:---:|---:|\n| 1 | 2 | 3 |\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let border = Style::new().fg(TABLE_BORDER_FG);
+        let head = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        assert_eq!(
+            out.lines,
+            vec![
+                Line::from(Span::styled("┌───┬────┬─────┐", border)),
+                Line::from(vec![
+                    Span::styled("│", border),
+                    Span::styled(" ", head),
+                    Span::styled("a", head),
+                    Span::styled(" ", head),
+                    Span::styled("│", border),
+                    Span::styled(" ", head),
+                    Span::styled("bb", head),
+                    Span::styled(" ", head),
+                    Span::styled("│", border),
+                    Span::styled(" ", head),
+                    Span::styled("ccc", head),
+                    Span::styled(" ", head),
+                    Span::styled("│", border),
+                ]),
+                Line::from(Span::styled("├───┼────┼─────┤", border)),
+                Line::from(vec![
+                    Span::styled("│", border),
+                    Span::raw(" "),
+                    Span::raw("1"),
+                    Span::raw(" "),
+                    Span::styled("│", border),
+                    Span::raw(" "), // left half of "2"'s own center padding (pad=1, lp=0)
+                    Span::raw("2"),
+                    Span::raw("  "), // right half (rp=1) + the cell's own trailing space
+                    Span::styled("│", border),
+                    Span::raw("   "), // "3"'s own right-align padding (pad=2, lp=2) + leading space
+                    Span::raw("3"),
+                    Span::raw(" "),
+                    Span::styled("│", border),
+                ]),
+                Line::from(Span::styled("└───┴────┴─────┘", border)),
+            ],
+            "table structure (borders/header style/alignment) did not match: {:?}",
+            out.lines
+        );
+    }
+
+    /// A `Table` nested inside a `List` item renders correctly (list indentation never breaks
+    /// `render_table`'s own line-based parsing — see `render_table_from_model`'s own doc comment on
+    /// why list nesting is safe but quote nesting is not) — the *other* half of
+    /// `contains_unsupported`'s own `in_quote` distinction, alongside the quote-nested case below.
+    #[test]
+    fn table_nested_in_a_list_item_renders_correctly() {
+        let src = "- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.as_ref() == "┌───┬───┐"));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table: {:?}",
+            out.lines
+        );
+        let has_row = out.lines.iter().any(|l| {
+            let joined: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            joined.contains('1') && joined.contains('2')
+        });
+        assert!(
+            has_row,
+            "expected the table's own data row: {:?}",
+            out.lines
+        );
+    }
+
+    /// A `Table`/`Html` block nested inside a `Quote` is reported `Unsupported` (`render_table`'s own
+    /// line-based parsing breaks on the quote's own `>`-prefixed continuation lines — see
+    /// `contains_unsupported`'s own doc comment on `in_quote`) — the safety net this test exists to
+    /// pin: a regression that quietly started rendering one anyway (instead of screening it out)
+    /// would show up as garbled output somewhere downstream, not as a clean failure here.
+    #[test]
+    fn quote_nested_table_and_html_are_reported_unsupported() {
+        let table_src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let doc = Doc::parse(table_src);
+        assert_eq!(
+            contains_unsupported(&doc.blocks[0].children, true),
+            Some("Table"),
+            "src: {table_src:?}"
+        );
+        let html_src = "> <div>x</div>\n> more\n";
+        let doc = Doc::parse(html_src);
+        assert_eq!(
+            contains_unsupported(&doc.blocks[0].children, true),
+            Some("Html"),
+            "src: {html_src:?}"
+        );
+    }
+
+    /// An `Html` block's tags are stripped, comments dropped, and entities decoded straight from the
+    /// model (`render_html_block`, reused verbatim) — a nested `<b>` disappears (not merely its own
+    /// tags: `render_html_block`'s own scan has no concept of nested structure at all, everything
+    /// between `<` and `>` is dropped uniformly), and the trailing blank line
+    /// `render_html_block_from_model` never adds a second one of its own on top of.
+    #[test]
+    fn html_block_strips_tags_drops_comments_and_decodes_entities_from_the_model() {
+        let src = "<div class=\"x\">\n<!-- hidden -->\nHello <b>world</b> &amp; friends\n</div>\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.lines,
+            vec![Line::from("Hello world & friends"), Line::from("")],
+            "tag-stripped/comment-dropped/entity-decoded output did not match: {:?}",
+            out.lines
+        );
+    }
+
+    /// A standalone block image (`![alt](url)` as a paragraph's *entire* content) renders through
+    /// `slot_of` exactly like production's own `BlockPart::Image` handling — an `Inline` slot reserves
+    /// rows and records an `ImagePlacement`; this also pins `ImagePlacement.cols`/`.rows` verbatim
+    /// from whatever `slot_of` answered (items 5/6 of this pass's own detection-power check: a wrong
+    /// `cols`/`rows` here is exactly what a real preview overlay would size incorrectly on screen).
+    ///
+    /// `math_on: false` is deliberate, not an oversight: production's own image extraction is never
+    /// gated by whether math lifting is on (`split_block_parts` runs unconditionally) — see
+    /// `BlockCtx.extract_here`'s own doc comment for the real, confirmed bug this pins a regression
+    /// test for (an earlier version of this pass reused `ctx.math_here` for image eligibility too,
+    /// which left image extraction silently disabled whenever `math_on` was `false`).
+    #[test]
+    fn standalone_block_image_renders_and_is_not_gated_by_math_on() {
+        let src = "![a cat](cat.png)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 7, rows: 3 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            &math_slot,
+            false, // math_on: false — extraction must still fire (see this test's own doc comment)
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images,
+            vec![ImagePlacement {
+                url: "cat.png".to_string(),
+                alt: "a cat".to_string(),
+                line: 0,
+                cols: 7,
+                rows: 3,
+                fence_ord: None,
+            }],
+            "images: {:?}",
+            out.images
+        );
+        assert_eq!(
+            out.lines.len(),
+            3,
+            "3 reserved rows for rows: 3: {:?}",
+            out.lines
+        );
+    }
+
+    /// `ImagePlacement.line` accounts for `decorate_headings_and_extras`'s own H1/H2 rule-line
+    /// insertion — a heading *before* the image shifts every later line index by one per level-1/2
+    /// heading, but that shift only happens once, at the very end of `render_doc` (see
+    /// `Writer.heading_rule_shift`'s own doc comment for why a placement recorded mid-walk cannot see
+    /// it directly). Two headings (one H1, one H2) precede the image here specifically so a
+    /// off-by-one in the shift's own accumulation (counting only one of the two, say) is
+    /// distinguishable from counting neither or both correctly.
+    #[test]
+    fn block_image_placement_line_accounts_for_heading_decoration_shift() {
+        let src = "# One\n\n## Two\n\npara\n\n![a](u.png)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 4, rows: 2 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        let placement = &out.images[0];
+        // `out.lines[placement.line]` must be the image's own reserved placeholder row (the one
+        // carrying its "🖼 alt" label — `image_placeholder_lines`'s own first line) — not merely *a*
+        // line somewhere nearby: if `heading_rule_shift` under- or over-counts by even one (missing
+        // one of the two preceding headings' own rule lines, say), this indexes the wrong row
+        // entirely (one short would land on "para" or a rule line; one over would land on a blank
+        // row past the image), and this assertion catches either directly.
+        let at_placement = out.lines.get(placement.line).map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        });
+        assert_eq!(
+            at_placement.as_deref().map(str::trim),
+            Some("🖼 a"),
+            "ImagePlacement.line ({}) must index the image's own reserved row in the fully \
+             decorated `out.lines` — two headings (one H1, one H2) precede it, each contributing its \
+             own rule line: {:?}",
+            placement.line,
+            out.lines
+        );
+        // And the row immediately before it must be the paragraph's own trailing blank separator,
+        // not a stray rule line the shift double-counted.
+        assert_eq!(
+            out.lines.get(placement.line - 1),
+            Some(&Line::from("para")),
+            "the line right before the image placement must be \"para\", the real paragraph \
+             immediately preceding it in the source — a wrong shift would land here instead: {:?}",
+            out.lines
+        );
+    }
+
+    /// Mermaid fence extraction and its own running ordinal (`ImagePlacement.fence_ord`) — three
+    /// fences, only the outer two of which are mermaid (the middle one is an ordinary fence, drawn as
+    /// code and never touching the ordinal counter at all), pinning both the *values* `fence_ord`
+    /// takes (`0`, then `1` — not `0`/`0`, which a broken "always 0" counter would produce, and not
+    /// `0`/`2`, which counting the plain fence too would produce) and the ordinary fence's own
+    /// untouched code rendering in between.
+    #[test]
+    fn mermaid_fence_ordinal_and_placement_render_from_the_model() {
+        let src = "```mermaid\nA\n```\n\n```\nplain\n```\n\n```mermaid\nB\n```\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 6, rows: 2 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &mermaid_slot,
+            "mermaid",
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images.iter().map(|p| p.fence_ord).collect::<Vec<_>>(),
+            vec![Some(0), Some(1)],
+            "two mermaid fences, ordinal 0 then 1 (the plain fence between them must not consume a \
+             slot): {:?}",
+            out.images
+        );
+        assert_eq!(
+            out.images
+                .iter()
+                .map(|p| (p.cols, p.rows))
+                .collect::<Vec<_>>(),
+            vec![(6, 2), (6, 2)],
+            "images: {:?}",
+            out.images
+        );
+        let has_plain_code = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.as_ref() == "plain"));
+        assert!(
+            has_plain_code,
+            "the ordinary fence between the two mermaid ones must still render as plain, \
+             highlighted code: {:?}",
+            out.lines
+        );
+    }
+
+    /// `render_mermaid_slot`'s own `ImagePlacement.url` must be **byte-for-byte identical** to what
+    /// production's own `mermaid_fence_url` computes for the same fence — not merely well-formed:
+    /// it is the literal cache key `md_image_cache`/`ensure_mermaid_fence_render` look the rendered
+    /// diagram up by (see `mermaid_fence_url`'s own doc comment), so a URL even one byte off from
+    /// what production would compute for the identical source resolves to nothing once a real
+    /// preview path tries to look it up — the diagram just never renders, silently, with every
+    /// rendered *line* (`RenderOut::lines`, the only thing `md_render_diff_tests` compared before
+    /// this pass) still looking exactly right. Pins the regression `render_mermaid_slot`'s own doc
+    /// comment documents in full (`code_body_text` strips one trailing `\n` from the reconstructed
+    /// body; production's own `fence` accumulator never does).
+    ///
+    /// Two cases, not one, each a **top-level** fence (not list-/quote-/details-nested — see
+    /// `render_mermaid_slot`'s own doc comment for why a list-nested fence is a separate, deliberately
+    /// still-open gap, already `BEHAVIOR_DECISIONS`-tracked for an unrelated reason of its own): a
+    /// single content line, and a body ending in *several* blank lines — `code_body_text` only ever
+    /// strips exactly one trailing `\n` regardless of how many precede it (see that function's own
+    /// doc comment), so a fix that put back "however many newlines look right" rather than exactly
+    /// one would still be caught wrong by the second case alone. Compares against
+    /// `collect_mermaid_fences` — production's own real extraction function, called directly, never a
+    /// hand-copied re-derivation of what its own `fence` accumulator would produce.
+    #[test]
+    fn mermaid_fence_url_matches_production_for_a_top_level_fence() {
+        for src in ["```mermaid\nA-->B\n```\n", "```mermaid\nA-->B\n\n\n```\n"] {
+            let prod_fences = crate::preview::markdown::collect_mermaid_fences(src);
+            assert_eq!(
+                prod_fences.len(),
+                1,
+                "src: {src:?}, fences: {prod_fences:?}"
+            );
+            let want = crate::preview::markdown::mermaid_fence_url(&prod_fences[0]);
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Raw;
+            let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 6, rows: 2 };
+            let out = render_doc(
+                &doc,
+                src,
+                40,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &mermaid_slot,
+                "mermaid",
+                &math_slot,
+                false,
+            );
+            assert!(
+                out.unsupported.is_empty(),
+                "src: {src:?}, unsupported: {:?}",
+                out.unsupported
+            );
+            assert_eq!(
+                out.images.len(),
+                1,
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            assert_eq!(
+                out.images[0].url, want,
+                "src: {src:?} — render_doc's own mermaid URL ({:?}) must match production's \
+                 mermaid_fence_url(&fence) ({want:?}) exactly, byte for byte",
+                out.images[0].url
+            );
+        }
+    }
+
+    /// The math analogue of `mermaid_fence_url_matches_production_for_a_top_level_fence` —
+    /// `render_math_slot`'s own `ImagePlacement.url` must match production's own `math_url(latex,
+    /// display)` exactly, for both an inline (`$…$`) and a display (`$$…$$`) expression. Unlike the
+    /// mermaid case, this pass never reconstructs `latex` from a byte range at all — `walk_inline_math`
+    /// reuses `scan_inline_math` verbatim, the same production function, so `latex` is production's
+    /// own raw capture already (see the module doc comment's own "no second math detector") — but the
+    /// URL is still checked directly here, not merely assumed correct from that reuse alone, so a
+    /// future change that quietly starts diverging (a normalization step added to one side but not
+    /// the other, say) does not go unnoticed just because `RenderOut::lines` still happens to render
+    /// correctly (see the module doc comment's own opening paragraph on why `images` needs its own,
+    /// independent comparison in the first place). Compares against `collect_math_exprs` — production's
+    /// own real extraction, called directly, never a hand-copied re-derivation.
+    ///
+    /// **Not** a case with a backslash-escaped ASCII punctuation character inside the expression
+    /// (`` $$a\_b$$ ``/`` $$a\,b$$ ``/`` $$a\*b$$ ``, say) — that is a real, separate, *pre-existing*
+    /// gap this test deliberately does not exercise: CommonMark's own inline grammar treats `\` +
+    /// ASCII punctuation as an escape, so pulldown-cmark reports the escaped character as its own,
+    /// separate `Event::Text` (splitting what `scan_inline_math`'s own line-based, pre-parse
+    /// `collect_math_exprs` sees as one unbroken run of characters into several inline events),
+    /// and `walk_inline_math`'s own per-event drive of that same scanner loses the still-open `$$`
+    /// across that split — confirmed directly (`collect_math_exprs` still finds one expression;
+    /// `render_doc`'s own `out.images` comes back empty, `out.unsupported` still empty too — the
+    /// expression is silently left as ordinary, unlifted text, not flagged unsupported). Out of scope
+    /// for *this* test (which checks `url` correctness once extraction has already succeeded, not
+    /// extraction's own robustness) and not caught by `md_render_diff_tests`'s corpus either (no
+    /// existing case combines math with an escaped mid-expression character) — filed here as a
+    /// pointer for whoever picks it up next, not fixed by this pass.
+    #[test]
+    fn math_url_matches_production_for_the_same_expression() {
+        for (src, display) in [
+            ("inline $x^2$ math\n", false),
+            ("$$\\int_0^1 x dx$$\n", true),
+        ] {
+            let prod = crate::preview::markdown::collect_math_exprs(src);
+            assert_eq!(prod.len(), 1, "src: {src:?}, exprs: {prod:?}");
+            let (latex, prod_display) = &prod[0];
+            assert_eq!(*prod_display, display, "src: {src:?}, exprs: {prod:?}");
+            let want = crate::preview::markdown::math_url(latex, *prod_display);
+
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+            let out = render_doc(
+                &doc,
+                src,
+                40,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                &math_slot,
+                true,
+            );
+            assert!(
+                out.unsupported.is_empty(),
+                "src: {src:?}, unsupported: {:?}",
+                out.unsupported
+            );
+            assert_eq!(
+                out.images.len(),
+                1,
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            assert_eq!(
+                out.images[0].url, want,
+                "src: {src:?} — render_doc's own math URL ({:?}) must match production's \
+                 math_url(latex, display) ({want:?}) exactly, byte for byte",
+                out.images[0].url
+            );
+        }
     }
 }

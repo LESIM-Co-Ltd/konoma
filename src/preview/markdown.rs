@@ -9632,6 +9632,22 @@ pub(crate) mod code_corpus {
                 "a mermaid fence indented 4 columns is left in the text and drawn as ordinary code",
                 "1. Diagram:\n\n    ```mermaid\n    flowchart TD\n    A-->B\n    ```\n",
             ),
+            // A clean, top-level fence — not nested in a list/quote/details, nothing else in the
+            // document to trigger any *other*, unrelated mismatch — so this case's own `lines`
+            // always match between the two renderers, and its `images` comparison in
+            // `md_render_diff_tests` is never masked by a pre-existing, tracked mismatch the way the
+            // two neighbouring mermaid cases above are (both already `BEHAVIOR_DECISIONS`/
+            // `INTENDED_IMPROVEMENTS`-listed for their own, unrelated `lines`-level reasons, which
+            // would silently absorb an `ImagePlacement` regression too — see
+            // `md_render_diff_tests`'s own module doc comment on why `images` needs its own,
+            // independent comparison in the first place). Exists specifically so this corpus can pin
+            // a real, unmasked regression in `render_mermaid_slot`'s own `ImagePlacement` fields
+            // (`url`/`line`/`cols`/`rows`/`fence_ord`/`alt`) — see `mermaid_fence_url`'s own doc
+            // comment on why `url` in particular being wrong is invisible to `lines` entirely.
+            (
+                "a top-level mermaid fence with no surrounding complication (image placement parity)",
+                "```mermaid\nA-->B\n```\n",
+            ),
             // Root cause (block-image extraction, 2026-08): pulling an `<img>` line out of a centered
             // banner splits the surrounding HTML block in two, and the `    |` separator left between
             // the halves becomes a real indented code block on screen. Only visible through the

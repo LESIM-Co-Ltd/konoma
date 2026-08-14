@@ -681,6 +681,26 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (1) --
   m00 line=0000 kind=CodeBlock
 
+=== code_corpus: a top-level mermaid fence with no surrounding complication (image placement parity) ===
+-- LINES (7) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "                                        "
+  s01 fg=cyan,bg=-,mod=I "◇ mermaid — mermaid"
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
+L0006 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (1) --
+  i00 line=0001 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://0b64b0af8fbb15c0"
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=MermaidFence{ordinal=0}
+
 === code_corpus: a two-digit ordered marker shifts the content column right ===
 -- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-

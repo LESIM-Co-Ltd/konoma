@@ -158,6 +158,10 @@ List{ordered=false, start=None} src=0..45 text="- item\n\n  ```rust\n  let x = 1
 -- BLOCKS (1) --
 CodeBlock{lang=Some("rust"), fenced=true, body_spans=[8..28:"~~~\nnot closing\n~~~\n"], text="~~~\nnot closing\n~~~"} src=0..31 text="```rust\n~~~\nnot closing\n~~~\n```"
 
+=== code_corpus: a top-level mermaid fence with no surrounding complication (image placement parity) ===
+-- BLOCKS (1) --
+CodeBlock{lang=Some("mermaid"), fenced=true, body_spans=[11..17:"A-->B\n"], text="A-->B"} src=0..20 text="```mermaid\nA-->B\n```"
+
 === code_corpus: a two-digit ordered marker shifts the content column right ===
 -- BLOCKS (1) --
 List{ordered=true, start=Some(10)} src=0..41 text="10. Step:\n\n    ```sh\n    echo hi\n    ```\n"

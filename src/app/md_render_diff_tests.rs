@@ -6,7 +6,17 @@
 //! fall outside its coverage entirely. What this module checks is narrower and more honest: for every
 //! case whose *entire* top-level block set is one this stage claims to support, does the new
 //! renderer's fully post-processed output match the production pipeline's, line for line, span for
-//! span, style for style?
+//! span, style for style — **and placement for placement**? A case only counts as a match
+//! ([`Outcome::Match`]) when both halves agree: `RenderOut::lines` against `CaseRender::lines`
+//! (`ratatui::text::Line`/`Span`/`Style` all derive `PartialEq`, so this is exact — content, span
+//! boundaries, every style field) *and* `RenderOut::images` against `CaseRender::images` (`url`/`alt`/
+//! `line`/`cols`/`rows`/`fence_ord`, likewise exact via `ImagePlacement`'s own derived `PartialEq`).
+//! Comparing only the rendered lines would miss an entire class of real regression: a wrong
+//! `ImagePlacement.url` (the synthetic cache key `md_image_cache`/`ensure_mermaid_fence_render` look
+//! an inline image, mermaid diagram, or math expression up by) leaves every rendered placeholder row
+//! byte-for-byte unchanged — the bug is invisible to `lines` entirely, and only shows up once a real
+//! preview path tries to *resolve* that placement against the cache and finds nothing there. See
+//! `run_case`'s own doc comment for exactly how the two comparisons combine into one `Outcome`.
 //!
 //! ## Three kinds of "expected mismatch" — and the one kind that is not
 //!
@@ -34,32 +44,129 @@
 //!   for whoever wires `render_doc` into a real preview path — not something to resolve inside this
 //!   harness by picking a side.
 //!
-//! ## Standalone block-level images and mermaid fences (`KNOWN_MISMATCHES`)
+//! ## Tables, HTML blocks, standalone block images, and mermaid fences (closed — history, not a
+//! ## live gap)
 //!
-//! Two shapes this stage's own scope (see `render.rs`'s own module doc comment) does not cover at all
-//! yet — see [`render_case_new`]'s callers for where the first one comes from:
+//! `render_doc` used to leave four `BlockKind`s entirely unimplemented — a `Table`/`Html` block
+//! reported the whole enclosing top-level construct `Unsupported`, and a standalone `![alt](url)`
+//! paragraph or a `mermaid`-tagged fence rendered as something visibly different from production's
+//! own extracted placement (inline alt-text; an ordinary highlighted code block) rather than being
+//! screened out at all. All four now render straight from the model
+//! (`render::render_table_from_model`/`render_html_block_from_model`/`try_render_paragraph_as_image`/
+//! `render_code_block_dispatch`'s own mermaid branch — see each one's own doc comment), closing
+//! `unsupported` to `0` across the whole corpus. Recorded here as history (why the gap existed, what
+//! closed it, and what closing it *revealed*, both new gaps this stage's own reuse strategy could not
+//! avoid and cases this stage's own architecture structurally improves on) rather than removed
+//! outright — a future regression back to reporting any of the four `Unsupported` should read as
+//! "this got worse," not as a mystery.
 //!
-//! * **Standalone block-level images.** A paragraph whose entire content is `![alt](url)` is
-//!   intercepted by the production pipeline *before* tui-markdown ever sees it (`split_block_parts`),
-//!   becoming a reserved-row image placement — not "alt text as a plain paragraph", which is what
-//!   `render::render_doc`'s inline-only `Image` handling produces (see that module's own doc comment:
-//!   block-level image extraction is out of scope for this stage).
-//! * **A fenced `mermaid` code block.** Production intercepts one *before* tui-markdown ever sees it
-//!   too (the same `split_segments`-family interception the previous bullet describes, just for a
-//!   different tag), substituting a diagram placement; `render_doc`'s `render_code_block` has no such
-//!   interception at all — a `mermaid`-tagged fence is drawn as an ordinary, highlighted code block,
-//!   exactly matching `model::BlockKind::CodeBlock`'s own doc comment ("the parent module's own choice
-//!   to render some of those as diagrams instead of code is a rendering decision, and this is a
-//!   structural model of the document, not of the screen"). Only when the diagram substitution
-//!   actually *fires* in production is this a mismatch — a mermaid fence indented past its own
-//!   container's content column, which production therefore also draws as plain code, still matches
-//!   (module scope, not a gap in `render_code_block`'s own content reconstruction). Both of these are
-//!   closed the same way, by a **future** stage: the one that teaches `render_doc` to draw konoma's own
-//!   remaining *structural* extras straight from the model — tables, block images, mermaid/math
-//!   diagrams — the same family `markdown.rs`'s own `split_segments`/`split_tables`/`split_math`
-//!   intercepts today, ahead of tui-markdown, for production. (GitHub alerts and `<details>` blocks,
-//!   the other two members of that family, are no longer in this category — see `render.rs`'s own
-//!   module doc comment for `render::render_alert_from_model`/`render::render_details_from_model`.)
+//! Closing these four also **exposed** several corpus cases that were previously invisible to this
+//! harness entirely — a document combining, say, a fenced fence-glue shape (already `KNOWN_MISMATCHES`/
+//! `INTENDED_IMPROVEMENTS`-eligible on its own) with a GFM table elsewhere in the same document was
+//! reported `Unsupported` as a whole *before* table support existed, so the fence-glue mismatch itself
+//! was never actually measured. Table/HTML support does not introduce these — it merely lets this
+//! harness see mismatches that were always latent. Four of the `INTENDED_IMPROVEMENTS` entries below
+//! (`"closing line with trailing text..."` ×4) are exactly this: the identical Category 1/2 shapes the
+//! rest of this list's own doc comment already documents in full, newly reachable now that a trailing
+//! GFM table in the same source no longer excludes the whole case.
+//!
+//! ### HTML `<img>` extraction (`KNOWN_MISMATCHES`)
+//!
+//! `render::paragraph_as_block_image` only recognizes **Markdown** image syntax (`![alt](url)`,
+//! optionally link-wrapped) — the one shape its own doc comment names explicitly. Production's own
+//! `extract_block_image` additionally recognizes a standalone HTML `<img src=...>` tag (optionally
+//! wrapped in layout tags like `<p>`/`<a>` — `extract_html_img`), which this stage does not attempt at
+//! all: such a line is, structurally, an ordinary `Html` leaf here, and `render_html_block_from_model`
+//! simply strips its tags — an `<img>` tag has no text content of its own to survive that stripping, so
+//! the line disappears from the output entirely, where production shows a real "🖼 alt — url" fallback
+//! (`samples: images.md`, an `<img>` wrapped in a centered `<p>` with nothing else on its own line — the
+//! *simplest* shape `extract_html_img` recognizes; see the next section for why an `<img>` mixed into a
+//! larger, multi-element HTML construct is a different case entirely, not closed by extending this same
+//! gap). A genuinely closable gap — not yet implemented, not structurally precluded — so
+//! `KNOWN_MISMATCHES`, not `INTENDED_IMPROVEMENTS`.
+//!
+//! ### Image extraction splitting an HTML block apart (`INTENDED_IMPROVEMENTS`)
+//!
+//! The "centered banner" family (`code_corpus`'s and `preprocess_corpus`'s several `"centered
+//! banner..."`/`"...br..."` cases, all drawn from real registry READMEs) is a **different** shape from
+//! the previous section, and not closed by ever implementing HTML `<img>` recognition the same way — a
+//! `<div align="center">…</div>` (or `<p align="center">…</p>`) wrapping several `<a>`/`<img>`/`<br>`
+//! elements and literal text (a `|` separator, say) is one, single `Html` block in this file's own
+//! model, and an `<img>` embedded *inside* a multi-element construct like that would never match a
+//! future, model-based "this whole block is nothing but one image" check either (the identical, narrow
+//! shape `paragraph_as_block_image` itself checks for a standalone Markdown image — see that function's
+//! own doc comment) — there being much more in the block than just an image is exactly what makes it
+//! *not* qualify.
+//!
+//! Production's own line-based `extract_block_image`, by contrast, has no concept of "which HTML block
+//! is this `<img>` line even inside of" at all — it runs over the raw source *before*
+//! `split_html_blocks` ever determines block boundaries (`split_block_parts` executes first — see that
+//! function's own doc comment), so pulling an `<img>`-only line out from the *middle* of what was one
+//! HTML construct genuinely **splits it into fragments**, each independently re-examined by
+//! `split_html_blocks` afterward. The result is a real, confirmed production defect (documented at the
+//! `code_corpus` cases' own definition sites: "pulling an `<img>` line out of a centered banner splits
+//! the surrounding HTML block in two, and the `    |` separator left between the halves becomes a real
+//! indented code block on screen") — a stray `|` character rendered as its own bogus indented code
+//! block, a `<br>`-turned-whitespace-only line ending the HTML block early and turning *everything*
+//! after it into more indented code, or (in the mildest case) the block's own surviving fragments
+//! rendered as scattered, disconnected pieces rather than the one coherent (if still tag-stripped,
+//! `<img>`-content-blind) unit this file's own model-based approach always draws. `render_doc` reads
+//! the block's own real, whole extent straight from `Doc::parse` (`model::BlockKind::Html`) and so has
+//! no comparable two-pass, line-based splitting step to have this defect *in* — the identical
+//! "structurally cannot reproduce a real upstream bug" reasoning `INTENDED_IMPROVEMENTS`'s own doc
+//! comment already establishes for Category 1/2 below, now extended to this third mechanism.
+//!
+//! ### A GFM table swallowing a subsequent indented line (`BEHAVIOR_DECISIONS`)
+//!
+//! `"code_corpus: an indented line right after a table block, with no blank line between"`
+//! (`"| a | b |\n|---|---|\n    code here\n"`): production's own `split_tables` requires every row
+//! after the header/delimiter to still `looks_like_table_row` (contain a literal `|`) — `"    code
+//! here"` does not, so the table ends at the delimiter row and the indented line becomes its own,
+//! separate indented code block. `Doc::parse` (real pulldown-cmark, `ENABLE_TABLES` on) disagrees:
+//! it keeps the table open and reads the indented line as one more body row (one cell, `"code here"`,
+//! the second column empty) — confirmed directly, not merely inferred (`Doc::parse` on this exact
+//! source reports one `Table` block whose own `rows` include a `"code here"` cell, not a separate
+//! `CodeBlock` at all). Neither is "the bug": GFM's own interaction between an already-open table and a
+//! subsequent indented line is not the kind of thing a hand-written, `|`-requiring line scanner and a
+//! real conforming parser are guaranteed to agree on, and whether konoma should keep matching its own
+//! established (arguably more intuitive — an indented line *looks* like code) table-ending heuristic or
+//! switch to the real grammar's own reading is a product decision, not a defect this harness can settle
+//! by picking a side — the identical standard every other `BEHAVIOR_DECISIONS` entry is held to.
+//!
+//! ### An HTML comment's own real end condition (`BEHAVIOR_DECISIONS`)
+//!
+//! `"code_corpus: an indented line swallowed by an HTML comment block is not code"`
+//! (`"<!-- note -->\n    code here\n"`): the identical shape the module doc comment's own "Inline HTML
+//! that interrupts a paragraph" section already documents for a different trigger (`split_html_blocks`
+//! running an HTML block to the *next blank line*, wider than CommonMark's own, construct-specific end
+//! conditions) — here the construct is a comment, whose own real end condition is `-->`, not a blank
+//! line. Production swallows `"    code here"` into the same HTML block as the comment (no blank line
+//! separates them) and renders it as rescued, tag-stripped text; `Doc::parse` ends the comment at its
+//! own `-->` and reads the indented line as its own, separate, real indented code block — the same
+//! spec-vs-permissive-pre-pass disagreement, over a comment instead of an inline tag, filed here rather
+//! than duplicating a second, near-identical entry's worth of reasoning.
+//!
+//! ### A `<details>`/`<summary>` with no blank line before its own body (`BEHAVIOR_DECISIONS`)
+//!
+//! `"code_span_corpus: details/summary immediately followed by a fenced code block, no blank line"`,
+//! and the two `samples` cases it also affects (`markdown.md`/`markdown.ja.md`'s own `<details open>`
+//! sections, each written with no blank line between `</summary>` and the paragraph right after it):
+//! CommonMark's own HTML-block continuation rule (type 6/7 — `<details>` is not one of the six special
+//! tags, so it is type 6, which continues to the next blank line) does not require a blank line to
+//! *start* a `<details>`'s own body — it requires one to *end the whole block*, tags included.
+//! Confirmed directly: `Doc::parse` on `"<details open>\n<summary>D</summary>\n\`x\` starts
+//! expanded.\n</details>\n"` (no blank line anywhere) reports one, single, **unfolded** `Html` leaf —
+//! `fold_details` never even gets a chance to run (see that function's own doc comment: it folds
+//! `<details>`'s opening tag with a *separate*, later sibling `Html` leaf for `</details>`, which this
+//! shape never produces at all, since pulldown-cmark's own grammar reads the whole thing as one block
+//! to begin with). Production's own hand-written `details_open_tag`/`is_details_close`-driven fold is,
+//! once again, deliberately more permissive than the spec — it does not require a blank line there
+//! either, matching konoma's own documented `<details>` UX intent (an interactive, always-foldable
+//! construct) rather than CommonMark's own stricter reading. The identical trade-off the module doc
+//! comment's own "Inline HTML that interrupts a paragraph" section already names for a different
+//! construct: matching production exactly would mean reproducing its own deviation from the spec, not
+//! closing a gap; matching the spec exactly would change how a real `<details>` block written this
+//! (common, terse) way actually renders. A product decision, not one this harness settles.
 //!
 //! ## Math (closed — history, not a live gap)
 //!
@@ -176,6 +283,18 @@
 //! production to catch up to real CommonMark structure instead — is a product decision, not something
 //! this harness can settle by picking a side.
 //!
+//! **The identical mechanism recurs for mermaid-fence extraction, not just alerts.**
+//! `"code_corpus: a mermaid fence at an ordered item's content column is diverted to a diagram"`
+//! (`"1. Diagram:\n\n   ```mermaid\n   flowchart TD\n   A-->B\n   ```\n"`): production's own
+//! `split_block_parts` deletes the fence's own lines from the raw text *before* tui-markdown ever
+//! parses anything, leaving `"1. Diagram:\n\n"` — a single-paragraph, **tight** item (no second block
+//! remains once the fence is gone), so `"Diagram:"` lands on the marker's own row
+//! (`old[0] = ["1. ", "Diagram:"]`, one line). `Doc::parse` reads the real source, where the item
+//! genuinely contains two block-level children (the paragraph and the `CodeBlock`) separated by a
+//! blank line — CommonMark's own rule makes that **loose**, so `render_item`'s loose-first convention
+//! puts `"Diagram:"` on its own row below the marker, exactly like the alert case above. Filed
+//! alongside it rather than as its own, separate entry in the list below, for the identical reason.
+//!
 //! ## Two categories closed structurally, not merely observed
 //!
 //! Two categories used to apply here — both artifacts of `render::render_doc` re-parsing each
@@ -218,6 +337,7 @@ use std::fmt::Write as _;
 // module's own doc comment for the precedent.
 use super::md_snapshot_tests::{all_cases, pre_src_for, render_case, SNAPSHOT_WIDTH};
 use super::*;
+use crate::preview::markdown::ImagePlacement;
 
 /// **This stage genuinely has not implemented the shape yet.** Cases (by the same `"corpus: name"`
 /// label `all_cases()` reports) whose entire top-level block set is one `render::render_doc` claims to
@@ -234,14 +354,15 @@ use super::*;
 /// start: most of this stage's job *is* measuring how many of these there are, honestly, not hiding
 /// them behind a passing test.
 ///
-/// The one remaining entry falls into the mermaid-substitution gap the module doc comment's own
-/// "Standalone block-level images and mermaid fences" section documents in full — closed by a future
-/// stage, the one that teaches `render_doc` to draw konoma's own structural extras (tables, alerts,
-/// `<details>`, images, mermaid/math diagrams) straight from the model.
+/// The one remaining entry is the HTML `<img>`-extraction gap the module doc comment's own "HTML
+/// `<img>` extraction" section documents in full — this stage recognizes only Markdown image syntax
+/// (`![alt](url)`), not an HTML `<img>` tag; a future stage that teaches `paragraph_as_block_image`'s
+/// own model-based check to also recognize a standalone `Html` leaf containing nothing but one `<img>`
+/// (optionally layout-wrapped) closes it.
 const KNOWN_MISMATCHES: &[&str] = &[
-    // Mermaid substitution (production intercepts the fence before tui-markdown ever sees it;
-    // `render_code_block` has no such interception — draws it as an ordinary code block instead).
-    "code_corpus: a mermaid fence at an ordered item's content column is diverted to a diagram",
+    // HTML `<img>` extraction (see the module doc comment's own "HTML `<img>` extraction" section) —
+    // this stage recognizes only Markdown `![alt](url)` syntax, never an HTML `<img>` tag.
+    "samples: images.md",
 ];
 
 /// **The two sides disagree about what CommonMark itself says, and neither is a bug.** Cases whose
@@ -270,6 +391,26 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
     // tight, one block left in the item; `render_doc`: loose, the real two-block structure). See the
     // module doc comment's own "A GitHub alert's own flat, pre-parse extraction..." section.
     "code_corpus: an alert inside a list item",
+    // The identical mechanism, for a mermaid fence's own flat, pre-parse extraction instead of an
+    // alert's — see the module doc comment's own "The identical mechanism recurs for mermaid-fence
+    // extraction" paragraph, right after the alert entry's own explanation.
+    "code_corpus: a mermaid fence at an ordered item's content column is diverted to a diagram",
+    // A GFM table's own interaction with a subsequent indented line — `split_tables` requires a
+    // literal `|` to keep the table open; `Doc::parse` reads it as one more table row instead. See
+    // the module doc comment's own "A GFM table swallowing a subsequent indented line" section.
+    "code_corpus: an indented line right after a table block, with no blank line between",
+    // An HTML comment's own real end condition (`-->`) vs. `split_html_blocks`'s own "runs to the
+    // next blank line" rule — the identical `split_html_blocks`-permissiveness disagreement as the
+    // inline-tag entry above, over a comment instead. See the module doc comment's own "An HTML
+    // comment's own real end condition" section.
+    "code_corpus: an indented line swallowed by an HTML comment block is not code",
+    // A `<details>`/`<summary>` with no blank line before its own body folds in production (hand-
+    // written, permissive) but stays one unfolded `Html` leaf in `Doc::parse` (CommonMark's own HTML
+    // type-6 continuation rule needs a blank line to *end* the block, not to *start* the body). See
+    // the module doc comment's own "A `<details>`/`<summary>` with no blank line..." section.
+    "code_span_corpus: details/summary immediately followed by a fenced code block, no blank line",
+    "samples: markdown.md",
+    "samples: markdown.ja.md",
 ];
 
 /// **`render_doc` is better than production on purpose, and is not expected to ever start matching
@@ -358,6 +499,25 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
 /// function's own doc comment). The quote's own `"> "` prefix still applies, correctly, to every row of
 /// the resulting header/body/padding band (`Writer::push_line`, unchanged) — production simply never
 /// gets far enough to draw a band there at all.
+///
+/// **Category 3 — a "centered banner" HTML block, drawn as one coherent (if `<img>`-blind) unit
+/// instead of being split apart.** See the module doc comment's own "Image extraction splitting an
+/// HTML block apart" section for the full mechanism: production's own `extract_block_image` runs
+/// *before* `split_html_blocks` ever determines block boundaries, so pulling an `<img>`-only line out
+/// of the *middle* of a multi-element HTML construct (a `<div align="center">` wrapping several
+/// `<a>`/`<img>`/`<br>` elements, the idiom real registry READMEs use for a row of badges) genuinely
+/// splits that construct into fragments — each re-examined independently, with real, confirmed
+/// fallout (a stray `|` character misread as its own indented code block; a `<br>`-turned-blank line
+/// ending the HTML block early and turning everything after it into more indented code). `render_doc`
+/// reads the block's own real extent straight from `Doc::parse` and has no comparable two-pass,
+/// line-based splitting step to have this defect in.
+///
+/// **Category 1/2 entries newly reachable via table support.** The four `"closing line with trailing
+/// text..."` entries below are the identical Category 1 (multi-line glue) and Category 2
+/// (quote-nested fence, undecorated in production) shapes documented above — each corpus case ends
+/// with a trailing GFM table specifically so that, before this pass added `Table` support, the whole
+/// case reported `Unsupported` and never reached this harness's comparison at all (see the module doc
+/// comment's own "Tables, HTML blocks, ..." section).
 const INTENDED_IMPROVEMENTS: &[&str] = &[
     "list_corpus: task item inside a loose list",
     "task_corpus: a real task at a list item's own indentation is still a real task",
@@ -401,6 +561,21 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
     "code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line)",
     "code_corpus: list item fence nested inside a plain block quote, with an inline-code continuation — masked by the pre-existing block-quote non-detection, not the glue defect",
     "code_span_corpus: indented code block inside a blockquote",
+    // ---- Category 1/2, newly reachable now that a trailing GFM table no longer excludes the case ----
+    "code_corpus: closing line with trailing text does not close, but the list item ends the block",
+    "code_corpus: closing line with trailing text inside a block quote",
+    "code_corpus: closing line with trailing text inside a list item inside a block quote",
+    "code_corpus: closing line with trailing text inside a nested list item",
+    // ---- Category 3: a "centered banner" HTML block split apart by image extraction (see above) ----
+    "code_corpus: a centered banner whose links wrap images (registry: criterion README.md)",
+    "code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md)",
+    "code_corpus: centered banner whose <img> lines are cut out of it stays HTML",
+    "code_corpus: centered banner with a bare <br> line in it (registry: raw-window-metal README.md)",
+    "code_corpus: crlf centered banner with no <br> (registry: tinytemplate README.md)",
+    "preprocess_corpus: bare br line inside an html block",
+    "preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md)",
+    "preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md)",
+    "preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md)",
 ];
 
 /// Renders `src` through `render::render_doc` (the block-model renderer under test) and the exact
@@ -408,15 +583,28 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
 /// (`app::md_text::collapse_links`/`autolink_bare_urls`/`substitute_emoji`, gated by the same `cfg`
 /// fields) — so a mismatch this module reports can only come from `render_doc` itself (or the one
 /// block kind it does not model at all, front matter — see below), never from the two sides running
-/// different post-processing.
+/// different post-processing. Returns `(lines, images, unsupported)` — `images` is
+/// `RenderOut::images` verbatim (aside from the same front-matter row shift `lines` itself gets, see
+/// below): `collapse_links`/`autolink_bare_urls`/`substitute_emoji` only ever touch `Line`/`Span`
+/// content, never `ImagePlacement`, matching `render_case`'s own identical "post-process runs on
+/// `lines`, `images` passes through untouched by it" shape exactly (that function's own body never
+/// threads `images` through its three post-process calls either).
 ///
 /// Front matter is handled identically to `render_case`'s own (private, unexported) handling of it:
 /// `Doc`/`render_doc` have no concept of a metadata block at all (`pre_src_for` already stripped it
 /// before `Doc::parse` ever ran — see the model module's own doc comment on what text it expects), so
 /// the rendered metadata block is computed the same way and prepended the same way here, by calling
 /// the exact same two functions (`strip_front_matter`/`render_front_matter`) `render_case` calls, not
-/// a second copy of that four-line prepend.
-fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static str>) {
+/// a second copy of that four-line prepend — **and, the identical way `render_case` itself does it
+/// right next to that same prepend, every placement's own `line` is shifted down by `fm_lines.len()`
+/// too**, not just the rendered rows: an `ImagePlacement.line` is an index into the *final* `lines`
+/// list a real preview path overlays an image onto, so a case combining front matter with an image/
+/// mermaid/math placement needs this exact +N to land on the right row post-prepend, the same reason
+/// `render_case`'s own `for p in &mut images { p.line += fm_lines.len(); }` exists at all.
+fn render_case_new(
+    cfg: &Config,
+    src: &str,
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>, Vec<&'static str>) {
     let icons = cfg.ui.icons;
     let code = crate::preview::markdown::CodeStyle {
         bg: cfg.ui.theme.code_bg(),
@@ -437,10 +625,14 @@ fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static
         Vec::new()
     };
 
-    // Same fixed-answer math slot `md_snapshot_tests::render_case` itself uses (see that function's
-    // own doc comment): no live `Picker` in a unit test, so every expression "renders" to its raw-LaTeX
-    // fallback — extraction and placement logic is still exercised end to end, just not the
-    // picker-dependent raster step. `math_on: true` matches the default `math = "image"` config.
+    // Same fixed-answer image/mermaid/math slots `md_snapshot_tests::render_case` itself uses (see
+    // that function's own doc comment): no live `Picker` in a unit test, so every expression/fence/
+    // image "renders" to its own picker-independent placeholder answer — extraction and placement
+    // logic is still exercised end to end, just not the picker-dependent raster step. `math_on: true`
+    // matches the default `math = "image"` config; `mermaid_caption: "mermaid"` is the exact literal
+    // `render_case` passes (not a translated string — this harness never varies `ui.lang`).
+    let slot_of = |_: &str| crate::preview::markdown::ImageSlot::Unavailable;
+    let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
 
     let pre_src = pre_src_for(cfg, src);
@@ -453,9 +645,19 @@ fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static
         theme,
         icons,
         &tasks,
+        &slot_of,
+        &mermaid_slot,
+        "mermaid",
         &math_slot,
         true,
     );
+
+    let mut images = out.images;
+    if !fm_lines.is_empty() {
+        for p in &mut images {
+            p.line += fm_lines.len();
+        }
+    }
 
     let mut lines = fm_lines;
     lines.extend(out.lines);
@@ -472,56 +674,85 @@ fn render_case_new(cfg: &Config, src: &str) -> (Vec<Line<'static>>, Vec<&'static
         lines
     };
 
-    (lines, out.unsupported)
+    (lines, images, out.unsupported)
 }
 
 /// One case's outcome: unsupported (some top-level block kind `render_doc` does not render at all —
-/// see the module doc comment), an exact match against the production pipeline, or a mismatch, with
-/// enough of a diagnostic (`{:?}` of both lines, `ratatui::text::Line` has a hand-written `Debug`
-/// impl — see `ratatui_core::text::line`) to see what differs without dumping the whole case.
+/// see the module doc comment), an exact match against the production pipeline on **both** `lines`
+/// and `images` (see the module doc comment's own opening paragraph for why a match requires both),
+/// or a mismatch, with enough of a diagnostic (`{:?}` of whichever of the two differed — possibly
+/// both; `ratatui::text::Line` has a hand-written `Debug` impl, see `ratatui_core::text::line`, and
+/// `ImagePlacement` derives one plainly) to see what differs without dumping the whole case.
 enum Outcome {
     Unsupported,
     Match,
     Mismatch { first_diff: String },
 }
 
-/// The first index at which `a`/`b` differ (comparing by `PartialEq` — `Line`/`Span`/`Style` all
-/// derive it, so this is exact: content, span boundaries, and every style field), or `None` if one is
-/// a strict prefix of the other (`min(a.len(), b.len())`, reported as the point of divergence too).
-fn first_diff_index(a: &[Line<'static>], b: &[Line<'static>]) -> Option<usize> {
+/// The first index at which `a`/`b` differ (comparing by `PartialEq`), or `None` if one is a strict
+/// prefix of the other (`min(a.len(), b.len())`, reported as the point of divergence too). Generic
+/// over the element type so the one function serves both comparisons `run_case` makes — `Line`
+/// (`Line`/`Span`/`Style` all derive `PartialEq`, so this is exact: content, span boundaries, and
+/// every style field) and `ImagePlacement` (`url`/`alt`/`line`/`cols`/`rows`/`fence_ord`, likewise
+/// exact via its own derived `PartialEq`) — rather than a second, hand-copied near-duplicate of the
+/// identical index-walk for the second type.
+fn first_diff_index<T: PartialEq>(a: &[T], b: &[T]) -> Option<usize> {
     let n = a.len().min(b.len());
     (0..n)
         .find(|&i| a[i] != b[i])
         .or(if a.len() != b.len() { Some(n) } else { None })
 }
 
-fn diff_message(old: &[Line<'static>], new: &[Line<'static>], i: usize) -> String {
+/// Formats one `{label}` diagnostic (`"line"`/`"image placement"` — see `run_case`'s own two call
+/// sites) at divergence index `i`, generic over the element type for the identical reason
+/// `first_diff_index` is (`Debug` is all this needs — every actual argument is `{:?}`-printed, never
+/// compared directly here).
+fn diff_message<T: std::fmt::Debug>(label: &str, old: &[T], new: &[T], i: usize) -> String {
     let mut s = String::new();
     writeln!(
         s,
-        "    first differing line: {i} (old has {} lines, new has {} lines)",
+        "    first differing {label}: {i} (old has {} {label}(s), new has {} {label}(s))",
         old.len(),
         new.len()
     )
     .unwrap();
-    writeln!(s, "    old[{i}] = {:?}", old.get(i)).unwrap();
-    writeln!(s, "    new[{i}] = {:?}", new.get(i)).unwrap();
+    writeln!(s, "    old {label}[{i}] = {:?}", old.get(i)).unwrap();
+    writeln!(s, "    new {label}[{i}] = {:?}", new.get(i)).unwrap();
     s
 }
 
+/// Runs one case through both renderers and combines the two independent comparisons
+/// `first_diff_index` makes (`lines` and `images` — see the module doc comment's own opening
+/// paragraph for why both are required for `Outcome::Match`) into one `Outcome`. When only one of
+/// the two actually diverges the diagnostic reports only that one (an unchanged `images` list next
+/// to a genuine `lines` mismatch would just be noise); when both diverge, both diagnostics are
+/// concatenated, so a case combining, say, a real `render_doc` regression in its rendered rows with
+/// a stale `ImagePlacement.line` from the same underlying cause is not silently reported as only one
+/// kind of mismatch.
 fn run_case(cfg: &Config, src: &str) -> (Outcome, Vec<Line<'static>>, Vec<Line<'static>>) {
     let old = render_case(cfg, src);
-    let (new_lines, unsupported) = render_case_new(cfg, src);
+    let (new_lines, new_images, unsupported) = render_case_new(cfg, src);
     if !unsupported.is_empty() {
         return (Outcome::Unsupported, old.lines, new_lines);
     }
-    match first_diff_index(&old.lines, &new_lines) {
-        None => (Outcome::Match, old.lines, new_lines),
-        Some(i) => {
-            let msg = diff_message(&old.lines, &new_lines, i);
-            (Outcome::Mismatch { first_diff: msg }, old.lines, new_lines)
-        }
+    let lines_diff = first_diff_index(&old.lines, &new_lines);
+    let images_diff = first_diff_index(&old.images, &new_images);
+    if lines_diff.is_none() && images_diff.is_none() {
+        return (Outcome::Match, old.lines, new_lines);
     }
+    let mut first_diff = String::new();
+    if let Some(i) = lines_diff {
+        first_diff.push_str(&diff_message("line", &old.lines, &new_lines, i));
+    }
+    if let Some(i) = images_diff {
+        first_diff.push_str(&diff_message(
+            "image placement",
+            &old.images,
+            &new_images,
+            i,
+        ));
+    }
+    (Outcome::Mismatch { first_diff }, old.lines, new_lines)
 }
 
 /// Runs every case in the parity corpus through both renderers and prints an honest tally — see the
