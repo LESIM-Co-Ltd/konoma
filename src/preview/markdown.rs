@@ -1094,6 +1094,19 @@ fn truncate_width(s: &str, max: usize) -> String {
 /// Turn code fences into a "special area" with a background, left gutter, and language header,
 /// and strip the leading `#` from heading lines, laying a full-width rule below H1/H2 to convey hierarchy.
 /// Process code blocks first (so a `# comment` inside code is not misdetected as a heading).
+///
+/// Split into `decorate_code_blocks` followed by `decorate_headings_and_extras` (rather than one
+/// flat function body) so a caller that already has a fully-decorated `CodeBlock` — `render.rs`'s
+/// `render_code_block`, which draws a code block's header/body/padding directly from the model
+/// instead of *reconstructing* it from tui-markdown's own rendered output the way
+/// `decorate_code_blocks` has to — can run the heading/extras passes alone, without a second,
+/// redundant code-block pass on top of its own output (redundant, not harmful: none of
+/// `render_code_block`'s own output lines carry `is_code_block_line`'s own `fg(White)` signal, so a
+/// second `decorate_code_blocks` pass over them would be a no-op every time, confirmed exactly, not
+/// merely assumed safe — see `render.rs`'s own `decorate_code_blocks_is_idempotent_on_render_docs_own_output`
+/// test). This split changes nothing about what `decorate_md_lines` itself computes — every existing
+/// call site (still exactly this function, unchanged in signature and behavior) — it only exposes the
+/// back two-thirds of its own body as a function `render.rs` can call on its own.
 fn decorate_md_lines(
     lines: Vec<Line<'static>>,
     width: u16,
@@ -1103,6 +1116,18 @@ fn decorate_md_lines(
     tasks: &[char],
 ) -> Vec<Line<'static>> {
     let lines = decorate_code_blocks(lines, width, code, theme);
+    decorate_headings_and_extras(lines, width, icons, tasks)
+}
+
+/// The tail of `decorate_md_lines`: heading decoration (`decorate_headings`) followed by the small
+/// extras pass (`decorate_extras` — thematic breaks, task-list checkboxes). See `decorate_md_lines`'s
+/// own doc comment for why this exists as its own function rather than being inlined there.
+fn decorate_headings_and_extras(
+    lines: Vec<Line<'static>>,
+    width: u16,
+    icons: bool,
+    tasks: &[char],
+) -> Vec<Line<'static>> {
     let lines = decorate_headings(lines, width);
     decorate_extras(lines, width, icons, tasks)
 }

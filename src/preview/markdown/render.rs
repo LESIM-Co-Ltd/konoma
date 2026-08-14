@@ -7,22 +7,24 @@
 //!
 //! ## Scope (this pass)
 //!
-//! `Heading`, `Paragraph`, `ThematicBreak`, `List`/`ListItem`, and `Quote{alert: None}` — plus their
-//! inline content: emphasis, strong, strikethrough, inline code, links, images (alt text only),
-//! soft/hard breaks, and super/subscript. `Quote{alert: Some(_)}` (a GitHub alert — konoma's own
-//! `render_alert`, not tui-markdown's, draws those; see `render_markdown_tasks_opts`'s own `alerts`
-//! branch) and every remaining `BlockKind` a `Doc` can contain (`CodeBlock`/`Table`/`Html`) are
-//! recorded in `RenderOut::unsupported` and produce **no output at all** — not even their own inline
-//! content, if a block this pass *does* cover happens to nest one of them (a fenced code block three
-//! levels down inside a list item, say). Rendering only the *rest* of that container, working around
-//! the one nested piece it cannot draw, would produce something the production renderer never draws
-//! (a list with a hole in the middle of it), and the diff harness would have no way to tell that
-//! apart from an actual match — so `contains_unsupported` walks a `List`'s or `Quote`'s *entire*
-//! subtree before rendering a single line of it, and the whole thing is reported unsupported (under
-//! whichever nested kind's name it actually found) the moment any of those three turns up anywhere
-//! inside it, at any depth. Reporting the container as unsupported and skipping the whole subtree is
-//! the honest choice for a skeleton stage; `render_doc` therefore only ever draws lines for a
-//! `List`/`Quote` whose entire contents this pass already knows how to render.
+//! `Heading`, `Paragraph`, `ThematicBreak`, `List`/`ListItem`, `Quote{alert: None}`, and now
+//! `CodeBlock` (fenced or indented, at any depth this pass otherwise covers — top level, inside a
+//! list item, inside a quote; see `render_code_block`'s own doc comment) — plus their inline content:
+//! emphasis, strong, strikethrough, inline code, links, images (alt text only), soft/hard breaks, and
+//! super/subscript. `Quote{alert: Some(_)}` (a GitHub alert — konoma's own `render_alert`, not
+//! tui-markdown's, draws those; see `render_markdown_tasks_opts`'s own `alerts` branch) and the two
+//! remaining `BlockKind`s a `Doc` can contain (`Table`/`Html`) are recorded in
+//! `RenderOut::unsupported` and produce **no output at all** — not even their own inline content, if
+//! a block this pass *does* cover happens to nest one of them (a table three levels down inside a
+//! list item, say). Rendering only the *rest* of that container, working around the one nested piece
+//! it cannot draw, would produce something the production renderer never draws (a list with a hole in
+//! the middle of it), and the diff harness would have no way to tell that apart from an actual match —
+//! so `contains_unsupported` walks a `List`'s or `Quote`'s *entire* subtree before rendering a single
+//! line of it, and the whole thing is reported unsupported (under whichever nested kind's name it
+//! actually found) the moment either of those two turns up anywhere inside it, at any depth. Reporting
+//! the container as unsupported and skipping the whole subtree is the honest choice for a skeleton
+//! stage; `render_doc` therefore only ever draws lines for a `List`/`Quote` whose entire contents this
+//! pass already knows how to render.
 //!
 //! A list item nested *inside* a code block, table, or HTML block is not a concern the other
 //! direction either — those three are leaves with no `Block::children` of their own (see
@@ -35,6 +37,16 @@
 //! bullet/number (see `render_item`'s own doc comment for exactly why, and `Writer::task_list_marker`'s
 //! for the one bookkeeping fix that shape needed — `contains_unsupported` used to exclude it entirely,
 //! under a synthetic `"LooseTask"` name, while the underlying panic that shape hit was still open).
+//!
+//! A **bare** (synthetic — `is_real_paragraph` false) `Paragraph` can legitimately appear anywhere in
+//! a *tight* list item's own child list, not merely first, once `CodeBlock` support means the item can
+//! contain a non-paragraph sibling that interrupts one paragraph and leaves another lazily continuing
+//! right after it with no blank line — `render_block`'s own `Paragraph` arm and `render_bare_paragraph`
+//! handle this; see either's own doc comment for why a *later* bare paragraph needs different
+//! treatment from a *real* one (`render_paragraph`'s own unconditional double blank-line push would be
+//! wrong for it) and why this was a latent gap in this file's existing `Heading`/`ThematicBreak`
+//! support too, not something `CodeBlock` alone introduced (see `render_bare_paragraph`'s own doc
+//! comment for how that was confirmed, directly, before `CodeBlock` support existed at all).
 //!
 //! ## How inline content is rendered
 //!
@@ -99,10 +111,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet;
 
-use super::model::{Block, BlockKind, Doc, Task};
+use super::model::{code_body_text, Block, BlockKind, Doc, Task};
 use super::{
-    image_loading_line, math_placeholder_lines, math_raw_lines, math_url, scan_inline_math,
-    CodeStyle, ImagePlacement, KonomaStyles, MathPart, MathSlot, SourceRun,
+    code_header, decorate_headings_and_extras, gutter_span, highlight_body, image_loading_line,
+    math_placeholder_lines, math_raw_lines, math_url, pad_to_width, scan_inline_math, CodeStyle,
+    ImagePlacement, KonomaStyles, MathPart, MathSlot, SourceRun,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -128,21 +141,27 @@ pub(crate) struct RenderOut {
 /// separator at all, and is recorded in `unsupported` instead.
 ///
 /// `src` is the exact text `doc` was parsed from (`Doc::parse(src)`) — needed, now that `List`
-/// support means this file must be able to tell a **tight** list item's own first paragraph (no
-/// wrapping `Tag::Paragraph` at all; `model::collect_stray_inline_run`'s synthetic node) apart from a
-/// **loose** one's (a real `Tag::Paragraph`, which changes how `render_paragraph`'s own unconditional
-/// blank-line push interacts with `Writer::task_list_marker`'s placement — see `render_item`'s own doc
-/// comment): the model already draws that exact line, in `Block.src`'s own trailing byte, for anything
-/// computed from raw `pulldown_cmark::Event` ranges to read back (see `model::collect_stray_inline_run`'s
-/// own doc comment, and its home test,
-/// `tight_list_item_gets_a_synthetic_paragraph_child_loose_item_gets_a_real_one`) —
-/// `is_real_first_paragraph` is exactly that read, not a second parser judgment of any kind.
-/// `width`/`theme`/`icons`/`tasks` are
-/// threaded straight through to `super::decorate_md_lines`, matching `render_markdown_with_images`'s
-/// own call to it via `render_text_block_safe`; `theme` is not yet read by anything this pass renders
-/// (no code blocks reach this file at all — see the module doc comment on scope), kept for signature
-/// parity with `render_markdown_with_images` so a later stage that adds `CodeBlock`/`Table` support
-/// does not have to change every call site's argument list again. `math_slot`/`math_on` are the same
+/// support means this file must be able to tell a **tight** list item's own paragraph (no wrapping
+/// `Tag::Paragraph` at all; `model::collect_stray_inline_run`'s synthetic node — and, since
+/// `CodeBlock` support, not necessarily the item's own *first* child either, see `render_block`'s own
+/// `Paragraph` arm) apart from a **loose** one's (a real `Tag::Paragraph`, which changes how
+/// `render_paragraph`'s own unconditional blank-line push interacts with `Writer::task_list_marker`'s
+/// placement — see `render_item`'s own doc comment): the model already draws that exact line, in
+/// `Block.src`'s own trailing byte, for anything computed from raw `pulldown_cmark::Event` ranges to
+/// read back (see `model::collect_stray_inline_run`'s own doc comment, and its home test,
+/// `tight_list_item_gets_a_synthetic_paragraph_child_loose_item_gets_a_real_one`) — `is_real_paragraph`
+/// is exactly that read, not a second parser judgment of any kind.
+/// `width`/`code`/`theme`/`icons`/`tasks` are threaded straight through to `w` (`Writer`'s own
+/// `width`/`code`/`theme` fields — read by `render_code_block`, the same way `math` is read by
+/// `render_math_slot` — and, at the very end here, `super::decorate_headings_and_extras`, the same
+/// heading/thematic-break/checkbox post-passes `render_text_block_safe` itself runs on tui-markdown's
+/// own output — matching `render_markdown_with_images`'s own call to `decorate_md_lines` via that
+/// function *minus* its own leading `decorate_code_blocks` pass: this file's own `CodeBlock`s are
+/// already fully decorated by the time they reach `w.lines`, so running that pass a second time here
+/// would be redundant — see `render_code_block`'s own doc comment, and this file's own
+/// `decorate_code_blocks_is_idempotent_on_render_docs_own_output` test (in `mod tests` below) for
+/// proof it would be no *more* than redundant, not a source of double-decoration). `math_slot`/
+/// `math_on` are the same
 /// two arguments `render_markdown_with_images` itself takes for the identical purpose — see
 /// `render_paragraph_math`'s own doc comment for how a `Paragraph`'s own text gets its LaTeX math
 /// lifted onto its own placeholder line(s) when `math_on` is set: at the top level, and inside a
@@ -186,6 +205,10 @@ pub(crate) fn render_doc(
         needs_newline: false,
         math,
         after_math: false,
+        pending_para_start: None,
+        code,
+        theme: theme.to_string(),
+        width,
     };
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
@@ -205,7 +228,14 @@ pub(crate) fn render_doc(
                 render_heading(&mut w, doc, *level, inline.clone(), &meta);
             }
             BlockKind::Paragraph { inline } => {
-                render_paragraph_dispatch(&mut w, doc, src, inline.clone(), math_here);
+                render_paragraph_dispatch(
+                    &mut w,
+                    doc,
+                    src,
+                    inline.clone(),
+                    math_here,
+                    block.src.start,
+                );
             }
             BlockKind::ThematicBreak => render_rule(&mut w),
             BlockKind::List { start, .. } => match contains_unsupported(&block.children) {
@@ -222,22 +252,24 @@ pub(crate) fn render_doc(
             // rendering the alert's body as an ordinary blockquote here would be a *third*, silently
             // wrong rendering, not a faithful stand-in for either side.
             BlockKind::Quote { alert: Some(_) } => unsupported.push("Quote"),
-            // Exhaustive on purpose (matching this crate's own convention — see e.g.
-            // `md_snapshot_tests::fmt_item_kind`'s doc comment): a new `BlockKind` variant must be
-            // taught to this match rather than silently falling through as "unsupported" under a
-            // name nobody chose on purpose.
-            BlockKind::CodeBlock { .. } => unsupported.push("CodeBlock"),
+            BlockKind::CodeBlock {
+                lang, body_spans, ..
+            } => render_code_block(&mut w, src, lang.as_deref(), body_spans),
             // Never reachable at the top level — a `ListItem` only ever exists as a `List`'s own
             // child (see `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every
             // one of those itself before this loop ever sees it. Matched defensively all the same,
             // rather than assumed unreachable — see `render_block`'s own doc comment for why that
             // convention holds throughout this file.
             BlockKind::ListItem { .. } => unsupported.push("ListItem"),
+            // Exhaustive on purpose (matching this crate's own convention — see e.g.
+            // `md_snapshot_tests::fmt_item_kind`'s doc comment): a new `BlockKind` variant must be
+            // taught to this match rather than silently falling through as "unsupported" under a
+            // name nobody chose on purpose.
             BlockKind::Table { .. } => unsupported.push("Table"),
             BlockKind::Html { .. } => unsupported.push("Html"),
         }
     }
-    let lines = super::decorate_md_lines(w.lines, width, code, theme, icons, tasks);
+    let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
     let images = w.math.map(|m| m.images).unwrap_or_default();
     RenderOut {
         lines,
@@ -248,18 +280,20 @@ pub(crate) fn render_doc(
 
 /// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body, or (recursively) either of
 /// those nested arbitrarily deep inside more `List`/`Quote` nesting — contains, anywhere inside it, a
-/// block kind this pass does not render at all: a fenced or indented `CodeBlock`, a `Table`, an
-/// `Html` block, or a GitHub-alert `Quote` (`alert: Some(_)`; see `render_doc`'s own `Quote` arm for
-/// why that one specifically is out of scope here too, not merely deferred like the other three).
+/// block kind this pass does not render at all: a `Table`, an `Html` block, or a GitHub-alert `Quote`
+/// (`alert: Some(_)`; see `render_doc`'s own `Quote` arm for why that one specifically is out of scope
+/// here too, not merely deferred like the other two). `CodeBlock` used to be a third name this
+/// function screened out — see `render_code_block`'s own doc comment for why a `CodeBlock` no longer
+/// needs this treatment at all, at any nesting depth, quote included.
 /// Returns the *first* such kind's name found, in document order, for the caller (`render_doc`'s own
 /// top-level dispatch, or a nested recursive call from this same function walking back up) to record
 /// in `RenderOut::unsupported` — the exact same reporting a *directly* unsupported top-level block
 /// already gets, just discovered one or more levels deeper. This is what keeps `render_doc`'s own
 /// "report the container as unsupported and skip the whole subtree" choice (see the module doc
-/// comment) honest for `List`/`Quote`: a three-item list with a fenced code block buried in the third
-/// item's own nested sublist is not partially rendered with a hole where that block would have gone —
-/// the whole list, all three items, is skipped, called out under whichever nested kind's own name
-/// `contains_unsupported` actually found, exactly like a bare top-level `CodeBlock` always has been.
+/// comment) honest for `List`/`Quote`: a three-item list with a table buried in the third item's own
+/// nested sublist is not partially rendered with a hole where that block would have gone — the whole
+/// list, all three items, is skipped, called out under whichever nested kind's own name
+/// `contains_unsupported` actually found, exactly like a bare top-level `Table` always has been.
 ///
 /// A **loose list item that has a task marker** used to be excluded here too, under a synthetic
 /// `"LooseTask"` name — not a real `BlockKind` variant at all — because that exact shape crashed
@@ -277,11 +311,13 @@ pub(crate) fn render_doc(
 fn contains_unsupported(blocks: &[Block]) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
-            BlockKind::CodeBlock { .. } => return Some("CodeBlock"),
             BlockKind::Table { .. } => return Some("Table"),
             BlockKind::Html { .. } => return Some("Html"),
             BlockKind::Quote { alert: Some(_) } => return Some("Quote"),
-            BlockKind::Heading { .. } | BlockKind::Paragraph { .. } | BlockKind::ThematicBreak => {}
+            BlockKind::Heading { .. }
+            | BlockKind::Paragraph { .. }
+            | BlockKind::ThematicBreak
+            | BlockKind::CodeBlock { .. } => {}
             BlockKind::ListItem { .. }
             | BlockKind::List { .. }
             | BlockKind::Quote { alert: None } => {
@@ -370,11 +406,91 @@ struct Writer<'m> {
     needs_newline: bool,
     math: Option<MathCtx<'m>>,
     after_math: bool,
+    /// A math-lifting paragraph's own leading-blank-line convention, deferred rather than applied
+    /// eagerly — `Some(needs_newline_before)` from the moment `render_paragraph_math`/`render_item`
+    /// (its own tight/loose-item-first-child special case) starts walking a paragraph whose text
+    /// *might* lift math, until whichever of `open_pending_para_start`/`drop_pending_para_start` first
+    /// resolves it; `None` once resolved (or when no math-lifting walk is in progress at all).
+    ///
+    /// ## Why this cannot be applied eagerly, the way `render_paragraph`'s non-math counterpart does
+    ///
+    /// `render_paragraph` (no math) always opens with `TextWriter::start_paragraph`'s own two-part
+    /// blank-line push (`if needs_newline { push_blank_line() }` then an *unconditional* second one)
+    /// *before* walking the paragraph's own inline content, because that walk is guaranteed to reach
+    /// `Writer::text`/`push_span` for its own first content — which *fills* that freshly-opened blank
+    /// row rather than adding a new one (`push_span`'s own `self.lines.last_mut()` fallback). A
+    /// math-lifting paragraph's walk (`walk_inline_math`) is not guaranteed that: its own very first
+    /// content can just as easily be a lifted math expression's own placeholder, which
+    /// `render_math_slot` appends via `self.lines.extend(..)` — deliberately bypassing `push_span`
+    /// (see `after_math`'s own doc comment for why) — so a blank row opened ahead of time for math to
+    /// "fill" never gets filled at all, and is left behind, genuinely empty, forever.
+    ///
+    /// This is not a hypothetical: it is exactly what production's own `render_markdown_with_images`
+    /// does for the identical shape, confirmed directly (not merely inferred) against
+    /// `code_span_corpus`'s own math cases (a `$$…$$`/`\(…\)`/`\[…\]` expression as a paragraph's own
+    /// *entire* content, immediately after another top-level block — an indented code block, in every
+    /// one of those three cases) — a lifted expression that is the very first (and typically only)
+    /// content of its own paragraph gets **no leading blank line of any kind**, not even the separator
+    /// a genuinely new top-level block would otherwise owe the page: `BlockPart::Math`'s own handling
+    /// (`render_markdown_with_images`'s own match arm) is `out.extend(math_placeholder_lines(..))` —
+    /// appended directly, with **no** paragraph-start convention run for it at all, because a lifted
+    /// expression is never fed through tui-markdown (or, here, `Writer::push_span`) in the first
+    /// place. This holds regardless of *what* preceded it — a code block (confirmed: the padding row's
+    /// own line is followed immediately by the math line, one line closer than a real separator would
+    /// put it), a heading, or another paragraph (confirmed with a hand-traced `"para1\n\n$$y$$\n"`) —
+    /// because `split_math`'s own document-wide split means the leading text run and the lifted
+    /// expression are never rendered by the same, blank-line-aware machinery at all; the split simply
+    /// discards whatever separator state might otherwise have applied.
+    ///
+    /// So the convention has to become *lazy*: `render_paragraph_math` records that a paragraph-start
+    /// is owed (`Some(w.needs_newline)`, capturing the value the eager version would have read
+    /// immediately) but does not yet act on it. The first thing that turns out to need a fresh row —
+    /// real text, reached via `render_text_with_math`'s own `MathPart::Text` arm, or an inline code
+    /// span/soft break/hard break/nested inline tag, reached via `ensure_fresh_after_math` (now the
+    /// shared "about to render real content" checkpoint for *both* this and `after_math` — see that
+    /// function's own doc comment) — opens it via `open_pending_para_start`, applying the exact same
+    /// two-part convention `render_paragraph` still applies eagerly (this struct's own doc comment on
+    /// `needs_newline` explains why that shape is correct for text: it is literally the same
+    /// `start_paragraph` convention, just applied at the point real content is about to fill it rather
+    /// than in advance). If a lifted expression turns out to be the very first thing instead,
+    /// `render_math_slot` calls `drop_pending_para_start` — clearing the slot **without** ever opening
+    /// it — matching production's own "appended directly, no convention at all" behavior exactly.
+    pending_para_start: Option<bool>,
+    /// Colors/layout for a `CodeBlock`'s own header/body/padding band (`render_code_block`) — the
+    /// exact `CodeStyle` `render_doc` itself received, held here (rather than threaded as an extra
+    /// parameter through every intermediate block dispatcher — `render_block`/`render_list`/
+    /// `render_item`/`render_quote` — down to the one function that actually reads it) for the same
+    /// reason `math` is: every one of those functions already threads `w: &mut Writer` through
+    /// everywhere it needs state at all. `Copy`, so reading it never needs a reborrow.
+    code: CodeStyle,
+    /// The syntect theme name `render_code_block` highlights a fence's body against — owned
+    /// (`String`, not `&'m str`) purely to sidestep threading a second named lifetime through this
+    /// struct for a value that is, in practice, a short string read at most a handful of times per
+    /// document; `render_doc`'s own `theme: &str` parameter is cloned into this exactly once.
+    theme: String,
+    /// `render_doc`'s own incoming column count, unchanged for the whole render — `render_code_block`
+    /// reads it directly (see that function's own doc comment on why the *quote-prefix* width still
+    /// has to be subtracted from it there, but list nesting never does).
+    width: u16,
 }
 
 impl<'m> Writer<'m> {
     fn cur_style(&self) -> Style {
         self.inline_styles.last().copied().unwrap_or_default()
+    }
+
+    /// Display-column width `push_line` currently adds to *every* line via `line_prefixes` — one
+    /// column per currently-open quote's own `">"` span, plus the one further column `push_line`
+    /// itself inserts (a single leading space) ahead of the innermost prefix, whenever at least one
+    /// quote is open; `0` when none is. Used by `render_code_block` to keep a quote-nested code
+    /// block's own full-width background band from overflowing the terminal once that prefix is
+    /// prepended on top of it — see that function's own doc comment.
+    fn prefix_width(&self) -> usize {
+        if self.line_prefixes.is_empty() {
+            0
+        } else {
+            self.line_prefixes.len() + 1
+        }
     }
 
     /// `TextWriter::push_line`: applies every currently-open blockquote prefix/style — see this
@@ -409,6 +525,32 @@ impl<'m> Writer<'m> {
 
     fn push_blank_line(&mut self) {
         self.push_line(Line::default());
+    }
+
+    /// Consumes a still-pending math-paragraph-start slot (see `pending_para_start`'s own doc
+    /// comment), opening it with the normal two-part leading-blank-line convention
+    /// `render_paragraph`/real `TextWriter::start_paragraph` both use unconditionally — called from
+    /// `ensure_fresh_after_math`, the shared checkpoint every path that is about to render real
+    /// (non-lifted) content already runs through. A no-op once the slot is no longer pending (already
+    /// opened this way, or already dropped — unopened — by a leading math lift; see
+    /// `drop_pending_para_start`).
+    fn open_pending_para_start(&mut self) {
+        if let Some(needs_newline_before) = self.pending_para_start.take() {
+            if needs_newline_before {
+                self.push_blank_line();
+            }
+            self.push_blank_line();
+            self.needs_newline = false;
+        }
+    }
+
+    /// Drops a still-pending math-paragraph-start slot **without** opening it — called from
+    /// `render_math_slot`, the one place a lifted expression can be the very first content a
+    /// math-lifting paragraph ever renders (see `pending_para_start`'s own doc comment for why that
+    /// shape gets no leading blank line at all, unlike ordinary text). A no-op once the slot is no
+    /// longer pending.
+    fn drop_pending_para_start(&mut self) {
+        self.pending_para_start = None;
     }
 
     /// `TextWriter::push_inline_style`.
@@ -776,15 +918,22 @@ struct MathCtx<'a> {
 /// this function with `math_here: true` while `w.math` is `None` (`math_on` was never set at all) —
 /// though no call site in this file actually does; checked here all the same, once, rather than
 /// trusting every caller to have already combined the two correctly.
+///
+/// `block_start`: the `Paragraph` `Block`'s own `src.start`, forwarded to `render_paragraph_math`
+/// (which needs it — see that function's own doc comment and `walk_inline_math`'s) — read, but not
+/// otherwise used, whenever the `math_here && w.math.is_some()` check sends this to plain
+/// `render_paragraph` instead, which does not need it (a `Paragraph` with no math to lift has no gap
+/// for a backslash-math opener to be caught in in the first place).
 fn render_paragraph_dispatch(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
     src: &str,
     inline: Range<usize>,
     math_here: bool,
+    block_start: usize,
 ) {
     if math_here && w.math.is_some() {
-        render_paragraph_math(w, doc, src, inline);
+        render_paragraph_math(w, doc, src, inline, block_start);
     } else {
         render_paragraph(w, doc, inline);
     }
@@ -864,13 +1013,37 @@ fn render_paragraph_dispatch(
 /// block" case, whose trailing math sits inside a (tight) list item's own lazily-continued text and is
 /// followed, with no separator line, by a wholly unrelated top-level paragraph next in the same
 /// document.
-fn render_paragraph_math(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, inline: Range<usize>) {
-    if w.needs_newline {
-        w.push_blank_line();
-    }
-    w.push_blank_line();
-    w.needs_newline = false;
-    walk_inline_math(&mut events_iter_ranged(&doc.events[inline]), w, src);
+///
+/// ## The leading edge: deferred, not eager (`pending_para_start`)
+///
+/// Unlike `render_paragraph`, this function does **not** open with the two-part leading-blank-line
+/// convention before walking the paragraph's own content — it records that one is *owed*
+/// (`w.pending_para_start = Some(w.needs_newline)`) and lets `walk_inline_math` resolve it, via
+/// whichever of `Writer::open_pending_para_start`/`drop_pending_para_start` the paragraph's own very
+/// first rendered content turns out to call for (see `pending_para_start`'s own doc comment for the
+/// full mechanism, and why an eager push here — this function's own original shape — left an orphaned,
+/// permanently-empty row behind whenever that first content turned out to be a lifted math expression
+/// rather than real text: confirmed directly via `code_span_corpus`'s own three backslash-math and
+/// display-math cases, each an indented code block followed by a paragraph whose *entire* content is a
+/// single lifted expression).
+///
+/// `block_start` is threaded straight through to `walk_inline_math`'s own identical parameter — see
+/// that function's own doc comment for the *other* bug this closes (a backslash-math opener that is
+/// this same paragraph's own very first event).
+fn render_paragraph_math(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    inline: Range<usize>,
+    block_start: usize,
+) {
+    w.pending_para_start = Some(w.needs_newline);
+    walk_inline_math(
+        &mut events_iter_ranged(&doc.events[inline]),
+        w,
+        src,
+        block_start,
+    );
     // A paragraph whose own trailing content was math (nothing textual after the last lift) leaves
     // `needs_newline == false`, matching a *fresh* `Writer`'s own start state — see this function's
     // own doc comment. Only a paragraph that ends in real text (even text *following* an earlier
@@ -878,6 +1051,14 @@ fn render_paragraph_math(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, inline: R
     if !w.after_math {
         w.needs_newline = true;
     }
+    // Defensive only (principle #3, `CLAUDE.md`): a well-formed `Paragraph`'s own `inline` range is
+    // never empty (`Doc::parse` always records at least one event for real content), so
+    // `walk_inline_math`'s own dispatch always resolves the slot just opened above — via either
+    // `open_pending_para_start` or `drop_pending_para_start` — before this function returns. Cleared
+    // here too regardless, so a `Doc::parse` edge case this file has not been tested against still
+    // degrades to "no stray leading blank line" for whatever paragraph renders *next* through this
+    // same `Writer`, rather than silently carrying a stale slot from this call into that one.
+    w.pending_para_start = None;
 }
 
 /// Like `events_iter`, but yields each event *with* its own byte range too. `walk_inline_math`'s own
@@ -930,12 +1111,47 @@ fn events_iter_ranged<'a, 'e>(
 /// travels into `render_backslash_math` itself (whichever of its own three exits fires — closer found,
 /// ran out of events, or a line-scoping break — flushes `pending` with the trim that exit's own
 /// outcome calls for) rather than this loop trying to peek and guess ahead of time.
+///
+/// ## `block_start`: letting a backslash-math opener be the walk's own very first event
+///
+/// `backslash_math_opener` needs a *gap* to read — the raw source bytes between the *previous* event's
+/// own end and this one's own start (see that function's own doc comment) — but the very first event
+/// this loop ever sees has no previous *event*, within this walk, to compute one from. Seeding
+/// `prev_end` with `None` for that first iteration (an earlier version of this function did exactly
+/// that) means `gap` comes out `None` too — never `Some("\\")` — so `\(`/`\[` can never be detected as
+/// an opener when it is the paragraph's own very first character: a genuine, pre-existing bug, not a
+/// corner case this loop invented (confirmed directly: `code_span_corpus`'s own backslash-math cases,
+/// each an indented code block followed by a paragraph whose *entire* content is `\(y\)`/`\[y\]`, used
+/// to fall through as the *literal* text `"(y)"`/`"[y]"`, never lifted).
+///
+/// `block_start` is the fix: the byte position *conceptually* just before this walk's own first event
+/// — `block.src.start`, for whichever `Block` owns the paragraph being walked (see each of this
+/// function's own three call sites for where that comes from). For a **real** `Paragraph`
+/// (`render_paragraph_math`'s own case, and a loose list item's own first child, in `render_item`),
+/// `block.src` is pulldown-cmark's own `Tag::Paragraph` span, which — unlike any individual inline
+/// event's own range — still includes a leading backslash its own escape handling stripped out of the
+/// first *event's* range (confirmed directly: parsing `"\[y\]\n"` alone reports `Start(Paragraph)`
+/// spanning `0..6`, the *whole* source, while its own first inline event, `Text("[y")`, starts at `1`
+/// — `src[0..1] == "\\"`, exactly the gap `backslash_math_opener` needs). Seeding `prev_end` with
+/// `Some(block_start)` computes that same gap for the walk's own first event too, the same way it
+/// already does for every later one, closing the bug for exactly the shape it affects — with **no**
+/// risk of a false positive for the ordinary case: whenever there is no leading escape (`block_start ==
+/// first_event.start`, or this paragraph does not start with a backslash), the computed gap is simply
+/// `""`, which `backslash_math_opener`'s own `gap != Some("\\")` check already rejects, identically to
+/// `None`. A **tight** list item's own first child (`render_item`'s *other* branch, a *synthetic*
+/// `Paragraph` `model::collect_stray_inline_run` builds rather than one pulldown-cmark itself wrapped)
+/// does not carry this same wider span — its own `Block.src` is built purely from consumed events, with
+/// no wrapping tag to have recorded one — so `block_start == first_event.start` there even when the
+/// item's own content *does* open with a backslash escape; this bug stays open for that one narrow
+/// shape (not exercised by the parity corpus, and no worse than before this fix: the gap is still `""`,
+/// not a false `Some("\\")`), rather than fabricating a position the model does not actually record.
 fn walk_inline_math<'a>(
     events: &mut impl Iterator<Item = (Event<'a>, Range<usize>)>,
     w: &mut Writer<'_>,
     src: &str,
+    block_start: usize,
 ) {
-    let mut prev_end: Option<usize> = None;
+    let mut prev_end: Option<usize> = Some(block_start);
     let mut pending: Option<pulldown_cmark::CowStr<'a>> = None;
     while let Some((ev, range)) = events.next() {
         let gap = prev_end.map(|p| &src[p..range.start]);
@@ -1175,20 +1391,35 @@ fn replay_events<'a>(w: &mut Writer<'_>, events: Vec<Event<'a>>) {
     }
 }
 
-/// If the last thing rendered was a lifted math expression (`w.after_math`), opens a fresh
-/// paragraph-start boundary (`render_paragraph`'s own two-part blank-line push, verbatim) before
-/// whatever comes next — mirrors production's own "every fragment following a lift is its own
-/// brand-new `TextWriter`" behavior (see `render_paragraph_math`'s own doc comment) without actually
-/// re-parsing: the *boundary*, not a second parse, is the only thing that needs reproducing. A no-op
-/// whenever `after_math` is already `false` (the overwhelmingly common case — most events in most
-/// paragraphs have no math anywhere near them), so every call site in `walk_inline_math`'s own
-/// dispatch loop can call this unconditionally, ahead of its own normal handling, rather than each
-/// having to re-derive "is this event adjacent to a lift" itself. The explicit `w.after_math = false`
-/// at the end is redundant with `push_blank_line`'s own side effect (`Writer::push_line` clears it
-/// unconditionally — see that struct's own doc comment) but kept anyway: this function's own contract
-/// ("the flag is consumed") should hold by its own reading, not merely as an accident of what its
-/// callee happens to also do.
+/// The shared checkpoint every path in this file that is about to render **real** (non-lifted)
+/// content already runs through, ahead of its own normal handling — resolves both of the two states
+/// that can leave a math-lifting paragraph's own leading edge unfinished:
+///
+/// 1. **A still-pending paragraph start** (`w.pending_para_start`) — this is the paragraph's own very
+///    first content, and it turns out to be real text/an inline construct rather than a lifted math
+///    expression, so the leading-blank-line convention `render_paragraph_math` deferred (see
+///    `pending_para_start`'s own doc comment for why it *had* to defer, rather than open eagerly the
+///    way `render_paragraph` still does) needs opening now, via `open_pending_para_start`.
+/// 2. **The last thing rendered was a lifted math expression** (`w.after_math`) — opens a fresh
+///    paragraph-start boundary (the exact same two-part blank-line push, verbatim) before whatever
+///    comes next, mirroring production's own "every fragment following a lift is its own brand-new
+///    `TextWriter`" behavior (see `render_paragraph_math`'s own doc comment) without actually
+///    re-parsing: the *boundary*, not a second parse, is the only thing that needs reproducing.
+///
+/// These two states can never both apply to the very same call: `pending_para_start` is only ever
+/// `Some` before *anything* has rendered in this walk, and `after_math` only ever becomes `true`
+/// *after* `render_math_slot` has already resolved (opened or dropped) whatever pending slot there
+/// was — so checking `pending_para_start` first, unconditionally, then `after_math`, is safe; at most
+/// one of the two blocks below ever actually does anything for a given call. Both are no-ops in the
+/// overwhelmingly common case (most events in most paragraphs are neither the walk's own first content
+/// nor immediately follow a lift), so every call site in `walk_inline_math`'s own dispatch loop calls
+/// this unconditionally, ahead of its own normal handling, rather than each having to re-derive either
+/// condition itself. The explicit `w.after_math = false` is redundant with `push_blank_line`'s own
+/// side effect (`Writer::push_line` clears it unconditionally — see that struct's own doc comment) but
+/// kept anyway: this function's own contract ("the flag is consumed") should hold by its own reading,
+/// not merely as an accident of what its callee happens to also do.
 fn ensure_fresh_after_math(w: &mut Writer<'_>) {
+    w.open_pending_para_start();
     if w.after_math {
         if w.needs_newline {
             w.push_blank_line();
@@ -1310,7 +1541,18 @@ fn render_text_with_math(w: &mut Writer<'_>, text: &str, trailing_lift: bool) {
 /// `render_paragraph_dispatch`'s own `w.math.is_some()` check, so this should never actually trigger,
 /// but principle #3 (`CLAUDE.md`) applies regardless: degrade to rendering nothing for this one
 /// expression rather than panic if that invariant is ever wrong.
+///
+/// `w.drop_pending_para_start()` runs first, unconditionally — this is the one place a math-lifting
+/// paragraph's own still-pending leading-blank-line slot (see `pending_para_start`'s own doc comment)
+/// can be resolved by a *lift*, rather than by real text (`ensure_fresh_after_math`'s own
+/// `open_pending_para_start` call): a no-op whenever nothing is pending (the overwhelmingly common
+/// case — a lift preceded by real text on the same line, or not the walk's own first content at all),
+/// but exactly the fix for the shape that motivated this pending-slot mechanism in the first place —
+/// a math expression that is a paragraph's own entire, only content — where dropping it here (never
+/// opening it) is what keeps that paragraph's own placeholder from being preceded by an orphaned blank
+/// row nothing else ever fills.
 fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool) {
+    w.drop_pending_para_start();
     let Some(math) = w.math.as_ref() else {
         return;
     };
@@ -1357,6 +1599,119 @@ fn render_rule(w: &mut Writer<'_>) {
     w.needs_newline = true;
 }
 
+/// Renders one `CodeBlock` — fenced or indented, at any nesting depth this file covers (top level,
+/// inside a list item, inside a quote — `render_block`'s own `CodeBlock` arm, and `render_doc`'s own
+/// top-level one, are this function's only two callers) — directly from the model's own
+/// `lang`/`body_spans`, reusing the exact building blocks production's own `flush_code_run` calls for
+/// the identical shape: `code_header` for the language-badge row, `highlight_body` for the
+/// syntect-highlighted, gutter+background body rows, and `gutter_span`/`pad_to_width` for the bottom
+/// padding row.
+///
+/// Unlike `flush_code_run` — which has to *re-derive* a code block's own extent from tui-markdown's
+/// own *rendered* output (`is_code_block_line`, a maximal run of `fg(White)` lines), because that is
+/// all production has to go on — this already *has* the block's own exact byte extent, straight from
+/// the one whole-document parse `Doc::parse` performed (see the module doc comment: this is the entire
+/// point of this refactor). It therefore never mis-detects a block's own boundary the way
+/// `flush_code_run` can — see that function's own doc comment, and `code_corpus`'s own "list item
+/// fence glued to a following inline-code paragraph" cases, the very shape that motivated this
+/// refactor in the first place — every `CodeBlock` this file's own `Doc::parse` reports gets exactly
+/// one header, drawn from the model, never zero (contrast `render_bare_paragraph`'s own doc comment
+/// for the companion half of that same fix: keeping whatever *follows* this block from gluing onto its
+/// own last row).
+///
+/// ## The blank line above the header
+///
+/// Mirrors real `TextWriter::start_codeblock`'s own leading blank-line check *exactly* — `if
+/// !self.text.lines.is_empty() { push_line(default) }` — which is **not** the same condition every
+/// other block-rendering function in this file uses (`if w.needs_newline`). Confirmed directly against
+/// real tui-markdown (not merely inferred): a fence is *always* preceded by exactly one blank row
+/// whenever anything at all has already been rendered — even when the source has *no* blank line
+/// before it (`"para\n```\naaa\n```\n"` renders identically to `"para\n\n```\naaa\n```\n"`, one blank
+/// row either way — a fence is a leaf block that can interrupt a paragraph without one), even when the
+/// immediately preceding content is a **tight** list item's own bare inline text with `needs_newline`
+/// still `false` (`"- text\n  ```\n  aaa\n  ```\n"` still gets the blank row), and even when the code
+/// block is a list item's own very *first* child with no leading text at all (`"- \n  ```\n  aaa\n
+/// ```\n"` — the blank row lands right after the bare `"- "` marker row) — but *not* when the code
+/// block is the very first thing in the whole document (`w.lines.is_empty()` still true at that
+/// point). `w.needs_newline` plays no part in this decision at all — using it here instead (matching
+/// every *other* block-rendering function's own convention) would skip the blank row for exactly the
+/// two shapes above where `needs_newline` happens to already be `false` for an unrelated reason (a
+/// **tight** item's own bare content, per `Writer::text`'s own doc comment, or `render_item`'s own
+/// unconditional reset right before dispatching an item's first child) even though real tui-markdown
+/// still draws one.
+///
+/// ## The width used for the header/body/padding band
+///
+/// `w.width` (`render_doc`'s own incoming column count), reduced by whatever quote-prefix width is
+/// currently open (`w.prefix_width()`) — never by list nesting, which (confirmed the same way — see
+/// this function's own leading-blank-line evidence above, gathered by rendering real list content and
+/// reading the columns back) adds no left margin of its own at all, in production or here. Reducing by
+/// the quote-prefix width keeps a quote-nested code block's own full-width background band from
+/// overflowing the terminal once `push_line` prepends the `"> "` prefix on top of it — a genuine
+/// judgment call, not something checked against a production precedent, because production does not
+/// decorate a quote-nested fence at all (its own `flush_code_run` never even recognizes one — the
+/// first rendered row reads `"> ```"`, not `"```"` — see that function's own doc comment). See
+/// `model::BlockKind::CodeBlock`'s own doc comment for why this model represents a quote-nested code
+/// block like any other regardless ("an intentional superset of what `parser_code_blocks` reports"),
+/// and `contains_unsupported`'s own doc comment above for where the old, blanket "any `CodeBlock`
+/// anywhere in a `Quote`'s subtree is unsupported" screen used to stop this file from ever reaching
+/// one at all.
+///
+/// ## Content: reconstructed from `body_spans`, never from a rendered run
+///
+/// `body_spans` is empty precisely when the fence has no content line at all (`model::BlockKind::
+/// CodeBlock.body_spans`'s own doc comment) — checked directly, rather than via `body_text.is_empty()`
+/// (which cannot tell "no content" apart from "exactly one *blank* content line": `code_body_text`
+/// strips at most one trailing newline either way, so both shapes reconstruct to `""`) — so a
+/// genuinely empty fence draws no body rows at all (matching `flush_code_run`'s own `highlight_body`
+/// early return for an empty `body: &[String]`), while one blank content line still draws exactly one
+/// (highlighted, gutter+background) blank row.
+fn render_code_block(
+    w: &mut Writer<'_>,
+    src: &str,
+    lang: Option<&str>,
+    body_spans: &[Range<usize>],
+) {
+    if !w.lines.is_empty() {
+        w.push_blank_line();
+    }
+    let content_w = (w.width as usize).saturating_sub(w.prefix_width());
+    // Mirrors `flush_code_run`'s own `let lang = opening_trimmed.trim_matches('`').trim().to_string();`
+    // — the model's own `lang` never carries backticks (those are fence syntax, not part of the info
+    // string pulldown-cmark reports), so only the `.trim()` half is still needed here.
+    let lang_trimmed = lang.unwrap_or("").trim();
+    let label = if lang_trimmed.is_empty() {
+        "code"
+    } else {
+        lang_trimmed
+    };
+    w.push_line(code_header(label, content_w, w.code));
+    let body_text = code_body_text(body_spans, src);
+    let body_lines: Vec<String> = if body_spans.is_empty() {
+        Vec::new()
+    } else {
+        body_text.split('\n').map(str::to_string).collect()
+    };
+    let theme = w.theme.clone();
+    for line in highlight_body(
+        &body_lines,
+        lang_trimmed,
+        content_w,
+        w.code.bg,
+        &theme,
+        w.code.tab_width,
+        w.code.wrap,
+    ) {
+        w.push_line(line);
+    }
+    w.push_line(pad_to_width(
+        vec![gutter_span(w.code.bg)],
+        content_w,
+        w.code.bg,
+    ));
+    w.needs_newline = true;
+}
+
 /// The generic block dispatcher used for every position in this file's block tree that is **not** a
 /// `List`'s own item sequence (which `render_list` walks itself, since each one needs a marker built
 /// first — see `render_item`) or an item's own *first* child (which `render_item` special-cases for
@@ -1364,22 +1719,33 @@ fn render_rule(w: &mut Writer<'_>) {
 /// list item after the first. Mirrors `TextWriter::start_tag`'s own top-level dispatch for the block
 /// kinds this pass covers.
 ///
-/// `Quote{alert: Some(_)}`/`CodeBlock`/`Table`/`Html` never legitimately reach this function: every
-/// caller that walks into a `List`'s or `Quote`'s own children only does so after `contains_unsupported`
-/// has already confirmed none of those four appear anywhere in that subtree (see `render_doc`'s own
+/// `Quote{alert: Some(_)}`/`Table`/`Html` never legitimately reach this function: every caller that
+/// walks into a `List`'s or `Quote`'s own children only does so after `contains_unsupported` has
+/// already confirmed none of those three appear anywhere in that subtree (see `render_doc`'s own
 /// dispatch, and that function's own doc comment) — so encountering one here would mean a bug
 /// upstream of this file, not merely input a smaller local check failed to reject. `ListItem` never
 /// legitimately reaches this function either — it only ever exists as a `List`'s own child (see
 /// `model::BlockKind::ListItem`'s doc comment), and `render_list` unwraps every one of those itself.
 /// Matched defensively (silently rendering nothing further) rather than assumed unreachable all the
 /// same, so a bug elsewhere degrades to "this one block goes missing" instead of a panic — principle
-/// #3 (`CLAUDE.md`).
+/// #3 (`CLAUDE.md`). `CodeBlock` *does* legitimately reach here now (`contains_unsupported` no longer
+/// screens it out — see that function's own doc comment) — `render_code_block` draws it.
 ///
-/// `math_here` is simply threaded through to whichever of `render_paragraph_dispatch`/`render_list`
-/// this block turns out to need it — see `render_doc`'s own doc comment for what it means and
-/// `render_quote`'s own call site below for the one place a caller of this function does *not* pass
-/// its own value through unchanged (a `Quote`'s own children never get it, regardless of what this
-/// function itself received).
+/// The `Paragraph` arm is not a single, unconditional dispatch the way it looks from `render_doc`'s
+/// own top-level loop (where a `Paragraph` is *always* real — see `is_real_paragraph`'s own doc
+/// comment on why that only ever fails for a list item's own content): a `Paragraph` reached *through*
+/// this function can be **bare** — `is_real_paragraph` decides which, per call, and routes to
+/// `render_paragraph_dispatch` (a real one — unchanged) or `render_bare_paragraph` (a bare one — see
+/// its own doc comment for why treating it as real would be wrong, and for the concrete shape that
+/// exercises this: a tight list item's own *later* child, once a `CodeBlock`, `Heading`, or
+/// `ThematicBreak` interrupts one bare paragraph with another lazily continuing right after it, no
+/// blank line either side).
+///
+/// `math_here` is simply threaded through to whichever of `render_paragraph_dispatch`/
+/// `render_bare_paragraph`/`render_list` this block turns out to need it — see `render_doc`'s own doc
+/// comment for what it means and `render_quote`'s own call site below for the one place a caller of
+/// this function does *not* pass its own value through unchanged (a `Quote`'s own children never get
+/// it, regardless of what this function itself received).
 fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, math_here: bool) {
     match &block.kind {
         BlockKind::Heading {
@@ -1397,18 +1763,23 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, mat
             render_heading(w, doc, *level, inline.clone(), &meta);
         }
         BlockKind::Paragraph { inline } => {
-            render_paragraph_dispatch(w, doc, src, inline.clone(), math_here);
+            if is_real_paragraph(src, block) {
+                render_paragraph_dispatch(w, doc, src, inline.clone(), math_here, block.src.start);
+            } else {
+                render_bare_paragraph(w, doc, src, inline.clone(), math_here, block.src.start);
+            }
         }
         BlockKind::ThematicBreak => render_rule(w),
         BlockKind::List { start, .. } => {
             render_list(w, doc, src, *start, &block.children, math_here)
         }
         BlockKind::Quote { alert: None } => render_quote(w, doc, src, &block.children),
-        BlockKind::Quote { alert: Some(_) }
-        | BlockKind::CodeBlock { .. }
-        | BlockKind::Table { .. }
-        | BlockKind::Html { .. }
-        | BlockKind::ListItem { .. } => {}
+        BlockKind::CodeBlock {
+            lang, body_spans, ..
+        } => render_code_block(w, src, lang.as_deref(), body_spans),
+        BlockKind::Quote { alert: Some(_) } | BlockKind::Table { .. } | BlockKind::Html { .. } => {}
+        // Never reachable — see the doc comment above.
+        BlockKind::ListItem { .. } => {}
     }
 }
 
@@ -1468,7 +1839,7 @@ fn render_list(
 /// builds on the fly (see that function's own doc comment), but there was never a real `Tag::Paragraph`
 /// for it. A **loose** item's own first paragraph, by contrast, is real — pulldown-cmark reports an
 /// ordinary `Start(Paragraph)`/`End(Paragraph)` pair around it, indistinguishable in `Doc.events` from
-/// any other paragraph in the document. `is_real_first_paragraph` reads `src` to tell the two apart
+/// any other paragraph in the document. `is_real_paragraph` reads `src` to tell the two apart
 /// (see `render_doc`'s own doc comment for exactly which byte settles it), because the two cases
 /// produce genuinely different output:
 ///
@@ -1494,7 +1865,7 @@ fn render_list(
 /// An item whose own first child is not a `Paragraph` at all (real or synthetic) — a bare bullet
 /// immediately followed by a nested `List`/`Quote` with no inline text of its own, e.g. `- - nested`
 /// — falls through to the generic dispatcher (`render_block`) for that first child too, the same as
-/// every child after it; `is_real_first_paragraph` reports `false` for a non-`Paragraph` block, so no
+/// every child after it; `is_real_paragraph` reports `false` for a non-`Paragraph` block, so no
 /// spurious blank line gets inserted ahead of it.
 ///
 /// `math_here` decides which of `walk_inline`/`walk_inline_math` drives the item's own first child's
@@ -1509,6 +1880,29 @@ fn render_list(
 /// *real* paragraph in every sense that matters to that rule — it simply never goes through
 /// `render_paragraph`/`render_paragraph_math` themselves (see this function's own doc comment on the
 /// tight/loose distinction for why).
+///
+/// `first.src.start` (below, at the `math_here` call site) closes `walk_inline_math`'s own
+/// backslash-math-as-first-event gap-detection bug for a **loose** item's own first child the same way
+/// it does for `render_paragraph_math` (see that function's own doc comment, and `walk_inline_math`'s)
+/// — a loose item's first child is a *real*, pulldown-cmark-wrapped `Paragraph`, so its own `Block.src`
+/// carries the same wider span a top-level paragraph's does. A **tight** item's synthetic first child
+/// does not (`model::collect_stray_inline_run`'s own doc comment: no wrapping tag to have recorded a
+/// wider span in the first place), so the gap this closes stays `""` there regardless — safe, not a
+/// regression, just not a fix for that one narrower shape (see `walk_inline_math`'s own doc comment for
+/// the identical caveat).
+///
+/// This function does **not**, however, reuse `render_paragraph_math`'s *other* fix — the deferred,
+/// `pending_para_start`-based leading-blank-line convention (see that field's own doc comment) — for
+/// its own `loose_first` branch below, on purpose: a loose item's own task marker (`w.task_list_marker`,
+/// called unconditionally right after `loose_first`'s own eager blank-line push, task or no task) needs
+/// that row to already exist the moment it runs, *regardless* of whether the item's first child's own
+/// first rendered content later turns out to be math — deferring the push here would either strand the
+/// marker on the wrong (marker's own) row when a task is present, or require re-deriving "does this
+/// item have a task" a second time inside the pending-slot machinery for no benefit, since a loose
+/// list item beginning directly with a lifted math expression is not a shape any corpus case exercises
+/// (nor one this task's own scope — closing `KNOWN_MISMATCHES`'s three top-level math entries — asks
+/// for). Left as the pre-existing eager push, unchanged, rather than risked on an unverified guess at
+/// what production would even do there.
 fn render_item(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -1522,9 +1916,7 @@ fn render_item(
     push_item_marker(w);
     w.needs_newline = false;
 
-    let loose_first = children
-        .first()
-        .is_some_and(|b| is_real_first_paragraph(src, b));
+    let loose_first = children.first().is_some_and(|b| is_real_paragraph(src, b));
     if loose_first {
         w.push_blank_line();
         w.needs_newline = false;
@@ -1542,7 +1934,12 @@ fn render_item(
             // own; that is exactly what distinguishes this from `render_paragraph`, which this
             // call deliberately bypasses for the item's own first child.
             if math_here {
-                walk_inline_math(&mut events_iter_ranged(&doc.events[inline.clone()]), w, src);
+                walk_inline_math(
+                    &mut events_iter_ranged(&doc.events[inline.clone()]),
+                    w,
+                    src,
+                    first.src.start,
+                );
             } else {
                 walk_inline(&mut events_iter(&doc.events[inline.clone()]), w, None);
             }
@@ -1570,19 +1967,118 @@ fn render_item(
 }
 
 /// Whether `block` is a **real** `Paragraph` — pulldown-cmark's own `Tag::Paragraph`, reported for a
-/// loose list item's own content — as opposed to the *synthetic* one `collect_stray_inline_run`
-/// builds for a tight item's (see `render_item`'s own doc comment for what that distinction changes).
-/// The two are told apart by `Block.src`'s own trailing byte in `src`: a real `Paragraph`'s range
-/// always runs through its own trailing newline (`"a\n"`), the way pulldown-cmark reports every
+/// loose list item's own content, or (always, regardless of tight/loose) for one reached any other
+/// way this file's own `Doc::parse` can produce a `Paragraph` (top level, or a `Quote`'s own body —
+/// see `render_block`'s own doc comment for why the reverse — "reached through `render_block` but
+/// still bare" — can only ever happen for a list item's own content) — as opposed to the *synthetic*
+/// one `collect_stray_inline_run` builds for a **tight** item's (see `render_item`'s own doc comment
+/// for what that distinction changes for an item's own *first* child, and `render_bare_paragraph`'s
+/// for a *later* one). Despite the name (kept from this function's original, narrower use —
+/// `render_item`'s own first-child special case, still its only *other* caller), nothing about this
+/// check is first-child-specific: it purely inspects `block`'s own byte range, a property of *how
+/// pulldown-cmark represented that one block*, independent of its position among its own siblings —
+/// which is exactly what lets `render_block`'s own `Paragraph` arm reuse it unchanged for *every*
+/// position, not just an item's first child.
+///
+/// The two shapes are told apart by `Block.src`'s own trailing byte in `src`: a real `Paragraph`'s
+/// range always runs through its own trailing newline (`"a\n"`), the way pulldown-cmark reports every
 /// `Tag::Paragraph`'s range; the synthetic one never does (`"a"`) — there is no wrapping tag for
 /// pulldown-cmark to have assigned that wider range to in the first place, only the leaf events
 /// themselves, whose own ranges stop at the run's last one. This is not a byte-range heuristic this
 /// file invented: it is the model's own, explicitly documented and unit-tested contract for reading
 /// the distinction back (see `model::collect_stray_inline_run`'s own doc comment, and
 /// `tight_list_item_gets_a_synthetic_paragraph_child_loose_item_gets_a_real_one`, the test that pins
-/// exactly this).
-fn is_real_first_paragraph(src: &str, block: &Block) -> bool {
+/// exactly this) — confirmed to hold for a **loose** list's own *later* paragraphs too, not merely its
+/// first (`Doc::parse` reports a trailing `"\n"` on *every* real paragraph in a loose list, even one
+/// with no blank line directly in front of it, e.g. right after a fence's own closing marker — the
+/// CommonMark rule is "loose or tight" per *list*, not per individual blank line).
+fn is_real_paragraph(src: &str, block: &Block) -> bool {
     matches!(&block.kind, BlockKind::Paragraph { .. }) && src[block.src.clone()].ends_with('\n')
+}
+
+/// Renders a **bare** (synthetic — `is_real_paragraph` false) `Paragraph`'s own inline content
+/// directly into `w`, with no `start_paragraph`/`end_paragraph`-equivalent bookkeeping of any kind —
+/// used both for a **tight** list item's own first child (`render_item`'s own first-child special
+/// case calls `walk_inline`/`walk_inline_math` itself, inline, for reasons specific to that position —
+/// see its own doc comment) and for any *later* sibling in the same item that turns out, on inspection
+/// (`is_real_paragraph`), to be equally bare (`render_block`'s own `Paragraph` arm, this function's
+/// only caller). A bare paragraph can appear anywhere in a tight item's own child list, not merely
+/// first, once the item contains an interrupting non-paragraph sibling (a `CodeBlock`, a `Heading`, a
+/// `ThematicBreak`, a nested `List`/`Quote`) with no blank line around it — CommonMark's own lazy
+/// continuation only absorbs plain text back into an *already-open* paragraph (`render_quote`'s own
+/// call site above already handles that shape correctly, since it never creates a second sibling
+/// block at all — confirmed directly: `"- a\n  > quoted\n  after\n"` parses `"after"` as part of the
+/// quote's own single paragraph, joined by a soft break, not a new block), but a fence, heading, or
+/// thematic break always *starts a new block*, so a lazily-continued line right after one becomes a
+/// genuinely separate sibling `Paragraph` — real if the enclosing list is loose, bare if it is tight.
+///
+/// The one piece of bookkeeping this function *does* still need — even though there is no wrapping
+/// `start_paragraph`/`end_paragraph` pair to supply it — is consuming a *pending* `w.needs_newline`
+/// left by whatever sibling came immediately before this one, so this content starts on its own fresh
+/// row rather than gluing onto that sibling's own last row. Mirrors real `TextWriter::text`'s own
+/// per-event guard (`if self.needs_newline { push_line(default); needs_newline = false }`), but
+/// applied **once**, up front, rather than repeated inside every individual `Writer` method the way
+/// the real `text`'s own copy is.
+///
+/// ## A deliberate, documented departure from tui-markdown's own (buggy) behavior
+///
+/// Confirmed directly against real tui-markdown: only `TextWriter::text` carries this guard —
+/// `code`/`soft_break`/`hard_break` do not consult `needs_newline` at all, so when a bare paragraph's
+/// own *first* inline event happens to be something other than `Event::Text` (most commonly
+/// `Event::Code`, an inline code span — e.g. `` `inline` after `` immediately following a list-nested
+/// fence's own closing marker with no blank line — `code_corpus`'s own "KNOWN FAILURE: list item fence
+/// glued to a following inline-code paragraph" cases), real tui-markdown glues that content directly
+/// onto whatever row is currently open. Production's own consequence of this — `flush_code_run`'s own
+/// "last row must be fence characters only" check failing, dropping that code block's header entirely,
+/// cancelling `y c` for the *whole document* (the count guard is document-wide) — is exactly the
+/// defect those corpus cases pin, and exactly the shape that motivated this refactor's own "single
+/// source of truth for block structure" premise (see the parent module's own doc comment). This
+/// function does **not** reproduce tui-markdown's own inconsistency here: the guard runs once, up
+/// front, regardless of which kind of event the paragraph's own content happens to start with, so a
+/// bare paragraph *always* lands on its own fresh row when one is owed — never glued onto a preceding
+/// sibling's own last row. This is a deliberate improvement, not an oversight: this file draws a
+/// `CodeBlock`'s own header directly from the model (`render_code_block`) and so can never lose one to
+/// begin with, which is exactly what makes fixing the *visual* glue here safe — there is no downstream
+/// count-guard left to desynchronize the way `flush_code_run`'s is. See `md_render_diff_tests`'s own
+/// `INTENDED_IMPROVEMENTS` list for where this shows up as a *documented* mismatch against production,
+/// not a gap.
+///
+/// ## Not a `CodeBlock`-specific fix
+///
+/// Confirmed, before any `CodeBlock` support existed, that `render_block`'s *previous* unconditional
+/// "every `Paragraph` is real" dispatch already mishandled this shape for the two block kinds this
+/// file already covered — `"- a\n  # heading\n  after\n"` and `"- a\n  ---\n  after\n"` (a tight
+/// item's own paragraph interrupted by a `Heading`/`ThematicBreak`, with a bare paragraph lazily
+/// continuing right after) — both rendered an extra, spurious blank line before `"after"` that real
+/// production never shows (`render_paragraph`'s own unconditional *second* blank-line push, wrong for
+/// a bare paragraph, right only for a real one). Nothing in the existing parity corpus happened to
+/// exercise a tight item with a *third*, later child at all, so this stayed a latent bug — undetected,
+/// not previously absent — until `CodeBlock` support made it observable via the very corpus cases the
+/// task this function was added for asks to fix. Fixing it generically here (rather than narrowly,
+/// only for a paragraph that happens to follow a `CodeBlock`) closes the `Heading`/`ThematicBreak`
+/// cases too, for free.
+fn render_bare_paragraph(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    inline: Range<usize>,
+    math_here: bool,
+    block_start: usize,
+) {
+    if w.needs_newline {
+        w.push_blank_line();
+        w.needs_newline = false;
+    }
+    if math_here {
+        walk_inline_math(
+            &mut events_iter_ranged(&doc.events[inline]),
+            w,
+            src,
+            block_start,
+        );
+    } else {
+        walk_inline(&mut events_iter(&doc.events[inline]), w, None);
+    }
 }
 
 /// Builds and pushes the current list item's own marker span onto whatever line `render_item` just
@@ -1643,6 +2139,16 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `#[cfg(test)]`-local, not added to the file's own top-level `use super::{..}` import: neither
+    // is read outside `decorate_code_blocks_is_idempotent_on_render_docs_own_output`, and a plain,
+    // non-test build already never calls `render_doc` at all (see the module doc comment) — importing
+    // them unconditionally would just be an `unused_imports` warning waiting to happen there.
+    use super::super::{decorate_code_blocks, is_code_header_span};
+    // `Span::dim()` (the `Stylize` trait) — needed by the two math regression tests below to build
+    // the exact same dimmed placeholder `math_raw_lines` itself constructs (see that function's own
+    // `Span::from(text).dim()`), for a byte-for-byte `Line` equality check against `render_doc`'s
+    // own output.
+    use ratatui::style::Stylize;
 
     fn fresh_writer() -> Writer<'static> {
         Writer {
@@ -1656,6 +2162,10 @@ mod tests {
             needs_newline: false,
             math: None,
             after_math: false,
+            pending_para_start: None,
+            code: CodeStyle::default(),
+            theme: String::new(),
+            width: 80,
         }
     }
 
@@ -1815,5 +2325,188 @@ mod tests {
             rendered.iter().any(|l| l.contains("[ ] nested")),
             "rendered lines: {rendered:?}"
         );
+    }
+
+    /// Structural proof (not merely an assumption) that `decorate_md_lines`'s split into
+    /// `decorate_code_blocks` + `decorate_headings_and_extras` (see that function's own doc comment
+    /// in the parent module) is safe for `render_doc` to skip the first half of: running
+    /// `decorate_code_blocks` a *second* time over `render_doc`'s own already-fully-decorated output
+    /// changes nothing at all. Exercises every position `render_code_block` covers in one document —
+    /// top level, inside a list item, inside a quote, and an indented (non-fenced) block — plus a
+    /// heading and a plain paragraph as neighbors, so a regression that made *any* of
+    /// `render_code_block`'s own output lines start matching `is_code_block_line`'s `fg(White)`
+    /// signal (the one thing that would make a second pass over them do anything at all — see
+    /// `decorate_code_blocks`'s own doc comment) would show up here as a genuine diff, not silently
+    /// pass because the corpus happened not to exercise that shape.
+    #[test]
+    fn decorate_code_blocks_is_idempotent_on_render_docs_own_output() {
+        let src = "# Heading\n\npara text\n\n```rust\nfn a() {}\n```\n\n\
+                    - item\n\n  ```sh\n  echo hi\n  ```\n\n\
+                    > quoted\n>\n> ```\n> quoted code\n> ```\n\n    indented one\n    indented two\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle {
+            bg: Some(Color::Rgb(43, 48, 59)),
+            label_bg: Some(Color::Rgb(70, 78, 99)),
+            label_right: true,
+            tab_width: 4,
+            wrap: true,
+        };
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            true,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "fixture should be fully supported: {:?}",
+            out.unsupported
+        );
+        // Sanity: the fixture really does exercise `render_code_block` more than once (one header
+        // per code block — a run over an *empty* document would trivially "pass" this test for the
+        // wrong reason).
+        let header_count = out
+            .lines
+            .iter()
+            .filter(|l| l.spans.iter().any(is_code_header_span))
+            .count();
+        assert_eq!(
+            header_count, 4,
+            "fixture doesn't exercise all four render_code_block positions: {:?}",
+            out.lines
+        );
+        let redecorated = decorate_code_blocks(out.lines.clone(), 80, code, "TwoDark");
+        assert_eq!(
+            out.lines, redecorated,
+            "a second decorate_code_blocks pass changed render_doc's own output — \
+             render_code_block's own output lines must never match is_code_block_line"
+        );
+    }
+
+    /// Regression for `Writer::pending_para_start`'s own bug (see that field's own doc comment): a
+    /// paragraph whose own first rendered content is a lifted math expression must render to *exactly*
+    /// its own placeholder line(s) — never preceded by an orphaned, permanently-empty blank row that
+    /// nothing ever fills (the old, eager `render_paragraph_math` unconditionally opened one, assuming
+    /// the paragraph's own first content would always reach `w.lines` via `push_span`, which a lift
+    /// never does — see `render_math_slot`'s own `self.lines.extend(..)`).
+    ///
+    /// Two shapes, both confirmed directly against the real production pipeline
+    /// (`md_render_diff_tests`'s own `markdown_render_diff_report`, before this fix, listed all three
+    /// `code_span_corpus` math cases in `KNOWN_MISMATCHES` for exactly this reason):
+    ///
+    /// * Math as the *whole* document — nothing precedes it, so `w.needs_newline` is `false` on entry
+    ///   and only the eager code's own *unconditional* second push would have fired.
+    /// * Math as a paragraph immediately following an indented code block (`code_span_corpus`'s own
+    ///   `"display math ($$...$$) inside an indented code block and outside"` case, `"    $$x$$\n\n$$y$$\n"`)
+    ///   — `w.needs_newline` is `true` on entry here, so the eager code's *conditional* leading push
+    ///   would have fired too, on top of the unconditional one (two orphaned blank lines, not one).
+    ///
+    /// Reverting `render_paragraph_math`/`Writer::open_pending_para_start`/`drop_pending_para_start`
+    /// back to the pre-fix eager two-part push makes both assertions below fail: the first case renders
+    /// two lines (`[Line::default(), "$$ y $$".dim()]`) instead of one, and the second renders six lines
+    /// (two orphaned `Line::default()`s ahead of the math line) instead of four.
+    #[test]
+    fn math_lift_that_is_a_paragraphs_entire_content_gets_no_leading_blank_line() {
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let width = 80;
+
+        let src = "$$y$$\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            width,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            true,
+        );
+        assert!(out.unsupported.is_empty(), "src: {src:?}");
+        assert_eq!(
+            out.lines,
+            vec![Line::from(Span::from("$$ y $$").dim())],
+            "a paragraph whose entire content is lifted math must render to exactly its own \
+             placeholder line — no leading blank row ahead of it: {:?}",
+            out.lines
+        );
+
+        let src = "    $$x$$\n\n$$y$$\n";
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            width,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &math_slot,
+            true,
+        );
+        assert!(out.unsupported.is_empty(), "src: {src:?}");
+        assert_eq!(
+            out.lines.len(),
+            4,
+            "expected exactly [header, body, padding, math] — no orphaned blank line(s) between the \
+             code block's own padding row and the math placeholder: {:?}",
+            out.lines
+        );
+        assert_eq!(
+            out.lines.last(),
+            Some(&Line::from(Span::from("$$ y $$").dim())),
+            "the math placeholder must be the render's own last line: {:?}",
+            out.lines
+        );
+    }
+
+    /// Regression for `backslash_math_opener`'s own gap-detection bug (see `walk_inline_math`'s own doc
+    /// comment, "`block_start`: letting a backslash-math opener be the walk's own very first event"): a
+    /// backslash-delimited math expression (`\(…\)`/`\[…\]`) that is a paragraph's own very first inline
+    /// event must still be detected and lifted, not fall through as literal, unlifted text (`"(y)"`/
+    /// `"[y]"`) for lack of a *previous* event, within that paragraph's own local walk, to compute a gap
+    /// from. Confirmed directly against the real production pipeline before this fix
+    /// (`md_render_diff_tests`'s own two backslash-math `KNOWN_MISMATCHES` entries).
+    ///
+    /// Reverting `walk_inline_math`'s own `block_start` seeding back to the pre-fix `prev_end: None`
+    /// makes both assertions below fail: each source renders its own escaped bracket/paren as four
+    /// plain text spans (`["(", "y", "(y" ...]`-shaped — see `backslash_math_opener`'s own doc comment
+    /// for the exact shape a failed detection falls back to) instead of one dimmed math placeholder.
+    #[test]
+    fn backslash_math_opener_detects_a_paragraphs_own_first_event() {
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let width = 80;
+
+        for (src, expected_dim) in [("\\(y\\)\n", "$y$"), ("\\[y\\]\n", "$$ y $$")] {
+            let doc = Doc::parse(src);
+            let out = render_doc(
+                &doc,
+                src,
+                width,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            assert_eq!(
+                out.lines,
+                vec![Line::from(Span::from(expected_dim).dim())],
+                "backslash-delimited math that is a paragraph's own very first event must still be \
+                 detected and lifted, not fall through as literal text — src: {src:?}, lines: {:?}",
+                out.lines
+            );
+        }
     }
 }
