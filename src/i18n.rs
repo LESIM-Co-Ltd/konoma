@@ -207,7 +207,6 @@ pub enum Msg {
     CopyHint,
     CopyFailed,
     CopiedCodeBlock,
-    CodeBlockCopyUnavailable,
     HintCopyCode,
     CutHint,
     CyclePathStyle,
@@ -731,11 +730,6 @@ fn en(msg: Msg) -> &'static str {
         CopyHint => "copy",
         CopyFailed => "copy failed: ",
         CopiedCodeBlock => "copied code block",
-        // Deliberately does not blame "the file changed" — in practice this is almost always
-        // konoma's own write-back scanner disagreeing with what the renderer draws (indented code
-        // blocks, `*`/`+` bullets, an alert/`<details>` body, or a document over the size cap have
-        // all triggered this refusal at one point or another), not a concurrent external edit.
-        CodeBlockCopyUnavailable => "couldn't copy code block",
         HintCopyCode => "copy code",
         CutHint => "cut",
         CyclePathStyle => "cycle path style (rel/~/abs)",
@@ -994,8 +988,11 @@ fn en(msg: Msg) -> &'static str {
         FileOpBusy => "another file operation is still running",
         BusyGitOp => "git",
         GitOpBusy => "another git operation is still running",
-        // See `CodeBlockCopyUnavailable`'s comment — same class of refusal, same reason not to
-        // name "the file changed" as the cause.
+        // Since the `md-block-walk` migration (2026-08), this really does mean the file changed on
+        // disk since the last render: `md_toggle_focused_task` reads the checkbox's position straight
+        // off the render pass's own record (no independent re-scan to disagree with it — see
+        // `MdItemKind::Task::state_at`'s own doc comment), so the on-disk prefix comparison this
+        // flashes for is a genuine external-edit detector, not a renderer/scanner drift.
         TaskFileChanged => "couldn't toggle checkbox — reloaded",
         AgoMin => "min ago",
         AgoMonths => "months ago",
@@ -1203,7 +1200,6 @@ fn jp(msg: Msg) -> &'static str {
         CopyHint => "コピー",
         CopyFailed => "コピー失敗: ",
         CopiedCodeBlock => "コードブロックをコピー",
-        CodeBlockCopyUnavailable => "コードブロックをコピーできませんでした",
         HintCopyCode => "コード",
         CutHint => "カット",
         CyclePathStyle => "パス表示の切替 (相対/~/絶対)",
@@ -1737,7 +1733,6 @@ mod tests {
         Msg::CopyHint,
         Msg::CopyFailed,
         Msg::CopiedCodeBlock,
-        Msg::CodeBlockCopyUnavailable,
         Msg::HintCopyCode,
         Msg::CutHint,
         Msg::CyclePathStyle,

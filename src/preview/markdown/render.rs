@@ -153,8 +153,8 @@ use super::{
     details_marker_line, gutter_span, highlight_body, image_loading_line, image_placeholder_lines,
     image_text_fallback, is_mermaid_info, math_placeholder_lines, math_raw_lines, math_url,
     mermaid_fence_url, mermaid_placeholder_lines, next_details_open, pad_to_width,
-    render_html_block, render_mermaid_block, render_table, scan_inline_math, CodeStyle,
-    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    render_html_block, render_mermaid_block, render_table, scan_inline_math, task_prefix_state,
+    CodeStyle, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -169,6 +169,29 @@ pub(crate) struct RenderOut {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<ImagePlacement>,
     pub unsupported: Vec<&'static str>,
+    /// Every `CodeBlock` this pass actually drew a header for (fenced or indented, at any depth this
+    /// pass covers — top level, inside a list item, inside a quote, inside an *open* alert/`Details`
+    /// body — see `render_code_block`'s own doc comment), in document order, holding the exact source
+    /// text `render_code_block` itself reconstructed via `model::code_body_text` to draw it — **never
+    /// a fence diverted to a mermaid diagram instead** (that one never reaches `render_code_block` at
+    /// all; see `render_code_block_dispatch`). This is not a second derivation of "where are the code
+    /// blocks" the way the old, source-line-scanning `code_block_source_locs` was: it is the exact
+    /// text this very pass already decided to draw a header for, pushed at the moment it drew it — so
+    /// the caller can read a focused code block's own source straight off this list, by ordinal, with
+    /// no re-scan and no count-guard reconciliation of any kind (see `app::md_items::focused_code_source`).
+    pub code_blocks: Vec<String>,
+    /// Every task-list checkbox marker this pass actually drew, in document order: `(state char,
+    /// byte offset of that char within `src`)`. GFM states (a space, `x`, or `X`) come straight from
+    /// the model's own `model::Task::state_at` — no re-derivation. A custom state (`ui.md_task_states`,
+    /// e.g. `/`) is never reported by pulldown-cmark as a task marker at all (see `model::Task`'s own
+    /// doc comment), so it is detected the identical way `decorate_extras`'s own text-based
+    /// `task_prefix_state` already detects one on a *rendered* line — applied here to the list item's
+    /// own `Block::src` (which always starts at the bullet character, regardless of nesting — see
+    /// `render_item`'s own call site) instead of a decorated line's text. Either way, an entry here is
+    /// pushed at the exact moment `render_item` decided to draw *some* checkbox for that item, so this
+    /// is the render pass's own record, not an independent re-scan the caller has to reconcile by
+    /// count against what actually ended up on screen (see `app::md_tasks::md_toggle_focused_task`).
+    pub tasks: Vec<(char, usize)>,
 }
 
 /// Three independent "how deep in the tree am I, and does it still apply" flags every recursive block
@@ -326,6 +349,8 @@ pub(crate) fn render_doc(
             lines: Vec::new(),
             images: Vec::new(),
             unsupported: vec!["MetadataBlock"],
+            code_blocks: Vec::new(),
+            tasks: Vec::new(),
         };
     }
     let styles = KonomaStyles { code_bg: code.bg };
@@ -373,6 +398,8 @@ pub(crate) fn render_doc(
         mermaid,
         slot_of,
         images: Vec::new(),
+        code_blocks: Vec::new(),
+        task_marks: Vec::new(),
         after_math: false,
         fresh_boundary: false,
         pending_para_start: None,
@@ -508,6 +535,8 @@ pub(crate) fn render_doc(
         lines,
         images: w.images,
         unsupported,
+        code_blocks: w.code_blocks,
+        tasks: w.task_marks,
     }
 }
 
@@ -709,6 +738,16 @@ struct Writer<'m> {
     /// on three separate context structs would just be three accumulators that all have to get
     /// concatenated back together at the end anyway.
     images: Vec<ImagePlacement>,
+    /// `RenderOut::code_blocks`, accumulated as `render_code_block` draws each header — see that
+    /// field's own doc comment. `render_bar_prefixed_body` merges its own isolated sub-`Writer`'s copy
+    /// back into the outer one's, in document order, the identical way it already does for `images`.
+    code_blocks: Vec<String>,
+    /// `RenderOut::tasks`, accumulated as `render_item` draws each checkbox marker (GFM or custom
+    /// state) — see that field's own doc comment. Named `task_marks`, not `tasks`, to keep it distinct
+    /// from `Writer::tasks` (the `&'m [char]` of configured custom states `render_item` reads to
+    /// *detect* one in the first place). Merged across `render_bar_prefixed_body`'s isolation boundary
+    /// the same way `images`/`code_blocks` are.
+    task_marks: Vec<(char, usize)>,
     after_math: bool,
     /// Whether the very last thing pushed onto `self.lines` was the end of a GitHub alert or
     /// `Details` block — `render_alert_from_model`/`render_details_from_model` are the *only* two
@@ -2779,6 +2818,13 @@ fn render_code_block(
     };
     w.push_line(code_header(label, content_w, w.code));
     let body_text = code_body_text(body_spans, src);
+    // Record the exact text `y c` will copy for this block — the same reconstruction just used to
+    // draw it, at the moment its header actually landed on screen (`RenderOut::code_blocks`'s own doc
+    // comment: this is the render pass's own record, never a second, source-line-scanning derivation
+    // reconciled by count against it afterward). Pushed for an empty fence too (an opening fence
+    // immediately followed by a closing one — `body_text` is `""`), matching `parser_code_blocks`'s
+    // own identical "still push, even when the block turned out to have no content" contract.
+    w.code_blocks.push(body_text.clone());
     let body_lines: Vec<String> = if body_spans.is_empty() {
         Vec::new()
     } else {
@@ -3220,7 +3266,7 @@ fn render_list(
     w.list_indices.push(start);
     for item in items {
         if let BlockKind::ListItem { task } = &item.kind {
-            render_item(w, doc, src, *task, &item.children, ctx);
+            render_item(w, doc, src, *task, &item.children, ctx, item.src.start);
         }
         // A `List`'s own children are always `ListItem`s (see `model::parse_container`'s own
         // `Tag::List` arm) — the `if let` above is not a lossy filter of some other shape, only the
@@ -3316,6 +3362,7 @@ fn render_item(
     task: Option<Task>,
     children: &[Block],
     ctx: BlockCtx,
+    item_src_start: usize,
 ) {
     // start_item(): a fresh physical line, unconditionally, carrying the item's own marker.
     w.push_line(Line::default());
@@ -3327,8 +3374,45 @@ fn render_item(
         w.push_blank_line();
         w.needs_newline = false;
     }
-    if let Some(t) = task {
-        w.task_list_marker(matches!(t.state, 'x' | 'X'));
+    match task {
+        Some(t) => {
+            w.task_list_marker(matches!(t.state, 'x' | 'X'));
+            // A GFM state (a space, `x`, or `X` — the only three pulldown-cmark itself ever reports
+            // via `Event::TaskListMarker`; see `model::Task`'s own doc comment) — `state_at` is
+            // already an absolute byte offset into `src`, read straight off the model, no detection
+            // needed.
+            w.task_marks.push((t.state, t.state_at));
+        }
+        None => {
+            // pulldown-cmark never reports a *custom* state (`ui.md_task_states`, e.g. `/`) as a task
+            // marker at all — `[/] foo` parses as an item with no `task`, its literal text becoming
+            // ordinary inline content (see `model::Task`'s own doc comment and
+            // `custom_task_state_char_is_not_recognized_as_a_task_by_pulldown_cmark`). Detected here
+            // the identical way `decorate_extras`'s own `replace_task_checkbox` detects one on a
+            // *rendered* line's text (`task_prefix_state`) — but applied to this item's own source
+            // range instead: `item_src_start` is always the item's own bullet character (`- `/`* `/
+            // `+ `), regardless of nesting — a list item's own marker is never repeated on a
+            // continuation line the way a block quote's `>` is, and never carries a parent list's own
+            // indentation either (both confirmed directly against the model: `item.src` for a nested
+            // item, or one inside a block quote, starts exactly at its own bullet byte, indentation
+            // and any `>` prefix already excluded — see this file's own module doc comment's citation
+            // of `model.rs`'s equivalent tests) — so `task_prefix_state`'s own "first byte must be a
+            // bullet" check is safe to run directly against `src[item_src_start..]` with no line
+            // re-slicing of any kind on this file's own part.
+            //
+            // Only the item's own **first physical line** is a candidate (a checkbox's own trailing
+            // `]` must be followed by whitespace or end-of-line, never a literal `\n` — the "any text
+            // after it" case `task_prefix_state`'s own doc comment covers is about the *rest of that
+            // one line*, not the item's own later, unrelated content), so the search is bounded to it
+            // explicitly rather than handed the item's own, possibly multi-line, `Block::src` whole.
+            let first_line_end = src[item_src_start..]
+                .find('\n')
+                .map_or(src.len(), |off| item_src_start + off);
+            let first_line = &src[item_src_start..first_line_end];
+            if let Some((state, off)) = task_prefix_state(first_line, w.tasks) {
+                w.task_marks.push((state, item_src_start + off));
+            }
+        }
     }
 
     let mut rest = children;
@@ -3851,6 +3935,8 @@ fn render_bar_prefixed_body(
         },
         slot_of: w.slot_of,
         images: Vec::new(),
+        code_blocks: Vec::new(),
+        task_marks: Vec::new(),
         after_math: false,
         fresh_boundary: false,
         pending_para_start: None,
@@ -3887,6 +3973,13 @@ fn render_bar_prefixed_body(
     // rather than silently dropped, so a future change to that exclusion can never lose a real
     // placement by omission (principle #3, `CLAUDE.md`).
     w.images.extend(inner.images);
+    // Unlike `images`, these are **not** always empty: a code block or a task-list checkbox inside an
+    // alert's/`<details>`'s own body is drawn (`render_code_block`/`render_item`, reached the normal
+    // way via `render_block`'s dispatch above) and is a real Tab/`y c` target on screen — merged back
+    // in document order, at the exact point this alert/`<details>` sits in the *outer* walk, matching
+    // where its own bar-prefixed lines just landed in `w.lines` two statements up.
+    w.code_blocks.extend(inner.code_blocks);
+    w.task_marks.extend(inner.task_marks);
 }
 
 #[cfg(test)]
@@ -3938,6 +4031,8 @@ mod tests {
             },
             slot_of: &no_images,
             images: Vec::new(),
+            code_blocks: Vec::new(),
+            task_marks: Vec::new(),
             after_math: false,
             fresh_boundary: false,
             pending_para_start: None,
@@ -4106,6 +4201,7 @@ mod tests {
             *task,
             &doc.blocks[0].children[0].children,
             fresh_ctx(),
+            doc.blocks[0].children[0].src.start,
         );
         let rendered: Vec<String> = w
             .lines

@@ -629,6 +629,26 @@ pub enum ImageSlot {
 /// change what gets extracted or whether a document falls back, only how an alert's own header/body
 /// lines are *styled*, so `extraction_targets`'s own probe call below is free to pass any fixed value
 /// for it.
+/// `render_markdown_with_images`'s own `code_blocks`/`tasks`: the source range/position data for
+/// every code block and task checkbox the render pass itself drew, in document order — the model
+/// path's own record, straight from the same parse it rendered from (see `render::RenderOut`'s own
+/// `code_blocks`/`tasks` doc comments for why this is a record rather than a second derivation).
+///
+/// `model_based` is `false` exactly when `render_markdown_with_images_legacy` drew this document
+/// instead (`render::RenderOut::unsupported` was non-empty) — in which case both `Vec`s here are
+/// always empty (the legacy renderer has no model of its own to record either from). The caller
+/// (`app::md_render::build_decorated`) reads that flag, not "is the `Vec` empty", to decide whether
+/// to fill the identical two fields a different way (a single, ungated scan of the legacy renderer's
+/// own splitter functions — see `build_decorated`'s own doc comment) — a genuinely empty document
+/// (no code blocks, no tasks) rendered by the *model* path would otherwise be indistinguishable from
+/// "the legacy path ran and recorded nothing", and re-running the legacy scan over it would be
+/// harmless but pointless work.
+pub struct MdRenderExtras {
+    pub model_based: bool,
+    pub code_blocks: Vec<String>,
+    pub tasks: Vec<(char, usize)>,
+}
+
 #[allow(clippy::too_many_arguments)] // the existing 7 args + mermaid/math slots (only one call site in app + tests)
 pub fn render_markdown_with_images(
     src: &str,
@@ -643,7 +663,7 @@ pub fn render_markdown_with_images(
     alerts: bool,
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
-) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>, MdRenderExtras) {
     let doc = model::Doc::parse(src);
     let out = render::render_doc(
         &doc,
@@ -661,9 +681,17 @@ pub fn render_markdown_with_images(
         math_on,
     );
     if out.unsupported.is_empty() {
-        return (out.lines, out.images);
+        return (
+            out.lines,
+            out.images,
+            MdRenderExtras {
+                model_based: true,
+                code_blocks: out.code_blocks,
+                tasks: out.tasks,
+            },
+        );
     }
-    render_markdown_with_images_legacy(
+    let (lines, images) = render_markdown_with_images_legacy(
         src,
         width,
         code,
@@ -676,6 +704,15 @@ pub fn render_markdown_with_images(
         alerts,
         math_slot,
         math_on,
+    );
+    (
+        lines,
+        images,
+        MdRenderExtras {
+            model_based: false,
+            code_blocks: Vec::new(),
+            tasks: Vec::new(),
+        },
     )
 }
 
@@ -2072,6 +2109,45 @@ pub(crate) struct TaskLoc {
     pub state_off: usize,
     /// Current state char in the source.
     pub state: char,
+}
+
+impl TaskLoc {
+    /// This marker's `(state, byte offset into `src`)`, in the identical shape
+    /// `render::RenderOut::tasks` records — used by `build_decorated`'s own legacy fallback (see that
+    /// function's own doc comment) to convert `task_source_locs`'s line-relative output into the same
+    /// document-absolute representation the model render pass gives `MdItemKind::Task::state_at`, so
+    /// `app::md_tasks::md_toggle_focused_task` never needs to know which of the two produced it.
+    /// `None` if `line` does not exist in `src` (defensive; `task_source_locs` never actually
+    /// produces one that doesn't).
+    pub(crate) fn absolute(&self, src: &str) -> Option<(char, usize)> {
+        let mut start = 0usize;
+        for (i, l) in src.split('\n').enumerate() {
+            if i == self.line {
+                return Some((self.state, start + self.state_off));
+            }
+            start += l.len() + 1;
+        }
+        None
+    }
+}
+
+/// Inverse of `TaskLoc::absolute`: the `(line, byte offset within that line)` a document-absolute
+/// byte offset into `src` falls on. Used by `app::md_tasks::md_toggle_focused_task` to turn
+/// `MdItemKind::Task::state_at` (a document-absolute offset — the model render pass's own
+/// `render::RenderOut::tasks` convention) back into `TaskLoc`'s line-relative shape, so the
+/// write-back verification chain (`pre_origin` line mapping, on-disk prefix comparison) needs no
+/// change from before this migration. `None` if `byte` does not land inside `src` at all (past its
+/// end) — defensive; every real caller hands this a `state_at` that came from `src` itself.
+pub(crate) fn byte_to_line_offset(src: &str, byte: usize) -> Option<(usize, usize)> {
+    let mut start = 0usize;
+    for (i, line) in src.split('\n').enumerate() {
+        let end = start + line.len();
+        if byte <= end {
+            return Some((i, byte - start));
+        }
+        start = end + 1;
+    }
+    None
 }
 
 /// Scan a run of "logical lines" — one alert/details body with its container prefix already
@@ -6777,7 +6853,7 @@ mod tests {
     fn math_renders_image_placeholder_or_raw_fallback() {
         // With math_on, a rendered expr reserves image rows + a placement; a failed one shows raw LaTeX.
         let img_slot = |_: &str, _: bool| MathSlot::Image { cols: 8, rows: 2 };
-        let (_lines, imgs) = render_markdown_with_images(
+        let (_lines, imgs, _extras) = render_markdown_with_images(
             "text $x^2$ more\n",
             40,
             BG,
@@ -6794,7 +6870,7 @@ mod tests {
         assert_eq!(imgs.len(), 1, "one math placement");
         assert!(is_math_url(&imgs[0].url));
         // Raw fallback: the raw LaTeX with delimiters is shown (nothing is lost).
-        let (raw_lines, raw_imgs) = render_markdown_with_images(
+        let (raw_lines, raw_imgs, _extras) = render_markdown_with_images(
             "text $x^2$ more\n",
             40,
             BG,
@@ -6815,7 +6891,7 @@ mod tests {
             .collect();
         assert!(joined.contains("$x^2$"), "raw LaTeX shown: {joined:?}");
         // math_on = false: the `$…$` stays inline as ordinary text (no placement, no lifting).
-        let (_l, off_imgs) = render_markdown_with_images(
+        let (_l, off_imgs, _extras) = render_markdown_with_images(
             "text $x^2$ more\n",
             40,
             BG,
@@ -7989,7 +8065,7 @@ plain body
     fn images_in_code_fences_are_not_extracted() {
         let src = "before\n\n```\n![a](x.png)\n```\n\nafter\n";
         let slot_of = |_: &str| ImageSlot::Inline { cols: 10, rows: 4 };
-        let (_lines, imgs) = render_markdown_with_images(
+        let (_lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
             BG,
@@ -8010,7 +8086,7 @@ plain body
     fn block_image_reserves_rows_and_records_placement() {
         let src = "# Title\n\n![hero](hero.png)\n\nbody\n";
         let slot_of = |_: &str| ImageSlot::Inline { cols: 20, rows: 5 };
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
             BG,
@@ -8043,7 +8119,7 @@ plain body
     fn image_without_backend_degrades_to_text() {
         let src = "![alt](missing.png)\n";
         let slot_of = |_: &str| ImageSlot::Unavailable; // no backend / unresolvable → text (principle #3)
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
             BG,
@@ -8067,7 +8143,7 @@ plain body
     fn remote_image_shows_loading_line() {
         let src = "![shot](https://example.com/a.png)\n";
         let slot_of = |_: &str| ImageSlot::Loading;
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             60,
             BG,
@@ -8258,7 +8334,7 @@ plain body
     fn mermaid_slots_image_loading_text() {
         let src = "before\n\n```mermaid\ngraph LR\nA-->B\n```\n\nafter\n";
         let slot_img = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             60,
             CodeStyle::default(),
@@ -8281,7 +8357,7 @@ plain body
             "キャプション行に番兵 span"
         );
         // Loading: no placement, but a loading line is present.
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             60,
             CodeStyle::default(),
@@ -8299,7 +8375,7 @@ plain body
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("loading"), "ローディング行: {joined}");
         // Text: the probe is also Text = extraction itself is OFF → the legacy text diagram (box-drawing) path.
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             60,
             CodeStyle::default(),
@@ -8344,8 +8420,8 @@ plain body
                 false,
             )
         };
-        let (en, ei) = render("Enter: full screen");
-        let (ja, ji) = render("Enter: 全画面");
+        let (en, ei, _) = render("Enter: full screen");
+        let (ja, ji, _) = render("Enter: 全画面");
         let cap_en = en[ei[0].line - 1].to_string();
         let cap_ja = ja[ji[0].line - 1].to_string();
         assert!(
@@ -8494,7 +8570,7 @@ plain body
     fn br_pre_and_render(src: &str) -> (String, Vec<Line<'static>>) {
         let pre = process_inline_html(src);
         set_details_open(collect_details_open(&pre));
-        let (lines, _) = render_markdown_with_images(
+        let (lines, _, _extras) = render_markdown_with_images(
             &pre,
             100,
             NO_CODE,
@@ -8538,7 +8614,7 @@ plain body
     fn banner_render(src: &str) -> (Vec<String>, usize, usize) {
         let pre = process_inline_html(src);
         set_details_open(collect_details_open(&pre));
-        let (lines, places) = render_markdown_with_images(
+        let (lines, places, _extras) = render_markdown_with_images(
             &pre,
             70,
             NO_CODE,
@@ -11344,9 +11420,25 @@ mod code_span_parity_tests {
         assert!(collect_math_exprs("`$a$` only\n").is_empty());
     }
 
-    /// The passes are line-scoped by construction, and all three agree on it. CommonMark would let a
-    /// code span run across a newline; none of these passes follows it there. Extending one pass
-    /// alone would put them back out of step, so the shared limit is pinned here.
+    /// `process_footnotes`/`process_inline_html` are raw-line string passes over `src`, run *before*
+    /// `Doc::parse` ever sees it (`app::md_render::build_decorated`'s pre-pass chain) — they still use
+    /// the hand-rolled, line-scoped `next_inline_code_span`, and still disagree with real CommonMark
+    /// the identical way: neither follows a code span across a newline, so an unclosed backtick on one
+    /// line and another unclosed one on the next are each read as *literal* text, not as a single span
+    /// spanning both lines. Extending one pass alone would put the two out of step with each other, so
+    /// the shared limit is pinned here for both.
+    ///
+    /// `collect_math_exprs`, by contrast, is **no longer** line-scoped for a document the model
+    /// renderer draws (`render::render_doc` — see `extraction_targets`'s own doc comment): it asks the
+    /// real parser, which correctly implements CommonMark's own rule that a code span *can* run across
+    /// a line ending (treated as a single space inside the span) — confirmed directly by walking
+    /// `model::Doc::parse`'s own event stream for this exact input: pulldown-cmark reports a single
+    /// `Event::Code` spanning both lines (`` `$x$\nstill $y$` ``), not two separate, unclosed runs.
+    /// So `` `$x$\nstill $y$` `` is now read as **one** multi-line code span (`$x$`/`$y$` both inside
+    /// it, neither extracted), where the old, hand-rolled scanner used to see two separate, unclosed
+    /// (hence non-code) lines and extract both as math — a genuine, documented improvement in
+    /// CommonMark correctness from switching to the real parser, not a regression: pinned here as the
+    /// new true behavior rather than the old, narrower one.
     #[test]
     fn code_span_detection_is_line_scoped_for_every_pass() {
         let src = "open `[^1]\nstill [^1]` closed\n\n[^1]: note\n";
@@ -11359,9 +11451,22 @@ mod code_span_parity_tests {
         // backticks are just literal characters sitting next to the produced keycaps.
         let html = "open `<kbd>K</kbd>\nstill <kbd>K</kbd>` closed\n";
         assert_eq!(process_inline_html(html), "open ``K`\nstill `K`` closed\n");
+        // The real parser treats the backtick pair as **one** span across the line break, so neither
+        // `$x$` nor `$y$` is extracted — both sit inside it.
         assert_eq!(
             collect_math_exprs("open `$x$\nstill $y$` closed\n").len(),
-            2
+            0,
+            "the model path's own parser now spans a code span across a newline, matching \
+             CommonMark — see this test's own doc comment"
+        );
+        // The non-model (legacy) extractor is unaffected: it is still the same hand-rolled,
+        // line-scoped scanner `process_footnotes`/`process_inline_html` use, so it still finds both
+        // (proving the divergence above is specifically about switching to the real parser, not a
+        // change to `next_inline_code_span` itself).
+        assert_eq!(
+            collect_math_exprs_legacy("open `$x$\nstill $y$` closed\n").len(),
+            2,
+            "the legacy scanner's own line-scoping is unchanged"
         );
     }
 }
@@ -11612,10 +11717,20 @@ mod task_scan_parity_tests {
             ],
             "tui-markdown の前提が変わった(ブロック引用内の字下げコードの形)"
         );
-        // ...and the full pipeline still draws zero code headers for it, matching this crate's
-        // behavior (pinned end-to-end by
-        // `heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch`).
-        assert_eq!(rendered_code_blocks("> para\n>\n>     code\n"), 0);
+        // ...and the **legacy** rendering pipeline (`decorate_code_blocks`'s own caller,
+        // `flush_code_run`) still draws zero code headers for it — this test's own subject function
+        // never gets a run to degrade in the first place for this shape, because nothing upstream of
+        // it ever recognizes one. Measured against `rendered_code_blocks_legacy`
+        // (`task_scan_parity_tests::rendered_code_blocks_legacy`), not the production entry point
+        // (`rendered_code_blocks`): since the `md-block-walk` migration, this exact document is no
+        // longer routed to the legacy renderer at all — the **model** renderer draws a header for a
+        // quote-nested indented code block now (an intentional superset — see
+        // `model::BlockKind::CodeBlock`'s own doc comment, and
+        // `heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch`, which pins the model's own
+        // count for this exact input) — but the **legacy** renderer specifically, which is what this
+        // test's own subject (`decorate_code_blocks`) is one stage of, is unchanged: it still finds
+        // nothing to degrade here, the identical way it always has.
+        assert_eq!(rendered_code_blocks_legacy("> para\n>\n>     code\n"), 0);
     }
 
     /// Count the checkboxes actually drawn on screen (the sentinel marker spans the app counts).
@@ -11671,7 +11786,7 @@ mod task_scan_parity_tests {
         // `render_markdown_tasks` reset this itself; the production entry point does not (production
         // seeds it per draw), so reset here or a second call would resume mid-sequence.
         set_details_open(Vec::new());
-        let (lines, _) = render_markdown_with_images(
+        let (lines, _, _extras) = render_markdown_with_images(
             src,
             100,
             CodeStyle::default(),
@@ -11774,24 +11889,121 @@ mod task_scan_parity_tests {
         }
     }
 
+    /// Count the code-block headers `render_markdown_with_images_legacy` draws — **not** the
+    /// production entry point (`rendered_code_blocks`, above): since the `md-block-walk` copy/toggle
+    /// migration, `code_block_source_locs` (this test's other half, below) is read only by
+    /// `app::md_render::build_decorated`'s legacy fallback branch, exercised precisely when
+    /// `render::RenderOut::unsupported` sends the whole document through this legacy renderer instead
+    /// of the model one — so its own paired oracle for "does the write-back scanner draw what the
+    /// renderer draws" is the legacy renderer specifically, not whichever renderer
+    /// `render_markdown_with_images` happens to dispatch to for a given `src`.
+    fn rendered_code_blocks_legacy(src: &str) -> usize {
+        set_details_open(Vec::new());
+        let (lines, _) = render_markdown_with_images_legacy(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| is_code_header_span(s))
+            .count()
+    }
+
     /// Root cause (indented code blocks): a top-level 4+-column indented code block was not
     /// recognized by the write-back scanner at all — any document containing one refused `y c` for
     /// **every** code block in it, fenced ones included (the count guard is document-wide). Runs
     /// `code_corpus` the same way `code_block_scanner_counts_exactly_what_the_renderer_draws` runs
     /// its own hand-picked cases, covering indented blocks alone and interacting with every other
     /// construct the scanner special-cases (fences, alerts, `<details>`, front matter, CRLF, lists).
+    ///
+    /// Since the `md-block-walk` copy/toggle migration, `code_block_source_locs` matters to `y c`
+    /// only on the narrow slice of documents that actually reach `app::md_render::build_decorated`'s
+    /// legacy fallback branch (`render::RenderOut::unsupported` non-empty — a `Table`/`Html` nested
+    /// inside a `Quote`, the one remaining gap): every other document is copied straight from the
+    /// model renderer's own record (`render::RenderOut::code_blocks`), which never consults this
+    /// scanner at all — see `app_faithful_parity_tests::code_scanner_matches_the_render_through_the_app_pipeline`
+    /// for the test that actually matters for those. So each case is routed by
+    /// `render_markdown_with_images`'s own real dispatch decision (`extras.model_based`, the identical
+    /// choice production makes) rather than assumed: a model-handled case skips the comparison
+    /// entirely (`code_block_source_locs`'s own count for it is not a correctness concern — nothing
+    /// downstream ever reads it), and only a genuinely legacy-routed case is checked, against the
+    /// **legacy** renderer specifically (`rendered_code_blocks_legacy`) — the renderer this scanner
+    /// is actually still paired with for that one document, not the model renderer `code_corpus`'s
+    /// own comment already documents several intentional divergences from (a code block directly
+    /// inside a plain, non-alert block quote; a mermaid fence within three columns of a list item's
+    /// own content column) nor the legacy renderer's own, separately-known "fence glued to a
+    /// following inline-code paragraph" gap that `code_block_source_locs` itself no longer has (it
+    /// now asks the real parser — `parser_code_blocks`'s own doc comment) but the legacy *renderer*
+    /// still does — comparing the two on a **model**-routed document would fail on either, for a
+    /// reason that has nothing to do with what this test exists to catch.
     #[test]
     fn code_block_scanner_matches_renderer_across_indented_code_corpus() {
-        for (name, src) in code_corpus::cases() {
+        // A genuine `render::RenderOut::unsupported` trigger (a `Table` nested inside a plain
+        // `Quote` — `contains_unsupported`'s own documented gap), with a code fence alongside it so
+        // this exercises the exact shape `y c` would have to resolve through the legacy fallback for.
+        // `code_corpus` itself has none (it is a *code*-focused corpus, not a quote/table one), so
+        // without this the loop below would never actually reach the legacy-routed branch at all —
+        // pinning `at_least_one_legacy_routed` below is what stops that from happening silently.
+        const GENUINELY_UNSUPPORTED: (&str, &str) = (
+            "quote wrapping a table (forces the legacy fallback) alongside a top-level fence",
+            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n\n```rust\nfn a(){}\n```\n",
+        );
+        let mut at_least_one_legacy_routed = false;
+        for (name, raw) in code_corpus::cases()
+            .into_iter()
+            .chain([GENUINELY_UNSUPPORTED])
+        {
+            // Front matter is stripped before `render_markdown_with_images` ever sees the text in
+            // production (`app::md_render::build_decorated`'s own leading step) — done here too, so
+            // "this case happens to still carry a YAML block" cannot masquerade as a genuine
+            // `unsupported` trigger the way it would if `raw` were handed to the renderer as-is (see
+            // `render::render_doc`'s own doc comment: it bails to the legacy renderer the moment it
+            // sees *any* metadata-block event, anywhere in the document).
+            let src = strip_front_matter(raw).1;
             set_details_open(Vec::new());
-            let drawn = rendered_code_blocks(src);
-            let scanned = code_block_source_locs(src, &[]).len();
+            let (_, _, extras) = render_markdown_with_images(
+                &src,
+                100,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &|_: &str| ImageSlot::Unavailable,
+                &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+                "mermaid",
+                true,
+                &|_: &str, _: bool| MathSlot::Raw,
+                false,
+            );
+            if extras.model_based {
+                continue; // this document is copied from the model's own record; the scanner is unused for it
+            }
+            at_least_one_legacy_routed = true;
+            set_details_open(Vec::new());
+            let drawn = rendered_code_blocks_legacy(&src);
+            let scanned = code_block_source_locs(&src, &[]).len();
             assert_eq!(
                 drawn, scanned,
-                "{name}: 画面のコードブロック数とコピー用スキャナの数が食い違う\
-                 (この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
+                "{name}: レガシー経路(unsupported)で画面のコードブロック数とコピー用スキャナの数が\
+                 食い違う(この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
             );
         }
+        assert!(
+            at_least_one_legacy_routed,
+            "このテストの本題(レガシー経路でのスキャナ整合性)が一度も検査されていない\
+             (全件が model 経路に成功した)"
+        );
     }
 
     /// Same corpus, same rule, for the checkbox toggle scanner (`task_source_locs`) — pins the
@@ -11830,7 +12042,7 @@ mod task_scan_parity_tests {
     /// README-shape tests that pin the two fixes' interaction.)
     fn rendered_texts(src: &str) -> Vec<String> {
         set_details_open(Vec::new());
-        let (lines, _) = render_markdown_with_images(
+        let (lines, _, _extras) = render_markdown_with_images(
             src,
             100,
             CodeStyle::default(),
@@ -12023,7 +12235,7 @@ mod task_scan_parity_tests {
             );
         }
         // A real mermaid fence is still diverted to a diagram (one placement, ordinal 0).
-        let (_, places) = {
+        let (_, places, _) = {
             set_details_open(Vec::new());
             render_markdown_with_images(
                 "para\n\n```mermaid\nflowchart TD\nA-->B\n```\n\ntail\n",
@@ -12144,7 +12356,7 @@ mod task_scan_parity_tests {
     /// gutter is stripped) are excluded, leaving only the highlighted content rows.
     fn code_body_row_texts(src: &str) -> Vec<String> {
         set_details_open(Vec::new());
-        let (lines, _) = render_markdown_with_images(
+        let (lines, _, _extras) = render_markdown_with_images(
             src,
             100,
             CodeStyle::default(),
@@ -12517,13 +12729,21 @@ mod task_scan_parity_tests {
     /// teaching the scanner to recognize a heading (also a thematic break and a setext underline) as
     /// non-paragraph content — see `is_atx_heading_line`/`is_thematic_break_line`/
     /// `is_setext_underline_line`'s doc comments for the CommonMark reasoning. Parity is pinned here
-    /// directly, replacing the old "known gap" assertion. (2) Any indented block inside a *plain*,
-    /// non-alert block quote remains genuinely unsupported on **both** sides — out of scope for this
-    /// fix (already true for fenced code too, before it: the block quote's own `>` marker sits in
-    /// front of every source line, so `decorate_code_blocks`'s literal `` "```" `` check never
-    /// matches it — matching the scanner, which also never opens a code block inside a bare `>`
-    /// prefix) — pinned here as a non-regression: both sides stay at 0, so there is no drawn/scanned
-    /// mismatch to refuse anything over.
+    /// directly, replacing the old "known gap" assertion.
+    ///
+    /// (2) An indented block inside a *plain*, non-alert block quote **used to be** genuinely
+    /// unsupported on both sides (both stayed at 0 — a non-regression, not a fix). Since the
+    /// `md-block-walk` migration this is a *third* footnote, not the same one: the **model** renderer
+    /// now draws a header for it — "an intentional superset of what `parser_code_blocks` reports"
+    /// (`model::BlockKind::CodeBlock`'s own doc comment) — while the legacy scanner
+    /// (`code_block_source_locs`) still does not, and that is *fine*, not a new mismatch to refuse `y
+    /// c` over: since this migration, the scanner is consulted only for documents that actually reach
+    /// the legacy rendering fallback (`render::RenderOut::unsupported`), and this one does not — the
+    /// model handles it, and copies straight from its own record
+    /// (`render::RenderOut::code_blocks`/`MdItemKind::CodeBlock::body`), never touching the scanner at
+    /// all (see `app::md_items::focused_code_source`'s own doc comment). Pinned here as what actually
+    /// matters now: the model renderer's own header count *and* the content it would copy, not
+    /// whether a scanner it no longer consults happens to agree.
     #[test]
     fn heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch() {
         let heading_then_code = "# H\n    now detected\n";
@@ -12542,12 +12762,35 @@ mod task_scan_parity_tests {
         let quoted = "> para\n>\n>     code\n";
         assert_eq!(
             rendered_code_blocks(quoted),
-            0,
-            "素の(アラートでない)引用内のフェンス/字下げはレンダラ側も未対応(既存の制約)"
+            1,
+            "モデルレンダラは素の(アラートでない)引用内の字下げコードにもヘッダを描く\
+             (意図的な優位=parser_code_blocks の上位互換)"
+        );
+        set_details_open(Vec::new());
+        let (_, _, extras) = render_markdown_with_images(
+            quoted,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        assert!(extras.model_based, "この文書は model 経路で処理されるはず");
+        assert_eq!(
+            extras.code_blocks,
+            vec!["code".to_string()],
+            "`y c` がコピーする中身は引用の `>` が残らず正しい"
         );
         assert!(
             code_block_source_locs(quoted, &[]).is_empty(),
-            "スキャナも同様に検出しない(食い違いなし・新規リグレッションではなく既知の制約の温存)"
+            "レガシースキャナは依然検出しない — が、この文書は model 経路なのでスキャナは \
+             `y c` に一切関与しない(参考の記録として残す・新規リグレッションではない)"
         );
     }
 
@@ -12994,7 +13237,7 @@ mod fence_and_math_extraction_tests {
     fn math_inside_alert_keeps_the_callout_intact() {
         set_details_open(Vec::new());
         let md = "# H\n\n> [!NOTE]\n> here is $x^2$ math\n> more alert text\n\nTail paragraph.\n";
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             md,
             60,
             CodeStyle::default(),
@@ -13058,7 +13301,7 @@ mod fence_and_math_extraction_tests {
     fn math_inside_closed_details_stays_hidden() {
         set_details_open(Vec::new());
         let md = "# H\n\n<details>\n<summary>Click to expand</summary>\n\nhere is $x^2$ math\n\nSECRET-SHOULD-BE-HIDDEN\n\n</details>\n\nTail paragraph.\n";
-        let (lines, _imgs) = render_markdown_with_images(
+        let (lines, _imgs, _extras) = render_markdown_with_images(
             md,
             60,
             CodeStyle::default(),
@@ -13096,7 +13339,7 @@ mod fence_and_math_extraction_tests {
     fn math_inside_table_keeps_the_grid() {
         set_details_open(Vec::new());
         let md = "# H\n\n| formula | value |\n|---|---|\n| $x^2$ | 4 |\n| plain | 5 |\n\nTail paragraph.\n";
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             md,
             60,
             CodeStyle::default(),
@@ -13149,7 +13392,7 @@ mod fence_and_math_extraction_tests {
     fn math_inside_blockquote_is_left_literal() {
         set_details_open(Vec::new());
         let md = "> plain quote $x^2$ inside\n> second line\n";
-        let (lines, imgs) = render_markdown_with_images(
+        let (lines, imgs, _extras) = render_markdown_with_images(
             md,
             60,
             CodeStyle::default(),
@@ -13190,7 +13433,7 @@ mod fence_and_math_extraction_tests {
     fn math_outside_structures_still_renders() {
         set_details_open(Vec::new());
         let md = "> [!NOTE]\n> here is $x^2$ math\n\n$y^2$ outside\n";
-        let (_lines, imgs) = render_markdown_with_images(
+        let (_lines, imgs, _extras) = render_markdown_with_images(
             md,
             60,
             CodeStyle::default(),
@@ -14157,29 +14400,6 @@ mod app_faithful_parity_tests {
         process_inline_html_traced(&s, &origin)
     }
 
-    fn drawn_code(src: &str) -> usize {
-        set_details_open(Vec::new());
-        let (lines, _) = render_markdown_with_images(
-            src,
-            100,
-            CodeStyle::default(),
-            "TwoDark",
-            false,
-            &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
-            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
-            "mermaid",
-            true,
-            &|_: &str, _: bool| MathSlot::Raw,
-            false,
-        );
-        lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .filter(|s| is_code_header_span(s))
-            .count()
-    }
-
     fn drawn_tasks(src: &str) -> usize {
         set_details_open(Vec::new());
         let lines = render_markdown_tasks(
@@ -14220,19 +14440,85 @@ mod app_faithful_parity_tests {
         v
     }
 
-    /// `y c`: the number of code blocks the copy scanner finds must equal the number of headers on
-    /// screen. Since `focused_code_source` now scans `md_cache.pre_src`, both sides are measured over
-    /// the preprocessed text — which is the point: the two can no longer be given different input.
+    /// `RenderOut::code_blocks` for `src`, under the same no-picker slot config `drawn_code` above
+    /// already uses (mermaid extraction on, images/math never available) — the model render pass's
+    /// own record of every code block's already-reconstructed source text, in document order. This
+    /// is what `y c` reads directly since the `md-block-walk` copy/toggle migration (no re-scan, no
+    /// count guard — see `app::md_items::focused_code_source`'s own doc comment); a document this
+    /// crate's own renderer draws via the model path always has this fully populated.
+    fn model_code_blocks(src: &str) -> Vec<String> {
+        set_details_open(Vec::new());
+        let (_, _, extras) = render_markdown_with_images(
+            src,
+            100,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
+            "mermaid",
+            true,
+            &|_: &str, _: bool| MathSlot::Raw,
+            false,
+        );
+        extras.code_blocks
+    }
+
+    /// `y c`'s copied text must be the file's own bytes, not merely the right *count* of plausible
+    /// strings — and, since the `md-block-walk` migration, the model renderer's own record
+    /// (`model_code_blocks`) is what it is actually read from (no independent re-scan of any kind —
+    /// see `app::md_items::focused_code_source`'s own doc comment), not `code_block_source_locs` (the
+    /// pre-migration scanner). Comparing against that scanner as an oracle turns out to be unusable
+    /// here: it disagrees with the model renderer in many already-known, intentional, *structural*
+    /// ways with nothing to do with preprocessing at all (a code block directly inside a plain block
+    /// quote — fenced or indented, nested inside a list item or not — a mermaid fence within three
+    /// columns of a list item's own content column, a fence's closing line carrying trailing text —
+    /// each an "intentional superset"/CommonMark-correctness fix `render_code_block`'s and
+    /// `model::BlockKind::CodeBlock`'s own doc comments already describe; discovering all of them by
+    /// hand here, one `assert_eq!` panic at a time, is exactly the kind of hand-maintained parity list
+    /// this whole migration exists to stop needing).
+    ///
+    /// So this keeps the module's own *original* concern — the renderer and a scanner handed
+    /// *different* strings (the file's own body vs the preprocessed `pre`), each internally
+    /// consistent with itself, but the two texts silently describing different content — while
+    /// dropping the now-unreliable "compare against the legacy scanner" mechanism: both sides are the
+    /// model renderer's own record, over the two different inputs. Compared against `body` (front
+    /// matter already stripped, matching `copying_from_the_preprocessed_text_yields_the_files_own_bytes`'s
+    /// own convention below), **not** `raw` (front matter still present): `render::render_doc` bails
+    /// out to the legacy renderer whole-document the moment it sees so much as one YAML metadata-block
+    /// event anywhere in `doc.events` (see its own doc comment), so calling `model_code_blocks(raw)`
+    /// directly on a case with front matter would always read back an empty `Vec` — not because the
+    /// model failed to find anything, but because `render_markdown_with_images` never even tried the
+    /// model path for that call at all. Front matter is stripped by a wholly separate step, before
+    /// `pre_src` is ever computed (`app::md_render::build_decorated`'s own leading `strip_front_matter`
+    /// call) — this comparison is about the footnote/inline-HTML pre-passes specifically, which is
+    /// exactly what comparing against `body` isolates.
+    ///
+    /// Wherever a pre-pass does not change which code blocks exist at all (the common case), the two
+    /// must be byte-identical; the one narrow list of cases where a pre-pass legitimately does
+    /// (`CHANGES_THE_BLOCK_SET`, shared with
+    /// `copying_from_the_preprocessed_text_yields_the_files_own_bytes`) is excluded the identical way.
     #[test]
     fn code_scanner_matches_the_render_through_the_app_pipeline() {
         for (name, raw) in all_cases() {
             let (pre, _) = app_pre(raw);
-            let drawn = drawn_code(&pre);
-            let scanned = code_block_source_locs(&pre, &[]).len();
+            let body = strip_front_matter(raw).1;
+            let from_pre = model_code_blocks(&pre);
+            let from_body = model_code_blocks(&body);
+            if from_pre.len() != from_body.len() {
+                assert!(
+                    CHANGES_THE_BLOCK_SET.contains(&name),
+                    "{name}: 前処理がコードブロックの集合を変えたが既知の理由が無い\
+                     (この類型の新しい実例の可能性)\n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}\
+                     \nfrom_body={from_body:?}\nfrom_pre={from_pre:?}"
+                );
+                continue;
+            }
             assert_eq!(
-                drawn, scanned,
-                "{name}: アプリ経路で画面のコードブロック数とコピー用スキャナの数が食い違う\
-                 (この文書では `y c` が全部拒否される)\n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
+                from_pre, from_body,
+                "{name}: 前処理の有無でレンダラが記録する中身がバイト単位で変わる\
+                 (`y c` が前処理の有無で違う内容をコピーする)\n--- raw ---\n{raw}"
             );
         }
     }

@@ -83,7 +83,13 @@ impl App {
             .iter()
             .filter_map(|p| p.fence_ord)
             .collect();
-        let items = build_md_items(&lines, &targets, &fence_ords);
+        let items = build_md_items(
+            &lines,
+            &targets,
+            &fence_ords,
+            &decorated.code_blocks,
+            &decorated.tasks,
+        );
         let anchors = compute_md_anchors(&lines);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let row_prefix = if self.cfg.ui.wrap && width > 0 {
@@ -243,7 +249,7 @@ impl App {
                     // A fence diagram inverts only the caption span (inverting the whole line would
                     // also invert the centered indentation whitespace into a huge white bar — caught
                     // on a real Ghostty).
-                    let whole = matches!(it.kind, MdItemKind::CodeBlock);
+                    let whole = matches!(it.kind, MdItemKind::CodeBlock { .. });
                     // The marker's within-line ordinal = the count of items on the same line that come before it.
                     let first_on_line = c.items.partition_point(|x| x.line < it.line);
                     let ordinal = f - first_on_line;
@@ -300,6 +306,8 @@ impl App {
                     src_lines: 0,
                     pre_src: String::new(),
                     pre_origin: Vec::new(),
+                    code_blocks: Vec::new(),
+                    tasks: Vec::new(),
                 }
             }
         };
@@ -363,7 +371,7 @@ impl App {
                                 .unwrap_or_else(|| self.details_default_open(attr))
                         })
                         .collect();
-                crate::preview::markdown::set_details_open(details_states);
+                crate::preview::markdown::set_details_open(details_states.clone());
                 // Decide how to render each image URL. A local file or a cached remote fetch resolves to
                 // a path → Inline (with its display size in cells). An uncached remote URL is Loading
                 // (a fetch is kicked off separately, in `decorated_lines`) unless it has already failed.
@@ -469,20 +477,50 @@ impl App {
                             None => MathSlot::Loading,
                         }
                     };
-                let (mut lines, mut images) = crate::preview::markdown::render_markdown_with_images(
-                    &src,
-                    width,
-                    code,
-                    &theme.code_theme,
-                    self.cfg.ui.icons,
-                    &self.cfg.ui.md_task_state_chars(),
-                    &slot_of,
-                    &mermaid_slot,
-                    tr(self.lang, crate::i18n::Msg::MermaidCaption),
-                    self.cfg.ui.md_alerts,
-                    &math_slot,
-                    math_on,
-                );
+                let (mut lines, mut images, extras) =
+                    crate::preview::markdown::render_markdown_with_images(
+                        &src,
+                        width,
+                        code,
+                        &theme.code_theme,
+                        self.cfg.ui.icons,
+                        &self.cfg.ui.md_task_state_chars(),
+                        &slot_of,
+                        &mermaid_slot,
+                        tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                        self.cfg.ui.md_alerts,
+                        &math_slot,
+                        math_on,
+                    );
+                // `extras.model_based == false`: this document took the legacy renderer fallback
+                // (`render::RenderOut::unsupported` — the one remaining gap, a `Table`/`Html` nested
+                // inside a `Quote`; see `render_markdown_with_images`'s own doc comment). It has no
+                // model of its own to have recorded `code_blocks`/`tasks` from, so this fills the
+                // identical two fields the same way `y c`/the checkbox toggle always used to get their
+                // data before this migration — a single scan of the legacy renderer's own splitter
+                // functions (`code_block_source_locs`/`task_source_locs`, which share `split_block_parts`/
+                // `splitter_code_mask` with the legacy renderer itself, not a hand-rolled re-derivation
+                // — see either's own doc comment), run **once here**, not once per `y c` press/toggle
+                // the way it used to be. No document-wide count guard: `build_md_items`'s own ordinal
+                // lookup into these two `Vec`s already degrades per-item (`None` for that one item
+                // only) rather than refusing the whole document — see `MdItemKind::CodeBlock`/`Task`'s
+                // own doc comments.
+                let (code_blocks, tasks_at) = if extras.model_based {
+                    (extras.code_blocks, extras.tasks)
+                } else {
+                    let task_states = self.cfg.ui.md_task_state_chars();
+                    let blocks =
+                        crate::preview::markdown::code_block_source_locs(&pre_src, &details_states);
+                    let marks: Vec<(char, usize)> = crate::preview::markdown::task_source_locs(
+                        &pre_src,
+                        &task_states,
+                        &details_states,
+                    )
+                    .iter()
+                    .filter_map(|loc| loc.absolute(&pre_src))
+                    .collect();
+                    (blocks, marks)
+                };
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
                 } else {
@@ -516,6 +554,8 @@ impl App {
                     src_lines,
                     pre_src,
                     pre_origin: origin,
+                    code_blocks,
+                    tasks: tasks_at,
                 }
             }
             Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
@@ -527,6 +567,8 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
             },
             // A standalone code file is syntax-highlighted via syntect.
             Some(PreviewKind::Code(_)) => DecoratedMarkdown {
@@ -538,6 +580,8 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
             },
             _ => DecoratedMarkdown {
                 lines: Vec::new(),
@@ -548,6 +592,8 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
             },
         }
     }

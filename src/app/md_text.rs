@@ -59,6 +59,8 @@ pub(super) fn build_md_items(
     lines: &[Line<'static>],
     targets: &[String],
     fence_ords: &[usize],
+    code_blocks: &[String],
+    task_marks: &[(char, usize)],
 ) -> Vec<MdItem> {
     let mut items = Vec::new();
     let mut k = 0usize;
@@ -75,15 +77,35 @@ pub(super) fn build_md_items(
                 if let Some(state) =
                     crate::preview::markdown::task_span_state(span.content.as_ref())
                 {
+                    // Ordinal among task-checkbox sentinels seen so far — the same "ordinal from
+                    // count-so-far" pattern `fence_ords`'s own lookup below uses (see that arm's own
+                    // comment): `task_marks` is the model render pass's own record, in document
+                    // order, of the identical checkboxes this scan is finding by sentinel span, so
+                    // the Nth sentinel and `task_marks[N]` are the same checkbox by construction (one
+                    // render pass, not two independent derivations) — never absent for a document the
+                    // model renderer drew (empty only for the legacy fallback, where `state_at` is
+                    // `None` and the toggle re-derives the position the pre-migration way).
+                    let seen = items
+                        .iter()
+                        .filter(|it| matches!(it.kind, MdItemKind::Task { .. }))
+                        .count();
+                    let state_at = task_marks.get(seen).map(|&(_, off)| off);
                     items.push(MdItem {
                         line: li,
-                        kind: MdItemKind::Task { state },
+                        kind: MdItemKind::Task { state, state_at },
                     });
                 }
             } else if crate::preview::markdown::is_code_header_span(span) {
+                // Same "ordinal from count-so-far, matched against the render pass's own record"
+                // shape as the task arm above — see its own comment.
+                let seen = items
+                    .iter()
+                    .filter(|it| matches!(it.kind, MdItemKind::CodeBlock { .. }))
+                    .count();
+                let body = code_blocks.get(seen).cloned();
                 items.push(MdItem {
                     line: li,
-                    kind: MdItemKind::CodeBlock,
+                    kind: MdItemKind::CodeBlock { body },
                 });
             } else if crate::preview::markdown::is_mermaid_header_span(span) {
                 let seen = items

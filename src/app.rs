@@ -1632,10 +1632,31 @@ struct MdItem {
 enum MdItemKind {
     /// A link; `target`=URL/relative path.
     Link { target: String },
-    /// A task checkbox; `state`=its current state char (` `/`x`/custom) as shown.
-    Task { state: char },
-    /// A fenced code block (its header line is the focus target; `Enter` copies its raw source).
-    CodeBlock,
+    /// A task checkbox. `state_at`=the byte offset of this exact checkbox's state char, into
+    /// `MdCache::pre_src`: for the (near-universal) model render path, read straight off
+    /// `render::RenderOut::tasks` — the same parse the renderer drew this checkbox from, so the
+    /// toggle needs no independent re-scan to find it (see `app::md_tasks::md_toggle_focused_task`);
+    /// for the rare legacy fallback, resolved once (by ordinal, no document-wide count) when
+    /// `app::md_render::build_decorated` built the cache. `None` only for the vanishingly rare item
+    /// even that per-item legacy resolution could not place — the toggle is a quiet no-op for it
+    /// (never a document-wide refusal; see `md_toggle_focused_task`'s own doc comment).
+    ///
+    /// `state`=its current state char (` `/`x`/custom) as drawn — read only by tests (asserting what
+    /// actually rendered); the toggle itself re-reads the char at `state_at` fresh, rather than
+    /// trusting this copy, so a `#[cfg(test)]`-only reader is the honest shape here, not dead weight.
+    Task {
+        #[cfg_attr(not(test), allow(dead_code))]
+        state: char,
+        state_at: Option<usize>,
+    },
+    /// A fenced code block (its header line is the focus target; `y c` copies its raw source).
+    /// `body`=this exact block's already-resolved source text: for the model render path, read
+    /// straight off `render::RenderOut::code_blocks` (pushed by `render_code_block` the moment it
+    /// drew this block's own header — no independent re-scan; see
+    /// `app::md_items::focused_code_source`); for the rare legacy fallback, resolved once, by
+    /// ordinal, the identical way `Task::state_at` is. `None` only for the vanishingly rare item even
+    /// that per-item legacy resolution could not place — `y c` is a quiet no-op for it.
+    CodeBlock { body: Option<String> },
     /// An inline mermaid diagram (image mode); `ordinal`=fence index in document order.
     /// `Enter` opens it full screen with zoom/pan.
     MermaidFence { ordinal: usize },
@@ -1989,6 +2010,19 @@ struct DecoratedMarkdown {
     pre_src: String,
     /// Per line of `pre_src`, the body line it came from — see `MdCache::pre_origin`.
     pre_origin: crate::preview::markdown::LineOrigin,
+    /// Every code block's already-resolved source text, in document order — from the model
+    /// renderer's own record (`render::RenderOut::code_blocks`) when it drew this document; when the
+    /// legacy renderer did instead (`RenderOut::unsupported`), `build_decorated`'s Markdown branch
+    /// fills this the same way `y c` always resolved a block pre-migration (`code_block_source_locs`,
+    /// run once here rather than once per copy — see that call site's own doc comment). Empty for a
+    /// non-Markdown preview kind, which builds no `MdItem`s of this kind to read it at all. See
+    /// `MdCache::items`/`MdItemKind::CodeBlock`'s own doc comments.
+    code_blocks: Vec<String>,
+    /// Every task checkbox's `(state, byte offset into pre_src)`, in document order — the identical
+    /// model-renderer-record/legacy-fallback split `code_blocks` has, for the checkbox toggle instead
+    /// of `y c` (`task_source_locs` in the fallback branch). See `MdCache::items`/`MdItemKind::Task`'s
+    /// own doc comments.
+    tasks: Vec<(char, usize)>,
 }
 
 /// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load

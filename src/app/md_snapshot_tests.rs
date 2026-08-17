@@ -220,7 +220,7 @@ pub(super) fn render_case(cfg: &Config, src: &str) -> CaseRender {
     let slot_of = |_: &str| crate::preview::markdown::ImageSlot::Unavailable;
     let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
-    let (mut lines, mut images) = crate::preview::markdown::render_markdown_with_images(
+    let (mut lines, mut images, _extras) = crate::preview::markdown::render_markdown_with_images(
         &pre_src,
         SNAPSHOT_WIDTH,
         code,
@@ -261,13 +261,15 @@ pub(super) fn render_case(cfg: &Config, src: &str) -> CaseRender {
     };
 
     let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
-    let items = build_md_items(&lines, &targets, &fence_ords);
-    let anchors = compute_md_anchors(&lines);
-
-    // The source scanners behind `y c` and the checkbox toggle: same input text (`pre_src`) and
-    // same `<details>` states the renderer above used.
+    // The source scanners behind `y c` and the checkbox toggle, pre-`md-block-walk`: same input text
+    // (`pre_src`) and same `<details>` states the renderer above used. Computed here (not read off
+    // `MdItemKind::CodeBlock::body`/`Task::state_at`) so this harness's own parity tests — which
+    // exist specifically to check the renderer's own sentinel count against *this independent* scan
+    // — still compare two genuinely separate derivations, not one echoing the other back to itself.
     let code_blocks = crate::preview::markdown::code_block_source_locs(&pre_src, &details_states);
     let task_locs = crate::preview::markdown::task_source_locs(&pre_src, &tasks, &details_states);
+    let items = build_md_items(&lines, &targets, &fence_ords, &[], &[]);
+    let anchors = compute_md_anchors(&lines);
 
     CaseRender {
         lines,
@@ -384,8 +386,13 @@ fn fmt_align(a: Option<Alignment>) -> &'static str {
 fn fmt_item_kind(k: &MdItemKind) -> String {
     match k {
         MdItemKind::Link { target } => format!("Link{{target={target:?}}}"),
-        MdItemKind::Task { state } => format!("Task{{state={state:?}}}"),
-        MdItemKind::CodeBlock => "CodeBlock".to_string(),
+        // `state_at`/`body` (the model-derived source position/text, threaded through since the
+        // `md-block-walk` copy/toggle migration) are deliberately left out of this dump: they are
+        // verification data for `y c`/the checkbox toggle, not part of the *rendered* structure this
+        // golden snapshot is pinning, and including them would force a snapshot regeneration with no
+        // rendering behavior actually changing.
+        MdItemKind::Task { state, .. } => format!("Task{{state={state:?}}}"),
+        MdItemKind::CodeBlock { .. } => "CodeBlock".to_string(),
         MdItemKind::MermaidFence { ordinal } => format!("MermaidFence{{ordinal={ordinal}}}"),
         MdItemKind::Details { ordinal } => format!("Details{{ordinal={ordinal}}}"),
     }

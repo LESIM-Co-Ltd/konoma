@@ -8,7 +8,7 @@ fn item_target(it: &MdItem) -> &str {
     match &it.kind {
         MdItemKind::Link { target } => target,
         MdItemKind::Task { .. } => panic!("expected a link item"),
-        MdItemKind::CodeBlock => panic!("expected a link item"),
+        MdItemKind::CodeBlock { .. } => panic!("expected a link item"),
         MdItemKind::MermaidFence { .. } => panic!("expected a link item"),
         MdItemKind::Details { .. } => panic!("expected a link item"),
     }
@@ -2041,8 +2041,9 @@ fn md_task_toggle_custom_states_cycle() {
 fn md_task_toggle_aborts_when_file_changed_externally() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // Don't write if the displayed state and disk state disagree (flash + reload). Avoids
-    // conflicting with an external agent's edits.
+    // Don't write if the displayed state and disk state disagree **on the focused checkbox's own
+    // line** (flash + reload) — position-based verification, not a document-wide count. Avoids
+    // conflicting with an external agent's edits to that exact checkbox.
     let dir = unique_tmp("konoma_md_task_abort_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2054,7 +2055,10 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
     let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     app.md_focus_move(1);
-    // (1) State mismatch: the screen stays at ' ' while the disk becomes 'x'.
+    // (1) State mismatch on the focused checkbox's own line: the screen stays at ' ' while the
+    // disk becomes 'x'. The write-back verification is position-based (does *this* line, read
+    // fresh from disk, still match what's on screen up to and including the state char) — it
+    // catches this the same way a document-wide count once did, without needing one.
     std::fs::write(&f, "- [x] a\n").unwrap();
     app.md_toggle_focused_task();
     assert_eq!(
@@ -2063,15 +2067,32 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
         "書かない"
     );
     assert!(app.flash.is_some(), "flash で通知");
-    // (2) Count mismatch: the number of tasks grew (the render side still sees 1).
+    // (2) A genuinely *unrelated* external edit — a second, brand-new task appended after the
+    // focused one — no longer blocks the toggle (the migration's whole point: the old document-wide
+    // count guard used to refuse this too, even though the focused checkbox's own line is untouched
+    // and toggling it is perfectly safe). `md-block-walk`'s position-based verification only checks
+    // the byte range of the checkbox actually being toggled, so this now succeeds.
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // let the screen catch up to x…
-    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // …then make the disk have 2, only on disk
+    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // …then append an unrelated new task on disk
+    app.flash = None;
+    app.md_toggle_focused_task();
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "- [ ] a\n- [ ] b\n",
+        "無関係な行が増えただけなら、フォーカス中のチェックボックス自身の行が一致していれば書く"
+    );
+    // (3) An edit to the *same* checkbox's own line, concurrent with the count change above, is
+    // still caught (position-based verification does not degrade into "never refuses"): the disk
+    // now shows "a" already checked by someone else, so the app's own toggle must refuse rather
+    // than blindly flip it back to unchecked.
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap(); // catch up to "- [ ] a\n- [ ] b\n"
+    std::fs::write(&f, "- [x] a\n- [ ] b\n").unwrap(); // the focused line ("a") changes underneath it
     app.flash = None;
     app.md_toggle_focused_task();
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
         "- [x] a\n- [ ] b\n",
-        "個数不一致でも書かない"
+        "フォーカス中の行自体が変わっていれば依然として書かない"
     );
     assert!(app.flash.is_some());
     std::fs::remove_dir_all(&dir).ok();
@@ -2490,7 +2511,7 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
         .map(|it| match it.kind {
             MdItemKind::Link { .. } => "link",
             MdItemKind::Task { .. } => "task",
-            MdItemKind::CodeBlock => "code",
+            MdItemKind::CodeBlock { .. } => "code",
             MdItemKind::MermaidFence { .. } => "mermaid",
             MdItemKind::Details { .. } => "details",
         })
@@ -16558,6 +16579,98 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The `y c` analog of `md_task_toggle_is_byte_exact_across_the_corpus`: drive the real preview
+/// pipeline over the whole corpus and, for every code block Tab reaches, copy it and check the text
+/// against an independent computation — `render_markdown_with_images`'s own record
+/// (`MdRenderExtras::code_blocks`), over the exact preprocessed text the app's own cache would have
+/// used (`md_snapshot_tests::pre_src_for`), matched by ordinal. This is the model renderer's own
+/// output, **not** a second, hand-rolled scanner (`code_block_source_locs` disagrees with the model
+/// renderer in many already-documented, intentional ways unrelated to any bug — see
+/// `preview::markdown::app_faithful_parity_tests::code_scanner_matches_the_render_through_the_app_pipeline`'s
+/// own doc comment) — so this test's own job is specifically the *plumbing* from that record through
+/// to the clipboard (`ensure_md_cache` → `build_md_items` → `MdItemKind::CodeBlock::body` →
+/// `focused_code_source`), not a second exercise of the renderer's own correctness (already covered
+/// by `model::code_body_text_matches_parser_code_blocks_for_every_non_quote_code_block_in_the_corpus`
+/// and the diff harness).
+#[test]
+fn md_code_block_copy_is_byte_exact_across_the_corpus() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = unique_tmp("konoma_code_corpus_copy");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+
+    let corpus = crate::preview::markdown::task_corpus::cases()
+        .into_iter()
+        .chain(crate::preview::markdown::code_corpus::cases());
+    for (name, src) in corpus {
+        std::fs::write(&f, src).unwrap();
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("doc.md"))
+            .unwrap();
+        app.tree_activate().unwrap();
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+        let code_items: Vec<usize> = app
+            .md_items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| matches!(it.kind, MdItemKind::CodeBlock { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        if code_items.is_empty() {
+            continue;
+        }
+
+        // Independent oracle: the model renderer's own record, over the same preprocessed text the
+        // app's own cache built from — `MermaidSlot::Text` matches what a picker-less test `App`
+        // itself resolves to (`font.is_none()` forces `MermaidSlot::Text` regardless of config; see
+        // `app::md_render::build_decorated`'s own `mermaid_slot` closure), so a mermaid-tagged fence
+        // is drawn as ordinary code on both sides here, consistently.
+        let cfg = Config::default();
+        let pre_src = super::md_snapshot_tests::pre_src_for(&cfg, src);
+        let (_, _, extras) = crate::preview::markdown::render_markdown_with_images(
+            &pre_src,
+            100,
+            crate::preview::markdown::CodeStyle::default(),
+            &cfg.ui.theme.code_theme,
+            cfg.ui.icons,
+            &cfg.ui.md_task_state_chars(),
+            &|_: &str| crate::preview::markdown::ImageSlot::Unavailable,
+            &|_: &str| crate::preview::markdown::MermaidSlot::Text,
+            "mermaid",
+            cfg.ui.md_alerts,
+            &|_: &str, _: bool| crate::preview::markdown::MathSlot::Raw,
+            false,
+        );
+
+        assert_eq!(
+            code_items.len(),
+            extras.code_blocks.len(),
+            "{name}: 画面のコードブロック項目数とモデルの記録数が食い違う\n--- src ---\n{src}"
+        );
+
+        for (nth, &item_idx) in code_items.iter().enumerate() {
+            app.tab.focused_item = Some(item_idx);
+            let copied = app.focused_code_text();
+            assert_eq!(
+                copied.as_deref(),
+                Some(extras.code_blocks[nth].as_str()),
+                "{name} #{nth}: `y c` がモデルの記録と違う内容をコピーする\n--- src ---\n{src}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Root cause (b), the front-matter case: the renderer (`build_decorated`) strips the leading YAML front
 /// matter before it ever reaches task detection, so a line inside it that merely *looks* like a task
 /// (`  - [ ] draft`) is never drawn as a checkbox. The write-back scanner must agree — scan the same
@@ -16729,7 +16842,7 @@ fn md_code_block_copy_works_beyond_the_preview_line_cap() {
         .md_items
         .iter()
         .enumerate()
-        .filter(|(_, it)| matches!(it.kind, MdItemKind::CodeBlock))
+        .filter(|(_, it)| matches!(it.kind, MdItemKind::CodeBlock { .. }))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -17434,7 +17547,7 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
         app.md_items
             .iter()
             .filter_map(|it| match it.kind {
-                MdItemKind::Task { state } => Some(state),
+                MdItemKind::Task { state, .. } => Some(state),
                 _ => None,
             })
             .collect()

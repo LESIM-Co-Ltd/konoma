@@ -35,7 +35,7 @@ impl App {
     #[cfg(test)]
     pub fn decorate_md_items(&mut self, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         let (lines, targets) = self.postprocess_md(lines);
-        let items = build_md_items(&lines, &targets, &[]);
+        let items = build_md_items(&lines, &targets, &[], &[], &[]);
         // Clamp the focus index into range.
         match self.tab.focused_item {
             Some(_) if items.is_empty() => self.tab.focused_item = None,
@@ -49,7 +49,7 @@ impl App {
         };
         let (target_line, whole_line) = {
             let it = &self.md_items[target_idx];
-            (it.line, matches!(it.kind, MdItemKind::CodeBlock))
+            (it.line, matches!(it.kind, MdItemKind::CodeBlock { .. }))
         };
         let first_on_line = self.md_items.partition_point(|x| x.line < target_line);
         let ordinal = target_idx - first_on_line;
@@ -139,7 +139,7 @@ impl App {
         // `▎`, details body is `▏`). Since it looks at the rendered line itself, there's no need to
         // re-interpret the source.
         let belongs: fn(&ratatui::text::Line<'_>) -> bool = match item.kind {
-            MdItemKind::CodeBlock => crate::preview::markdown::is_code_line,
+            MdItemKind::CodeBlock { .. } => crate::preview::markdown::is_code_line,
             MdItemKind::Details { .. } => crate::preview::markdown::is_details_body_line,
             // Links/checkboxes are one line. A fenced diagram has reserved rows, so its end is
             // derived from the placement below instead.
@@ -240,7 +240,7 @@ impl App {
             // Copying it aligns with the other copy operations and goes through `y` (the copy
             // leader, pre-empted in main.rs).
             Some(MdItem {
-                kind: MdItemKind::CodeBlock,
+                kind: MdItemKind::CodeBlock { .. },
                 ..
             }) => Ok(()),
             // Inline mermaid diagram: open it full screen (with zoom/pan).
@@ -284,64 +284,44 @@ impl App {
         self.tab.preview_kind = Some(kind);
     }
 
-    /// Raw source of the focused code block, matched by ordinal against the on-screen headers.
-    /// `None` when the focused item is not a code block, there is no render cache, or the counts
-    /// disagree (pathological doc) — the caller then flashes instead of copying garbage (safe
-    /// fallback, #3). Also used by tests to assert the copied value without a clipboard round-trip.
+    /// Raw source of the focused code block — the item's own `body`, verbatim. `None` when the
+    /// focused item is not a code block, nothing is focused, or (vanishingly rare — see
+    /// `MdItemKind::CodeBlock`'s own doc comment) this one specific block's text could not be
+    /// resolved when the cache was built. Also used by tests to assert the copied value without a
+    /// clipboard round-trip.
     ///
-    /// Scans `md_cache.pre_src` — **the exact text the renderer parsed** — not a fresh read of the
-    /// file. Root cause this fixed (2026-08, reported by a user on the released build): re-reading
-    /// the file here meant scanning text the pre-passes had not been applied to, so any document
-    /// whose structure those passes change (a multi-line footnote definition, a `<br>`) made the
-    /// scanner and the screen disagree about how many code blocks exist, and the count guard refused
-    /// `y c` for the *whole* document. Reading the renderer's own string removes the disagreement by
-    /// construction rather than by keeping a second derivation in sync.
-    ///
-    /// Copying the preprocessed text is safe because the pre-passes leave code verbatim (they all
-    /// gate on `literal_code_mask`): measured over 2,182 real `.md` files, the pre-passes changed
-    /// 2,105 of them, and the extracted block contents differed in only the four that this very bug
-    /// broke. There is no write-back here — only a copy — so, unlike `md_tasks.rs`, no byte offsets
-    /// into the on-disk file are needed.
+    /// The final step of the `md-block-walk` migration: this is a plain field read, not a scan. Every
+    /// `MdItemKind::CodeBlock` in `self.md_items` already carries its own resolved `body` — for the
+    /// (now near-universal) model render path, pushed by `render_code_block` at the exact moment it
+    /// drew this block's own header (`render::RenderOut::code_blocks`); for the rare legacy fallback,
+    /// resolved once, by ordinal, when `app::md_render::build_decorated` built the cache (see that
+    /// function's own doc comment) — either way, there is no second, independent derivation of "where
+    /// are the code blocks" left for this function to reconcile by count at copy time, which is what
+    /// the *old* `code_block_source_locs`-based scan here used to do (root cause of the class of bug
+    /// this closes: seven separate renderer-vs-scanner drifts, the last found 2026-08 on the released
+    /// build — see `code_block_source_locs`'s own doc comment for the full history).
     fn focused_code_source(&self) -> Option<String> {
         let f = self.tab.focused_item?;
-        if !matches!(
-            self.md_items.get(f),
+        match self.md_items.get(f) {
             Some(MdItem {
-                kind: MdItemKind::CodeBlock,
+                kind: MdItemKind::CodeBlock { body: Some(text) },
                 ..
-            })
-        ) {
-            return None;
+            }) => Some(text.clone()),
+            _ => None,
         }
-        // Which code block this is within the document (an ordinal excluding links/tasks).
-        let ordinal = self.md_items[..=f]
-            .iter()
-            .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
-            .count()
-            .saturating_sub(1);
-        let total = self
-            .md_items
-            .iter()
-            .filter(|it| matches!(it.kind, MdItemKind::CodeBlock))
-            .count();
-        // The renderer's own text (already capped by `preview::text::load` and front-matter-stripped
-        // upstream), plus the `<details>` open/closed states of that same render — without those,
-        // fences inside a collapsed block would be counted and the count guard would trip.
-        let cache = self.md_cache.as_ref()?;
-        let blocks =
-            crate::preview::markdown::code_block_source_locs(&cache.pre_src, &cache.details_states);
-        // Only trust and copy it when the on-screen header count matches the source's block count.
-        (blocks.len() == total)
-            .then(|| blocks.get(ordinal).cloned())
-            .flatten()
     }
 
-    /// Copy the focused code block's raw source to the clipboard, or flash a safe notice when it
-    /// cannot be resolved (`focused_code_source` = None). Triggered by the copy leader (`y`) in a
-    /// Markdown preview when a code block is focused (pre-empted in `handle_key`).
+    /// Copy the focused code block's raw source to the clipboard. A silent no-op when it cannot be
+    /// resolved (`focused_code_source` = `None`) — this is now unreachable for any document the
+    /// model renderer drew (its own `body` is always `Some`; see that field's own doc comment), so
+    /// there is no longer a dedicated "couldn't copy" notice to show: the one case left (the legacy
+    /// fallback's own per-item resolution genuinely failing) is `y c` on a code block that turns out
+    /// not to exist as *this exact* block on screen — nothing to copy, and nothing safer to say about
+    /// it than nothing at all (principle #3, `CLAUDE.md`: never copy the wrong block's text instead).
+    /// Triggered by the copy leader (`y`) in a Markdown preview when a code block is focused
+    /// (pre-empted in `handle_key`).
     pub fn md_copy_focused_code(&mut self) {
         let Some(text) = self.focused_code_source() else {
-            self.flash = Some(tr(self.lang, crate::i18n::Msg::CodeBlockCopyUnavailable).into());
             return;
         };
         match set_clipboard(&text) {
@@ -369,7 +349,7 @@ impl App {
                 .tab
                 .focused_item
                 .and_then(|f| self.md_items.get(f))
-                .is_some_and(|it| matches!(it.kind, MdItemKind::CodeBlock))
+                .is_some_and(|it| matches!(it.kind, MdItemKind::CodeBlock { .. }))
     }
 
     /// Whether the currently focused Markdown item is a task checkbox (drives the Space fixed key:
