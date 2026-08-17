@@ -288,6 +288,7 @@ pub(crate) fn render_doc(
     slot_of: &dyn Fn(&str) -> ImageSlot,
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
     mermaid_caption: &str,
+    alerts: bool,
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> RenderOut {
@@ -345,6 +346,7 @@ pub(crate) fn render_doc(
         width,
         icons,
         tasks,
+        alerts,
     };
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
@@ -385,11 +387,32 @@ pub(crate) fn render_doc(
                     None => render_quote(&mut w, doc, src, &block.children, ctx),
                 }
             }
+            // A GitHub-alert-headed quote with `w.alerts = false` (`ui.md_alerts`): drawn as an
+            // ordinary blockquote, exactly the `alert: None` arm above — see `Writer.alerts`'s own
+            // doc comment for why this is read off `w` rather than threaded as a fourth `BlockCtx`
+            // field, and `render_markdown_tasks_opts`'s own identical `alerts` gate in `markdown.rs`
+            // for the legacy path this mirrors. `block.children` still has the literal `[!TYPE]`
+            // header text sitting in its own first paragraph either way (`model::alert_kind_of` only
+            // *peeks* at the quote's first line to decide `alert`/`alert_title` — it never strips
+            // anything from `children`), so this plain-quote render of an alert-headed block shows
+            // that marker text verbatim, matching the legacy path's own "`[!WARNING]` survives as raw
+            // text" contract (pinned by `e2e_markdown_autolink_emoji_alerts_toggle_off`). A separate
+            // arm from the one above (not merged via `alert.is_none() || !w.alerts`) because a match
+            // guard does not count towards exhaustiveness — the compiler cannot tell that arm, on its
+            // own, already covers every `alert: None` case.
+            BlockKind::Quote { alert: Some(_), .. } if !w.alerts => {
+                match contains_unsupported(&block.children, true) {
+                    Some(bad) => unsupported.push(bad),
+                    None => render_quote(&mut w, doc, src, &block.children, ctx),
+                }
+            }
             // A GitHub alert — konoma's own `render_alert_from_model`, reusing `markdown.rs`'s own
             // `alert_header_line`/`alert_bar` for the header/bar decoration; see the module doc
             // comment's own "Scope" section. An alert is still, structurally, a `Quote` (pulldown-cmark
             // reports the identical `Tag::BlockQuote` either way — see `model::BlockKind::Quote`'s own
             // doc comment) — so its own children get `in_quote: true` too, the same as a plain quote's.
+            // Only reached when `w.alerts` is `true` — the two arms above already caught every
+            // `alert: None`, and every `alert: Some(_)` with alerts turned off.
             BlockKind::Quote {
                 alert: Some(kind),
                 alert_title,
@@ -756,6 +779,24 @@ struct Writer<'m> {
     /// one `math: Option<MathCtx<'m>>` already uses) rather than owned, since `render_doc`'s own
     /// `tasks: &[char]` parameter already outlives the whole call.
     tasks: &'m [char],
+    /// `render_doc`'s own incoming `alerts` flag (`ui.md_alerts`) — unchanged for the whole render,
+    /// the same way `icons`/`tasks` are. Read at *both* places a `Quote { alert: Some(_), .. }` can
+    /// be reached (`render_doc`'s own top-level dispatch, and `render_block`'s nested one — a
+    /// GitHub-alert-headed quote can sit inside a `List`/`Quote`/`Details` too): `false` renders it
+    /// as an ordinary blockquote (`render_quote`, exactly the `alert: None` arm's own path) instead of
+    /// the colored callout `render_alert_from_model` draws — matching `markdown.rs`'s own
+    /// `render_markdown_tasks_opts`'s identical `alerts` gate (`if alerts { split_alerts(..) } else {
+    /// render_md_text(..) }`) for the legacy path. Held on `Writer` — not threaded through
+    /// `BlockCtx` as a fourth field — because, unlike `math_here`/`extract_here`/
+    /// `details_interactive`, its value never changes with nesting depth (it is one document-wide
+    /// config flag, not a position in the tree): every function that reaches a `Quote` at all already
+    /// has `w: &mut Writer` in scope, so no call site needs to remember to propagate it into a fresh
+    /// `BlockCtx` the way `render_quote`'s own `child_ctx`/`render_bar_prefixed_body`'s own `body_ctx`
+    /// have to for the three fields that *do* vary. `render_bar_prefixed_body`'s own, fully isolated
+    /// sub-`Writer` copies this field from the outer one for the identical reason it copies
+    /// `icons`/`code`/`theme`: a nested alert discovered *inside* another alert's or a `<details>`
+    /// block's own body must honor the same document-wide toggle.
+    alerts: bool,
     /// How many extra lines `decorate_headings_and_extras`'s own `decorate_headings` pass — run
     /// exactly **once**, over the *whole* document, right at the very end of `render_doc` — will
     /// insert **before** whatever line index `self.lines.len()` currently reports, once that single
@@ -2761,7 +2802,13 @@ fn render_code_block(
 /// not go unnoticed). `render_mermaid_block` itself already normalizes the *rendered lines*'
 /// trailing-`\n` difference away internally (`code.trim_end_matches('\n')`, its own first statement),
 /// unaffected by this fix either way — `code` (unchanged, still `code_body_text`'s own trimmed
-/// output) is what still gets passed there and to `w.mermaid.slot`, only the *hash input* changes.
+/// output) is what still gets passed there for every rendering exit (the empty-body fallback above,
+/// and the `Text` arm below). `w.mermaid.slot` itself, however, is handed the corrected, `\n`-restored
+/// `hashed` string, not `code` — see this function's own body for why: the one real, stateful slot
+/// closure (`app::md_render::build_decorated`'s own `mermaid_slot`) has no independent re-add step of
+/// its own, so it has to be handed the fence's literal, hash-ready bytes directly, the same
+/// convention `render_markdown_with_images_legacy`'s own `BlockPart::Mermaid` arm already hands it
+/// (its own `fence` accumulator, `\n`-terminated from the start).
 ///
 /// Increments `w.mermaid.ord` — the running fence ordinal `ImagePlacement.fence_ord` records —
 /// **before** checking whether `code` is empty, matching production's own `let ord = fence_ord;
@@ -2789,16 +2836,40 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
         w.fresh_boundary = true;
         return;
     }
-    match (w.mermaid.slot)(&code) {
+    // `code` is `code_body_text`'s own output — one trailing `\n` short of what production's own
+    // `fence` accumulator (`split_block_parts_masked`'s line-by-line `mermaid: Option<String>`)
+    // would hash (see this function's own doc comment for why that gap is always exactly one
+    // `\n`, never more or less, for a non-empty fence reaching this arm at all). `hashed` puts it
+    // back — and, critically, is what gets passed to `w.mermaid.slot` itself, not the shorter
+    // `code`: the slot closure has exactly one real, stateful implementation
+    // (`app::md_render::build_decorated`'s own `mermaid_slot`), and *that* closure computes its
+    // own cache-lookup key by hashing whatever string it is handed, with no way to tell whether
+    // the caller was this function or `render_markdown_with_images_legacy`'s own `BlockPart::Mermaid`
+    // arm (which always hands its closure the fully-accumulated `fence`, trailing `\n` included —
+    // the exact same bytes it then also hashes for the URL, no adjustment needed on that side).
+    // Handing the closure `code` (short by one `\n`) here, while `extraction_targets`'s own probe
+    // closure independently re-added the missing `\n` before recording it, used to make the two
+    // recorded keys agree with each other *and* with this function's own URL — while the one
+    // real, stateful closure (which has no such independent re-add step; it simply hashes
+    // whatever `code` it receives) silently looked up the wrong cache key under the model-based
+    // path only, leaving every mermaid diagram stuck on `Loading` forever whenever `render_doc`
+    // rendered it. Confirmed directly: `app::tests::empty_mermaid_fence_does_not_stick_on_loading`
+    // synchronously renders and caches the diagram, then still shows `🖼 mermaid — loading…` on
+    // rebuild, because the closure's own lookup key (`mermaid_fence_url(code)`, "graph LR\n  A -->
+    // B" — no trailing `\n` at all) never matched the key the diagram was actually cached under
+    // (`mermaid_fence_url(&hashed)`, "graph LR\n  A --> B\n"). Passing `hashed` here instead makes
+    // both render paths hand the slot closure the *identical* convention (the fence's own literal
+    // bytes, trailing `\n` included) — the closure can stay ignorant of which path called it, and
+    // `code` (still `code_body_text`'s own trimmed output) remains what gets rendered on every
+    // other exit (`render_mermaid_block(&code, ..)` below, and above for the empty-body case).
+    let hashed = format!("{code}\n");
+    match (w.mermaid.slot)(&hashed) {
         MermaidSlot::Image { cols, rows } => {
-            // `code` is `code_body_text`'s own output — one trailing `\n` short of what
-            // production's own `fence` accumulator would hash (see this function's own doc
-            // comment for why that gap is always exactly one `\n`, never more or less, for a
-            // non-empty fence reaching this arm at all). Put it back *only* for the hash input;
-            // `code` itself (used for rendering, and passed to `w.mermaid.slot` above) is
-            // untouched. Still calls production's own `mermaid_fence_url` directly — never a
-            // second, hand-rolled copy of its FNV-1a computation — on the corrected bytes.
-            let url = mermaid_fence_url(&format!("{code}\n"));
+            // Still calls production's own `mermaid_fence_url` directly — never a second,
+            // hand-rolled copy of its FNV-1a computation — on the identical bytes just handed to
+            // the slot closure above, so this URL and whatever cache key that closure itself
+            // looked up under can never independently drift apart.
+            let url = mermaid_fence_url(&hashed);
             let mut ls = mermaid_placeholder_lines(cols, rows, width, w.mermaid.caption);
             // The first entry is the caption line (a Tab-focus sentinel) — the reserved rows the
             // placement overlays start right after it, matching production's own identical split.
@@ -3004,6 +3075,14 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
         BlockKind::ThematicBreak => render_rule(w),
         BlockKind::List { start, .. } => render_list(w, doc, src, *start, &block.children, ctx),
         BlockKind::Quote { alert: None, .. } => render_quote(w, doc, src, &block.children, ctx),
+        // A GitHub-alert-headed quote with `w.alerts = false` — see the identical pair of arms in
+        // `render_doc`'s own top-level dispatch, above, for the full reasoning (`Writer.alerts`'s own
+        // doc comment for why this is read off `w` rather than a fourth `BlockCtx` field, and why this
+        // is a separate arm from `alert: None` rather than one merged guard — a match guard does not
+        // count towards exhaustiveness).
+        BlockKind::Quote { alert: Some(_), .. } if !w.alerts => {
+            render_quote(w, doc, src, &block.children, ctx)
+        }
         BlockKind::Quote {
             alert: Some(kind),
             alert_title,
@@ -3711,6 +3790,11 @@ fn render_bar_prefixed_body(
         width: w.width.saturating_sub(2),
         icons: w.icons,
         tasks: w.tasks,
+        // Copied from the outer `Writer`, matching `icons`/`code`/`theme` just above — a nested
+        // alert discovered *inside* this body (an alert nested inside a `Details` block, or inside
+        // another alert) has to honor the same document-wide `ui.md_alerts` toggle the outer render
+        // is using; see `Writer.alerts`'s own doc comment.
+        alerts: w.alerts,
     };
     let body_ctx = BlockCtx {
         math_here: false,
@@ -3793,6 +3877,10 @@ mod tests {
             width: 80,
             icons: false,
             tasks: super::super::DEFAULT_TASK_STATES,
+            // Matches `ui.md_alerts`'s own default (`true`) — every existing test below that reaches
+            // a `Quote { alert: Some(_), .. }` through this helper expects the colored-callout path
+            // unless its own doc comment says otherwise.
+            alerts: true,
         }
     }
 
@@ -4005,6 +4093,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             true,
         );
@@ -4075,6 +4164,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             true,
         );
@@ -4100,6 +4190,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             true,
         );
@@ -4150,6 +4241,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "Enter: full screen",
+                true,
                 &math_slot,
                 true,
             );
@@ -4190,6 +4282,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4263,6 +4356,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4343,6 +4437,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4396,6 +4491,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4456,6 +4552,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4529,6 +4626,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4602,6 +4700,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4647,6 +4746,7 @@ mod tests {
             &slot_of,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false, // math_on: false — extraction must still fire (see this test's own doc comment)
         );
@@ -4701,6 +4801,7 @@ mod tests {
             &slot_of,
             &no_mermaid,
             "Enter: full screen",
+            true,
             &math_slot,
             false,
         );
@@ -4767,6 +4868,7 @@ mod tests {
             &no_images,
             &mermaid_slot,
             "mermaid",
+            true,
             &math_slot,
             false,
         );
@@ -4849,6 +4951,7 @@ mod tests {
                 &no_images,
                 &mermaid_slot,
                 "mermaid",
+                true,
                 &math_slot,
                 false,
             );
@@ -4933,6 +5036,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "mermaid",
+                true,
                 &math_slot,
                 true,
             );
@@ -4985,6 +5089,7 @@ mod tests {
             &no_images,
             &no_mermaid,
             "mermaid",
+            true,
             &math_slot,
             true,
         );
@@ -5030,6 +5135,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "mermaid",
+                true,
                 &math_slot,
                 true,
             );
@@ -5088,6 +5194,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "mermaid",
+                true,
                 &math_slot,
                 true,
             );
@@ -5179,6 +5286,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "mermaid",
+                true,
                 &math_slot,
                 true,
             );
@@ -5228,6 +5336,7 @@ mod tests {
                 &no_images,
                 &no_mermaid,
                 "mermaid",
+                true,
                 &math_slot,
                 true,
             );

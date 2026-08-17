@@ -18,22 +18,26 @@ L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "item:"
 L0001 style=fg=-,bg=-,mod=- align=-
-L0002 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-L0003 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "aaa"
-L0004 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-  s01 fg=white,bg=-,mod=- "inline"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "aaa"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- " after"
+  s00 fg=white,bg=-,mod=- "inline"
+  s01 fg=-,bg=-,mod=- " after"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
   c00 "aaa"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: KNOWN FAILURE: same glue in a bullet list item ===
 -- LINES (6) --
@@ -41,22 +45,26 @@ L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "item:"
 L0001 style=fg=-,bg=-,mod=- align=-
-L0002 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-L0003 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "aaa"
-L0004 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-  s01 fg=white,bg=-,mod=- "inline"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "aaa"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- " after"
+  s00 fg=white,bg=-,mod=- "inline"
+  s01 fg=-,bg=-,mod=- " after"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
   c00 "aaa"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: KNOWN FAILURE: same glue, with an unrelated real fence following later in the document ===
 -- LINES (10) --
@@ -64,15 +72,18 @@ L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "item:"
 L0001 style=fg=-,bg=-,mod=- align=-
-L0002 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-L0003 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "aaa"
-L0004 style=fg=white,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "```"
-  s01 fg=white,bg=-,mod=- "inline"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "aaa"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- " after"
+  s00 fg=white,bg=-,mod=- "inline"
+  s01 fg=-,bg=-,mod=- " after"
 L0006 style=fg=-,bg=-,mod=- align=-
 L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
@@ -90,27 +101,16 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
-  m00 line=0007 kind=CodeBlock
+-- ITEMS (2) --
+  m00 line=0002 kind=CodeBlock
+  m01 line=0007 kind=CodeBlock
 
 === code_corpus: a centered banner whose links wrap images (registry: criterion README.md) ===
--- LINES (6) --
-L0000 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 CI — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/badge.svg"
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "|"
 L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=I "▎ "
-  s01 fg=-,bg=-,mod=- "                                                                                            "
-  s02 fg=gray,bg=-,mod=DI " code "
 L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "|"
-L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-L0004 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -118,12 +118,108 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (3) --
-  m00 line=0000 kind=Link{target="https://img.example/badge.svg"}
-  m01 line=0001 kind=CodeBlock
-  m02 line=0004 kind=Link{target="https://img.example/v.svg"}
+-- ITEMS (0) --
 
 === code_corpus: a checkbox after a fence whose closing line has trailing text (list ended by a paragraph) ===
+-- LINES (12) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "item"
+L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " rust "
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(198,120,221),bg=-,mod=- "let"
+  s02 fg=rgb(171,178,191),bg=-,mod=- " x "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "="
+  s04 fg=rgb(171,178,191),bg=-,mod=- " "
+  s05 fg=rgb(209,154,102),bg=-,mod=- "1"
+  s06 fg=rgb(171,178,191),bg=-,mod=- ";"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
+L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Text."
+L0009 style=fg=-,bg=-,mod=- align=-
+L0010 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+L0011 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f046} "
+  s02 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (1) --
+  c00 "let x = 1;\n``` (note)\n"
+-- TASKS (2) --
+  t00 line=0008 state_off=0003 state=' '
+  t01 line=0009 state_off=0003 state='x'
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (3) --
+  m00 line=0003 kind=CodeBlock
+  m01 line=0010 kind=Task{state=' '}
+  m02 line=0011 kind=Task{state='x'}
+
+=== code_corpus: a checkbox after a fence whose closing line has trailing text (tight list) ===
+-- LINES (8) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- "item"
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " rust "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(198,120,221),bg=-,mod=- "let"
+  s02 fg=rgb(171,178,191),bg=-,mod=- " x "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "="
+  s04 fg=rgb(171,178,191),bg=-,mod=- " "
+  s05 fg=rgb(209,154,102),bg=-,mod=- "1"
+  s06 fg=rgb(171,178,191),bg=-,mod=- ";"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "a"
+L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f046} "
+  s02 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (1) --
+  c00 "let x = 1;\n``` (note)"
+-- TASKS (2) --
+  t00 line=0004 state_off=0003 state=' '
+  t01 line=0005 state_off=0003 state='x'
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (3) --
+  m00 line=0002 kind=CodeBlock
+  m01 line=0006 kind=Task{state=' '}
+  m02 line=0007 kind=Task{state='x'}
+
+=== code_corpus: a details block after a fence whose closing line has trailing text ===
 -- LINES (11) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
@@ -142,115 +238,22 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "Text."
+  s00 fg=-,bg=-,mod=- "- "
 L0008 style=fg=-,bg=-,mod=- align=-
-L0009 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f096} "
-  s02 fg=-,bg=-,mod=- "a"
-L0010 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f046} "
-  s02 fg=-,bg=-,mod=- "b"
--- IMAGES (0) --
--- CODE_BLOCKS (1) --
-  c00 "let x = 1;\n``` (note)\n"
--- TASKS (2) --
-  t00 line=0008 state_off=0003 state=' '
-  t01 line=0009 state_off=0003 state='x'
--- DETAILS_OPEN (0) --
--- ANCHORS (0) --
--- ITEMS (3) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0009 kind=Task{state=' '}
-  m02 line=0010 kind=Task{state='x'}
-
-=== code_corpus: a checkbox after a fence whose closing line has trailing text (tight list) ===
--- LINES (7) --
-L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-  s01 fg=-,bg=-,mod=- "item"
-L0001 style=fg=-,bg=-,mod=- align=-
-L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=I "▎ "
-  s01 fg=-,bg=-,mod=- "                                                                                            "
-  s02 fg=gray,bg=-,mod=DI " rust "
-L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(198,120,221),bg=-,mod=- "let"
-  s02 fg=rgb(171,178,191),bg=-,mod=- " x "
-  s03 fg=rgb(171,178,191),bg=-,mod=- "="
-  s04 fg=rgb(171,178,191),bg=-,mod=- " "
-  s05 fg=rgb(209,154,102),bg=-,mod=- "1"
-  s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
-L0004 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f096} "
-  s02 fg=-,bg=-,mod=- "a"
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f046} "
-  s02 fg=-,bg=-,mod=- "b"
--- IMAGES (0) --
--- CODE_BLOCKS (1) --
-  c00 "let x = 1;\n``` (note)"
--- TASKS (2) --
-  t00 line=0004 state_off=0003 state=' '
-  t01 line=0005 state_off=0003 state='x'
--- DETAILS_OPEN (0) --
--- ANCHORS (0) --
--- ITEMS (3) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0005 kind=Task{state=' '}
-  m02 line=0006 kind=Task{state='x'}
-
-=== code_corpus: a details block after a fence whose closing line has trailing text ===
--- LINES (10) --
-L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "item"
-L0002 style=fg=-,bg=-,mod=- align=-
-L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=I "▎ "
-  s01 fg=-,bg=-,mod=- "                                                                                            "
-  s02 fg=gray,bg=-,mod=DI " rust "
-L0004 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(198,120,221),bg=-,mod=- "let"
-  s02 fg=rgb(171,178,191),bg=-,mod=- " x "
-  s03 fg=rgb(171,178,191),bg=-,mod=- "="
-  s04 fg=rgb(171,178,191),bg=-,mod=- " "
-  s05 fg=rgb(209,154,102),bg=-,mod=- "1"
-  s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
-L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "next"
-L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▾ "
   s01 fg=-,bg=-,mod=B "S"
-L0009 style=fg=-,bg=-,mod=- align=-
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
   s01 fg=-,bg=-,mod=- "body"
 -- IMAGES (0) --
@@ -262,7 +265,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0003 kind=CodeBlock
-  m01 line=0008 kind=Details{ordinal=0}
+  m01 line=0009 kind=Details{ordinal=0}
 
 === code_corpus: a fence in a list item, then a real top-level fence after the list ends ===
 -- LINES (12) --
@@ -312,7 +315,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   m01 line=0009 kind=CodeBlock
 
 === code_corpus: a fence-lookalike indented 4 columns is the literal content of an indented code block ===
--- LINES (5) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -322,8 +325,14 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "```rustfn a(){}```"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```rust"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "fn a(){}"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -335,7 +344,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock
 
 === code_corpus: a heading and a real fence after a fence whose closing line has trailing text ===
--- LINES (15) --
+-- LINES (16) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -353,31 +362,33 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "next"
+  s00 fg=-,bg=-,mod=- "- "
 L0008 style=fg=-,bg=-,mod=- align=-
-L0009 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "next"
+L0009 style=fg=-,bg=-,mod=- align=-
+L0010 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "H"
-L0010 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0011 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0012 style=fg=-,bg=-,mod=- align=-
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                              "
   s02 fg=gray,bg=-,mod=DI " sh "
-L0013 style=fg=-,bg=-,mod=- align=-
+L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
   s01 fg=rgb(86,182,194),bg=-,mod=- "echo"
   s02 fg=rgb(171,178,191),bg=-,mod=- " hi"
-L0014 style=fg=-,bg=-,mod=- align=-
+L0015 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (2) --
@@ -386,10 +397,10 @@ L0014 style=fg=-,bg=-,mod=- align=-
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (1) --
-  a00 line=0009 slug="h"
+  a00 line=0010 slug="h"
 -- ITEMS (2) --
   m00 line=0003 kind=CodeBlock
-  m01 line=0012 kind=CodeBlock
+  m01 line=0013 kind=CodeBlock
 
 === code_corpus: a longer closing line closes ===
 -- LINES (8) --
@@ -426,52 +437,53 @@ L0007 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_corpus: a mermaid fence at an ordered item's content column is diverted to a diagram ===
--- LINES (8) --
-L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=lightblue,bg=-,mod=- "1. "
-  s01 fg=-,bg=-,mod=- "Diagram:"
-L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "                                        "
-  s01 fg=cyan,bg=-,mod=I "◇ mermaid — mermaid"
-L0002 style=fg=-,bg=-,mod=- align=-
-L0003 style=fg=-,bg=-,mod=- align=-
-L0004 style=fg=-,bg=-,mod=- align=-
-L0005 style=fg=-,bg=-,mod=- align=-
-L0006 style=fg=-,bg=-,mod=- align=-
-L0007 style=fg=-,bg=-,mod=- align=-
--- IMAGES (1) --
-  i00 line=0002 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://45c917d560f0fba8"
--- CODE_BLOCKS (0) --
--- TASKS (0) --
--- DETAILS_OPEN (0) --
--- ANCHORS (0) --
--- ITEMS (1) --
-  m00 line=0001 kind=MermaidFence{ordinal=0}
-
-=== code_corpus: a mermaid fence indented 4 columns is left in the text and drawn as ordinary code ===
--- LINES (6) --
+-- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Diagram:"
 L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "                                        "
+  s01 fg=cyan,bg=-,mod=I "◇ mermaid — mermaid"
 L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=I "▎ "
-  s01 fg=-,bg=-,mod=- "                                                                                         "
-  s02 fg=gray,bg=-,mod=DI " mermaid "
 L0004 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "flowchart TDA-->B"
 L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
--- IMAGES (0) --
+L0006 style=fg=-,bg=-,mod=- align=-
+L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (1) --
+  i00 line=0003 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://91455937ad5dce94"
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=MermaidFence{ordinal=0}
+
+=== code_corpus: a mermaid fence indented 4 columns is left in the text and drawn as ordinary code ===
+-- LINES (9) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=lightblue,bg=-,mod=- "1. "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Diagram:"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "                                        "
+  s01 fg=cyan,bg=-,mod=I "◇ mermaid — mermaid"
+L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
+L0006 style=fg=-,bg=-,mod=- align=-
+L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (1) --
+  i00 line=0003 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://91455937ad5dce94"
 -- CODE_BLOCKS (1) --
   c00 "flowchart TD\nA-->B"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0002 kind=MermaidFence{ordinal=0}
 
 === code_corpus: a plain (non-alert) block quote wrapping a fence is not detected by either side ===
 -- LINES (5) --
@@ -482,24 +494,28 @@ L0000 style=fg=green,bg=-,mod=I align=-
 L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0002 style=fg=white,bg=-,mod=- align=-
+L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0003 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "code"
-L0004 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "code"
+L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: a real HTML block and a tag-shaped indented block in one document ===
 -- LINES (7) --
@@ -528,7 +544,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
   m00 line=0004 kind=CodeBlock
 
 === code_corpus: a shorter closing line does not close a longer fence ===
--- LINES (8) --
+-- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -546,12 +562,14 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "```"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "next"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -615,7 +633,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_corpus: a tilde closing line does not close a backtick fence ===
--- LINES (8) --
+-- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -633,14 +651,16 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "~"
-  s08 fg=rgb(171,178,191),bg=-,mod=- "~"
-  s09 fg=rgb(171,178,191),bg=-,mod=- "~"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "~"
+  s02 fg=rgb(171,178,191),bg=-,mod=- "~"
+  s03 fg=rgb(171,178,191),bg=-,mod=- "~"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "next"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -728,7 +748,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_corpus: an alert after a fence whose closing line has trailing text ===
--- LINES (10) --
+-- LINES (11) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -746,21 +766,23 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "next"
+  s00 fg=-,bg=-,mod=- "- "
 L0008 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "next"
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=blue,bg=-,mod=- "\u{f05a} "
   s02 fg=blue,bg=-,mod=B "Note"
-L0009 style=fg=-,bg=-,mod=- align=-
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "body"
 -- IMAGES (0) --
@@ -773,25 +795,26 @@ L0009 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_corpus: an alert inside a list item ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-  s01 fg=-,bg=-,mod=- "item"
 L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "item"
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=blue,bg=-,mod=- "\u{f05a} "
   s02 fg=blue,bg=-,mod=B "Note"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=cyan,bg=-,mod=I "▎ "
   s02 fg=-,bg=-,mod=- "                                                                                            "
   s03 fg=gray,bg=-,mod=DI " sh "
-L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=cyan,bg=-,mod=- "▎ "
   s02 fg=rgb(86,182,194),bg=-,mod=- "echo"
   s03 fg=rgb(171,178,191),bg=-,mod=- " hi"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
@@ -801,71 +824,77 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock
 
 === code_corpus: an indented line right after a table block, with no blank line between ===
--- LINES (7) --
+-- LINES (5) --
 L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────┬───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
-  s03 fg=cyan,bg=-,mod=B " "
+  s03 fg=cyan,bg=-,mod=B "         "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=cyan,bg=-,mod=B " "
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────────┼───┤"
 L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "code here"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "  "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0004 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=I "▎ "
-  s01 fg=-,bg=-,mod=- "                                                                                            "
-  s02 fg=gray,bg=-,mod=DI " code "
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "code here"
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=- "▎ "
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
   c00 "code here"
--- TASKS (0) --
--- DETAILS_OPEN (0) --
--- ANCHORS (0) --
--- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
-
-=== code_corpus: an indented line swallowed by an HTML comment block is not code ===
--- LINES (2) --
-L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "code here"
-L0001 style=fg=-,bg=-,mod=- align=-
--- IMAGES (0) --
--- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
-=== code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph ===
--- LINES (6) --
+=== code_corpus: an indented line swallowed by an HTML comment block is not code ===
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "para"
-L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "x"
-L0002 style=fg=-,bg=-,mod=- align=-
-L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
-L0004 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
   s01 fg=rgb(171,178,191),bg=-,mod=- "code here"
-L0005 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=CodeBlock
+
+=== code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "para"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "x"
+L0001 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=I "▎ "
+  s01 fg=-,bg=-,mod=- "                                                                                            "
+  s02 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "code here"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -874,7 +903,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: block quote nested inside a list item, wrapping a fence ===
 -- LINES (7) --
@@ -886,24 +915,29 @@ L0002 style=fg=-,bg=-,mod=- align=-
 L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0004 style=fg=white,bg=-,mod=- align=-
+L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```sh"
-L0005 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                            "
+  s04 fg=gray,bg=-,mod=DI " sh "
+L0005 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "echo hi"
-L0006 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(86,182,194),bg=-,mod=- "echo"
+  s04 fg=rgb(171,178,191),bg=-,mod=- " hi"
+L0006 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0004 kind=CodeBlock
 
 === code_corpus: block quote nested inside a list item, wrapping an indented block ===
 -- LINES (8) --
@@ -919,89 +953,77 @@ L0003 style=fg=green,bg=-,mod=I align=-
 L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0005 style=fg=white,bg=-,mod=- align=-
+L0005 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0006 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " code "
+L0006 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "code"
-L0007 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "code"
+L0007 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0005 kind=CodeBlock
 
 === code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md) ===
--- LINES (5) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Banner — "
   s01 fg=blue,bg=-,mod=U "https://img.example/banner.png"
 L0001 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0002 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 rustc — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/rustc.svg"
-L0003 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 Patron — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/patron.png"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail."
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (4) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://img.example/banner.png"}
   m01 line=0001 kind=Link{target="https://img.example/v.svg"}
-  m02 line=0002 kind=Link{target="https://img.example/rustc.svg"}
-  m03 line=0003 kind=Link{target="https://img.example/patron.png"}
 
 === code_corpus: centered banner whose <img> lines are cut out of it stays HTML ===
--- LINES (3) --
+-- LINES (2) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 a — "
   s01 fg=blue,bg=-,mod=U "https://img.example/a.svg"
-L0001 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 b — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/b.svg"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (1) --
   m00 line=0000 kind=Link{target="https://img.example/a.svg"}
-  m01 line=0001 kind=Link{target="https://img.example/b.svg"}
 
 === code_corpus: centered banner with a bare <br> line in it (registry: raw-window-metal README.md) ===
--- LINES (3) --
+-- LINES (2) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0001 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 License - MIT — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/mit.svg"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (1) --
   m00 line=0000 kind=Link{target="https://img.example/v.svg"}
-  m01 line=0001 kind=Link{target="https://img.example/mit.svg"}
 
 === code_corpus: checkbox in a nested list item written with three spaces after the bullet (registry: zerocopy agent_docs) ===
 -- LINES (3) --
@@ -1264,7 +1286,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_corpus: closing line with trailing text does not close, but the list item ends the block ===
--- LINES (13) --
+-- LINES (14) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -1282,26 +1304,28 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "["
-  s10 fg=rgb(171,178,191),bg=-,mod=- "#"
-  s11 fg=rgb(209,154,102),bg=-,mod=- "1"
-  s12 fg=rgb(171,178,191),bg=-,mod=- "]"
-  s13 fg=rgb(171,178,191),bg=-,mod=- "("
-  s14 fg=rgb(171,178,191),bg=-,mod=- "https"
-  s15 fg=rgb(171,178,191),bg=-,mod=- ":"
-  s16 fg=rgb(92,99,112),bg=-,mod=I "//"
-  s17 fg=rgb(92,99,112),bg=-,mod=I "example.com/1))"
 L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "["
+  s04 fg=rgb(171,178,191),bg=-,mod=- "#"
+  s05 fg=rgb(209,154,102),bg=-,mod=- "1"
+  s06 fg=rgb(171,178,191),bg=-,mod=- "]"
+  s07 fg=rgb(171,178,191),bg=-,mod=- "("
+  s08 fg=rgb(171,178,191),bg=-,mod=- "https"
+  s09 fg=rgb(171,178,191),bg=-,mod=- ":"
+  s10 fg=rgb(92,99,112),bg=-,mod=I "//"
+  s11 fg=rgb(92,99,112),bg=-,mod=I "example.com/1))"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "next"
+  s00 fg=-,bg=-,mod=- "- "
 L0008 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+  s00 fg=-,bg=-,mod=- "next"
 L0009 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1311,9 +1335,9 @@ L0009 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0010 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0011 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0012 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1323,7 +1347,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0012 style=fg=-,bg=-,mod=- align=-
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1335,23 +1359,38 @@ L0012 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_corpus: closing line with trailing text inside a block quote ===
--- LINES (8) --
-L0000 style=fg=white,bg=-,mod=- align=-
+-- LINES (9) --
+L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```rust"
-L0001 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " rust "
+L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "let x = 1;"
-  s03 fg=-,bg=-,mod=- "``` (note)"
-L0002 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(198,120,221),bg=-,mod=- "let"
+  s04 fg=rgb(171,178,191),bg=-,mod=- " x "
+  s05 fg=rgb(171,178,191),bg=-,mod=- "="
+  s06 fg=rgb(171,178,191),bg=-,mod=- " "
+  s07 fg=rgb(209,154,102),bg=-,mod=- "1"
+  s08 fg=rgb(171,178,191),bg=-,mod=- ";"
+L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s04 fg=rgb(171,178,191),bg=-,mod=- "("
+  s05 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s06 fg=rgb(171,178,191),bg=-,mod=- ")"
+L0003 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1361,9 +1400,9 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1373,17 +1412,18 @@ L0006 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=CodeBlock
 
 === code_corpus: closing line with trailing text inside a list item inside a block quote ===
--- LINES (11) --
+-- LINES (12) --
 L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
@@ -1395,22 +1435,37 @@ L0001 style=fg=green,bg=-,mod=I align=-
 L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0003 style=fg=white,bg=-,mod=- align=-
+L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```rust"
-L0004 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " rust "
+L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "let x = 1;"
-  s03 fg=-,bg=-,mod=- "``` (note)"
-L0005 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(198,120,221),bg=-,mod=- "let"
+  s04 fg=rgb(171,178,191),bg=-,mod=- " x "
+  s05 fg=rgb(171,178,191),bg=-,mod=- "="
+  s06 fg=rgb(171,178,191),bg=-,mod=- " "
+  s07 fg=rgb(209,154,102),bg=-,mod=- "1"
+  s08 fg=rgb(171,178,191),bg=-,mod=- ";"
+L0005 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s04 fg=rgb(171,178,191),bg=-,mod=- "("
+  s05 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s06 fg=rgb(171,178,191),bg=-,mod=- ")"
+L0006 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=cyan,bg=-,mod=- "▎ "
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1420,9 +1475,9 @@ L0007 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0008 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0009 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1432,17 +1487,18 @@ L0009 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0010 style=fg=-,bg=-,mod=- align=-
+L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0003 kind=CodeBlock
 
 === code_corpus: closing line with trailing text inside a nested list item ===
--- LINES (13) --
+-- LINES (14) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "outer"
@@ -1463,18 +1519,20 @@ L0005 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(171,178,191),bg=-,mod=- " "
   s05 fg=rgb(209,154,102),bg=-,mod=- "1"
   s06 fg=rgb(171,178,191),bg=-,mod=- ";"
-  s07 fg=rgb(171,178,191),bg=-,mod=- "``` "
-  s08 fg=rgb(171,178,191),bg=-,mod=- "("
-  s09 fg=rgb(171,178,191),bg=-,mod=- "note"
-  s10 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "``` "
+  s02 fg=rgb(171,178,191),bg=-,mod=- "("
+  s03 fg=rgb(171,178,191),bg=-,mod=- "note"
+  s04 fg=rgb(171,178,191),bg=-,mod=- ")"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "after"
-L0008 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0009 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1484,9 +1542,9 @@ L0009 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0010 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0011 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0012 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1496,7 +1554,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0012 style=fg=-,bg=-,mod=- align=-
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1633,7 +1691,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
   m00 line=0006 kind=Link{target="https://img.example/ci.svg"}
 
 === code_corpus: crlf indented block ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -1643,8 +1701,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "indentedsecond"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "indented"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "second"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1894,27 +1955,32 @@ L0000 style=fg=green,bg=-,mod=I align=-
 L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0002 style=fg=white,bg=-,mod=- align=-
+L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```sh"
-L0003 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                            "
+  s04 fg=gray,bg=-,mod=DI " sh "
+L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "echo hi"
-L0004 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(86,182,194),bg=-,mod=- "echo"
+  s04 fg=rgb(171,178,191),bg=-,mod=- " hi"
+L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: fence-lookalike 4 columns past a bullet item's content column is indented code ===
--- LINES (6) --
+-- LINES (8) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -1926,8 +1992,14 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "```shecho hi```"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```sh"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "echo hi"
+L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```"
+L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2007,15 +2079,18 @@ L0009 style=fg=-,bg=-,mod=- align=-
   m01 line=0007 kind=CodeBlock
 
 === code_corpus: indented block at doc start ===
--- LINES (3) --
+-- LINES (4) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "line oneline two"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "line one"
 L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "line two"
+L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2337,7 +2412,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock
 
 === code_corpus: indented block whose content is a GFM table stays literal code ===
--- LINES (5) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2347,8 +2422,14 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "| a | b ||---|---|| 1 | 2 |"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "| a | b |"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "|---|---|"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "| 1 | 2 |"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2475,7 +2556,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock
 
 === code_corpus: indented block whose content is an alert header stays literal code ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2485,8 +2566,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "> [!NOTE]> body"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "> [!NOTE]"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "> body"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2585,7 +2669,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m01 line=0006 kind=CodeBlock
 
 === code_corpus: indented block whose first line is plain and a later line is tag-shaped ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2595,8 +2679,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "plain first<div>"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "plain first"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<div>"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2608,7 +2695,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock
 
 === code_corpus: indented code inside a bullet item (content column + 4) ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2620,8 +2707,11 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "code linesecond line"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "code line"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "second line"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2709,32 +2799,36 @@ L0000 style=fg=green,bg=-,mod=I align=-
 L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-L0002 style=fg=white,bg=-,mod=- align=-
+L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0003 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " code "
+L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "aaa"
-L0004 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "aaa"
+L0004 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-  s03 fg=white,bg=-,mod=- "inline"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 L0005 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- " after"
+  s02 fg=white,bg=-,mod=- "inline"
+  s03 fg=-,bg=-,mod=- " after"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=CodeBlock
 
 === code_corpus: list item fence with a two-line body (count parity only — content is checked elsewhere) ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2746,8 +2840,11 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "aaabbb"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "aaa"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "bbb"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -2954,7 +3051,7 @@ L0002 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_corpus: standalone indented block ===
--- LINES (7) --
+-- LINES (8) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Normal paragraph."
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -2964,11 +3061,14 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "indented code linesecond line"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "indented code line"
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "second line"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0006 style=fg=-,bg=-,mod=- align=-
+L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Tail."
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -3079,7 +3179,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_corpus: two chunks glued by a blank separator into one code block ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -3092,8 +3192,10 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s01 fg=rgb(171,178,191),bg=-,mod=- "chunk one"
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "chunk two"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "chunk two"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -4103,18 +4205,21 @@ L0010 style=fg=-,bg=-,mod=- align=-
 
 === code_span_corpus: indented code block inside a blockquote ===
 -- LINES (9) --
-L0000 style=fg=white,bg=-,mod=- align=-
+L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
-L0001 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=I "▎ "
+  s03 fg=-,bg=-,mod=- "                                                                                          "
+  s04 fg=gray,bg=-,mod=DI " code "
+L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
-L0002 style=fg=white,bg=-,mod=- align=-
+  s02 fg=cyan,bg=-,mod=- "▎ "
+  s03 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
+L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "```"
+  s02 fg=cyan,bg=-,mod=- "▎ "
 L0003 style=fg=-,bg=-,mod=- align=-
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
@@ -4132,7 +4237,8 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block inside a list item, six columns, blank line before it ===
 -- LINES (12) --
@@ -4172,26 +4278,29 @@ L0011 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with a closing tag ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "</a>[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "</a>"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -4204,26 +4313,29 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with a rewritable tag ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "<kbd>K</kbd>[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<kbd>K</kbd>"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -4236,26 +4348,29 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with a tag with attributes ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "<a href=\"x\">[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<a href=\"x\">"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -4268,26 +4383,29 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with an HTML comment ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "<!-- c -->[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<!-- c -->"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -4300,26 +4418,29 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with an autolink ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "<https://example.com>[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<https://example.com>"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -4332,26 +4453,29 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock
 
 === code_span_corpus: indented code block opening with cjk in angle brackets ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
   s02 fg=gray,bg=-,mod=DI " code "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "<仕様書>[^1] <kbd>K</kbd> $x$"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "<仕様書>"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -5178,7 +5302,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === code_span_corpus: two indented chunks separated by a blank line stay one literal block ===
--- LINES (10) --
+-- LINES (11) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=I "▎ "
   s01 fg=-,bg=-,mod=- "                                                                                            "
@@ -5188,19 +5312,21 @@ L0001 style=fg=-,bg=-,mod=- align=-
   s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "[^1] <kbd>K</kbd> $x$"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
 L0005 style=fg=-,bg=-,mod=- align=-
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "out ¹ "
   s01 fg=white,bg=-,mod=- "K"
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$x$"
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
+  s00 fg=-,bg=-,mod=D "$x$"
 L0008 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0009 style=fg=-,bg=-,mod=- align=-
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
@@ -6530,22 +6656,23 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === list_corpus: task item inside a loose list ===
--- LINES (2) --
+-- LINES (4) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-  s01 fg=-,bg=-,mod=- "a"
 L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f096} "
-  s02 fg=-,bg=-,mod=- "b"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "[ ] "
+  s01 fg=-,bg=-,mod=- "b"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
   t00 line=0002 state_off=0003 state=' '
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+-- ITEMS (0) --
 
 === list_corpus: task item nested under a tight item ===
 -- LINES (2) --
@@ -6870,21 +6997,17 @@ L0006 style=fg=-,bg=-,mod=- align=-
   m01 line=0006 kind=Link{target="https://example.com"}
 
 === preprocess_corpus: bare br line inside an html block ===
--- LINES (2) --
+-- LINES (1) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 a — "
   s01 fg=blue,bg=-,mod=U "https://a.svg"
-L0001 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 b — "
-  s01 fg=blue,bg=-,mod=U "https://b.svg"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (1) --
   m00 line=0000 kind=Link{target="https://a.svg"}
-  m01 line=0001 kind=Link{target="https://b.svg"}
 
 === preprocess_corpus: br after a fence ===
 -- LINES (6) --
@@ -7269,23 +7392,19 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md) ===
--- LINES (3) --
+-- LINES (2) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0001 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 License - MIT — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/mit.svg"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (1) --
   m00 line=0000 kind=Link{target="https://img.example/v.svg"}
-  m01 line=0001 kind=Link{target="https://img.example/mit.svg"}
 
 === preprocess_corpus: checkbox carrying a ref ===
 -- LINES (5) --
@@ -7773,26 +7892,22 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md) ===
--- LINES (5) --
+-- LINES (4) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "TT"
 L0001 style=fg=-,bg=-,mod=- align=-
 L0002 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 CI — "
   s01 fg=blue,bg=-,mod=U "https://img.example/ci.svg"
-L0003 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (1) --
   m00 line=0002 kind=Link{target="https://img.example/ci.svg"}
-  m01 line=0003 kind=Link{target="https://img.example/v.svg"}
 
 === preprocess_corpus: crlf with a continued def ===
 -- LINES (5) --
@@ -7855,7 +7970,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m01 line=0002 kind=CodeBlock
 
 === preprocess_corpus: def carrying a fence ===
--- LINES (5) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Ref"
   s01 fg=-,bg=-,mod=- "^"
@@ -7868,8 +7983,14 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "```rustfn a() {}```"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```rust"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "fn a() {}"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -7882,7 +8003,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m01 line=0002 kind=CodeBlock
 
 === preprocess_corpus: def carrying a list ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Ref"
   s01 fg=-,bg=-,mod=- "^"
@@ -7895,8 +8016,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "- one- two"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "- one"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "- two"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -8303,31 +8427,23 @@ L0000 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=Task{state=' '}
 
 === preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md) ===
--- LINES (5) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Banner — "
   s01 fg=blue,bg=-,mod=U "https://img.example/banner.png"
 L0001 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0002 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 rustc — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/rustc.svg"
-L0003 style=fg=-,bg=-,mod=D align=-
-  s00 fg=-,bg=-,mod=- "🖼 Patron — "
-  s01 fg=blue,bg=-,mod=U "https://img.example/patron.png"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail."
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (4) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://img.example/banner.png"}
   m01 line=0001 kind=Link{target="https://img.example/v.svg"}
-  m02 line=0002 kind=Link{target="https://img.example/rustc.svg"}
-  m03 line=0003 kind=Link{target="https://img.example/patron.png"}
 
 === preprocess_corpus: mid-line br inside an html block ===
 -- LINES (3) --
@@ -11443,13 +11559,14 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m02 line=0004 kind=Task{state=' '}
 
 === task_corpus: a real task at a list item's own indentation is still a real task ===
--- LINES (2) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-  s01 fg=cyan,bg=-,mod=B "\u{f096} "
-  s02 fg=-,bg=-,mod=- "outer"
 L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "- "
+  s00 fg=-,bg=-,mod=- "[ ] "
+  s01 fg=-,bg=-,mod=- "outer"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "    - "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "nested at matching indent"
 -- IMAGES (0) --
@@ -11459,9 +11576,8 @@ L0001 style=fg=-,bg=-,mod=- align=-
   t01 line=0002 state_off=0005 state=' '
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state=' '}
+-- ITEMS (1) --
+  m00 line=0002 kind=Task{state=' '}
 
 === task_corpus: alert CAUTION ===
 -- LINES (2) --
@@ -12783,7 +12899,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
   m01 line=0006 kind=Task{state=' '}
 
 === task_corpus: task-lookalike inside a fence-lookalike top-level indented code block ===
--- LINES (7) --
+-- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -12793,11 +12909,17 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s02 fg=gray,bg=-,mod=DI " code "
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
-  s01 fg=rgb(171,178,191),bg=-,mod=- "```rust- [ ] fake```"
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```rust"
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "- [ ] fake"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+  s01 fg=rgb(171,178,191),bg=-,mod=- "```"
 L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=- "▎ "
+L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "real"
@@ -12810,7 +12932,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m01 line=0008 kind=Task{state=' '}
 
 === task_corpus: task-lookalike inside a tilde fence with a shorter nested tilde lookalike ===
 -- LINES (7) --

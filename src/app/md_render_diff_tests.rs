@@ -733,6 +733,14 @@ fn render_case_new(
         &slot_of,
         &mermaid_slot,
         "mermaid",
+        // `cfg.ui.md_alerts` — matching `render_case`'s own identical argument to
+        // `render_markdown_with_images` (the "old"/dispatcher side of this same comparison; see that
+        // function's own call site) — not a hardcoded `true`: with `render_markdown_with_images` no
+        // longer falling back to the legacy renderer just because `alerts` is off (see that
+        // function's own doc comment for the narrowed fallback), a corpus case run with `md_alerts =
+        // false` needs *both* sides of this comparison honoring the identical config, not one side
+        // silently pinned to the default.
+        cfg.ui.md_alerts,
         &math_slot,
         true,
     );

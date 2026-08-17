@@ -579,8 +579,117 @@ pub enum ImageSlot {
 /// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
 /// degrades to a one-line text placeholder (design principle #3). Text runs are rendered by
 /// `render_markdown` unchanged, so all existing decoration behavior is preserved.
+///
+/// ## The production entry point, now dispatching to the block-model renderer (`md-block-walk`)
+///
+/// This is the single production call site every real preview goes through
+/// (`app::md_render::build_decorated`, one call), and also the function the whole parity-test suite
+/// (`md_snapshot_tests`/`md_render_diff_tests`, and every "does the render match the write-back
+/// scanner" test in this file) already called directly before this refactor — so switching *this*
+/// function's own body over to `Doc::parse` → `render::render_doc` puts both the running app and every
+/// existing test on the new renderer at once, with no second call site to keep in sync (see
+/// `render::render_doc`'s own module doc comment for the renderer itself, and `model::Doc`'s for why a
+/// single whole-document parse is the entire point).
+///
+/// Falls back to the pre-refactor implementation (`render_markdown_with_images_legacy`, the exact
+/// body this function had before this dispatch was added) in exactly one case, checked *before*
+/// trusting the new renderer's own output:
+///
+/// * `RenderOut::unsupported` is non-empty — some top-level `Table`/`Html` sits nested inside a
+///   `Quote` somewhere in `src` (the one remaining gap `render::contains_unsupported`'s own doc comment
+///   documents in full; every other shape renders from the model now — see the parity-corpus numbers in
+///   that module's own doc comment: `unsupported: 0` across all 462 cases). Falling back to the *whole*
+///   document, not just the one affected construct, is the same "never partially render, never drop
+///   content" choice `render_doc` itself already makes internally for this exact shape (see
+///   `contains_unsupported`'s own doc comment) — principle #3 (`CLAUDE.md`), never silently losing what
+///   was on screen before this switch.
+///
+/// `alerts` (`ui.md_alerts`) is no longer a fallback trigger on its own: `render::render_doc` now takes
+/// the identical `alerts` parameter this function does and honors it directly — a `> [!TYPE]`
+/// blockquote with `alerts = false` renders as an ordinary blockquote (`render_quote`, the same
+/// function a plain `Quote` already used), the literal `[!TYPE]` marker text left in place exactly the
+/// way `render_markdown_tasks_opts`'s own identical gate leaves it for the legacy path (see
+/// `render::Writer.alerts`'s own doc comment for the mechanism). Pinned by a real, running e2e test
+/// (`e2e_markdown_autolink_emoji_alerts_toggle_off`) that expects `"[!WARNING]"` to survive as raw text
+/// when this config is off — still exercised, now through the model path, not by diverting to the
+/// legacy one.
+///
+/// `extraction_targets` (this file, right below the collector functions) is the sibling half of this
+/// same fallback decision: `collect_remote_image_urls`/`collect_mermaid_fences`/`collect_math_exprs`
+/// each derive their own "which extraction path did this document actually take" from
+/// `RenderOut::unsupported` too, so a document this function renders via the model always has its
+/// remote-image/mermaid-fence/math-expression keys collected the model's own way (see that function's
+/// own doc comment for exactly why matching *this* function's own choice, key for key, is the whole
+/// point of that split). Unlike the `unsupported` fallback, `alerts` needs no equivalent mirroring on
+/// that side at all: a `Quote`'s own body — alert or plain — always renders with `extract_here: false`
+/// (`render_quote`'s own `child_ctx`, `render_bar_prefixed_body`'s own `body_ctx`; see either's doc
+/// comment), so no image/mermaid/math extraction ever happens *inside* one regardless of how its
+/// header renders, and `contains_unsupported`'s own `Quote` handling never distinguishes `alert: Some`
+/// from `alert: None` either (both pass `in_quote: true` identically) — `alerts` genuinely cannot
+/// change what gets extracted or whether a document falls back, only how an alert's own header/body
+/// lines are *styled*, so `extraction_targets`'s own probe call below is free to pass any fixed value
+/// for it.
 #[allow(clippy::too_many_arguments)] // the existing 7 args + mermaid/math slots (only one call site in app + tests)
 pub fn render_markdown_with_images(
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+    let doc = model::Doc::parse(src);
+    let out = render::render_doc(
+        &doc,
+        src,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+    );
+    if out.unsupported.is_empty() {
+        return (out.lines, out.images);
+    }
+    render_markdown_with_images_legacy(
+        src,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+    )
+}
+
+/// The pre-`md-block-walk` implementation of `render_markdown_with_images` — line-based extraction
+/// (`split_block_parts`/`split_math`) over raw source, then a per-run `tui-markdown` decoration pass
+/// (`render_markdown_tasks_opts`). Kept, unchanged, as the fallback `render_markdown_with_images`
+/// itself calls whenever the model-based renderer cannot be trusted for a given call (see that
+/// function's own doc comment for exactly when: `alerts = false`, or `render::render_doc` reports part
+/// of the document as `unsupported`) — never called directly by any real preview path or test on its
+/// own any more (every existing call site that used to name this function now names the dispatcher
+/// above instead), but still fully exercised *through* it for every corpus case that hits either
+/// fallback condition.
+#[allow(clippy::too_many_arguments)]
+fn render_markdown_with_images_legacy(
     src: &str,
     width: u16,
     code: CodeStyle,
@@ -772,7 +881,21 @@ pub fn is_remote_image_url(url: &str) -> bool {
 /// Collect the URLs of all block-level images whose source is remote (HTTP(S)), in document order.
 /// Fence-aware (an image inside a code fence is skipped), matching `render_markdown_with_images`. Used
 /// by the app to kick off background fetches for the remote images it is about to show as "loading".
+///
+/// Derived from `extraction_targets` — see that function's own doc comment for why this, and its two
+/// siblings below (`collect_mermaid_fences`/`collect_math_exprs`), no longer walk `src` on their own:
+/// every extraction key this returns is exactly the one `render_markdown_with_images` itself would
+/// place a remote image under for this same `src`, by construction (both read off the identical
+/// `render::render_doc` pass, or fall back to the identical raw-line scan, together).
 pub fn collect_remote_image_urls(src: &str) -> Vec<String> {
+    extraction_targets(src).remote_urls
+}
+
+/// The pre-`md-block-walk` implementation of `collect_remote_image_urls` (line-based, fence-aware
+/// scanning of raw `src` — unchanged). Kept as the fallback `extraction_targets` calls whenever the
+/// model-based renderer cannot be trusted for `src` (mirroring `render_markdown_with_images_legacy`'s
+/// own role for rendering) — see that function's own doc comment.
+fn collect_remote_image_urls_legacy(src: &str) -> Vec<String> {
     let mut urls = Vec::new();
     for part in split_block_images(src) {
         if let BlockPart::Image { url, .. } = part {
@@ -782,6 +905,155 @@ pub fn collect_remote_image_urls(src: &str) -> Vec<String> {
         }
     }
     urls
+}
+
+/// What `collect_remote_image_urls`/`collect_mermaid_fences`/`collect_math_exprs` each return one
+/// field of — computed together, by one `Doc::parse` + `render::render_doc` pass (or, when that pass
+/// cannot be trusted for `src`, one shared fallback to the three legacy, raw-line-based scanners), so
+/// the three lists can never independently disagree about which extraction path a given document took.
+struct ExtractionTargets {
+    remote_urls: Vec<String>,
+    mermaid_fences: Vec<String>,
+    math_exprs: Vec<(String, bool)>,
+}
+
+/// The shared implementation behind `collect_remote_image_urls`/`collect_mermaid_fences`/
+/// `collect_math_exprs`: every URL/fence-body/`(latex, display)` key any of the three collects, in one
+/// pass, so a caller invoking all three for the same `src` (as `app::md_render::build_decorated` does)
+/// always sees a consistent answer for "which renderer will actually place this document" — never one
+/// collector saying "model" while another says "legacy" for the identical document.
+///
+/// ## Why this exists: the exact URL a real render will key its placement under
+///
+/// `collect_mermaid_fences`/`collect_math_exprs` do not return URLs at all — they return the fence
+/// body / `(latex, display)` pair the app later hashes itself (`mermaid_fence_url`/`math_url`) to kick
+/// off a background render and to key `md_image_cache`. For that hash to land on the *same* key
+/// `render_markdown_with_images` will place its own `ImagePlacement` under, the **input bytes** handed
+/// to the hash have to match byte for byte, not merely "be an equivalent representation of the same
+/// fence" — and `render::render_doc`'s own `render_mermaid_slot` computes its hash input from
+/// `model::code_body_text(body_spans, src)` (the fence's content **with any enclosing list item's own
+/// content-column indentation already stripped** — see that field's own doc comment), which disagrees,
+/// byte for byte, with what the pre-refactor line scanner (`split_block_parts`, still `src`'s own
+/// literal lines, indentation included) would have hashed for exactly the same list-nested fence — the
+/// "list-nested mermaid fence" divergence `render_mermaid_slot`'s own doc comment documents in full.
+/// Re-deriving each collector's own answer independently (a second, hand-written walk of `src` that
+/// tries to reproduce the model's own dedenting rules) would risk drifting from `render_doc`'s own
+/// extraction the exact way this whole refactor exists to eliminate (see `model.rs`'s own module doc
+/// comment: "every one of the 'renderer vs. scanner disagree' bugs ... comes from the same root cause").
+/// So this does not re-derive anything: it calls `render::render_doc` itself, with recording probe
+/// closures standing in for `slot_of`/`mermaid_slot`/`math_slot`, and simply records the exact
+/// arguments those closures were called with — the identical inputs a *real* render's own closures
+/// would have received, in the identical order, because `render_doc` calls each of the three
+/// unconditionally, at exactly the same points in its own tree walk, regardless of what the closure
+/// answers (`render_image_slot`/`render_mermaid_slot`/`render_math_slot` each call their own slot
+/// closure — building a real `ImagePlacement` only for the `Inline`/`Image` answer, but *calling* it
+/// either way; see each one's own doc comment). The probe closures here always answer `Inline`/`Image`
+/// (never `Loading`/`Unavailable`/`Text`/`Raw`) purely so a placement is always recorded to read the
+/// input back off of — the `cols`/`rows` they invent are never read by anything downstream of this
+/// function, which discards `RenderOut::lines`/`RenderOut::images` entirely and keeps only what the
+/// closures themselves observed.
+///
+/// `math_on: true` unconditionally: matching how the three *callers* of these collectors
+/// (`app::md_render::build_decorated`) already gate them — `collect_math_exprs` is only ever called
+/// `if math_on`, `collect_mermaid_fences` only `if mermaid_on`, `collect_remote_image_urls` only `if
+/// font.is_some()` — so by the time any of the three collector functions actually runs, the caller has
+/// already decided extraction is wanted; this function's own job is only "what would be extracted",
+/// never "should it be" a second time.
+///
+/// ## The fallback: matching `render_markdown_with_images`'s own choice, not just its extraction rules
+///
+/// `render::render_doc` reports `RenderOut::unsupported` the identical way whether called for real
+/// rendering or for this probe (same `doc`, same `src`) — so whenever it is non-empty,
+/// `render_markdown_with_images` itself will have already fallen back to
+/// `render_markdown_with_images_legacy` for this exact `src` (see that function's own doc comment), and
+/// every extraction key this function hands back falls back the identical way, to the three legacy,
+/// raw-line-based scanners (`collect_remote_image_urls_legacy`/`collect_mermaid_fences_legacy`/
+/// `collect_math_exprs_legacy`) — never a mix of "some keys from the model, some from the legacy scan"
+/// for the same document. See `render_markdown_with_images`'s own doc comment for the one further
+/// fallback condition (`alerts = false`) this function cannot see or mirror, and why that gap is
+/// accepted rather than closed here.
+fn extraction_targets(src: &str) -> ExtractionTargets {
+    let doc = model::Doc::parse(src);
+    let remote_urls: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let mermaid_fences: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let math_exprs: std::cell::RefCell<Vec<(String, bool)>> = std::cell::RefCell::new(Vec::new());
+    // Every extracted image URL is recorded (not merely the remote ones) — `collect_remote_image_urls`
+    // itself filters down to `is_remote_image_url` below, matching its own pre-refactor contract
+    // (`collect_remote_image_urls_legacy`'s identical filter over `BlockPart::Image`).
+    let slot_of = |url: &str| {
+        remote_urls.borrow_mut().push(url.to_string());
+        ImageSlot::Inline { cols: 1, rows: 1 }
+    };
+    // `render_mermaid_slot` never calls its own slot closure for a fence whose body is empty (a
+    // half-written ```mermaid — see that function's own doc comment); `code` here is exactly
+    // `render_mermaid_slot`'s own hash input — the fence's literal bytes with the one trailing `\n`
+    // `model::code_body_text` strips already put back (`hashed`; see that function's own doc
+    // comment for why the *same* string, not the shorter, still-stripped one, is what every real
+    // slot closure is handed: the one real, stateful implementation,
+    // `app::md_render::build_decorated`'s own `mermaid_slot`, hashes whatever it receives with no
+    // independent re-add step of its own, so this probe has to record precisely what that closure
+    // would receive too, byte for byte — recording anything else would silently stop matching the
+    // key a real diagram actually gets cached under, the exact bug that function's own doc comment
+    // documents in full). But `render_doc` itself *also* calls this same closure once, up front,
+    // with a literal empty string (`fences_on: !matches!(mermaid_slot(""), MermaidSlot::Text)` — see
+    // `render_doc`'s own doc comment on that line) purely to decide whether fence extraction is on at
+    // all, before it has parsed a single real fence. In real production that call is harmless (the
+    // real `mermaid_slot` closure just answers a variant, nothing is recorded), but *this* closure
+    // records every call it receives — so without the `!code.is_empty()` guard below, that one probe
+    // call would show up as a phantom `""` entry ahead of every document's real fences. Skipping
+    // empty `code` here can never drop a *real* fence: a fence-body call only ever reaches this
+    // closure once `render_mermaid_slot` has already confirmed `code.trim().is_empty()` is false (on
+    // the *pre*-hash `code`, which is a byte-for-byte prefix of `hashed` short only its own final
+    // `\n`), so `hashed` itself is never empty — nor merely `"\n"` — for a genuine fence.
+    let mermaid_slot = |code: &str| {
+        if !code.is_empty() {
+            mermaid_fences.borrow_mut().push(code.to_string());
+        }
+        MermaidSlot::Image { cols: 1, rows: 1 }
+    };
+    let math_slot = |latex: &str, display: bool| {
+        math_exprs.borrow_mut().push((latex.to_string(), display));
+        MathSlot::Image { cols: 1, rows: 1 }
+    };
+    // `width`/`code`/`theme`/`icons`/`tasks`/`mermaid_caption`/`alerts` affect only `RenderOut::lines`
+    // (layout, never read here) and are otherwise inert to which extraction closures fire — any
+    // well-formed value works (see `render_markdown_with_images`'s own doc comment, specifically the
+    // paragraph on `alerts`, for exactly why a `Quote`'s own body never extracts anything regardless
+    // of whether its header renders as a plain quote or a colored alert callout); `DEFAULT_TASK_STATES`
+    // and a representative width match what the rest of this file's own probe call sites
+    // (`md_render_diff_tests::render_case_new`) already use for the identical reason.
+    let out = render::render_doc(
+        &doc,
+        src,
+        100,
+        CodeStyle::default(),
+        "TwoDark",
+        false,
+        DEFAULT_TASK_STATES,
+        &slot_of,
+        &mermaid_slot,
+        "mermaid",
+        true, // alerts: inert here (see the paragraph above) — matches production's own default
+        &math_slot,
+        true,
+    );
+    if out.unsupported.is_empty() {
+        ExtractionTargets {
+            remote_urls: remote_urls
+                .into_inner()
+                .into_iter()
+                .filter(|u| is_remote_image_url(u))
+                .collect(),
+            mermaid_fences: mermaid_fences.into_inner(),
+            math_exprs: math_exprs.into_inner(),
+        }
+    } else {
+        ExtractionTargets {
+            remote_urls: collect_remote_image_urls_legacy(src),
+            mermaid_fences: collect_mermaid_fences_legacy(src),
+            math_exprs: collect_math_exprs_legacy(src),
+        }
+    }
 }
 
 /// Split the source into text runs and standalone block-level images. Fence-aware: an image inside a
@@ -2731,8 +3003,26 @@ pub fn is_mermaid_fence_url(url: &str) -> bool {
 }
 
 /// All top-level ```mermaid fence bodies in `src`, in document order (fences nested inside other
-/// code fences are not diagrams and are excluded — same fence rules as the block splitter).
+/// code fences are not diagrams and are excluded — same fence rules as the block splitter). Each
+/// entry is exactly the byte string `mermaid_fence_url` must be called on to reproduce the
+/// `ImagePlacement.url` `render_markdown_with_images` places that fence's diagram under — see
+/// `extraction_targets`'s own doc comment for why this can no longer be derived from a second,
+/// independent walk of `src`.
+///
+/// A fence whose body is empty (a half-written ```mermaid, nothing typed inside it yet) is never
+/// included: it can never become a diagram in the first place (`render_mermaid_slot` never calls its
+/// own slot closure for one — see that function's own doc comment), and the one caller
+/// (`app::md_render::build_decorated`) already skips any empty entry it does see before doing anything
+/// with it, so this is not a narrowing of what the caller can rely on.
 pub fn collect_mermaid_fences(src: &str) -> Vec<String> {
+    extraction_targets(src).mermaid_fences
+}
+
+/// The pre-`md-block-walk` implementation of `collect_mermaid_fences` (line-based, fence-aware
+/// scanning of raw `src`, indentation and all — unchanged). Kept as the fallback `extraction_targets`
+/// calls whenever the model-based renderer cannot be trusted for `src` — see
+/// `render_markdown_with_images_legacy`'s own doc comment for its counterpart on the rendering side.
+fn collect_mermaid_fences_legacy(src: &str) -> Vec<String> {
     split_block_parts(src, true)
         .into_iter()
         .filter_map(|p| match p {
@@ -2770,10 +3060,19 @@ pub fn is_synthetic_md_url(url: &str) -> bool {
 }
 
 /// All math expressions in `src`, in document order, as (latex, display). Mirrors the render path
-/// (`split_block_parts` → `split_math` per text run) so the extracted set matches what is drawn and
-/// the caller can kick off exactly those renders. Fence/code-span aware (math inside a code fence or
-/// `` `code span` `` is not extracted).
+/// so the extracted set matches what is drawn and the caller can kick off exactly those renders.
+/// Fence/code-span aware (math inside a code fence or `` `code span` `` is not extracted) — see
+/// `extraction_targets`'s own doc comment for why this is no longer a second, independent walk of
+/// `src`.
 pub fn collect_math_exprs(src: &str) -> Vec<(String, bool)> {
+    extraction_targets(src).math_exprs
+}
+
+/// The pre-`md-block-walk` implementation of `collect_math_exprs` (`split_block_parts` → `split_math`
+/// per text run, over raw `src` — unchanged). Kept as the fallback `extraction_targets` calls whenever
+/// the model-based renderer cannot be trusted for `src` — see `render_markdown_with_images_legacy`'s
+/// own doc comment for its counterpart on the rendering side.
+fn collect_math_exprs_legacy(src: &str) -> Vec<(String, bool)> {
     split_block_parts(src, false)
         .into_iter()
         .flat_map(|p| match p {
@@ -7938,9 +8237,21 @@ plain body
         let fences = collect_mermaid_fences(src);
         assert_eq!(fences.len(), 1, "外側フェンス内の mermaid は抽出しない");
         assert_eq!(fences[0], "graph LR\nA-->B\n");
-        // An unclosed fence safely reverts to text (nothing is lost).
+        // An unclosed fence is valid CommonMark: a fenced code block with no matching close runs to
+        // the end of the input (the same rule any other unclosed fenced code block already follows —
+        // see `model::Doc::parse`, backed by `pulldown_cmark`). The pre-`md-block-walk` hand-rolled
+        // scanner (`collect_mermaid_fences_legacy`) special-cased this shape as "safely revert to
+        // text" instead, but `extraction_targets` mirrors whatever `render::render_doc` itself would
+        // actually place (see that function's own doc comment) — and `render_doc` does place this one,
+        // the same way it renders any other unclosed fence as a genuine code block. Not reproducing a
+        // hand-picked "unterminated" special case here is exactly the point (see `extraction_targets`'s
+        // own doc comment on why a second, independently maintained walk of `src` is what this
+        // refactor exists to eliminate).
         let unterminated = "```mermaid\ngraph LR\nA-->B\n";
-        assert!(collect_mermaid_fences(unterminated).is_empty());
+        assert_eq!(
+            collect_mermaid_fences(unterminated),
+            vec!["graph LR\nA-->B\n".to_string()],
+        );
     }
 
     #[test]
@@ -12525,8 +12836,21 @@ mod fence_and_math_extraction_tests {
                 &["body\n"],
             ),
             ("tilde fence", "~~~mermaid\ntilde\n~~~\n", &["tilde\n"]),
-            ("unterminated is dropped", "```mermaid\nno close\n", &[]),
-            ("empty body", "```mermaid\n```\n", &[""]),
+            // An unclosed fence is valid CommonMark (runs to end of input, same as any other
+            // unclosed fenced code block) — `render_doc` places it as a real diagram, so
+            // `collect_mermaid_fences` must report it too (see `collect_mermaid_fences_top_level_only`
+            // for the full reasoning; the legacy hand-rolled scanner's "revert unclosed fence to text"
+            // special case does not survive the switch to the model-based renderer).
+            (
+                "unterminated is kept",
+                "```mermaid\nno close\n",
+                &["no close\n"],
+            ),
+            // An empty fence body (nothing typed inside it yet) can never become a diagram —
+            // `render_mermaid_slot` never even calls its own slot closure for one (see
+            // `collect_mermaid_fences`'s own doc comment) — so it is never included, unlike the
+            // legacy scanner, which produced one `""` entry for this exact shape.
+            ("empty body", "```mermaid\n```\n", &[]),
             (
                 "multi-line body kept verbatim",
                 "```mermaid\nflowchart TD\n  A-->B\n```\n",
