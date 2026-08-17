@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-17
+
 ### Fixed
 - **A code block written inside a numbered or bulleted list could not be copied, and its lines ran
   together on screen.** Pressing `y c` anywhere in such a document answered "couldn't copy code
@@ -48,6 +50,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 - **`\(` followed by a Markdown link crashed the preview** — the shape a changelog uses to cite a
   pull request, `\([#519](https://…))`.
+
+- **Toggling a checkbox could change a different line.** In a document that mixes a numbered list
+  written with `[ ]` — which konoma leaves as literal text — with an ordinary checkbox further down,
+  pressing `Space` on the checkbox rewrote the first numbered line instead, with nothing on screen to
+  say so. Found before release; the number of checkboxes recorded and the number drawn are now
+  compared across every test document, so the two cannot drift apart again.
+
+- **A checkbox in a list whose items are separated by blank lines** was drawn as literal `[ ]` on a
+  row of its own, could not be focused with `Tab`, and did nothing on `Space`. It now behaves like
+  any other checkbox.
+
+- **A checkbox inside a block quote** (`> - [ ] …`) was never recognised as one — drawn as text, and
+  skipped by `Tab`. It is now focusable and toggleable. Headings inside a block quote are styled too,
+  which they were not before.
 
 ### Changed
 - **A section commented out with `<!-- … -->` is no longer shown.** The comment used to be treated as
@@ -1794,7 +1810,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.23.9...v0.24.0
