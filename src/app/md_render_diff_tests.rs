@@ -1002,3 +1002,166 @@ fn markdown_render_diff_report() {
 fn markdown_render_diff_corpus_is_not_empty() {
     assert!(all_cases().len() > 100);
 }
+
+// -------------------------------------------------------------------------------------------
+// Self-contained regressions for the block-image extraction fixes `md_real_file_sweep_tests`'s
+// own real-registry sweep found and closed. That sweep needs a populated Cargo registry cache and
+// is `#[ignore]`d for it (see its own module doc comment); these tests need neither — a handful of
+// small, synthetic, hand-written documents reproducing the exact shape each real file that sweep
+// found losing content used, run on every `cargo test`, using `render_case_new` directly (the same
+// helper the diff-report cases above build on) rather than the full match/mismatch/content-loss
+// machinery that module runs. `Config::default()` throughout: none of these shapes depend on any
+// non-default `[ui]` setting. `render_case_new`'s own `slot_of` always answers `ImageSlot::\
+// Unavailable` (no live `Picker` in a unit test — that function's own doc comment) — `render_image_\
+// slot` never pushes an `ImagePlacement` for that slot (only for a real, picker-backed `Inline` one;
+// see that function's own body), it draws `image_text_fallback`'s own `"🖼 <alt> — <url>"` text line
+// instead — so these check the **rendered lines'** own flattened text for that `alt`/`url` pair,
+// not the (always-empty, in this harness) `images` vector.
+
+/// Every span's content concatenated, across every line, with no separator — enough to check
+/// substring presence/absence without caring exactly which line or span something landed on.
+fn flatten_all(lines: &[Line<'static>]) -> String {
+    lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+/// `render.rs`'s `segment_as_block_images`/`split_top_level_image_units` — two badges sharing one
+/// physical source line, separated only by a space, both extract as their own images (previously:
+/// neither did, and the whole paragraph fell through to ordinary inline rendering, discarding both
+/// URLs — confirmed real: `phf-0.11.3/README.md`'s own `[![CI](…badge.svg)](…) [![Latest Version]\
+/// (…svg)](…)`, both badges on one line).
+#[test]
+fn two_badges_sharing_one_physical_line_both_extract_as_images() {
+    let cfg = Config::default();
+    let src = "[![CI](https://x.example/ci.svg)](https://x.example/ci) [![Docs](https://x.example/docs.svg)](https://x.example/docs)\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let text = flatten_all(&lines);
+    assert!(
+        text.contains("CI") && text.contains("https://x.example/ci.svg"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("Docs") && text.contains("https://x.example/docs.svg"),
+        "{text:?}"
+    );
+    // Neither badge's own *wrapping link* `href` (as opposed to the image's own `src` above) is
+    // ever shown as visible text — `render_image_slot`'s own doc comment — so this also confirms
+    // the fix did not accidentally start showing it.
+    assert!(!text.contains("https://x.example/ci)"), "{text:?}");
+}
+
+/// `render.rs`'s `segment_as_block_images`'s own empty-segment handling — a bare `\` hard-break line
+/// between two rows of badges (`top_level_segment_bounds` reports the `\` line's own escape-newline
+/// as one segment with *nothing* between two consecutive break events) does not disqualify either
+/// row (previously: the whole paragraph — badges on both sides of the `\` line — fell through to
+/// ordinary inline rendering, discarding every one of their URLs; confirmed real: `vello_common-\
+/// 0.0.9/README.md`'s own six-badge banner, split into two rows of three by exactly this line).
+#[test]
+fn a_bare_backslash_hard_break_between_two_rows_of_badges_does_not_disqualify_either_row() {
+    let cfg = Config::default();
+    let src = "[![A](https://x.example/a.svg)](https://x.example/a)\n\\\n[![B](https://x.example/b.svg)](https://x.example/b)\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let text = flatten_all(&lines);
+    assert!(text.contains("https://x.example/a.svg"), "{text:?}");
+    assert!(text.contains("https://x.example/b.svg"), "{text:?}");
+}
+
+/// `render.rs`'s `split_top_level_image_units`'s own comment-skipping arm — an HTML comment trailing
+/// a badge on the *same* physical line does not disqualify the badge (previously: the whole
+/// paragraph fell through to ordinary inline rendering; confirmed real: `rangemap-1.7.1/README.md`'s
+/// own `[![Rust](…)](…) <!-- Don't forget to update the GitHub actions config… -->`).
+#[test]
+fn a_trailing_html_comment_on_a_badge_line_does_not_disqualify_the_badge() {
+    let cfg = Config::default();
+    let src =
+        "[![Rust](https://x.example/rust.svg)](https://x.example/rust) <!-- keep this in sync -->\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let text = flatten_all(&lines);
+    assert!(
+        text.contains("Rust") && text.contains("https://x.example/rust.svg"),
+        "{text:?}"
+    );
+    assert!(!text.contains("keep this in sync"), "{text:?}");
+}
+
+/// `render.rs`'s `heading_trailing_images` — an ATX heading whose own title text is directly
+/// followed, on the *same* physical line, by one or more reference-style badges, extracts them as
+/// real images and keeps the title text (previously: `walk_inline`'s generic `Tag::Image` handling
+/// discarded every badge's own URL unconditionally, heading or not; confirmed real: `rav1e-0.8.1/\
+/// README.md`'s own `# rav1e [![Actions Status][actions badge]][actions] [![CodeCov][codecov \
+/// badge]][codecov]`).
+#[test]
+fn a_heading_with_trailing_badges_on_the_same_line_extracts_them_as_images() {
+    let cfg = Config::default();
+    let src =
+        "# rav1e [![Actions][actions badge]][actions] [![CodeCov][codecov badge]][codecov]\n\n\
+        [actions badge]: https://x.example/actions.svg\n\
+        [actions]: https://x.example/actions\n\
+        [codecov badge]: https://x.example/codecov.svg\n\
+        [codecov]: https://x.example/codecov\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let heading_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(heading_text.starts_with("rav1e"), "{heading_text:?}");
+    let text = flatten_all(&lines);
+    assert!(
+        text.contains("Actions") && text.contains("https://x.example/actions.svg"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("CodeCov") && text.contains("https://x.example/codecov.svg"),
+        "{text:?}"
+    );
+}
+
+/// `render.rs`'s `heading_trailing_images` again — a **setext** heading whose title text is lazily
+/// continued (no blank line anywhere) by standalone badge lines, then the `====`/`----` underline,
+/// extracts the badges as real images and keeps the plain title text (previously: a real, narrower
+/// gap this same test module's own history left deliberately open, closed once this sweep confirmed
+/// it real rather than left open a second time; confirmed real: `ab_glyph-0.2.32/README.md`'s own
+/// `ab_glyph\n[![crates.io](…)](…)\n[![Documentation](…)](…)\n========`).
+#[test]
+fn a_setext_heading_lazily_continued_by_badge_lines_extracts_them_as_images() {
+    let cfg = Config::default();
+    let src = "ab_glyph\n[![crates.io](https://x.example/crates.svg)](https://x.example/crates)\n[![Docs](https://x.example/docs.svg)](https://x.example/docs)\n========\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let heading_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(heading_text.trim(), "ab_glyph");
+    let text = flatten_all(&lines);
+    assert!(
+        text.contains("crates.io") && text.contains("https://x.example/crates.svg"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("Docs") && text.contains("https://x.example/docs.svg"),
+        "{text:?}"
+    );
+}
+
+/// `render.rs`'s `paragraph_leading_images` — the mirror of `paragraph_trailing_images`: one or more
+/// standalone image lines *first*, real text lazily continuing right after with no blank line —
+/// extracts the leading badge as a real image and keeps the following sentence (previously: this
+/// exact mirror shape was named, and deliberately left unaddressed, in `paragraph_trailing_images`'s
+/// own doc comment; closed here once confirmed real rather than left open a second time; confirmed
+/// real: `rusty-fork-0.3.1/README.md`'s own `[![](http://meritbadge.herokuapp.com/rusty-fork)]\
+/// (https://crates.io/crates/rusty-fork)\nRusty-fork provides a way to "fork" unit tests…`).
+#[test]
+fn a_leading_badge_immediately_followed_by_real_text_extracts_the_badge_and_keeps_the_text() {
+    let cfg = Config::default();
+    let src = "[![](https://x.example/badge.svg)](https://x.example/badge)\nReal intro sentence follows immediately.\n";
+    let (lines, _images, unsupported) = render_case_new(&cfg, src);
+    assert!(unsupported.is_empty(), "unsupported: {unsupported:?}");
+    let text = flatten_all(&lines);
+    assert!(text.contains("https://x.example/badge.svg"), "{text:?}");
+    assert!(
+        text.contains("Real intro sentence follows immediately."),
+        "{text:?}"
+    );
+}

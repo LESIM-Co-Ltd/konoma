@@ -426,7 +426,7 @@ pub(crate) fn render_doc(
                     classes: classes.clone(),
                     attrs: attrs.clone(),
                 };
-                render_heading(&mut w, doc, *level, inline.clone(), &meta);
+                render_heading(&mut w, doc, src, *level, inline.clone(), &meta);
             }
             BlockKind::Paragraph { inline } => {
                 render_paragraph_dispatch(
@@ -1307,6 +1307,7 @@ fn events_iter<'a, 'e>(
 fn render_heading(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
+    src: &str,
     level: u8,
     inline: Range<usize>,
     meta: &HeadingMeta,
@@ -1318,7 +1319,16 @@ fn render_heading(
     let hashes = format!("{} ", "#".repeat(level as usize));
     w.push_line(Line::styled(hashes, heading_style));
     w.needs_newline = false;
-    walk_inline(&mut events_iter(&doc.events[inline]), w, None);
+    // `heading_trailing_images` — see its own doc comment — peels a trailing badge row off the
+    // title text before drawing it, so a badge's own `dest_url` is not silently discarded the way
+    // `walk_inline`'s own generic `Tag::Image` handling always discards one; the ordinary case (no
+    // trailing images at all, `None`) draws the *whole* `inline` range exactly as before, with no
+    // trailing images to render afterward.
+    let (text_range, images) = match heading_trailing_images(doc, src, &inline) {
+        Some((text_range, images)) => (text_range, images),
+        None => (inline, Vec::new()),
+    };
+    walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
     if let Some(suffix) = meta.to_suffix() {
         w.push_span(Span::styled(suffix, w.styles.heading_meta()));
     }
@@ -1326,6 +1336,9 @@ fn render_heading(
         w.heading_rule_shift += 1;
     }
     w.needs_newline = true;
+    for (alt, url) in &images {
+        render_image_slot(w, alt, url);
+    }
 }
 
 /// Renders one **real** `Paragraph` block into `w`, in place — mirrors `TextWriter::start_paragraph`/
@@ -1392,63 +1405,570 @@ struct MermaidCtx<'a> {
     ord: usize,
 }
 
-/// If `inline` (a `Paragraph`'s own event-index range into `doc.events` — see `model::Doc.events`'s
-/// own doc comment) represents nothing but a single standalone image — `![alt](url)`, optionally
-/// wrapped in a link (`[![alt](url)](href)`) — returns its `(alt, url)`. Mirrors `markdown.rs`'s own
-/// line-based `extract_md_img`'s scope for exactly this one shape (see that function's own doc
-/// comment): a paragraph whose *entire* content, and nothing more, is one image. The image's own
-/// `dest_url` is used, never the wrapping link's own `href` — matching `extract_md_img` exactly (that
-/// function's own doc comment: "Extract a Markdown `![alt](url)`, optionally wrapped in a
-/// `[ ... ](href)` link" — the link is recognized only to be *stepped past*, its own destination
-/// never read).
+/// Index bounds (`(start, end)`, `end` exclusive, the break event itself in neither side) of every
+/// run `events` splits into at a top-level (`depth == 0` — never inside an open tag such as a `Link`'s
+/// own span) `SoftBreak`/`HardBreak`. A multi-line paragraph with no blank line separating its
+/// physical source lines is exactly this shape: pulldown-cmark reports one `SoftBreak` event per line
+/// join, at the paragraph's own top level, so this recovers "one segment per physical source line"
+/// without re-parsing anything (see the module doc comment's own "How inline content is rendered"
+/// section on why re-parsing is avoided everywhere else in this file). The index form (rather than
+/// borrowed slices directly) is what lets `paragraph_trailing_images` reconstruct a single, contiguous
+/// `Range<usize>` spanning *several* leading segments — the shape `render_paragraph`/`walk_inline`
+/// themselves need — something a `Vec` of already-split slices cannot hand back without re-deriving
+/// the same boundaries a second time; `split_top_level_breaks` (below) is the slice-returning form for
+/// callers (`paragraph_as_block_images`) that only ever need one segment at a time on its own.
+fn top_level_segment_bounds(events: &[(Event<'_>, Range<usize>)]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    for (i, (ev, _)) in events.iter().enumerate() {
+        match ev {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            Event::SoftBreak | Event::HardBreak if depth == 0 => {
+                out.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push((start, events.len()));
+    out
+}
+
+/// `top_level_segment_bounds`, sliced against `events` — one borrowed slice per resulting run. See
+/// that function's own doc comment for the split rule and why the two forms coexist.
+fn split_top_level_breaks<'e, 'd>(
+    events: &'e [(Event<'d>, Range<usize>)],
+) -> Vec<&'e [(Event<'d>, Range<usize>)]> {
+    top_level_segment_bounds(events)
+        .into_iter()
+        .map(|(s, e)| &events[s..e])
+        .collect()
+}
+
+/// If `seg` (one line-segment of a paragraph's own inline events — see `split_top_level_breaks`) is
+/// *nothing but* a single standalone image, returns its `(alt, url)` — either a Markdown `![alt](url)`
+/// (optionally wrapped in a link, `[![alt](url)](href)`; the image's own `dest_url` is used, never the
+/// wrapping link's own `href` — matching `markdown.rs`'s own line-based `extract_md_img`'s identical
+/// "the link is recognized only to be stepped past" contract), or a raw HTML `<img src=...>` tag
+/// (optionally wrapped in layout tags like `<a>`/`<p>` — `super::extract_block_image`, the identical
+/// function `render_html_block_from_model`/production's own `split_block_parts_masked` call for the
+/// same shape; reconstructed from `src`, never from an event's own `CowStr` payload, since an HTML
+/// attribute's entities are not decoded by pulldown-cmark the way real text is).
 ///
-/// Reads straight from `doc.events` — never from `src[range]` — so, unlike `render_table_from_model`/
-/// `render_html_block_from_model`'s own naive whole-block slice, this has no quote-marker-survival
-/// concern at all (`Doc.events` never represents a container's own marker as an event to begin with;
-/// see `model::Doc.events`'s own doc comment). It is `BlockCtx.math_here`'s own value — not anything
-/// this function itself checks — that decides whether extraction is *eligible* at this position:
-/// production's own line-based `extract_block_image` still rejects a quote-nested standalone-image
-/// line outright (its own leading `>` defeats the "prefix must be empty or exactly `[`" check the
-/// same way it defeats `parse_fence`'s own fence-open check — see `BlockCtx.math_here`'s own doc
-/// comment for the full reasoning, and the confirmed, documented production behavior it cites), so
-/// matching that call site's own eligibility gate is what keeps this file's output aligned with
-/// production even though this function *could*, on its own, safely extract a quote-nested one too.
-///
-/// A multi-line paragraph whose *first* line alone is a standalone image, with more real content
-/// lazily continuing right after it (no blank line), is **not** extracted here — the model's own
-/// `inline` range covers the *whole* paragraph, so anything beyond the image's own `End(Image)`
-/// event fails this function's own "nothing but one image" check and it returns `None`, falling
-/// through to ordinary paragraph rendering (the image shown as inline alt-text, matching this file's
-/// own `Image` handling in `start_inline_tag`). Production's own line-based `extract_block_image`, by
-/// contrast, operates per *physical source line*, so it pulls the image's own line out as a
-/// standalone `BlockPart::Image` regardless of what a lazily-continued *next* line holds — a
-/// documented, narrow gap, not exercised by the parity corpus at the time this was written (see the
-/// module doc comment's own "Scope" section).
-fn paragraph_as_block_image(doc: &Doc<'_>, inline: &Range<usize>) -> Option<(String, String)> {
-    let events = &doc.events[inline.clone()];
-    let inner = match events.first() {
+/// **The `image_starts != 1` check below, not merely "is the *first* event `Start(Image)` and the
+/// *last* one `End(Image)`", is what tells one image apart from several concatenated ones sharing an
+/// outer link/segment** — the exact defect `render_html_block_from_model`'s own doc comment already
+/// recounts fixing for the HTML "centered banner" shape (a whole multi-image block naively handed to
+/// `extract_block_image` once "finds only the *first* `<img>` tag... and, on a match, rendered *only*
+/// that one image..., silently discarding every badge after the first"): a paragraph whose *first*
+/// physical line is `[![a](u1)](h1)` and whose *next* line (no blank line between — soft-continued
+/// into the *same* Markdown paragraph) is `[![b](u2)](h2)` produces the event sequence
+/// `Start(Link) Start(Image) Text(a) End(Image) End(Link) SoftBreak Start(Link) Start(Image) Text(b)
+/// End(Image) End(Link)` — whose *first* event is `Start(Link)` and *last* is `End(Link)`, the exact
+/// shape the outer link-unwrap below expects for a *single* wrapped image, even though two entirely
+/// separate ones sit end to end inside it. Checking only the endpoints (this function's own
+/// pre-`md-block-walk` version) unwrapped that "outer link" anyway, found `inner`'s own first/last
+/// events were `Start(Image)`/`End(Image)` (the *first* badge's own pair — the *second* badge's own
+/// `End(Link)`/`SoftBreak`/`Start(Link)`/`Start(Image)` all end up *inside* `inner` by the same wrong
+/// assumption), and rendered one, wrong, merged line: both alt texts concatenated, only the *first*
+/// image's own URL kept, the second's silently dropped — confirmed against `~/.cargo/registry`'s own
+/// real crate READMEs (the shields.io "badge row" idiom — one badge per line, no blank line between —
+/// is extremely common there) rather than merely reasoned about: hundreds of files lost a badge's own
+/// URL/label text this way before this function existed. This function is only ever handed one
+/// already-`split_top_level_breaks`-separated line-segment at a time, so a *second* image sharing that
+/// segment can only mean exactly this "concatenated, not truly one" shape — never a legitimately
+/// nested one (Markdown's own alt-text position never permits another `Image` to start inside it).
+fn segment_as_block_image(
+    src: &str,
+    seg: &[(Event<'_>, Range<usize>)],
+) -> Option<(String, String)> {
+    if seg.is_empty() {
+        return None;
+    }
+    let inner = match seg.first() {
         Some((Event::Start(Tag::Link { .. }), _)) => {
-            if !matches!(events.last(), Some((Event::End(TagEnd::Link), _))) {
+            if !matches!(seg.last(), Some((Event::End(TagEnd::Link), _))) {
                 return None;
             }
-            &events[1..events.len() - 1]
+            &seg[1..seg.len() - 1]
         }
-        _ => events,
+        _ => seg,
     };
-    let Some((Event::Start(Tag::Image { dest_url, .. }), _)) = inner.first() else {
-        return None;
-    };
-    if !matches!(inner.last(), Some((Event::End(TagEnd::Image), _))) {
+    if inner.is_empty() {
         return None;
     }
-    let url = dest_url.to_string();
-    if url.is_empty() {
-        // Matches `extract_md_img`'s own `if url.is_empty() { return None; }` — an image with no
-        // destination at all is not extracted in production either.
+    let image_starts = inner
+        .iter()
+        .filter(|(ev, _)| matches!(ev, Event::Start(Tag::Image { .. })))
+        .count();
+    if image_starts > 0 {
+        if image_starts != 1
+            || !matches!(inner.first(), Some((Event::Start(Tag::Image { .. }), _)))
+            || !matches!(inner.last(), Some((Event::End(TagEnd::Image), _)))
+        {
+            return None;
+        }
+        let Some((Event::Start(Tag::Image { dest_url, .. }), _)) = inner.first() else {
+            return None;
+        };
+        let url = dest_url.to_string();
+        if url.is_empty() {
+            // Matches `extract_md_img`'s own `if url.is_empty() { return None; }` — an image with no
+            // destination at all is not extracted in production either.
+            return None;
+        }
+        let alt = image_alt_text(&inner[1..inner.len() - 1]);
+        return Some((alt, url));
+    }
+    // Not a real Markdown `Tag::Image` event at all — try the HTML shape instead: `inner` must be
+    // *nothing but* inline HTML (an image event above would already have matched, so this can never
+    // double-match one) for `extract_block_image` to even apply the same way it would to a genuine raw
+    // source line; any real text, emphasis, or other inline construct mixed in falls through to
+    // ordinary paragraph rendering instead, unchanged.
+    if !inner
+        .iter()
+        .all(|(ev, _)| matches!(ev, Event::InlineHtml(_) | Event::Html(_)))
+    {
         return None;
     }
-    let alt = image_alt_text(&inner[1..inner.len() - 1]);
-    Some((alt, url))
+    let start = inner.first()?.1.start;
+    let end = inner.last()?.1.end;
+    super::extract_block_image(&src[start..end])
+}
+
+/// Splits `seg` (one line-segment — see `split_top_level_breaks`) into one slice per **top-level**
+/// image-or-link-wrapped-image unit, when `seg` is nothing but a run of those separated only by
+/// whitespace — `None` for anything else (real text, another inline construct, an HTML-only segment
+/// — the latter still falls through to `segment_as_block_image`'s own whole-segment HTML branch,
+/// unaffected by this function at all, since neither `Event::Html` nor `Event::InlineHtml` matches
+/// either arm below).
+///
+/// Exists for one real, confirmed shape `segment_as_block_image`'s own single-image contract cannot
+/// see at all: **two or more badges sharing one physical source line**, separated only by a literal
+/// space rather than each getting its own line — `phf-0.11.3/README.md`'s own `[![CI](https://\
+/// github.com/rust-phf/rust-phf/actions/workflows/ci.yml/badge.svg)](https://github.com/rust-phf/\
+/// rust-phf/actions/workflows/ci.yml) [![Latest Version](https://img.shields.io/crates/v/phf.svg)]\
+/// (https://crates.io/crates/phf)`, both badges on one line. `split_top_level_breaks` only ever
+/// splits at a `SoftBreak`/`HardBreak` — a *line join* — so two images on the *same* line, with no
+/// line join anywhere between them, land in one shared segment together; `segment_as_block_image`'s
+/// own `image_starts != 1` check (deliberately: see that check's own doc comment, "more than one
+/// image sharing an outer link/segment") correctly refuses to guess which of the two `dest_url`s is
+/// the "real" one and returns `None` for the *whole* segment — which used to mean the *whole
+/// paragraph* fell through to ordinary inline rendering, where a bare `Tag::Image` shows only its
+/// own alt text (`start_inline_tag`'s `Tag::Image` arm — `walk_inline` on its own children, no
+/// `render_image_slot` call, no URL recorded anywhere), losing **both** badges' own image URLs
+/// entirely (not just the wrapping links' own `href`s, already excluded by design — see
+/// `render_image_slot`) — confirmed directly against the real registry sweep this function exists to
+/// close: `vello_common`/`vello_cpu`/`fearless_simd`/`rangemap`/`atomic`/`base64`/`bit-set`/`bit-vec`
+/// and more all write two or more shields.io badges on one shared line this same way.
+///
+/// A unit is either a bare `Start(Image)..End(Image)` run or a `Start(Link)..End(Link)` run wrapping
+/// exactly one (`segment_as_block_image` itself still does the "exactly one, and only one" check —
+/// this function only finds each unit's own boundary, matching braces by depth the same way
+/// `collect_link_destination_ranges` does in the sweep test module, for the identical reason: a
+/// `Link` can wrap an `Image` — never the reverse, CommonMark disallows nesting either kind inside
+/// itself — so simple depth-tracking on *any* `Start`/`End` pair, stopping at the matching top-level
+/// close of *this* unit's own opening kind, can never mismatch which `End` belongs to which `Start`).
+/// One top-level image-or-link-wrapped-image unit's own event slice, as [`split_top_level_image_\
+/// units`] returns them (`clippy::type_complexity`'s own suggestion — this exists only to name the
+/// type, not to change what it means).
+type ImageUnits<'e, 'd> = Vec<&'e [(Event<'d>, Range<usize>)]>;
+
+fn split_top_level_image_units<'e, 'd>(
+    src: &str,
+    seg: &'e [(Event<'d>, Range<usize>)],
+) -> Option<ImageUnits<'e, 'd>> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < seg.len() {
+        if let Event::Text(t) = &seg[i].0 {
+            if t.trim().is_empty() {
+                i += 1;
+                continue;
+            }
+            return None; // real text alongside an image on this line — not a pure badge row.
+        }
+        // A trailing (or interspersed) HTML comment on the *same* physical line as a badge —
+        // `rangemap-1.7.1/README.md`'s own `[![Rust](…)](…) <!-- Don't forget to update the GitHub
+        // actions config… -->` — is harmless the identical way whitespace is: it draws nothing
+        // (`render_html_block` on it reduces to empty), so skipping it here does not silently drop
+        // any visible content. A **non**-comment (or otherwise non-empty) `Html`/`InlineHtml` still
+        // falls through to the `_ => return None` arm below, unchanged — this only ever widens what
+        // counts as "harmless", never what counts as an image.
+        if let Event::Html(_) | Event::InlineHtml(_) = &seg[i].0 {
+            if render_html_block(&src[seg[i].1.clone()]).is_empty() {
+                i += 1;
+                continue;
+            }
+            return None;
+        }
+        let wants_end = match &seg[i].0 {
+            Event::Start(Tag::Link { .. }) => TagEnd::Link,
+            Event::Start(Tag::Image { .. }) => TagEnd::Image,
+            _ => return None, // any other construct — not a pure badge row either.
+        };
+        let mut depth = 0i32;
+        let mut j = i + 1;
+        let end_idx = loop {
+            if j >= seg.len() {
+                return None; // unbalanced within this segment.
+            }
+            match &seg[j].0 {
+                Event::Start(_) => depth += 1,
+                Event::End(e) if *e == wants_end && depth == 0 => break j,
+                Event::End(_) => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        };
+        out.push(&seg[i..=end_idx]);
+        i = end_idx + 1;
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// [`segment_as_block_image`], generalized to one or more images sharing a single line-segment
+/// (`split_top_level_image_units` — see that function's own doc comment for exactly which real
+/// shape this closes). Every caller of the old, single-image function goes through this one instead;
+/// a segment that is genuinely just one image behaves identically either way (`split_top_level_\
+/// image_units` returns a single-unit `Vec`, `segment_as_block_image` on that one unit is the exact
+/// same call the old code made directly), and a segment `split_top_level_image_units` cannot make
+/// sense of at all (real text, an HTML-only line, ...) falls through to `segment_as_block_image`
+/// itself unchanged, wrapped in a one-element `Vec` on a match.
+///
+/// A genuinely **empty** segment (`seg.is_empty()`) — real, not a defensive-only case:
+/// `top_level_segment_bounds` pushes one whenever two break events land back to back with nothing
+/// between them, which is exactly what a bare `\` line (`"row one\n\\\nrow two\n"` — a hard line
+/// break on a line of its own, the standard Markdown idiom for a visible gap *inside* one paragraph
+/// without starting a new one — GitHub renders shields.io "badge row" READMEs with it constantly)
+/// produces: pulldown-cmark reports the line above's own trailing newline as one `SoftBreak`, then
+/// the `\`-line's own escape-newline as a second, immediately following `HardBreak`, with **no**
+/// event of any kind between them — confirmed directly: `vello_common-0.0.9/README.md`'s own six-
+/// badge banner, split into two rows of three by exactly this `\` line. Returns `Some(vec![])` for
+/// this shape specifically, **not** `None` — an empty segment carries no real text of any kind (the
+/// disqualifying condition every other arm here checks for), so it can never be the reason a
+/// "nothing but standalone images" paragraph should stop being recognized as one; `segment_as_\
+/// block_image`'s own `if seg.is_empty() { return None; }`, reached without this check, is what
+/// used to make this whole 3-badges-then-a-gap-then-3-more shape fail as **whole-paragraph** image
+/// extraction the instant it reached the gap — losing every badge from the row *before* it too, not
+/// merely swallowing the (rendered) `\` line, when the real paragraph fell through to ordinary
+/// inline rendering as a single, whole unit (confirmed directly in this module's own development,
+/// the same file: three unrelated badges fused onto one merged inline-link line, all three losing
+/// their own image `src`, with the *later* row of three — past the point `paragraph_trailing_\
+/// images`'s own peel-from-the-end still succeeded — rendered as real images regardless, further
+/// confirming the empty segment, not anything about the badges themselves, was the actual defect).
+fn segment_as_block_images(
+    src: &str,
+    seg: &[(Event<'_>, Range<usize>)],
+) -> Option<Vec<(String, String)>> {
+    if seg.is_empty() {
+        return Some(Vec::new());
+    }
+    if let Some(units) = split_top_level_image_units(src, seg) {
+        let mut out = Vec::with_capacity(units.len());
+        for unit in units {
+            out.push(segment_as_block_image(src, unit)?);
+        }
+        return Some(out);
+    }
+    segment_as_block_image(src, seg).map(|img| vec![img])
+}
+
+/// If `inline` (a `Paragraph`'s own event-index range into `doc.events` — see `model::Doc.events`'s
+/// own doc comment) represents nothing but a sequence of standalone images — one per physical source
+/// line (`split_top_level_breaks`), each recognized by `segment_as_block_image` — returns them all, in
+/// document order. A paragraph with no `SoftBreak`/`HardBreak` at all (the common case: one image,
+/// alone, with blank lines on both sides) is exactly the one-segment instance of this same shape, so
+/// this subsumes what a narrower "is the whole paragraph one image" check used to do on its own.
+///
+/// Reads straight from `doc.events` (only `segment_as_block_image`'s own HTML branch ever reads
+/// `src[range]`, and only for a byte range `doc.events` itself already reported) — so, unlike
+/// `render_table_from_model`/`render_html_block_from_model`'s own naive whole-block slice, this has no
+/// quote-marker-survival concern at all (`Doc.events` never represents a container's own marker as an
+/// event to begin with; see `model::Doc.events`'s own doc comment). It is `BlockCtx.math_here`'s own
+/// value — not anything this function itself checks — that decides whether extraction is *eligible* at
+/// this position: production's own line-based `extract_block_image` still rejects a quote-nested
+/// standalone-image line outright (its own leading `>` defeats the "prefix must be empty or exactly
+/// `[`" check the same way it defeats `parse_fence`'s own fence-open check — see `BlockCtx.math_here`'s
+/// own doc comment for the full reasoning, and the confirmed, documented production behavior it
+/// cites), so matching that call site's own eligibility gate is what keeps this file's output aligned
+/// with production even though this function *could*, on its own, safely extract a quote-nested one
+/// too.
+///
+/// A paragraph mixing a standalone-image line with a line of *real* text (no blank line between) is
+/// **not** extracted here — the text-carrying segment fails `segment_as_block_image` and the whole
+/// paragraph falls through to ordinary rendering (each image shown as inline alt-text, matching this
+/// file's own `Image` handling in `start_inline_tag`) — still a real, narrow, documented gap against
+/// production's own per-*line* `extract_block_image` (which pulls a standalone-image line out
+/// regardless of what a lazily-continued neighbor line holds); not exercised by the parity corpus, and
+/// not the shape the real-world sweep (`app::md_real_file_sweep_tests`) that motivated this function's
+/// own image-count fix above actually found losing content — every affected real file was a run of
+/// *consecutive* image-only lines (the "badge row" idiom), which this function now handles in full.
+fn paragraph_as_block_images(
+    doc: &Doc<'_>,
+    src: &str,
+    inline: &Range<usize>,
+) -> Option<Vec<(String, String)>> {
+    let events = &doc.events[inline.clone()];
+    if events.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for seg in split_top_level_breaks(events) {
+        out.extend(segment_as_block_images(src, seg)?);
+    }
+    Some(out)
+}
+
+/// `(the text-only prefix's own inline range, its trailing images)` — `paragraph_trailing_images`'s
+/// own return shape, named so its signature reads plainly instead of tripping clippy's
+/// `type_complexity` lint on the raw nested tuple.
+type TextPrefixAndTrailingImages = (Range<usize>, Vec<(String, String)>);
+
+/// Peels a **trailing run of standalone image units** off the end of a *heading's* own inline event
+/// stream — `render_heading`'s own only caller, and this file's only extraction of any kind for a
+/// heading at all: `walk_inline`'s generic `Tag::Image` handling (`start_inline_tag`) shows only an
+/// image's own alt text, discarding its `dest_url` entirely, matching every *other* inline position
+/// this file draws an image inline (bold/italic text, a list item's own tight paragraph, ...) — but
+/// unlike those, a heading is often *itself* a badge row's own home: `rav1e-0.8.1/README.md`'s own
+/// `# rav1e [![Actions Status][actions badge]][actions] [![CodeCov][codecov badge]][codecov]`, and a
+/// setext heading whose title text is lazily continued by standalone image lines with no blank line
+/// anywhere (`ab_glyph-0.2.32/README.md`'s own `ab_glyph\n[![crates.io](…)](…)\n[![Documentation]\
+/// (…)](…)\n========` — CommonMark correctly folds the whole thing into one heading's own inline
+/// content; a narrower, previously *deliberately left open* gap this function now closes, see this
+/// sweep's own `docs`/git history for that earlier decision and the direct confirmation the shape is
+/// real and common enough in this same registry to close properly rather than leave open).
+///
+/// Generalizes `paragraph_trailing_images`'s own "text, then one or more standalone image lines"
+/// shape from *physical-line* granularity (`top_level_segment_bounds`, which needs a `SoftBreak`/
+/// `HardBreak` between every unit) to *unit* granularity (`split_top_level_image_units`'s own single
+/// image-or-link-wrapped-image shape), because — unlike the paragraphs `paragraph_trailing_images`
+/// itself was built for — a heading's own badges are just as often written on the **same** physical
+/// line as the title text with nothing but a space between (`rav1e`'s own case above has no
+/// `SoftBreak`/`HardBreak` anywhere in it at all, so `paragraph_trailing_images`'s own line-based
+/// split would find nothing to peel). Kept as a **separate** function from `paragraph_trailing_\
+/// images` rather than generalizing that one in place, deliberately: a heading's own real title text
+/// is never itself "just images" the way `paragraph_as_block_images`'s own top-level image-only
+/// paragraph is, so the two functions' own contracts genuinely differ at the type-of-caller level,
+/// and keeping them apart means a future change to either can never risk silently perturbing the
+/// other's own, already pixel-pinned paragraph behavior (`md_render_diff_tests`'s own extensive
+/// `paragraph_trailing_images` corpus).
+///
+/// Walks `inline`'s own top-level events **once**, front to back, classifying each top-level item as
+/// exactly one of: a whitespace-only `Text` or a comment-reducing `Html`/`InlineHtml` (transparent —
+/// neither an image nor real title text, the identical two "harmless" exceptions `split_top_level_\
+/// image_units`/`segment_as_block_images` already establish for a *paragraph's* own badge row, for
+/// the identical reason: a bare `\` hard-break line between two rows of badges, and an inline HTML
+/// comment trailing a badge on the very same physical line, both real, confirmed shapes — see those
+/// two functions' own doc comments); a `Start(Link)`/`Start(Image)` run through its own matching
+/// `End` at the same top-level depth, classified as an image via `segment_as_block_image` on that
+/// exact unit slice if it resolves to exactly one image, real (disqualifying) content otherwise (a
+/// link wrapping real text, several images sharing one unit, ...); or anything else, always real.
+/// The **longest trailing run of image classifications** — skipping over transparent items, which
+/// never break a run — is what gets peeled; `None` when that run is empty (the ordinary heading,
+/// unchanged) or spans the *whole* heading (an image-only heading is not a shape this sweep's own
+/// real corpus exercises, and falls through to ordinary, pre-existing inline rendering unchanged —
+/// not a regression this function introduces).
+/// `(start_idx, end_idx_exclusive, image-if-any)` — one entry per non-transparent top-level item
+/// [`heading_trailing_images`] classifies its own heading's inline content into, in document order
+/// (`clippy::type_complexity`'s own suggestion — this exists only to name the type, not to change
+/// what it means).
+type HeadingItems = Vec<(usize, usize, Option<(String, String)>)>;
+
+fn heading_trailing_images(
+    doc: &Doc<'_>,
+    src: &str,
+    inline: &Range<usize>,
+) -> Option<TextPrefixAndTrailingImages> {
+    let events = &doc.events[inline.clone()];
+    if events.is_empty() {
+        return None;
+    }
+    // One entry per non-transparent top-level item, in document order; a whitespace-only/comment-
+    // reducing item contributes no entry at all.
+    let mut items: HeadingItems = Vec::new();
+    let mut i = 0usize;
+    while i < events.len() {
+        match &events[i].0 {
+            Event::Text(t) if t.trim().is_empty() => i += 1,
+            // A `SoftBreak`/`HardBreak` between two lines of a setext heading's own lazily-continued
+            // title (`ab_glyph-0.2.32/README.md`'s own `ab_glyph\n[badge1]\n[badge2]\n========` —
+            // pulldown-cmark reports one `SoftBreak` per line join, exactly the same shape
+            // `top_level_segment_bounds` itself splits *on* rather than treats as content) is
+            // harmless the identical way a plain space between two badges on one physical line is —
+            // neither is real title text, and skipping either without disqualifying the run is what
+            // lets this function recognize a badge row regardless of whether it is one physical line
+            // or several: confirmed directly, this module's own development — without this arm, the
+            // very first `SoftBreak` scanning backward from the end stopped the trailing-run search
+            // dead, peeling only the *last* line's own badge (or none at all) off a multi-line row.
+            Event::SoftBreak | Event::HardBreak => i += 1,
+            Event::Html(_) | Event::InlineHtml(_)
+                if render_html_block(&src[events[i].1.clone()]).is_empty() =>
+            {
+                i += 1;
+            }
+            Event::Start(Tag::Link { .. }) | Event::Start(Tag::Image { .. }) => {
+                let wants_end = if matches!(events[i].0, Event::Start(Tag::Link { .. })) {
+                    TagEnd::Link
+                } else {
+                    TagEnd::Image
+                };
+                let mut depth = 0i32;
+                let mut j = i + 1;
+                let end_idx = loop {
+                    if j >= events.len() {
+                        break events.len(); // unbalanced within this heading — treat as real content.
+                    }
+                    match &events[j].0 {
+                        Event::Start(_) => depth += 1,
+                        Event::End(e) if *e == wants_end && depth == 0 => break j + 1,
+                        Event::End(_) => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                };
+                let img = segment_as_block_image(src, &events[i..end_idx]);
+                items.push((i, end_idx, img));
+                i = end_idx;
+            }
+            _ => {
+                items.push((i, i + 1, None));
+                i += 1;
+            }
+        }
+    }
+    let mut split = items.len();
+    while split > 0 && items[split - 1].2.is_some() {
+        split -= 1;
+    }
+    if split == 0 || split == items.len() {
+        return None;
+    }
+    let images: Vec<(String, String)> = items[split..]
+        .iter()
+        .map(|(_, _, img)| {
+            img.clone()
+                .expect("every item past `split` is an image by construction")
+        })
+        .collect();
+    // `items[split].0` is an index *relative to `events`* (`= &doc.events[inline.clone()]`), not an
+    // absolute one — `inline` (like `BlockKind::Heading.inline` itself) is an **event-index** range
+    // into `doc.events`, not a byte range into `src` (the same distinction `paragraph_trailing_\
+    // images`'s own `inline.start + text_end_rel` below already gets right) — `inline.start + …`
+    // converts it back to the absolute event index `doc.events[text_range]` needs.
+    let text_end_idx = items[split].0;
+    let text_range = inline.start..(inline.start + text_end_idx);
+    Some((text_range, images))
+}
+
+/// If `inline` is a real paragraph of ordinary text **immediately followed**, with no blank line, by
+/// one or more standalone image lines (`segment_as_block_image`, one per physical source line — the
+/// identical per-line unit `paragraph_as_block_images` itself splits on) — the "intro sentence, then a
+/// badge/screenshot below it" idiom, confirmed against real content
+/// (`~/.cargo/registry/.../zune-jpeg-*/Benches.md`: `"...of (now defunct?) [Cutefish OS] default \
+/// wallpaper.\n![img](benches/images/speed_bench.jpg)\n"`, no blank line between the sentence and the
+/// image) — returns `(the text-only prefix's own inline range, the trailing images, in document
+/// order)`. `None` when the paragraph has no top-level break at all, when its *last* segment is not an
+/// image (nothing to peel off the end), or when *every* segment is an image (that shape is
+/// `paragraph_as_block_images`'s own, checked first by every caller — see `try_render_paragraph_as_\
+/// image`'s own doc comment — so this function is never even asked about it: reaching this function at
+/// all already means that check failed).
+///
+/// **Does not** handle the mirror shape — one or more standalone image lines *first*, real text lazily
+/// continuing right after — `paragraph_as_block_image`'s own pre-`md-block-walk` doc comment already
+/// named that a real, narrower gap in this stage's own coverage (not exercised by the parity corpus,
+/// and not the shape the real-world sweep motivating *this* function's own trailing-image half
+/// actually found losing content — every real instance found was trailing, never leading).
+fn paragraph_trailing_images(
+    doc: &Doc<'_>,
+    src: &str,
+    inline: &Range<usize>,
+) -> Option<TextPrefixAndTrailingImages> {
+    let events = &doc.events[inline.clone()];
+    let bounds = top_level_segment_bounds(events);
+    if bounds.len() < 2 {
+        return None; // no top-level break at all — nothing to peel a trailing run off of.
+    }
+    let mut images = Vec::new();
+    let mut trailing = 0usize;
+    for &(s, e) in bounds.iter().rev() {
+        match segment_as_block_images(src, &events[s..e]) {
+            Some(imgs) => {
+                // `imgs` is already in document order (this one segment's own left-to-right
+                // reading); pushed here in the *reverse* per-segment order the outer walk visits
+                // them in, so the final `images.reverse()` below restores overall document order
+                // for a multi-image segment exactly the same way it already does across segments.
+                images.extend(imgs.into_iter().rev());
+                trailing += 1;
+            }
+            None => break,
+        }
+    }
+    if trailing == 0 || trailing == bounds.len() {
+        return None;
+    }
+    images.reverse(); // collected innermost-out (last segment first); restore document order.
+    let text_end_rel = bounds[bounds.len() - trailing - 1].1;
+    let text_range = inline.start..(inline.start + text_end_rel);
+    Some((text_range, images))
+}
+
+/// The mirror of [`paragraph_trailing_images`]: peels one or more standalone image **lines** off the
+/// **front** of a paragraph whose own tail, immediately after (no blank line), is real text —
+/// `rusty-fork-0.3.1/README.md`'s own `[![](http://meritbadge.herokuapp.com/rusty-fork)](https://\
+/// crates.io/crates/rusty-fork)\nRusty-fork provides a way to "fork" unit tests into separate \
+/// processes.\n`, one (empty-alt) badge line immediately followed by the crate's own real intro
+/// sentence, no blank line between them. `paragraph_trailing_images`'s own doc comment named this
+/// exact shape ("the mirror shape... a real, narrower gap... not exercised by the parity corpus")
+/// as deliberately left open at the time it was written; closed here once this sweep confirmed it as
+/// real, non-hypothetical content loss (not merely a hypothetical gap) rather than left open a
+/// second time.
+///
+/// Returns `(the leading images, in document order, the text-only suffix's own inline range)`.
+/// `None` under the identical three conditions `paragraph_trailing_images` itself returns `None`
+/// for, mirrored front-to-back: no top-level break at all, the paragraph's own *first* segment is
+/// not an image (nothing to peel off the front), or *every* segment is an image (`paragraph_as_\
+/// block_images`'s own shape, already checked first by every caller — see `try_render_paragraph_\
+/// as_image`'s own doc comment — so this function is never even asked about it either).
+/// `(the leading images, in document order, the text-only suffix's own inline range)` —
+/// [`paragraph_leading_images`]'s own return shape, the mirror of `TextPrefixAndTrailingImages`
+/// (`clippy::type_complexity`'s own suggestion — this exists only to name the type, not to change
+/// what it means).
+type LeadingImagesAndTextSuffix = (Vec<(String, String)>, Range<usize>);
+
+fn paragraph_leading_images(
+    doc: &Doc<'_>,
+    src: &str,
+    inline: &Range<usize>,
+) -> Option<LeadingImagesAndTextSuffix> {
+    let events = &doc.events[inline.clone()];
+    let bounds = top_level_segment_bounds(events);
+    if bounds.len() < 2 {
+        return None; // no top-level break at all — nothing to peel a leading run off of.
+    }
+    let mut images = Vec::new();
+    let mut leading = 0usize;
+    for &(s, e) in &bounds {
+        match segment_as_block_images(src, &events[s..e]) {
+            Some(imgs) => {
+                images.extend(imgs); // already document order; segments walked front to back too.
+                leading += 1;
+            }
+            None => break,
+        }
+    }
+    if leading == 0 || leading == bounds.len() {
+        return None;
+    }
+    let text_start_rel = bounds[leading].0;
+    let text_range = (inline.start + text_start_rel)..inline.end;
+    Some((images, text_range))
 }
 
 /// Plain-text reconstruction of one `Image`'s own alt-text content (`events` = everything strictly
@@ -1471,25 +1991,30 @@ fn image_alt_text(events: &[(Event<'_>, Range<usize>)]) -> String {
     s
 }
 
-/// If `extract_eligible` and `inline` is a standalone block image (`paragraph_as_block_image`),
-/// renders it as one via `render_image_slot` and returns `true`; otherwise renders nothing and
-/// returns `false`, leaving the caller (`render_paragraph_dispatch`/`render_bare_paragraph`) to fall
-/// through to its own ordinary paragraph handling. The one shared checkpoint both of those functions'
-/// own `Paragraph` dispatch runs through first, so the "is this paragraph actually just an image"
-/// decision — and its own eligibility gate — never gets duplicated between them.
+/// If `extract_eligible` and `inline` is nothing but one or more standalone block images
+/// (`paragraph_as_block_images` — one per physical source line when several sit end to end with no
+/// blank line between them, the common "badge row" README idiom), renders each in document order via
+/// `render_image_slot` and returns `true`; otherwise renders nothing and returns `false`, leaving the
+/// caller (`render_paragraph_dispatch`/`render_bare_paragraph`) to fall through to its own ordinary
+/// paragraph handling. The one shared checkpoint both of those functions' own `Paragraph` dispatch runs
+/// through first, so the "is this paragraph actually just image(s)" decision — and its own eligibility
+/// gate — never gets duplicated between them.
 fn try_render_paragraph_as_image(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
+    src: &str,
     inline: &Range<usize>,
     extract_eligible: bool,
 ) -> bool {
     if !extract_eligible {
         return false;
     }
-    let Some((alt, url)) = paragraph_as_block_image(doc, inline) else {
+    let Some(images) = paragraph_as_block_images(doc, src, inline) else {
         return false;
     };
-    render_image_slot(w, &alt, &url);
+    for (alt, url) in &images {
+        render_image_slot(w, alt, url);
+    }
     true
 }
 
@@ -1573,8 +2098,47 @@ fn render_paragraph_dispatch(
     extract_here: bool,
     block_start: usize,
 ) {
-    if try_render_paragraph_as_image(w, doc, &inline, extract_here) {
+    if try_render_paragraph_as_image(w, doc, src, &inline, extract_here) {
         return;
+    }
+    // A real, ordinary paragraph whose own *tail* is one or more standalone image lines (see
+    // `paragraph_trailing_images`'s own doc comment for the confirmed real-content shape this
+    // closes) — render the leading text normally, then each trailing image, in order.
+    if extract_here {
+        if let Some((text_range, images)) = paragraph_trailing_images(doc, src, &inline) {
+            if math_here && w.math.is_some() {
+                render_paragraph_math(w, doc, src, text_range, block_start);
+            } else {
+                render_paragraph(w, doc, text_range);
+            }
+            for (alt, url) in &images {
+                render_image_slot(w, alt, url);
+            }
+            return;
+        }
+        // The mirror shape — see `paragraph_leading_images`'s own doc comment for the confirmed
+        // real-content shape this closes: one or more standalone image lines *first*, real text
+        // lazily continuing right after with no blank line between them. `render_image_slot` itself
+        // has no leading-blank-line check of its own (that function's own doc comment) — unlike the
+        // trailing-image case above, where `render_paragraph`'s own leading check already ran first,
+        // here the *first* thing drawn for this whole paragraph is an image, so this block owns that
+        // check itself, the identical one `render_paragraph`/`render_heading` each run at their own
+        // start.
+        if let Some((images, text_range)) = paragraph_leading_images(doc, src, &inline) {
+            if w.needs_newline {
+                w.push_blank_line();
+            }
+            w.needs_newline = false;
+            for (alt, url) in &images {
+                render_image_slot(w, alt, url);
+            }
+            if math_here && w.math.is_some() {
+                render_paragraph_math(w, doc, src, text_range, block_start);
+            } else {
+                render_paragraph(w, doc, text_range);
+            }
+            return;
+        }
     }
     if math_here && w.math.is_some() {
         render_paragraph_math(w, doc, src, inline, block_start);
@@ -2139,6 +2703,19 @@ fn render_backslash_math<'a>(
     let opener = if display { '[' } else { '(' };
     let content_start = first_range.start + opener.len_utf8();
     let mut fallback: Vec<Event<'a>> = vec![Event::Text(first_text)];
+    // Tracks whether the loop is currently inside a nested `Start`/`End` span (a markdown link, say)
+    // sitting *between* the opener and the eventual closer — mirrors `render_multiline_display_math`'s
+    // own identical `depth` counter, for the identical reason: a `Start` event's own `range` spans its
+    // *entire* construct (matching its own later `End`'s range — pulldown-cmark's convention), so its
+    // first child's own `range.start` sits *earlier* than the `Start` event's own `range.end`. Gap-
+    // computing (`src[prev_end..range.start]`) against that child while `prev_end` still holds the
+    // parent `Start`'s own `range.end` slices with `prev_end > range.start` — an invalid, **panicking**
+    // range. Confirmed directly: `"...compilation. \([#519](https://…/pull/519))\n"` (a real
+    // CommonMark generic backslash-escape — `\(`, stopping this from parsing as an ordinary open
+    // paren — immediately followed by a real markdown link, drawn straight from a `~/.cargo/registry`
+    // README's own CHANGELOG.md) panicked exactly this way before this guard existed, crashing the
+    // whole preview on ordinary, valid input — a design-principle-#3 violation, not a documented gap.
+    let mut depth: i32 = 0;
     loop {
         let Some((ev, range)) = events.next() else {
             if let Some(p) = pending {
@@ -2147,30 +2724,47 @@ fn render_backslash_math<'a>(
             replay_events(w, fallback);
             return;
         };
-        let gap = prev_end.map(|p| &src[p..range.start]);
+        // Only a *top-level* (`depth == 0`) gap is ever a meaningful closer candidate in the first
+        // place — `backslash_math_opener`'s own doc comment: the question is whether a bare `\)`/`\]`
+        // gap turns up on the same line, never whether one happens to sit inside some unrelated
+        // nested construct's own interior — so skipping it entirely while `depth > 0` changes no
+        // real detection, only avoids the invalid slice above.
+        let gap = if depth == 0 {
+            prev_end.map(|p| &src[p..range.start])
+        } else {
+            None
+        };
         *prev_end = Some(range.end);
-        let is_break = matches!(ev, Event::SoftBreak | Event::HardBreak);
-        if let Event::Text(t) = &ev {
-            if gap == Some("\\") && t.starts_with(closer) {
-                if let Some(p) = pending {
-                    render_text_with_math(w, &p, true);
+        match &ev {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+        let is_break = depth == 0 && matches!(ev, Event::SoftBreak | Event::HardBreak);
+        if depth == 0 {
+            if let Event::Text(t) = &ev {
+                if gap == Some("\\") && t.starts_with(closer) {
+                    if let Some(p) = pending {
+                        render_text_with_math(w, &p, true);
+                    }
+                    // `range.start` is the closer *character*'s own position — but the `gap ==
+                    // Some("\\")` check just above confirms the one byte immediately before it is
+                    // the closer's own escaping backslash (ASCII, always exactly one byte), which
+                    // belongs to the closer delimiter `\)`/`\]` itself, never to the content —
+                    // excluded here (`- 1`) the same way `opener.len_utf8()` is added, not
+                    // subtracted, on `content_start`'s own side.
+                    let content = &src[content_start..range.start - 1];
+                    render_math_slot(w, content.trim(), display);
+                    let rest = &t[closer.len_utf8()..];
+                    if !rest.is_empty() {
+                        // No lookahead available here for whether *this* trailing text is itself
+                        // immediately followed by another backslash-math opener (`trailing_lift:
+                        // false`) — not exercised by the parity corpus (see this function's own doc
+                        // comment on its own "text trailing the closer" caveat).
+                        render_text_with_math(w, rest, false);
+                    }
+                    return;
                 }
-                // `range.start` is the closer *character*'s own position — but the `gap == Some("\\")`
-                // check just above confirms the one byte immediately before it is the closer's own
-                // escaping backslash (ASCII, always exactly one byte), which belongs to the closer
-                // delimiter `\)`/`\]` itself, never to the content — excluded here (`- 1`) the same
-                // way `opener.len_utf8()` is added, not subtracted, on `content_start`'s own side.
-                let content = &src[content_start..range.start - 1];
-                render_math_slot(w, content.trim(), display);
-                let rest = &t[closer.len_utf8()..];
-                if !rest.is_empty() {
-                    // No lookahead available here for whether *this* trailing text is itself
-                    // immediately followed by another backslash-math opener (`trailing_lift:
-                    // false`) — not exercised by the parity corpus (see this function's own doc
-                    // comment on its own "text trailing the closer" caveat).
-                    render_text_with_math(w, rest, false);
-                }
-                return;
             }
         }
         fallback.push(ev);
@@ -2445,11 +3039,15 @@ fn render_dollar_math_tail<'a>(
         // event turned up (this loop's own first version: `extendable = gap == "\\" && matches!(ev,
         // Event::Text(_))`, `false` for `Event::Start` unconditionally) buffered only the lone `Start`
         // into `fallback` and returned, leaving `Text("bold")`/`End(Strong)` orphaned. Waiting for
-        // `depth` to return to `0` (mirroring how `render_backslash_math`'s own loop achieves the
-        // identical safety *implicitly*, by never special-casing `Start`/`End` at all and so never
-        // stopping on one either) closes this structurally, not just for `Strong` — any inline
+        // `depth` to return to `0` closes this structurally, not just for `Strong` — any inline
         // construct at all (`Emphasis`, `Link`, nested combinations of either) shares the same
-        // wide-`Start`-range shape and so needs the identical protection.
+        // wide-`Start`-range shape and so needs the identical protection. (`render_backslash_math`'s
+        // own loop never special-cases `Start`/`End` either, so it never stops mid-construct this same
+        // way — but it turned out to need its *own*, distinct `depth` guard regardless, for a second,
+        // narrower reason this loop's own re-scan-the-growing-slice design happens not to share: gap-
+        // *computing* against a child event while `prev_end` still holds its wide-spanning parent
+        // `Start`'s own `range.end` is itself an invalid, panicking slice, degenerate `depth > 0`
+        // buffering aside — see that function's own doc comment for the confirmed, real-content case.)
         if is_break && depth == 0 {
             if let Some(p) = pending {
                 render_text_with_math(w, &p, false);
@@ -3163,7 +3761,7 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
                 classes: classes.clone(),
                 attrs: attrs.clone(),
             };
-            render_heading(w, doc, *level, inline.clone(), &meta);
+            render_heading(w, doc, src, *level, inline.clone(), &meta);
         }
         BlockKind::Paragraph { inline } => {
             if is_real_paragraph(src, block) {
@@ -3566,8 +4164,48 @@ fn render_bare_paragraph(
         w.push_blank_line();
         w.needs_newline = false;
     }
-    if try_render_paragraph_as_image(w, doc, &inline, extract_here) {
+    if try_render_paragraph_as_image(w, doc, src, &inline, extract_here) {
         return;
+    }
+    // See the identical branch in `render_paragraph_dispatch` — `paragraph_trailing_images`'s own
+    // doc comment for the shape this closes.
+    if extract_here {
+        if let Some((text_range, images)) = paragraph_trailing_images(doc, src, &inline) {
+            if math_here {
+                walk_inline_math(
+                    &mut events_iter_ranged(&doc.events[text_range]),
+                    w,
+                    src,
+                    block_start,
+                );
+            } else {
+                walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
+            }
+            for (alt, url) in &images {
+                render_image_slot(w, alt, url);
+            }
+            return;
+        }
+        // See the identical branch in `render_paragraph_dispatch` — `paragraph_leading_images`'s own
+        // doc comment for the shape this closes. No extra leading-blank-line handling needed here
+        // (unlike that other call site): this function's own `if w.needs_newline { .. }` at its very
+        // start, above, already ran before any dispatch decision was made.
+        if let Some((images, text_range)) = paragraph_leading_images(doc, src, &inline) {
+            for (alt, url) in &images {
+                render_image_slot(w, alt, url);
+            }
+            if math_here {
+                walk_inline_math(
+                    &mut events_iter_ranged(&doc.events[text_range]),
+                    w,
+                    src,
+                    block_start,
+                );
+            } else {
+                walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
+            }
+            return;
+        }
     }
     if math_here {
         walk_inline_math(
@@ -5010,6 +5648,210 @@ mod tests {
         );
     }
 
+    /// Regression for a real, confirmed content-loss bug — the `app::md_real_file_sweep_tests` sweep
+    /// over every `.md` file under `~/.cargo/registry/src` found hundreds of real crate READMEs (the
+    /// shields.io "badge row" idiom: one `[![alt](url)](href)` badge per physical line, no blank line
+    /// between consecutive badges — a single Markdown paragraph, several images long) silently losing
+    /// every badge's own URL past the first one, before `paragraph_as_block_images`'s own `image_starts
+    /// != 1` count check existed (see that function's own doc comment for the exact, confirmed
+    /// mechanism: checking only the first/last event of a naively "outer-link-unwrapped" range treated
+    /// two entirely separate badges sharing one paragraph as if they were one, nested one — rendering a
+    /// single, wrong, merged line with both alt texts concatenated and only the *first* image's own
+    /// URL kept). Two badges here, each independently link-wrapped, one per line — the minimal shape
+    /// that reproduces it — must extract as **two separate placements**, each with its own real URL,
+    /// not as one merged placement or one placement with the second badge's own information dropped.
+    #[test]
+    fn consecutive_badge_lines_extract_every_image_not_just_the_first() {
+        let src = "[![Build Status](build.svg)](https://ci.example/build)\n\
+                   [![Docs](docs.svg)](https://docs.example)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images,
+            vec![
+                ImagePlacement {
+                    url: "build.svg".to_string(),
+                    alt: "Build Status".to_string(),
+                    line: 0,
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+                ImagePlacement {
+                    url: "docs.svg".to_string(),
+                    alt: "Docs".to_string(),
+                    line: 1,
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+            ],
+            "both badges must extract as separate placements, each with its own URL — not one \
+             merged placement missing the second badge's own URL: {:?}",
+            out.images
+        );
+    }
+
+    /// The `image_starts != 1` count check's own, narrower target directly, isolated from
+    /// `paragraph_as_block_images`'s own per-physical-line segmentation (the sibling test above puts
+    /// its two badges on *separate* lines — each already lands in its own segment before the count
+    /// check is ever consulted, so that test alone does not exercise this specific guard): two badges
+    /// on the *same* physical line (a bare space between them, no `SoftBreak` at all — confirmed
+    /// against real content too, `~/.cargo/registry/.../phf-*/README.md`'s own two-badge row) share
+    /// one segment, with two `Start(Image)`/`End(Image)` pairs inside it.
+    ///
+    /// `segment_as_block_images`/`split_top_level_image_units` (added for `md_real_file_sweep_\
+    /// tests`'s own real-registry sweep) now recognizes this exact shape and extracts **both**
+    /// badges correctly, as two separate placements, the same way `consecutive_badge_lines_extract_\
+    /// every_image_not_just_the_first` above already establishes for the *separate*-line case — not
+    /// "must not be extracted at all," this test's own earlier version (see `git log` for the
+    /// version this replaced): that version deliberately rejected the whole segment and fell through
+    /// to ordinary rendering, a safe-but-lossy degrade written specifically to avoid a real, worse
+    /// bug this function's own pre-`md-block-walk` version had — reverting the count check back to
+    /// "only look at the first/last event" reproduces it exactly: `events.first()` is badge *a*'s
+    /// own `Start(Link)`, `events.last()` happens to be badge *b*'s own `End(Link)`, so the naive
+    /// unwrap treats the *whole* two-badge span as one wrapped image — `inner.first()`/`inner.\
+    /// last()` then resolve to badge *a*'s `Start(Image)` and badge *b*'s `End(Image)` respectively,
+    /// both checks pass, and the result is one wrong, merged placement: alt texts concatenated
+    /// (`"a b"`), only badge *a*'s own URL (`u1`) kept, badge *b*'s own URL (`u2`) silently dropped.
+    /// The safe-degrade was the best available fix at the time; it is not anymore, now that
+    /// `split_top_level_image_units` can tell "two separate units sharing one line" apart from "one
+    /// truly ambiguous merge" (still `segment_as_block_image`'s own `image_starts != 1` guard, for a
+    /// shape like two images glued inside one *un-split-able* wrapper) precisely.
+    #[test]
+    fn two_images_sharing_one_line_segment_both_extract_as_separate_placements() {
+        let src = "[![a](u1)](h1) [![b](u2)](h2)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images,
+            vec![
+                ImagePlacement {
+                    url: "u1".to_string(),
+                    alt: "a".to_string(),
+                    line: 0,
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+                ImagePlacement {
+                    url: "u2".to_string(),
+                    alt: "b".to_string(),
+                    line: 1,
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+            ],
+            "both badges sharing one physical line must extract as separate placements, each with \
+             its own URL — not rejected outright, and not merged into one with the second badge's \
+             own information dropped: {:?}",
+            out.images
+        );
+    }
+
+    /// Regression for a second, real, confirmed content-loss bug the same sweep found: a real sentence
+    /// directly followed, with no blank line, by a standalone image line
+    /// (`~/.cargo/registry/.../zune-jpeg-*/Benches.md`: `"...of (now defunct?) [Cutefish OS] default \
+    /// wallpaper.\n![img](benches/images/speed_bench.jpg)\n"`) lost the image's own URL entirely before
+    /// `paragraph_trailing_images` existed — the whole paragraph (sentence *and* image line, joined by
+    /// `paragraph_as_block_images`'s own "every segment must be an image" gate failing on the sentence)
+    /// fell through to ordinary rendering, where the image showed only as inline alt-text with no URL,
+    /// squished onto the end of the sentence's own line. Both the sentence's own text *and* the image's
+    /// own real placement must survive intact.
+    #[test]
+    fn sentence_directly_followed_by_a_standalone_image_line_still_extracts_the_image() {
+        let src = "Some intro sentence.\n![a cat](cat.png)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 7, rows: 3 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images,
+            vec![ImagePlacement {
+                url: "cat.png".to_string(),
+                alt: "a cat".to_string(),
+                line: 1,
+                cols: 7,
+                rows: 3,
+                fence_ord: None,
+            }],
+            "the trailing image must still extract, with its own real URL, not fall back to \
+             URL-less inline alt-text: {:?}",
+            out.images
+        );
+        assert_eq!(
+            out.lines.first(),
+            Some(&Line::from("Some intro sentence.")),
+            "the leading sentence's own text must survive intact, on its own line: {:?}",
+            out.lines
+        );
+    }
+
     /// Mermaid fence extraction and its own running ordinal (`ImagePlacement.fence_ord`) — three
     /// fences, only the outer two of which are mermaid (the middle one is an ordinary fence, drawn as
     /// code and never touching the ordinal counter at all), pinning both the *values* `fence_ord`
@@ -5466,6 +6308,106 @@ mod tests {
                 out.lines, want,
                 "src: {src:?} — must render exactly as if the never-closing `$` had never triggered \
                  `render_dollar_math_tail` at all: {:?}",
+                out.lines
+            );
+        }
+    }
+
+    /// Regression for a real, confirmed panic — the `render_backslash_math` analogue of the
+    /// `render_dollar_math_tail` one just above, found by `app::md_real_file_sweep_tests`'s own sweep
+    /// over every `.md` file under `~/.cargo/registry/src`, not merely reasoned about:
+    /// `proptest-1.11.0/CHANGELOG.md` panics rendering `"...compilation. \([#519](https://…/pull/\
+    /// 519))\n"` — an ordinary CommonMark generic backslash-escape (`\(`, stopping this from parsing
+    /// as an open paren at all — not LaTeX math) immediately followed by a real markdown link, whose
+    /// closing `)` is never itself escaped. `render_backslash_math`'s own loop, before this fix,
+    /// computed a gap (`src[prev_end..range.start]`) against *every* event unconditionally, including
+    /// a `Start(Link)`'s own first child — but a `Start` event's own `range` spans its *entire*
+    /// construct (matching its later `End`'s), so that child's own `range.start` sits *earlier* than
+    /// the `Start`'s own `range.end` `prev_end` had just been set to: `src[prev_end..range.start]`
+    /// with `prev_end > range.start` panics ("byte range starts at X but ends at Y"). Reverting the
+    /// `depth == 0` gate on gap-computation/closer-detection/`is_break` back to unconditional (the
+    /// smallest change that reproduces the pre-fix behavior) panics on every case below.
+    ///
+    /// Each case's own expected `lines` was confirmed against the fixed renderer directly (not merely
+    /// asserted): the opener replays as a literal `"("`/`"["` (no lift — no matching *escaped* closer
+    /// ever turns up), whatever nested link/emphasis sits between it and the closer renders exactly as
+    /// it would have outside any math context at all, and the closer/trailing text survive intact —
+    /// pinning "does not panic" *and* "renders as if `backslash_math_opener` had never matched at all",
+    /// the identical double bar `dollar_that_never_closes_does_not_panic_when_unrelated_markup_follows`
+    /// holds its own cases to.
+    #[test]
+    fn backslash_math_that_never_closes_does_not_panic_when_a_link_follows() {
+        for (src, want) in [
+            (
+                "See \\([a link](http://x)) here.\n",
+                vec![Line::from_iter([
+                    Span::from("See "),
+                    Span::from("("),
+                    Span::from("a link"),
+                    Span::from(" ("),
+                    Span::from("http://x").blue().underlined(),
+                    Span::from(")"),
+                    Span::from(") here."),
+                ])],
+            ),
+            (
+                "See \\[[a link](http://x)] here.\n",
+                vec![Line::from_iter([
+                    Span::from("See "),
+                    Span::from("["),
+                    Span::from("a link"),
+                    Span::from(" ("),
+                    Span::from("http://x").blue().underlined(),
+                    Span::from(")"),
+                    Span::from("]"),
+                    Span::from(" here."),
+                ])],
+            ),
+            (
+                "\\([a **bold** link](http://x)) works.\n",
+                vec![Line::from_iter([
+                    Span::from("("),
+                    Span::from("a "),
+                    Span::from("bold").bold(),
+                    Span::from(" link"),
+                    Span::from(" ("),
+                    Span::from("http://x").blue().underlined(),
+                    Span::from(")"),
+                    Span::from(") works."),
+                ])],
+            ),
+        ] {
+            let doc = Doc::parse(src);
+            let code = CodeStyle::default();
+            let math_slot = |_: &str, _: bool| MathSlot::Raw;
+            let out = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                // icons: `false` — matching the sibling `$…` regression test above (`render_doc`'s
+                // own raw Link rendering is icon-blind regardless; icon substitution is
+                // `collapse_links`'s own app-level post-process, exercised separately).
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "mermaid",
+                true,
+                &math_slot,
+                true,
+            );
+            assert!(out.unsupported.is_empty(), "src: {src:?}");
+            assert!(
+                out.images.is_empty(),
+                "src: {src:?}, images: {:?}",
+                out.images
+            );
+            assert_eq!(
+                out.lines, want,
+                "src: {src:?} — must render exactly as if `backslash_math_opener` had never matched \
+                 at all: {:?}",
                 out.lines
             );
         }

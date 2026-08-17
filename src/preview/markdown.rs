@@ -719,14 +719,19 @@ pub fn render_markdown_with_images(
 /// The pre-`md-block-walk` implementation of `render_markdown_with_images` — line-based extraction
 /// (`split_block_parts`/`split_math`) over raw source, then a per-run `tui-markdown` decoration pass
 /// (`render_markdown_tasks_opts`). Kept, unchanged, as the fallback `render_markdown_with_images`
-/// itself calls whenever the model-based renderer cannot be trusted for a given call (see that
-/// function's own doc comment for exactly when: `alerts = false`, or `render::render_doc` reports part
-/// of the document as `unsupported`) — never called directly by any real preview path or test on its
-/// own any more (every existing call site that used to name this function now names the dispatcher
-/// above instead), but still fully exercised *through* it for every corpus case that hits either
-/// fallback condition.
+/// itself calls whenever `render::render_doc` reports part of the document as `unsupported` (see that
+/// function's own doc comment for exactly when — `alerts = false` is *not* one of the triggers any
+/// more, see that doc comment's own note on why) — never called directly by any real preview path any
+/// more (every existing production call site now names the dispatcher above instead), but still fully
+/// exercised *through* it for every corpus case that hits the fallback condition.
+///
+/// `pub(crate)`: `app::md_real_file_sweep_tests` (a real-Markdown-corpus sweep, gated `#[ignore]`) calls
+/// this directly, unconditionally, to render every swept file the pre-`md-block-walk` way — the
+/// baseline it diffs `render::render_doc`'s own output against — rather than only ever seeing this
+/// function's output when `render_markdown_with_images` itself happens to fall back on a given file
+/// (visibility-only change, no behavior here changes either way).
 #[allow(clippy::too_many_arguments)]
-fn render_markdown_with_images_legacy(
+pub(crate) fn render_markdown_with_images_legacy(
     src: &str,
     width: u16,
     code: CodeStyle,
@@ -4303,7 +4308,13 @@ fn html_text_run(buf: &mut Vec<(&str, bool)>) -> SourceRun {
 }
 
 /// Render an HTML block as its tag-stripped text (entities decoded, comments dropped entirely).
-fn render_html_block(raw: &str) -> Vec<Line<'static>> {
+///
+/// `pub(crate)`, not private: `app::md_real_file_sweep_tests` (a cousin module, not a descendant of
+/// this one) calls this directly to compute a document's own "ground truth visible text" for its
+/// content-loss check — the exact same tag/comment stripping `render_html_block_from_model` applies
+/// when actually drawing an `Html` block, reused rather than re-implemented a second time, so that
+/// check can never itself drift from what either renderer actually strips.
+pub(crate) fn render_html_block(raw: &str) -> Vec<Line<'static>> {
     // Strip tags/comments by scanning characters (also handles a `<!-- -->` that spans multiple lines).
     let mut text = String::new();
     let mut rest = raw;

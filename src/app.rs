@@ -5787,3 +5787,8 @@ mod md_model_snapshot_tests;
 // measures and why it is not itself a golden snapshot.
 #[cfg(test)]
 mod md_render_diff_tests;
+// A real-world (not synthetic-corpus) sweep of the new block-model renderer against the pre-switch
+// legacy one, over every `.md` file under `~/.cargo/registry/src` — see its own module doc comment.
+// `#[ignore]`d (needs a populated Cargo registry cache) and never run as part of the normal suite.
+#[cfg(test)]
+mod md_real_file_sweep_tests;
