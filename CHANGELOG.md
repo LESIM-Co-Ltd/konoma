@@ -38,11 +38,26 @@ All notable changes to konoma are documented in this file. The format is based o
   so the two never met.
 
 - **Several ways a document could quietly lose content**, each found by comparing every rendered row
-  against the previous renderer across the whole corpus and 2,082 real files: a centred banner showed
-  only its first badge; a `<details>` opened without a blank line lost the first sentence of its
-  folded body; display maths opened by `$$` on its own line, or containing an escaped character such
-  as `\,`, vanished; and with `md_frontmatter = false` the `---` header disappeared instead of being
-  shown as text.
+  against the previous renderer across the whole corpus and 2,080 real crate documents: a centred
+  banner showed only its first badge, and badges were also dropped when several shared a line, when a
+  bare backslash line break separated them, when a comment trailed the row, when they followed a
+  heading's text, and when a paragraph opened with them; a `<details>` opened without a blank line
+  lost the first sentence of its folded body; display maths opened by `$$` on its own line, or
+  containing an escaped character such as `\,`, vanished; and with `md_frontmatter = false` the `---`
+  header disappeared instead of being shown as text.
+
+- **`\(` followed by a Markdown link crashed the preview** — the shape a changelog uses to cite a
+  pull request, `\([#519](https://…))`.
+
+### Changed
+- **A section commented out with `<!-- … -->` is no longer shown.** The comment used to be treated as
+  ending at the first blank line, so a long commented-out block — an internal checklist, a draft
+  section — was printed in full from that blank line onward, even though no Markdown viewer shows it.
+
+- **Markdown previews are drawn from the document's own structure rather than reconstructed from a
+  rendered result.** Beyond the fixes above this is invisible, and it measures faster and lighter on
+  large files, but it is a large change to the most-used path in konoma. If a document renders
+  differently than you expect, that is worth reporting.
 
 ## [0.25.0] - 2026-08-13
 
