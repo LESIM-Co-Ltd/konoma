@@ -683,7 +683,7 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
         }
         let close_pos = rest.iter().position(|c| is_details_close_block(c, src));
         let body_start = line_after(src, b.src.start);
-        let (children, block_end, summary_end) = match close_pos {
+        let (mut children, block_end, summary_end) = match close_pos {
             Some(pos) => {
                 let mut children = Vec::with_capacity(pos);
                 for _ in 0..pos {
@@ -706,8 +706,91 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
         // summary_end` (a later sibling's own range never starts before this block's own first
         // line ends), but this guards against a slice panic outright if some future input this
         // function has not been tested against ever violated it.
-        let inner = &src[body_start.min(summary_end)..summary_end];
+        let inner_start = body_start.min(summary_end);
+        let inner = &src[inner_start..summary_end];
         let (summary, _body) = super::extract_summary_body(inner);
+        // A **no-blank-line-after-the-open-tag** rescue: `b.src` (the open tag's own leaf) can run
+        // past its own first line even on this "normal" (not `glued_details_fold`) path — CommonMark's
+        // HTML-block grammar keeps absorbing whatever *non-blank* lines follow `<details ...>`
+        // (`alpha` in `<details open>\nalpha\n<br>\nbeta\n</details>\n`, confirmed directly: this
+        // exact source's own `Html` leaf reports `src: 0..21`, covering the open tag's own line *and*
+        // `alpha`'s) until the block genuinely ends at a blank line, and `alpha` here is no more a
+        // `<summary>` than it is a `</details>` — it is ordinary body text that just happened to have
+        // no blank line of its own separating it from the tag above. `super::split_details`'s own
+        // raw-line body scan has no such gluing to begin with (it treats `body_start..summary_end` as
+        // one flat span regardless of blank lines, then hands the whole thing to a fresh Markdown
+        // parse), so production loses nothing here — this rescues the identical text on this file's
+        // own path (found 2026-08, rendering every "no blank line under an unseparated `<details>`"
+        // shape in the parity corpus: `alpha` above vanished outright, kept out of both `children`
+        // — `fold_details` never sees it as a sibling `Block` at all, since it was never a `Doc.events`
+        // block of its own — *and* the `extract_summary_body` call above, whose own `_body` return
+        // value has always been discarded here (`inner` deliberately reaches past `b.src.end`, into
+        // whatever real sibling children/close tag follow, purely so a *glued* `<summary>` — see
+        // below — is still found; the well-formed "summary and body are separate siblings" shape
+        // never had a leftover for `_body` to carry in the first place, which is why nothing here
+        // needed it before now).
+        //
+        // The rescued range is only ever the slice `super::extract_summary_body` has *not* already
+        // read as the summary tag (`super::summary_tag_end`, the identical boundary that function's
+        // own second return value is sliced from) — clamped to `b.src.end`, this leaf's own extent, so
+        // a `<summary>` glued onto the same line as the open tag (the everyday, blank-line-separated-
+        // body idiom `<details>\n<summary>S</summary>\n\nbody\n</details>\n` glues *these two* lines
+        // into one `Html` leaf too, confirmed directly) is never rescued a second time as raw body
+        // text alongside its own already-extracted `summary` field: `real_body_start` lands at (or
+        // past) `b.src.end` there, so the `if` below never fires, and this stays a pure no-op on
+        // every shape that does not have this exact gap. Rendered via `render_html_block_from_model`
+        // like any other `Html` block (`tag: None`, matching what `super::html_tag_name` would report
+        // for a line that does not start with `<` at all) — reusing the one function this file already
+        // trusts to turn arbitrary glued raw text into `Line`s, rather than a second, narrower
+        // reimplementation of it here.
+        //
+        // Guarded on the leftover being more than whitespace: the everyday, blank-line-separated-body
+        // idiom (`<details>\n<summary>S</summary>\n\nbody\n</details>\n`) glues the open tag and its
+        // own `<summary>` into one `Html` leaf too (confirmed directly — no blank line separates
+        // *those* two lines either), and, once rounded up to a line boundary (below), `real_body_start`
+        // there lands *at* `b.src.end`: there is nothing left in the leaf past the summary line at all.
+        // Rescuing an empty range as a `Block` on every well-formed `<details>` would still be a
+        // *structural* regression `render.rs`'s own `contains_unsupported` can observe even though the
+        // screen never changes: a quote-nested alert's own `<details>` reaches this exact shape
+        // (`> <details open>\n> <summary>Nested</summary>\n`, `md_render_diff_tests`'s own
+        // `details_nested_inside_an_alert_does_not_consume_the_top_level_ordinal` corpus case) with
+        // `in_quote: true` already set, and a bare `BlockKind::Html` child there is reported
+        // unsupported unconditionally (`contains_unsupported`'s own `Html { .. } if in_quote` arm) —
+        // falling the *whole* alert back to the legacy renderer over one phantom, invisible child. The
+        // `.trim()` check keeps this rescue narrowly targeted at the one shape it exists for (real body
+        // text CommonMark genuinely glued to the open tag, confirmed non-whitespace) rather than firing
+        // on every well-formed block regardless of whether there is anything left to rescue at all.
+        //
+        // Rounded up to the *next line* — via `line_after`, not used byte-exact — when a `<summary>`
+        // was actually found and consumed: `super::summary_tag_end`'s own boundary lands mid-line,
+        // right after `</summary>`'s own `>`, but pulldown-cmark's own `Event::Html` sub-events are
+        // always whole, `'\n'`-inclusive physical lines (confirmed directly: `Doc::parse`'s own event
+        // stream for a glued leaf reports one `Event::Html` per source line, trailing newline and all —
+        // see the module doc comment's "How inline content is rendered" section). Splitting a leaf
+        // mid-line here would leave neither the tag-line sliver `render.rs`'s own completeness check
+        // (`app::md_model_snapshot_tests::model_covers_every_inline_event_across_the_full_corpus`)
+        // computes from `b.src.start..first_child.src.start`, nor this rescued leaf itself, covering
+        // that one summary line's own trailing `'\n'` in full — found the same way as the leaf-count
+        // regression above, by running the full test suite after adding the byte-exact version first.
+        // No such rounding when no `<summary>` was found at all (`summary_tag_end` returns `None`):
+        // `inner_start` is already a clean line start there (`line_after(src, b.src.start)`, the
+        // position right after the open tag's own first line) — rounding again would skip the very
+        // first real body line (`alpha`, in the doc comment above) whole.
+        let real_body_start = match super::summary_tag_end(inner) {
+            Some(off) => line_after(src, inner_start + off),
+            None => inner_start,
+        }
+        .min(b.src.end);
+        if real_body_start < b.src.end && !src[real_body_start..b.src.end].trim().is_empty() {
+            children.insert(
+                0,
+                Block {
+                    kind: BlockKind::Html { tag: None },
+                    src: real_body_start..b.src.end,
+                    children: Vec::new(),
+                },
+            );
+        }
         out.push(Block {
             kind: BlockKind::Details {
                 open_attr,

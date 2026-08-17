@@ -2682,6 +2682,7 @@ Paragraph{inline=174..191:"チェックボックスは操作できる: Tab で�
 Heading{level=2, inline=193..194:"HTML ブロック", id=None, classes=[], attrs=[]} src=1552..1573 text="## HTML ブロック\n"
 Paragraph{inline=196..216:"<details> は折りたたみセクションになる: ▸/▾ のマーカー付きで、Tab で要約行に フォーカス → Space か Enter で開閉。既定は G"…} src=1574..1851 text="`<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に\nフォーカス → `Space` か `Ente"…
 Details{open_attr=false, summary="閉じた details（クリックで開く相当・Tab→Space で開く）", glued_body=None} src=1852..2104 text="<details>\n<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>\n中身は Markdown と"…
+  Html{tag=None} src=1956..2035 text="中身は Markdown として描画される。**太字**やリストも効く:\n"
   List{ordered=false, start=None} src=2036..2093 text="- 折りたたみの中の項目\n- もう一つの項目\n"
     ListItem{task=None} src=2036..2069 text="- 折りたたみの中の項目\n"
       Paragraph{inline=224..225:"折りたたみの中の項目"} src=2038..2068 text="折りたたみの中の項目"
@@ -2758,6 +2759,7 @@ Paragraph{inline=174..189:"Checkboxes are interactive: Tab to focus (same cycle 
 Heading{level=2, inline=191..192:"HTML blocks", id=None, classes=[], attrs=[]} src=1267..1282 text="## HTML blocks\n"
 Paragraph{inline=194..214:"<details> becomes a collapsible section with a ▸/▾ marker: Tab focuses the summa"…} src=1283..1528 text="`<details>` becomes a collapsible section with a `▸`/`▾` marker: `Tab` focuses t"…
 Details{open_attr=false, summary="Closed details (like \"click to expand\" — open with Tab→Space)", glued_body=None} src=1529..1740 text="<details>\n<summary>Closed details (like \"click to expand\" — open with Tab→Space)"…
+  Html{tag=None} src=1624..1687 text="The body is rendered as Markdown. **Bold** and lists work too:\n"
   List{ordered=false, start=None} src=1688..1729 text="- an item inside the fold\n- another item\n"
     ListItem{task=None} src=1688..1714 text="- an item inside the fold\n"
       Paragraph{inline=222..223:"an item inside the fold"} src=1690..1713 text="an item inside the fold"

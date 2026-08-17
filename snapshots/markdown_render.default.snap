@@ -114,11 +114,17 @@ L0009 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   m01 line=0007 kind=CodeBlock
 
 === code_corpus: a centered banner whose links wrap images (registry: criterion README.md) ===
--- LINES (3) --
-L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "|"
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 CI — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/badge.svg"
 L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "|"
 L0002 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -126,7 +132,9 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (2) --
+  m00 line=0000 kind=Link{target="https://img.example/badge.svg"}
+  m01 line=0003 kind=Link{target="https://img.example/v.svg"}
 
 === code_corpus: a checkbox after a fence whose closing line has trailing text (list ended by a paragraph) ===
 -- LINES (12) --
@@ -1046,53 +1054,69 @@ L0007 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   m00 line=0005 kind=CodeBlock
 
 === code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md) ===
--- LINES (3) --
+-- LINES (5) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Banner — "
   s01 fg=blue,bg=-,mod=U "https://img.example/banner.png"
 L0001 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 rustc — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/rustc.svg"
+L0003 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 Patron — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/patron.png"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail."
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (4) --
   m00 line=0000 kind=Link{target="https://img.example/banner.png"}
   m01 line=0001 kind=Link{target="https://img.example/v.svg"}
+  m02 line=0002 kind=Link{target="https://img.example/rustc.svg"}
+  m03 line=0003 kind=Link{target="https://img.example/patron.png"}
 
 === code_corpus: centered banner whose <img> lines are cut out of it stays HTML ===
--- LINES (2) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 a — "
   s01 fg=blue,bg=-,mod=U "https://img.example/a.svg"
-L0001 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 b — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/b.svg"
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://img.example/a.svg"}
+  m01 line=0001 kind=Link{target="https://img.example/b.svg"}
 
 === code_corpus: centered banner with a bare <br> line in it (registry: raw-window-metal README.md) ===
--- LINES (2) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0001 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 License - MIT — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/mit.svg"
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://img.example/v.svg"}
+  m01 line=0001 kind=Link{target="https://img.example/mit.svg"}
 
 === code_corpus: checkbox in a nested list item written with three spaces after the bullet (registry: zerocopy agent_docs) ===
 -- LINES (3) --
@@ -7303,17 +7327,21 @@ L0006 style=fg=-,bg=-,mod=- align=-
   m01 line=0006 kind=Link{target="https://example.com"}
 
 === preprocess_corpus: bare br line inside an html block ===
--- LINES (1) --
+-- LINES (2) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 a — "
   s01 fg=blue,bg=-,mod=U "https://a.svg"
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 b — "
+  s01 fg=blue,bg=-,mod=U "https://b.svg"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://a.svg"}
+  m01 line=0001 kind=Link{target="https://b.svg"}
 
 === preprocess_corpus: br after a fence ===
 -- LINES (6) --
@@ -7711,19 +7739,23 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md) ===
--- LINES (2) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0001 style=fg=-,bg=-,mod=- align=-
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 License - MIT — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/mit.svg"
+L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
+-- ITEMS (2) --
   m00 line=0000 kind=Link{target="https://img.example/v.svg"}
+  m01 line=0001 kind=Link{target="https://img.example/mit.svg"}
 
 === preprocess_corpus: checkbox carrying a ref ===
 -- LINES (5) --
@@ -8229,22 +8261,26 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md) ===
--- LINES (4) --
+-- LINES (5) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "TT"
 L0001 style=fg=-,bg=-,mod=- align=-
 L0002 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 CI — "
   s01 fg=blue,bg=-,mod=U "https://img.example/ci.svg"
-L0003 style=fg=-,bg=-,mod=- align=-
+L0003 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
+-- ITEMS (2) --
   m00 line=0002 kind=Link{target="https://img.example/ci.svg"}
+  m01 line=0003 kind=Link{target="https://img.example/v.svg"}
 
 === preprocess_corpus: crlf with a continued def ===
 -- LINES (5) --
@@ -8784,23 +8820,31 @@ L0000 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=Task{state=' '}
 
 === preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md) ===
--- LINES (3) --
+-- LINES (5) --
 L0000 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Banner — "
   s01 fg=blue,bg=-,mod=U "https://img.example/banner.png"
 L0001 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 Crates.io — "
   s01 fg=blue,bg=-,mod=U "https://img.example/v.svg"
-L0002 style=fg=-,bg=-,mod=- align=-
+L0002 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 rustc — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/rustc.svg"
+L0003 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 Patron — "
+  s01 fg=blue,bg=-,mod=U "https://img.example/patron.png"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "tail."
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (2) --
+-- ITEMS (4) --
   m00 line=0000 kind=Link{target="https://img.example/banner.png"}
   m01 line=0001 kind=Link{target="https://img.example/v.svg"}
+  m02 line=0002 kind=Link{target="https://img.example/rustc.svg"}
+  m03 line=0003 kind=Link{target="https://img.example/patron.png"}
 
 === preprocess_corpus: mid-line br inside an html block ===
 -- LINES (3) --

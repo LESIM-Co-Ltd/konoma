@@ -292,6 +292,42 @@ pub(crate) fn render_doc(
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> RenderOut {
+    // ## A raw, un-stripped YAML front-matter block falls back whole, like a quote-nested
+    // `Table`/`Html`
+    //
+    // `Options::ENABLE_YAML_STYLE_METADATA_BLOCKS` is always on (`model::parse_options`, shared with
+    // the legacy path's own `tui_markdown_parse_options` — see that function's own doc comment), so a
+    // document whose caller did *not* run `strip_front_matter` first (`[ui] md_frontmatter = false`,
+    // the one real, reachable production case — every other caller strips it before any text reaches
+    // a parser at all, matching `model::is_unmodeled_container_tag`'s own doc comment) hands
+    // `Doc::parse` a leading `Event::Start(Tag::MetadataBlock(_))`. This model's own `parse_container`
+    // deliberately does not represent that construct at all (`model::is_unmodeled_container_tag`), so
+    // it never becomes a `Block` the loop below could see, unlike a quote-nested `Table`/`Html` —
+    // there is no top-level entry left behind for `contains_unsupported` to have found,
+    // whole-document or otherwise. Checked here, over `doc.events` directly (the one place this file
+    // reads them without going through a `Block`'s own `inline`/`body_spans` range), rather than
+    // inside the block loop below, because there is nothing to loop into: `doc.blocks` already has no
+    // representation of the missing bytes to inspect.
+    //
+    // Reported the identical way a quote-nested `Table`/`Html` is (`unsupported.push(..)`, discarding
+    // whatever this function would otherwise have rendered) so `render_markdown_with_images` falls
+    // back to the *whole* document via the legacy path, which renders a metadata block correctly
+    // (tui-markdown's own native `Event::Start(Tag::MetadataBlock(_))` handling — plain, unstyled
+    // text, confirmed by the `e2e_markdown_front_matter_off_leaves_body_intact` test this closes)
+    // instead of the block silently vanishing along with every byte inside it (found 2026-08,
+    // switching production over to this file: `title`/`author: Me` disappeared from the screen
+    // entirely with `md_frontmatter` off, principle #3).
+    if doc
+        .events
+        .iter()
+        .any(|(ev, _)| matches!(ev, Event::Start(Tag::MetadataBlock(_))))
+    {
+        return RenderOut {
+            lines: Vec::new(),
+            images: Vec::new(),
+            unsupported: vec!["MetadataBlock"],
+        };
+    }
     let styles = KonomaStyles { code_bg: code.bg };
     let math = math_on.then_some(MathCtx {
         slot: math_slot,
@@ -2934,48 +2970,69 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
     w.fresh_boundary = true;
 }
 
-/// Renders an `Html` block's own raw source directly into `w`, in place, by reusing `markdown.rs`'s
-/// own `render_html_block` (tag-stripping, comment-dropping, entity-decoding) on a plain slice of
-/// `src` (`&src[block_src]`) — the identical function production's own `HtmlPart::Html(h) =>
-/// out.extend(render_html_block(&h))` calls. Only ever called for an `Html` block
-/// `contains_unsupported` has already confirmed is not nested inside any `Quote` — see that
-/// function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead
+/// Renders an `Html` block's own raw source directly into `w`, in place — mirroring production's own
+/// two-pass split line by line, rather than treating the block as one opaque blob. Only ever called for
+/// an `Html` block `contains_unsupported` has already confirmed is not nested inside any `Quote` — see
+/// that function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead
 /// (a quote-nested HTML block is silently *dropped entirely* in production — this file's own naive
 /// slice, `>`-prefix and all, would be a real, if different, degradation of its own, not an
 /// improvement worth reproducing).
 ///
-/// ## An `<img>`-only block is a standalone image, not tag-stripped text
+/// ## Every standalone-image line is its own image, not just the block's first `<img>`
 ///
-/// Checked **first**, via `super::extract_block_image` — the identical function production's own
-/// `split_block_parts_masked` calls, per physical source line, to pull a standalone image out
-/// *before* `split_html_blocks` ever runs at all (see that pass's own module doc comment: image
-/// extraction happens first in production's pipeline, so a line like
-/// `<p align="center"><img src="x" alt="y"></p>` — optionally wrapped in layout tags such as `<p>`/
-/// `<a>`, `extract_html_img`'s own scope — never even reaches `split_html_blocks` as an `Html`
-/// construct to begin with). This file has no equivalent two-pass ordering (`Doc::parse` reads
-/// `Html`/`Image` block-vs-inline structure straight off the real parser, in one walk — see the
-/// module doc comment's own "How inline content is rendered" section) — reusing the *same* extraction
-/// function at the point this file *does* reach an `Html`-kind block reproduces the identical
-/// end result without needing a second, hand-rolled recognizer: `render_html_block`'s own naive,
-/// per-character tag-stripping has no concept of `<img>` at all (an image tag carries no text content
-/// of its own to survive stripping), so without this check the line would disappear from the output
-/// entirely — a real content loss (`samples/images.md`'s own HTML `<img>` section, the corpus case
-/// this closes), not merely a formatting difference, which is why this is checked unconditionally
-/// rather than folded into some `BEHAVIOR_DECISIONS`-tracked accepted gap. `extract_block_image`
-/// itself is line-based (`t.trim()`) but works unmodified on a **multi-line** `Html` block's own raw
-/// text too — `html_is_only_tags`' own char-by-char scan treats an embedded `'\n'` as ordinary
-/// whitespace, identically to a space, so a `<div>` opened and closed on separate physical lines with
-/// nothing but an `<img>` between them extracts exactly the same way a single-line one does. On a
-/// match, renders via `render_image_slot` — the same block-image renderer a standalone Markdown
-/// `![alt](url)` paragraph already goes through (`try_render_paragraph_as_image`) — and returns
-/// immediately, before ever calling `render_html_block`, since `render_image_slot`'s own trailing
-/// state (`needs_newline = false`/`after_math = true`/`fresh_boundary = true`) already matches this
-/// function's own unconditional exit state exactly (see both fields' own doc comments below).
+/// Production's own `split_block_parts_masked` walks the *whole document* one physical source line at a
+/// time, pulling every standalone-image line (`super::extract_block_image`) out into its own
+/// `BlockPart::Image` *before* `split_html_blocks` ever groups the surviving lines into an
+/// `HtmlPart::Html` blob at all (see that pass's own module doc comment: image extraction happens first
+/// in production's pipeline). A banner with several badge `<img>` lines — `<div align="center">` wrapping
+/// three or four of them, the shape at the top of a great many crate READMEs — therefore never reaches
+/// production's own `render_html_block` as one chunk in the first place: each image line is peeled off
+/// individually, and only the tag-only lines left between them (`<div>`/`<a>`/`</a>`/`<br>`/`</div>`) are
+/// what `render_html_block` ever tag-strips.
+///
+/// This file has no equivalent two-pass ordering (`Doc::parse` reads `Html`/`Image` block-vs-inline
+/// structure straight off the real parser, in one walk — see the module doc comment's own "How inline
+/// content is rendered" section): by the time this function runs, `Doc::parse` has already folded an
+/// entire multi-image banner into a single `Html`-kind block's own raw source, so reproducing
+/// production's result means re-running its own per-line split *here*, not calling
+/// `super::extract_block_image` once on the whole block. (This function used to do exactly that —
+/// `extract_block_image(raw)` on the whole multi-line slice finds only the *first* `<img>` tag anywhere
+/// in the block, `extract_html_img`'s own scan having no notion of "stop at the first one versus find
+/// them all" — and, on a match, rendered *only* that one image and returned immediately, silently
+/// discarding every badge after the first and all the surrounding tag-only markup too. Real crate
+/// READMEs — `static_assertions`/`raw-window-metal`/`tinytemplate`, the corpus cases this closes — hit
+/// this constantly.)
+///
+/// Walks `raw`'s own physical lines (`split_inclusive('\n')`, so a final line with no trailing newline —
+/// `block_src` need not carry one — is handled the same as every other). A line that is itself a
+/// standalone image (`super::extract_block_image` on that one line, trimmed — the identical per-line
+/// check `split_block_parts_masked` runs) first flushes whatever tag-only/text lines have accumulated so
+/// far through `render_html_block` (so an image mid-banner does not end up sandwiched inside the *next*
+/// image's own tag-stripped run), then renders via `render_image_slot` — the same block-image renderer a
+/// standalone Markdown `![alt](url)` paragraph already goes through (`try_render_paragraph_as_image`).
+/// Every other line accumulates into that buffer; whatever is left over at the end (the common case —
+/// most `Html` blocks carry no image line at all — and a banner's own tail, e.g. its closing `</div>`) is
+/// flushed the same way. A block with no image lines at all behaves exactly as before this change: the
+/// buffer never flushes early, so `render_html_block` still sees the whole block in one call.
+///
+/// A genuinely multi-line `<img …>` tag — its own attributes wrapped across two or more physical source
+/// lines, with no single line holding a complete `<...>` — is not recognized by this per-line walk (each
+/// half fails `extract_block_image` on its own). Production has the identical gap: `split_block_parts_masked`
+/// is exactly as line-bound. Not a regression relative to the whole-block call this replaced, either: an
+/// `<img>` tag that *is* alone on its own physical line — however many tag-only lines wrap it on
+/// neighbouring lines of their own — extracts identically either way, since that one line alone already
+/// satisfies `extract_block_image` on its own; a `<div>` opened and closed on separate physical lines
+/// with nothing but such an `<img>` line between them still extracts exactly the same way a single-line
+/// block does.
 ///
 /// No leading-blank-line check, matching `render_table_from_model`'s own (see that function's own doc
 /// comment) — `render_html_block`'s own output already ends with its own trailing blank line
 /// (`render_html_block`'s own final `if !out.is_empty() { out.push(Line::from("")) }`), so a second,
 /// separately-pushed one here would be a real, visible double blank row production never shows.
+/// `render_image_slot`'s own trailing state (`needs_newline = false`/`after_math = true`/
+/// `fresh_boundary = true`) already matches this function's own unconditional exit state exactly (see
+/// both fields' own doc comments below), so interleaving it with `render_html_block` flushes leaves
+/// nothing to reconcile between calls.
 /// `needs_newline = false`/`fresh_boundary = true` on the way out means whatever renders *next* does
 /// not add a leading blank line of its own either (`render_code_block`'s own leading-blank check
 /// reads `fresh_boundary` specifically, not `needs_newline` — see `render_table_from_model`'s own doc
@@ -2983,13 +3040,26 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
 /// blank exactly.
 fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
     let raw = &src[block_src];
-    if let Some((alt, url)) = super::extract_block_image(raw) {
-        render_image_slot(w, &alt, &url);
-        return;
+    let mut buf = String::new();
+    let flush = |w: &mut Writer<'_>, buf: &mut String| {
+        if !buf.is_empty() {
+            for l in render_html_block(buf) {
+                w.push_line(l);
+            }
+            buf.clear();
+        }
+    };
+    for line in raw.split_inclusive('\n') {
+        let bare = line.strip_suffix('\n').unwrap_or(line);
+        match super::extract_block_image(bare) {
+            Some((alt, url)) => {
+                flush(w, &mut buf);
+                render_image_slot(w, &alt, &url);
+            }
+            None => buf.push_str(line),
+        }
     }
-    for line in render_html_block(raw) {
-        w.push_line(line);
-    }
+    flush(w, &mut buf);
     w.needs_newline = false;
     w.after_math = true;
     w.fresh_boundary = true;
