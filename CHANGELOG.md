@@ -6,6 +6,44 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **A code block written inside a numbered or bulleted list could not be copied, and its lines ran
+  together on screen.** Pressing `y c` anywhere in such a document answered "couldn't copy code
+  block" and left the clipboard untouched — not just for that block, for every block in the file.
+  The same documents drew the block's opening fence as literal ``` text, and glued all of its lines
+  into one unreadable row.
+
+  Both came from the same place. konoma reconstructed where each code block began and ended by
+  reading back the styles of the rows a third-party renderer had already drawn, and that renderer
+  glues rows together in two situations: it joins a list-nested block's body into a single row, and
+  it attaches the first inline-code span of a following paragraph onto the closing fence's row. The
+  second one cost the block its header, so the count of blocks on screen no longer matched the count
+  in the file, and a guard that compares the two refused the whole document.
+
+  konoma now derives Markdown structure once, from the document itself, and renders from that. A
+  code block's text comes from the file, so copying is a slice of the source rather than a
+  reconstruction that has to be sanity-checked, and the guard — along with the refusal message — is
+  gone. Checkbox toggling changed the same way: it replaces one byte at a known offset, after
+  confirming that byte still reads as expected on disk.
+
+  Documents in Japanese hit this constantly, because a step-by-step list whose items are commands is
+  exactly the shape that triggers it; English prose rarely writes a paragraph that starts with inline
+  code right under a fence, which is why no crate README in a 2,082-file audit ever showed it.
+
+- **A code block inside a block quote is now drawn and can be copied.** It was previously skipped by
+  both the renderer and the copy path, so the feature simply did nothing there.
+
+- **A diagram could sit at "loading" forever.** The key a rendered diagram is stored under was
+  computed from the fence body with its trailing newline, while the placeholder asked for it without,
+  so the two never met.
+
+- **Several ways a document could quietly lose content**, each found by comparing every rendered row
+  against the previous renderer across the whole corpus and 2,082 real files: a centred banner showed
+  only its first badge; a `<details>` opened without a blank line lost the first sentence of its
+  folded body; display maths opened by `$$` on its own line, or containing an escaped character such
+  as `\,`, vanished; and with `md_frontmatter = false` the `---` header disappeared instead of being
+  shown as text.
+
 ## [0.25.0] - 2026-08-13
 
 ### Added
