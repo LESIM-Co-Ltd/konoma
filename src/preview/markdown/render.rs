@@ -3968,7 +3968,88 @@ fn render_item(
     w.needs_newline = false;
 
     let loose_first = children.first().is_some_and(|b| is_real_paragraph(src, b));
-    if loose_first {
+    // pulldown-cmark never reports a *custom* state (`ui.md_task_states`, e.g. `/`) as a task marker
+    // event at all — `[/] foo` parses as an item with no `task`, its literal text becoming ordinary
+    // inline content (see `model::Task`'s own doc comment and
+    // `custom_task_state_char_is_not_recognized_as_a_task_by_pulldown_cmark`). Detected here the
+    // identical way `decorate_extras`'s own `replace_task_checkbox` detects one on a *rendered*
+    // line's text (`task_prefix_state`) — but applied to this item's own source range instead:
+    // `item_src_start` is always the item's own bullet character (`- `/`* `/`+ `), regardless of
+    // nesting — a list item's own marker is never repeated on a continuation line the way a block
+    // quote's `>` is, and never carries a parent list's own indentation either (both confirmed
+    // directly against the model: `item.src` for a nested item, or one inside a block quote, starts
+    // exactly at its own bullet byte, indentation and any `>` prefix already excluded — see this
+    // file's own module doc comment's citation of `model.rs`'s equivalent tests) — so
+    // `task_prefix_state`'s own "first byte must be a bullet" check is safe to run directly against
+    // `src[item_src_start..]` with no line re-slicing of any kind on this file's own part.
+    //
+    // Only the item's own **first physical line** is a candidate (a checkbox's own trailing `]` must
+    // be followed by whitespace or end-of-line, never a literal `\n` — the "any text after it" case
+    // `task_prefix_state`'s own doc comment covers is about the *rest of that one line*, not the
+    // item's own later, unrelated content), so the search is bounded to it explicitly rather than
+    // handed the item's own, possibly multi-line, `Block::src` whole. Computed once, *before*
+    // `task`'s own match below, both because it decides `checkbox_shares_the_marker_row`
+    // (`loose_first`'s own gap has to be settled before anything writes to `w.lines`) and because
+    // the `None` arm below reuses this exact value instead of re-deriving it a second time.
+    let custom_task = if task.is_none() {
+        let first_line_end = src[item_src_start..]
+            .find('\n')
+            .map_or(src.len(), |off| item_src_start + off);
+        let first_line = &src[item_src_start..first_line_end];
+        task_prefix_state(first_line, w.tasks)
+    } else {
+        None
+    };
+    // A task item's own checkbox always collapses onto the marker's own row — tight or loose list
+    // alike — rather than following `loose_first`'s usual "marker alone, text one row below" shape.
+    //
+    // Root cause this closes (found live, comparing this renderer's output for `"- [ ] one\n\n- [ ]
+    // two\n"` against the pre-refactor production build): real pulldown-cmark reports a *loose*
+    // item's own `Event::TaskListMarker` strictly *after* `Start(Paragraph)` (see
+    // `model::parse_item_task_and_children`'s own doc comment) — `TextWriter::task_list_marker`
+    // (real tui-markdown) therefore lands the checkbox on the fresh, *empty* row
+    // `start_paragraph`'s own two-part blank-line push just opened, not the marker's own row, via
+    // an unconditional `line.spans.insert(1, ..)` with **no bounds check at all** — which panics on
+    // exactly that empty row (0 spans, `insert(1, ..)` needs at least 1). Production's own
+    // panic-isolation (`render_text_block_safe`'s `catch_unwind` + `split_block_for_retry`) catches
+    // that crash and re-splits the document at the nearest blank line, and a `"- [ ] one\n"`
+    // fragment on its own — a single item, no blank line *inside* it — reparses as a **tight**
+    // one-item list, which is what actually reaches the screen: production's own "tight-looking"
+    // task list is an accidental side effect of crash recovery, not a deliberate rendering choice
+    // (confirmed directly: a *custom*-state loose item right after a real-state one — no
+    // `Event::TaskListMarker` involved for that item at all — still shows up "tight-looking" in
+    // production, purely because the crash-recovery split happens to isolate it onto its own,
+    // trivially-tight single-item fragment too).
+    //
+    // This file's own `Writer::task_list_marker` fixed the underlying panic (`spans.len().min(1)`
+    // instead of a bare `1`) but, before this fix, still *placed* the marker exactly where real
+    // tui-markdown's crashing version would have — the empty row — faithfully reproducing the
+    // *position* a bug in the reference implementation would have produced, while no longer
+    // reproducing the crash that used to make that position invisible. Confirmed directly: without
+    // this change, `"- [ ] one\n\n- [ ] two\n"` rendered `["- ", "[ ] one", "- ", "[ ] two"]` — the
+    // marker and the raw, never-decorated `"[ ] "` text stranded on separate lines, so
+    // `decorate_extras`'s own `replace_task_checkbox` (which requires the *same* line to both start
+    // with the bullet and hold the checkbox — `task_prefix_state`'s own "first byte must be a
+    // bullet" contract) never recognized either line as a checkbox at all, leaving the literal
+    // brackets on screen and no `task_marker_style()` sentinel for Tab-focus/`Space` to key off.
+    //
+    // The model already carries `task: Option<Task>` as a plain field on `ListItem`, decoupled from
+    // pulldown-cmark's own event *order* — unlike real tui-markdown (and this file's own inline
+    // walk, which only ever sees a raw `Event` stream), `render_item` is free to draw the checkbox
+    // wherever makes sense on screen, with no obligation to reproduce a upstream ordering quirk that
+    // exists only because of *how* the reference implementation happens to consume its own event
+    // stream. Suppressing the loose-only blank-line gap for either a real (`task.is_some()`) or a
+    // custom (`custom_task.is_some()`) checkbox is what makes that row line up with the marker's
+    // own: for a real task, via the same splice `Writer::task_list_marker`'s own
+    // `content.ends_with("- ")` fast path already performs for a **tight** item, reused here
+    // unchanged; for a custom one, there is no dedicated splice call at all — the marker's own row
+    // simply stays the *current* line, so the item's own ordinary paragraph walk below (which
+    // reads the literal `"[/] foo"` text as plain inline content — the whole reason no splice is
+    // needed) appends directly onto it, the identical mechanism a **tight** item's own custom-state
+    // checkbox already relies on. A loose item with no task at all keeps its own separate row
+    // exactly as before (this is not a general "loose items always render tight" change).
+    let checkbox_shares_the_marker_row = task.is_some() || custom_task.is_some();
+    if loose_first && !checkbox_shares_the_marker_row {
         w.push_blank_line();
         w.needs_newline = false;
     }
@@ -3979,35 +4060,38 @@ fn render_item(
             // via `Event::TaskListMarker`; see `model::Task`'s own doc comment) — `state_at` is
             // already an absolute byte offset into `src`, read straight off the model, no detection
             // needed.
-            w.task_marks.push((t.state, t.state_at));
+            //
+            // Only pushed when *this* item's own list is unordered (`list_indices.last() ==
+            // Some(&None)`) — the exact same "is this list's own marker a bullet" test
+            // `push_item_marker`, two calls up the stack, already used to decide between writing a
+            // literal `"- "` or a `"N. "` marker span. `decorate_extras`'s own `replace_task_checkbox`
+            // (downstream, over the *rendered* text) only ever recognizes a checkbox whose line, after
+            // trimming, starts with a bullet byte (`task_prefix_state`'s own "first byte must be
+            // `-`/`*`/`+`" contract) — an ordered item's own `"N. "` marker line starts with a digit,
+            // so real GFM task syntax on an *ordered* list item (pulldown-cmark reports
+            // `Event::TaskListMarker` for either kind — see `model::Task`'s own doc comment) still
+            // writes the literal `"[ ] "`/`"[x] "` text here (unchanged — matching production, which
+            // never decorates an ordered item's own checkbox either) but is never turned into a
+            // sentinel span, so `build_md_items`'s "Nth sentinel on screen == task_marks[N]" ordinal
+            // pairing (see its own doc comment) must never count that entry at all — pushing it
+            // regardless (this file's pre-existing bug, found live: a document mixing an ordered
+            // task list ahead of an unordered one toggled the *ordered* item's own, invisible,
+            // never-decorated checkbox when `Space` was pressed on the *visible*, unordered one)
+            // silently shifted every later unordered task's own ordinal down by one per ordered task
+            // ahead of it in the document, pairing the focused sentinel with a completely different
+            // checkbox's byte offset instead of degrading to `None` the way a genuine count mismatch
+            // does (principle #3) — a wrong answer is worse than a safe refusal.
+            if matches!(w.list_indices.last(), Some(None)) {
+                w.task_marks.push((t.state, t.state_at));
+            }
         }
         None => {
-            // pulldown-cmark never reports a *custom* state (`ui.md_task_states`, e.g. `/`) as a task
-            // marker at all — `[/] foo` parses as an item with no `task`, its literal text becoming
-            // ordinary inline content (see `model::Task`'s own doc comment and
-            // `custom_task_state_char_is_not_recognized_as_a_task_by_pulldown_cmark`). Detected here
-            // the identical way `decorate_extras`'s own `replace_task_checkbox` detects one on a
-            // *rendered* line's text (`task_prefix_state`) — but applied to this item's own source
-            // range instead: `item_src_start` is always the item's own bullet character (`- `/`* `/
-            // `+ `), regardless of nesting — a list item's own marker is never repeated on a
-            // continuation line the way a block quote's `>` is, and never carries a parent list's own
-            // indentation either (both confirmed directly against the model: `item.src` for a nested
-            // item, or one inside a block quote, starts exactly at its own bullet byte, indentation
-            // and any `>` prefix already excluded — see this file's own module doc comment's citation
-            // of `model.rs`'s equivalent tests) — so `task_prefix_state`'s own "first byte must be a
-            // bullet" check is safe to run directly against `src[item_src_start..]` with no line
-            // re-slicing of any kind on this file's own part.
-            //
-            // Only the item's own **first physical line** is a candidate (a checkbox's own trailing
-            // `]` must be followed by whitespace or end-of-line, never a literal `\n` — the "any text
-            // after it" case `task_prefix_state`'s own doc comment covers is about the *rest of that
-            // one line*, not the item's own later, unrelated content), so the search is bounded to it
-            // explicitly rather than handed the item's own, possibly multi-line, `Block::src` whole.
-            let first_line_end = src[item_src_start..]
-                .find('\n')
-                .map_or(src.len(), |off| item_src_start + off);
-            let first_line = &src[item_src_start..first_line_end];
-            if let Some((state, off)) = task_prefix_state(first_line, w.tasks) {
+            if let Some((state, off)) = custom_task {
+                // No equivalent gate needed here: `custom_task` (above) already requires
+                // `src[item_src_start..]`'s own first byte to be a bullet char (mirroring
+                // `task_prefix_state`'s identical check on the *rendered* line) — an ordered item's
+                // own source starts with a digit, so `custom_task` is already `None` for one, with
+                // nothing left for a second gate to filter out.
                 w.task_marks.push((state, item_src_start + off));
             }
         }
@@ -4042,8 +4126,11 @@ fn render_item(
             // line before any `Quote`/`Heading`/`ThematicBreak` directly interrupting a tight item's
             // own paragraph with no blank line in the source; see `list_corpus`'s own "block quote
             // can interrupt a tight item's own paragraph with no blank line" case, which is exactly
-            // what caught this.
-            w.needs_newline = loose_first && !w.after_math;
+            // what caught this. `checkbox_shares_the_marker_row`: whenever a task collapsed this
+            // item onto the marker's own row (see that binding's own doc comment, above), no
+            // `start_paragraph()`-equivalent blank line ever opened for it either — behaviorally
+            // tight, regardless of `loose_first`'s own value — so the exit state has to match.
+            w.needs_newline = loose_first && !checkbox_shares_the_marker_row && !w.after_math;
         } else {
             render_block(first, w, doc, src, ctx);
         }
@@ -4226,7 +4313,14 @@ fn render_bare_paragraph(
 /// `w.list_indices` non-empty (`render_list` pushes this list's own entry before rendering a single
 /// item), so the `let... else` below is defensive only, never actually reached.
 fn push_item_marker(w: &mut Writer<'_>) {
-    let width = w.list_indices.len() * 4 - 3;
+    // `saturating_sub`, not a bare `- 3`: `list_indices.len() == 0` (the same "no list is actually
+    // open" shape the `let...else` right below already guards defensively) used to underflow this
+    // `usize` subtraction — `0 * 4 - 3` panics ("attempt to subtract with overflow") *before* that
+    // guard is ever reached, which used to make the guard's own "defensive only, never reached"
+    // doc comment claim false for the *one* shape it exists to protect against. `width`'s own value
+    // is never read in that empty case anyway (the guard returns immediately after), so saturating
+    // to `0` here is not a guess at what the "right" width would be — there is no list open at all.
+    let width = w.list_indices.len().saturating_mul(4).saturating_sub(3);
     let Some(last_index) = w.list_indices.last_mut() else {
         return;
     };
@@ -4276,18 +4370,131 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         w.push_blank_line();
         w.needs_newline = false;
     }
-    w.line_prefixes.push(Span::raw(">"));
-    w.line_styles.push(w.styles.blockquote());
+    // Renders `children` into an **isolated** sub-`Writer` first — no inherited `line_prefixes` at
+    // all — and decorates *that* raw output (`decorate_headings_and_extras`) before this quote's own
+    // `>` prefix ever gets applied to a single line of it. Mirrors `render_bar_prefixed_body`'s own
+    // "decorate, then prepend the container's own bar" shape exactly (see that function's own doc
+    // comment for the fuller reasoning this borrows) — the identical, already-established pattern
+    // this file already uses for a GitHub alert's or a `<details>` block's own body, not a new
+    // mechanism invented for quotes specifically.
+    //
+    // Root cause this closes (a *pre-existing* gap, not a regression — confirmed directly against
+    // the shipped, pre-refactor production build: `"> - [ ] x\n"` shows the same undecorated,
+    // unfocusable `[ ] x` there too): the *previous* version of this function pushed its own `>`
+    // prefix onto the **shared** `w.line_prefixes`/`line_styles` stack and rendered every child
+    // straight into the same, single `w` — so by the time `render_doc`'s own, single, whole-document
+    // `decorate_headings_and_extras` pass finally ran (once, at the very end, over every line this
+    // whole render produced), a quoted child's own lines already carried their `>` prefix span,
+    // permanently. `decorate_extras`'s own `replace_task_checkbox`/`task_prefix_state` (and
+    // `decorate_headings`'s own heading-rule recognition) both require a line's own **first** span to
+    // carry no prefix at all — the module doc comment's own "How inline content is rendered" section
+    // already names this as a known, *accepted* limitation for a quoted heading/rule (matching
+    // production's own, equally `>`-blind `decorate_md_lines` there) — but a checkbox failing to
+    // become interactive is a real, user-visible loss (no Tab focus, no `Space` toggle, no icon),
+    // exactly the shape `render_bar_prefixed_body` was already built to avoid for an alert's/
+    // `<details>`'s own body. This function had simply never been updated to use that same shape.
+    //
+    // Reuses the **unmodified** `Writer::push_line` prefixing mechanism for the actual `>`-prepending
+    // step (the loop just below, after decoration) — rather than a bar-span manually prepended once
+    // per line the way `render_bar_prefixed_body` does — specifically so **nested** quotes keep
+    // rendering byte-for-byte as before: `push_line`'s own convention is `N` bare `">"` spans
+    // (adjacent, no space between them) followed by exactly *one* shared space, then content,
+    // regardless of nesting depth (see `Writer::line_prefixes`'s own doc comment) — a per-level
+    // "bar = '> '" prepend (an alert's/`<details>`'s own convention) would instead produce a space
+    // after *every* level's own `>`, changing `"> > x"` into a visually different shape for a
+    // doubly-quoted line than what this file (and production) have always drawn. Pushing this
+    // level's own `>` onto `w.line_prefixes` *right before* re-emitting the already-decorated lines
+    // (rather than before rendering `children`, as the previous version did) makes `push_line` do the
+    // *identical* prefixing work as before, just fed already-decorated lines instead of raw ones —
+    // and, for a **nested** quote (recursion: a `Quote` found in `children` reaches this same
+    // function again with `w` bound to *this* level's own `inner`), the inner call's own re-emit loop
+    // sees `inner.line_prefixes` still empty at that point (nothing has pushed onto it yet — this
+    // level's own push happens later, below, *after* every child — nested quotes included — has
+    // already fully rendered into `inner`), so the recursion isolates and decorates one level at a
+    // time, cleanly, from the innermost quote outward.
+    let mut inner = Writer {
+        lines: Vec::new(),
+        inline_styles: Vec::new(),
+        link: None,
+        styles: w.styles,
+        list_indices: Vec::new(),
+        line_prefixes: Vec::new(),
+        line_styles: Vec::new(),
+        needs_newline: false,
+        math: None,
+        mermaid: MermaidCtx {
+            slot: w.mermaid.slot,
+            caption: w.mermaid.caption,
+            // Same `- 2` reduction `render_bar_prefixed_body` uses for an alert's/`<details>`'s own
+            // body, applied here for the identical reason (a code block or table directly inside
+            // this quote must not overflow once the `>` prefix lands on top of it — see
+            // `render_code_block`'s own doc comment on why `w.prefix_width()` exists at all). Not
+            // exact for a **doubly**-nested quote specifically (each isolated level only ever knows
+            // its own immediate parent's *un-prefixed* width, not how many quote levels already sit
+            // above that — a real, accepted imprecision, not a silent one: see the width field's own
+            // comment just below for the full reasoning and why erring narrow, never wide, is the
+            // safe direction).
+            width: w.width.saturating_sub(2),
+            fences_on: w.mermaid.fences_on,
+            ord: 0,
+        },
+        slot_of: w.slot_of,
+        images: Vec::new(),
+        code_blocks: Vec::new(),
+        task_marks: Vec::new(),
+        after_math: false,
+        fresh_boundary: false,
+        pending_para_start: None,
+        heading_rule_shift: 0,
+        code: w.code,
+        theme: w.theme.clone(),
+        // `w.width - 2`, always — not `w.width - w.prefix_width()`-after-pushing (which would be
+        // exact for a *first*-level quote but is unavailable to compute exactly for a nested one; see
+        // `mermaid.width`'s own comment above for why). Every quote reached through *this* file's own
+        // recursion isolates independently, so a doubly-quoted code block ends up narrower than the
+        // theoretically tightest fit by a column or two, never wider — the direction that keeps
+        // `render_code_block`'s own overflow-prevention guarantee (the reason `prefix_width()` exists
+        // in the first place) intact even where the reduction is not pixel-perfect.
+        width: w.width.saturating_sub(2),
+        icons: w.icons,
+        tasks: w.tasks,
+        alerts: w.alerts,
+    };
+    // Unchanged from before this fix: math lifting/image/mermaid extraction never fire inside a
+    // blockquote at any depth (`structure_mask`'s own exclusion — see `BlockCtx.math_here`'s own doc
+    // comment) — only `details_interactive` is still propagated, not forced, exactly as before (see
+    // this function's own doc comment above for why: a plain quote's own body is reached through the
+    // *same* top-level interactive scan, unlike an alert's/`<details>`'s own independently re-parsed
+    // one).
     let child_ctx = BlockCtx {
         math_here: false,
         extract_here: false,
         details_interactive: ctx.details_interactive,
     };
     for child in children {
-        render_block(child, w, doc, src, child_ctx);
+        render_block(child, &mut inner, doc, src, child_ctx);
+    }
+    let decorated =
+        decorate_headings_and_extras(inner.lines, inner.width, inner.icons, inner.tasks);
+    w.line_prefixes.push(Span::raw(">"));
+    w.line_styles.push(w.styles.blockquote());
+    for line in decorated {
+        w.push_line(line);
     }
     w.line_prefixes.pop();
     w.line_styles.pop();
+    // Merged back the identical way `render_bar_prefixed_body` merges its own `inner`'s
+    // accumulators — see that function's own doc comment on why `images` is always empty here today
+    // (`extract_here: false`, defensive all the same) while `code_blocks`/`task_marks` are not
+    // (a code block or a task-list checkbox *is* a real, on-screen `y c`/Tab/`Space` target inside a
+    // quote, and now — for a checkbox — an interactive one for the first time).
+    w.images.extend(inner.images);
+    w.code_blocks.extend(inner.code_blocks);
+    w.task_marks.extend(inner.task_marks);
+    // Because of the isolation above, `w.after_math` can never legitimately be `true` here either —
+    // nothing inside a quote's own subtree can have set it (`math_here: false`, throughout) — so this
+    // stays the plain, unconditional `needs_newline = true` `TextWriter` itself always uses for
+    // `end_blockquote`, exactly as before this fix.
     w.needs_newline = true;
 }
 
@@ -6463,5 +6670,1523 @@ mod tests {
                 out.images[0].url
             );
         }
+    }
+
+    /// Regression: a **loose** task list (items separated by a blank line —
+    /// `"- [ ] one\n\n- [ ] two\n\n- [ ] three\n"`) used to render each item's marker and its own
+    /// checkbox+text on two *separate* rows (`["- ", "[ ] one", "- ", "[ ] two", ...]`), with the
+    /// checkbox left as literal, undecorated `"[ ] "` text — a real regression against the
+    /// pre-refactor production build, which shows every item as one row, checkbox properly
+    /// symbolized (`"- [ ] one"`, `"- [ ] two"`, ...), found live by comparing this renderer's own
+    /// output against `render_markdown_with_images_legacy`'s for the identical input.
+    ///
+    /// The root cause (see `render_item`'s own `checkbox_shares_the_marker_row` doc comment, right
+    /// above where this test's own fix lives): production's *apparent* "tight-looking" loose task
+    /// list is not a deliberate design at all — it is `render_text_block_safe`'s own panic-recovery
+    /// silently re-parsing each crashed item as its own isolated, single-line (and so genuinely
+    /// tight) list, after real tui-markdown's `TaskListMarker` handling panics on the identical
+    /// "loose item's own fresh, empty row" shape this file used to place the marker on, unpanicking
+    /// but unchanged in *position*. This file has no such crash (and no such recovery pass) to hide
+    /// behind — `render_item` now decides the checkbox's own row directly, matching what production
+    /// only ever *shows* by accident.
+    #[test]
+    fn loose_task_list_collapses_checkbox_onto_the_marker_row_like_production_does() {
+        let src = "- [ ] one\n\n- [ ] two\n\n- [ ] three\n";
+        let out = render(src, true, false);
+        assert_eq!(
+            lines_text(&out),
+            vec!["- [ ] one", "- [ ] two", "- [ ] three"]
+        );
+        // The checkbox span must carry `task_marker_style()` — the exact Tab-focus/`Space`-toggle
+        // sentinel `app::md_items`/`app::md_tasks` key off — not survive as plain, undecorated text
+        // (the actual, reported symptom: before this fix, `decorate_extras`'s own
+        // `replace_task_checkbox` never recognized either malformed line as a checkbox at all, so
+        // this style was never applied).
+        let checkbox_style = super::super::task_marker_style();
+        for line in &out.lines {
+            let checkbox = line
+                .spans
+                .iter()
+                .find(|s| s.style == checkbox_style)
+                .unwrap_or_else(|| panic!("no task_marker_style() span on line {line:?}"));
+            assert_eq!(checkbox.content.as_ref(), "[ ] ");
+        }
+        // `task_marks` (what `y c`/write-back/Space-toggle read the byte offset from) must still
+        // point at the state character itself, one entry per item, in document order — unaffected
+        // by the row the marker happens to render on, but pinned here as part of the same
+        // regression's own fix.
+        assert_eq!(out.tasks.len(), 3, "tasks: {:?}", out.tasks);
+        for (state, off) in &out.tasks {
+            assert_eq!(*state, ' ');
+            assert_eq!(
+                &src[*off..*off + 1],
+                " ",
+                "byte {off} must be the state char itself"
+            );
+        }
+    }
+
+    /// The identical loose-task-list shape, but with a **checked** item mixed in and a **custom**
+    /// task state (`ui.md_task_states` — never reported by pulldown-cmark as `Event::TaskListMarker`
+    /// at all, so it takes the `None` arm's own `task_prefix_state` detection instead, not
+    /// `Writer::task_list_marker`) — confirms the fix does not regress either of those two other
+    /// task-item shapes for a loose list.
+    #[test]
+    fn loose_task_list_checked_and_custom_states_also_collapse_onto_the_marker_row() {
+        let src = "- [x] done\n\n- [/] custom\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        // `'/'` must be in the configured task-state alphabet for `task_prefix_state` to recognize
+        // it at all — the `render`/`render_with_images` helpers above only ever configure `[' ',
+        // 'x']` (GFM's own two), so this calls `render_doc` directly with a widened set.
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x', '/'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        let texts = lines_text(&out);
+        assert_eq!(texts, vec!["- [x] done", "- [/] custom"]);
+        assert_eq!(
+            out.tasks,
+            vec![('x', 3), ('/', 15)],
+            "tasks: {:?}",
+            out.tasks
+        );
+    }
+
+    /// A **tight** task list (no blank line between items) must render exactly as it always has —
+    /// `checkbox_shares_the_marker_row` only ever *skips* a blank-line push that a tight item's own
+    /// `loose_first == false` already made a no-op; nothing here should change for it.
+    #[test]
+    fn tight_task_list_is_unaffected_by_the_loose_task_fix() {
+        let out = render("- [ ] one\n- [ ] two\n", true, false);
+        assert_eq!(lines_text(&out), vec!["- [ ] one", "- [ ] two"]);
+    }
+
+    /// A **loose** list item with **no** task at all must keep its own pre-existing two-row shape
+    /// (marker alone, text one row below) — `checkbox_shares_the_marker_row` is `false` whenever
+    /// `task.is_none()`, so this is not a general "loose lists always collapse" change.
+    #[test]
+    fn loose_list_with_no_task_still_gets_its_own_separate_row() {
+        let out = render("- one\n\n- two\n", true, false);
+        assert_eq!(lines_text(&out), vec!["- ", "one", "- ", "two"]);
+    }
+
+    /// Companion fix, same underlying principle, requested separately once confirmed *not* a
+    /// regression (the shipped production build shows the identical, undecorated gap for this
+    /// shape): a checkbox inside a **plain** (non-alert) blockquote — `"> - [ ] x\n"` — used to
+    /// render its `[ ] x` text with the `>` prefix already baked into `w.lines` (`render_quote`'s
+    /// own *previous* shared-`Writer` design), so `render_doc`'s own single, whole-document
+    /// `decorate_headings_and_extras` pass — which requires a line's own **first** span to carry no
+    /// prefix at all (`task_prefix_state`'s "first byte must be a bullet" contract) — never
+    /// recognized it. `render_quote` now decorates its own children in an isolated sub-`Writer`
+    /// *before* the `>` prefix is ever applied (mirroring `render_bar_prefixed_body`'s own,
+    /// already-established pattern for an alert's/`<details>`'s own body — see `render_quote`'s own
+    /// doc comment for the full mechanism and why it reuses `push_line`'s own, unmodified prefixing
+    /// loop rather than a per-level bar-span prepend).
+    #[test]
+    fn checkbox_inside_a_plain_quote_is_decorated_and_recorded() {
+        let out = render("> - [ ] quoted task\n", true, false);
+        assert_eq!(lines_text(&out), vec!["> - [ ] quoted task"]);
+        let checkbox_style = super::super::task_marker_style();
+        let checkbox = out.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.style == checkbox_style)
+            .expect("the checkbox span must carry the Tab-focus sentinel style");
+        assert_eq!(checkbox.content.as_ref(), "[ ] ");
+        assert_eq!(out.tasks, vec![(' ', 5)], "tasks: {:?}", out.tasks);
+    }
+
+    /// **Nested** quotes (`> > x`) must keep rendering byte-for-byte as before this fix — `N` bare
+    /// `>` spans, no space between them, exactly one shared space before the content, regardless of
+    /// depth (`Writer::line_prefixes`'s own doc comment) — proving the isolate-then-re-prefix
+    /// rewrite reuses `push_line`'s own unmodified mechanism correctly rather than reproducing an
+    /// alert-bar-style "space after every level" shape.
+    #[test]
+    fn nested_quotes_keep_the_same_prefix_shape_as_before() {
+        let out = render("> > nested\n", true, false);
+        assert_eq!(lines_text(&out), vec!["> > nested"]);
+    }
+
+    /// A checkbox inside a **doubly**-nested quote (`> > - [ ] x`) — the recursive case
+    /// `nested_quotes_keep_the_same_prefix_shape_as_before` doesn't exercise on its own — confirms
+    /// the fix generalizes past one level: each level isolates, decorates, and re-prefixes in turn,
+    /// from the innermost quote outward.
+    #[test]
+    fn checkbox_inside_a_doubly_nested_quote_is_also_decorated() {
+        let out = render("> > - [ ] x\n", true, false);
+        assert_eq!(lines_text(&out), vec!["> > - [ ] x"]);
+        let checkbox_style = super::super::task_marker_style();
+        assert!(
+            out.lines[0].spans.iter().any(|s| s.style == checkbox_style),
+            "lines: {:?}",
+            out.lines[0]
+        );
+    }
+
+    /// A heading directly inside a plain quote — a documented, *accepted* limitation before this
+    /// fix (the module doc comment's own "How inline content is rendered" section: "a heading or
+    /// rule nested inside a `Quote` does **not** get its usual special treatment"), closed as a
+    /// side effect of the same isolate-before-prefix rewrite (`decorate_headings` now sees the
+    /// heading's own line with no leading span, exactly like a top-level one). Pinned here as a
+    /// deliberate behavior change, not merely inferred from the checkbox fix.
+    #[test]
+    fn heading_inside_a_plain_quote_now_gets_the_full_width_rule_too() {
+        let out = render("> # H\n", true, false);
+        let texts = lines_text(&out);
+        assert_eq!(texts.len(), 2, "lines: {texts:?}");
+        assert!(texts[0].starts_with("> "), "heading line: {:?}", texts[0]);
+        assert!(texts[0].contains('H'), "heading line: {:?}", texts[0]);
+        assert!(
+            texts[1].starts_with("> ─") || texts[1].starts_with('>'),
+            "the full-width rule under an H1/H2 must also be quote-prefixed: {texts:?}"
+        );
+    }
+
+    /// A code block directly inside a plain quote — the shape whose own *width* accounting this
+    /// fix's own doc comment flags as an accepted imprecision for deep nesting — still gets its
+    /// background band correctly narrowed for the **common**, single-level case (never wider than
+    /// before, matching `render_code_block`'s own overflow-prevention contract): every line's own
+    /// rendered width, quote prefix included, must not exceed the requested column count.
+    #[test]
+    fn code_block_inside_a_plain_quote_still_fits_the_requested_width() {
+        let src = "> ```rust\n> fn a() {}\n> ```\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle {
+            bg: Some(Color::Rgb(10, 10, 10)),
+            ..CodeStyle::default()
+        };
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let width = 40u16;
+        let out = render_doc(
+            &doc,
+            src,
+            width,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        for l in &out.lines {
+            let cols: usize = l
+                .spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            assert!(
+                cols <= width as usize,
+                "line {cols} cols wide, requested width was {width}: {:?}",
+                line_text(l)
+            );
+        }
+    }
+
+    // =========================================================================================
+    // Coverage-hardening pass (pre-release audit). Everything below closes the ~125-line gap
+    // `cargo llvm-cov` reported for this file before this pass, plus a batch of mutation-testing
+    // and adversarial-input regressions written alongside it. Grouped by the area of `render_doc`
+    // each targets; every group's own header names the line ranges (as of the audit) it closes.
+    // Several tests reach a genuinely defensive branch directly (bypassing `Doc::parse` and
+    // `render_doc` entirely, the same way `task_list_marker_on_a_fresh_empty_line_does_not_panic`
+    // above already does) — each such test says so, and why real parsing cannot reach it.
+
+    /// A convenience `render_doc` caller for this whole section: same defaults `fresh_writer`/
+    /// `fresh_ctx` establish (80 columns, default `CodeStyle`, icons off, GFM task states,
+    /// `no_images`/`no_mermaid`, `MathSlot::Raw`), `alerts`/`math_on` as explicit arguments since
+    /// most of the tests below need to vary at least one of them. Not a second render path: this
+    /// is exactly the `render_doc(&doc, src, 80, code, "TwoDark", false, &[' ', 'x'], &no_images,
+    /// &no_mermaid, "Enter: full screen", alerts, &math_slot, math_on)` call every test below would
+    /// otherwise repeat verbatim.
+    fn render(src: &str, alerts: bool, math_on: bool) -> RenderOut {
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            alerts,
+            &math_slot,
+            math_on,
+        )
+    }
+
+    /// Like `render`, but with a `slot_of` that answers `ImageSlot::Inline` for every URL — needed
+    /// by every test in this section that has to observe a real `ImagePlacement` (the `no_images`
+    /// helper always answers `Unavailable`, which never records one).
+    fn render_with_images(
+        src: &str,
+        alerts: bool,
+        math_on: bool,
+        cols: u16,
+        rows: u16,
+    ) -> RenderOut {
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols, rows };
+        render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            alerts,
+            &math_slot,
+            math_on,
+        )
+    }
+
+    /// Joins one decorated `Line`'s own spans back into plain text, for assertions that only care
+    /// about the words on screen, not which spans/styles carried them.
+    fn line_text(l: &Line<'_>) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn lines_text(out: &RenderOut) -> Vec<String> {
+        out.lines.iter().map(line_text).collect()
+    }
+
+    // ---- `contains_unsupported`/`render_doc` top-level dispatch: lines 444, 468, 483, 508, 525,
+    // 632, 637 — every "a Table/Html turned up nested inside a Quote somewhere in this List's/
+    // alert's/Details's own subtree" reporting path, at every position `render_doc`'s own top-level
+    // dispatch can reach one from. ----
+
+    /// A `List` whose only item's own content is a plain `Quote` containing a GFM table: the
+    /// table's own `in_quote` check fires immediately (base case, already covered elsewhere), the
+    /// enclosing `Quote` arm's own recursive "found a violation in my own children" propagates it
+    /// (line 637), and the outer `List` arm's identical propagation does too (line 632) — both
+    /// `contains_unsupported`'s own two "if let Some(bad) = ... return Some(bad)" recursion sites,
+    /// reached from two different nesting depths in the same document — before `render_doc`'s own
+    /// top-level `List` dispatch records it (line 444).
+    #[test]
+    fn list_with_a_quote_nested_table_is_reported_unsupported_by_the_list_arm() {
+        let src = "- item\n  > | a | b |\n  > |---|---|\n  > | 1 | 2 |\n";
+        let out = render(src, true, false);
+        assert_eq!(out.unsupported, vec!["Table"]);
+        assert!(out.lines.is_empty(), "an unsupported block draws nothing");
+    }
+
+    /// A `<details>` block whose body is a plain `Quote` containing a table — the identical nested
+    /// shape as above, but reached via `render_doc`'s own `Details` arm (line 508) instead of
+    /// `List`'s.
+    #[test]
+    fn details_with_a_quote_nested_table_is_reported_unsupported_by_the_details_arm() {
+        let src = "<details>\n<summary>s</summary>\n\n\
+                    > | a | b |\n> |---|---|\n> | 1 | 2 |\n\n\
+                    </details>\n";
+        let out = render(src, true, false);
+        assert_eq!(out.unsupported, vec!["Table"]);
+    }
+
+    /// A GitHub-alert-headed quote (`> [!NOTE]`) whose own body — already `in_quote: true` from the
+    /// moment its header is recognized (see `contains_unsupported`'s own doc comment) — directly
+    /// contains a table, with `alerts: false`: reaches `render_doc`'s own "`Quote { alert: Some(_)
+    /// }` but `!w.alerts`" arm (line 466-471), not the interactive-alert one below.
+    #[test]
+    fn alert_headed_quote_with_alerts_off_and_a_nested_table_is_reported_unsupported() {
+        let src = "> [!NOTE]\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let out = render(src, false, false);
+        assert_eq!(out.unsupported, vec!["Table"]);
+    }
+
+    /// The identical document, `alerts: true` this time — reaches `render_doc`'s own real,
+    /// interactive alert arm (line 479-493) instead, which reports the same "Table" name before
+    /// ever calling `render_alert_from_model`.
+    #[test]
+    fn alert_headed_quote_with_alerts_on_and_a_nested_table_is_reported_unsupported() {
+        let src = "> [!NOTE]\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let out = render(src, true, false);
+        assert_eq!(out.unsupported, vec!["Table"]);
+    }
+
+    /// `render_doc`'s own top-level `BlockKind::ListItem { .. } => unsupported.push("ListItem")`
+    /// arm (line 525) — the doc comment above it says this can never legitimately fire (a `List`
+    /// always unwraps its own item children before this loop ever sees one); no real `Doc::parse`
+    /// output can produce a top-level `ListItem`, so this constructs one directly (`Doc`/`Block`
+    /// fields are all `pub` within the crate — the same "call the private surface directly" this
+    /// whole file's own defensive-branch tests already do, e.g. `task_list_marker`'s own low-level
+    /// tests above) and confirms `render_doc` degrades to reporting it, not panicking.
+    #[test]
+    fn a_top_level_list_item_that_could_never_really_happen_is_reported_unsupported_not_a_panic() {
+        let doc = Doc {
+            events: Vec::new(),
+            blocks: vec![Block {
+                kind: BlockKind::ListItem { task: None },
+                src: 0..0,
+                children: Vec::new(),
+            }],
+        };
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            "",
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert_eq!(out.unsupported, vec!["ListItem"]);
+    }
+
+    // ---- `Writer` low-level bookkeeping: lines 963, 1020, 1110-1112 ----
+
+    /// `Writer::push_span`'s own `None` fallback (`self.lines.last_mut()` finds nothing —
+    /// `self.lines` is completely empty) — line 963. Every full-document test above always has
+    /// *something* already on `w.lines` (a heading rule, a marker row, ...) by the time any inline
+    /// content pushes a span, so this is a direct, low-level call on a genuinely fresh `Writer`.
+    #[test]
+    fn push_span_on_a_totally_empty_writer_opens_the_first_line_itself() {
+        let mut w = fresh_writer();
+        assert!(w.lines.is_empty());
+        w.push_span(Span::raw("hi"));
+        assert_eq!(w.lines, vec![Line::from(vec![Span::raw("hi")])]);
+    }
+
+    /// `Writer::text`'s own `if i > 0 { push_blank_line() }` (line 1020) — a `Text` payload with an
+    /// embedded `\n`, the "rare but not impossible" shape that method's own doc comment names.
+    #[test]
+    fn text_with_an_embedded_newline_starts_a_fresh_line_for_the_second_half() {
+        let mut w = fresh_writer();
+        w.text("line1\nline2");
+        assert_eq!(
+            lines_text(&RenderOut {
+                lines: w.lines.clone(),
+                images: Vec::new(),
+                unsupported: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
+            }),
+            vec!["line1", "line2"]
+        );
+    }
+
+    /// `Writer::task_list_marker`'s own `else` arm (lines 1110-1112: `self.lines` is `None` —
+    /// nothing has been pushed at all yet, unlike the existing regression test above which pushes
+    /// an empty `Line` first) — falls back to `push_span`, which itself opens the very first line
+    /// (the `None` branch this same section already covers on its own, line 963).
+    #[test]
+    fn task_list_marker_with_no_lines_at_all_falls_back_to_push_span() {
+        let mut w = fresh_writer();
+        assert!(w.lines.is_empty());
+        w.task_list_marker(true);
+        assert_eq!(w.lines.len(), 1);
+        assert_eq!(w.lines[0].spans.len(), 1);
+        assert_eq!(w.lines[0].spans[0].content.as_ref(), "[x] ");
+    }
+
+    // ---- Inline dispatch: subscript/superscript, and the defensive fallbacks around them
+    // (lines 1195-1205, 1213, 1236-1244) ----
+
+    /// `Tag::Superscript`'s own `wrap_styled` arm (lines 1201-1206) — `^text^`, real
+    /// `Doc::parse` output (`Options::ENABLE_SUPERSCRIPT` is on — see `model::parse_options`).
+    /// Note (an honest finding, not asserted here): pulldown-cmark 0.13's superscript/subscript
+    /// delimiters follow the *underscore*-style "no intraword use" flanking rule — `x^2^` (no
+    /// space around the delimiters) never opens one at all, only `x ^2^ y` does; `inline_corpus`'s
+    /// own "superscript"/"subscript" cases (`"x^2^ is x squared.\n"`/`"H~2~O is water.\n"`) are
+    /// mid-word and so never reach this arm through real parsing either — confirmed directly via a
+    /// throwaway event dump before writing this test, not merely inferred.
+    #[test]
+    fn superscript_renders_through_the_real_tag_dispatch() {
+        let out = render("a ^super^ b\n", true, false);
+        assert_eq!(lines_text(&out), vec!["a super b"]);
+        // Mutation-testing gap closed: text-content-only assertions above did not catch a mutant
+        // that dropped `Modifier::ITALIC` from the superscript style, leaving only `DIM` — the span
+        // itself has to carry the exact `DIM | ITALIC` combination `start_inline_tag`'s own
+        // `Tag::Superscript` arm sets, not merely render the right characters.
+        let span = out.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "super")
+            .expect("superscript span");
+        assert!(span.style.add_modifier.contains(Modifier::DIM));
+        assert!(span.style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    /// `Tag::Subscript`'s own arm (lines 1195-1200) — the mirror case, `~text~`.
+    #[test]
+    fn subscript_renders_through_the_real_tag_dispatch() {
+        let out = render("a ~sub~ b\n", true, false);
+        assert_eq!(lines_text(&out), vec!["a sub b"]);
+        // Mutation-testing gap closed: same reasoning as the superscript test above, this time for
+        // a mutant that dropped `Modifier::DIM`, leaving only `ITALIC`.
+        let span = out.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "sub")
+            .expect("subscript span");
+        assert!(span.style.add_modifier.contains(Modifier::DIM));
+        assert!(span.style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    /// Mutation-testing gap: a strikethrough span's own style must carry `Modifier::CROSSED_OUT`
+    /// specifically — a mutant that swapped it for `BOLD` rendered identical *text* (this file's own
+    /// existing strikethrough coverage, in the production-diff-parity tests elsewhere in this
+    /// module, only ever compares rendered text/line shape against production, never inspects the
+    /// modifier bits directly) and stayed green.
+    #[test]
+    fn strikethrough_span_carries_the_crossed_out_modifier() {
+        let out = render("This was ~~deleted~~ text.\n", true, false);
+        let span = out.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "deleted")
+            .expect("strikethrough span");
+        assert!(span.style.add_modifier.contains(Modifier::CROSSED_OUT));
+    }
+
+    /// Mutation-testing gap: `push_item_marker`'s own ordered-item marker span must be styled
+    /// `Color::LightBlue` specifically (matching real `TextWriter::start_item`'s own
+    /// `.light_blue()`) — a mutant that swapped it for `Yellow` stayed green, since no existing test
+    /// inspected the marker span's own color.
+    #[test]
+    fn ordered_list_marker_is_styled_light_blue() {
+        let out = render("1. first\n2. second\n", true, false);
+        let marker = out.lines[0].spans.first().expect("marker span");
+        assert!(
+            marker.content.as_ref().contains('1'),
+            "marker: {:?}",
+            marker.content
+        );
+        assert_eq!(marker.style.fg, Some(Color::LightBlue));
+    }
+
+    /// Mutation-testing gap: `render_code_block`'s own `label` fallback for a fence/indented block
+    /// with no language info string must be the literal `"code"` — a mutant that swapped it for
+    /// `"text"` stayed green, since no existing test in this file reads the header badge's own text
+    /// back for a *lang-less* block specifically (every other code-block test in this module names a
+    /// real language).
+    #[test]
+    fn code_block_with_no_language_labels_itself_code() {
+        let out = render("```\nplain\n```\n", true, false);
+        let header = out
+            .lines
+            .iter()
+            .find(|l| l.spans.iter().any(super::super::is_code_header_span))
+            .expect("a header line");
+        assert!(
+            line_text(header).contains("code"),
+            "header: {:?}",
+            line_text(header)
+        );
+    }
+
+    /// Mutation-testing gap: `multiline_math_opener`'s own `"\\[" => "\\]"` mapping specifically —
+    /// the existing direct test for this function only exercises the `"$$" => "$$"` arm; a mutant
+    /// that had the `\[` opener look for the **wrong** closer (`"$$"` instead of `"\]"`) stayed
+    /// green.
+    #[test]
+    fn multiline_math_opener_maps_backslash_bracket_to_its_own_closer() {
+        let (closer, _) = multiline_math_opener("\\[\n", &(0..2)).expect("opener recognized");
+        assert_eq!(closer, "\\]");
+    }
+
+    /// Mutation-testing gap: `render_rule`'s own literal `"---"` push — the *pre-decoration* text
+    /// `decorate_extras` later recognizes and turns into the real full-width rule. A mutant that
+    /// swapped it for `"***"` stayed green through the *full* `render_doc` pipeline (`decorate_extras`
+    /// treats `"---"`/`"***"`/`"___"` identically — an accepted equivalence, not a gap: see the
+    /// direct, pre-decoration check below, which *does* distinguish them, confirming `render_rule`
+    /// itself still emits the specific literal its own doc comment says it does).
+    #[test]
+    fn render_rule_pushes_the_literal_dashes_line() {
+        let mut w = fresh_writer();
+        render_rule(&mut w);
+        assert_eq!(w.lines, vec![Line::from("---")]);
+    }
+
+    /// Mutation-testing gap: `render_mermaid_slot`'s own `if code.trim().is_empty()` branch — an
+    /// empty mermaid fence body must degrade to the legacy text-diagram fallback (`render_mermaid_
+    /// block`) without ever consulting `w.mermaid.slot` at all. No existing test in this file drives
+    /// an *empty* fence body through a `fences_on: true` mermaid slot (every existing mermaid test
+    /// either has real content or uses `no_mermaid`, which disables extraction before this branch is
+    /// ever reached) — a mutant that neutered the check (`&& false`) stayed green.
+    ///
+    /// The slot closure below has to answer the one-time `fences_on` probe (`render_doc`'s own
+    /// `mermaid_slot("")` call, always literally empty) with something *other* than `MermaidSlot::
+    /// Text` — answering `Text` there would itself disable extraction (`fences_on: !matches!(.., Text)`)
+    /// and mask the mutant by routing through `render_code_block` instead, never reaching
+    /// `render_mermaid_slot` at all; confirmed directly, the hard way (this test's own first version
+    /// did exactly that and the mutation went right on passing).
+    #[test]
+    fn empty_mermaid_fence_uses_the_text_fallback_without_consulting_the_slot() {
+        let src = "```mermaid\n```\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let mermaid_slot = |s: &str| -> MermaidSlot {
+            if s.is_empty() {
+                MermaidSlot::Image { cols: 1, rows: 1 } // the fences_on probe — keep extraction on
+            } else {
+                panic!("the empty-fence-body branch must never consult the slot: {s:?}")
+            }
+        };
+        let out = render_doc(
+            &doc,
+            src,
+            80,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &mermaid_slot,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(out.images.is_empty(), "no placement for an empty fence");
+    }
+
+    /// `start_inline_tag`'s own defensive `other => skip_balanced(..)` arm (line 1213) and
+    /// `skip_balanced`'s own recursive `Start`/matching-`End`/catch-all branches (lines 1236-1241) —
+    /// a `Tag::List` can never legitimately open *inside* a `Heading`/`Paragraph`'s own inline
+    /// content (CommonMark has no such construct there), so this feeds `walk_inline` a hand-built
+    /// event stream directly, the same low-level pattern the file's own existing
+    /// `escape_handling_drops_the_backslash_from_every_event_range` test already uses for
+    /// `Doc::parse`'s own event stream. Includes a nested `Emphasis` *inside* the stray `List`, so
+    /// `skip_balanced`'s own recursive `Event::Start(t) => skip_balanced(events, t.to_end())` arm
+    /// (not merely its own top-level dispatch) gets exercised too, and a plain `Text` while
+    /// skipping, so its own catch-all (`_ => {}`, line 1241) fires as well.
+    #[test]
+    fn an_unexpected_inline_start_tag_is_skipped_balanced_not_rendered() {
+        let mut w = fresh_writer();
+        let events: Vec<Event<'_>> = vec![
+            Event::Start(Tag::List(None)),
+            Event::Text("skip me".into()),
+            Event::Start(Tag::Emphasis),
+            Event::Text("nested".into()),
+            Event::End(TagEnd::Emphasis),
+            Event::End(TagEnd::List(false)),
+            Event::Text("after".into()),
+        ];
+        walk_inline(&mut events.into_iter(), &mut w, None);
+        assert_eq!(w.lines, vec![Line::from(vec![Span::raw("after")])]);
+    }
+
+    /// `skip_balanced`'s own "ran out of events before the matching `End` ever turned up" path —
+    /// the `while let Some(ev) = events.next()` loop simply exhausting (no real `Doc::parse` output
+    /// can be unbalanced this way; this calls the private helper directly, as above).
+    #[test]
+    fn skip_balanced_on_an_unbalanced_stream_just_runs_out_without_panicking() {
+        let events: Vec<Event<'_>> = vec![
+            Event::Start(Tag::Emphasis),
+            Event::Text("never closes".into()),
+        ];
+        // No assertion beyond "returns" — the whole point is that this does not loop forever or
+        // panic reading past the end.
+        skip_balanced(&mut events.into_iter(), TagEnd::List(false));
+    }
+
+    // ---- `HeadingMeta::to_suffix`: line 1270 ----
+
+    /// A bare heading-attribute key with no `=value` (`{lang}`, inside `{#id .cls lang}`) — the
+    /// `None => parts.push(key.clone())` arm every other heading-attribute test in this file's own
+    /// production-diff corpus happens to avoid (they all use `key=value` pairs).
+    #[test]
+    fn heading_attribute_with_no_value_renders_the_bare_key() {
+        let out = render("## Heading {#id .cls lang}\n", true, false);
+        assert!(
+            lines_text(&out)[0].contains("lang"),
+            "lines: {:?}",
+            lines_text(&out)
+        );
+        assert!(
+            !lines_text(&out)[0].contains("lang="),
+            "no value should be appended"
+        );
+    }
+
+    // ---- Block-image extraction: `segment_as_block_image`/`split_top_level_image_units`
+    // (lines 1488, 1500, 1520, 1604-1605, 1616) ----
+
+    /// `segment_as_block_image`'s own `if seg.is_empty() { return None; }` (line 1488) — direct,
+    /// low-level: no real caller ever hands it a literally empty slice (`segment_as_block_images`'s
+    /// own empty-segment shortcut, `Some(Vec::new())`, intercepts that case first — see that
+    /// function's own doc comment on the bare-`\` "gap" shape this exists for).
+    #[test]
+    fn segment_as_block_image_on_an_empty_segment_is_none() {
+        assert_eq!(segment_as_block_image("", &[]), None);
+    }
+
+    /// `segment_as_block_image`'s own "link wraps nothing at all" branch (line 1500) — `seg` is
+    /// exactly `Start(Link)`, `End(Link)`, back to back, so `inner = &seg[1..1]` is empty. Direct,
+    /// low-level construction (real parsing never wraps an empty link body around *nothing* —
+    /// `[](url)` has no `Start(Image)`/text inside the link at all, so this exercises the same
+    /// shape without needing to find a source string that produces it).
+    #[test]
+    fn segment_as_block_image_where_a_link_wraps_nothing_is_none() {
+        let link_tag = Tag::Link {
+            link_type: pulldown_cmark::LinkType::Inline,
+            dest_url: "h".into(),
+            title: "".into(),
+            id: "".into(),
+        };
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Start(link_tag), 0..1),
+            (Event::End(TagEnd::Link), 1..2),
+        ];
+        assert_eq!(segment_as_block_image("xx", &events), None);
+    }
+
+    /// `segment_as_block_image`'s own `if url.is_empty() { return None; }` (line 1520) — a
+    /// standalone image whose destination is the empty string (`![alt]()`), reached through the
+    /// real `paragraph_as_block_images` path: since the extraction fails, the whole paragraph falls
+    /// through to ordinary inline rendering, showing only the alt text (matching production's own
+    /// "an image with no destination is not extracted" contract, cited in this function's own doc
+    /// comment).
+    #[test]
+    fn standalone_image_with_an_empty_url_is_not_extracted_as_a_block_image() {
+        let out = render("![a]()\n", true, false);
+        assert!(out.images.is_empty());
+        assert_eq!(lines_text(&out), vec!["a"]);
+    }
+
+    /// `split_top_level_image_units`'s own "a non-comment HTML/InlineHtml event sits alongside the
+    /// image — not a pure badge row" branch (lines 1600-1605): a CDATA section containing a literal
+    /// `>` before its own real close (`<![CDATA[a>b]]>`) is reported by pulldown-cmark as **one**
+    /// `InlineHtml` event spanning the whole thing, but `render_html_block`'s own naive
+    /// first-`>`-wins tag stripper reads only `<![CDATA[a` as "the tag" and leaves `b]]>` behind as
+    /// visible text — confirmed non-empty, so this is not treated as a harmless comment, and the
+    /// whole segment falls through to ordinary paragraph rendering (an `Unavailable`-slot image
+    /// placeholder plus the literal fallback text, never a block-image placement).
+    #[test]
+    fn image_next_to_non_comment_html_is_not_folded_into_a_badge_row() {
+        let out = render("![a](u.png) <![CDATA[a>b]]>\n", true, false);
+        assert!(
+            out.images.is_empty(),
+            "html with real visible content should block badge-row extraction: {:?}",
+            out.images
+        );
+    }
+
+    /// `split_top_level_image_units`'s own "unbalanced within this segment" (line 1616) — an
+    /// `Image` `Start` with no matching `End` anywhere in the slice. Direct, low-level (real
+    /// `Doc::parse` output is always balanced).
+    #[test]
+    fn split_top_level_image_units_on_an_unbalanced_image_is_none() {
+        let image_tag = Tag::Image {
+            link_type: pulldown_cmark::LinkType::Inline,
+            dest_url: "u".into(),
+            title: "".into(),
+            id: "".into(),
+        };
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Start(image_tag), 0..3),
+            (Event::Text("a".into()), 1..2),
+        ];
+        assert_eq!(split_top_level_image_units("src", &events), None);
+    }
+
+    // ---- `paragraph_as_block_images`/`heading_trailing_images`: empty ranges and an unbalanced
+    // heading badge (lines 1720, 1791, 1811-1815, 1820, 1826) ----
+
+    /// `paragraph_as_block_images`'s own `if events.is_empty() { return None; }` (line 1720) —
+    /// direct, low-level: an empty inline range never actually reaches this function through
+    /// `render_paragraph_dispatch` (a real `Paragraph` always has at least one inline event).
+    #[test]
+    fn paragraph_as_block_images_on_an_empty_range_is_none() {
+        let doc = Doc::parse("");
+        assert_eq!(paragraph_as_block_images(&doc, "", &(0..0)), None);
+    }
+
+    /// `heading_trailing_images`'s own identical empty-range guard (line 1791).
+    #[test]
+    fn heading_trailing_images_on_an_empty_range_is_none() {
+        let doc = Doc::parse("");
+        assert_eq!(heading_trailing_images(&doc, "", &(0..0)), None);
+    }
+
+    /// A heading whose title is followed by a **bare** (not link-wrapped) badge image and then a
+    /// trailing HTML comment on the same line — `rav1e`-style trailing badges, but with an inline
+    /// comment after the last one too (the shields.io README idiom `heading_trailing_images`'s own
+    /// doc comment cites). Exercises the HTML-comment-is-transparent skip (lines 1811-1815, `i +=
+    /// 1`, not disqualifying the trailing run) and the bare-`Image` (as opposed to `Link`-wrapped)
+    /// `wants_end` arm (line 1820) together: the badge still peels off, the heading's own title text
+    /// is what is left.
+    #[test]
+    fn heading_badge_followed_by_a_comment_still_peels_as_a_trailing_image() {
+        let out = render_with_images(
+            "## Heading ![`code` alt](u.png) <!-- c -->\n",
+            true,
+            false,
+            5,
+            2,
+        );
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "u.png");
+        assert_eq!(
+            lines_text(&out)[0],
+            "Heading ",
+            "the comment and the badge must not survive as literal title text: {:?}",
+            lines_text(&out)
+        );
+    }
+
+    /// `heading_trailing_images`'s own `Event::Html(_) | Event::InlineHtml(_) if
+    /// render_html_block(..).is_empty()` match *guard* evaluating to **false** — the sibling of the
+    /// test just above, which only ever exercised the guard's *true* half (a comment, which strips
+    /// to nothing). A CDATA section holding a literal `>` before its own real close
+    /// (`<![CDATA[a>b]]>` — the identical shape `image_next_to_non_comment_html_is_not_folded_into_
+    /// a_badge_row` above already confirms `render_html_block` does not strip cleanly) is reported
+    /// by pulldown-cmark as one `InlineHtml` event; failing the guard, it falls through to the
+    /// catch-all "real content" arm instead of being skipped as transparent — disqualifying the
+    /// badge immediately before it from ever counting as part of a trailing run at all (`split`
+    /// never moves off `items.len()`, so nothing peels).
+    #[test]
+    fn heading_badge_followed_by_non_comment_html_is_not_peeled_as_trailing() {
+        let out = render_with_images(
+            "## Heading ![badge](u.png) <![CDATA[a>b]]>\n",
+            true,
+            false,
+            5,
+            2,
+        );
+        assert!(
+            out.images.is_empty(),
+            "the CDATA content disqualifies the badge from the trailing run: {:?}",
+            out.images
+        );
+    }
+
+    /// `heading_trailing_images`'s own `Event::Html(_) | Event::InlineHtml(_) if
+    /// render_html_block(..).is_empty()` match guard evaluating to **false**, isolated as a direct,
+    /// low-level call — the sibling test just above exercises this same guard through real parsing
+    /// (a heading badge followed by non-comment HTML), but that document *also* has to satisfy the
+    /// `Event::Start(Tag::Image { .. })`/text-classification machinery around it, which turned out to
+    /// leave this one specific line's own region still unattributed by `cargo llvm-cov`'s per-region
+    /// tracking. A bare, single-event heading (just the CDATA `InlineHtml`, nothing else) pins the
+    /// guard's `false` outcome on its own, unambiguously.
+    #[test]
+    fn heading_trailing_images_html_guard_false_branch_is_reached_directly() {
+        let src = "<![CDATA[a>b]]>";
+        assert!(
+            !super::super::render_html_block(src).is_empty(),
+            "fixture must actually disqualify — otherwise this test proves nothing"
+        );
+        let events: Vec<(Event<'_>, Range<usize>)> =
+            vec![(Event::InlineHtml(src.into()), 0..src.len())];
+        let doc = Doc {
+            events,
+            blocks: Vec::new(),
+        };
+        assert_eq!(heading_trailing_images(&doc, src, &(0..1)), None);
+    }
+
+    /// `Writer::prefix_width`'s own non-empty branch (`line_prefixes.len() + 1`) — before the plain-
+    /// quote checkbox fix (see `render_quote`'s own doc comment), this fired for every quote-nested
+    /// code block/table, reached through `render_code_block`/`render_table_from_model`'s own width
+    /// math while `w.line_prefixes` was non-empty. `render_quote` now isolates its own children into
+    /// a sub-`Writer` whose `line_prefixes` stays empty throughout their entire render (the quote's
+    /// own `>` is pushed only for the brief re-emit loop *after* children finish, onto the *caller's*
+    /// writer) — so no current call site ever invokes either function while `line_prefixes` is
+    /// non-empty any more, only `push_line`'s own identical check does. Direct, low-level call:
+    /// confirms the method itself is still correct, independent of whether any current caller still
+    /// exercises it this way.
+    #[test]
+    fn prefix_width_reflects_open_quote_prefixes() {
+        let mut w = fresh_writer();
+        assert_eq!(w.prefix_width(), 0);
+        w.line_prefixes.push(Span::raw(">"));
+        assert_eq!(w.prefix_width(), 2);
+        w.line_prefixes.push(Span::raw(">"));
+        assert_eq!(w.prefix_width(), 3);
+    }
+
+    /// `heading_trailing_images`'s own "unbalanced within this heading — treat as real content"
+    /// fallback (line 1826) — an `Image` `Start` with no matching `End` anywhere in the heading's
+    /// own inline range. Direct, low-level construction (real parsing is always balanced): confirms
+    /// this degrades to "not a peelable trailing run" (`None`) rather than reading past the end of
+    /// `events`.
+    #[test]
+    fn heading_trailing_images_on_an_unbalanced_heading_gives_up_without_panicking() {
+        let image_tag = Tag::Image {
+            link_type: pulldown_cmark::LinkType::Inline,
+            dest_url: "u".into(),
+            title: "".into(),
+            id: "".into(),
+        };
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Start(image_tag), 0..5),
+            (Event::Text("ab".into()), 1..3),
+        ];
+        let doc = Doc {
+            events,
+            blocks: Vec::new(),
+        };
+        assert_eq!(heading_trailing_images(&doc, "abcde", &(0..2)), None);
+    }
+
+    // ---- `image_alt_text`: lines 1986-1988 ----
+
+    /// Alt text containing an inline code span (`Event::Code`, line 1986) and a hard break
+    /// (`Event::HardBreak`, line 1987; `Event::Text`/`Event::SoftBreak` are already covered
+    /// elsewhere) — both concatenated with the `Event::Text` payloads around them, a hard break
+    /// becoming a single literal space, mirroring `Writer::soft_break`'s own rendering (see this
+    /// function's own doc comment).
+    #[test]
+    fn image_alt_text_joins_code_spans_and_hard_breaks_as_plain_text() {
+        let out = render_with_images("## Heading ![`code` alt](u.png)\n", true, false, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].alt, "code alt");
+
+        let out2 = render("![line1\\\nline2](u.png)\n", true, false);
+        assert!(
+            out2.images.is_empty(),
+            "no live slot in this call — Unavailable fallback"
+        );
+        assert!(
+            lines_text(&out2)[0].contains("line1 line2"),
+            "hard break inside alt text should become one literal space: {:?}",
+            lines_text(&out2)
+        );
+    }
+
+    /// `image_alt_text`'s own catch-all (`_ => {}`, line 1988) — a nested inline construct (bold)
+    /// inside a standalone image's own alt text contributes its own `Start`/`End(Strong)` events,
+    /// silently dropped (matching this function's own doc comment: alt text carries no styling of
+    /// its own, only the plain text/code/breaks inside it).
+    #[test]
+    fn image_alt_text_drops_nested_style_tags() {
+        let out = render_with_images("![**bold** alt](u.png)\n", true, false, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].alt, "bold alt");
+    }
+
+    // ---- `render_paragraph_dispatch`/`render_bare_paragraph`: the math-lifting branches of the
+    // leading/trailing standalone-image split (lines 2110, 2129, 2138-2139, 4168, 4174-4187,
+    // 4194-4207) — and `render_image_slot`'s `Unavailable` fallback (`no_images`, lines 4640-4642)
+    // ----
+
+    /// A top-level paragraph whose text lifts inline math, immediately followed (no blank line) by
+    /// a standalone trailing image, with `math_on: true` — `paragraph_trailing_images` peels the
+    /// image, and since `math_here && w.math.is_some()`, the leading text renders through
+    /// `render_paragraph_math` (line 2110), not plain `render_paragraph`.
+    #[test]
+    fn paragraph_with_math_and_a_trailing_image_lifts_the_math_first() {
+        let out = render_with_images("$x$ intro\n![badge](u.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "u.png");
+        assert!(
+            lines_text(&out).iter().any(|l| l.contains('$')),
+            "the math must have been lifted (a dimmed raw placeholder), not left as plain text: {:?}",
+            lines_text(&out)
+        );
+    }
+
+    /// A heading (leaving `w.needs_newline: true`), then a paragraph whose text is a **leading**
+    /// standalone image followed by real text, `math_on: false` — `paragraph_leading_images` peels
+    /// the image; since `w.needs_newline` is true entering, the leading-blank-line push (line 2129)
+    /// fires; since `math_here` is false, the trailing text renders through plain `render_paragraph`
+    /// (line 2138-2139), not `render_paragraph_math`.
+    #[test]
+    fn heading_then_a_leading_image_paragraph_gets_its_own_blank_line_and_plain_text() {
+        let out = render_with_images("# T\n\n![badge](u.png)\noutro\n", false, false, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        let texts = lines_text(&out);
+        assert_eq!(texts.last().map(String::as_str), Some("outro"));
+        // Between the heading's own rule and the image there must be a blank row — proof
+        // `push_blank_line` actually fired for the leading-image branch, not just the heading's own.
+        let rule_idx = texts.iter().position(|l| l.starts_with('━')).unwrap();
+        assert_eq!(texts[rule_idx + 1], "", "lines: {texts:?}");
+    }
+
+    /// A **tight** list item's own *later* (bare, interrupted-by-a-heading) child paragraph whose
+    /// entire content is a single standalone image — `try_render_paragraph_as_image` inside
+    /// `render_bare_paragraph` returns early (line 4168), before either the trailing- or
+    /// leading-image branch below it ever runs.
+    #[test]
+    fn tight_list_bare_paragraph_that_is_only_an_image_returns_early() {
+        let out = render_with_images("- a\n  # h\n  ![badge](u.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "u.png");
+    }
+
+    /// The same tight-list, bare-paragraph shape, but with leading real text before the trailing
+    /// image, `math_on: true` — `render_bare_paragraph`'s own trailing-image branch's `math_here`
+    /// arm (lines 4174-4187, `walk_inline_math` instead of plain `walk_inline`).
+    #[test]
+    fn tight_list_bare_paragraph_trailing_image_with_math_on_uses_the_math_walk() {
+        let out = render_with_images("- a\n  # h\n  intro\n  ![badge](u.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert!(lines_text(&out).iter().any(|l| l == "intro"));
+    }
+
+    /// The mirror shape — leading image, trailing real text — `render_bare_paragraph`'s own
+    /// leading-image branch's `math_here` arm (lines 4193-4207).
+    #[test]
+    fn tight_list_bare_paragraph_leading_image_with_math_on_uses_the_math_walk() {
+        let out = render_with_images("- a\n  # h\n  ![badge](u.png)\n  outro\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert!(lines_text(&out).iter().any(|l| l == "outro"));
+    }
+
+    /// The identical trailing-image bare-paragraph shape as above, but with `math_on: false` — the
+    /// `else` half of `render_bare_paragraph`'s own trailing-image branch (plain `walk_inline`
+    /// instead of `walk_inline_math`, line 4182).
+    #[test]
+    fn tight_list_bare_paragraph_trailing_image_with_math_off_uses_the_plain_walk() {
+        let out = render_with_images(
+            "- a\n  # h\n  intro\n  ![badge](u.png)\n",
+            true,
+            false,
+            5,
+            2,
+        );
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert!(lines_text(&out).iter().any(|l| l == "intro"));
+    }
+
+    /// The identical leading-image bare-paragraph shape, `math_on: false` — the `else` half of
+    /// `render_bare_paragraph`'s own leading-image branch (line 4205).
+    #[test]
+    fn tight_list_bare_paragraph_leading_image_with_math_off_uses_the_plain_walk() {
+        let out = render_with_images(
+            "- a\n  # h\n  ![badge](u.png)\n  outro\n",
+            true,
+            false,
+            5,
+            2,
+        );
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert!(lines_text(&out).iter().any(|l| l == "outro"));
+    }
+
+    /// `no_images` itself (lines 4640-4642) — every other test in this file that has no image of
+    /// its own to exercise reaches for `&no_images` as a filler argument, but none of them ever
+    /// actually *render* a real standalone image through it (all of `render.rs`'s own pre-existing
+    /// image tests use a live `ImageSlot::Inline`-returning closure instead — see e.g. the
+    /// `slot_of` closures a few hundred lines above). A standalone image rendered with `no_images`
+    /// as the real slot answer is what finally calls its body, and confirms `render_image_slot`'s
+    /// own `Unavailable` arm degrades to the one-line text fallback rather than reserving any rows.
+    #[test]
+    fn a_standalone_image_with_no_live_slot_degrades_to_the_text_fallback() {
+        let out = render("![alt](u.png)\n", true, false);
+        assert!(out.images.is_empty());
+        assert_eq!(lines_text(&out).len(), 1);
+        assert!(
+            lines_text(&out)[0].contains("alt") && lines_text(&out)[0].contains("u.png"),
+            "lines: {:?}",
+            lines_text(&out)
+        );
+    }
+
+    // ---- Math walk: multi-line display-math bounds, growing-slice resolution/give-up exits with
+    // a preceding `pending` text (lines 2512, 2563, 2774-2778, 2797-2814, 2994, 3053) ----
+
+    /// `multiline_math_opener`'s own "this opener's own line is the very last line of `src`, with
+    /// no trailing newline at all" branch (line 2511-2512, `bounds.end` unchanged rather than `+
+    /// 1`) — direct, low-level: the private helper takes only `src`/a byte range, no `Doc` needed.
+    #[test]
+    fn multiline_math_opener_at_the_very_end_of_input_with_no_trailing_newline() {
+        let src = "abc\n$$";
+        let range = 4..6; // the "$$" itself
+        assert_eq!(&src[range.clone()], "$$");
+        let (closer, body_start) = multiline_math_opener(src, &range).expect("opener recognized");
+        assert_eq!(closer, "$$");
+        assert_eq!(
+            body_start,
+            src.len(),
+            "no `+ 1`: there is no byte after this line at all"
+        );
+    }
+
+    /// `render_multiline_display_math`'s own "ran out of events" exit (lines 2560-2567), with a
+    /// non-empty `pending` text carried in (line 2562-2563 specifically — the sibling test for the
+    /// *same* exit with `pending: None` is already covered by an existing regression elsewhere in
+    /// this file). Direct, low-level call: getting `pending` to survive into this exact call via
+    /// real parsing needs two back-to-back `Event::Text`s with nothing between them (the shape a
+    /// caret/tilde delimiter ambiguity sometimes produces — see the superscript/subscript note
+    /// above) whose *second* one is, byte for byte, a whole physical line reading exactly `"$$"` —
+    /// a combination real documents essentially never produce; calling the function directly proves
+    /// the code path itself is sound regardless.
+    #[test]
+    fn render_multiline_display_math_ran_out_of_events_flushes_a_pending_text_first() {
+        let mut w = fresh_writer();
+        let mut events = std::iter::empty();
+        let mut prev_end = Some(0usize);
+        render_multiline_display_math(
+            &mut w,
+            &mut events,
+            Some(pulldown_cmark::CowStr::from("lead ")),
+            pulldown_cmark::CowStr::from("$$"),
+            2,
+            "$$",
+            "$$\n",
+            &mut prev_end,
+        );
+        assert_eq!(
+            lines_text(&RenderOut {
+                lines: w.lines,
+                images: Vec::new(),
+                unsupported: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
+            }),
+            vec!["lead $$"],
+            "both the flushed pending text and the un-closed opener replay onto one line"
+        );
+    }
+
+    /// `render_multiline_display_math`'s own **success** exit (`is_closer_line`, lines 2577-2584)
+    /// with a non-empty `pending` text (line 2579-2580) — the sibling of the "ran out of events"
+    /// test just above: here the closer line genuinely turns up, so `pending` flushes with
+    /// `trailing_lift: true` before the display-math placeholder itself renders (via
+    /// `render_math_slot`, which degrades to nothing here since `w.math` is `None` — already
+    /// covered on its own above; what this test is actually proving is that the pending flush
+    /// happens at all). Direct, low-level construction, for the identical reason the "ran out of
+    /// events" sibling test is: real parsing essentially never produces two adjacent `Text` events
+    /// where the second is a whole physical line reading exactly `"$$"`.
+    #[test]
+    fn render_multiline_display_math_closer_found_flushes_a_pending_text_first() {
+        let mut w = fresh_writer();
+        let src = "$$\nbody\n$$\n";
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Text("body".into()), 3..7),
+            (Event::Text("$$".into()), 8..10),
+        ];
+        let mut it = events.into_iter();
+        let mut prev_end = Some(0usize);
+        render_multiline_display_math(
+            &mut w,
+            &mut it,
+            Some(pulldown_cmark::CowStr::from("lead ")),
+            pulldown_cmark::CowStr::from("$$"),
+            3,
+            "$$",
+            src,
+            &mut prev_end,
+        );
+        assert_eq!(
+            w.lines,
+            // `trailing_lift: true` (a lift immediately follows) trims the trailing space —
+            // `render_math_parts`'s own trim rule, exercised here too.
+            vec![Line::from(vec![Span::raw("lead")])],
+            "the pending text must flush before the (here, no-op) math slot renders"
+        );
+    }
+
+    /// `render_backslash_math`'s own `is_break` exit (lines 2771-2779) with a non-empty `pending`
+    /// text (lines 2774-2775) — a backslash-math opener (`\(`) that never finds its own closer
+    /// before a hard line break, preceded by ordinary text on the *same* physical line (the
+    /// preceding-adjacent-`Text`-event shape a backslash escape reliably produces — see
+    /// `backslash_math_opener`'s own doc comment). The buffered fallback replayed through
+    /// `replay_events` also carries an inline code span (`Event::Code`, lines 2797-2800), a raw
+    /// inline HTML tag (dropped by `replay_events`'s own catch-all, line 2814), and the triggering
+    /// `HardBreak` itself (lines 2805-2808) — so this one document exercises `replay_events`'s
+    /// entire event-kind coverage in a single pass.
+    #[test]
+    fn backslash_math_opener_that_never_closes_replays_everything_it_buffered() {
+        let out = render("lead \\(a `code` <b> more  \nend\n", true, true);
+        assert!(
+            out.images.is_empty(),
+            "nothing here should have been recognized as math: {:?}",
+            out.images
+        );
+        let texts = lines_text(&out);
+        assert_eq!(texts.len(), 2, "lines: {texts:?}");
+        assert_eq!(texts[0], "lead (a code  more");
+        assert_eq!(texts[1], "end");
+    }
+
+    /// `render_dollar_math_tail`'s own "resolved" exit (lines 2986-3001) with a non-empty `pending`
+    /// text (line 2993-2994) — a dollar-math span that only closes after growing *past* a nested
+    /// `Strong` span (so the growing-raw-slice re-scan, not a single-event scan, is what actually
+    /// resolves it — see this function's own "Never stop mid-construct" doc comment), preceded by
+    /// ordinary text on the same physical line via the identical backslash-escape adjacency trick
+    /// used above.
+    #[test]
+    fn dollar_math_that_resolves_across_a_nested_strong_span_flushes_a_pending_text_first() {
+        let out = render("lead \\*$a **b** c$ tail\n", true, true);
+        let texts = lines_text(&out);
+        assert_eq!(texts.len(), 3, "lines: {texts:?}");
+        assert_eq!(
+            texts[0], "lead *",
+            "the pending text must have flushed onto its own line"
+        );
+        assert!(texts[1].contains("$a **b** c$"), "lines: {texts:?}");
+        assert_eq!(texts[2], "tail");
+    }
+
+    /// `render_dollar_math_tail`'s own `is_break` exit (lines 3051-3057) with a non-empty `pending`
+    /// text (line 3052-3053) — the mirror of the backslash-math case above, but for the
+    /// currency-shaped `$…` opener that `dollar_math_still_open` cannot resolve within one event:
+    /// preceded by ordinary text on the same physical line, and given up on at the very next
+    /// `SoftBreak` (never even reaching the unrelated `end` text on the following line — confirmed
+    /// by the fact that everything still renders on one row, `SoftBreak` degrading to a literal
+    /// space, not two).
+    #[test]
+    fn dollar_math_that_never_closes_gives_up_at_the_next_soft_break() {
+        let out = render("lead \\*$50 more\nend\n", true, true);
+        assert!(
+            out.images.is_empty(),
+            "nothing should have been lifted: {:?}",
+            out.images
+        );
+        let texts = lines_text(&out);
+        assert_eq!(texts, vec!["lead *$50 more end"]);
+    }
+
+    // ---- `render_math_slot`/`ensure_fresh_after_math` defensive fallbacks: lines 3092, 3145, 3234
+    // ----
+
+    /// `render_math_slot`'s own `let Some(math) = w.math.as_ref() else { return; }` (line 3233-3235)
+    /// — every real call site only ever reaches this with `w.math.is_some()` already true (gated by
+    /// `render_paragraph_dispatch`'s own check), so this calls it directly on a fresh `Writer`
+    /// (`math: None` by construction — see `fresh_writer`'s own doc comment) to confirm the
+    /// defensive fallback degrades to "render nothing" rather than panicking on the `unwrap` this
+    /// function's own doc comment explains it deliberately does not use.
+    #[test]
+    fn render_math_slot_with_no_math_context_at_all_renders_nothing() {
+        let mut w = fresh_writer();
+        render_math_slot(&mut w, "x", false);
+        assert!(w.lines.is_empty());
+    }
+
+    /// `render_text_with_math`'s own `if i > 0 { push_blank_line() }` (line 3144-3146) — the
+    /// math-aware analogue of `Writer::text`'s identical multi-physical-line handling (already
+    /// covered above for the plain, non-math case); direct, low-level call with an embedded `\n`.
+    #[test]
+    fn render_text_with_math_on_an_embedded_newline_starts_a_fresh_line() {
+        let mut w = fresh_writer();
+        render_text_with_math(&mut w, "line1\nline2", false);
+        assert_eq!(
+            lines_text(&RenderOut {
+                lines: w.lines,
+                images: Vec::new(),
+                unsupported: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
+            }),
+            vec!["line1", "line2"]
+        );
+    }
+
+    /// `ensure_fresh_after_math`'s own **separate** `if w.after_math { if w.needs_newline { .. } }`
+    /// branch (lines 3090-3096), with `needs_newline` *and* `after_math` both already `true` on
+    /// entry, and `pending_para_start` already `None` — the one state-combination this function's
+    /// own doc comment says can legitimately reach it (`pending_para_start`/`after_math` are stated
+    /// to be mutually exclusive in practice for real documents: whichever produces `after_math:
+    /// true` always resolves `pending_para_start` in the very same step — see `render_math_slot`'s
+    /// own unconditional `w.drop_pending_para_start()`). A real document that lands in exactly this
+    /// shape (an empty `Quote` — the one construct whose own exit sets `needs_newline = true`
+    /// *unconditionally*, without going through `push_line` — immediately following a lift, with a
+    /// second math-lifting paragraph after it) was not found; this is a direct, low-level
+    /// construction of the state instead, which is honest about that (see this section's own header
+    /// comment on why several tests here take this shape).
+    #[test]
+    fn ensure_fresh_after_math_with_needs_newline_and_after_math_both_set_pushes_two_blanks() {
+        let mut w = fresh_writer();
+        w.lines.push(Line::from("prior"));
+        w.needs_newline = true;
+        w.after_math = true;
+        w.pending_para_start = None;
+        ensure_fresh_after_math(&mut w);
+        assert_eq!(
+            w.lines,
+            vec![Line::from("prior"), Line::default(), Line::default()],
+            "the inner (needs_newline) push and the unconditional second push both fired"
+        );
+        assert!(!w.after_math, "the flag must be consumed");
+        assert!(!w.needs_newline);
+    }
+
+    // ---- `render_block`/`trim_leading_header`: lines 3797-3798, 3832, 4342, 4408-4410, 4414 ----
+
+    /// `render_block`'s own generic `BlockKind::Quote { alert: Some(_), .. } if !w.alerts` arm
+    /// (lines 3797-3798) — the *nested* sibling of the identical top-level-dispatch arm already
+    /// covered above (line 466-471): an alert-headed quote reached through a **list item**'s own
+    /// content, with `alerts: false`, so it renders as a plain blockquote (the literal `[!NOTE]`
+    /// marker text surviving, matching `Writer.alerts`'s own doc comment) rather than the colored
+    /// callout box.
+    #[test]
+    fn alert_headed_quote_nested_inside_a_list_item_with_alerts_off_renders_as_a_plain_quote() {
+        let out = render("- item\n\n  > [!NOTE]\n  > text\n", false, false);
+        assert!(out.unsupported.is_empty());
+        let joined = lines_text(&out).join("\n");
+        assert!(joined.contains("[!NOTE]"), "lines: {:?}", lines_text(&out));
+        assert!(
+            !joined.contains('▌'),
+            "no alert bar — this must be a plain quote: {joined:?}"
+        );
+    }
+
+    /// `render_block`'s own defensive `BlockKind::ListItem { .. } => {}` catch-all (line 3832) —
+    /// like the top-level equivalent above, real parsing can never hand this function a raw
+    /// `ListItem` (`render_list` always unwraps one first); direct, low-level call confirms it
+    /// renders nothing rather than panicking.
+    #[test]
+    fn render_block_on_a_bare_list_item_that_could_never_really_happen_renders_nothing() {
+        let doc = Doc::parse("");
+        let mut w = fresh_writer();
+        let block = Block {
+            kind: BlockKind::ListItem { task: None },
+            src: 0..0,
+            children: Vec::new(),
+        };
+        render_block(&block, &mut w, &doc, "", fresh_ctx());
+        assert!(w.lines.is_empty());
+    }
+
+    /// `line_after`'s own `None => src.len()` fallback (line 4341-4342) — an alert header that is
+    /// the very last line of the whole document, with no trailing newline at all.
+    #[test]
+    fn alert_header_with_no_trailing_newline_at_all_does_not_panic() {
+        let out = render("> [!NOTE]", true, false);
+        assert!(out.unsupported.is_empty());
+        assert!(
+            lines_text(&out)[0].contains("Note"),
+            "lines: {:?}",
+            lines_text(&out)
+        );
+    }
+
+    /// `trim_leading_header`'s own "straddles the boundary, but is not a `Paragraph`" defensive
+    /// fallback (lines 4408-4410, `out.push(b.clone())` — kept unmodified rather than dropped) and
+    /// its own final `Vec::new()` for an empty/all-header `children` slice (line 4414). This
+    /// function's own doc comment states the straddling-non-`Paragraph` shape "cannot legitimately
+    /// straddle this boundary at all" for real parsing (every other block kind starts fresh at its
+    /// own line) — direct, low-level calls for both.
+    #[test]
+    fn trim_leading_header_keeps_a_straddling_non_paragraph_block_unmodified() {
+        let doc = Doc::parse("");
+        let children = vec![Block {
+            kind: BlockKind::ThematicBreak,
+            src: 0..10,
+            children: Vec::new(),
+        }];
+        let out = trim_leading_header(&children, &doc, 5);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].kind, BlockKind::ThematicBreak));
+        assert_eq!(
+            out[0].src,
+            0..10,
+            "a non-Paragraph straddler is kept byte-for-byte unchanged"
+        );
+    }
+
+    #[test]
+    fn trim_leading_header_on_no_children_at_all_is_empty() {
+        let doc = Doc::parse("");
+        assert_eq!(trim_leading_header(&[], &doc, 0), Vec::<Block>::new());
+    }
+
+    // ---- `push_item_marker`: line 4230-4231 ----
+
+    /// `push_item_marker`'s own `let Some(last_index) = w.list_indices.last_mut() else { return; }`
+    /// — the doc comment above it says `render_list` always pushes an entry first, so this is
+    /// always reachable in practice; direct, low-level call on a fresh `Writer` (`list_indices`
+    /// empty by construction) confirms the defensive early return, not a panic on an empty `Vec`.
+    #[test]
+    fn push_item_marker_with_no_open_list_returns_without_panicking() {
+        let mut w = fresh_writer();
+        assert!(w.list_indices.is_empty());
+        push_item_marker(&mut w);
+        assert!(w.lines.is_empty());
+    }
+
+    // =========================================================================================
+    // Extreme/adversarial input sweep: `render_doc` must never panic, on any of the shapes below.
+    // Each case is rendered at several widths (including pathologically narrow ones) and with both
+    // `code.wrap` settings; a handful of specific cases from konoma's own history (cited inline) are
+    // also pinned individually above the sweep.
+
+    /// Every genuinely adversarial/extreme document this pass collected, run through `render_doc`
+    /// at a handful of widths (1, 2, 3, 10, 80, 4000) and both `code.wrap` settings, with math/
+    /// alerts both on — the combination most likely to trip an internal invariant. No output is
+    /// asserted (the documents are deliberately meaningless); the only contract under test is "does
+    /// not panic, for any of these, at any of these widths".
+    #[test]
+    fn render_doc_never_panics_on_adversarial_input() {
+        let cases: Vec<String> = vec![
+            // Deeply nested containers (10 levels) of every kind this file covers.
+            "> ".repeat(10) + "deep quote\n",
+            "- ".repeat(10) + "deep list\n",
+            {
+                let mut s = String::new();
+                for _ in 0..10 {
+                    s.push_str("- a\n");
+                }
+                s
+            },
+            // Unclosed fences, quotes, emphasis, links, alerts, details — at every depth this file
+            // itself dispatches through.
+            "```rust\nfn a() {}\n".to_string(),
+            "> unclosed quote with no closing anything".to_string(),
+            "**unclosed bold".to_string(),
+            "*unclosed italic".to_string(),
+            "~~unclosed strike".to_string(),
+            "[unclosed link(".to_string(),
+            "![unclosed image(".to_string(),
+            "> [!NOTE] unclosed alert body".to_string(),
+            "<details>\n<summary>unclosed".to_string(),
+            "<details>\n<summary>s</summary>\nbody with no close at all\n".to_string(),
+            "$$unclosed display math".to_string(),
+            "\\(unclosed backslash math".to_string(),
+            "$unclosed dollar".to_string(),
+            // A single, enormous line — 300,000 bytes, no newline anywhere (stresses width-based
+            // wrapping/highlighting at extreme scale without allocating hundreds of MB).
+            "x".repeat(300_000),
+            // Thousands of blank lines back to back.
+            "\n".repeat(5_000),
+            // CJK, emoji, combining marks, zero-width characters, mixed into every construct.
+            "# 見出し ✅🇯🇵\u{200B}\u{0301}\n".to_string(),
+            "これは*強調*と**太字**と`コード`です。\n".to_string(),
+            "- 項目1\n- 項目2\u{200D}\u{FE0F}\n".to_string(),
+            "> 引用文\u{0301}です\n".to_string(),
+            "![代替テキスト](画像.png)\n".to_string(),
+            "```rust\nlet 変数 = \"文字列\u{200B}\";\n```\n".to_string(),
+            // CRLF and a leading UTF-8 BOM.
+            "line one\r\nline two\r\n\r\n# heading\r\n".to_string(),
+            "\u{FEFF}# heading with a BOM\n".to_string(),
+            // Control characters and literal tabs mixed into ordinary text and code fences.
+            "text with a \u{0007} bell and a \u{001B} escape\n".to_string(),
+            "\tindented with a real tab\nnot indented\n".to_string(),
+            "```\n\tfenced code with a tab\n```\n".to_string(),
+            // Every `\`-escapable character from the module's own escape corpus, immediately
+            // followed by a multibyte character each time — the exact shape that has panicked this
+            // file before on a byte-boundary slice (`escape then CJK`/`escape then emoji`).
+            "\\*あ \\_い \\[う \\]え \\(お \\)か \\$き \\\\く\n".to_string(),
+            "\\*🎉 \\_🎉 \\[🎉 \\]🎉 \\(🎉 \\)🎉 \\$🎉 \\\\🎉\n".to_string(),
+            "\\あ \\🎉 \\\u{200B}\n".to_string(),
+            // A currency `$` immediately followed by bold text, on multiple lines and inside a
+            // list item — the exact shape `render_dollar_math_tail`'s own doc comment cites as a
+            // real, confirmed pre-fix panic (`"It costs $50 **bold** text.\n"`).
+            "It costs $50 **bold** text.\n".to_string(),
+            "- It costs $50 **bold** text.\n".to_string(),
+            "> It costs $50 **bold** text.\n".to_string(),
+            // A backslash-escaped bracket immediately followed by a real link — the confirmed
+            // pre-fix panic `render_backslash_math`'s own doc comment cites.
+            "See \\([#519](https://example.com/pull/519))\n".to_string(),
+            // Table with ragged/empty rows and CJK cells, immediately touching a fence with no
+            // blank line.
+            "| a | b |\n|---|---|\n| | 日本語 |\n```\ncode\n```\n".to_string(),
+            // A checkbox marker as the very first byte of the document, and a custom task state.
+            "- [ ] first\n".to_string(),
+            "- [x] first\n".to_string(),
+            "- [/] custom\n".to_string(),
+            // Every inline construct packed onto a single line together.
+            "# H *em* **st** ~~s~~ `c` [l](u) ![i](u) ^sup^ ~sub~ \\* end\n".to_string(),
+        ];
+        let code_wrap_true = CodeStyle {
+            wrap: true,
+            ..CodeStyle::default()
+        };
+        let code_wrap_false = CodeStyle {
+            wrap: false,
+            ..CodeStyle::default()
+        };
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 4, rows: 2 };
+        for src in &cases {
+            let doc = Doc::parse(src);
+            for width in [1u16, 2, 3, 10, 80, 4000] {
+                for code in [code_wrap_true, code_wrap_false] {
+                    let _ = render_doc(
+                        &doc,
+                        src,
+                        width,
+                        code,
+                        "TwoDark",
+                        true,
+                        &[' ', 'x', '/'],
+                        &slot_of,
+                        &no_mermaid,
+                        "Enter: full screen",
+                        true,
+                        &math_slot,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
+    /// `code.tab_width` swept across its own extremes (0 = disabled, and a pathologically large
+    /// value) against a fenced code block whose body actually contains tab characters — a separate,
+    /// focused sweep from the general adversarial one above because a bad `tab_width` interacts with
+    /// `highlight_body`'s own column math specifically, not with parsing.
+    #[test]
+    fn render_doc_never_panics_across_extreme_tab_widths() {
+        let src = "```rust\n\tfn a() {\n\t\tb();\n\t}\n```\n";
+        let doc = Doc::parse(src);
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        for tab_width in [0usize, 1, 100] {
+            let code = CodeStyle {
+                tab_width,
+                ..CodeStyle::default()
+            };
+            let _ = render_doc(
+                &doc,
+                src,
+                80,
+                code,
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &math_slot,
+                false,
+            );
+        }
+    }
+
+    /// Deeply nested inline emphasis (10 levels of `*`/`_`/`~~` interleaved) — a shape aimed
+    /// squarely at `walk_inline`'s own recursive `Start`/`End` balancing rather than at block-level
+    /// nesting (already covered by the adversarial sweep above).
+    #[test]
+    fn render_doc_never_panics_on_deeply_nested_inline_emphasis() {
+        let mut src = String::new();
+        for i in 0..10 {
+            src.push_str(if i % 2 == 0 { "*" } else { "_" });
+        }
+        src.push_str("center");
+        for i in (0..10).rev() {
+            src.push_str(if i % 2 == 0 { "*" } else { "_" });
+        }
+        src.push('\n');
+        let out = render(&src, true, true);
+        assert!(!out.lines.is_empty());
     }
 }

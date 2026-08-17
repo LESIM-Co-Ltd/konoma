@@ -247,6 +247,60 @@ fn cfg_ui_restore_tabs_default_and_parse() {
     );
 }
 
+/// `restore_single_tab`: default true (a lone-tab session is still persisted/restored). Had zero
+/// TOML-layer coverage before this — only the `session_actions` unit tests (App::new-level, not
+/// TOML parsing) exercised it.
+#[test]
+fn cfg_ui_restore_single_tab_default_and_parse() {
+    assert!(
+        toml::from_str::<Config>("[ui]\n")
+            .unwrap()
+            .ui
+            .restore_single_tab
+    );
+    assert!(
+        !toml::from_str::<Config>("[ui]\nrestore_single_tab = false\n")
+            .unwrap()
+            .ui
+            .restore_single_tab
+    );
+}
+
+/// `md_details`: default `"auto"`; `"open"`/`"closed"` (and any other string) are stored verbatim —
+/// `App::details_default_open` (app/md_render.rs, not this parsing layer) is the permissive
+/// resolver, matching `filter_mode`'s split between raw storage here and interpretation there. Had
+/// zero coverage in this file before this (e2e's `e2e_ui_md_details_config_forces_open_despite_
+/// missing_attribute` only covered `"open"`, not the field's own TOML parse/default).
+#[test]
+fn cfg_ui_md_details_default_and_parse() {
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\n").unwrap().ui.md_details,
+        "auto"
+    );
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\nmd_details = \"open\"\n")
+            .unwrap()
+            .ui
+            .md_details,
+        "open"
+    );
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\nmd_details = \"closed\"\n")
+            .unwrap()
+            .ui
+            .md_details,
+        "closed"
+    );
+    // Unrecognized value stored verbatim, same convention as every other mode string in this file.
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\nmd_details = \"sideways\"\n")
+            .unwrap()
+            .ui
+            .md_details,
+        "sideways"
+    );
+}
+
 #[test]
 fn cfg_ui_tabbar_default_and_parse() {
     assert_eq!(
@@ -402,6 +456,23 @@ fn cfg_ui_mermaid_default_and_parse() {
     );
 }
 
+/// `math`: default `"image"`; `"text"` disables the LaTeX-to-raster lift. Had zero coverage in this
+/// file before this — `math_color`'s own sanitizer was covered, but the sibling mode switch that
+/// gates it (whether math renders as an image at all — `App::math_image_mode`) was never checked at
+/// the TOML-parsing layer, only exercised end-to-end via `e2e_ui_math_image_mode_lifts_expression_
+/// text_mode_keeps_it_inline` (which never asserts what the *raw config field* itself parsed to).
+#[test]
+fn cfg_ui_math_default_and_parse() {
+    assert_eq!(toml::from_str::<Config>("[ui]\n").unwrap().ui.math, "image");
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\nmath = \"text\"\n")
+            .unwrap()
+            .ui
+            .math,
+        "text"
+    );
+}
+
 #[test]
 fn cfg_ui_mermaid_theme_default_and_parse() {
     assert_eq!(
@@ -463,6 +534,8 @@ commit_meta_align = "center"
 follow_view = "hologram"
 mermaid = "ascii-art"
 mermaid_theme = "chartreuse"
+math = "vector-art"
+md_details = "sideways"
 "#,
     )
     .unwrap();
@@ -477,6 +550,8 @@ mermaid_theme = "chartreuse"
     assert_eq!(cfg.ui.follow_view, "hologram");
     assert_eq!(cfg.ui.mermaid, "ascii-art");
     assert_eq!(cfg.ui.mermaid_theme, "chartreuse");
+    assert_eq!(cfg.ui.math, "vector-art");
+    assert_eq!(cfg.ui.md_details, "sideways");
 }
 
 #[test]

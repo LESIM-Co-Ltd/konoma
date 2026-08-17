@@ -979,29 +979,26 @@ L0004 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   m00 line=0002 kind=CodeBlock
 
 === code_corpus: block quote nested inside a list item, wrapping a fence ===
--- LINES (7) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "item"
 L0002 style=fg=-,bg=-,mod=- align=-
-L0003 style=fg=green,bg=-,mod=I align=-
-  s00 fg=-,bg=-,mod=- ">"
-  s01 fg=-,bg=-,mod=- " "
-L0004 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+L0003 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
   s04 fg=white,bg=rgb(70,78,99),mod=B " sh "
-L0005 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+L0004 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s03 fg=rgb(86,182,194),bg=rgb(43,48,59),mod=- "echo"
   s04 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " hi"
   s05 fg=-,bg=rgb(43,48,59),mod=- "                                                                                         "
-L0006 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+L0005 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
@@ -1012,7 +1009,7 @@ L0006 style=fg=green,bg=rgb(43,48,59),mod=I align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock
 
 === code_corpus: block quote nested inside a list item, wrapping an indented block ===
 -- LINES (8) --
@@ -1181,16 +1178,17 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- LINES (1) --
 L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
-  s01 fg=-,bg=-,mod=- "[ ] "
-  s02 fg=-,bg=-,mod=- " "
-  s03 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "- "
+  s03 fg=cyan,bg=-,mod=B "\u{f096} "
   s04 fg=-,bg=-,mod=- "quoted task"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
 
 === code_corpus: checkbox with four spaces after the bullet ===
 -- LINES (1) --
@@ -2093,6 +2091,40 @@ L0006 style=fg=-,bg=rgb(43,48,59),mod=- align=-
 -- ITEMS (1) --
   m00 line=0004 kind=CodeBlock
 
+=== code_corpus: fence inside a nested plain block quote (two levels) ===
+-- LINES (3) --
+L0000 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- ">"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
+  s05 fg=-,bg=rgb(43,48,59),mod=- "                                                                                          "
+  s06 fg=white,bg=rgb(70,78,99),mod=B " sh "
+L0001 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- ">"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s05 fg=rgb(86,182,194),bg=rgb(43,48,59),mod=- "echo"
+  s06 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " hi"
+  s07 fg=-,bg=rgb(43,48,59),mod=- "                                                                                       "
+L0002 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- ">"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s05 fg=-,bg=rgb(43,48,59),mod=- "                                                                                              "
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=CodeBlock
+
 === code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line) ===
 -- LINES (5) --
 L0000 style=fg=green,bg=-,mod=I align=-
@@ -2127,6 +2159,43 @@ L0004 style=fg=green,bg=rgb(43,48,59),mod=I align=-
 -- ANCHORS (0) --
 -- ITEMS (1) --
   m00 line=0002 kind=CodeBlock
+
+=== code_corpus: fence inside an alert nested inside a plain block quote ===
+-- LINES (4) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=blue,bg=-,mod=- "\u{f05a} "
+  s04 fg=blue,bg=-,mod=B "Note"
+L0001 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
+  s04 fg=-,bg=rgb(43,48,59),mod=- "                                                                                          "
+  s05 fg=white,bg=rgb(70,78,99),mod=B " sh "
+L0002 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s04 fg=rgb(86,182,194),bg=rgb(43,48,59),mod=- "echo"
+  s05 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " hi"
+  s06 fg=-,bg=rgb(43,48,59),mod=- "                                                                                       "
+L0003 style=fg=green,bg=rgb(43,48,59),mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s04 fg=-,bg=rgb(43,48,59),mod=- "                                                                                              "
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=CodeBlock
 
 === code_corpus: fence-lookalike 4 columns past a bullet item's content column is indented code ===
 -- LINES (8) --
@@ -6788,9 +6857,10 @@ L0001 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
 L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
-  s01 fg=-,bg=-,mod=- ">"
-  s02 fg=-,bg=-,mod=- " "
-  s03 fg=-,bg=-,mod=- "b"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- ">"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "b"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -6901,16 +6971,19 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === list_corpus: quote containing a heading ===
--- LINES (3) --
+-- LINES (4) --
 L0000 style=fg=green,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "# "
-  s03 fg=-,bg=-,mod=- "Title"
+  s02 fg=-,bg=-,mod=- "Title"
 L0001 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
+  s02 fg=cyan,bg=-,mod=D "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "body"
@@ -6952,7 +7025,7 @@ L0001 style=fg=green,bg=-,mod=I align=-
 L0002 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "---"
+  s02 fg=rgb(90,98,120),bg=-,mod=- "──────────────────────────────────────────────────────────────────────────────────────────────────"
 L0003 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
@@ -6980,23 +7053,23 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === list_corpus: task item inside a loose list ===
--- LINES (4) --
+-- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "a"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "[ ] "
-  s01 fg=-,bg=-,mod=- "b"
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "b"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
   t00 line=0002 state_off=0003 state=' '
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0002 kind=Task{state=' '}
 
 === list_corpus: task item nested under a tight item ===
 -- LINES (2) --
@@ -11996,13 +12069,12 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m02 line=0004 kind=Task{state=' '}
 
 === task_corpus: a real task at a list item's own indentation is still a real task ===
--- LINES (3) --
+-- LINES (2) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
+  s01 fg=cyan,bg=-,mod=B "\u{f096} "
+  s02 fg=-,bg=-,mod=- "outer"
 L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "[ ] "
-  s01 fg=-,bg=-,mod=- "outer"
-L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "    - "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "nested at matching indent"
@@ -12013,8 +12085,9 @@ L0002 style=fg=-,bg=-,mod=- align=-
   t01 line=0002 state_off=0005 state=' '
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+-- ITEMS (2) --
+  m00 line=0000 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state=' '}
 
 === task_corpus: alert CAUTION ===
 -- LINES (2) --
@@ -12136,6 +12209,29 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (1) --
   m00 line=0000 kind=Details{ordinal=0}
+
+=== task_corpus: alert nested inside a plain blockquote ===
+-- LINES (2) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=blue,bg=-,mod=- "\u{f05a} "
+  s04 fg=blue,bg=-,mod=B "Note"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=- "▌ "
+  s03 fg=-,bg=-,mod=- "- "
+  s04 fg=cyan,bg=-,mod=B "\u{f096} "
+  s05 fg=-,bg=-,mod=- "alert in quote"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Task{state=' '}
 
 === task_corpus: alert nested inside an open details shows its task ===
 -- LINES (3) --
@@ -12967,6 +13063,24 @@ L0004 style=fg=-,bg=-,mod=- align=-
   m01 line=0002 kind=Task{state=' '}
   m02 line=0004 kind=Task{state='x'}
 
+=== task_corpus: nested plain blockquote (two levels) ===
+-- LINES (1) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- ">"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "- "
+  s05 fg=cyan,bg=-,mod=B "\u{f096} "
+  s06 fg=-,bg=-,mod=- "quoted twice"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
 === task_corpus: nested two levels ===
 -- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -13058,16 +13172,38 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- LINES (1) --
 L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
-  s01 fg=-,bg=-,mod=- "[ ] "
-  s02 fg=-,bg=-,mod=- " "
-  s03 fg=-,bg=-,mod=- "- "
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "- "
+  s03 fg=cyan,bg=-,mod=B "\u{f096} "
   s04 fg=-,bg=-,mod=- "quoted"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
--- ITEMS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Task{state=' '}
+
+=== task_corpus: plain blockquote nested inside an alert ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=blue,bg=-,mod=- "▌ "
+  s01 fg=blue,bg=-,mod=- "\u{f05a} "
+  s02 fg=blue,bg=-,mod=B "Note"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=blue,bg=-,mod=- "▌ "
+  s01 fg=-,bg=-,mod=- ">"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=- "- "
+  s04 fg=cyan,bg=-,mod=B "\u{f096} "
+  s05 fg=-,bg=-,mod=- "quoted in alert"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Task{state=' '}
 
 === task_corpus: plain dash ===
 -- LINES (2) --

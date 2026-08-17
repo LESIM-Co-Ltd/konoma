@@ -52,8 +52,18 @@ impl Sim {
     }
 
     fn with_config(root: &std::path::Path, cfg: Config) -> Sim {
+        Sim::with_config_sized(root, cfg, 90, 26)
+    }
+
+    /// Same as `with_config`, but with an explicit terminal size instead of the standard 90x26.
+    /// Needed by tests that must clear `mermaid_fit_rows`'s viewport clamp (`preview_viewport - 2`)
+    /// to observe a **large** `ui.mermaid_rows` actually growing the diagram — at 90x26 the
+    /// viewport (22 rows for a single-fence document, confirmed by direct measurement) already
+    /// clamps the *default* 24 down to 20, so any `mermaid_rows` >= 22 would clamp to the exact same
+    /// 20 and the "large value changes something" contrast would be unobservable, not merely small.
+    fn with_config_sized(root: &std::path::Path, cfg: Config, w: u16, h: u16) -> Sim {
         let app = App::new(root.to_path_buf(), cfg).expect("App::new");
-        let term = Terminal::new(TestBackend::new(90, 26)).expect("terminal");
+        let term = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         let mut sim = Sim {
             app,
             term,
@@ -7968,7 +7978,11 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
     ),
     (
         "tab_width",
-        Coverage::Covered("e2e_ui_tab_width_changes_expansion_columns"),
+        Coverage::Covered(
+            "e2e_ui_tab_width_changes_expansion_columns (plain text) / \
+             e2e_ui_tab_width_changes_expansion_in_markdown_code_block (Markdown fence + \
+             extreme values 0/usize::MAX)",
+        ),
     ),
     (
         "syntax_highlight",
@@ -7998,7 +8012,15 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
     ),
     (
         "theme",
-        Coverage::Covered("e2e_ui_theme_code_bg_toggle_changes_code_block_background"),
+        // `ThemeConfig` has 5 sub-fields; `code_bg` was the only one with a real e2e contrast
+        // before the 2026-08-17 pre-release sweep added one test per remaining sub-field.
+        Coverage::Covered(
+            "e2e_ui_theme_code_bg_toggle_changes_code_block_background (code_bg) / \
+             e2e_ui_theme_code_theme_changes_markdown_code_block_highlight_colors (code_theme) / \
+             e2e_ui_theme_code_label_align_left_vs_right_moves_badge_in_markdown (code_label_align) / \
+             e2e_ui_theme_code_label_bg_configurable_in_markdown (code_label_bg) / \
+             e2e_ui_theme_bg_paints_the_whole_frame_background (bg)",
+        ),
     ),
     (
         "image_render_scale",
@@ -8466,6 +8488,52 @@ fn e2e_ui_tab_width_changes_expansion_columns() {
     s8.enter();
     s8.see("→       X");
     s8.dont_see("→   X");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `tab_width`, inside a MARKDOWN FENCED CODE BLOCK specifically — the test just above only ever
+/// exercises a plain `.txt` file; `CodeStyle.tab_width` is threaded through
+/// `render_markdown_with_images` as its own argument, separate from the standalone-code preview
+/// path, so this is a genuinely different call site worth its own keystroke-level check. Also covers
+/// the "極端値" (extreme value) axis this config's own field explicitly promises: `0` disables
+/// expansion (raw tab char kept, no `→` marker at all) and an absurd out-of-range value safely
+/// clamps back to the default (4) rather than allocating a huge buffer or hanging
+/// (`config::clamp_tab_width`).
+#[test]
+fn e2e_ui_tab_width_changes_expansion_in_markdown_code_block() {
+    let dir = sandbox("ui_tab_width_md_cfg");
+    std::fs::write(dir.join("d.md"), "```rust\n\tX\n```\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s4 = Sim::new(&root); // default tab_width=4: marker + 3 spaces = 4 cols
+    s4.select("d.md");
+    s4.enter();
+    s4.see("→   X");
+
+    let mut cfg8 = Config::default();
+    cfg8.ui.tab_width = 8;
+    let mut s8 = Sim::with_config(&root, cfg8); // marker + 7 spaces = 8 cols
+    s8.select("d.md");
+    s8.enter();
+    s8.see("→       X");
+    s8.dont_see("→   X");
+
+    // 0 = expansion disabled: the raw tab character survives, no marker drawn at all.
+    let mut cfg0 = Config::default();
+    cfg0.ui.tab_width = 0;
+    let mut s0 = Sim::with_config(&root, cfg0);
+    s0.select("d.md");
+    s0.enter();
+    s0.dont_see("→");
+
+    // An absurd out-of-range value must not crash/hang/allocate huge — it clamps back to the
+    // default (4), the same as `tab_width` unset.
+    let mut cfg_huge = Config::default();
+    cfg_huge.ui.tab_width = 9_223_372_036_854_775_807; // usize::MAX on a 64-bit target
+    let mut s_huge = Sim::with_config(&root, cfg_huge);
+    s_huge.select("d.md");
+    s_huge.enter();
+    s_huge.see("→   X"); // clamped to the default, not a huge allocation
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -10023,5 +10091,720 @@ fn e2e_ui_math_render_cap_eventually_renders_every_expression() {
         n,
         "上限を設けても、いずれ全ての式がレンダリングされ切るはず(報告2の修正が新しいスタックを生まない)"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// Config-axis x real-keystroke sweep (final pre-release audit): fills the specific gaps found by
+// cross-referencing `UI_CONFIG_COVERAGE` (H3, above) against every sub-field of the `theme` entry
+// (only `code_bg` had a real e2e contrast; `code_theme`/`code_label_align`/`code_label_bg`/`bg` did
+// not) plus a handful of concrete config x keystroke combinations `docs/archive/AUDIT-TESTS-2026-08.md`'s
+// own H1/H3 gaps didn't happen to cover: `mermaid_rows` at a value LARGER than the default (only
+// smaller was tested), `md_details = "closed"`, `icons` on the alert-header glyph, `y c` code-block
+// copy from inside a plain (non-alert) blockquote and an open `<details>`, checkbox toggling in a
+// loose list and inside an *open* `<details>` (only *collapsed* was tested), manual scroll keys
+// (`j`/`g`/`G`) under both `wrap` values, Markdown-specific state surviving a tab switch, and one
+// stress test with every Markdown toggle off at once.
+// =============================================================================
+
+/// `theme.code_theme`: the bundled two-face syntax theme used inside a Markdown fenced code block.
+/// Only `code_bg` (not `code_theme`) had a real config x keystroke contrast before this — the
+/// `UI_CONFIG_COVERAGE` table's `theme` entry names one test for the whole 5-field `ThemeConfig`.
+/// Changing the theme name must repaint the keyword's own foreground color (confirmed against real
+/// two-face palettes: TwoDark = Zed One Dark's purple keyword vs Dracula's pink).
+#[test]
+fn e2e_ui_theme_code_theme_changes_markdown_code_block_highlight_colors() {
+    let dir = sandbox("ui_code_theme_md");
+    std::fs::write(
+        dir.join("d.md"),
+        "```rust\nfn add(x: i32) -> i32 { x + 1 }\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s_default = Sim::new(&root); // theme.code_theme = "TwoDark" (default)
+    s_default.select("d.md");
+    s_default.enter();
+    let fg_default = s_default
+        .style_of("fn")
+        .and_then(|st| st.fg)
+        .expect("既定テーマでも `fn` キーワードは色付けされるはず");
+
+    let mut cfg = Config::default();
+    cfg.ui.theme.code_theme = "Dracula".into();
+    let mut s_dracula = Sim::with_config(&root, cfg);
+    s_dracula.select("d.md");
+    s_dracula.enter();
+    let fg_dracula = s_dracula
+        .style_of("fn")
+        .and_then(|st| st.fg)
+        .expect("Dracula テーマでも `fn` キーワードは色付けされるはず");
+
+    assert_ne!(
+        fg_default, fg_dracula,
+        "code_theme を変えると Markdown コードブロック内のキーワード色が変わるはず: \
+         TwoDark={fg_default:?} Dracula={fg_dracula:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `theme.code_label_align`: the language badge (`" rust "`) at the top of a fenced code block is
+/// right-aligned by default and left-aligned (right after the gutter) when set to `"left"`.
+#[test]
+fn e2e_ui_theme_code_label_align_left_vs_right_moves_badge_in_markdown() {
+    let dir = sandbox("ui_code_label_align_md");
+    std::fs::write(dir.join("d.md"), "```rust\nfn f() {}\n```\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s_right = Sim::new(&root); // theme.code_label_align = "right" (default)
+    s_right.select("d.md");
+    s_right.enter();
+    let (_, col_right) = s_right
+        .find_text(" rust ")
+        .expect("既定=右寄せの言語バッジが見えるはず");
+
+    let mut cfg = Config::default();
+    cfg.ui.theme.code_label_align = "left".into();
+    let mut s_left = Sim::with_config(&root, cfg);
+    s_left.select("d.md");
+    s_left.enter();
+    let (_, col_left) = s_left
+        .find_text(" rust ")
+        .expect("left=左寄せの言語バッジが見えるはず");
+
+    assert!(
+        col_left < 10,
+        "left はガター直後(左端寄り)に描かれるはず: col={col_left}"
+    );
+    assert!(
+        col_right > col_left + 20,
+        "right は left より十分右に描かれるはず: right={col_right} left={col_left}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `theme.code_label_bg`: `"auto"` (default) gives the language badge a brightened background; an
+/// explicit color overrides it; `"none"` (combined with `code_bg="none"` — see the in-test comment)
+/// removes it entirely (dim italic text on no background instead).
+#[test]
+fn e2e_ui_theme_code_label_bg_configurable_in_markdown() {
+    let dir = sandbox("ui_code_label_bg_md");
+    std::fs::write(dir.join("d.md"), "```rust\nfn f() {}\n```\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s_auto = Sim::new(&root); // theme.code_label_bg = "auto" (default)
+    s_auto.select("d.md");
+    s_auto.enter();
+    let bg_auto = s_auto
+        .style_of(" rust ")
+        .and_then(|st| st.bg)
+        .expect("既定(auto)はバッジに背景色があるはず");
+
+    // An explicit color overrides "auto"'s derived brightened shade.
+    let mut cfg_red = Config::default();
+    cfg_red.ui.theme.code_label_bg = "#ff0000".into();
+    let mut s_red = Sim::with_config(&root, cfg_red);
+    s_red.select("d.md");
+    s_red.enter();
+    let bg_red = s_red.style_of(" rust ").and_then(|st| st.bg);
+    assert_eq!(
+        bg_red,
+        Some(ratatui::style::Color::Rgb(0xff, 0, 0)),
+        "明示色を設定するとバッジの背景がそれになるはず: auto={bg_auto:?} red={bg_red:?}"
+    );
+    assert_ne!(Some(bg_auto), bg_red, "auto と明示色は異なる色のはず");
+
+    // `code_label_bg="none"` alone is NOT enough to observe "no background at all": `code_header`'s
+    // own final step (`markdown.rs`) applies `line.style(Style::new().bg(bg))` for the WHOLE header
+    // line whenever `code_bg` (the surrounding code block's own background, a SEPARATE setting) is
+    // still `Some` — a badge span with no `.bg()` of its own then still shows the code block's base
+    // color through that line-level style. Isolating "truly no background" requires BOTH set to
+    // "none" together.
+    let mut cfg_none = Config::default();
+    cfg_none.ui.theme.code_label_bg = "none".into();
+    cfg_none.ui.theme.code_bg = "none".into();
+    let mut s_none = Sim::with_config(&root, cfg_none);
+    s_none.select("d.md");
+    s_none.enter();
+    // Same `Color::Reset`-sentinel caveat as `e2e_ui_theme_bg_paints_the_whole_frame_background`:
+    // ratatui's own `Cell::default()` bg is `Some(Color::Reset)`, not a literal `None` — so "no
+    // explicit background was painted" is the absence of an `Rgb` variant, not `Option::is_none()`.
+    let bg_none = s_none.style_of(" rust ").and_then(|st| st.bg);
+    assert!(
+        !matches!(bg_none, Some(ratatui::style::Color::Rgb(..))),
+        "code_label_bg=none かつ code_bg=none はバッジに明示的な Rgb 背景が無いはず: {bg_none:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `theme.bg`: paints the WHOLE frame's background (`ui::render`'s own base coat, applied before any
+/// widget draws — see that call site's own doc comment), so it reaches a blank cell in the tree view
+/// too, not just Markdown — but it is exercised here specifically because this whole section audits
+/// every `ThemeConfig` sub-field, and this is the only one with zero prior real e2e contrast.
+#[test]
+fn e2e_ui_theme_bg_paints_the_whole_frame_background() {
+    let dir = sandbox("ui_theme_bg_cfg");
+    std::fs::write(dir.join("d.md"), "hello\n").unwrap();
+    let root = canon(&dir);
+
+    // Default theme.bg = "none": a blank tree-view cell carries no EXPLICIT (Rgb) background paint
+    // — `ratatui::buffer::Cell::default()`'s own bg is `Some(Color::Reset)` (a sentinel meaning "no
+    // color set," not a literal `None`), so the real signal that `theme.bg` did NOT run its base
+    // coat (`ui::render`'s own `frame.buffer_mut().set_style(area, Style::new().bg(bg))`) is the
+    // ABSENCE of an `Rgb` variant, not `Option::is_none()`.
+    let s_default = Sim::new(&root);
+    let bg_default = s_default.cell_style(3, 85).bg;
+    assert!(
+        !matches!(bg_default, Some(ratatui::style::Color::Rgb(..))),
+        "既定(none)は明示的な Rgb 背景を塗らないはず: {bg_default:?}"
+    );
+
+    let mut cfg = Config::default();
+    cfg.ui.theme.bg = "#123456".into();
+    let s_painted = Sim::with_config(&root, cfg);
+    let bg_painted = s_painted.cell_style(3, 85).bg;
+    assert_eq!(
+        bg_painted,
+        Some(ratatui::style::Color::Rgb(0x12, 0x34, 0x56)),
+        "theme.bg は画面全体の背景として塗られるはず: {bg_painted:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid_rows`: the pre-existing `e2e_ui_mermaid_rows_changes_reserved_diagram_height` only ever
+/// compares a SMALLER value (4) against the default (24) — both well under the standard 90x26
+/// terminal's own viewport clamp (measured directly: `mermaid_fit_rows` caps at
+/// `preview_viewport - 2` = 20 rows there, so anything >= 22 clamps to the exact same 20 as the
+/// default and a "larger value" contrast would be unobservable). This uses a taller terminal
+/// (`with_config_sized`) so the cap never engages, and confirms a LARGER explicit value actually
+/// grows the diagram past the default — the other half of "小さい値/大きい値" this config's own doc
+/// comment promises.
+#[test]
+fn e2e_ui_mermaid_rows_large_value_grows_diagram_beyond_default() {
+    let dir = sandbox("ui_mermaid_rows_large_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "```mermaid\nflowchart TD\nA-->B-->C-->D-->E-->F-->G-->H\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s_default = Sim::with_config_sized(&root, Config::default(), 90, 60).with_picker();
+    s_default.select("d.md");
+    s_default.enter();
+    assert!(
+        s_default.app.preview_viewport_for_test() > 26,
+        "前提: 広い viewport で mermaid_rows=24(既定) がクランプされないはず: viewport={}",
+        s_default.app.preview_viewport_for_test()
+    );
+    let rows_default = s_default.app.md_images()[0].rows;
+
+    let mut cfg_large = Config::default();
+    cfg_large.ui.mermaid_rows = 48;
+    let mut s_large = Sim::with_config_sized(&root, cfg_large, 90, 60).with_picker();
+    s_large.select("d.md");
+    s_large.enter();
+    let rows_large = s_large.app.md_images()[0].rows;
+
+    assert!(
+        rows_large > rows_default,
+        "mermaid_rows=48 は既定24より大きい高さになるはず(十分な viewport下): \
+         large={rows_large} default={rows_default}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `md_details = "closed"`: forces a `<details>` block collapsed even when its `open` attribute
+/// says otherwise (the mirror image of the pre-existing `"open"` override test) — the "auto"/"open"
+/// axis was covered, "closed" was not.
+#[test]
+fn e2e_ui_md_details_closed_config_forces_collapse_despite_open_attribute() {
+    let dir = sandbox("ui_md_details_closed_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "<details open>\n<summary>Sum</summary>\n\nBODYMARKER\n\n</details>\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    // "auto" (default) honors the `open` attribute → expanded.
+    let mut s_auto = Sim::new(&root);
+    s_auto.select("d.md");
+    s_auto.enter();
+    s_auto.see("BODYMARKER");
+
+    // md_details="closed" forces it collapsed even though the attribute says open.
+    let mut cfg = Config::default();
+    cfg.ui.md_details = "closed".into();
+    let mut s_closed = Sim::with_config(&root, cfg);
+    s_closed.select("d.md");
+    s_closed.enter();
+    s_closed.dont_see("BODYMARKER");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `icons`: a GitHub alert's header carries a Nerd Font icon before the label when `icons=true`
+/// (`alert_header_line`), shifting the label's own screen column right by the icon-glyph + space
+/// width. `icons` was already covered elsewhere via the task-marker glyph, but never against the
+/// alert header specifically.
+#[test]
+fn e2e_ui_icons_alert_header_glyph_shifts_label_column() {
+    let dir = sandbox("ui_icons_alert_cfg");
+    std::fs::write(dir.join("d.md"), "> [!NOTE]\n> body\n").unwrap();
+    let root = canon(&dir);
+
+    let mut cfg_off = Config::default();
+    cfg_off.ui.icons = false;
+    let mut s_off = Sim::with_config(&root, cfg_off);
+    s_off.select("d.md");
+    s_off.enter();
+    let (_, col_off) = s_off
+        .find_text("Note")
+        .expect("icons=false でもラベルテキストは見えるはず");
+
+    let mut s_on = Sim::new(&root); // default icons=true
+    s_on.select("d.md");
+    s_on.enter();
+    let (_, col_on) = s_on
+        .find_text("Note")
+        .expect("icons=true でもラベルテキストは見えるはず");
+
+    assert!(
+        col_on > col_off,
+        "icons=true は Nerd Font アイコン分だけラベルが右にずれるはず: on={col_on} off={col_off}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `y c` inside a PLAIN blockquote (no `[!TYPE]` header — a genuine `Quote`, not an alert). Every
+/// existing `y c` coverage is at top level or inside a list item; a quote-nested code block is a
+/// distinct code path (`render_code_block_dispatch` reached through `render_quote` → `render_block`,
+/// documented as "an intentional superset of what `parser_code_blocks` reports" in
+/// `model::BlockKind::CodeBlock`'s own doc comment) that had no keystroke-level coverage at all.
+#[test]
+fn e2e_md_code_block_inside_plain_blockquote_is_focusable_and_copyable() {
+    let dir = sandbox("ui_md_quote_code_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "> Intro line.\n>\n> ```rust\n> fn quoted() {}\n> ```\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("d.md");
+    s.enter();
+    s.see("rust"); // the fence's own bar-prefixed language header
+    s.tab(); // the only focusable item: the fenced code block
+    assert!(
+        s.app.md_focused_code(),
+        "引用内のコードブロックにフォーカスできるはず"
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("fn quoted() {}"),
+        "引用の `>` を含まない生ソースが取得できるはず"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "y c でコピー通知が出るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `y c` inside an OPEN `<details>` block — Tab must land on the summary first, then the nested code
+/// block, and the copied text must be the bar-free raw source (`render_bar_prefixed_body`'s own
+/// isolation, documented at length on that function).
+#[test]
+fn e2e_md_code_block_inside_open_details_is_focusable_and_copyable() {
+    let dir = sandbox("ui_md_details_code_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "<details open>\n<summary>Sum</summary>\n\n```python\ndef f():\n    pass\n```\n\n</details>\n",
+    )
+    .unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("d.md");
+    s.enter();
+    s.see("python"); // the fence's language header, inside the open details body
+
+    // Document order: summary, then the code block.
+    s.tab();
+    assert!(
+        s.app.md_focused_details().is_some(),
+        "1番目=summary(details) のはず"
+    );
+    s.tab();
+    assert!(
+        s.app.md_focused_code(),
+        "2番目=details 内のコードブロックのはず"
+    );
+    assert_eq!(
+        s.app.focused_code_text().as_deref(),
+        Some("def f():\n    pass"),
+        "details のバー(▏)を含まない生ソースが取得できるはず"
+    );
+    s.key('y');
+    s.key('c');
+    assert!(s.app.flash.is_some(), "y c でコピー通知が出るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A LOOSE list (a blank line between items) of task checkboxes — the shape that used to panic
+/// tui-markdown (`loose_list_task_item_does_not_panic`, v0.8.0), and that the block-model renderer
+/// drew with the list marker and the item's own text on two separate rows, leaving the checkbox as
+/// literal `[ ]`: no icon, no focus, no toggle. `render_item` now keeps a task item's checkbox on
+/// the marker's own row whether the list is tight or loose, so every checkbox behaves the same way
+/// regardless of the blank lines around it.
+#[test]
+fn e2e_task_toggle_works_in_a_loose_list() {
+    let dir = sandbox("ui_md_loose_list_should_work_cfg");
+    let body = "- [ ] one\n\n- [ ] two\n\n- [ ] three\n";
+    std::fs::write(dir.join("d.md"), body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("d.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("d.md")).unwrap();
+
+    s.tab();
+    s.key(' ');
+    assert!(read().contains("- [x] one"), "1番目: {}", read());
+    s.dont_see("couldn't toggle checkbox");
+
+    s.tab();
+    s.key(' ');
+    assert!(read().contains("- [x] two"), "2番目: {}", read());
+    assert!(
+        read().contains("- [x] one"),
+        "1番目は変化しないまま: {}",
+        read()
+    );
+
+    s.tab();
+    s.key(' ');
+    assert!(read().contains("- [x] three"), "3番目: {}", read());
+    s.dont_see("couldn't toggle checkbox");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Checkbox toggling on a checkbox that's actually visible inside an OPEN `<details>` block — the
+/// complement of the pre-existing `e2e_task_toggle_works_with_a_collapsed_details_block` (which only
+/// ever proves a *hidden* checkbox is correctly excluded from the scanner's count; this proves a
+/// *visible* one inside an open block is correctly included and toggled).
+#[test]
+fn e2e_task_toggle_works_on_checkbox_inside_an_open_details_block() {
+    let dir = sandbox("ui_md_details_open_task_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "<details open>\n<summary>Sum</summary>\n\n- [ ] inside open details\n\n</details>\n",
+    )
+    .unwrap();
+    let mut s = Sim::with_config(&canon(&dir), Config::default());
+    s.select("d.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("d.md")).unwrap();
+
+    // 1st focusable: the summary. 2nd: the visible checkbox inside the open body.
+    s.tab();
+    assert!(s.app.md_focused_details().is_some(), "1番目=summary のはず");
+    s.tab();
+    assert!(
+        s.app.md_focused_task(),
+        "2番目=開いた details 内の可視タスクのはず"
+    );
+    s.key(' ');
+    assert!(
+        read().contains("- [x] inside open details"),
+        "開いた details 内のタスクがトグルされるはず: {}",
+        read()
+    );
+    s.dont_see("couldn't toggle checkbox");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A checkbox inside a plain block quote (`> - [ ] x`, no `[!TYPE]` header). It used to be drawn as
+/// literal text and skipped by `Tab` entirely, because `render_quote` rendered its children into the
+/// surrounding `Writer` with the `>` prefix already installed, so the top-level decoration pass never
+/// saw a line whose own text began with a bullet. `render_quote` now isolates, decorates, then
+/// prefixes - the same order an alert's and a `<details>`'s body already used - so a quoted checkbox
+/// behaves exactly like one anywhere else.
+#[test]
+fn e2e_task_toggle_works_inside_a_plain_blockquote() {
+    let dir = sandbox("ui_md_quote_task_should_work_cfg");
+    std::fs::write(dir.join("d.md"), "> - [ ] quoted task\n").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), Config::default());
+    s.select("d.md");
+    s.enter();
+    let read = || std::fs::read_to_string(dir.join("d.md")).unwrap();
+    s.tab();
+    assert!(
+        s.app.md_focused_task(),
+        "引用内のタスクにフォーカスできるはず"
+    );
+    s.key(' ');
+    assert!(
+        read().contains("> - [x] quoted task"),
+        "引用内のタスクがトグルされるはず: {}",
+        read()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression: an **ordered**-list task item (`"1. [ ] x"`) used to be pushed into
+/// `RenderOut::tasks` unconditionally, the same as an unordered one — even though
+/// `decorate_extras`'s own `replace_task_checkbox` never decorates one (`task_prefix_state`'s own
+/// "first byte must be `-`/`*`/`+`" contract; a `push_item_marker`'s own ordered-item marker line
+/// always starts `"N. "`, a digit, never a bullet — see either's own doc comment). A document
+/// mixing an ordered task list *ahead of* an unordered one therefore recorded a "ghost" entry for
+/// every invisible ordered checkbox, shifting every later, real, on-screen checkbox's own ordinal
+/// down by one in `RenderOut::tasks` — `build_md_items`'s "Nth sentinel found on screen ==
+/// `task_marks[N]`" pairing (see that field's own doc comment) then handed the **visible**
+/// checkbox's own Tab-focus/`Space`-toggle the **invisible** ordered item's own byte offset
+/// instead: pressing `Space` on the one checkbox actually on screen silently edited a *different*
+/// line of the file. Found live on exactly this shape (2026-08), reproduced here byte-for-byte:
+/// `Space` on the sole focusable checkbox must flip line 4 (`"- [ ] visible bullet"`), never line
+/// 1 or 2 (the two ordered, undrawn ones) — this is the "toggle writes to the wrong line while the
+/// checkbox count still agrees" class principle #3 exists to rule out, one level more subtle than a
+/// pure count mismatch (which the existing safe-refusal path already catches): here the counts
+/// looked fine (`task_marks.len() == 1` in production before this fix too, `render_item` never
+/// having produced more than the one real GFM task on this exact document — the mis-pairing shows
+/// up only once a *second*, undrawn task exists earlier in the file to steal the first slot), so a
+/// naive "does the write happen at all" check would not have caught it — the position itself has to
+/// be checked. The general, corpus-wide form of this check (every case in the golden-snapshot
+/// corpus, not just this one document) lives in `app/tests.rs`'s own
+/// `model_render_records_exactly_the_sentinels_it_draws_across_the_corpus`.
+#[test]
+fn e2e_ordered_list_ghost_task_does_not_steal_the_visible_checkboxs_toggle() {
+    let dir = sandbox("md_ordered_ghost_task");
+    let body = "1. [ ] ordered invisible\n2. [ ] ordered invisible two\n\n- [ ] visible bullet\n";
+    std::fs::write(dir.join("mix.md"), body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("mix.md");
+    s.enter();
+
+    // Exactly one checkbox is ever drawn/focusable — GFM never decorates an ordered item's own
+    // checkbox, so both "1. [ ]"/"2. [ ]" lines stay literal, undrawn text (see this test's own
+    // doc comment) — proven directly against `md_items`, not inferred from Tab behavior alone.
+    assert_eq!(
+        s.app.md_task_item_count_for_test(),
+        1,
+        "画面上のチェックボックスは可視の1個だけのはず"
+    );
+
+    s.tab(); // the only Tab stop for a checkbox: the visible bullet's own
+    assert!(
+        s.app.md_focused_task(),
+        "Tab は唯一の可視チェックボックス(visible bullet)にフォーカスするはず"
+    );
+    s.key(' ');
+
+    let src = std::fs::read_to_string(dir.join("mix.md")).unwrap();
+    assert!(
+        src.contains("- [x] visible bullet"),
+        "Space はフォーカスした可視チェックボックス(4行目)をトグルするはず: {src}"
+    );
+    assert!(
+        src.contains("1. [ ] ordered invisible\n"),
+        "1行目(不可視の順序付きタスク)は変化しないはず: {src}"
+    );
+    assert!(
+        src.contains("2. [ ] ordered invisible two\n"),
+        "2行目(不可視の順序付きタスク)は変化しないはず: {src}"
+    );
+    s.dont_see("couldn't toggle checkbox");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `Details` analog of the ordered-list-task regression above: two independent, sibling
+/// top-level `<details>` blocks (both closed by default), toggled one at a time through the real
+/// Tab/Space path, confirming the **first** one's own toggle only ever opens the **first** one's own
+/// body — never the second's — and vice versa. Unlike a task/code-block/mermaid record,
+/// `Details`'s own Tab-focus ordinal has no separate accumulator to have desynced from (it is
+/// computed purely self-referentially — see `app/tests.rs`'s own
+/// `model_render_records_exactly_the_sentinels_it_draws_across_the_corpus` doc comment) — the risk
+/// here is the *other* sequence, `render_details_from_model`'s own `next_details_open` counter,
+/// landing on the wrong slot of `details_states` for one of these two blocks; this proves it does
+/// not, end to end, via the exact same `Tab`/`Space` keys a reader would press.
+#[test]
+fn e2e_two_sibling_details_blocks_toggle_independently() {
+    let dir = sandbox("md_two_sibling_details");
+    let body = "<details>\n<summary>One</summary>\n\nBODY-ONE\n\n</details>\n\n\
+                <details>\n<summary>Two</summary>\n\nBODY-TWO\n\n</details>\n";
+    std::fs::write(dir.join("d.md"), body).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("d.md");
+    s.enter();
+    s.dont_see("BODY-ONE");
+    s.dont_see("BODY-TWO");
+
+    s.tab(); // 1st Tab stop: "One"'s own summary (ordinal 0)
+    assert!(
+        s.app.md_focused_details().is_some(),
+        "1つ目は details のはず"
+    );
+    s.key(' '); // open ordinal 0
+    s.see("BODY-ONE");
+    s.dont_see("BODY-TWO");
+
+    s.tab(); // 2nd Tab stop: "Two"'s own summary (ordinal 1) — count of summaries is unchanged
+             // by One's own body becoming visible, so this is still the very next item.
+    assert!(
+        s.app.md_focused_details().is_some(),
+        "2つ目も details のはず"
+    );
+    s.key(' '); // open ordinal 1
+    s.see("BODY-ONE"); // unaffected by opening the second block
+    s.see("BODY-TWO");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Manual scroll keys (`j`/`k`/`g`/`G` — `Motion::Down/Up/Top/Bottom` on `Surface::PreviewText`,
+/// which moves `preview_scroll` directly for a non-windowed decorated Markdown document) under both
+/// `wrap` values. Existing coverage only ever drove scrolling indirectly via Tab-follow
+/// (`e2e_md_wrapped_focus_follows_offscreen_item`); this drives it directly, the way a reader
+/// actually pages through a long document without touching any link/task/code-block focus target.
+#[test]
+fn e2e_md_manual_scroll_moves_preview_scroll_wrap_on_and_off() {
+    let mut src = String::from("# Doc\n\n");
+    for i in 0..80 {
+        src.push_str(&format!("paragraph line {i}\n\n"));
+    }
+    for (label, wrap) in [("wrap_on", true), ("wrap_off", false)] {
+        let dir = sandbox(&format!("ui_md_manual_scroll_{label}"));
+        std::fs::write(dir.join("d.md"), &src).unwrap();
+        let mut cfg = Config::default();
+        cfg.ui.wrap = wrap;
+        let mut s = Sim::with_config(&canon(&dir), cfg);
+        s.select("d.md");
+        s.enter();
+        assert_eq!(s.app.tab.preview_scroll, 0, "[{label}] 初期スクロール0");
+
+        for _ in 0..10 {
+            s.key('j');
+        }
+        let after_j = s.app.tab.preview_scroll;
+        assert!(
+            after_j > 0,
+            "[{label}] j 連打でスクロールが進むはず: scroll={after_j}"
+        );
+
+        s.key('G');
+        let bottom = s.app.tab.preview_scroll;
+        assert!(
+            bottom > after_j,
+            "[{label}] G で j 連打後よりさらに末尾までスクロールするはず: \
+             after_j={after_j} bottom={bottom}"
+        );
+
+        s.key('g');
+        assert_eq!(s.app.tab.preview_scroll, 0, "[{label}] g で先頭へ戻るはず");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Markdown-specific preview state (decorated-view scroll position, raw-source toggle) must survive
+/// opening a new tab and switching back — `t`/`[` are declared `global` (keymap.rs), so they must
+/// work while a Markdown preview (not the tree) is showing, and per-tab state must round-trip
+/// through `TabState`/`PerTab`'s own snapshot/load. Distinct from
+/// `e2e_tab_switch_reloads_tree_from_disk` (which only exercises the tree) and from session-restore
+/// (which is a fresh-process concept, not a same-process tab switch).
+///
+/// The scroll-position and raw-toggle checks are two SEPARATE round trips (not one continuous
+/// sequence): confirmed directly (a scratch probe) that pressing `R` itself resets
+/// `tab.preview_scroll` to 0 as part of switching into raw/windowed mode — raw mode tracks its own
+/// view position through a different mechanism (`FileWindow`), not `preview_scroll` — so comparing a
+/// decorated-mode scroll value against what `preview_scroll` reads AFTER a raw-mode toggle would
+/// conflate "the mode switch reset it" with "the tab switch lost it." Testing them independently
+/// isolates what a tab switch actually does to each one.
+#[test]
+fn e2e_md_state_preserved_across_tab_switch() {
+    let dir = sandbox("ui_md_tab_switch_state");
+    let mut src = String::from("# Doc\n\n");
+    for i in 0..60 {
+        src.push_str(&format!("paragraph line {i}\n\n"));
+    }
+    std::fs::write(dir.join("d.md"), &src).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("d.md");
+    s.enter();
+
+    // 1) Decorated-view scroll position survives a tab switch.
+    for _ in 0..10 {
+        s.key('j');
+    }
+    let scroll_before = s.app.tab.preview_scroll;
+    assert!(scroll_before > 0, "前提: スクロールが進んでいる");
+    assert!(!s.app.is_raw_source(), "前提: まだ装飾表示のまま");
+
+    s.key('t'); // open a fresh (blank) tab
+    assert_eq!(s.app.tab_count(), 2, "t でタブが増える");
+    s.key('['); // switch back to the original tab
+    assert_eq!(s.app.active_tab_index(), 0, "[ で元のタブへ戻る");
+    assert_eq!(
+        s.app.tab.preview_scroll, scroll_before,
+        "装飾 Markdown のスクロール位置がタブ切替後も保持されるはず: \
+         before={scroll_before} after={}",
+        s.app.tab.preview_scroll
+    );
+
+    // 2) The raw/decorated MODE flag itself survives a further tab switch (checked separately from
+    // scroll — see this test's own doc comment for why the two can't share one round trip).
+    s.key('R');
+    assert!(s.app.is_raw_source(), "前提: R で raw に切替わる");
+    s.key(']'); // to the tab opened above
+    assert_eq!(s.app.active_tab_index(), 1, "] で新規タブへ");
+    s.key('['); // back to the original (raw) tab
+    assert_eq!(s.app.active_tab_index(), 0, "[ で元のタブへ戻る");
+    assert!(
+        s.app.is_raw_source(),
+        "raw 表示モードがタブ切替後も保持されるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Every Markdown decoration toggle off at once, on one document that exercises all of them —
+/// front-matter deliberately excluded (`md_frontmatter=false` does NOT restore the literal `---`
+/// text: `ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS` is unconditionally on in tui-markdown
+/// itself, see `e2e_markdown_front_matter_off_leaves_body_intact`'s own comment, so it would need a
+/// style-level assertion, not a text one, and is already covered on its own). A robustness sweep:
+/// disabling every toggle together must never crash and must leave every marker exactly as literal
+/// text as disabling each one individually already proves — no toggle should start firing only when
+/// combined with the others (e.g. an interaction between `md_alerts=false` and `md_inline_html=false`
+/// changing how the alert's `[!NOTE]` marker or its body is masked).
+#[test]
+fn e2e_md_all_toggles_off_renders_without_crashing() {
+    let dir = sandbox("ui_md_all_off_cfg");
+    let body = concat!(
+        "> [!NOTE]\n> alert body\n\n",
+        "text[^1] with :rocket: and https://x.example and H<sub>2</sub>O\n\n",
+        "[^1]: a footnote\n\n",
+        "- [ ] task one\n\n",
+        "```mermaid\nflowchart TD\nA-->B\n```\n\n",
+        "$E=mc^2$\n",
+    );
+    std::fs::write(dir.join("d.md"), body).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.md_alerts = false;
+    cfg.ui.md_autolink = false;
+    cfg.ui.md_emoji = false;
+    cfg.ui.md_footnotes = false;
+    cfg.ui.md_inline_html = false;
+    cfg.ui.mermaid = "text".into();
+    cfg.ui.math = "text".into();
+    cfg.ui.icons = false;
+    cfg.ui.wrap = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("d.md");
+    s.enter();
+
+    s.see("[!NOTE]"); // alert marker left literal (no callout box)
+    assert!(
+        s.app.md_link_targets().is_empty(),
+        "autolink off: リンク無し"
+    );
+    s.see(":rocket:"); // emoji shortcode left literal
+    s.see("https://x.example"); // bare URL not linked
+    s.see("[^1]"); // footnote marker left literal
+    s.see("H2O"); // <sub> tags stripped, "2" stays literal (not superscript)
+    s.see("[ ] task one"); // icons=false: ASCII checkbox
+    s.see("$E=mc^2$"); // math left as raw LaTeX text
+    s.dont_see("can not preview"); // no crash-fallback banner anywhere
     std::fs::remove_dir_all(&dir).ok();
 }

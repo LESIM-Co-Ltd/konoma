@@ -2546,4 +2546,1412 @@ mod tests {
             assert_eq!(Doc::parse(&src), Doc::parse(&src));
         }
     }
+
+    // =============================================================================================
+    // Test-hardening pass (pre-release audit): everything from here down was added to close two
+    // kinds of gap found by measuring line coverage on this file (`cargo llvm-cov`):
+    //
+    //   1. `check_invariants` itself (above) had 100% *function* coverage but was missing ~85 *line*
+    //      lines — every one of its "report a violation" branches, the whole reason the function
+    //      exists, had never actually fired in any test run. A checker nobody has ever seen catch
+    //      anything is not yet proven to catch anything — see `invariant_violations` below, which
+    //      builds a deliberately-broken `Block`/`Task` for each violation kind `check_invariants`
+    //      claims to detect and asserts it is actually reported.
+    //   2. A handful of defensive branches (a handful of `Event::Start` arms marked "not reachable
+    //      for well-formed input", `parse_blocks_raw`'s own stray-`TaskListMarker` catch-all,
+    //      `collect_stray_inline_run`'s exhausted-stream arm, `glued_details_fold`'s "ran off the
+    //      end with no close" and "found a close but something unrelated follows it" arms,
+    //      `html_tag_name`'s empty-name arm) are real code, but only reachable either through a
+    //      *malformed* — not merely unusual — event stream, or through document shapes this model's
+    //      own doc comments already anticipated (`<details>` with no close anywhere, glued to
+    //      trailing content, ending mid-line with no trailing newline). Reached below either by a
+    //      genuinely adversarial `Doc::parse` input, or — where no real document reaches a purely
+    //      defensive branch at all — by calling the private helper directly with a hand-built
+    //      `Walker`/`Task`/`Block`, exactly as this module's own contract (private items are visible
+    //      to this same file's own `#[cfg(test)] mod tests`) allows.
+    //
+    // Three "completeness proxy" tests round this out for the one class of gap line coverage cannot
+    // measure at all: the render pipeline's own completeness cross-check
+    // (`app::md_model_snapshot_tests::model_covers_every_inline_event_across_the_full_corpus`, in
+    // `src/app/`) is out of scope for this file to touch or duplicate — instead, three small,
+    // self-contained scans (over this same `Doc`) are built here, purely to *prove* — by corrupting a
+    // real, correctly-parsed `Doc` one way at a time and showing the scan notices — that "an inline
+    // event belongs to no leaf" / "a `TaskListMarker` was dropped" / "a `CodeBlock` was dropped" are
+    // all things *some* check can catch, without claiming these three toy scans are a substitute for
+    // the real one.
+
+    // ---- adversarial coverage of `check_invariants` itself: prove each violation kind is caught ---
+    //
+    // Every test below builds a `Block`/`Task` value that breaks exactly one invariant
+    // `check_invariants` is documented to catch, then asserts the violation is actually reported.
+    // `check_invariants` is called directly (never through `Doc::parse`) — nothing here needs a
+    // document real parsing could ever produce, only a `Block` tree shaped the way the checker is
+    // supposed to reject. `src`/`events_len` are likewise whatever this test needs them to be, not
+    // values a real `Doc::parse` call produced — `check_invariants` takes them as plain parameters
+    // and has no way to tell the difference.
+
+    /// Runs `check_invariants` over `blocks` at the top level (`parent: None`) and returns whatever
+    /// it reports — a thin wrapper purely to avoid repeating the same four parameters at every call
+    /// site below.
+    fn violations_of(blocks: &[Block], src: &str, events_len: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        check_invariants(blocks, src, events_len, None, "root", &mut out);
+        out
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // deliberately backwards: this is the violation under test
+    fn check_invariants_catches_src_start_after_end() {
+        let bad = leaf(BlockKind::ThematicBreak, 5..2);
+        let out = violations_of(std::slice::from_ref(&bad), "0123456789", 0);
+        assert!(
+            out.iter().any(|m| m.contains("src.start > src.end")),
+            "expected a start>end violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_src_end_past_input_length() {
+        let src = "abc";
+        let bad = leaf(BlockKind::ThematicBreak, 0..99);
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter().any(|m| m.contains("past the input's length")),
+            "expected an end-past-length violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_range_that_splits_a_multibyte_char() {
+        let src = "あ"; // one 3-byte character: valid boundaries are only 0 and 3
+        let bad = leaf(BlockKind::ThematicBreak, 0..1); // ends mid-character
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter().any(|m| m.contains("is not on a char boundary")),
+            "expected a char-boundary violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_child_escaping_its_parent() {
+        let src = "0123456789";
+        let child = leaf(BlockKind::ThematicBreak, 6..8); // outside the parent's own 0..5
+        let parent = Block {
+            kind: BlockKind::List {
+                ordered: false,
+                start: None,
+            },
+            src: 0..5,
+            children: vec![child],
+        };
+        let out = violations_of(std::slice::from_ref(&parent), src, 0);
+        assert!(
+            out.iter().any(|m| m.contains("escapes its parent")),
+            "expected a parent-escape violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_overlapping_siblings() {
+        let src = "0123456789";
+        let a = leaf(BlockKind::ThematicBreak, 0..5);
+        let b = leaf(BlockKind::ThematicBreak, 3..8); // starts before `a` ends
+        let out = violations_of(&[a, b], src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("overlaps the previous sibling")),
+            "expected an overlap violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_siblings_out_of_source_order() {
+        let src = "0123456789";
+        // Not overlapping in the visual sense either sibling's own text occupies, but the second
+        // one's own start (0) sits *before* the first one's own end (9) — `check_invariants` only
+        // has one guard for "siblings must be in non-decreasing source order" (the same `start < pe`
+        // check `check_invariants_catches_overlapping_siblings` exercises above), so a genuinely
+        // reversed pair trips the identical branch — see this module's own report on why "siblings
+        // overlap" and "siblings are out of order" are, in this checker, the same check.
+        let a = leaf(BlockKind::ThematicBreak, 5..9);
+        let b = leaf(BlockKind::ThematicBreak, 0..2);
+        let out = violations_of(&[a, b], src, 0);
+        assert!(
+            !out.is_empty(),
+            "expected a violation for an out-of-source-order sibling pair, got none"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges, clippy::single_range_in_vec_init)] // deliberately backwards single-span body_spans: this is the violation under test
+    fn check_invariants_catches_a_code_block_span_start_after_end() {
+        let src = "0123456789";
+        let bad = leaf(
+            BlockKind::CodeBlock {
+                lang: None,
+                fenced: true,
+                body_spans: vec![5..2],
+            },
+            0..10,
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("body_spans") && m.contains("start > end")),
+            "expected a body_spans start>end violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a real body_spans is a Vec<Range<usize>>; one span is the normal case
+    fn check_invariants_catches_a_code_block_span_past_input_length() {
+        let src = "0123456789";
+        let bad = leaf(
+            BlockKind::CodeBlock {
+                lang: None,
+                fenced: true,
+                body_spans: vec![0..99],
+            },
+            0..10,
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("body_spans") && m.contains("past the input's length")),
+            "expected a body_spans length violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a real body_spans is a Vec<Range<usize>>; one span is the normal case
+    fn check_invariants_catches_a_code_block_span_splitting_a_multibyte_char() {
+        let src = "0あ23456789"; // "あ" occupies bytes 1..4
+        let bad = leaf(
+            BlockKind::CodeBlock {
+                lang: None,
+                fenced: true,
+                body_spans: vec![0..2], // ends mid-character
+            },
+            0..src.len(),
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("body_spans") && m.contains("is not on a char boundary")),
+            "expected a body_spans char-boundary violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a real body_spans is a Vec<Range<usize>>; one span is the normal case
+    fn check_invariants_catches_a_code_block_span_escaping_its_own_block() {
+        let src = "0123456789";
+        let bad = leaf(
+            BlockKind::CodeBlock {
+                lang: None,
+                fenced: true,
+                body_spans: vec![6..8], // the block's own src (below) ends at 5
+            },
+            0..5,
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("body_spans") && m.contains("escapes its own block's src")),
+            "expected a body_spans own-block-escape violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_overlapping_code_block_spans() {
+        let src = "0123456789";
+        let bad = leaf(
+            BlockKind::CodeBlock {
+                lang: None,
+                fenced: true,
+                body_spans: vec![0..5, 3..8], // second starts before the first ends
+            },
+            0..10,
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("body_spans") && m.contains("overlaps the previous span")),
+            "expected an overlapping-spans violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_task_state_at_splitting_a_multibyte_char() {
+        let src = "[あ]"; // '[' at byte 0, "あ" at bytes 1..4, ']' at byte 4
+        let bad = Block {
+            kind: BlockKind::ListItem {
+                task: Some(Task {
+                    state: 'x',
+                    state_at: 2, // mid-character
+                }),
+            },
+            src: 0..src.len(),
+            children: Vec::new(),
+        };
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("task.state_at") && m.contains("is not on a char boundary")),
+            "expected a task char-boundary violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_task_state_that_does_not_match_the_byte_at_state_at() {
+        let src = "[y]";
+        let bad = Block {
+            kind: BlockKind::ListItem {
+                task: Some(Task {
+                    state: 'x', // the byte at state_at is actually 'y'
+                    state_at: 1,
+                }),
+            },
+            src: 0..src.len(),
+            children: Vec::new(),
+        };
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter()
+                .any(|m| m.contains("does not point at task.state")),
+            "expected a task state-mismatch violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_task_state_at_not_bracketed() {
+        let src = "(x)"; // parens, not square brackets
+        let bad = Block {
+            kind: BlockKind::ListItem {
+                task: Some(Task {
+                    state: 'x',
+                    state_at: 1,
+                }),
+            },
+            src: 0..src.len(),
+            children: Vec::new(),
+        };
+        let out = violations_of(std::slice::from_ref(&bad), src, 0);
+        assert!(
+            out.iter().any(|m| m.contains("is not bracketed by")),
+            "expected a task bracket violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // deliberately backwards: this is the violation under test
+    fn check_invariants_catches_a_headings_inline_start_after_end() {
+        let src = "# hi\n";
+        let bad = leaf(
+            BlockKind::Heading {
+                level: 1,
+                inline: 5..2,
+                id: None,
+                classes: Vec::new(),
+                attrs: Vec::new(),
+            },
+            0..src.len(),
+        );
+        let out = violations_of(std::slice::from_ref(&bad), src, 10);
+        assert!(
+            out.iter().any(|m| m.contains("inline.start > inline.end")),
+            "expected an inline start>end violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn check_invariants_catches_a_paragraphs_inline_end_past_events_len() {
+        let src = "hi\n";
+        let bad = leaf(BlockKind::Paragraph { inline: 0..99 }, 0..src.len());
+        let out = violations_of(std::slice::from_ref(&bad), src, 3); // only 3 real events exist
+        assert!(
+            out.iter()
+                .any(|m| m.contains("inline.end") && m.contains("past events_len")),
+            "expected an inline-past-events_len violation, got {out:?}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // deliberately backwards: this is one of the two violations under test
+    fn check_invariants_reports_every_violation_at_once_not_just_the_first() {
+        // `check_invariants`'s own doc comment promises this ("Returns every violation found ...
+        // rather than asserting inline, so one test run reports everything wrong at once") — pin it
+        // directly: two independently-broken top-level siblings should both show up in `out`, not
+        // just whichever is encountered first.
+        let src = "0123456789";
+        let a = leaf(BlockKind::ThematicBreak, 5..2); // start > end
+        let b = leaf(BlockKind::ThematicBreak, 0..99); // past input length
+        let out = violations_of(&[a, b], src, 0);
+        assert!(
+            out.iter().any(|m| m.contains("src.start > src.end")),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|m| m.contains("past the input's length")),
+            "{out:?}"
+        );
+    }
+
+    // ---- completeness proxies: prove "a piece of the raw stream went unrepresented" is catchable -
+    //
+    // The render pipeline's own completeness cross-check (`app::md_model_snapshot_tests`, in
+    // `src/app/`) is out of scope here — these three tests instead build small, local, self-contained
+    // scans over a `Doc` this file already trusts (real output of `Doc::parse`), then *corrupt a
+    // clone* of that same `Doc` one way at a time and show the scan's own count changes. This proves
+    // each described gap is detectable by *some* check, without claiming these scans are a substitute
+    // for the real one.
+
+    /// Marks every event index claimed by some `Heading`/`Paragraph` leaf's own `inline` range,
+    /// recursively. A narrow proxy for "every inline-content event belongs to some leaf" — real
+    /// completeness also has to account for `CodeBlock`/`Table` content (byte ranges, not event
+    /// indices) and container `Start`/`End` events, none of which this toy scan attempts; see the
+    /// section doc comment above.
+    fn events_claimed_by_a_leaf(blocks: &[Block], claimed: &mut [bool]) {
+        for b in blocks {
+            let inline = match &b.kind {
+                BlockKind::Heading { inline, .. } => Some(inline),
+                BlockKind::Paragraph { inline } => Some(inline),
+                _ => None,
+            };
+            if let Some(inline) = inline {
+                for i in inline.clone() {
+                    if let Some(slot) = claimed.get_mut(i) {
+                        *slot = true;
+                    }
+                }
+            }
+            events_claimed_by_a_leaf(&b.children, claimed);
+        }
+    }
+
+    #[test]
+    fn completeness_proxy_detects_an_inline_event_dropped_from_every_leaf() {
+        // A heading, a paragraph, *and* a thematic break — so `events_claimed_by_a_leaf`'s own match
+        // exercises all three of its arms (`Heading`, `Paragraph`, and the `_ => None` fallback for
+        // every other `BlockKind`, `ThematicBreak` here), not just the one this proxy happens to
+        // corrupt below.
+        let src = "# Title\n\nhello world\n\n---\n";
+        let doc = Doc::parse(src);
+        assert_eq!(
+            doc.blocks.len(),
+            3,
+            "heading, paragraph, thematic break: {:?}",
+            doc.blocks
+        );
+        let mut claimed = vec![false; doc.events.len()];
+        events_claimed_by_a_leaf(&doc.blocks, &mut claimed);
+        assert!(
+            claimed.iter().any(|&c| c),
+            "sanity: the real model should claim at least one event"
+        );
+
+        // Corrupt a copy: truncate the paragraph's own `inline` range so it drops its own trailing
+        // content — exactly what "an inline event belongs to no leaf" looks like.
+        let mut corrupted = doc.blocks.clone();
+        let BlockKind::Paragraph { inline } = &mut corrupted[1].kind else {
+            panic!("expected the paragraph at index 1: {:?}", corrupted[1].kind)
+        };
+        inline.end = inline.start;
+        let mut claimed_after = vec![false; doc.events.len()];
+        events_claimed_by_a_leaf(&corrupted, &mut claimed_after);
+        assert!(
+            claimed
+                .iter()
+                .zip(claimed_after.iter())
+                .any(|(&before, &after)| before && !after),
+            "corrupting the paragraph's own inline range should un-claim at least one event the \
+             real model claims"
+        );
+    }
+
+    fn count_task_list_markers_in_events(doc: &Doc<'_>) -> usize {
+        doc.events
+            .iter()
+            .filter(|(ev, _)| matches!(ev, Event::TaskListMarker(_)))
+            .count()
+    }
+
+    fn count_tasks_recorded_in_tree(blocks: &[Block]) -> usize {
+        let mut n = 0;
+        for b in blocks {
+            if let BlockKind::ListItem { task: Some(_) } = &b.kind {
+                n += 1;
+            }
+            n += count_tasks_recorded_in_tree(&b.children);
+        }
+        n
+    }
+
+    #[test]
+    fn completeness_proxy_detects_a_task_list_marker_dropped_from_the_tree() {
+        let src = "- [ ] a\n- [x] b\n";
+        let doc = Doc::parse(src);
+        assert_eq!(
+            count_task_list_markers_in_events(&doc),
+            2,
+            "sanity: two markers in the raw event stream"
+        );
+        assert_eq!(
+            count_tasks_recorded_in_tree(&doc.blocks),
+            2,
+            "sanity: the real model records both"
+        );
+
+        // Corrupt a copy: drop one item's own recorded task, as if `take_task_marker` had missed it.
+        let mut corrupted = doc.blocks.clone();
+        let BlockKind::ListItem { task } = &mut corrupted[0].children[0].kind else {
+            panic!("expected the first list item")
+        };
+        *task = None;
+        assert_eq!(
+            count_tasks_recorded_in_tree(&corrupted),
+            1,
+            "the corrupted copy under-counts relative to the raw stream's own marker count"
+        );
+        assert_ne!(
+            count_task_list_markers_in_events(&doc),
+            count_tasks_recorded_in_tree(&corrupted),
+            "a TaskListMarker present in the raw stream but absent from every ListItem.task is \
+             exactly the completeness gap this proxy exists to catch"
+        );
+    }
+
+    fn count_code_block_starts_in_raw_events(src: &str) -> usize {
+        Parser::new_ext(src, parse_options())
+            .into_offset_iter()
+            .filter(|(ev, _)| matches!(ev, Event::Start(Tag::CodeBlock(_))))
+            .count()
+    }
+
+    fn count_code_blocks_recorded_in_tree(blocks: &[Block]) -> usize {
+        let mut n = 0;
+        for b in blocks {
+            if matches!(b.kind, BlockKind::CodeBlock { .. }) {
+                n += 1;
+            }
+            n += count_code_blocks_recorded_in_tree(&b.children);
+        }
+        n
+    }
+
+    #[test]
+    fn completeness_proxy_detects_a_code_block_dropped_from_the_tree() {
+        let src = "```rust\nfn a() {}\n```\n\npara\n\n```\nplain\n```\n";
+        let doc = Doc::parse(src);
+        let raw = count_code_block_starts_in_raw_events(src);
+        assert_eq!(
+            raw, 2,
+            "sanity: two Start(CodeBlock) events in the raw stream"
+        );
+        assert_eq!(
+            count_code_blocks_recorded_in_tree(&doc.blocks),
+            2,
+            "sanity: the real model records both"
+        );
+
+        // Corrupt a copy: replace one CodeBlock with an unrelated leaf kind, as if
+        // `parse_container`'s own `Tag::CodeBlock` arm had been skipped instead of building a
+        // `Block` for it.
+        let mut corrupted = doc.blocks.clone();
+        corrupted[0].kind = BlockKind::ThematicBreak;
+        assert_eq!(
+            count_code_blocks_recorded_in_tree(&corrupted),
+            1,
+            "the corrupted copy under-counts relative to the raw stream's own CodeBlock count"
+        );
+        assert_ne!(
+            raw,
+            count_code_blocks_recorded_in_tree(&corrupted),
+            "a Start(CodeBlock) present in the raw stream but represented by no \
+             BlockKind::CodeBlock anywhere in the tree is exactly the completeness gap this proxy \
+             exists to catch"
+        );
+    }
+
+    // ---- defensive branches reachable only through a malformed event stream, poked directly ------
+    //
+    // Every function below is documented, at its own definition, as having a branch "not reachable
+    // for well-formed input" — a real `Doc::parse` call can never desync its own event stream enough
+    // to trip these, because pulldown-cmark's own event stream is always well-formed (every opened
+    // tag is eventually closed). They exist purely as principle-#3 ("never crash on any input
+    // pulldown-cmark accepts") insurance. Reaching them at all means calling the private helper
+    // directly, with a hand-built `Walker` deliberately positioned somewhere the function does not
+    // expect — legitimate here because `Walker`/every helper below is private to this file, and
+    // `#[cfg(test)] mod tests` is a descendant module of it (same privacy rule the rest of this file
+    // already relies on to construct `Block`/`Task` values by hand above).
+
+    fn walker_for(src: &str) -> Walker<'_> {
+        Walker {
+            iter: Parser::new_ext(src, parse_options())
+                .into_offset_iter()
+                .peekable(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn parse_blocks_raw_silently_ignores_a_top_level_task_list_marker() {
+        // `parse_item_task_and_children`/`take_task_marker` are the *only* real callers that ever
+        // look for a `TaskListMarker` — every genuine one is consumed by one of them before
+        // `parse_blocks_raw`'s own loop ever sees it. Advancing a walker past `Start(List)` and
+        // `Start(Item)` by hand, then handing it straight to `parse_blocks_raw` (bypassing
+        // `parse_item_task_and_children` entirely), puts the marker exactly where its own doc
+        // comment says it can never legitimately be: the very next event that loop's own `match`
+        // sees. No panic, no desync — the marker is dropped (its own three bytes never claimed by
+        // anything, matching `is_stray_inline_leaf`'s own doc comment on why `TaskListMarker` is
+        // excluded from a stray run), and parsing continues normally past it.
+        let src = "- [ ] a\n";
+        let mut w = walker_for(src);
+        let _ = w.next(); // Start(List)
+        let _ = w.next(); // Start(Item)
+        let out = parse_blocks_raw(&mut w, src);
+        assert_eq!(
+            out.len(),
+            1,
+            "the item's own text still becomes a block: {out:?}"
+        );
+        let BlockKind::Paragraph { inline } = &out[0].kind else {
+            panic!("expected a synthetic paragraph: {:?}", out[0].kind)
+        };
+        assert_eq!(
+            inline_plain_text(
+                &Doc {
+                    events: w.events.clone(),
+                    blocks: Vec::new()
+                },
+                inline
+            ),
+            "a"
+        );
+    }
+
+    #[test]
+    fn collect_stray_inline_run_handles_an_exhausted_event_stream() {
+        // Reachable only through a manufactured stream: a genuine tight-list-item stray run is
+        // always followed by at least an `End(Item)` (pulldown-cmark closes every tag it opens), so
+        // `events.peek()` never actually returns `None` mid-run for real input. Feeding this
+        // function a walker over an *already-exhausted* parser (an empty document has zero events)
+        // exercises the `None => false` arm directly — the run still ends cleanly, at the one event
+        // handed in as `first`, with no panic.
+        let mut w = walker_for("");
+        let range = collect_stray_inline_run((Event::Text("x".into()), 3..4), &mut w);
+        assert_eq!(
+            range,
+            3..4,
+            "an exhausted stream ends the run at just its own first event"
+        );
+    }
+
+    #[test]
+    fn collect_code_body_spans_defensively_skips_an_unexpected_start_event() {
+        // Called on a walker that never consumed the `Start(Paragraph)` opening this text — its own
+        // first `next()` sees that `Start` directly, not a `Start(CodeBlock)`'s own content.
+        let src = "**bold** x\n";
+        let mut w = walker_for(src);
+        let spans = collect_code_body_spans(&mut w);
+        assert!(
+            spans.is_empty(),
+            "no Event::Text was ever seen at code-block level: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn collect_code_body_spans_defensively_skips_an_event_that_is_neither_text_nor_end() {
+        // Same idea as the sibling test above, but positioned to reach the function's own final
+        // `_ => {}` catch-all specifically (unlike a `Start`, a bare `SoftBreak`/`End(Paragraph)` —
+        // neither `Event::Text` nor `Event::End(TagEnd::CodeBlock)` nor a `Start` — has no arm of its
+        // own at all): consume the opening `Start(Paragraph)` by hand first, so the walker handed to
+        // `collect_code_body_spans` starts mid-paragraph, at `Text("a")`/`SoftBreak`/`Text("b")`/
+        // `End(Paragraph)` directly. Two of those are genuine `Event::Text` (collected, however
+        // meaningless the resulting "spans" are outside any real code block — this function has no
+        // way to know it was handed the wrong context), and the other two both land on `_ => {}`.
+        let src = "a\nb\n"; // a single-newline soft break inside one paragraph
+        let mut w = walker_for(src);
+        let _ = w.next(); // Start(Paragraph)
+        let spans = collect_code_body_spans(&mut w);
+        assert_eq!(
+            spans.len(),
+            2,
+            "both Text(\"a\") and Text(\"b\") still get collected: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn collect_table_rows_defensively_skips_an_unexpected_start_event() {
+        let src = "**bold** x\n";
+        let mut w = walker_for(src);
+        let rows = collect_table_rows(&mut w);
+        assert!(
+            rows.is_empty(),
+            "no TableHead/TableRow was ever seen: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn collect_table_rows_defensively_skips_an_event_that_is_neither_a_row_kind_nor_end() {
+        // Reaches `collect_table_rows`'s own final `_ => {}` the same way as
+        // `collect_code_body_spans_defensively_skips_an_event_that_is_neither_text_nor_end` above.
+        let src = "a\nb\n";
+        let mut w = walker_for(src);
+        let _ = w.next(); // Start(Paragraph)
+        let rows = collect_table_rows(&mut w);
+        assert!(
+            rows.is_empty(),
+            "no TableHead/TableRow/End(Table) event ever appears in this stream: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn collect_row_cells_defensively_skips_an_unexpected_start_event() {
+        let src = "**bold** x\n";
+        let mut w = walker_for(src);
+        let cells = collect_row_cells(&mut w, TagEnd::TableRow);
+        assert!(cells.is_empty(), "no TableCell was ever seen: {cells:?}");
+    }
+
+    #[test]
+    fn collect_row_cells_defensively_skips_an_event_that_is_neither_a_cell_nor_its_own_end() {
+        // Reaches `collect_row_cells`'s own final `_ => {}` the same way as the two tests above —
+        // `end` is `TagEnd::TableRow`, which the stray `End(Paragraph)` here does not match either.
+        let src = "a\nb\n";
+        let mut w = walker_for(src);
+        let _ = w.next(); // Start(Paragraph)
+        let cells = collect_row_cells(&mut w, TagEnd::TableRow);
+        assert!(cells.is_empty(), "no TableCell was ever seen: {cells:?}");
+    }
+
+    #[test]
+    fn collect_html_tag_defensively_skips_an_unexpected_start_event() {
+        let src = "**bold** x\n";
+        let mut w = walker_for(src);
+        let range = 0..src.len();
+        let tag = collect_html_tag(&mut w, &range, src);
+        // `first_line` is read from `src[block_range]` regardless of what the (unrelated) event
+        // walk consumed — `**bold** x` starts with `*`, not `<`, so `html_tag_name` reports `None`
+        // via its own early `?` (a different branch than the one this test targets — see
+        // `html_tag_name_reports_none_when_no_name_characters_follow_the_opening_bracket` below for
+        // that one directly), but reaching this point at all with no panic and an empty consumed
+        // stream is what this test pins.
+        assert_eq!(tag, None);
+    }
+
+    #[test]
+    fn html_tag_name_reports_none_when_no_name_characters_follow_the_opening_bracket() {
+        // `html_tag_name` is a pure function of a line, callable directly with no `Doc`/`Walker` at
+        // all — real CommonMark HTML-block recognition never hands it a line shaped like these (a
+        // "complete" open/close tag requires a valid name right after `<`/`</`), so its own
+        // `if name.is_empty()` branch is otherwise unreachable through any document that actually
+        // parses as an `HtmlBlock` in the first place.
+        assert_eq!(
+            html_tag_name("< foo>"),
+            None,
+            "space right after '<' leaves no name chars"
+        );
+        assert_eq!(html_tag_name("<"), None, "nothing at all after '<'");
+        assert_eq!(
+            html_tag_name("</"),
+            None,
+            "nothing after the closing-tag slash either"
+        );
+        // Controls: the ordinary, well-formed cases this function exists to handle still work.
+        assert_eq!(html_tag_name("<div>"), Some("div".to_string()));
+        assert_eq!(html_tag_name("</div>"), Some("div".to_string()));
+        assert_eq!(html_tag_name(""), None, "doesn't even start with '<'");
+        assert_eq!(
+            html_tag_name("<!doctype>"),
+            None,
+            "excluded by the '!' guard, not this branch"
+        );
+    }
+
+    // ---- `glued_details_fold`'s own two "give up" arms, reached through real `Doc::parse` input ---
+    //
+    // Unlike the previous section, every case below *is* reachable through ordinary `Doc::parse` —
+    // no hand-built `Walker` needed — because pulldown-cmark really does glue an unclosed or
+    // trailing-content `<details>` block into one literal `HtmlBlock`; `fold_details` really does
+    // call `glued_details_fold` on it (whenever it is the last sibling at its own level, whether or
+    // not it happens to also contain its own close — see `fold_details`'s own doc comment on why
+    // `rest.is_empty()` alone is enough to try).
+
+    #[test]
+    fn unclosed_glued_details_with_no_close_anywhere_in_the_document_stays_unfolded() {
+        // No `</details>` anywhere in the whole (single-block) document — `glued_details_fold`'s own
+        // scan runs off the end of `b.src` having found nothing, returns `None`, and `fold_details`
+        // falls back to leaving the raw `Html` leaf exactly as it was.
+        let src = "<details>\n<summary>S</summary>\nno close anywhere\n";
+        let doc = Doc::parse(src);
+        assert_eq!(doc.blocks.len(), 1);
+        assert!(matches!(
+            doc.blocks[0].kind,
+            BlockKind::Html { tag: Some(ref t) } if t == "details"
+        ));
+    }
+
+    #[test]
+    fn glued_details_with_unrelated_content_after_the_close_stays_unfolded() {
+        // A close *is* found this time (`</details>` on line 3), but the same glued `HtmlBlock`
+        // keeps running past it (no blank line separates "extra content here" from the close
+        // either) — `glued_details_fold` refuses to silently drop that trailing text, and
+        // `fold_details` leaves the whole thing as one unfolded `Html` leaf rather than truncating
+        // `Block::src` and orphaning bytes with no sibling slot to carry them.
+        let src = "<details>\n<summary>A</summary>\n</details>\nextra content here\n";
+        let doc = Doc::parse(src);
+        assert_eq!(doc.blocks.len(), 1);
+        assert!(matches!(
+            doc.blocks[0].kind,
+            BlockKind::Html { tag: Some(ref t) } if t == "details"
+        ));
+        assert_eq!(
+            &src[doc.blocks[0].src.clone()],
+            src,
+            "the whole glued leaf is kept intact"
+        );
+    }
+
+    #[test]
+    fn unclosed_details_with_no_trailing_newline_stays_unfolded() {
+        // The open tag is *also* the entire input, with no trailing `'\n'` at all — `line_after`'s
+        // own "no '\n' found" fallback (`src.len()`) and `glued_details_fold`'s own "ran off the
+        // end" arm both fire from this one case.
+        let src = "<details>";
+        let doc = Doc::parse(src);
+        assert_eq!(doc.blocks.len(), 1);
+        assert!(matches!(
+            doc.blocks[0].kind,
+            BlockKind::Html { tag: Some(ref t) } if t == "details"
+        ));
+        assert_eq!(doc.blocks[0].src, 0..src.len());
+    }
+
+    // ---- Details ordinal contract vs. `collect_details_open` (markdown.rs) ------------------------
+
+    /// Depth-first, source-order collection of every `BlockKind::Details`'s own `open_attr` — the
+    /// model's own analogue of `collect_details_open`'s return value, used only by the two tests
+    /// below to compare the two.
+    fn collect_model_details_open(blocks: &[Block], out: &mut Vec<bool>) {
+        for b in blocks {
+            if let BlockKind::Details { open_attr, .. } = &b.kind {
+                out.push(*open_attr);
+            }
+            collect_model_details_open(&b.children, out);
+        }
+    }
+
+    #[test]
+    fn model_details_ordinal_matches_collect_details_open_for_well_formed_non_quote_nesting() {
+        // `collect_details_open` (`markdown.rs`) is the render pipeline's own scanner for seeding a
+        // `<details>` block's default open/closed toggle state — see its own doc comment. This
+        // model's `BlockKind::Details` sequence (walked depth-first, in source order) must agree
+        // with it for every shape the two are documented, or empirically confirmed, to fold
+        // identically: well-formed and blank-line-separated (at the top level, nested inside a list
+        // item, several deep), unclosed, and "first close wins" swallowing of an inner `<details>`
+        // glued into an *outer* one's own well-formed body.
+        //
+        // Two shapes are deliberately **excluded** here — not because they are hard to write, but
+        // because the two sides are already known to disagree about them (found empirically while
+        // writing this test, not merely inferred from a doc comment):
+        //
+        //   * a `<details>` nested inside a **block quote** — see
+        //     `model_details_ordinal_diverges_from_collect_details_open_for_a_quote_nested_details`
+        //     below, which pins the divergence directly and explains it.
+        //   * a `<details>` glued (no blank line anywhere) to a *further nested* `<details>`, itself
+        //     also glued with no blank line: this model deliberately leaves the whole construct as
+        //     one unfolded `Html` leaf (see
+        //     `glued_details_with_no_blank_line_anywhere_stays_an_unfolded_html_leaf`, above) — there
+        //     is no separate sibling boundary for `fold_details`'s "first close wins" search to have
+        //     found in the first place — while `split_details`'s own, differently-shaped raw-line
+        //     scan folds it anyway. A pre-existing, intentional divergence for this one pathological
+        //     shape (confirmed directly: `model` reports `[]`, `collect_details_open` reports
+        //     `[false]`, for `"<details>\n<summary>A</summary>\n<details>\n<summary>Nested\
+        //     </summary>\n</details>\n</details>\n"`), not something this test asserts parity on.
+        let cases = [
+            "<details>\n<summary>S</summary>\n\nbody\n\n</details>\n",
+            "<details>\n<summary>A</summary>\n\na\n\n</details>\n\n\
+             <details open>\n<summary>B</summary>\n\nb\n\n</details>\n",
+            "- item\n\n  <details>\n  <summary>S</summary>\n\n  body\n\n  </details>\n",
+            "<details>\n<summary>S</summary>\n\nbody one\n\nbody two\n",
+            "<details>\n<summary>Outer</summary>\n\n\
+             <details open>\n<summary>Inner</summary>\n\ninner body\n\n</details>\n\n\
+             outer body after inner\n\n</details>\n",
+            "- item\n\n  <details>\n  <summary>Outer</summary>\n\n  body\n\n  </details>\n\n\
+             - item2\n\n  <details open>\n  <summary>Second</summary>\n\n  body2\n\n  </details>\n",
+            "<details open>\n<summary>A</summary>\n\na\n\n</details>\n\n\
+             <details>\n<summary>B</summary>\n\nb\n\n</details>\n\n\
+             <details open>\n<summary>C</summary>\n\nc\n\n</details>\n",
+        ];
+        for src in cases {
+            let doc = Doc::parse(src);
+            let mut model_open: Vec<bool> = Vec::new();
+            collect_model_details_open(&doc.blocks, &mut model_open);
+            let split_open = super::super::collect_details_open(src);
+            assert_eq!(model_open, split_open, "case {src:?}");
+        }
+    }
+
+    #[test]
+    fn model_details_ordinal_diverges_from_collect_details_open_for_a_quote_nested_details() {
+        // Documents, rather than papers over, a real gap: `collect_details_open`'s own doc comment
+        // explains that a `<details>` reachable only through a GitHub *alert*'s body is invisible to
+        // it, "because `split_details` sees the raw, not-yet-alert-stripped source, where such a
+        // block's opening tag is still `>`-prefixed and so does not match `details_open_tag`". The
+        // identical mechanism — the raw line still carries a `>` prefix — applies just as much to a
+        // *plain*, non-alert block quote, which that doc comment does not separately call out. This
+        // model still folds it correctly (pulldown-cmark's own event stream has already stripped the
+        // `>` by the time this model ever sees the text), so the two genuinely disagree here — worth
+        // flagging as a discovered gap in `collect_details_open`'s own documented contract, not
+        // something this file can fix (it lives in `markdown.rs`).
+        let src = "> <details>\n> <summary>S</summary>\n>\n> body\n>\n> </details>\n";
+        let doc = Doc::parse(src);
+        let mut model_open: Vec<bool> = Vec::new();
+        collect_model_details_open(&doc.blocks, &mut model_open);
+        assert_eq!(
+            model_open,
+            vec![false],
+            "the model itself still folds a quote-nested details"
+        );
+        assert_eq!(
+            super::super::collect_details_open(src),
+            Vec::<bool>::new(),
+            "collect_details_open misses it — the same '>'-prefix mechanism its own doc comment \
+             documents for alerts specifically also applies to a plain quote"
+        );
+    }
+
+    // ---- extreme / adversarial input: `Doc::parse` must never panic, and invariants must hold ----
+    //
+    // Every case below is real Markdown source text handed straight to `Doc::parse` — not a
+    // hand-built `Block` tree — covering shapes principle #3 (`CLAUDE.md`: "never crash on any input
+    // pulldown-cmark accepts") says this model must survive: unclosed constructs, deep nesting, huge
+    // single lines, huge sibling counts, CJK/emoji/combining/zero-width/RTL text, CRLF/no-trailing-
+    // newline/BOM/NUL/control-byte encodings, tab/full-width-space/mixed indentation, empty/
+    // whitespace-only input, and every backslash-escape form this model's own module doc comment
+    // discusses (`\*` `\_` `\[` `\]` `\(` `\)` `\$` `\\`), including immediately before a multi-byte
+    // character — the exact shape that has caused byte-boundary panics elsewhere in this codebase's
+    // own history (see this file's own CJK/multibyte tests above, and `markdown.rs`'s own
+    // `scan_inline_math`/`find_inline_dollar` fixes for the same class of bug). `Doc::parse` is run
+    // through `super::super::catch_silent` (the project's own shared panic-catching helper, already
+    // `pub(crate)`) so one panicking case does not stop the rest of the corpus from being checked —
+    // every failure (a panic, or an invariant violation) is collected and reported together, in the
+    // same "report everything wrong, not just the first" style `check_invariants` itself follows.
+
+    /// Every extreme/adversarial `(name, source)` pair this section checks. Kept as a single,
+    /// reusable list so both `doc_parse_never_panics_and_invariants_hold_across_extreme_inputs`
+    /// (below) and any future addition to this corpus benefit from the same collection.
+    fn extreme_input_corpus() -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = Vec::new();
+        let mut push = |name: &str, src: String| v.push((name.to_string(), src));
+
+        // -- unclosed constructs --
+        push("unclosed fence", "```rust\nfn a() {}\n".to_string());
+        push("unclosed fence, no lang", "```\nplain\n".to_string());
+        push(
+            "unclosed fence nested in a list item",
+            "- item\n\n  ```rust\n  fn a() {}\n".to_string(),
+        );
+        push(
+            "unclosed details, well-formed open/summary",
+            "<details>\n<summary>S</summary>\n\nbody\n".to_string(),
+        );
+        push(
+            "unclosed details, no summary tag",
+            "<details>\nbody only\n".to_string(),
+        );
+        push(
+            "unclosed html comment",
+            "<!-- never closes\nmore text\nstill in the comment\n".to_string(),
+        );
+        push(
+            "unclosed emphasis (asterisk)",
+            "*never closes\nmore text\n".to_string(),
+        );
+        push(
+            "unclosed emphasis (underscore)",
+            "_never closes\nmore text\n".to_string(),
+        );
+        push("unclosed strong", "**never closes\nmore text\n".to_string());
+        push(
+            "unclosed link, no matching bracket",
+            "[never closes (no matching bracket\n".to_string(),
+        );
+        push(
+            "unclosed link, no matching paren",
+            "[text](never closes\n".to_string(),
+        );
+        push(
+            "unclosed inline code",
+            "`never closes\nmore text\n".to_string(),
+        );
+        push(
+            "unclosed strikethrough",
+            "~~never closes\nmore text\n".to_string(),
+        );
+        push(
+            "table header with no body rows",
+            "| a | b |\n|---|---|\n".to_string(),
+        );
+        push(
+            "table header row with no delimiter row at all",
+            "| a | b |\nnot a delimiter row\n".to_string(),
+        );
+
+        // -- deep nesting --
+        push("deeply nested bullet list (10 levels)", {
+            let mut s = String::new();
+            for i in 0..10 {
+                s.push_str(&"  ".repeat(i));
+                s.push_str("- level\n");
+            }
+            s
+        });
+        push("deeply nested block quote (10 levels)", {
+            let mut s = "> ".repeat(10);
+            s.push_str("deep quote\n");
+            s
+        });
+        push(
+            "list inside quote inside list",
+            "- outer\n\n  > quoted\n  >\n  > - inner list\n  >   - inner inner\n".to_string(),
+        );
+        push("alternating quote/list nesting (8 levels)", {
+            let mut s = String::new();
+            for i in 0..8 {
+                if i % 2 == 0 {
+                    s.push_str(&"> ".repeat(i / 2 + 1));
+                } else {
+                    s.push_str(&"  ".repeat(i));
+                    s.push_str("- ");
+                }
+            }
+            s.push_str("bottom\n");
+            s
+        });
+
+        // -- huge single line / many blank lines / many siblings --
+        push("huge single line, no newline (~1MB)", "x".repeat(1_000_000));
+        push("huge single line, unclosed emphasis (~1MB)", {
+            let mut s = String::from("*");
+            s.push_str(&"a".repeat(1_000_000));
+            s
+        });
+        push("many blank lines (5000)", "\n".repeat(5000));
+        push("many sibling paragraphs (2000)", {
+            let mut s = String::new();
+            for i in 0..2000 {
+                s.push_str(&format!("para {i}\n\n"));
+            }
+            s
+        });
+        push("many sibling list items (3000)", {
+            let mut s = String::new();
+            for i in 0..3000 {
+                s.push_str(&format!("- item {i}\n"));
+            }
+            s
+        });
+
+        // -- CJK / emoji / combining / zero-width / RTL --
+        push(
+            "cjk heavy",
+            "# 見出しタイトル\n\n本文は日本語です。**強調**も*斜体*も入ります。\n\n\
+             - 項目一\n- 項目二\n\n> 引用も日本語\n"
+                .to_string(),
+        );
+        push(
+            "emoji throughout",
+            "# 🎉 Title 🚀\n\nHello 👋 world 🌍! `code 💻` and **bold 🔥**.\n\n- [ ] 🧪 test\n"
+                .to_string(),
+        );
+        push(
+            "combining marks stacked",
+            "e\u{0301}\u{0301}\u{0301}\u{0301}\u{0301} five combining acutes on one base\n"
+                .to_string(),
+        );
+        push(
+            "zero width characters",
+            "zero\u{200B}width\u{200C}space\u{200D}joiner\u{FEFF}mixed\n".to_string(),
+        );
+        push(
+            "rtl text mixed with ltr",
+            "\u{202B}שלום עולם\u{202C} mixed with English text\n".to_string(),
+        );
+        push(
+            "rtl heading",
+            "# \u{0645}\u{0631}\u{062D}\u{0628}\u{0627} Arabic heading\n".to_string(),
+        );
+        push(
+            "cjk task list and code fence",
+            "- [ ] 日本語のタスク\n- [x] 完了したタスク\n\n```rust\nfn 関数() -> 文字列 {}\n```\n"
+                .to_string(),
+        );
+
+        // -- CRLF / no trailing newline / BOM / NUL / control chars --
+        push(
+            "crlf throughout, mixed constructs",
+            "# Title\r\n\r\nBody line one\r\nBody line two\r\n\r\n\
+             - item one\r\n- item two\r\n\r\n```rust\r\nfn a() {}\r\n```\r\n\r\n\
+             > quoted\r\n> line two\r\n"
+                .to_string(),
+        );
+        push(
+            "no trailing newline, plain text",
+            "just text, no newline at all".to_string(),
+        );
+        push(
+            "no trailing newline, heading",
+            "# Title, no newline".to_string(),
+        );
+        push(
+            "no trailing newline, fenced code",
+            "```\ncode\n```".to_string(),
+        );
+        push("no trailing newline, list item", "- one\n- two".to_string());
+        push(
+            "bom prefixed document",
+            "\u{FEFF}# Title\n\nBody\n".to_string(),
+        );
+        push("nul byte embedded", "before\u{0}after\n".to_string());
+        push(
+            "assorted c0 control chars",
+            "col1\u{1}col2\u{2}col3\u{7}bell\u{8}backspace\n".to_string(),
+        );
+
+        // -- tab / full-width space / mixed indentation --
+        push(
+            "tab-indented code block",
+            "para\n\n\tline one\n\tline two\n".to_string(),
+        );
+        push(
+            "tab after a list marker",
+            "-\ttab then item text\n".to_string(),
+        );
+        push(
+            "fullwidth space, not real indentation",
+            "　　- looks indented but is U+3000, not ascii space\n".to_string(),
+        );
+        push(
+            "mixed tab and space indentation",
+            "- item\n \t - mixed indent nested item\n".to_string(),
+        );
+
+        // -- empty / whitespace-only --
+        push("empty string", String::new());
+        push("single space", " ".to_string());
+        push(
+            "whitespace only (spaces and tabs)",
+            "   \t   \t\t  ".to_string(),
+        );
+        push("single newline only", "\n".to_string());
+        push("many newlines only", "\n\n\n\n\n\n\n\n".to_string());
+
+        // -- escapes: every form this model's own module doc comment discusses --
+        for esc in ["\\*", "\\_", "\\[", "\\]", "\\(", "\\)", "\\$", "\\\\"] {
+            push(
+                &format!("escape {esc:?} mid-text"),
+                format!("text {esc} more text\n"),
+            );
+            push(
+                &format!("escape {esc:?} at start of line"),
+                format!("{esc} more text\n"),
+            );
+            push(
+                &format!("escape {esc:?} at end of input, no newline"),
+                format!("text {esc}"),
+            );
+        }
+        // The one class of bug this codebase has actually hit before (see `CLAUDE.md`'s own record
+        // of a `\` + multibyte byte-boundary panic in a *different* scanner, `scan_inline_math`):
+        // a backslash immediately followed by a multi-byte character.
+        push(
+            "backslash immediately before cjk",
+            "before \\あ after\n".to_string(),
+        );
+        push(
+            "backslash immediately before emoji",
+            "before \\🎉 after\n".to_string(),
+        );
+        push(
+            "backslash immediately before combining mark",
+            "before \\\u{0301} after\n".to_string(),
+        );
+        push(
+            "input ends with a lone trailing backslash",
+            "text ends with backslash\\".to_string(),
+        );
+        push(
+            "currency dollar, not math (ENABLE_MATH is off anyway)",
+            "price is \\$5 not math\n".to_string(),
+        );
+        push(
+            "raw dollar-delimited text, unprocessed",
+            "inline $x + y$ and $$z$$ display\n".to_string(),
+        );
+        push(
+            "raw footnote-shaped text, unprocessed",
+            "See [^1] here.\n\n[^1]: definition\n".to_string(),
+        );
+
+        v
+    }
+
+    #[test]
+    fn doc_parse_never_panics_and_invariants_hold_across_extreme_inputs() {
+        let mut failures: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        for (name, src) in extreme_input_corpus() {
+            checked += 1;
+            // Not a `move` closure: `name`/`src` are only ever borrowed here, so both are still
+            // usable afterward to build a failure message — `catch_silent`'s own `f: impl FnOnce()
+            // -> T` has no `'static` bound, so a borrowing closure is fine.
+            let result = super::super::catch_silent(|| {
+                let doc = Doc::parse(&src);
+                let mut out = Vec::new();
+                check_invariants(&doc.blocks, &src, doc.events.len(), None, &name, &mut out);
+                out
+            });
+            match result {
+                None => failures.push(format!("{name:?}: PANICKED")),
+                Some(violations) if !violations.is_empty() => {
+                    failures.push(format!(
+                        "{name:?}: {} invariant violation(s): {violations:?}",
+                        violations.len()
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        assert!(
+            checked > 60,
+            "the extreme-input corpus looks suspiciously small ({checked}) — did a `push` call \
+             break?"
+        );
+        assert!(
+            failures.is_empty(),
+            "{} case(s) failed out of {checked}:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn doc_parse_never_panics_on_deeply_nested_alternating_containers() {
+        // A single, especially adversarial case pulled out on its own (rather than folded silently
+        // into the corpus above) so a regression here fails with an obviously specific test name:
+        // 15 levels of quote-wrapping-list-wrapping-quote, ending in a task item, a fenced code
+        // block, and a table, none of them closed.
+        let mut src = String::new();
+        for i in 0..15 {
+            if i % 2 == 0 {
+                src.push_str("> ");
+            } else {
+                src.push_str("- ");
+            }
+        }
+        src.push_str("- [ ] deep task\n");
+        for i in 0..15 {
+            let prefix = if i % 2 == 0 { "> " } else { "  " };
+            src.push_str(prefix);
+        }
+        src.push_str("```rust\nfn deep() {}\n");
+        let doc = super::super::catch_silent(|| Doc::parse(&src));
+        let doc = doc.expect("Doc::parse must not panic on deep, unclosed, alternating nesting");
+        let mut out = Vec::new();
+        check_invariants(
+            &doc.blocks,
+            &src,
+            doc.events.len(),
+            None,
+            "deeply_nested_alternating",
+            &mut out,
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    // ---- `CodeBlock.body_spans` and `Task.state_at` contract, hardened across extreme containers --
+    //
+    // The two fields a future in-place "copy this code block" / "toggle this checkbox" feature would
+    // slice the input directly from — see `BlockKind::CodeBlock.body_spans`'s and `Task::state_at`'s
+    // own doc comments. Both are checked here across every combination their own doc comments call
+    // out as needing a *list* of spans (rather than one contiguous range) in the first place: fenced
+    // and indented, nested inside a list item / block quote / GFM alert / `<details>` body, under
+    // CRLF line endings, with a literal tab as *content* (inside a fence, a tab is just a content
+    // byte, not indentation), and with CJK content. Every expected reconstruction below was confirmed
+    // by first printing `Doc::parse`'s own actual output for that exact source (not merely assumed)
+    // before being pinned as an assertion — the reconstruction rules for quote/list continuation-line
+    // indentation and CRLF normalization are exactly the subtle, easy-to-get-wrong shape this whole
+    // model exists to get right once, in one place (see the module doc comment's own "Why this
+    // exists" section).
+
+    #[test]
+    fn code_block_body_spans_reconstruct_byte_exact_content_across_extreme_containers() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "fenced code nested inside a block quote",
+                "> ```rust\n> fn a() {}\n> ```\n",
+                "fn a() {}",
+            ),
+            (
+                "fenced code nested inside a GFM alert",
+                "> [!WARNING]\n> ```\n> code in alert\n> ```\n",
+                "code in alert",
+            ),
+            (
+                "fenced code nested inside a details body",
+                "<details>\n<summary>S</summary>\n\n```rust\nfn a() {}\n```\n\n</details>\n",
+                "fn a() {}",
+            ),
+            (
+                "fenced code nested inside a list item, CRLF throughout",
+                "- item\r\n\r\n  ```rust\r\n  fn a() {}\r\n  ```\r\n",
+                "fn a() {}",
+            ),
+            (
+                "indented code, CRLF throughout",
+                "para\r\n\r\n    line one\r\n    line two\r\n",
+                "line one\nline two",
+            ),
+            (
+                "indented code nested inside a block quote",
+                "> para\n>\n>     indented code\n>     more code\n",
+                "indented code\nmore code",
+            ),
+            (
+                "cjk code content",
+                "```rust\nfn 関数() -> 文字列 {}\n```\n",
+                "fn 関数() -> 文字列 {}",
+            ),
+            (
+                "a literal tab as fenced code content, not indentation",
+                "```\n\tindented with tab inside fence\n```\n",
+                "\tindented with tab inside fence",
+            ),
+            (
+                "empty fenced code nested inside a list item",
+                "- item\n\n  ```\n  ```\n",
+                "",
+            ),
+        ];
+        for (name, src, expected) in cases {
+            let doc = Doc::parse(src);
+            let mut spans_by_block: Vec<Vec<Range<usize>>> = Vec::new();
+            code_block_bodies_ignoring_quote_flag(&doc.blocks, &mut spans_by_block);
+            assert_eq!(
+                spans_by_block.len(),
+                1,
+                "case {name:?}: expected exactly one code block"
+            );
+            let actual = code_body_text(&spans_by_block[0], src);
+            assert_eq!(actual, *expected, "case {name:?}");
+            // Every reconstructed span also has to satisfy the checker's own invariants — belt and
+            // suspenders on top of the byte-exact content match above.
+            let mut violations = Vec::new();
+            check_invariants(
+                &doc.blocks,
+                src,
+                doc.events.len(),
+                None,
+                name,
+                &mut violations,
+            );
+            assert!(violations.is_empty(), "case {name:?}: {violations:?}");
+        }
+    }
+
+    /// Like `code_block_bodies` above, but collecting only the `body_spans` themselves (not the
+    /// quote-nesting flag) — used by the extreme-containers test above, which deliberately *does*
+    /// want quote-nested code blocks included (unlike `parser_code_blocks`'s own convention).
+    fn code_block_bodies_ignoring_quote_flag(blocks: &[Block], out: &mut Vec<Vec<Range<usize>>>) {
+        for b in blocks {
+            if let BlockKind::CodeBlock { body_spans, .. } = &b.kind {
+                out.push(body_spans.clone());
+            }
+            code_block_bodies_ignoring_quote_flag(&b.children, out);
+        }
+    }
+
+    #[test]
+    fn task_state_at_contract_holds_across_extreme_containers() {
+        let cases = [
+            (
+                "task list nested inside a block quote",
+                "> - [ ] a\n> - [x] b\n> - [X] c\n",
+            ),
+            (
+                "task list nested inside a GFM alert",
+                "> [!NOTE]\n> - [ ] a\n> - [x] b\n> - [X] c\n",
+            ),
+            (
+                "task list nested inside a details body",
+                "<details>\n<summary>S</summary>\n\n- [ ] a\n- [x] b\n- [X] c\n\n</details>\n",
+            ),
+            (
+                "task list, CRLF throughout",
+                "- [ ] a\r\n- [x] b\r\n- [X] c\r\n",
+            ),
+            (
+                "task list, cjk label text",
+                "- [ ] 日本語のタスク\n- [x] 完了したタスク\n",
+            ),
+            (
+                "task list nested two list levels deep",
+                "- outer\n  - [ ] nested a\n  - [x] nested b\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let doc = Doc::parse(src);
+            let mut tasks: Vec<Task> = Vec::new();
+            collect_tasks(&doc.blocks, &mut tasks);
+            assert!(
+                !tasks.is_empty(),
+                "case {name:?}: expected at least one task item"
+            );
+            for t in &tasks {
+                assert!(
+                    src.is_char_boundary(t.state_at),
+                    "case {name:?}: state_at {} not on a char boundary",
+                    t.state_at
+                );
+                assert!(
+                    src[t.state_at..].starts_with(t.state),
+                    "case {name:?}: byte at state_at does not match state {:?}",
+                    t.state
+                );
+                assert_eq!(
+                    src.as_bytes().get(t.state_at - 1),
+                    Some(&b'['),
+                    "case {name:?}: byte before state_at is not '['"
+                );
+                assert_eq!(
+                    src.as_bytes().get(t.state_at + 1),
+                    Some(&b']'),
+                    "case {name:?}: byte after state_at is not ']'"
+                );
+            }
+            // Same belt-and-suspenders as the code-block test above: `check_invariants` itself must
+            // also see the whole tree as clean.
+            let mut violations = Vec::new();
+            check_invariants(
+                &doc.blocks,
+                src,
+                doc.events.len(),
+                None,
+                name,
+                &mut violations,
+            );
+            assert!(violations.is_empty(), "case {name:?}: {violations:?}");
+        }
+    }
+
+    fn collect_tasks(blocks: &[Block], out: &mut Vec<Task>) {
+        for b in blocks {
+            if let BlockKind::ListItem { task: Some(t) } = &b.kind {
+                out.push(*t);
+            }
+            collect_tasks(&b.children, out);
+        }
+    }
 }

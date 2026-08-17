@@ -163,6 +163,18 @@ impl App {
     pub fn md_item_line_for_test(&self, idx: usize) -> usize {
         self.md_items[idx].line
     }
+    /// Count of `MdItemKind::Task` entries currently in `md_items` — i.e. exactly the checkboxes
+    /// this render pass actually drew a Tab-focusable sentinel for (see `MdItemKind::Task`'s own
+    /// doc comment). Used by `e2e_tests.rs` (a sibling module of `app`, with no access to the
+    /// private `md_items` field itself) to prove an ordered-list task item is never counted among
+    /// them — GFM never decorates one on screen, so it must never become a Tab stop either.
+    #[cfg(test)]
+    pub fn md_task_item_count_for_test(&self) -> usize {
+        self.md_items
+            .iter()
+            .filter(|it| matches!(it.kind, MdItemKind::Task { .. }))
+            .count()
+    }
     #[cfg(test)]
     pub fn md_visual_span_for_test(&self, line: usize) -> (usize, usize) {
         self.md_visual_span(line)

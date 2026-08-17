@@ -9611,6 +9611,26 @@ pub(crate) mod task_corpus {
             ("plain then alert", "- [ ] out\n\n> [!NOTE]\n> - [ ] in\n"),
             ("two alerts", "> [!NOTE]\n> - [ ] a\n\n> [!TIP]\n> - [ ] b\n"),
             ("plain blockquote", "> - [ ] quoted\n"),
+            // These three pin the *reach* of `render_quote`'s model-only decoration (2026-08
+            // investigation into this test's own oracle — see
+            // `app::tests::md_task_toggle_is_byte_exact_across_the_corpus`'s doc comment): a nested
+            // plain quote, a plain quote nested inside an alert's own body, and an alert nested
+            // inside a plain quote. None of these is expected to be found by `task_source_locs`
+            // either (that scanner deliberately still does not recognize a plain, non-alert quote at
+            // all, at any depth — see `heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch`
+            // in `task_scan_parity_tests`) — what these entries actually exercise is
+            // `md_task_toggle_is_byte_exact_across_the_corpus`'s real, end-to-end write path
+            // (`App::md_toggle_focused_task`) for a shape the legacy-calibrated scanner cannot
+            // describe, not the scanner itself.
+            ("nested plain blockquote (two levels)", "> > - [ ] quoted twice\n"),
+            (
+                "plain blockquote nested inside an alert",
+                "> [!NOTE]\n> > - [ ] quoted in alert\n",
+            ),
+            (
+                "alert nested inside a plain blockquote",
+                "> > [!NOTE]\n> > - [ ] alert in quote\n",
+            ),
             (
                 "details closed",
                 "<details>\n<summary>S</summary>\n\n- [ ] hidden\n\n</details>\n",
@@ -10030,6 +10050,23 @@ pub(crate) mod code_corpus {
             (
                 "fence inside a plain block quote draws no header (tui-markdown prefixes every line)",
                 "> quoted:\n>\n> ```sh\n> echo hi\n> ```\n",
+            ),
+            // These two mirror `task_corpus`'s "nested plain blockquote"/"alert nested inside a
+            // plain blockquote" pair (2026-08 investigation into `code_block_source_locs`'s own
+            // reach — see `app::tests::md_task_toggle_is_byte_exact_across_the_corpus`'s doc
+            // comment): a fence inside a *nested* plain quote, and a fence inside an alert nested
+            // inside a plain quote. `code_block_source_locs` is not expected to find either (it
+            // still has no plain-quote branch at any depth) — these exercise
+            // `md_code_block_copy_is_byte_exact_across_the_corpus`'s real `y c` path
+            // (`focused_code_source`, reading straight off the model's own `RenderOut::code_blocks`)
+            // for a shape that scanner cannot describe.
+            (
+                "fence inside a nested plain block quote (two levels)",
+                "> > ```sh\n> > echo hi\n> > ```\n",
+            ),
+            (
+                "fence inside an alert nested inside a plain block quote",
+                "> > [!NOTE]\n> > ```sh\n> > echo hi\n> > ```\n",
             ),
             (
                 "block quote nested inside a list item, wrapping an indented block",

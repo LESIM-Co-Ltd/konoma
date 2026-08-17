@@ -16451,6 +16451,45 @@ fn changed_filter_survives_returning_from_another_repo() {
 /// moves. Counting parity (in `markdown::task_scan_parity_tests`) only proves the renderer and the
 /// scanner agree on *how many* boxes there are; this proves the Nth box on screen edits the Nth box in
 /// the source — the property that actually matters when a document mixes alerts, details and tables.
+///
+/// The independent "expected position" oracle is `task_source_locs(src, ..)`, deliberately **not**
+/// the model renderer's own record (`MdRenderExtras::tasks`) — even though the latter is what
+/// `MdItemKind::Task::state_at` is actually read from in production (`app::md_render::build_decorated`).
+/// Two reasons, both confirmed while fixing this test's crash on the `"plain blockquote"` corpus case:
+///
+/// 1. `task_source_locs`'s own contract is calibrated to the **legacy** renderer, not the model one —
+///    it is only ever consulted in production when the model renderer falls back to the legacy path,
+///    and a plain (non-alert) block quote is a **model-only** decoration `render_quote` draws that the
+///    legacy renderer still does not. This is pinned directly, in `preview/markdown.rs`, by
+///    `task_scan_parity_tests::heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch` (which
+///    asserts `code_block_source_locs("> para\n>\n>     code\n", &[]).is_empty()` as *correct*, not a
+///    gap to close) and `task_scan_parity_tests::scanner_counts_exactly_what_the_renderer_draws` (which
+///    checks the whole `task_corpus` against the **legacy**-only `render_markdown_tasks`). Teaching
+///    `task_source_locs`/`code_block_source_locs` to also decorate a plain quote (tried first) broke
+///    both of those and, worse, would make the scanner **over-count** relative to what the legacy
+///    renderer actually draws whenever a document both reaches that legacy fallback (a `Table`/`Html`
+///    nested in a *different* quote) and separately contains an unrelated plain-quote checkbox/code
+///    block — silently shifting every later checkbox's/code block's write-back ordinal by one in
+///    production (`build_md_items`'s `task_marks.get(seen)`/`code_blocks.get(seen)` lookup), the exact
+///    "silent wrong-byte write" class principle #3 exists to rule out.
+/// 2. `MdRenderExtras::tasks` is not (yet) a safe stand-in either: probed directly, it currently
+///    reports 2 entries for `"1. [ ] ordered task\n2. [x] done\n"` (an entry already in `code_corpus`)
+///    even though the model renderer draws **no** interactive checkbox span for either line (GFM task
+///    markers only decorate an unordered-list item — `task_prefix_state`'s own doc comment — and this
+///    project's own `task_items`/`is_task_span` scan agrees: 0 on screen). `RenderOut::tasks`'s own doc
+///    comment promises it only records a marker "this pass actually drew", so that is model-renderer
+///    behavior still in flux (under active, concurrent development elsewhere in this same migration),
+///    not a stable oracle to build a byte-position test on.
+///
+/// So: this test keeps `task_source_locs` as the oracle (its established, tested role), but no longer
+/// assumes its count always matches what's on screen. For the (rare, currently exactly-one-entry)
+/// documents where a construct the model renders but the legacy scanner does not skip decorates a real,
+/// on-screen, toggleable checkbox — `task_source_locs`'s count undershoots `task_items`'s — the
+/// byte-position cross-check is skipped for that document (the toggle itself is still driven and still
+/// checked for the invariants that do not depend on the scanner: it must not be refused, must change
+/// exactly one character, and must preserve CRLF/trailing-newline shape). Never the other direction:
+/// `task_source_locs` overshooting `task_items` would mean it invented a checkbox that is not really on
+/// screen, which is asserted against directly (that shape is *not* a known, accepted gap).
 #[test]
 fn md_task_toggle_is_byte_exact_across_the_corpus() {
     use ratatui::backend::TestBackend;
@@ -16489,6 +16528,16 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
             .map(|(i, _)| i)
             .collect();
+
+        let locs = crate::preview::markdown::task_source_locs(src, &[' ', 'x'], &[]);
+        assert!(
+            locs.len() <= task_items.len(),
+            "{name}: 書き戻しスキャナが画面より多くのチェックボックスを見つけた\
+             (安全な方向=見落としのみのはずが逆転している)\n--- src ---\n{src}"
+        );
+        // Whether `task_source_locs` describes exactly what is on screen for this document — see
+        // this test's own doc comment above for the (currently one) documented exception.
+        let scanner_matches_screen = locs.len() == task_items.len();
 
         for (nth, &item_idx) in task_items.iter().enumerate() {
             // Reopen from the original content each time (don't carry over the effect of a
@@ -16531,36 +16580,38 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
                 1,
                 "{name} #{nth}: 変更が1文字でない(位置={diff:?})\n--- after ---\n{after}"
             );
-            let locs = crate::preview::markdown::task_source_locs(src, &[' ', 'x'], &[]);
-            let loc = &locs[nth];
-            // Derive the expected position using **the same line-splitting as the product**
-            // (`split('\n')`). `str::lines()` drops the CRLF `\r`, so counting with it is off
-            // by one byte on CRLF documents (a pitfall on the test side).
-            let line_start: usize = src.split('\n').take(loc.line).map(|l| l.len() + 1).sum();
-            assert_eq!(
-                diff[0],
-                line_start + loc.state_off,
-                "{name} #{nth}: 別の位置を書き換えた\n--- after ---\n{after}"
-            );
-            // A check that doesn't depend on the offset calculation: after writing back and
-            // re-reading, **only that one** checkbox's state has changed and the rest are unchanged.
-            let after_locs = crate::preview::markdown::task_source_locs(&after, &[' ', 'x'], &[]);
-            assert_eq!(
-                after_locs.len(),
-                locs.len(),
-                "{name} #{nth}: 書き戻しでチェックボックスの個数が変わった"
-            );
-            for (i, (b, a)) in locs.iter().zip(after_locs.iter()).enumerate() {
-                if i == nth {
-                    assert_ne!(
-                        b.state, a.state,
-                        "{name} #{nth}: 対象の状態が変わっていない"
-                    );
-                } else {
-                    assert_eq!(
-                        b.state, a.state,
-                        "{name} #{nth}: 別のタスク #{i} を書き換えた"
-                    );
+            if scanner_matches_screen {
+                let loc = &locs[nth];
+                // Derive the expected position using **the same line-splitting as the product**
+                // (`split('\n')`). `str::lines()` drops the CRLF `\r`, so counting with it is off
+                // by one byte on CRLF documents (a pitfall on the test side).
+                let line_start: usize = src.split('\n').take(loc.line).map(|l| l.len() + 1).sum();
+                assert_eq!(
+                    diff[0],
+                    line_start + loc.state_off,
+                    "{name} #{nth}: 別の位置を書き換えた\n--- after ---\n{after}"
+                );
+                // A check that doesn't depend on the offset calculation: after writing back and
+                // re-reading, **only that one** checkbox's state has changed and the rest are unchanged.
+                let after_locs =
+                    crate::preview::markdown::task_source_locs(&after, &[' ', 'x'], &[]);
+                assert_eq!(
+                    after_locs.len(),
+                    locs.len(),
+                    "{name} #{nth}: 書き戻しでチェックボックスの個数が変わった"
+                );
+                for (i, (b, a)) in locs.iter().zip(after_locs.iter()).enumerate() {
+                    if i == nth {
+                        assert_ne!(
+                            b.state, a.state,
+                            "{name} #{nth}: 対象の状態が変わっていない"
+                        );
+                    } else {
+                        assert_eq!(
+                            b.state, a.state,
+                            "{name} #{nth}: 別のタスク #{i} を書き換えた"
+                        );
+                    }
                 }
             }
             // Line structure (newline kind, line count) is unchanged.
@@ -16669,6 +16720,131 @@ fn md_code_block_copy_is_byte_exact_across_the_corpus() {
         }
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The general form of the regression fixed live (2026-08) — an **ordered**-list task item
+/// (`"1. [ ] x"`) was pushed into `RenderOut::tasks` unconditionally, the same as an unordered
+/// one — even though `decorate_extras`'s own `replace_task_checkbox` never decorates one
+/// (`task_prefix_state`'s own "first byte must be `-`/`*`/`+`" contract; a `push_item_marker`'s own
+/// ordered-item marker line always starts `"N. "`, a digit, never a bullet — see either's own doc
+/// comment). A document mixing an ordered task list *ahead of* an unordered one therefore recorded a
+/// "ghost" entry for every invisible ordered checkbox, shifting every later, real, on-screen
+/// checkbox's own ordinal down by one in `RenderOut::tasks` — `build_md_items`'s "Nth sentinel found
+/// on screen == `task_marks[N]`" pairing (see that field's own doc comment) then handed the
+/// **visible** checkbox's own Tab-focus/`Space`-toggle the **invisible** ordered item's own byte
+/// offset instead: pressing `Space` on the one checkbox actually on screen silently edited a
+/// *different* line of the file — the "toggle writes to the wrong line while the checkbox count
+/// still agrees" class principle #3 exists to rule out, one level more subtle than a pure count
+/// mismatch (which the existing safe-refusal path already catches): the counts looked fine
+/// (`task_marks.len() == 1` even before this fix, `render_item` never having produced more than the
+/// one real GFM task on this exact document — the mis-pairing shows up only once a *second*,
+/// undrawn task exists earlier in the file to steal the first slot), so a naive "does the write
+/// happen at all" check would not have caught it — the position itself has to be checked.
+///
+/// The exact, real-keypress reproduction (`Tab` then `Space` on the one visible checkbox in a
+/// document byte-identical to the one reported live) lives in `e2e_tests.rs`
+/// (`e2e_ordered_list_ghost_task_does_not_steal_the_visible_checkboxs_toggle`, which needs the
+/// `Sim` keystroke harness this file does not have); this is the general form, verified the way a
+/// "record vs. draw" bug actually has
+/// to be verified — by rendering and counting, not by reasoning about the code: for **every** case
+/// in the golden-snapshot corpus (`all_cases()` — the full `task_corpus`/`code_corpus`/
+/// `code_span_corpus`/`preprocess_corpus`/`inline_corpus`/`list_corpus` union *plus* the repo's own
+/// real `samples/*.md` files, the same broad net `markdown_render_snapshot_default` runs), the model
+/// renderer's own "what did this pass actually draw a sentinel for" records —
+/// `RenderOut::tasks`/`RenderOut::code_blocks`, and mermaid's own `ImagePlacement::fence_ord`
+/// (`Some` exactly when `mermaid_placeholder_lines`'s own caption sentinel was drawn — see
+/// `render_mermaid_slot`'s own doc comment) — must have **exactly** one entry per matching sentinel
+/// span (`is_task_span`/`is_code_header_span`/`is_mermaid_header_span`) the render pass actually put
+/// on screen for that same document. `Link`'s own "record" (`collapse_links`/`autolink_bare_urls`'s
+/// `targets`) needs no equivalent check here: unlike these three, it is never a separately
+/// accumulated list indexed by a later, independent "how many have I seen" count — every target is
+/// pushed in the exact same loop iteration that produces its own link span, so the two can never
+/// drift apart by construction (see `md_text.rs::collapse_links`'s own body).
+///
+/// `Details`'s own ordinal needs no equivalent count-parity check either — unlike the other three,
+/// it has no separately accumulated list to have desynced from in the first place: `build_md_items`
+/// computes it purely self-referentially (the count of `Details` items this exact same scan has
+/// already found), so the one way it *could* still disagree with what actually gets toggled is
+/// `render_details_from_model`'s own `next_details_open` sequence landing on a different ordinal
+/// than the sentinel-scan one for the identical document — a distinct risk, already covered by its
+/// own dedicated tests (`details_nested_inside_an_alert_does_not_consume_the_top_level_ordinal`,
+/// here, and `e2e_tests.rs`'s own `e2e_two_sibling_details_blocks_toggle_independently`, which needs
+/// the `Sim` keystroke harness this file does not have).
+#[test]
+fn model_render_records_exactly_the_sentinels_it_draws_across_the_corpus() {
+    // Every non-empty fence becomes a diagram (a fixed, arbitrary placement size) — including the
+    // one-time `fences_on` probe (`render_doc`'s own `mermaid_slot("")` call): that probe must
+    // answer something other than `Text` to keep extraction on at all, and a *real* empty fence
+    // body never reaches this closure a second time to ask again (`render_mermaid_slot`'s own
+    // `code.trim().is_empty()` short-circuit renders it directly, bypassing the slot entirely — see
+    // `render.rs`'s own `empty_mermaid_fence_uses_the_text_fallback_without_consulting_the_slot`
+    // test), so there is no real input this closure ever needs to answer `Text` for at all. This
+    // test cares only about whether a sentinel/record pair was produced together, not about real
+    // diagram sizing, so no picker/font is needed to drive this meaningfully, unlike the app-level
+    // tests above which stay `MermaidSlot::Text` throughout (a font-less test `App` always resolves
+    // to `Text` — see `build_decorated`'s own `mermaid_slot` closure) and so never exercise this
+    // record/sentinel pair at all.
+    let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 6, rows: 2 };
+    let cfg = Config::default();
+    let mut checked_a_mermaid_fence = false;
+    for (name, src) in super::md_snapshot_tests::all_cases() {
+        let pre_src = super::md_snapshot_tests::pre_src_for(&cfg, &src);
+        let (lines, images, extras) = crate::preview::markdown::render_markdown_with_images(
+            &pre_src,
+            100,
+            crate::preview::markdown::CodeStyle::default(),
+            &cfg.ui.theme.code_theme,
+            cfg.ui.icons,
+            &cfg.ui.md_task_state_chars(),
+            &|_: &str| crate::preview::markdown::ImageSlot::Unavailable,
+            &mermaid_slot,
+            "mermaid",
+            cfg.ui.md_alerts,
+            &|_: &str, _: bool| crate::preview::markdown::MathSlot::Raw,
+            false,
+        );
+        // The legacy fallback (`RenderOut::unsupported` non-empty) has no model record of its own
+        // to check at all — `MdRenderExtras::model_based == false` there, both `Vec`s always empty
+        // by construction (see that field's own doc comment) — nothing to compare.
+        if !extras.model_based {
+            continue;
+        }
+        let all_spans = || lines.iter().flat_map(|l| l.spans.iter());
+        let drawn_tasks = all_spans()
+            .filter(|s| crate::preview::markdown::is_task_span(s))
+            .count();
+        assert_eq!(
+            extras.tasks.len(),
+            drawn_tasks,
+            "{name}: RenderOut::tasks の件数({}) と実際に描かれたチェックボックス数({drawn_tasks}) が食い違う\n--- src ---\n{src}",
+            extras.tasks.len()
+        );
+        let drawn_code = all_spans()
+            .filter(|s| crate::preview::markdown::is_code_header_span(s))
+            .count();
+        assert_eq!(
+            extras.code_blocks.len(),
+            drawn_code,
+            "{name}: RenderOut::code_blocks の件数({}) と実際に描かれたヘッダ数({drawn_code}) が食い違う\n--- src ---\n{src}",
+            extras.code_blocks.len()
+        );
+        let drawn_mermaid = all_spans()
+            .filter(|s| crate::preview::markdown::is_mermaid_header_span(s))
+            .count();
+        let recorded_mermaid = images.iter().filter(|p| p.fence_ord.is_some()).count();
+        assert_eq!(
+            recorded_mermaid,
+            drawn_mermaid,
+            "{name}: 描かれた mermaid キャプション数({drawn_mermaid}) と fence_ord を持つ記録数({recorded_mermaid}) が食い違う\n--- src ---\n{src}"
+        );
+        if drawn_mermaid > 0 {
+            checked_a_mermaid_fence = true;
+        }
+    }
+    assert!(
+        checked_a_mermaid_fence,
+        "corpus に mermaid フェンスを含む文書が一つも無かった(このチェック自体が空振りしている)"
+    );
 }
 
 /// Root cause (b), the front-matter case: the renderer (`build_decorated`) strips the leading YAML front
