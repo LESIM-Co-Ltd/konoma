@@ -379,7 +379,13 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// Diff-view keys for a backend that cannot write: `DiffScrollDiscardHint` without `x:discard`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    DiffScrollNoDiscardHint,
     StGit,
+    /// Flash when a write is asked of a backend that only reads (jj).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    VcsReadOnly,
     /// Status-bar chip when a jj (Jujutsu) backend is answering, in place of `StGit`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StJj,
@@ -797,6 +803,7 @@ fn en(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "current branch (HEAD) is always shown",
         DiffScrollHint => "j/k:scroll  h/l:hscroll  s:unified/split/auto  g/G:ends  q/Esc:back",
         DiffScrollDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  x:discard  q/Esc:back",
+        DiffScrollNoDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         Keymap => "keymap",
@@ -898,6 +905,7 @@ fn en(msg: Msg) -> &'static str {
         StQuit => "QUIT",
         StQuitHint => "y / q / Enter = quit    n / Esc = cancel",
         StFilter => "FILTER",
+        VcsReadOnly => "konoma only reads a jj repository — use jj itself to change it",
         StGit => "GIT",
         StJj => "JJ",
         StGraph => "GRAPH",
@@ -1264,6 +1272,7 @@ fn jp(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
         DiffScrollHint => "j/k:スクロール  h/l:横移動  s:縦/横/Auto  g/G:先頭/末尾  q/Esc:戻る",
         DiffScrollDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  x:破棄  q/Esc:戻る",
+        DiffScrollNoDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  q/Esc:戻る",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         Keymap => "キーマップ",
@@ -1365,6 +1374,7 @@ fn jp(msg: Msg) -> &'static str {
         StQuit => "終了確認",
         StQuitHint => "y / q / Enter = 終了    n / Esc = 取消",
         StFilter => "絞り込み",
+        VcsReadOnly => "konoma は jj リポジトリを読むだけです — 変更は jj で行ってください",
         StGit => "Git",
         StJj => "jj",
         StGraph => "グラフ",
@@ -1893,6 +1903,8 @@ mod tests {
         Msg::StDiff,
         Msg::StDrop,
         Msg::StFilter,
+        Msg::DiffScrollNoDiscardHint,
+        Msg::VcsReadOnly,
         Msg::StGit,
         Msg::StJj,
         Msg::StGraph,

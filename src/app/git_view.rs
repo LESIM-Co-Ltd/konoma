@@ -483,6 +483,13 @@ impl App {
     /// `x` in the Git view = discard. Opens a confirmation dialog (on confirm: git::discard then reload).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_view_start_discard(&mut self) {
+        // The footer hides this key when the backend cannot write, but the binding still exists —
+        // say why rather than attempting a git operation on a repository git does not own.
+        if !crate::vcs::caps(&self.tab.root).write {
+            self.flash =
+                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+            return;
+        }
         let Some(path) = self.git_view_selected() else {
             return;
         };
@@ -613,6 +620,11 @@ impl App {
     /// (on confirm: git::discard then return to the Git view). Uses the same flow as discard from the Git view.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn git_diff_start_discard(&mut self) {
+        if !crate::vcs::caps(&self.tab.root).write {
+            self.flash =
+                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+            return;
+        }
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
             return;
         };

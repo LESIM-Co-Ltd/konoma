@@ -291,6 +291,11 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),
         InternalMode::GitBranch => tr(lang, crate::i18n::Msg::BranchesNavHint),
         InternalMode::GitWorktrees => tr(lang, crate::i18n::Msg::WorktreesNavHint),
+        // `x:discard` is a write. A backend that cannot take one must not advertise it — an
+        // advertised key gets pressed.
+        InternalMode::GitDiff if !crate::vcs::caps(&app.tab.root).write => {
+            tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHint)
+        }
         InternalMode::GitDiff => tr(lang, crate::i18n::Msg::DiffScrollDiscardHint),
         InternalMode::Commit => tr(lang, crate::i18n::Msg::StCommitHint),
         InternalMode::GitLog => tr(lang, crate::i18n::Msg::GitNavDetailHint),

@@ -18,6 +18,17 @@ use crate::git::{ChangeEntry, DiffLine, FileStatus};
 #[cfg(feature = "git")]
 pub mod jj;
 
+/// What a backend can do beyond answering questions.
+///
+/// konoma's views are shared, but not every action behind them exists in every system: offering one
+/// that does not is worse than hiding it, because a key that is advertised gets pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    /// Whether konoma can change the repository through this backend. False for jj, where every
+    /// read deliberately carries `--ignore-working-copy` and nothing writes.
+    pub write: bool,
+}
+
 /// The read surface a version-control backend answers.
 ///
 /// `Send + Sync` because the status scan runs on a worker thread (`spawn_or_sync_statuses`).
@@ -27,6 +38,9 @@ pub mod jj;
 /// return an empty/None answer rather than an error, so a caller never has to special-case
 /// "no repository here".
 pub trait Vcs: Send + Sync {
+    /// What this backend can do beyond reading. See [`Caps`].
+    fn caps(&self) -> Caps;
+
     /// The repository's working directory (the directory the VCS commands run from), or None when
     /// `root` is not inside a repository.
     fn workdir(&self, root: &Path) -> Option<PathBuf>;
@@ -58,6 +72,10 @@ pub trait Vcs: Send + Sync {
 pub struct Git;
 
 impl Vcs for Git {
+    fn caps(&self) -> Caps {
+        Caps { write: true }
+    }
+
     fn workdir(&self, root: &Path) -> Option<PathBuf> {
         crate::git::workdir(root)
     }
@@ -102,6 +120,11 @@ pub struct Jj;
 
 #[cfg(feature = "git")]
 impl Vcs for Jj {
+    fn caps(&self) -> Caps {
+        // Reading is all konoma does here, on purpose: see the module docs on `jj`.
+        Caps { write: false }
+    }
+
     fn workdir(&self, root: &Path) -> Option<PathBuf> {
         jj::workspace_root(root)
     }
@@ -189,6 +212,11 @@ pub fn worktree_origin(root: &Path) -> Option<String> {
 /// See [`Vcs::file_diff`].
 pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     backend_for(root).file_diff(root, file)
+}
+
+/// See [`Vcs::caps`].
+pub fn caps(root: &Path) -> Caps {
+    backend_for(root).caps()
 }
 
 /// See [`Vcs::changed_files`].
