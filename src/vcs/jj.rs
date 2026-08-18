@@ -247,6 +247,43 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
     map
 }
 
+/// Paths the ignore rules exclude, as absolute paths, with a fully ignored directory collapsed to a
+/// single entry rather than recursed into — the same shape the git backend returns, because the tree
+/// reads it as "self or an ancestor is in this set".
+///
+/// jj has no `git status --ignored` to delegate to, so the set is derived: walk once with the ignore
+/// rules applied to learn what survives them, then walk the directory tree and record whatever did
+/// not. Descending stops at each ignored entry, so a `target/` or `node_modules/` is one entry and
+/// is never entered.
+pub fn ignored(root: &Path) -> HashSet<PathBuf> {
+    let mut set = HashSet::new();
+    let Some(ws) = workspace_root(root) else {
+        return set;
+    };
+    let visible: HashSet<PathBuf> = walk(&ws).map(ignore::DirEntry::into_path).collect();
+    let mut stack = vec![ws];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == ".jj" || name == ".git" {
+                continue; // the VCS's own directory, which git does not report either
+            }
+            if !visible.contains(&path) {
+                set.insert(path); // ignored: record it and do not look inside
+                continue;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(path);
+            }
+        }
+    }
+    set
+}
+
 /// The workspace walk: everything jj would consider part of the working copy.
 ///
 /// `require_git(false)` is what makes `.gitignore` apply in a repository created with

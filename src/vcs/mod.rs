@@ -93,11 +93,8 @@ impl Vcs for Jj {
         jj::statuses(root)
     }
 
-    fn ignored(&self, _root: &Path) -> HashSet<PathBuf> {
-        // Not answered yet, so nothing is dimmed — the same as a directory with no repository at
-        // all, which is what these workspaces looked like before. The git backend delegates this to
-        // `git status --ignored`, which has no jj counterpart; it lands as its own step.
-        HashSet::new()
+    fn ignored(&self, root: &Path) -> HashSet<PathBuf> {
+        jj::ignored(root)
     }
 
     fn branch(&self, root: &Path) -> Option<String> {
