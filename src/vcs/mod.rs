@@ -159,6 +159,53 @@ impl Vcs for Git {
     }
 }
 
+/// Which backend the user asked for, from `[external] vcs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preference {
+    /// Prefer jj wherever a `.jj` exists, git everywhere else.
+    Auto,
+    /// Always git, even in a repository jj also owns.
+    Git,
+    /// jj wherever it can answer; git elsewhere, since the alternative is showing nothing.
+    Jj,
+}
+
+impl Preference {
+    /// Anything unrecognised means `auto`: a typo in the config should not silently take the tree's
+    /// markers away.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "git" => Self::Git,
+            "jj" => Self::Jj,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Process-wide, set once from the config at startup. Unlike git's own on/off switch this cannot be
+/// thread-local: the status scan runs on a worker thread, and it has to detect the same backend the
+/// UI thread does.
+static PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Applies `[external] vcs`.
+pub fn set_preference(p: Preference) {
+    let v = match p {
+        Preference::Auto => 0,
+        Preference::Git => 1,
+        Preference::Jj => 2,
+    };
+    PREFERENCE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+fn preference() -> Preference {
+    match PREFERENCE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Preference::Git,
+        2 => Preference::Jj,
+        _ => Preference::Auto,
+    }
+}
+
 /// Which backend answers for a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VcsKind {
@@ -243,15 +290,22 @@ impl Vcs for Jj {
 
 /// Which version-control system answers for `root`.
 ///
-/// **jj answers only where git cannot.** The eventual rule is the opposite — a directory holding
-/// `.jj` belongs to whoever created it — but flipping that while the jj backend is still filling in
-/// would take working views away from colocated repositories, where git answers everything today.
-/// The preference flips once jj covers the same surface; see `docs/FEATURE-JJ-SUPPORT.md`.
+/// **A directory holding `.jj` belongs to jj**, colocated or not: whoever ran `jj git init` works in
+/// jj, and showing them git's view of their own repository — a detached HEAD, an index they never
+/// use, a graph full of the commits jj rewrote — describes a repository they are not working in.
+/// `[external] vcs` overrides it either way.
+///
+/// git answers everywhere else, including where `.jj` exists but the `jj` binary does not: falling
+/// back shows something rather than nothing.
 pub fn detect(root: &Path) -> VcsKind {
     #[cfg(feature = "git")]
-    if crate::git::workdir(root).is_none() && jj::workspace_root(root).is_some() && jj::available()
     {
-        return VcsKind::Jj;
+        if preference() == Preference::Git {
+            return VcsKind::Git;
+        }
+        if jj::workspace_root(root).is_some() && jj::available() {
+            return VcsKind::Jj;
+        }
     }
     let _ = root;
     VcsKind::Git

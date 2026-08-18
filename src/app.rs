@@ -2424,6 +2424,7 @@ impl App {
         // EXTERNAL_GIT_ENABLED).
         #[cfg(feature = "git")]
         crate::git::set_external_git_enabled(app.cfg.external.git);
+        crate::vcs::set_preference(crate::vcs::Preference::parse(&app.cfg.external.vcs));
         app.rebuild_tree()?;
         // Register the current state as the first tab.
         app.tabs.push(app.snapshot_tab());

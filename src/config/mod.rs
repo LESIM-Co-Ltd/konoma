@@ -40,6 +40,12 @@ pub struct ExternalConfig {
     pub git: bool,
     /// The external git tool launched with `!` in the changes hub (`[git] tool`, default lazygit).
     pub git_tool: bool,
+    /// Which version-control system answers for a directory: `"auto"` (default), `"git"` or `"jj"`.
+    ///
+    /// `auto` prefers jj wherever a `.jj` exists — whoever created it works in jj — and falls back
+    /// to git everywhere else, including when the `jj` binary is missing. Set it explicitly to pin
+    /// a colocated repository, where both systems can answer, to the one you actually work in.
+    pub vcs: String,
     /// The external PDF fallback tools — macOS's bundled `qlmanage`/`sips`, used only when the
     /// primary renderer (`hayro`, pure Rust — always active regardless of this flag) fails to render
     /// page 1 of a given PDF (encrypted/corrupt/unsupported). `false` never launches those tools;
@@ -62,6 +68,7 @@ impl Default for ExternalConfig {
         Self {
             git: true,
             git_tool: true,
+            vcs: "auto".to_string(),
             pdf: true,
             video: true,
             remote_images: true,
