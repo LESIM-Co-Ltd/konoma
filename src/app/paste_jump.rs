@@ -238,7 +238,7 @@ impl App {
             vec![pb]
         } else {
             let mut v = vec![self.tab.root.join(&pb)];
-            if let Some(wd) = crate::git::workdir(&self.tab.root) {
+            if let Some(wd) = crate::vcs::workdir(&self.tab.root) {
                 if wd != self.tab.root {
                     v.push(wd.join(&pb));
                 }
@@ -253,7 +253,7 @@ impl App {
     /// `app.rs`, and the owner/repo/blob/ref prefix (which never exists on disk) is skipped.
     fn resolve_url_components(&self, components: &[String]) -> Option<PathBuf> {
         let mut bases: Vec<PathBuf> = Vec::new();
-        if let Some(wd) = crate::git::workdir(&self.tab.root) {
+        if let Some(wd) = crate::vcs::workdir(&self.tab.root) {
             bases.push(wd);
         }
         if !bases.iter().any(|b| b == &self.tab.root) {
@@ -284,7 +284,7 @@ impl App {
             } else {
                 path.parent().map(Path::to_path_buf).unwrap_or_default()
             };
-            let new_root = crate::git::workdir(&anchor)
+            let new_root = crate::vcs::workdir(&anchor)
                 .filter(|wd| path.starts_with(wd))
                 .unwrap_or(anchor);
             let new_root = new_root.canonicalize().unwrap_or(new_root);

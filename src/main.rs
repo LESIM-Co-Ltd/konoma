@@ -26,6 +26,7 @@ mod speed_tests;
 #[cfg(test)]
 mod test_support;
 mod ui;
+mod vcs;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

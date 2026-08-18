@@ -1065,7 +1065,7 @@ impl App {
         {
             return;
         }
-        let wd = crate::git::workdir(&self.tab.root);
+        let wd = crate::vcs::workdir(&self.tab.root);
         // statuses/branch run `git status` **from the workdir**: within the same repository the
         // result is identical from any subdirectory. So **when workdir is the same and not dirty,
         // reuse it instead of recomputing** (this avoids synchronously running a whole-worktree-scanning
@@ -1235,9 +1235,9 @@ impl App {
     ) -> crate::app::StatusResult {
         crate::app::StatusResult {
             gen,
-            statuses: crate::git::statuses(&root),
-            branch: crate::git::branch(&root),
-            worktree_origin: crate::git::worktree_origin(&root),
+            statuses: crate::vcs::statuses(&root),
+            branch: crate::vcs::branch(&root),
+            worktree_origin: crate::vcs::worktree_origin(&root),
             workdir,
         }
     }
@@ -1253,7 +1253,7 @@ impl App {
     ///   These must not answer "no changes" just because a scan hasn't finished — that reads as a broken
     ///   feature rather than a slow one.
     pub fn ensure_git_status_now(&mut self) {
-        let wd = crate::git::workdir(&self.tab.root);
+        let wd = crate::vcs::workdir(&self.tab.root);
         // Do nothing if not in flight and we already have the latest for the same repo (the same judgment as `l`/`h`'s reuse).
         let fresh = self.git_status_pending.is_none()
             && self.git_status_workdir.is_some()
@@ -1293,7 +1293,7 @@ impl App {
         self.git_status_pending = None;
         // Run the re-validation request that arrived while computing (the coalesced one) exactly once here.
         if self.git_status_dirty {
-            let wd = crate::git::workdir(&self.tab.root);
+            let wd = crate::vcs::workdir(&self.tab.root);
             self.kick_status_refresh(wd);
         }
         // The "changed files only" filter's list is entries **already derived** from statuses, so a
@@ -1320,7 +1320,7 @@ impl App {
     fn spawn_or_sync_ignored(&mut self, root: PathBuf, workdir: PathBuf, gen: u64) {
         let Some(tx) = self.ignored_tx.clone() else {
             // Synchronous fallback: compute and apply it on the spot (no staleness).
-            let set = crate::git::ignored(&root);
+            let set = crate::vcs::ignored(&root);
             self.apply_ignored(IgnoredResult { gen, workdir, set });
             return;
         };
@@ -1331,7 +1331,7 @@ impl App {
             // whatever it was before). An empty set is a safe degrade — nothing gets dimmed/hidden,
             // the same shape `refresh_ignored_if_needed` already uses for a root that isn't a repo at all.
             let set = crate::preview::markdown::compute_or_fallback(
-                || crate::git::ignored(&root),
+                || crate::vcs::ignored(&root),
                 Default::default,
             );
             let _ = tx.send(IgnoredResult { gen, workdir, set });
@@ -1646,7 +1646,7 @@ impl App {
         // Refetching goes to **a separate thread**. This is called from within `handle_key` (fs
         // events / tab switches), so running it synchronously froze key input itself for the
         // duration of `git status`.
-        let wd = crate::git::workdir(&self.tab.root);
+        let wd = crate::vcs::workdir(&self.tab.root);
         self.git_status_dirty = true; // refetch even for the same workdir (a re-validation request)
         self.kick_status_refresh(wd);
     }
