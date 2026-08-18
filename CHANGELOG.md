@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-08-18
+
 ### Added
 - **jj (Jujutsu) repositories now work — preview.** The surface is complete and was checked against
   jj's own output in every layout jj can produce, but it has not lived through long everyday use,
@@ -1864,7 +1866,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.0...v0.24.1
