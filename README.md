@@ -132,6 +132,11 @@ you came from, since a worktree's directory rarely does.
   the diff *since you pressed `F`*, so pre-existing changes stay out of the way.
 - **Git suite**: status, diff, log, a custom commit-graph renderer, branches, commits, and
   **worktrees** — list them, diff one against its base branch, and switch or open it in a tab.
+- **jj (Jujutsu) — preview**: a repository jj created without a colocated `.git`, and every
+  `jj workspace`, gets the same views. Off by default where git can already answer; set
+  `[external] vcs = "jj"` to use it in a colocated repository too. **konoma only reads a jj
+  repository.** Preview: the surface is complete for the tree, diffs and the hub, but `jj workspace`
+  has no list yet, and jj is pre-1.0 and moves monthly.
 - **File manager**: create / rename / delete (trash by default) / copy / move, plus search,
   bookmarks, and sorting. Destructive actions require a confirmation dialog.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
@@ -231,6 +236,9 @@ sudo apt install ffmpeg git lazygit       # Debian / Ubuntu
   build with `--no-default-features` to drop it.
 - **lazygit** — the external git tool launched with `!` inside the changes hub. Any other TUI works
   too: set `[git] tool` in the config (e.g. `"tig status"`).
+- **jj** — needed only for the jj backend (preview). Without it konoma falls back to git, so a
+  machine with no jj behaves exactly as before. `[jj] tool` (default `lazyjj`) is what `!` launches
+  inside a jj repository.
 
 Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the

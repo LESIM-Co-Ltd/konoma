@@ -529,12 +529,21 @@ git              = true   # git integration (status colors, gutter, Git views, s
                            # executable is found on the machine (checked once, on first use), and `o` says so.
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
 vcs              = "auto" # Which version-control system answers: "auto" | "git" | "jj".
-                          # "auto" prefers jj wherever a .jj exists — whoever created it works in jj —
-                          # and falls back to git everywhere else, including when the jj binary is
-                          # missing. Pin a colocated repository (.git and .jj side by side) to the
-                          # system you actually work in with "git" or "jj". konoma only reads a jj
-                          # repository: every jj call carries --ignore-working-copy, so it never
-                          # snapshots the working copy, and write keys are hidden rather than offered.
+                          # ** jj support is a preview. ** The surface is complete for the tree,
+                          # diffs and the hub, but `jj workspace` has no list yet, and jj is pre-1.0
+                          # and ships breaking changes monthly.
+                          #   "auto" (default) — git wherever git can answer, so a repository that
+                          #     already worked keeps showing exactly what it showed. jj answers only
+                          #     where there is no git repository to ask: one created with
+                          #     `jj git init --no-colocate`, or a `jj workspace`.
+                          #   "git"  — always git, even where a .jj sits beside the .git.
+                          #   "jj"   — jj wherever a .jj exists, colocated or not. Ask for this when
+                          #     jj is the system you actually work in.
+                          # konoma only READS a jj repository: every call carries
+                          # --ignore-working-copy, so it never snapshots the working copy, and write
+                          # keys are hidden rather than offered. The one exception is `R` in the hub,
+                          # which asks for a snapshot after a confirmation ([ui] confirm_jj_sync).
+                          # With no jj binary on the machine, konoma falls back to git.
 
 [jj]
 tool = "lazyjj"   # The external jj tool launched with `!` in the hub, the way [git] tool is for git.

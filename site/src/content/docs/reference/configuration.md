@@ -196,6 +196,10 @@ Mermaid and images always open at the top.
 
 ## `[jj]` — jj (Jujutsu) integration
 
+**Preview.** The surface is complete for the tree, diffs and the hub, but `jj workspace` has no list
+yet, and jj is pre-1.0 and ships breaking changes monthly. konoma pins nothing: it probes the `jj`
+on your machine once and falls back to git if it cannot answer.
+
 Only what has no git counterpart lives here; everything else about a jj repository is decided by
 `[external] vcs` and by jj itself. **konoma only reads a jj repository** — every call carries
 `--ignore-working-copy`, so it never snapshots the working copy, and keys that would write are
@@ -214,7 +218,7 @@ so an absent `[external]` section (or an absent field within it) changes nothing
 |---|---|---|
 | `git` | `true` | git integration: status colors, the gutter, the Git views, stage/unstage/commit/checkout/branch (`src/git.rs`, via the `git` CLI and the embedded git2/libgit2). `false` behaves exactly like building with `--no-default-features` (no `git` feature) — every read returns empty/`None`, every write returns an error. `o` (open the Git view) flashes a message distinct from "not a git repo", since it may well be one. Whatever this setting says, git integration also **turns itself off automatically when no `git` executable is found** on the machine (probed once, on first use); `o` then says git is not installed rather than blaming the directory. |
 | `git_tool` | `true` | The external git tool launched with `!` (`[git] tool`, default lazygit). |
-| `vcs` | `"auto"` | Which version-control system answers: `"auto"` \| `"git"` \| `"jj"`. `auto` prefers jj wherever a `.jj` exists and falls back to git everywhere else, including when the `jj` binary is missing. Use `"git"` or `"jj"` to pin a colocated repository. konoma only **reads** a jj repository — every call carries `--ignore-working-copy`, so it never snapshots the working copy, and write keys are hidden rather than offered. |
+| `vcs` | `"auto"` | Which version-control system answers. **jj support is a preview** — see the [git suite guide](/guides/git/). `"auto"` keeps git wherever git can answer, so a repository that already worked shows exactly what it showed before; jj answers only where there is no git repository to ask (`jj git init --no-colocate`, or a `jj workspace`). `"git"` is always git. `"jj"` uses jj wherever a `.jj` exists, colocated or not — ask for this when jj is the system you actually work in. With no `jj` binary on the machine, konoma falls back to git. |
 | `pdf` | `true` | The **external fallback** rasterizer — macOS's bundled `qlmanage`/`sips`, tried only when the primary renderer (`hayro`, pure Rust — parses/renders in-process regardless of this flag) fails on page 1 of a given PDF (encrypted, corrupt, or otherwise unsupported). `false` never launches those tools, but PDF preview itself (page rendering and the page count) keeps working via `hayro`. **On every other platform this flag is effectively a no-op**: there is no external PDF tool to launch. |
 | `video` | `true` | The **external fallback** thumbnail extractors (`ffmpegthumbnailer`/`ffmpeg`), tried only when the built-in decoder (pure Rust, in-process regardless of this flag) can't handle the file — i.e. anything that isn't H.264 or HEVC in `.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`. `false` never launches them, but H.264 and HEVC thumbnails from those containers keep working. Same relationship `pdf` has with `hayro` above. |
 | `remote_images` | `true` | Fetching `http(s)://` images referenced from Markdown — the only outbound network call konoma makes. Done in-process via `ureq` (rustls), not an external tool. |

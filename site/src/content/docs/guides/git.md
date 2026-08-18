@@ -66,13 +66,23 @@ tab, and `d` diffs it against its base branch — committed and uncommitted work
 together. See [Working with an AI agent](../agent-watch/) for why that matters when an
 agent is doing the committing.
 
-## jj (Jujutsu) repositories
+## jj (Jujutsu) repositories — preview
+
+**This is a preview.** The surface below is complete and was checked against jj's own output in
+every layout jj can produce — colocated, non-colocated, and a workspace — but it has not lived
+through long everyday use yet. `jj workspace` has no list of its own, and jj is pre-1.0: it ships breaking changes monthly, and
+konoma probes the `jj` on your machine rather than pinning a version — if it cannot answer, konoma
+falls back to git and nothing else changes.
+
+**Nothing changes for a repository that already worked.** By default git keeps answering wherever it
+can, so a colocated repository (`.git` and `.jj` side by side) looks exactly as it did. jj answers
+where there is no git repository to ask: one created with `jj git init --no-colocate`, and every
+`jj workspace`. Set `[external] vcs = "jj"` to use jj in a colocated repository too.
 
 A repository jj created without a colocated `.git`, and every `jj workspace`,
 gets the same views this page describes — the tree's markers and dimming, the
-diffs, the changed-file list, follow mode, and the hub. konoma picks the
-backend from what is on disk: a directory holding `.jj` belongs to jj, and
-`[external] vcs` overrides that either way.
+diffs, the changed-file list, follow mode, and the hub. `[external] vcs` decides which
+backend answers.
 
 What you see is jj's, not git's wearing jj's data:
 

@@ -166,11 +166,16 @@ impl Vcs for Git {
 /// Which backend the user asked for, from `[external] vcs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preference {
-    /// Prefer jj wherever a `.jj` exists, git everywhere else.
+    /// **git wherever git can answer; jj only where it cannot.** A repository with a `.git` keeps
+    /// showing what it always showed — upgrading konoma must not change the views of a repository
+    /// that already worked — while one jj created without a colocated `.git`, and every
+    /// `jj workspace`, gets the jj backend instead of nothing at all.
     Auto,
-    /// Always git, even in a repository jj also owns.
+    /// Always git, even where a `.jj` sits beside the `.git`.
     Git,
-    /// jj wherever it can answer; git elsewhere, since the alternative is showing nothing.
+    /// **jj wherever a `.jj` exists**, colocated or not: ask for this when jj is the system you
+    /// actually work in, and git's view of your repository — a detached HEAD, an index you never
+    /// stage to, a graph full of the commits jj rewrote — is describing something else.
     Jj,
 }
 
@@ -293,22 +298,21 @@ impl Vcs for Jj {
     }
 }
 
-/// Which version-control system answers for `root`.
+/// Which version-control system answers for `root`. See [`Preference`] for what decides it.
 ///
-/// **A directory holding `.jj` belongs to jj**, colocated or not: whoever ran `jj git init` works in
-/// jj, and showing them git's view of their own repository — a detached HEAD, an index they never
-/// use, a graph full of the commits jj rewrote — describes a repository they are not working in.
-/// `[external] vcs` overrides it either way.
-///
-/// git answers everywhere else, including where `.jj` exists but the `jj` binary does not: falling
-/// back shows something rather than nothing.
+/// git also answers where a `.jj` exists but the `jj` binary does not: falling back shows something
+/// rather than nothing.
 pub fn detect(root: &Path) -> VcsKind {
     #[cfg(feature = "git")]
     {
-        if preference() == Preference::Git {
+        let pref = preference();
+        if pref == Preference::Git {
             return VcsKind::Git;
         }
-        if jj::workspace_root(root).is_some() && jj::available() {
+        // Under `auto`, git keeps whatever it can already answer; jj fills the gap where there is no
+        // git repository to ask. `jj` asks for jj wherever it can answer at all.
+        let git_answers = pref == Preference::Auto && crate::git::workdir(root).is_some();
+        if !git_answers && jj::workspace_root(root).is_some() && jj::available() {
             return VcsKind::Jj;
         }
     }

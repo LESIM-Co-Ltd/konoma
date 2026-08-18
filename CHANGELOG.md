@@ -7,7 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- **jj (Jujutsu) repositories now work.** A repository created with `jj git init --no-colocate`, and
+- **jj (Jujutsu) repositories now work — preview.** The surface is complete and was checked against
+  jj's own output in every layout jj can produce, but it has not lived through long everyday use,
+  `jj workspace` has no list of its own yet, and jj is pre-1.0 (breaking changes land monthly, so
+  konoma probes the `jj` on the machine rather than pinning a version).
+
+  **Nothing changes for a repository that already worked.** git keeps answering wherever it can, so
+  a colocated repository looks exactly as it did; jj answers where there is no git repository to
+  ask. A repository created with `jj git init --no-colocate`, and
   every `jj workspace`, has no `.git` — so konoma showed nothing at all for them: no change markers,
   no chip, `d` answering "no changes" and `o` answering "not a git repo". They now get the same
   views a git repository does: the tree's markers and ignore dimming, the full-screen diff, the
@@ -42,9 +49,10 @@ All notable changes to konoma are documented in this file. The format is based o
   `--ignore-working-copy` outside the two places named for it.
 - `a` in the graph widens it from jj's own range to every revision, and `[jj] tool` (default
   `lazyjj`) is what `!` launches in a jj repository.
-- `[external] vcs` (`"auto"` | `"git"` | `"jj"`) decides which system answers. `auto` prefers jj
-  wherever a `.jj` exists and falls back to git everywhere else, including when the `jj` binary is
-  missing; the explicit values pin a colocated repository to the system you actually work in.
+- `[external] vcs` (`"auto"` | `"git"` | `"jj"`) decides which system answers. `auto` (default)
+  keeps git wherever git can answer and lets jj fill the gap; `"git"` is always git; `"jj"` uses jj
+  wherever a `.jj` exists, colocated or not. With no `jj` binary on the machine, konoma falls back
+  to git.
 
 ### Changed
 - The commit graph's node symbols are now chosen from a table keyed by what the node *means*, and
