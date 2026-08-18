@@ -62,7 +62,13 @@ fn chip_str(text: String, bg: Color, dark_bg: bool) -> Span<'static> {
 /// Since Git has grown, the changes hub/log/graph/branches/detail **promote the main mode to GIT**.
 fn display_chip(app: &App) -> Span<'static> {
     if app.in_git_view() {
-        return chip(app.lang, Msg::StGit, Color::Yellow, false);
+        // Which backend is answering has to be visible: a colocated repository has both, and a diff
+        // taken against `@-` is not the same thing as one taken against HEAD.
+        return match app.git_vcs {
+            crate::vcs::VcsKind::Git => chip(app.lang, Msg::StGit, Color::Yellow, false),
+            #[cfg(feature = "git")]
+            crate::vcs::VcsKind::Jj => chip(app.lang, Msg::StJj, Color::Magenta, false),
+        };
     }
     let (msg, bg, dark) = match app.display_mode() {
         DisplayMode::Tree => (Msg::StTree, Color::White, false),

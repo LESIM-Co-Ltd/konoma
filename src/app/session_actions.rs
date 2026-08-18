@@ -194,7 +194,7 @@ impl App {
                     // Reproduce the full-screen git diff that was being viewed. Falls back to the
                     // normal preview if there is no diff (since committed / a no-git build) —
                     // the same judgment as follow_jump.
-                    let diff = crate::git::file_diff(&self.tab.root, p);
+                    let diff = crate::vcs::file_diff(&self.tab.root, p);
                     if !diff.is_empty() {
                         self.open_git_diff(p);
                         self.diff_cache = Some(super::DiffCache {

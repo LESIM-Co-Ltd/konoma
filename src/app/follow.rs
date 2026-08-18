@@ -304,7 +304,7 @@ impl App {
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
         } else {
-            gutter_marks(&crate::git::file_diff(&self.tab.root, &path))
+            gutter_marks(&crate::vcs::file_diff(&self.tab.root, &path))
         };
         let Some(first) = marks.keys().min().copied() else {
             return;

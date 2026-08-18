@@ -880,7 +880,7 @@ fn cli_paths(out: &[u8]) -> Vec<PathBuf> {
 /// header and no body, matching libgit2 (see [`looks_binary`]). Text is compared through
 /// `from_utf8_lossy` — the same conversion `collect_diff_lines` applies to libgit2's line content.
 #[cfg(feature = "git")]
-fn push_file_diff(
+pub(crate) fn push_file_diff(
     out: &mut Vec<DiffLine>,
     rel: &Path,
     old: Option<&[u8]>,

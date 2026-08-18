@@ -380,6 +380,9 @@ pub enum Msg {
     StQuitHint,
     StFilter,
     StGit,
+    /// Status-bar chip when a jj (Jujutsu) backend is answering, in place of `StGit`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    StJj,
     StGraph,
     StImage,
     StInfo,
@@ -896,6 +899,7 @@ fn en(msg: Msg) -> &'static str {
         StQuitHint => "y / q / Enter = quit    n / Esc = cancel",
         StFilter => "FILTER",
         StGit => "GIT",
+        StJj => "JJ",
         StGraph => "GRAPH",
         StImage => "IMAGE",
         StInfo => "INFO",
@@ -1362,6 +1366,7 @@ fn jp(msg: Msg) -> &'static str {
         StQuitHint => "y / q / Enter = 終了    n / Esc = 取消",
         StFilter => "絞り込み",
         StGit => "Git",
+        StJj => "jj",
         StGraph => "グラフ",
         StImage => "画像",
         StInfo => "情報",
@@ -1889,6 +1894,7 @@ mod tests {
         Msg::StDrop,
         Msg::StFilter,
         Msg::StGit,
+        Msg::StJj,
         Msg::StGraph,
         Msg::StImage,
         Msg::StInfo,

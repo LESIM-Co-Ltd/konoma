@@ -175,14 +175,9 @@ fn differs_from_parent(ws: &Path, rel: &str, disk: &Path) -> bool {
     let Ok(now) = std::fs::read(disk) else {
         return true; // unreadable: report it rather than hide it
     };
-    let out = std::process::Command::new("jj")
-        .current_dir(ws)
-        .args(args(&["file", "show", "-r", "@-", rel]))
-        .stdin(std::process::Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => o.stdout != now,
-        _ => true,
+    match parent_bytes(ws, rel) {
+        Some(before) => before != now,
+        None => true,
     }
 }
 
@@ -245,6 +240,45 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
         crate::git::rollup(&mut map, &ws, &ws.join(rel), FileStatus::Deleted);
     }
     map
+}
+
+/// Working-copy diff of one file: the parent commit (`@-`) against what is on disk right now.
+///
+/// That base is what `jj diff` itself shows, and reading the current bytes off disk rather than
+/// asking jj for them is what keeps the answer honest — jj would report its last snapshot, which
+/// can be older than the file.
+///
+/// A file the parent does not have reads as all-added, matching how the git backend treats an
+/// untracked file. Returns an empty diff when the file is outside the workspace or jj cannot
+/// answer, the same "quietly render blank" contract as everywhere else here.
+pub fn file_diff(root: &Path, file: &Path) -> Vec<crate::git::DiffLine> {
+    let mut out = Vec::new();
+    let Some(ws) = workspace_root(root) else {
+        return out;
+    };
+    let abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let ws_abs = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    let Ok(rel) = abs.strip_prefix(&ws_abs) else {
+        return out; // outside this workspace
+    };
+    let Some(rel_str) = rel.to_str() else {
+        return out;
+    };
+    let before = parent_bytes(&ws, rel_str);
+    let after = std::fs::read(&abs).ok();
+    crate::git::push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), false);
+    out
+}
+
+/// The parent commit's bytes for one path, or None when the parent does not have it.
+fn parent_bytes(ws: &Path, rel: &str) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("jj")
+        .current_dir(ws)
+        .args(args(&["file", "show", "-r", "@-", rel]))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
 }
 
 /// Paths the ignore rules exclude, as absolute paths, with a fully ignored directory collapsed to a

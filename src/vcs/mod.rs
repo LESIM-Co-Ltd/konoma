@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::git::FileStatus;
+use crate::git::{DiffLine, FileStatus};
 
 #[cfg(feature = "git")]
 pub mod jj;
@@ -43,6 +43,11 @@ pub trait Vcs: Send + Sync {
 
     /// For a linked worktree, the name it was created from; None for the main one.
     fn worktree_origin(&self, root: &Path) -> Option<String>;
+
+    /// Line diff of one file against the committed state it should be compared with (git: HEAD,
+    /// jj: the working-copy commit's parent). A file the committed state does not have reads as
+    /// all-added.
+    fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine>;
 }
 
 /// The git backend. It delegates to [`crate::git`], which still holds the implementation.
@@ -67,6 +72,10 @@ impl Vcs for Git {
 
     fn worktree_origin(&self, root: &Path) -> Option<String> {
         crate::git::worktree_origin(root)
+    }
+
+    fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine> {
+        crate::git::file_diff(root, file)
     }
 }
 
@@ -104,6 +113,10 @@ impl Vcs for Jj {
     fn worktree_origin(&self, _root: &Path) -> Option<String> {
         // jj's equivalent is `jj workspace`, which is deliberately out of scope for now.
         None
+    }
+
+    fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine> {
+        jj::file_diff(root, file)
     }
 }
 
@@ -159,6 +172,11 @@ pub fn branch(root: &Path) -> Option<String> {
 /// See [`Vcs::worktree_origin`].
 pub fn worktree_origin(root: &Path) -> Option<String> {
     backend_for(root).worktree_origin(root)
+}
+
+/// See [`Vcs::file_diff`].
+pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
+    backend_for(root).file_diff(root, file)
 }
 
 #[cfg(test)]

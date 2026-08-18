@@ -3180,7 +3180,7 @@ impl App {
             }
         }
         let _ = follow;
-        crate::git::file_diff(&self.tab.root, path)
+        crate::vcs::file_diff(&self.tab.root, path)
     }
 
     fn enter_preview(&mut self, path: &Path) {
@@ -4407,7 +4407,7 @@ impl App {
         };
         let hit = matches!(&self.gutter_cache, Some(c) if c.path == path);
         if !hit {
-            let diff = crate::git::file_diff(&self.tab.root, &path);
+            let diff = crate::vcs::file_diff(&self.tab.root, &path);
             let marks = gutter_marks(&diff);
             self.gutter_cache = Some(GutterCache {
                 path: path.clone(),
