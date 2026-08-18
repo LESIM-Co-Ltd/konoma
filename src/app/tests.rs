@@ -15529,6 +15529,7 @@ fn stale_git_status_result_is_discarded() {
         )]),
         branch: Some("stale".into()),
         worktree_origin: None,
+        vcs: crate::vcs::VcsKind::Git,
     };
     assert!(!app.apply_statuses(stale), "古い世代の結果は捨てる");
     assert!(
@@ -15566,6 +15567,7 @@ fn apply_statuses_with_a_panic_shaped_result_still_clears_pending() {
         statuses: Default::default(),
         branch: None,
         worktree_origin: None,
+        vcs: crate::vcs::VcsKind::Git,
     };
     assert!(app.apply_statuses(panic_fallback), "現世代なので適用される");
     assert!(
@@ -15587,6 +15589,7 @@ fn apply_statuses_with_a_panic_shaped_result_still_clears_pending() {
         statuses: Default::default(),
         branch: None,
         worktree_origin: None,
+        vcs: crate::vcs::VcsKind::Git,
     };
     assert!(
         !app.apply_statuses(stale_panic_fallback),

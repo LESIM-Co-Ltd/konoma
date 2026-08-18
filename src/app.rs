@@ -932,6 +932,11 @@ pub struct StatusResult {
     /// `apply_statuses`) — see `App::worktree_origin`'s doc comment for why it rides along here
     /// instead of having its own refresh path.
     worktree_origin: Option<String>,
+    /// Which backend answered. The tree's chip is drawn from it (git names a branch, jj names the
+    /// working-copy commit), and it rides along here for the same reason `worktree_origin` does:
+    /// it is decided by the same scan, so it must land with the same result rather than be probed
+    /// again at draw time.
+    vcs: crate::vcs::VcsKind,
 }
 
 /// Which long-running filesystem operation a background job is performing.
@@ -1427,6 +1432,8 @@ pub struct App {
     diff_layout: DiffLayout,
     /// The current branch name (fetched at the same time as git status). None if not a repo.
     git_branch: Option<String>,
+    /// Which backend produced `git_branch`/`git_status`. Same lifecycle as `git_branch`.
+    pub(crate) git_vcs: crate::vcs::VcsKind,
     /// The origin repo name when the current root is inside a **linked worktree** (`git worktree
     /// add`), else `None`. Same lifecycle/cache as `git_branch` — fetched by the same background
     /// scan (`scan_statuses`), applied by the same `apply_statuses`, cleared whenever `git_branch`
@@ -2382,6 +2389,7 @@ impl App {
             git_ignored: std::collections::HashSet::new(),
             git_status_for: None,
             git_status_workdir: None,
+            git_vcs: crate::vcs::VcsKind::Git,
             git_status_dirty: false,
             git_status_pending: None,
             git_status_gen: 0,

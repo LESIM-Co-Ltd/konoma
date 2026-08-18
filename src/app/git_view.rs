@@ -43,7 +43,10 @@ impl App {
                 return;
             }
         }
-        if crate::vcs::branch(&self.tab.root).is_none() {
+        // Deliberately git's own answer, not the backend's: this hub is the git hub, and a jj
+        // workspace must keep saying so rather than opening an empty one. It moves to the backend
+        // when the jj hub exists.
+        if crate::git::branch(&self.tab.root).is_none() {
             // Not a repo (or the feature is disabled). Ignore safely and notify via flash.
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
             return;
@@ -1963,7 +1966,7 @@ mod tests {
         sh(&dir, &["add", "-A"]);
         sh(&dir, &["commit", "-q", "-m", "init"]);
         let root = dir.canonicalize().unwrap();
-        let base = crate::vcs::branch(&root).expect("sanity: has a branch after the commit");
+        let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
         let linked = unique_tmp(&format!("{name}_linked"));
         let _ = std::fs::remove_dir_all(&linked);
         sh(

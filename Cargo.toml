@@ -261,6 +261,7 @@ similar = "3.1.1"
 # (配布容易性 PRD §5)＝C ライブラリ・build.rs 経由のネイティブビルド無し。`Matcher` はキー入力毎に
 # 作り直すと ~135KB の eager alloc が毎回走るため、呼び出し側で使い回す(bookmark_actions.rs 参照)。
 nucleo-matcher = "0.3"
+ignore = "0.4.33"
 
 [features]
 default = ["git"]

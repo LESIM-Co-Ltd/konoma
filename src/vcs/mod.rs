@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 
 use crate::git::FileStatus;
 
+#[cfg(feature = "git")]
+pub mod jj;
+
 /// The read surface a version-control backend answers.
 ///
 /// `Send + Sync` because the status scan runs on a worker thread (`spawn_or_sync_statuses`).
@@ -67,12 +70,69 @@ impl Vcs for Git {
     }
 }
 
-/// The backend that answers for `root`.
+/// Which backend answers for a directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VcsKind {
+    Git,
+    /// jj (Jujutsu). See [`jj`].
+    #[cfg(feature = "git")]
+    Jj,
+}
+
+/// The jj backend. See [`jj`] for why every read is safe.
+#[cfg(feature = "git")]
+pub struct Jj;
+
+#[cfg(feature = "git")]
+impl Vcs for Jj {
+    fn workdir(&self, root: &Path) -> Option<PathBuf> {
+        jj::workspace_root(root)
+    }
+
+    fn statuses(&self, root: &Path) -> HashMap<PathBuf, FileStatus> {
+        jj::statuses(root)
+    }
+
+    fn ignored(&self, _root: &Path) -> HashSet<PathBuf> {
+        // Not answered yet, so nothing is dimmed — the same as a directory with no repository at
+        // all, which is what these workspaces looked like before. The git backend delegates this to
+        // `git status --ignored`, which has no jj counterpart; it lands as its own step.
+        HashSet::new()
+    }
+
+    fn branch(&self, root: &Path) -> Option<String> {
+        jj::branch(root)
+    }
+
+    fn worktree_origin(&self, _root: &Path) -> Option<String> {
+        // jj's equivalent is `jj workspace`, which is deliberately out of scope for now.
+        None
+    }
+}
+
+/// Which version-control system answers for `root`.
 ///
-/// Detection (`.jj` before `.git`, and the `[external] vcs` override) lands with the jj backend;
-/// until then every directory is answered by git, exactly as before.
-pub fn backend_for(_root: &Path) -> &'static dyn Vcs {
-    &Git
+/// **jj answers only where git cannot.** The eventual rule is the opposite — a directory holding
+/// `.jj` belongs to whoever created it — but flipping that while the jj backend is still filling in
+/// would take working views away from colocated repositories, where git answers everything today.
+/// The preference flips once jj covers the same surface; see `docs/FEATURE-JJ-SUPPORT.md`.
+pub fn detect(root: &Path) -> VcsKind {
+    #[cfg(feature = "git")]
+    if crate::git::workdir(root).is_none() && jj::workspace_root(root).is_some() && jj::available()
+    {
+        return VcsKind::Jj;
+    }
+    let _ = root;
+    VcsKind::Git
+}
+
+/// The backend that answers for `root`.
+pub fn backend_for(root: &Path) -> &'static dyn Vcs {
+    match detect(root) {
+        VcsKind::Git => &Git,
+        #[cfg(feature = "git")]
+        VcsKind::Jj => &Jj,
+    }
 }
 
 // --- The window callers use ---------------------------------------------------------------------

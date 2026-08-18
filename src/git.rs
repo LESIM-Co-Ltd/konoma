@@ -186,7 +186,7 @@ impl FileStatus {
 /// inside a non-ASCII-named ancestor directory still falls through to canonicalize — its rollup
 /// entries need resolving too.
 #[cfg(all(feature = "git", target_os = "macos"))]
-fn normalize_status_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_status_path(path: PathBuf) -> PathBuf {
     match path.to_str() {
         Some(s) if s.is_ascii() => path,
         _ => path.canonicalize().unwrap_or(path),
@@ -194,7 +194,7 @@ fn normalize_status_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(all(feature = "git", not(target_os = "macos")))]
-fn normalize_status_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_status_path(path: PathBuf) -> PathBuf {
     path
 }
 
@@ -3142,8 +3142,16 @@ pub fn worktree_add(
 }
 
 /// Applies the status to a file and its ancestor directories (up to workdir). Directories keep the higher priority.
+///
+/// Shared with the jj backend: how a status rolls up into its parent directories is a property of
+/// konoma's tree, not of git, so both backends must do it the same way.
 #[cfg(feature = "git")]
-fn rollup(map: &mut HashMap<PathBuf, FileStatus>, workdir: &Path, abs: &Path, st: FileStatus) {
+pub(crate) fn rollup(
+    map: &mut HashMap<PathBuf, FileStatus>,
+    workdir: &Path,
+    abs: &Path,
+    st: FileStatus,
+) {
     map.entry(abs.to_path_buf())
         .and_modify(|e| {
             if st.rank() > e.rank() {

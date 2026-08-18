@@ -404,12 +404,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             tr(app.lang, Msg::StChangedOnly),
             app.tab.entries.len()
         ),
-        (None, Some(branch)) => format!(
-            " {}  {} {} ",
-            app.format_path(&root),
-            icons::branch_marker(icons_on),
-            branch
-        ),
+        (None, Some(branch)) => match icons::chip_marker(app.git_vcs, icons_on) {
+            "" => format!(" {}  {} ", app.format_path(&root), branch),
+            marker => format!(" {}  {} {} ", app.format_path(&root), marker, branch),
+        },
         (None, None) => format!(" {} ", app.format_path(&root)),
     };
 

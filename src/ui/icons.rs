@@ -128,3 +128,16 @@ pub fn node_glyph(kind: crate::git::NodeKind) -> char {
         K::Merge => '\u{25c6}',                   // ◆
     }
 }
+
+/// Marker in front of the tree's repository chip.
+///
+/// git names a branch, so it gets the branch glyph. jj names the working-copy commit and its label
+/// already opens with `@` — jj's own symbol for it — so a second marker would only repeat it.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn chip_marker(vcs: crate::vcs::VcsKind, icons: bool) -> &'static str {
+    match vcs {
+        crate::vcs::VcsKind::Git => branch_marker(icons),
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => "",
+    }
+}

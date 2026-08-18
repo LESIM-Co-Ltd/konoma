@@ -1192,6 +1192,7 @@ impl App {
                 statuses: Default::default(),
                 branch: None,
                 worktree_origin: None,
+                vcs: crate::vcs::VcsKind::Git,
                 workdir,
             };
             self.apply_statuses(res);
@@ -1220,6 +1221,7 @@ impl App {
                     statuses: Default::default(),
                     branch: None,
                     worktree_origin: None,
+                    vcs: crate::vcs::VcsKind::Git,
                     workdir: workdir_for_failure,
                 },
             );
@@ -1238,6 +1240,7 @@ impl App {
             statuses: crate::vcs::statuses(&root),
             branch: crate::vcs::branch(&root),
             worktree_origin: crate::vcs::worktree_origin(&root),
+            vcs: crate::vcs::detect(&root),
             workdir,
         }
     }
@@ -1283,6 +1286,7 @@ impl App {
         }
         self.git_status = res.statuses;
         self.git_branch = res.branch;
+        self.git_vcs = res.vcs;
         self.git_worktree_origin = res.worktree_origin;
         self.git_status_workdir = res.workdir;
         // A matching generation = this result belongs to the current workdir. The root at the time
