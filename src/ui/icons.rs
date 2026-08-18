@@ -112,3 +112,19 @@ pub fn file_icon(path: &Path) -> char {
         _ => '\u{f016}',                                                // default: generic file
     }
 }
+
+/// Glyph for one commit-graph node. **The backend decides the [`NodeKind`](crate::git::NodeKind);
+/// this table decides the glyph.** Keeping them apart is what lets the node cell be located by
+/// position rather than by matching on the character, so a second VCS can bring its own symbols
+/// (jj draws `@` for the working copy, `○` for an ordinary commit, `×` for a conflict) without
+/// breaking the code that paints the legend and the selected row.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub fn node_glyph(kind: crate::git::NodeKind) -> char {
+    use crate::git::NodeKind as K;
+    match kind {
+        // git has no glyph of its own for the working copy: its pseudo-row is drawn as an ordinary
+        // node and recoloured yellow-bold afterwards.
+        K::Normal | K::WorkingCopy => '\u{25cf}', // ●
+        K::Merge => '\u{25c6}',                   // ◆
+    }
+}

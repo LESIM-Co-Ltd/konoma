@@ -1317,6 +1317,8 @@ fn git_graph_move_extremes_no_panic() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     let commit = |id: &str| crate::git::GraphRow {
         graph: Vec::new(),
+        node: Some(crate::git::NodeKind::Normal),
+        node_col: Some(0),
         commit: Some(id.to_string()),
         short: String::new(),
         subject: String::new(),
@@ -1327,6 +1329,8 @@ fn git_graph_move_extremes_no_panic() {
     };
     let connector = || crate::git::GraphRow {
         graph: Vec::new(),
+        node: None,
+        node_col: None,
         commit: None,
         short: String::new(),
         subject: String::new(),

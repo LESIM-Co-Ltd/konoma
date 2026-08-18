@@ -1530,9 +1530,8 @@ pub fn legend_from_rows(
             continue;
         }
         let node_color = r
-            .graph
-            .iter()
-            .find(|(g, _)| g == "●" || g == "◆")
+            .node_col
+            .and_then(|i| r.graph.get(i))
             .and_then(|(_, st)| st.fg)
             .unwrap_or(Color::Reset);
         for tok in r.refs.split(',') {
@@ -2344,11 +2343,34 @@ pub fn worktree_add(
     }
 }
 
+/// What a commit-graph node **means**, independent of the glyph that draws it. The backend decides
+/// the kind; [`crate::ui::icons::node_glyph`] decides the glyph. Keeping the two apart is what lets
+/// the node cell be located by position (`GraphRow::node_col`) instead of by matching on the
+/// character — so a second VCS can bring its own symbols without silently breaking the code that
+/// paints the legend and the selected row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub enum NodeKind {
+    /// An ordinary commit (one parent, or the root).
+    Normal,
+    /// A merge (two or more parents).
+    Merge,
+    /// The working copy's own row (git: the "Uncommitted changes" pseudo-row).
+    WorkingCopy,
+}
+
 /// One row of the commit graph (`G`: SourceTree / Git Graph style). `graph` = the (char, style) sequence of the colored lane area;
 /// `commit` = the commit on that row (Some = commit row / None = connector-only row).
 #[derive(Debug, Clone)]
 pub struct GraphRow {
     pub graph: Vec<(String, ratatui::style::Style)>,
+    /// What this row's node is (None on connector-only rows).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub node: Option<NodeKind>,
+    /// Index into `graph` of the node cell (None on connector-only rows). **Locate the node with
+    /// this, never by comparing the glyph** — the glyph is a per-VCS presentation detail.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub node_col: Option<usize>,
     pub commit: Option<String>,
     pub short: String,
     pub subject: String,
@@ -2554,13 +2576,13 @@ fn lay_out_lanes(
     };
     // Assemble the commit row (2 columns per lane). my_lane = the node, other active lanes = │,
     // gaps = blank.
-    let commit_cells = |lanes: &[Option<Lane>], my_lane: usize, node: char, my_color: Color| {
+    let commit_cells = |lanes: &[Option<Lane>], my_lane: usize, node: NodeKind, my_color: Color| {
         let n = lanes.len();
         let mut glyph = vec![' '; n.saturating_mul(2).saturating_sub(1).max(1)];
         let mut color = vec![Color::Reset; glyph.len()];
         for (i, l) in lanes.iter().enumerate() {
             if i == my_lane {
-                glyph[i * 2] = node;
+                glyph[i * 2] = crate::ui::icons::node_glyph(node);
                 color[i * 2] = my_color;
             } else if let Some(l) = l {
                 glyph[i * 2] = '│';
@@ -2610,10 +2632,20 @@ fn lay_out_lanes(
             }
         }
 
-        // 3) The commit row.
-        let node = if c.parents.len() >= 2 { '◆' } else { '●' };
+        // 3) The commit row. The *kind* is decided here (the backend knows the meaning); the glyph
+        // comes from `icons::node_glyph`, and `node_col` records where it landed so nothing has to
+        // find it by comparing characters. Two columns per lane, so the node sits at my_lane * 2.
+        let node = if c.id == WT_ID {
+            NodeKind::WorkingCopy
+        } else if c.parents.len() >= 2 {
+            NodeKind::Merge
+        } else {
+            NodeKind::Normal
+        };
         rows.push(GraphRow {
             graph: commit_cells(&lanes, my_lane, node, my_color),
+            node: Some(node),
+            node_col: Some(my_lane * 2),
             commit: Some(c.id.clone()),
             short: c.short.clone(),
             subject: c.subject.clone(),
@@ -2659,17 +2691,18 @@ fn lay_out_lanes(
     // clear commit, set worktree=true, and repaint the node (●) yellow-bold (keeping the lane position).
     if wt.is_some() {
         use ratatui::style::{Modifier, Style};
-        if let Some(r) = rows.iter_mut().find(|r| r.commit.as_deref() == Some(WT_ID)) {
+        if let Some(r) = rows
+            .iter_mut()
+            .find(|r| r.node == Some(NodeKind::WorkingCopy))
+        {
             r.commit = None;
             r.worktree = true;
             r.short = String::new();
             let node = Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD);
-            for cell in r.graph.iter_mut() {
-                if cell.0 == "●" || cell.0 == "◆" {
-                    cell.1 = node;
-                }
+            if let Some(cell) = r.node_col.and_then(|i| r.graph.get_mut(i)) {
+                cell.1 = node;
             }
         }
     }
@@ -2723,6 +2756,8 @@ fn cells_from(
 fn connector_row(graph: Vec<(String, ratatui::style::Style)>) -> GraphRow {
     GraphRow {
         graph,
+        node: None,
+        node_col: None,
         commit: None,
         short: String::new(),
         subject: String::new(),
