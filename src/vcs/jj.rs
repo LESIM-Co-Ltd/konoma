@@ -181,46 +181,43 @@ fn differs_from_parent(ws: &Path, rel: &str, disk: &Path) -> bool {
     }
 }
 
-/// Status of everything that differs from `@-`, as absolute paths, with directories rolled up the
-/// same way the git backend does it.
+/// One scan of the working copy: every file that differs from `@-`, as an absolute path.
+///
+/// **This is the only place the comparison is made** — both the tree's markers and the changed-file
+/// list are derived from it, so they cannot drift apart.
 ///
 /// Freshness comes from the walk, not from jj: `jj diff` answers from the last snapshot, so a file
-/// written since then would be invisible. Every file newer than that snapshot is therefore treated
-/// as a candidate and checked against the parent's content — normally a handful, since the snapshot
-/// is refreshed by any jj command the user runs.
-pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
-    let mut map = HashMap::new();
-    let Some(ws) = workspace_root(root) else {
-        return map;
+/// written since then would be invisible to it. Every file newer than that snapshot is therefore a
+/// candidate and gets checked against the parent's content — normally a handful, since any jj
+/// command the user runs refreshes the snapshot.
+fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
+    let mut out = Vec::new();
+    let Some(m) = meta(ws) else {
+        return out; // jj could not answer: stay quiet rather than guess
     };
-    let Some(m) = meta(&ws) else {
-        return map; // jj could not answer: stay quiet rather than guess
-    };
-    let known = known_changes(&ws);
-    let tracked = tracked(&ws);
+    let known = known_changes(ws);
+    let tracked = tracked(ws);
     let mut seen: HashSet<String> = HashSet::new();
     let mut confirmed = 0usize;
 
-    for entry in walk(&ws) {
-        let Ok(rel) = entry.path().strip_prefix(&ws) else {
-            continue;
-        };
-        let Some(rel) = rel.to_str() else {
-            continue;
-        };
+    for entry in walk(ws) {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
-        seen.insert(rel.to_string());
-        let st = if let Some(&st) = known.get(rel) {
+        let Some(rel) = entry.path().strip_prefix(ws).ok().and_then(|p| p.to_str()) else {
+            continue;
+        };
+        let rel = rel.to_string();
+        seen.insert(rel.clone());
+        let st = if let Some(&st) = known.get(&rel) {
             st
         } else if !newer_than(entry.path(), m.snapshot_epoch) {
             continue; // jj has seen this file and reported nothing about it
-        } else if !tracked.contains(rel) {
+        } else if !tracked.contains(&rel) {
             FileStatus::Added
         } else if confirmed < CONFIRM_CAP {
             confirmed += 1;
-            if differs_from_parent(&ws, rel, entry.path()) {
+            if differs_from_parent(ws, &rel, entry.path()) {
                 FileStatus::Modified
             } else {
                 continue;
@@ -228,18 +225,47 @@ pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
         } else {
             FileStatus::Modified
         };
-        crate::git::rollup(
-            &mut map,
-            &ws,
-            &crate::git::normalize_status_path(entry.into_path()),
-            st,
-        );
+        out.push((crate::git::normalize_status_path(entry.into_path()), st));
     }
 
     for rel in tracked.difference(&seen) {
-        crate::git::rollup(&mut map, &ws, &ws.join(rel), FileStatus::Deleted);
+        out.push((ws.join(rel), FileStatus::Deleted));
+    }
+    out
+}
+
+/// Status of everything that differs from `@-`, as absolute paths, with directories rolled up the
+/// same way the git backend does it.
+pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
+    let mut map = HashMap::new();
+    let Some(ws) = workspace_root(root) else {
+        return map;
+    };
+    for (abs, st) in scan(&ws) {
+        crate::git::rollup(&mut map, &ws, &abs, st);
     }
     map
+}
+
+/// The changed files, one entry per file, sorted by path — what the changed-file list (`C`) and the
+/// jumps between changes (`n`/`N`) walk.
+///
+/// `staged` is always false: jj has no index, so there is no such distinction to report. The hub
+/// hides the staging keys for the same reason.
+pub fn changed_files(root: &Path) -> Vec<crate::git::ChangeEntry> {
+    let Some(ws) = workspace_root(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<crate::git::ChangeEntry> = scan(&ws)
+        .into_iter()
+        .map(|(path, status)| crate::git::ChangeEntry {
+            path,
+            status,
+            staged: false,
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
 }
 
 /// Working-copy diff of one file: the parent commit (`@-`) against what is on disk right now.

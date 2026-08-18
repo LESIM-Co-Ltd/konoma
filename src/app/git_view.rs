@@ -51,7 +51,7 @@ impl App {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
             return;
         }
-        self.tab.git_view_entries = crate::git::changed_files(&self.tab.root);
+        self.tab.git_view_entries = crate::vcs::changed_files(&self.tab.root);
         self.tab.git_view_sel = 0;
         self.tab.git_view = true;
     }
@@ -91,7 +91,7 @@ impl App {
     }
     /// Rebuild the list after a write operation and clamp the cursor. Also invalidates and refetches git status.
     pub fn git_view_reload(&mut self) {
-        self.tab.git_view_entries = crate::git::changed_files(&self.tab.root);
+        self.tab.git_view_entries = crate::vcs::changed_files(&self.tab.root);
         if self.tab.git_view_sel >= self.tab.git_view_entries.len() {
             self.tab.git_view_sel = self.tab.git_view_entries.len().saturating_sub(1);
         }

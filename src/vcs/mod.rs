@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::git::{DiffLine, FileStatus};
+use crate::git::{ChangeEntry, DiffLine, FileStatus};
 
 #[cfg(feature = "git")]
 pub mod jj;
@@ -48,6 +48,10 @@ pub trait Vcs: Send + Sync {
     /// jj: the working-copy commit's parent). A file the committed state does not have reads as
     /// all-added.
     fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine>;
+
+    /// The changed files, one entry per file, sorted by path — what the changed-file list and the
+    /// jumps between changes walk.
+    fn changed_files(&self, root: &Path) -> Vec<ChangeEntry>;
 }
 
 /// The git backend. It delegates to [`crate::git`], which still holds the implementation.
@@ -76,6 +80,10 @@ impl Vcs for Git {
 
     fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine> {
         crate::git::file_diff(root, file)
+    }
+
+    fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
+        crate::git::changed_files(root)
     }
 }
 
@@ -117,6 +125,10 @@ impl Vcs for Jj {
 
     fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine> {
         jj::file_diff(root, file)
+    }
+
+    fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
+        jj::changed_files(root)
     }
 }
 
@@ -177,6 +189,11 @@ pub fn worktree_origin(root: &Path) -> Option<String> {
 /// See [`Vcs::file_diff`].
 pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     backend_for(root).file_diff(root, file)
+}
+
+/// See [`Vcs::changed_files`].
+pub fn changed_files(root: &Path) -> Vec<ChangeEntry> {
+    backend_for(root).changed_files(root)
 }
 
 #[cfg(test)]
