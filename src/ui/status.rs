@@ -141,7 +141,14 @@ fn internal_chip(app: &App) -> Option<Span<'static>> {
         InternalMode::GitLog => (Msg::StLog, Color::Yellow, false),
         InternalMode::GitDetail => (Msg::StCommitDiff, Color::Blue, true),
         // Branch operations are also part of the Git family's yellow.
-        InternalMode::GitBranch => (Msg::StBranch, Color::Yellow, false),
+        InternalMode::GitBranch => {
+            // jj's list holds bookmarks; the word is not a synonym for branch there.
+            match app.git_vcs {
+                crate::vcs::VcsKind::Git => (Msg::StBranch, Color::Yellow, false),
+                #[cfg(feature = "git")]
+                crate::vcs::VcsKind::Jj => (Msg::StBookmark, Color::Yellow, false),
+            }
+        }
         // Worktrees are also part of the Git family's yellow.
         InternalMode::GitWorktrees => (Msg::StWorktrees, Color::Yellow, false),
         InternalMode::GitGraph => (Msg::StGraph, Color::Yellow, false),
@@ -286,9 +293,17 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::Info => tr(lang, crate::i18n::Msg::StCloseHint),
         InternalMode::TableCell => tr(lang, crate::i18n::Msg::TableCellActions),
         InternalMode::ChangedFilter => tr(lang, crate::i18n::Msg::ChangedFilterHint),
+        // Staging, committing and worktrees are git's; offering them where they do not exist is
+        // worse than leaving them out.
+        InternalMode::GitChanges if !crate::vcs::caps(&app.tab.root).write => {
+            tr(lang, crate::i18n::Msg::StJjHubKeys)
+        }
         InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
         InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),
+        InternalMode::GitBranch if !crate::vcs::caps(&app.tab.root).write => {
+            tr(lang, crate::i18n::Msg::BookmarksNavHint)
+        }
         InternalMode::GitBranch => tr(lang, crate::i18n::Msg::BranchesNavHint),
         InternalMode::GitWorktrees => tr(lang, crate::i18n::Msg::WorktreesNavHint),
         // `x:discard` is a write. A backend that cannot take one must not advertise it — an

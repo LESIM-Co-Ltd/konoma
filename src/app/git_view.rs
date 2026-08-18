@@ -43,10 +43,9 @@ impl App {
                 return;
             }
         }
-        // Deliberately git's own answer, not the backend's: this hub is the git hub, and a jj
-        // workspace must keep saying so rather than opening an empty one. It moves to the backend
-        // when the jj hub exists.
-        if crate::git::branch(&self.tab.root).is_none() {
+        // The backend's own answer: None means "no repository I can show", which is an unborn git
+        // repository as much as a directory with no `.jj` and no `.git`.
+        if crate::vcs::branch(&self.tab.root).is_none() {
             // Not a repo (or the feature is disabled). Ignore safely and notify via flash.
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NotAGitRepo).into());
             return;
@@ -664,7 +663,7 @@ impl App {
     /// Does nothing if there are no commits (unborn), this is not a repo, or the feature is disabled (no-op).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_log(&mut self) {
-        let commits = crate::git::log(&self.tab.root, 200);
+        let commits = crate::vcs::log(&self.tab.root, 200);
         if commits.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoCommits).into());
             return;
@@ -719,7 +718,7 @@ impl App {
     /// `b`: Open the local branch list. Opened from the Git view, so the view closes. Cursor moves to the current branch. The filter is reset.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_branches(&mut self) {
-        let list = crate::git::branches(&self.tab.root);
+        let list = crate::vcs::refs(&self.tab.root);
         if list.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoBranches).into());
             return;
@@ -776,7 +775,7 @@ impl App {
     }
     /// Refetch the list (e.g. after deletion). Clamps the cursor to range.
     fn git_branches_reload(&mut self) {
-        self.tab.git_branches = Some(crate::git::branches(&self.tab.root));
+        self.tab.git_branches = Some(crate::vcs::refs(&self.tab.root));
         self.clamp_git_branch_sel();
     }
     /// `Enter`: Switch to the selected branch. If uncommitted changes conflict, git refuses (Err is flashed). On success, returns to the Git view.
@@ -1143,8 +1142,7 @@ impl App {
         let mut candidates: Vec<&str> = Vec::new();
         for name in &self.cfg.ui.graph_base_branches {
             let name = name.as_str();
-            if !candidates.contains(&name) && crate::git::branch_tip(&self.tab.root, name).is_some()
-            {
+            if !candidates.contains(&name) && crate::vcs::ref_tip(&self.tab.root, name).is_some() {
                 candidates.push(name);
             }
         }
@@ -1390,7 +1388,7 @@ impl App {
     fn derive_base_from_order(&self) -> Option<(String, String)> {
         for name in &self.tab.git_graph_order {
             if self.tab.git_graph_visible.contains(name) {
-                if let Some(oid) = crate::git::branch_tip(&self.tab.root, name) {
+                if let Some(oid) = crate::vcs::ref_tip(&self.tab.root, name) {
                     return Some((oid, name.clone()));
                 }
             }
@@ -1441,7 +1439,7 @@ impl App {
         } else {
             Some(visible.as_slice())
         };
-        let mut rows = crate::git::graph_with_base(
+        let mut rows = crate::vcs::graph(
             &self.tab.root,
             self.tab.git_graph_base.as_deref(),
             self.lang,
@@ -1778,8 +1776,8 @@ impl App {
             (crate::git::worktree_diff(&self.tab.root), None)
         } else if let Some(id) = row.commit {
             (
-                crate::git::commit_diff(&self.tab.root, &id),
-                crate::git::commit_meta(&self.tab.root, &id),
+                crate::vcs::commit_diff(&self.tab.root, &id),
+                crate::vcs::commit_meta(&self.tab.root, &id),
             )
         } else {
             return;
@@ -1798,9 +1796,9 @@ impl App {
         let Some(id) = self.git_log_selected_id() else {
             return;
         };
-        let lines = crate::git::commit_diff(&self.tab.root, &id);
+        let lines = crate::vcs::commit_diff(&self.tab.root, &id);
         self.tab.git_detail = Some(lines);
-        self.tab.git_detail_meta = crate::git::commit_meta(&self.tab.root, &id);
+        self.tab.git_detail_meta = crate::vcs::commit_meta(&self.tab.root, &id);
         self.tab.git_detail_scroll = 0;
         self.tab.git_detail_hscroll = 0;
         self.tab.git_detail_title = None;

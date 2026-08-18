@@ -67,13 +67,13 @@ impl App {
             Surface::GitDetail => self.tab.git_detail_meta.clone(),
             Surface::GitLog => {
                 let id = self.git_log_selected_id()?;
-                crate::git::commit_meta(&self.tab.root, &id)
+                crate::vcs::commit_meta(&self.tab.root, &id)
             }
             Surface::GitGraph => {
                 let id = self
                     .git_graph_selected_row()
                     .and_then(|r| r.commit.clone())?;
-                crate::git::commit_meta(&self.tab.root, &id)
+                crate::vcs::commit_meta(&self.tab.root, &id)
             }
             _ => None,
         }

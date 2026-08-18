@@ -2355,8 +2355,14 @@ pub enum NodeKind {
     Normal,
     /// A merge (two or more parents).
     Merge,
-    /// The working copy's own row (git: the "Uncommitted changes" pseudo-row).
+    /// The working copy's own row (git: the "Uncommitted changes" pseudo-row; jj: `@`, a real
+    /// commit).
     WorkingCopy,
+    /// A commit that cannot be rewritten (jj's `immutable`, which includes the root).
+    Immutable,
+    /// A commit holding a conflict. jj keeps conflicts in commits rather than blocking on them, so
+    /// this is a state to show, not an error to stop at.
+    Conflict,
 }
 
 /// One row of the commit graph (`G`: SourceTree / Git Graph style). `graph` = the (char, style) sequence of the colored lane area;
@@ -2403,20 +2409,24 @@ pub fn graph_with_base(
     }
     let commits = dag_commits(root, 400, refs);
     let wt = worktree_payload(root, lang);
-    lay_out_lanes(&commits, base, wt)
+    lay_out_lanes(&commits, base, wt, crate::vcs::VcsKind::Git)
 }
 
 /// Raw DAG data for drawing the graph (with parent-ID lists). Does not use `--graph`; lays out ourselves.
 #[cfg(feature = "git")]
 #[derive(Clone)]
-struct DagCommit {
-    id: String,
-    parents: Vec<String>,
-    short: String,
-    subject: String,
-    author: String,
-    date: String,
-    refs: String,
+pub(crate) struct DagCommit {
+    pub(crate) id: String,
+    pub(crate) parents: Vec<String>,
+    pub(crate) short: String,
+    pub(crate) subject: String,
+    pub(crate) author: String,
+    pub(crate) date: String,
+    pub(crate) refs: String,
+    /// What the node means, when the backend knows something the shape of the DAG does not say —
+    /// jj marks its working copy, its immutable commits and its conflicts. None falls back to
+    /// "a merge has two parents, everything else is ordinary", which is all git can tell.
+    pub(crate) kind: Option<NodeKind>,
 }
 
 /// Fetches the equivalent of `git log --topo-order --parents`, `%x1f`-delimited, into a sequence of `DagCommit`.
@@ -2474,6 +2484,7 @@ fn dag_commits(root: &Path, max: usize, refs: Option<&[String]>) -> Vec<DagCommi
             author: it.next().unwrap_or("").to_string(),
             date: it.next().unwrap_or("").to_string(),
             refs: it.next().unwrap_or("").to_string(),
+            kind: None, // git reads the kind off the DAG's shape
         });
     }
     commits
@@ -2494,10 +2505,11 @@ struct Lane {
 /// (merge = `├─┘` **above** the commit row). Lanes are not reused (parallel lanes waiting for the same ancestor merge at that ancestor),
 /// so forks/merges are always to the right of my_lane = a simple implementation.
 #[cfg(feature = "git")]
-fn lay_out_lanes(
+pub(crate) fn lay_out_lanes(
     commits: &[DagCommit],
     base: Option<&str>,
     wt: Option<(String, String)>,
+    vcs: crate::vcs::VcsKind,
 ) -> Vec<GraphRow> {
     use ratatui::style::Color;
 
@@ -2518,6 +2530,7 @@ fn lay_out_lanes(
             author: String::new(),
             date: date.clone(),
             refs: String::new(),
+            kind: Some(NodeKind::WorkingCopy),
         });
         v.extend(commits.iter().cloned());
         v
@@ -2582,7 +2595,7 @@ fn lay_out_lanes(
         let mut color = vec![Color::Reset; glyph.len()];
         for (i, l) in lanes.iter().enumerate() {
             if i == my_lane {
-                glyph[i * 2] = crate::ui::icons::node_glyph(node);
+                glyph[i * 2] = crate::ui::icons::node_glyph(node, vcs);
                 color[i * 2] = my_color;
             } else if let Some(l) = l {
                 glyph[i * 2] = '│';
@@ -2635,13 +2648,13 @@ fn lay_out_lanes(
         // 3) The commit row. The *kind* is decided here (the backend knows the meaning); the glyph
         // comes from `icons::node_glyph`, and `node_col` records where it landed so nothing has to
         // find it by comparing characters. Two columns per lane, so the node sits at my_lane * 2.
-        let node = if c.id == WT_ID {
+        let node = c.kind.unwrap_or(if c.id == WT_ID {
             NodeKind::WorkingCopy
         } else if c.parents.len() >= 2 {
             NodeKind::Merge
         } else {
             NodeKind::Normal
-        };
+        });
         rows.push(GraphRow {
             graph: commit_cells(&lanes, my_lane, node, my_color),
             node: Some(node),
@@ -3897,6 +3910,7 @@ mod tests {
         // M (merge B,F) → B (→R) / F (→R) → R (root). A branch = ├─┐ below the commit, a merge =
         // ├─┘ above the commit.
         let dc = |id: &str, parents: &[&str]| DagCommit {
+            kind: None,
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             short: id.into(),
@@ -3911,7 +3925,7 @@ mod tests {
             dc("F", &["R"]),
             dc("R", &[]),
         ];
-        let rows = lay_out_lanes(&commits, None, None);
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Git);
         let joined: Vec<String> = rows
             .iter()
             .map(|r| {
@@ -3953,6 +3967,7 @@ mod tests {
         // Three tips merge into the same root R → the middle lane is ┴ (up+left+right), the
         // farthest is ┘. Must not become `├───┘`.
         let dc = |id: &str, parents: &[&str]| DagCommit {
+            kind: None,
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             short: id.into(),
@@ -3967,7 +3982,7 @@ mod tests {
             dc("T3", &["R"]),
             dc("R", &[]),
         ];
-        let rows = lay_out_lanes(&commits, None, None);
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Git);
         let joined: Vec<String> = rows
             .iter()
             .map(|r| {
@@ -3995,6 +4010,7 @@ mod tests {
         // Two branches (A: A1→A2→R / B: B1→B2→R). With base specified, that branch's node always
         // lands on lane0 (col0).
         let dc = |id: &str, parents: &[&str]| DagCommit {
+            kind: None,
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             short: id.into(),
@@ -4019,7 +4035,7 @@ mod tests {
         };
 
         // No base: A, which appears first, gets lane0; B goes to the right.
-        let none = lay_out_lanes(&commits, None, None);
+        let none = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Git);
         assert!(node_at_col0(&none, "A1"), "base なしでは A1 が lane0");
         assert!(
             !node_at_col0(&none, "B1"),
@@ -4027,7 +4043,7 @@ mod tests {
         );
 
         // base=B1 (feature's tip): the B lineage goes to lane0, A gets pushed to the right.
-        let based = lay_out_lanes(&commits, Some("B1"), None);
+        let based = lay_out_lanes(&commits, Some("B1"), None, crate::vcs::VcsKind::Git);
         assert!(
             node_at_col0(&based, "B1"),
             "base=B1 で B1 が lane0: {based:?}",
@@ -4055,6 +4071,7 @@ mod tests {
         // sit **on A's lane (not col0)** and connect vertically directly above HEAD (the diff
         // target matches HEAD).
         let dc = |id: &str, parents: &[&str], refs: &str| DagCommit {
+            kind: None,
             id: id.into(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             short: id.into(),
@@ -4074,7 +4091,7 @@ mod tests {
 
         // base=B1: lane0 = the B lineage. The WT row is worktree=true, and col0 is not `●` (HEAD=A
         // is in the right lane).
-        let rows = lay_out_lanes(&commits, Some("B1"), wt.clone());
+        let rows = lay_out_lanes(&commits, Some("B1"), wt.clone(), crate::vcs::VcsKind::Git);
         let wt_row = rows.iter().find(|r| r.worktree).expect("WT 行がある");
         assert!(wt_row.commit.is_none(), "WT 行は commit=None");
         assert!(
@@ -4099,7 +4116,7 @@ mod tests {
         );
 
         // No base: HEAD=A is the leftmost lane0, so WT is also col0 (matches the previous display).
-        let rows0 = lay_out_lanes(&commits, None, wt);
+        let rows0 = lay_out_lanes(&commits, None, wt, crate::vcs::VcsKind::Git);
         let wt0 = rows0.iter().find(|r| r.worktree).unwrap();
         assert!(
             matches!(wt0.graph.first(), Some((s, _)) if s == "●"),
@@ -5409,6 +5426,7 @@ mod tests {
         let n = 1000usize;
         let commits: Vec<DagCommit> = (0..n)
             .map(|i| DagCommit {
+                kind: None,
                 id: format!("c{i}"),
                 parents: if i + 1 < n {
                     vec![format!("c{}", i + 1)]
@@ -5423,7 +5441,7 @@ mod tests {
             })
             .collect();
         let t = Instant::now();
-        let rows = lay_out_lanes(&commits, None, None);
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Git);
         let dt = t.elapsed();
         assert_eq!(
             rows.iter().filter(|r| r.commit.is_some()).count(),

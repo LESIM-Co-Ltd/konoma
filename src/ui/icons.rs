@@ -119,13 +119,26 @@ pub fn file_icon(path: &Path) -> char {
 /// (jj draws `@` for the working copy, `○` for an ordinary commit, `×` for a conflict) without
 /// breaking the code that paints the legend and the selected row.
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
-pub fn node_glyph(kind: crate::git::NodeKind) -> char {
+pub fn node_glyph(kind: crate::git::NodeKind, vcs: crate::vcs::VcsKind) -> char {
     use crate::git::NodeKind as K;
+    #[cfg(feature = "git")]
+    if vcs == crate::vcs::VcsKind::Jj {
+        // jj's own symbols. A jj user reads `@` as "where I am" everywhere jj prints a graph, and
+        // `◆` means immutable there — the opposite of git's "this is a merge".
+        return match kind {
+            K::WorkingCopy => '@',
+            K::Normal | K::Merge => '\u{25cb}', // ○
+            K::Immutable => '\u{25c6}',         // ◆
+            K::Conflict => '\u{00d7}',          // ×
+        };
+    }
+    let _ = vcs;
     match kind {
         // git has no glyph of its own for the working copy: its pseudo-row is drawn as an ordinary
         // node and recoloured yellow-bold afterwards.
         K::Normal | K::WorkingCopy => '\u{25cf}', // ●
-        K::Merge => '\u{25c6}',                   // ◆
+        K::Merge | K::Immutable => '\u{25c6}',    // ◆
+        K::Conflict => '\u{00d7}',                // ×
     }
 }
 

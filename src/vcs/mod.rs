@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::git::{ChangeEntry, DiffLine, FileStatus};
+use crate::git::{BranchInfo, ChangeEntry, CommitInfo, CommitMeta, DiffLine, FileStatus, GraphRow};
 
 #[cfg(feature = "git")]
 pub mod jj;
@@ -66,6 +66,30 @@ pub trait Vcs: Send + Sync {
     /// The changed files, one entry per file, sorted by path — what the changed-file list and the
     /// jumps between changes walk.
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry>;
+
+    /// Recent commits, newest first.
+    fn log(&self, root: &Path, max: usize) -> Vec<CommitInfo>;
+
+    /// The commit graph, already laid out into rows.
+    fn graph(
+        &self,
+        root: &Path,
+        base: Option<&str>,
+        lang: crate::i18n::Lang,
+        refs: Option<&[String]>,
+    ) -> Vec<GraphRow>;
+
+    /// The named pointers into history: git branches, jj bookmarks.
+    fn refs(&self, root: &Path) -> Vec<BranchInfo>;
+
+    /// The commit a named pointer points at.
+    fn ref_tip(&self, root: &Path, name: &str) -> Option<String>;
+
+    /// Detail for one revision.
+    fn commit_meta(&self, root: &Path, id: &str) -> Option<CommitMeta>;
+
+    /// Everything one revision changed, file by file.
+    fn commit_diff(&self, root: &Path, id: &str) -> Vec<DiffLine>;
 }
 
 /// The git backend. It delegates to [`crate::git`], which still holds the implementation.
@@ -102,6 +126,36 @@ impl Vcs for Git {
 
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
         crate::git::changed_files(root)
+    }
+
+    fn log(&self, root: &Path, max: usize) -> Vec<CommitInfo> {
+        crate::git::log(root, max)
+    }
+
+    fn graph(
+        &self,
+        root: &Path,
+        base: Option<&str>,
+        lang: crate::i18n::Lang,
+        refs: Option<&[String]>,
+    ) -> Vec<GraphRow> {
+        crate::git::graph_with_base(root, base, lang, refs)
+    }
+
+    fn refs(&self, root: &Path) -> Vec<BranchInfo> {
+        crate::git::branches(root)
+    }
+
+    fn ref_tip(&self, root: &Path, name: &str) -> Option<String> {
+        crate::git::branch_tip(root, name)
+    }
+
+    fn commit_meta(&self, root: &Path, id: &str) -> Option<CommitMeta> {
+        crate::git::commit_meta(root, id)
+    }
+
+    fn commit_diff(&self, root: &Path, id: &str) -> Vec<DiffLine> {
+        crate::git::commit_diff(root, id)
     }
 }
 
@@ -152,6 +206,38 @@ impl Vcs for Jj {
 
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
         jj::changed_files(root)
+    }
+
+    fn log(&self, root: &Path, max: usize) -> Vec<CommitInfo> {
+        jj::log(root, max)
+    }
+
+    fn graph(
+        &self,
+        root: &Path,
+        _base: Option<&str>,
+        _lang: crate::i18n::Lang,
+        _refs: Option<&[String]>,
+    ) -> Vec<GraphRow> {
+        // Pinning a base branch and filtering by branch are both git-shaped questions; jj asks them
+        // with a revset instead, which is its own step.
+        jj::graph(root, None, 400)
+    }
+
+    fn refs(&self, root: &Path) -> Vec<BranchInfo> {
+        jj::bookmarks(root)
+    }
+
+    fn ref_tip(&self, root: &Path, name: &str) -> Option<String> {
+        jj::bookmark_tip(root, name)
+    }
+
+    fn commit_meta(&self, root: &Path, id: &str) -> Option<CommitMeta> {
+        jj::commit_meta(root, id)
+    }
+
+    fn commit_diff(&self, root: &Path, id: &str) -> Vec<DiffLine> {
+        jj::commit_diff(root, id)
     }
 }
 
@@ -212,6 +298,41 @@ pub fn worktree_origin(root: &Path) -> Option<String> {
 /// See [`Vcs::file_diff`].
 pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     backend_for(root).file_diff(root, file)
+}
+
+/// See [`Vcs::log`].
+pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
+    backend_for(root).log(root, max)
+}
+
+/// See [`Vcs::graph`].
+pub fn graph(
+    root: &Path,
+    base: Option<&str>,
+    lang: crate::i18n::Lang,
+    refs: Option<&[String]>,
+) -> Vec<GraphRow> {
+    backend_for(root).graph(root, base, lang, refs)
+}
+
+/// See [`Vcs::refs`].
+pub fn refs(root: &Path) -> Vec<BranchInfo> {
+    backend_for(root).refs(root)
+}
+
+/// See [`Vcs::ref_tip`].
+pub fn ref_tip(root: &Path, name: &str) -> Option<String> {
+    backend_for(root).ref_tip(root, name)
+}
+
+/// See [`Vcs::commit_meta`].
+pub fn commit_meta(root: &Path, id: &str) -> Option<CommitMeta> {
+    backend_for(root).commit_meta(root, id)
+}
+
+/// See [`Vcs::commit_diff`].
+pub fn commit_diff(root: &Path, id: &str) -> Vec<DiffLine> {
+    backend_for(root).commit_diff(root, id)
 }
 
 /// See [`Vcs::caps`].

@@ -309,6 +309,31 @@ pub enum Action {
     ToggleTableCell,
 }
 
+#[cfg(feature = "git")]
+impl Action {
+    /// Whether running this changes the repository.
+    ///
+    /// Not every backend can take one: konoma reads a jj repository and never writes to it, so a
+    /// write asked of jj is answered with an explanation instead of a failure. Keeping the list
+    /// here means a new write action is refused by default rather than by remembering to guard it.
+    pub fn writes_repository(self) -> bool {
+        matches!(
+            self,
+            Action::GitStage
+                | Action::GitUnstage
+                | Action::GitStageAll
+                | Action::GitUnstageAll
+                | Action::GitDiscard
+                | Action::GitDiffDiscard
+                | Action::GitCommit
+                | Action::BranchCheckout
+                | Action::BranchCreate
+                | Action::BranchDelete
+                | Action::WorktreeCreate
+        )
+    }
+}
+
 // =============================================================================
 // Surface (the frontmost surface = the single source of truth). Replaces internal_mode in Stage 3.
 // =============================================================================

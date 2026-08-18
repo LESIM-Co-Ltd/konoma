@@ -379,6 +379,16 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// The pointer list's chip when jj is answering: it lists bookmarks, not branches.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    StBookmark,
+    /// Pointer-list keys for a backend that cannot write: no checkout, no create, no delete.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    BookmarksNavHint,
+    /// Hub keys for a backend that cannot write: no staging, no commit, no worktrees, and jj's
+    /// pointers are bookmarks.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    StJjHubKeys,
     /// Diff-view keys for a backend that cannot write: `DiffScrollDiscardHint` without `x:discard`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     DiffScrollNoDiscardHint,
@@ -785,6 +795,7 @@ fn en(msg: Msg) -> &'static str {
         InfoItems => "items",
         VisualOpsHint => "j/k:extend  a:this-dir  A:all  v:commit  Space:ops(d/r/c/x)  Esc:cancel",
         BranchesNavHint => "j/k:nav  Enter:checkout  n:new  d:delete  /:search  q/Esc:back",
+        BookmarksNavHint => "j/k:nav  /:search  q/Esc:back",
         GitNavDetailHint => "j/k:nav  Enter:detail  q/Esc:back",
         GitNavDetailCommitHint => {
             "j/k:nav  Enter:detail  s:base  x/0:base off  b:branches  q/Esc:back"
@@ -854,6 +865,7 @@ fn en(msg: Msg) -> &'static str {
         ResetFit => "reset to fit",
         Root => "root",
         StGitHubKeys => "s/S:stage(all) u/U:unstage(all) x:discard c:commit Enter:diff d:diff-all l:log g:graph b:branch w:worktrees !:tool q:close",
+        StJjHubKeys => "Enter:diff d:diff-all l:log g:graph b:bookmarks !:tool q:close",
         Scroll => "scroll",
         Scroll10Lines => "scroll 10 lines",
         SearchHint => "search (code/text); next / prev match",
@@ -891,6 +903,7 @@ fn en(msg: Msg) -> &'static str {
         OutlineTitle => " Outline ",
         OutlineActions => "j/k move   ↵ jump   o·q·Esc close",
         HelpTabList => "tab list (switch / close)",
+        StBookmark => "BOOKMARK",
         StBranch => "BRANCH",
         StChanges => "CHANGES",
         StCommit => "COMMIT",
@@ -1258,6 +1271,7 @@ fn jp(msg: Msg) -> &'static str {
         InfoItems => "項目",
         VisualOpsHint => "j/k:範囲  a:同階層  A:全部  v:確定  Space:操作(d/r/c/x)  Esc:取消",
         BranchesNavHint => "j/k:移動  Enter:切替  n:新規  d:削除  /:検索  q/Esc:戻る",
+        BookmarksNavHint => "j/k:移動  /:検索  q/Esc:戻る",
         GitNavDetailHint => "j/k:移動  Enter:詳細  q/Esc:戻る",
         GitNavDetailCommitHint => "j/k:移動  Enter:詳細  s:基準  x/0:基準解除  b:ブランチ  q/Esc:戻る",
         GraphBaseSet => "基準: ",
@@ -1323,6 +1337,7 @@ fn jp(msg: Msg) -> &'static str {
         ResetFit => "フィットに戻す",
         Root => "ルート",
         StGitHubKeys => "s/S:ステージ(全) u/U:解除(全) x:破棄 c:コミット Enter:差分 d:全変更差分 l:ログ g:グラフ b:ブランチ w:ワークツリー !:ツール q:閉じる",
+        StJjHubKeys => "Enter:差分  d:全差分  l:ログ  g:グラフ  b:ブックマーク  !:ツール  q:閉じる",
         Scroll => "スクロール",
         Scroll10Lines => "10 行スクロール",
         SearchHint => "検索(コード/テキスト); 次 / 前の一致",
@@ -1360,6 +1375,7 @@ fn jp(msg: Msg) -> &'static str {
         OutlineTitle => " アウトライン ",
         OutlineActions => "j/k 移動   ↵ ジャンプ   o·q·Esc 閉じる",
         HelpTabList => "タブ一覧(切替 / 閉じる)",
+        StBookmark => "ブックマーク",
         StBranch => "ブランチ",
         StChanges => "変更",
         StCommit => "コミット",
@@ -1904,6 +1920,9 @@ mod tests {
         Msg::StDrop,
         Msg::StFilter,
         Msg::DiffScrollNoDiscardHint,
+        Msg::StJjHubKeys,
+        Msg::BookmarksNavHint,
+        Msg::StBookmark,
         Msg::VcsReadOnly,
         Msg::StGit,
         Msg::StJj,

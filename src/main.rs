@@ -1508,6 +1508,13 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
 /// Central dispatch that runs a resolved `Action`. Only `Quit` requests exit, returning `Ok(true)`.
 /// Surface-dependent behavior (motion amount, the q/Esc return target) branches on `sfc` (§5).
 fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> {
+    // A backend that only reads gets asked politely and answers here, once, rather than each write
+    // discovering it separately and failing in its own way.
+    #[cfg(feature = "git")]
+    if action.writes_repository() && !crate::vcs::caps(&app.tab.root).write {
+        app.flash = Some(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly).to_string());
+        return Ok(false);
+    }
     match action {
         Action::Noop => {}
         Action::Navigate(m) => dispatch_navigate(app, sfc, m),

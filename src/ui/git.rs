@@ -14,6 +14,29 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::ui::icons;
+/// How the hub names the system answering it. git calls its pointer a branch and marks it with a
+/// glyph; jj's label already opens with `@`, so it needs no marker of its own.
+fn repo_label(app: &App, icons_on: bool) -> Option<String> {
+    let name = match app.git_vcs {
+        crate::vcs::VcsKind::Git => "Git",
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => "jj",
+    };
+    let b = app.git_branch()?;
+    Some(match icons::chip_marker(app.git_vcs, icons_on) {
+        "" => format!("{name} {b}"),
+        marker => format!("{name} {marker} {b}"),
+    })
+}
+
+/// The system's name on its own, for a title with nothing to point at.
+fn repo_name(app: &App) -> &'static str {
+    match app.git_vcs {
+        crate::vcs::VcsKind::Git => "Git",
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => "jj",
+    }
+}
 
 /// Render the Git view's change list full-screen, in the content area instead of tree/preview.
 pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
@@ -24,13 +47,9 @@ pub fn render_changes(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title: " Git ⎇ <branch>  (N) " (icons=false: " Git br: <branch>  (N) "). Just the glyph/label
     // when there's no branch.
-    let title = match app.git_branch() {
-        Some(b) => format!(
-            " Git {} {b}  ({}) ",
-            icons::branch_marker(icons_on),
-            entries.len()
-        ),
-        None => format!(" Git  ({}) ", entries.len()),
+    let title = match repo_label(app, icons_on) {
+        Some(l) => format!(" {l}  ({}) ", entries.len()),
+        None => format!(" {}  ({}) ", repo_name(app), entries.len()),
     };
 
     let lines: Vec<Line> = if entries.is_empty() {
@@ -150,12 +169,11 @@ pub fn render_log(frame: &mut Frame, app: &App, area: Rect) {
     let sel = app.git_log_sel();
 
     let title = match app.git_branch() {
-        Some(b) => format!(
-            " Git log {} {b}  ({}) ",
-            icons::branch_marker(icons_on),
-            entries.len()
-        ),
-        None => format!(" Git log  ({}) ", entries.len()),
+        Some(b) => match icons::chip_marker(app.git_vcs, icons_on) {
+            "" => format!(" {} log {b}  ({}) ", repo_name(app), entries.len()),
+            m => format!(" {} log {m} {b}  ({}) ", repo_name(app), entries.len()),
+        },
+        None => format!(" {} log  ({}) ", repo_name(app), entries.len()),
     };
 
     // How meta (author, date) is aligned. "inline"=right after the subject / anything else (default)=a right-aligned column.
@@ -219,10 +237,17 @@ pub fn render_branches(frame: &mut Frame, app: &App, area: Rect) {
     let sel = app.git_branch_sel();
     // While filtering / with a query, show "/<query>" in the title.
     let q = app.git_branch_query();
+    // git calls them branches, jj calls them bookmarks, and the difference matters: a bookmark does
+    // not follow the working copy the way a branch follows HEAD.
+    let kind = match app.git_vcs {
+        crate::vcs::VcsKind::Git => "Git branches",
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => "jj bookmarks",
+    };
     let title = if q.is_empty() {
-        format!(" Git branches  ({}) ", entries.len())
+        format!(" {kind}  ({}) ", entries.len())
     } else {
-        format!(" Git branches  /{q}  ({}) ", entries.len())
+        format!(" {kind}  /{q}  ({}) ", entries.len())
     };
 
     let lines: Vec<Line> = if entries.is_empty() {
@@ -368,9 +393,9 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 String::new()
             };
-            format!(" Git graph  ({n})  {icon}base: {b} ")
+            format!(" {} graph  ({n})  {icon}base: {b} ", repo_name(app))
         }
-        None => format!(" Git graph  ({n}) "),
+        None => format!(" {} graph  ({n}) ", repo_name(app)),
     };
 
     // Draw the border first, then split inner into the "commit column" and the "legend (bottom edge)".
@@ -620,16 +645,38 @@ pub fn render_graph_picker(frame: &mut Frame, app: &App, area: Rect) {
 /// Render the commit detail (the DiffLine sequence from commit_diff) as a full-screen diff.
 /// Uses the same Zed-style coloring as phase 3's GitDiff (shared `preview::gitdiff::diff_lines`).
 /// The "── path ──" at the start of each file is inserted by git as a Context line.
+/// What a revision is called, and which of its two IDs names it. git has one ID and calls it a
+/// commit; jj keeps the change ID stable across rewrites and calls the thing a change.
+fn revision_label(
+    app: &App,
+    meta: Option<&crate::git::CommitMeta>,
+    fallback: Option<&str>,
+) -> String {
+    let (word, id) = match app.git_vcs {
+        crate::vcs::VcsKind::Git => ("commit", meta.map(|m| m.short.clone())),
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => ("change", meta.map(|m| m.short.clone())),
+    };
+    match id.or_else(|| fallback.map(|f| f[..f.len().min(7)].to_string())) {
+        Some(id) => format!(" {word} {id} "),
+        None => format!(" {word} "),
+    }
+}
+
 /// The meta info lines stacked at the top of the commit detail (the full commit message, preserving body line breaks).
 /// Since log/graph can only show the one-liner subject, the detail view shows the full text.
-fn commit_header_lines(meta: &crate::git::CommitMeta, width: usize) -> Vec<Line<'static>> {
+fn commit_header_lines(
+    meta: &crate::git::CommitMeta,
+    width: usize,
+    word: &str,
+) -> Vec<Line<'static>> {
     use ratatui::style::{Color, Modifier};
     let dim = Style::new().fg(Color::DarkGray);
     let mut out: Vec<Line<'static>> = Vec::new();
     // Line 1: commit <short>   <author> · <date>
     out.push(Line::from(vec![
         Span::styled(
-            format!("commit {}", meta.short),
+            format!("{} {}", word, meta.short),
             Style::new().fg(Color::Yellow),
         ),
         Span::styled(format!("   {} · {}", meta.author, meta.date), dim),
@@ -663,14 +710,12 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
             Some(r) if r.worktree => {
                 format!(" {} ", tr(app.lang, crate::i18n::Msg::UncommittedChanges))
             }
-            Some(r) => match &r.commit {
-                Some(id) => format!(" commit {} ", &id[..id.len().min(7)]),
-                None => " commit ".to_string(),
-            },
-            None => match app.git_log_selected_id() {
-                Some(id) => format!(" commit {} ", &id[..id.len().min(7)]),
-                None => " commit ".to_string(),
-            },
+            Some(r) => revision_label(app, app.git_detail_meta(), r.commit.as_deref()),
+            None => revision_label(
+                app,
+                app.git_detail_meta(),
+                app.git_log_selected_id().as_deref(),
+            ),
         }
     };
     let title = format!("{}{} ", base_title.trim_end(), mode_tag);
@@ -682,7 +727,14 @@ pub fn render_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let iw = inner.width as usize;
     let header_lines: Vec<Line<'static>> = app
         .git_detail_meta()
-        .map(|m| commit_header_lines(m, iw))
+        .map(|m| {
+            let word = match app.git_vcs {
+                crate::vcs::VcsKind::Git => "commit",
+                #[cfg(feature = "git")]
+                crate::vcs::VcsKind::Jj => "change",
+            };
+            commit_header_lines(m, iw, word)
+        })
         .unwrap_or_default();
 
     let diff = app.git_detail_lines();
@@ -1035,7 +1087,7 @@ mod tests {
             date: "2026-06-29".into(),
             message: "subject line\n\nbody paragraph one\nbody paragraph two".into(),
         };
-        let lines = commit_header_lines(&meta, 40);
+        let lines = commit_header_lines(&meta, 40, "commit");
         let text: Vec<String> = lines
             .iter()
             .map(|l| {

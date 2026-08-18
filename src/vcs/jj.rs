@@ -298,13 +298,7 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<crate::git::DiffLine> {
 
 /// The parent commit's bytes for one path, or None when the parent does not have it.
 fn parent_bytes(ws: &Path, rel: &str) -> Option<Vec<u8>> {
-    let out = std::process::Command::new("jj")
-        .current_dir(ws)
-        .args(args(&["file", "show", "-r", "@-", rel]))
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    out.status.success().then_some(out.stdout)
+    revision_bytes(ws, "@-", rel)
 }
 
 /// Paths the ignore rules exclude, as absolute paths, with a fully ignored directory collapsed to a
@@ -369,6 +363,259 @@ fn newer_than(path: &Path, epoch: i64) -> bool {
         Ok(d) => d.as_secs() as i64 >= epoch,
         Err(_) => true,
     }
+}
+
+// --- The hub: history, bookmarks and commit detail -----------------------------------------------
+// jj names commits by change ID, so that is what every list shows; the commit ID stays available for
+// the detail view, which is where it is needed to talk to git, GitHub or CI.
+
+/// Fields shared by the history readers, tab-separated so no JSON parser is needed.
+const DAG_TEMPLATE: &str = concat!(
+    r#"commit_id ++ "\t" ++ parents.map(|p| p.commit_id()).join(" ") ++ "\t""#,
+    r#" ++ change_id.shortest(8) ++ "\t" ++ description.first_line() ++ "\t""#,
+    r#" ++ author.name() ++ "\t" ++ committer.timestamp().format("%Y-%m-%d") ++ "\t""#,
+    r#" ++ committer.timestamp().format("%s") ++ "\t" ++ working_copies ++ "\t""#,
+    r#" ++ bookmarks.join(",") ++ "\t" ++ if(conflict,"c","") ++ if(immutable,"i","")"#,
+    r#" ++ if(current_working_copy,"w","") ++ "\n""#,
+);
+
+/// One row of `jj log`, before konoma decides how to draw it.
+struct Row {
+    commit: String,
+    parents: Vec<String>,
+    change: String,
+    subject: String,
+    author: String,
+    date: String,
+    epoch: i64,
+    /// `default@` / `ws-second@` — which workspace has this commit checked out, if any.
+    workspaces: String,
+    bookmarks: String,
+    conflict: bool,
+    immutable: bool,
+    /// Checked out by *this* workspace. Another workspace's checkout is an ordinary commit that
+    /// happens to carry a label — jj marks only its own with `@`.
+    here: bool,
+}
+
+/// Reads `revset` out of jj. `None` uses jj's own default, which is deliberately narrow: it hides
+/// the commits jj rewrote on its way here, which is exactly the noise a full DAG walk would show.
+fn rows(ws: &Path, revset: Option<&str>, max: usize) -> Vec<Row> {
+    let mut call = vec!["log", "--no-graph", "-T", DAG_TEMPLATE];
+    if let Some(r) = revset {
+        call.push("-r");
+        call.push(r);
+    }
+    let Some(out) = run(ws, &call) else {
+        return Vec::new();
+    };
+    out.lines()
+        .take(max)
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 10 {
+                return None;
+            }
+            Some(Row {
+                commit: f[0].to_string(),
+                parents: f[1].split_whitespace().map(str::to_string).collect(),
+                change: f[2].to_string(),
+                subject: f[3].to_string(),
+                author: f[4].to_string(),
+                date: f[5].to_string(),
+                epoch: f[6].trim().parse().unwrap_or(0),
+                workspaces: f[7].to_string(),
+                bookmarks: f[8].to_string(),
+                conflict: f[9].contains('c'),
+                immutable: f[9].contains('i'),
+                here: f[9].contains('w'),
+            })
+        })
+        .collect()
+}
+
+/// What decorates a row in the graph: the workspaces that have it checked out and the bookmarks
+/// pointing at it. `default@` matters as much as a bookmark name here — it is how a jj user reading
+/// several workspaces at once tells them apart.
+fn decorations(r: &Row) -> String {
+    [r.workspaces.as_str(), r.bookmarks.as_str()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn node_kind(r: &Row) -> crate::git::NodeKind {
+    use crate::git::NodeKind as K;
+    if r.conflict {
+        K::Conflict
+    } else if r.here {
+        K::WorkingCopy
+    } else if r.immutable {
+        K::Immutable
+    } else if r.parents.len() >= 2 {
+        K::Merge
+    } else {
+        K::Normal
+    }
+}
+
+/// The commit list behind `l`.
+pub fn log(root: &Path, max: usize) -> Vec<crate::git::CommitInfo> {
+    let Some(ws) = workspace_root(root) else {
+        return Vec::new();
+    };
+    rows(&ws, None, max)
+        .into_iter()
+        .map(|r| crate::git::CommitInfo {
+            id: r.commit,
+            // What a jj user reads and retypes is the change ID; it survives the rewrites that give
+            // a commit a new hash.
+            short: r.change,
+            summary: r.subject,
+            author: r.author,
+            time_epoch: r.epoch,
+        })
+        .collect()
+}
+
+/// The commit graph.
+///
+/// The range is jj's own default rather than every reachable commit: jj rewrites commits as you
+/// work, and all of those predecessors stay reachable through `refs/jj/keep/*`, so walking the
+/// whole DAG buries the six commits that matter under dozens that no longer exist to the user.
+/// Passing an explicit revset (`all()`) is what widens it again.
+pub fn graph(root: &Path, revset: Option<&str>, max: usize) -> Vec<crate::git::GraphRow> {
+    let Some(ws) = workspace_root(root) else {
+        return Vec::new();
+    };
+    let commits: Vec<crate::git::DagCommit> = rows(&ws, revset, max)
+        .into_iter()
+        .map(|r| crate::git::DagCommit {
+            kind: Some(node_kind(&r)),
+            refs: decorations(&r),
+            id: r.commit,
+            short: r.change,
+            subject: if r.immutable && r.parents.is_empty() && r.subject.is_empty() {
+                "root()".to_string() // jj's own name for it; the alternative is a blank row
+            } else {
+                r.subject
+            },
+            author: if r.epoch == 0 {
+                String::new()
+            } else {
+                r.author
+            },
+            date: if r.epoch == 0 { String::new() } else { r.date },
+            parents: r.parents,
+        })
+        .collect();
+    // No pseudo-row for uncommitted work: in jj the working copy *is* a commit, and it is already
+    // in the list above.
+    crate::git::lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Jj)
+}
+
+/// Bookmarks, in the shape the branch list already renders.
+///
+/// `is_current` is always false: a jj bookmark does not follow the working copy the way a git branch
+/// follows HEAD, so there is no "the one you are on" to mark. Working on an unnamed commit is the
+/// normal state, not a detached-HEAD accident.
+pub fn bookmarks(root: &Path) -> Vec<crate::git::BranchInfo> {
+    let Some(ws) = workspace_root(root) else {
+        return Vec::new();
+    };
+    let Some(out) = run(&ws, &["bookmark", "list", "-T", r#"name ++ "\n""#]) else {
+        return Vec::new();
+    };
+    let mut v: Vec<crate::git::BranchInfo> = out
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|name| crate::git::BranchInfo {
+            name: name.to_string(),
+            is_current: false,
+        })
+        .collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v.dedup_by(|a, b| a.name == b.name);
+    v
+}
+
+/// The commit a bookmark points at.
+pub fn bookmark_tip(root: &Path, name: &str) -> Option<String> {
+    let ws = workspace_root(root)?;
+    let out = run(&ws, &["log", "-r", name, "--no-graph", "-T", "commit_id"])?;
+    let id = out.lines().next()?.trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Detail for one revision. `id` may be a commit ID or a change ID — jj resolves both.
+///
+/// The description comes last and is read whole rather than flattened: it is the only field that
+/// can hold newlines, so putting it at the end means nothing has to escape them.
+pub fn commit_meta(root: &Path, id: &str) -> Option<crate::git::CommitMeta> {
+    let ws = workspace_root(root)?;
+    const T: &str = concat!(
+        r#"commit_id ++ "\t" ++ change_id.shortest(8) ++ "\t" ++ author.name() ++ "\t""#,
+        r#" ++ committer.timestamp().format("%Y-%m-%d %H:%M") ++ "\t" ++ description"#,
+    );
+    let out = run(&ws, &["log", "-r", id, "--no-graph", "-T", T])?;
+    let mut f = out.splitn(5, '\t');
+    let commit = f.next()?.to_string();
+    let change = f.next()?.to_string();
+    let author = f.next()?.to_string();
+    let date = f.next()?.to_string();
+    let message = f.next().unwrap_or("").trim_end().to_string();
+    if commit.is_empty() {
+        return None;
+    }
+    Some(crate::git::CommitMeta {
+        id: commit,
+        // The change ID leads, because that is the name this commit keeps across rewrites.
+        short: change,
+        author,
+        date,
+        message,
+    })
+}
+
+/// Everything one revision changed, file by file, with a header per file — the same shape the git
+/// backend produces, so the detail view renders it unchanged.
+pub fn commit_diff(root: &Path, id: &str) -> Vec<crate::git::DiffLine> {
+    let mut out = Vec::new();
+    let Some(ws) = workspace_root(root) else {
+        return out;
+    };
+    let Some(summary) = run(&ws, &["diff", "--summary", "-r", id]) else {
+        return out;
+    };
+    let parent = format!("{id}-");
+    for line in summary.lines() {
+        let Some((_, rel)) = line.split_once(' ') else {
+            continue;
+        };
+        let before = revision_bytes(&ws, &parent, rel);
+        let after = revision_bytes(&ws, id, rel);
+        crate::git::push_file_diff(
+            &mut out,
+            Path::new(rel),
+            before.as_deref(),
+            after.as_deref(),
+            true,
+        );
+    }
+    out
+}
+
+/// One path's bytes at one revision, or None when that revision does not have it.
+fn revision_bytes(ws: &Path, rev: &str, rel: &str) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("jj")
+        .current_dir(ws)
+        .args(args(&["file", "show", "-r", rev, rel]))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
 }
 
 #[cfg(test)]
