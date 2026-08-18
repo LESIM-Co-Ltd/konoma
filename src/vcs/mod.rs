@@ -70,9 +70,11 @@ pub trait Vcs: Send + Sync {
     /// Recent commits, newest first.
     fn log(&self, root: &Path, max: usize) -> Vec<CommitInfo>;
 
-    /// The commit graph, already laid out into rows.
+    /// The commit graph, already laid out into rows. `all` asks for every revision rather than the
+    /// range the backend considers current.
     fn graph(
         &self,
+        all: bool,
         root: &Path,
         base: Option<&str>,
         lang: crate::i18n::Lang,
@@ -134,11 +136,13 @@ impl Vcs for Git {
 
     fn graph(
         &self,
+        _all: bool,
         root: &Path,
         base: Option<&str>,
         lang: crate::i18n::Lang,
         refs: Option<&[String]>,
     ) -> Vec<GraphRow> {
+        // git's graph is already every reachable commit; there is no narrower range to widen from.
         crate::git::graph_with_base(root, base, lang, refs)
     }
 
@@ -261,6 +265,7 @@ impl Vcs for Jj {
 
     fn graph(
         &self,
+        all: bool,
         root: &Path,
         _base: Option<&str>,
         _lang: crate::i18n::Lang,
@@ -268,7 +273,7 @@ impl Vcs for Jj {
     ) -> Vec<GraphRow> {
         // Pinning a base branch and filtering by branch are both git-shaped questions; jj asks them
         // with a revset instead, which is its own step.
-        jj::graph(root, None, 400)
+        jj::graph(root, all.then_some("all()"), 400)
     }
 
     fn refs(&self, root: &Path) -> Vec<BranchInfo> {
@@ -361,12 +366,13 @@ pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
 
 /// See [`Vcs::graph`].
 pub fn graph(
+    all: bool,
     root: &Path,
     base: Option<&str>,
     lang: crate::i18n::Lang,
     refs: Option<&[String]>,
 ) -> Vec<GraphRow> {
-    backend_for(root).graph(root, base, lang, refs)
+    backend_for(root).graph(all, root, base, lang, refs)
 }
 
 /// See [`Vcs::refs`].

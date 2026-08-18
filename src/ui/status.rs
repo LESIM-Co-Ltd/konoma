@@ -299,6 +299,10 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
             tr(lang, crate::i18n::Msg::StJjHubKeys)
         }
         InternalMode::GitChanges => tr(lang, crate::i18n::Msg::StGitHubKeys),
+        // Pinning a base is git's; widening the range is jj's, since only jj has a narrower one.
+        InternalMode::GitGraph if !crate::vcs::caps(&app.tab.root).write => {
+            tr(lang, crate::i18n::Msg::JjGraphNavHint)
+        }
         InternalMode::GitGraph => tr(lang, crate::i18n::Msg::GitNavDetailCommitHint),
         InternalMode::GitGraphPicker => tr(lang, crate::i18n::Msg::GraphPickerFooter),
         InternalMode::GitBranch if !crate::vcs::caps(&app.tab.root).write => {

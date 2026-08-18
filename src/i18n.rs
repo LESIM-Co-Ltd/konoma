@@ -379,6 +379,18 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// Graph keys for a backend with a narrower default range: `GitNavDetailCommitHint` plus `a`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjGraphNavHint,
+    /// Flash on `a` in the graph when the backend already draws everything.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    GraphAlreadyAll,
+    /// Flash on `a`: the graph widened to every revision.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    GraphShowingAll,
+    /// Flash on `a`: the graph narrowed back to the backend's own range.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    GraphShowingDefault,
     /// The pointer list's chip when jj is answering: it lists bookmarks, not branches.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StBookmark,
@@ -800,6 +812,7 @@ fn en(msg: Msg) -> &'static str {
         GitNavDetailCommitHint => {
             "j/k:nav  Enter:detail  s:base  x/0:base off  b:branches  q/Esc:back"
         }
+        JjGraphNavHint => "j/k:nav  Enter:detail  a:all revisions  b:bookmarks  q/Esc:back",
         GraphBaseSet => "base: ",
         GraphBaseCleared => "base cleared",
         GraphBaseNeedsCommit => "select a commit to set as base",
@@ -903,6 +916,9 @@ fn en(msg: Msg) -> &'static str {
         OutlineTitle => " Outline ",
         OutlineActions => "j/k move   ↵ jump   o·q·Esc close",
         HelpTabList => "tab list (switch / close)",
+        GraphAlreadyAll => "the graph already shows every commit",
+        GraphShowingAll => "showing every revision",
+        GraphShowingDefault => "showing the default range",
         StBookmark => "BOOKMARK",
         StBranch => "BRANCH",
         StChanges => "CHANGES",
@@ -1274,6 +1290,7 @@ fn jp(msg: Msg) -> &'static str {
         BookmarksNavHint => "j/k:移動  /:検索  q/Esc:戻る",
         GitNavDetailHint => "j/k:移動  Enter:詳細  q/Esc:戻る",
         GitNavDetailCommitHint => "j/k:移動  Enter:詳細  s:基準  x/0:基準解除  b:ブランチ  q/Esc:戻る",
+        JjGraphNavHint => "j/k:移動  Enter:詳細  a:全リビジョン  b:ブックマーク  q/Esc:戻る",
         GraphBaseSet => "基準: ",
         GraphBaseCleared => "基準を解除しました",
         GraphBaseNeedsCommit => "基準にするコミットを選んでください",
@@ -1375,6 +1392,9 @@ fn jp(msg: Msg) -> &'static str {
         OutlineTitle => " アウトライン ",
         OutlineActions => "j/k 移動   ↵ ジャンプ   o·q·Esc 閉じる",
         HelpTabList => "タブ一覧(切替 / 閉じる)",
+        GraphAlreadyAll => "グラフは既に全コミットを表示しています",
+        GraphShowingAll => "全リビジョンを表示",
+        GraphShowingDefault => "既定の範囲を表示",
         StBookmark => "ブックマーク",
         StBranch => "ブランチ",
         StChanges => "変更",
@@ -1922,6 +1942,10 @@ mod tests {
         Msg::DiffScrollNoDiscardHint,
         Msg::StJjHubKeys,
         Msg::BookmarksNavHint,
+        Msg::JjGraphNavHint,
+        Msg::GraphAlreadyAll,
+        Msg::GraphShowingAll,
+        Msg::GraphShowingDefault,
         Msg::StBookmark,
         Msg::VcsReadOnly,
         Msg::StGit,

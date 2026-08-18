@@ -209,6 +209,10 @@ pub enum Action {
     /// Graph: clear the pinned base.
     #[cfg(feature = "git")]
     GitGraphClearBase,
+    /// Show every revision in the graph instead of the backend's own range (jj only; git's graph
+    /// is already everything).
+    #[cfg(feature = "git")]
+    GitGraphToggleAll,
     /// Graph: open the branch-visibility panel (toggles which branches show when there are many).
     #[cfg(feature = "git")]
     GitGraphOpenPicker,
@@ -964,6 +968,7 @@ impl KeyMap {
             // visibility panel. log has none of this, hence a separate map.
             let mut ggraph = glog.clone();
             ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
+            ggraph.insert(KeyPress::ch('a'), run(Action::GitGraphToggleAll));
             ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
             // `0` also clears it (the vim feel of "line-home = return to the anchor". Coexists with
             // `x`; both resolve to the same Action).
@@ -1955,6 +1960,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "git_graph_clear_base" => Action::GitGraphClearBase,
         #[cfg(feature = "git")]
+        "git_graph_toggle_all" => Action::GitGraphToggleAll,
+        #[cfg(feature = "git")]
         "git_graph_open_picker" => Action::GitGraphOpenPicker,
         #[cfg(feature = "git")]
         "git_graph_picker_toggle" => Action::GitGraphPickerToggle,
@@ -2136,6 +2143,8 @@ pub fn action_name(a: Action) -> String {
         Action::GitGraphSetBase => "git_graph_set_base",
         #[cfg(feature = "git")]
         Action::GitGraphClearBase => "git_graph_clear_base",
+        #[cfg(feature = "git")]
+        Action::GitGraphToggleAll => "git_graph_toggle_all",
         #[cfg(feature = "git")]
         Action::GitGraphOpenPicker => "git_graph_open_picker",
         #[cfg(feature = "git")]

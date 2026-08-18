@@ -1706,6 +1706,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         #[cfg(feature = "git")]
         Action::GitGraphClearBase => app.git_graph_clear_base(),
         #[cfg(feature = "git")]
+        Action::GitGraphToggleAll => app.git_graph_toggle_all(),
+        #[cfg(feature = "git")]
         Action::GitGraphOpenPicker => app.git_graph_open_picker(),
         #[cfg(feature = "git")]
         Action::GitGraphPickerToggle => app.git_graph_picker_toggle(),

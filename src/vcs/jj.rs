@@ -438,20 +438,27 @@ fn rows(ws: &Path, revset: Option<&str>, max: usize) -> Vec<Row> {
 /// pointing at it. `default@` matters as much as a bookmark name here — it is how a jj user reading
 /// several workspaces at once tells them apart.
 fn decorations(r: &Row) -> String {
-    [r.workspaces.as_str(), r.bookmarks.as_str()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ")
+    [
+        r.workspaces.as_str(),
+        r.bookmarks.as_str(),
+        if r.conflict { "conflict" } else { "" },
+    ]
+    .iter()
+    .filter(|s| !s.is_empty())
+    .copied()
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 fn node_kind(r: &Row) -> crate::git::NodeKind {
     use crate::git::NodeKind as K;
-    if r.conflict {
-        K::Conflict
-    } else if r.here {
+    // Where you are outranks what is wrong with it — jj keeps drawing `@` for a conflicted working
+    // copy and says "(conflict)" alongside, because a conflict there is a state to work in, not a
+    // reason to stop. `decorations` carries the word.
+    if r.here {
         K::WorkingCopy
+    } else if r.conflict {
+        K::Conflict
     } else if r.immutable {
         K::Immutable
     } else if r.parents.len() >= 2 {

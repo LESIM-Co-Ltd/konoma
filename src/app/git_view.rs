@@ -1440,6 +1440,7 @@ impl App {
             Some(visible.as_slice())
         };
         let mut rows = crate::vcs::graph(
+            self.tab.git_graph_all,
             &self.tab.root,
             self.tab.git_graph_base.as_deref(),
             self.lang,
@@ -1508,6 +1509,32 @@ impl App {
             "{}{label}",
             crate::i18n::tr(self.lang, crate::i18n::Msg::GraphBaseSet)
         ));
+    }
+
+    /// `a`: widen the graph to every revision, or narrow it back.
+    ///
+    /// Only jj keeps a narrower default — it rewrites commits as you work, and every predecessor
+    /// stays reachable, so its own range hides what no longer exists to you. git's graph is already
+    /// everything, so there is nothing to widen.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn git_graph_toggle_all(&mut self) {
+        if crate::vcs::detect(&self.tab.root) == crate::vcs::VcsKind::Git {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::GraphAlreadyAll).into());
+            return;
+        }
+        self.tab.git_graph_all = !self.tab.git_graph_all;
+        self.rebuild_git_graph_keep_sel();
+        self.flash = Some(
+            crate::i18n::tr(
+                self.lang,
+                if self.tab.git_graph_all {
+                    crate::i18n::Msg::GraphShowingAll
+                } else {
+                    crate::i18n::Msg::GraphShowingDefault
+                },
+            )
+            .into(),
+        );
     }
 
     /// Phase 2: Clear the base pin and return to the default display.

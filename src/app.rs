@@ -2111,6 +2111,9 @@ pub(crate) struct PerTab {
     // saved, and gets reset on restore.
     git_graph_base: Option<String>,
     git_graph_base_label: Option<String>,
+    /// Whether the graph shows every revision instead of the range the backend considers current.
+    /// Only jj has a narrower default; git already draws everything.
+    pub(crate) git_graph_all: bool,
     git_graph_visible: std::collections::HashSet<String>,
     git_graph_legend: Vec<crate::git::LegendEntry>,
     git_graph_hidden: usize,
@@ -2226,6 +2229,7 @@ impl Default for PerTab {
             git_graph_sel: 0,
             git_graph_base: None,
             git_graph_base_label: None,
+            git_graph_all: false,
             git_graph_visible: std::collections::HashSet::new(),
             git_graph_legend: Vec::new(),
             git_graph_hidden: 0,

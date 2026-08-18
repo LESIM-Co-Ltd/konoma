@@ -387,7 +387,9 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
     // gated by `ui.icons`, so icons=false never duplicates the wording ("⌖ base:" → "base:", not
     // "base: base:").
     let title = match app.git_graph_base_label() {
-        Some(b) => {
+        // A pinned base is git's: jj asks the same question with a revset, so showing a base here
+        // would name something that has no effect on what is drawn.
+        Some(b) if crate::vcs::caps(&app.tab.root).write => {
             let icon = if icons_on {
                 format!("{} ", icons::base_icon())
             } else {
@@ -395,7 +397,7 @@ pub fn render_graph(frame: &mut Frame, app: &App, area: Rect) {
             };
             format!(" {} graph  ({n})  {icon}base: {b} ", repo_name(app))
         }
-        None => format!(" {} graph  ({n}) ", repo_name(app)),
+        _ => format!(" {} graph  ({n}) ", repo_name(app)),
     };
 
     // Draw the border first, then split inner into the "commit column" and the "legend (bottom edge)".
