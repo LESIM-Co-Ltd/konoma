@@ -35,6 +35,13 @@ All notable changes to konoma are documented in this file. The format is based o
   against the parent's content. A file written by an agent with no jj command in between — invisible
   to `jj diff --summary --ignore-working-copy` — still shows up, and follow mode still jumps to it.
 
+- `R` in the hub asks jj for a snapshot — the one thing konoma writes to a jj repository, and only
+  when asked. It exists for what konoma cannot see on its own: a file whose contents changed while
+  its timestamp did not. `[ui] confirm_jj_sync` (default on) asks first. That nothing else writes is
+  checked rather than stated: a test reads the backend's own source and fails if any jj call skips
+  `--ignore-working-copy` outside the two places named for it.
+- `a` in the graph widens it from jj's own range to every revision, and `[jj] tool` (default
+  `lazyjj`) is what `!` launches in a jj repository.
 - `[external] vcs` (`"auto"` | `"git"` | `"jj"`) decides which system answers. `auto` prefers jj
   wherever a `.jj` exists and falls back to git everywhere else, including when the `jj` binary is
   missing; the explicit values pin a colocated repository to the system you actually work in.

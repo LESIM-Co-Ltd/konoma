@@ -379,6 +379,9 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// Flash on `w` in a jj repository: konoma does not list jj workspaces yet.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjWorkspacesUnlisted,
     /// Confirmation before letting jj take a snapshot.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjSyncConfirm,
@@ -817,6 +820,7 @@ fn en(msg: Msg) -> &'static str {
         HintDetailsToggle => "expand/collapse the focused <details>",
         GitToolFailed => "git tool failed: ",
         JjToolFailed => "jj tool failed: ",
+        JjWorkspacesUnlisted => "konoma does not list jj workspaces yet — `jj workspace list` does",
         JjSyncConfirm => "Let jj snapshot the working copy? (jj undo reverses it)",
         JjSyncDone => "jj snapshotted the working copy",
         JjSyncFailed => "jj could not snapshot the working copy",
@@ -1304,6 +1308,7 @@ fn jp(msg: Msg) -> &'static str {
         HintDetailsToggle => "フォーカス中の <details> を開閉",
         GitToolFailed => "git ツール起動失敗: ",
         JjToolFailed => "jj ツール起動失敗: ",
+        JjWorkspacesUnlisted => "jj の workspace 一覧は未対応です — `jj workspace list` で見られます",
         JjSyncConfirm => "jj に作業コピーを取り込ませますか?(jj undo で戻せます)",
         JjSyncDone => "jj が作業コピーを取り込みました",
         JjSyncFailed => "jj が作業コピーを取り込めませんでした",
@@ -1854,6 +1859,7 @@ mod tests {
         Msg::HintDetailsToggle,
         Msg::GitToolFailed,
         Msg::JjToolFailed,
+        Msg::JjWorkspacesUnlisted,
         Msg::JjSyncConfirm,
         Msg::JjSyncDone,
         Msg::JjSyncFailed,

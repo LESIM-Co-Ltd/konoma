@@ -66,6 +66,43 @@ tab, and `d` diffs it against its base branch — committed and uncommitted work
 together. See [Working with an AI agent](../agent-watch/) for why that matters when an
 agent is doing the committing.
 
+## jj (Jujutsu) repositories
+
+A repository jj created without a colocated `.git`, and every `jj workspace`,
+gets the same views this page describes — the tree's markers and dimming, the
+diffs, the changed-file list, follow mode, and the hub. konoma picks the
+backend from what is on disk: a directory holding `.jj` belongs to jj, and
+`[external] vcs` overrides that either way.
+
+What you see is jj's, not git's wearing jj's data:
+
+- The chip names the working-copy commit (`@ owyqxpku side B`) rather than a
+  branch. jj tracks none, and in a colocated repository git itself is left
+  detached — "HEAD" would be a lie.
+- A new file reads as added, not untracked: jj has no untracked state.
+- The graph uses jj's own range and symbols — `@` working copy, `○` commit,
+  `◆` immutable, `×` conflict — and names rows by change ID, the name a commit
+  keeps when jj rewrites it. `a` widens it to every revision. Another
+  workspace's checkout appears as an ordinary commit labelled `ws-second@`.
+- `b` lists bookmarks and marks none of them current, because a bookmark does
+  not follow the working copy the way a branch follows HEAD.
+- `!` launches `[jj] tool` (default `lazyjj`).
+
+**konoma only reads a jj repository.** Every call it makes carries
+`--ignore-working-copy`, so it never snapshots your working copy — without
+that, a status refresh would write a commit, and konoma refreshes on every
+file change. Keys that would write are not offered.
+
+Because it never writes, konoma tracks changes itself rather than asking jj,
+which means a file an agent wrote a second ago shows up even though jj has not
+noticed it yet. The one thing that escapes this is a file whose contents
+changed while its timestamp did not; `R` in the hub asks jj for a snapshot to
+settle it, after a confirmation (`[ui] confirm_jj_sync`).
+
+Not there yet: `jj workspace` has no list of its own (`w` says so), and staging
+has no counterpart — jj has no index, and `jj split` selects after the fact
+rather than before.
+
 ## External tool — `!` (inside the changes hub)
 
 For anything beyond the built-ins (rebase, stash surgery…), `!` (inside the changes hub, `o`) suspends

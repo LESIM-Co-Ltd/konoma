@@ -907,6 +907,15 @@ impl App {
     /// branches yet").
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn open_git_worktrees(&mut self) {
+        // A jj workspace is not a git worktree, and in a colocated repository git's list describes
+        // the repository the user is *not* working in — a detached checkout they never made, with a
+        // key offering to create another. Say what konoma does not do yet instead of showing it.
+        #[cfg(feature = "git")]
+        if crate::vcs::detect(&self.tab.root) == crate::vcs::VcsKind::Jj {
+            self.flash =
+                Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JjWorkspacesUnlisted).into());
+            return;
+        }
         let list = crate::git::worktrees(&self.tab.root);
         if list.is_empty() {
             self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::NoWorktrees).into());
