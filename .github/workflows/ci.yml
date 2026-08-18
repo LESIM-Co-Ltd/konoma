@@ -73,8 +73,12 @@ jobs:
       - name: Install jj
         run: |
           ver=v0.44.0
+          tmp=$(mktemp -d)
+          # The tarball holds `./jj` beside a LICENSE and a README, so unpack it whole and place the
+          # binary — naming a member here depends on the leading `./` and fails without it.
           curl -sSfL "https://github.com/jj-vcs/jj/releases/download/$ver/jj-$ver-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar xz -C /usr/local/bin jj
+            | tar xz -C "$tmp"
+          sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
           jj --version
 
       - name: Clippy (default features)
