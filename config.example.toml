@@ -531,6 +531,10 @@ vcs              = "auto" # Which version-control system answers: "auto" | "git"
                           # system you actually work in with "git" or "jj". konoma only reads a jj
                           # repository: every jj call carries --ignore-working-copy, so it never
                           # snapshots the working copy, and write keys are hidden rather than offered.
+
+[jj]
+tool = "lazyjj"   # The external jj tool launched with `!` in the hub, the way [git] tool is for git.
+                  # A missing binary flashes what could not be launched, exactly as a missing lazygit does.
 pdf              = true   # The external fallback rasterizer: macOS's bundled qlmanage/sips, tried only when the primary
                            # renderer (hayro, pure Rust, always active regardless of this flag) fails on page 1 of a
                            # given PDF (encrypted/corrupt/unsupported). false never launches those tools; PDF preview

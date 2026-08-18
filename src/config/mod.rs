@@ -21,6 +21,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub editor: EditorConfig,
     pub git: GitConfig,
+    pub jj: JjConfig,
     pub external: ExternalConfig,
 }
 
@@ -102,6 +103,25 @@ pub struct GitConfig {
     /// worktree's own `git status` unless you add it to `.git/info/exclude` yourself — konoma never
     /// writes to that file for you.
     pub worktree_dir: String,
+}
+
+/// jj (Jujutsu) settings (`[jj]`). Only what has no git counterpart lives here — everything else
+/// about a jj repository is decided by `[external] vcs` and by jj itself.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct JjConfig {
+    /// External jj tool launched with `!` inside the hub (command + args, whitespace-separated).
+    /// Default "lazyjj". Missing from the machine behaves exactly like a missing lazygit: a flash
+    /// naming what could not be launched.
+    pub tool: String,
+}
+
+impl Default for JjConfig {
+    fn default() -> Self {
+        Self {
+            tool: "lazyjj".into(),
+        }
+    }
 }
 
 impl Default for GitConfig {

@@ -407,6 +407,21 @@ pub fn footer_spans(app: &App, width: u16) -> Vec<Span<'static>> {
 }
 
 /// which-key popup (footer-line version). Only while waiting on a leader, shows the menu heading + candidates
+/// Swaps a label whose wording assumes git for the one the answering backend uses.
+pub(crate) fn relabel_for_backend(app: &App, label: crate::i18n::Msg) -> crate::i18n::Msg {
+    #[cfg(feature = "git")]
+    if app.git_vcs == crate::vcs::VcsKind::Jj {
+        use crate::i18n::Msg;
+        return match label {
+            Msg::WkShortHash => Msg::WkChangeId,
+            Msg::WkFullHash => Msg::WkCommitId,
+            other => other,
+        };
+    }
+    let _ = app;
+    label
+}
+
 /// (`key:label`). Returns None if pending_leader is None. Zero per-frame cost (only while waiting).
 fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
     let lead = app.pending_leader?;
@@ -425,7 +440,9 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
                 KeyCode::Char(c) => c.to_string(),
                 _ => "?".to_string(),
             };
-            let label = tr(app.lang, it.label);
+            // jj names a commit by its change ID and keeps the hash underneath; the menu copies the
+            // right thing already, so only the words need to follow.
+            let label = tr(app.lang, relabel_for_backend(app, it.label));
             format!("{k}:{label}")
         })
         .collect();

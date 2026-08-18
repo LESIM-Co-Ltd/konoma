@@ -88,7 +88,7 @@ pub fn leader_section(app: &App, id: LeaderId, prefix: &str) -> Option<HelpSecti
     let title = tr(app.lang, menu.title);
     let mut sec = HelpSection::new(title.to_string());
     for it in &menu.items {
-        let label = tr(app.lang, it.label);
+        let label = tr(app.lang, super::status::relabel_for_backend(app, it.label));
         sec = sec.row(
             format!("{prefix} {}", leader_key_str(it.key)),
             label.to_string(),

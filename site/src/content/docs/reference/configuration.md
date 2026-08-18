@@ -192,6 +192,18 @@ Mermaid and images always open at the top.
 | `diff` | `"unified"` | Initial diff layout: `"unified"` (vertical) / `"split"` (side by side) / `"auto"` (by width). Cycle at runtime with `s` while viewing a diff. |
 | `worktree_dir` | `"../"` | Where `n` in the worktree list puts a new worktree, resolved against the **main** worktree so the location doesn't depend on which worktree you started from. The directory is named after the branch, with `/` replaced by `-`. Pointing this inside the repository works, but then that path needs a `.gitignore` or `.git/info/exclude` entry of your own — konoma never writes one for you. |
 
+
+## `[jj]` — jj (Jujutsu) integration
+
+Only what has no git counterpart lives here; everything else about a jj repository is decided by
+`[external] vcs` and by jj itself. **konoma only reads a jj repository** — every call carries
+`--ignore-working-copy`, so it never snapshots the working copy, and keys that would write are
+hidden rather than offered.
+
+| Key | Default | Description |
+|---|---|---|
+| `tool` | `"lazyjj"` | External jj tool launched with `!` inside the hub, the way `[git] tool` is for git. A missing binary flashes what could not be launched. |
+
 ## `[external]` — external process on/off switches
 
 One on/off switch per external process konoma can launch. Every key defaults to `true`,

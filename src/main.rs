@@ -1194,8 +1194,14 @@ fn run_editor(
 /// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
 fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    let tmpl = app.cfg.git.tool.trim();
-    let tmpl = if tmpl.is_empty() { "lazygit" } else { tmpl };
+    // `!` launches the tool for whichever system owns the directory: lazygit knows nothing about a
+    // jj repository, and running it there would show a repository the user is not working in.
+    let (tmpl, fallback) = match app.git_vcs {
+        crate::vcs::VcsKind::Git => (app.cfg.git.tool.trim(), "lazygit"),
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => (app.cfg.jj.tool.trim(), "lazyjj"),
+    };
+    let tmpl = if tmpl.is_empty() { fallback } else { tmpl };
     let mut parts = tmpl.split_whitespace().map(|s| s.to_string());
     let Some(prog) = parts.next() else {
         return Ok(());
@@ -1206,7 +1212,14 @@ fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resul
     if let Err(e) = status {
         app.flash = Some(format!(
             "{}{prog}: {e}",
-            i18n::tr(app.lang, crate::i18n::Msg::GitToolFailed)
+            i18n::tr(
+                app.lang,
+                match app.git_vcs {
+                    crate::vcs::VcsKind::Git => crate::i18n::Msg::GitToolFailed,
+                    #[cfg(feature = "git")]
+                    crate::vcs::VcsKind::Jj => crate::i18n::Msg::JjToolFailed,
+                }
+            )
         ));
     }
     Ok(())

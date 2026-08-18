@@ -379,6 +379,15 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// `!` failed to launch, when jj is the backend and the tool is jj's.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjToolFailed,
+    /// Copy-menu label where the identity is a change ID rather than a hash (jj).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    WkChangeId,
+    /// Copy-menu label for the underlying commit ID in a system that names commits some other way.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    WkCommitId,
     /// Graph keys for a backend with a narrower default range: `GitNavDetailCommitHint` plus `a`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjGraphNavHint,
@@ -795,6 +804,7 @@ fn en(msg: Msg) -> &'static str {
         MdTaskToggleHelp => "toggle focused checkbox (writes to the file)",
         HintDetailsToggle => "expand/collapse the focused <details>",
         GitToolFailed => "git tool failed: ",
+        JjToolFailed => "jj tool failed: ",
         GlobalApp => "global",
         HScroll => "horizontal scroll",
         GitHScrollEnds => "hscroll / line ends",
@@ -1064,6 +1074,8 @@ fn en(msg: Msg) -> &'static str {
         AgoYears => "years ago",
         WkCopyPathTitle => "Copy path",
         WkGitCopyTitle => "Copy commit",
+        WkChangeId => "change id",
+        WkCommitId => "commit id",
         WkShortHash => "short hash",
         WkFullHash => "full hash",
         WkSubject => "subject",
@@ -1275,6 +1287,7 @@ fn jp(msg: Msg) -> &'static str {
         MdTaskToggleHelp => "フォーカス中のチェックボックスをトグル(ファイルに書込み)",
         HintDetailsToggle => "フォーカス中の <details> を開閉",
         GitToolFailed => "git ツール起動失敗: ",
+        JjToolFailed => "jj ツール起動失敗: ",
         GlobalApp => "グローバル",
         HScroll => "横スクロール(非折返し時)",
         GitHScrollEnds => "横スクロール / 行頭・行末",
@@ -1535,6 +1548,8 @@ fn jp(msg: Msg) -> &'static str {
         AgoYears => "年前",
         WkCopyPathTitle => "パスをコピー",
         WkGitCopyTitle => "コミットをコピー",
+        WkChangeId => "change id",
+        WkCommitId => "commit id",
         WkShortHash => "短ハッシュ",
         WkFullHash => "完全ハッシュ",
         WkSubject => "件名",
@@ -1818,6 +1833,7 @@ mod tests {
         Msg::MdTaskToggleHelp,
         Msg::HintDetailsToggle,
         Msg::GitToolFailed,
+        Msg::JjToolFailed,
         Msg::GlobalApp,
         Msg::HScroll,
         Msg::GitHScrollEnds,
@@ -2073,6 +2089,8 @@ mod tests {
         Msg::StMarkOverwrite,
         Msg::StMarkOverwriteHint,
         Msg::WkGitCopyTitle,
+        Msg::WkChangeId,
+        Msg::WkCommitId,
         Msg::WkShortHash,
         Msg::WkFullHash,
         Msg::WkSubject,
