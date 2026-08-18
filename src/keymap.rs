@@ -213,6 +213,10 @@ pub enum Action {
     /// is already everything).
     #[cfg(feature = "git")]
     GitGraphToggleAll,
+    /// Ask jj to take a snapshot — the only thing konoma writes to a jj repository, and only when
+    /// asked. See `vcs::jj::snapshot`.
+    #[cfg(feature = "git")]
+    JjSync,
     /// Graph: open the branch-visibility panel (toggles which branches show when there are many).
     #[cfg(feature = "git")]
     GitGraphOpenPicker,
@@ -948,6 +952,7 @@ impl KeyMap {
             gchg.insert(KeyPress::ch('l'), run(Action::GitOpenLog));
             gchg.insert(KeyPress::ch('g'), run(Action::GitOpenGraph));
             gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+            gchg.insert(KeyPress::ch('R'), run(Action::JjSync));
             gchg.insert(KeyPress::ch('q'), run(Action::GitClose));
             // y→ copies the selected changed file's path (reuses the same path-copy menu as the tree).
             gchg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
@@ -1962,6 +1967,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "git_graph_toggle_all" => Action::GitGraphToggleAll,
         #[cfg(feature = "git")]
+        "jj_sync" => Action::JjSync,
+        #[cfg(feature = "git")]
         "git_graph_open_picker" => Action::GitGraphOpenPicker,
         #[cfg(feature = "git")]
         "git_graph_picker_toggle" => Action::GitGraphPickerToggle,
@@ -2145,6 +2152,8 @@ pub fn action_name(a: Action) -> String {
         Action::GitGraphClearBase => "git_graph_clear_base",
         #[cfg(feature = "git")]
         Action::GitGraphToggleAll => "git_graph_toggle_all",
+        #[cfg(feature = "git")]
+        Action::JjSync => "jj_sync",
         #[cfg(feature = "git")]
         Action::GitGraphOpenPicker => "git_graph_open_picker",
         #[cfg(feature = "git")]

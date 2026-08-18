@@ -419,6 +419,9 @@ pub struct UiConfig {
     /// dialog (`y`/Enter = overwrite, `n`/Esc = cancel). false = overwrite silently. Setting a fresh
     /// letter, or re-setting the same path, never asks.
     pub confirm_bookmark_overwrite: bool,
+    /// Ask before letting jj take a snapshot (`R` in the hub). konoma never writes to a jj
+    /// repository on its own, so this is the one place it can, and it says so before doing it.
+    pub confirm_jj_sync: bool,
     /// What follow mode (`F`) opens when it jumps to a changed file. `"diff"` (default) = the full-screen
     /// git diff of that file (hunk-level before/after — the way hunk/livediff/diffpane present agent
     /// edits; untracked files show as an all-added diff); `"file"` = the normal content preview scrolled
@@ -730,6 +733,7 @@ impl Default for UiConfig {
             commit_meta_align: "right".into(),
             confirm_quit: true,
             confirm_bookmark_overwrite: true,
+            confirm_jj_sync: true,
             csv_rainbow: true,
             follow_view: "diff".into(),
             md_task_states: vec![" ".into(), "x".into()],

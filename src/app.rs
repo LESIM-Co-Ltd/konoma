@@ -644,6 +644,9 @@ enum PendingOp {
     GitDiscard { path: PathBuf },
     /// In the Git view, `c`=enter a commit message. On confirm, git::commit (uses the staged index).
     GitCommit,
+    /// In the hub, `R`=let jj take a snapshot. The only write konoma makes to a jj repository, and
+    /// only after this confirmation.
+    JjSync,
     /// In the branch list, `n`=enter a new branch name. On confirm, git::create_branch (create and switch).
     GitCreateBranch,
     /// In the worktree list, `n`=enter a branch name for a new linked worktree. On confirm,

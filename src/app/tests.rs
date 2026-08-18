@@ -21572,3 +21572,72 @@ fn tree_descend_still_descends_into_directories() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Builds a throwaway jj workspace with no colocated `.git`. None when this machine has no jj —
+/// konoma falls back to git there, so the suite has to stay green without it.
+#[cfg(feature = "git")]
+fn jj_scratch(name: &str) -> Option<PathBuf> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).ok()?;
+    let jj = |args: &[&str]| {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir) // never touch the running machine's own jj config
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !jj(&["git", "init", "--no-colocate", "."]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+    if !jj(&["commit", "-m", "seed"]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+    Some(dir)
+}
+
+/// `[ui] confirm_jj_sync` decides whether `R` asks first. konoma writes to a jj repository only
+/// here, so the default has to be the one that asks.
+#[cfg(feature = "git")]
+#[test]
+fn ui_confirm_jj_sync_gates_the_only_write() {
+    let Some(dir) = jj_scratch("konoma_confirm_jj_sync") else {
+        return;
+    };
+
+    let mut on = Config::default();
+    assert!(
+        on.ui.confirm_jj_sync,
+        "the setting that guards konoma's only write must default to asking"
+    );
+    on.ui.confirm_jj_sync = true;
+    let mut app = App::new(dir.clone(), on).unwrap();
+    app.jj_start_sync();
+    assert!(
+        app.dialog.is_some(),
+        "with the confirmation on, R must ask before letting jj snapshot"
+    );
+
+    let mut off = Config::default();
+    off.ui.confirm_jj_sync = false;
+    let mut app = App::new(dir.clone(), off).unwrap();
+    app.jj_start_sync();
+    assert!(
+        app.dialog.is_none(),
+        "with the confirmation off, R must act without asking"
+    );
+    assert!(
+        app.flash.is_some(),
+        "acting without asking still has to report what happened"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

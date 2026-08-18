@@ -53,6 +53,32 @@ fn run(cwd: &Path, rest: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// **The one command konoma runs without `--ignore-working-copy`**, and only when the user asks for
+/// it explicitly.
+///
+/// It makes jj take a snapshot: jj compares the working directory against `@` and, if they differ,
+/// rewrites `@` to match. That is a write — a new commit and an entry in the operation log — which
+/// is why nothing else here does it. It exists as a way out of the one thing konoma's own tracking
+/// cannot see: a file whose contents changed while its modification time did not.
+///
+/// Runs synchronously: the user just confirmed a dialog, and jj does nothing when there is nothing
+/// to take (measured: no new commit, no operation, no bytes). It only costs anything when there is
+/// something to snapshot, which is exactly when the user asked for it.
+pub fn snapshot(root: &Path) -> bool {
+    let Some(ws) = workspace_root(root) else {
+        return false;
+    };
+    std::process::Command::new("jj")
+        .current_dir(&ws)
+        .args(["status"]) // deliberately not through `args`: see above
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// The workspace root: the nearest ancestor holding `.jj`.
 ///
 /// Pure filesystem lookup — **jj is never launched for a directory that has no `.jj`**, which is
@@ -652,6 +678,36 @@ mod tests {
         let a = args(&["log", "-r", "@"]);
         assert_eq!(a.first(), Some(&"log"));
         assert_eq!(a.last(), Some(&IGNORE_WORKING_COPY));
+    }
+
+    /// Every jj invocation in this module goes through `args` — which appends the no-write flag —
+    /// except two that cannot write: the version probe, and the snapshot the user explicitly asks
+    /// for. Checked against the source rather than trusted: the promise is only worth anything if a
+    /// call that forgets the flag fails here.
+    #[test]
+    fn only_the_named_exceptions_run_jj_without_the_flag() {
+        let src = include_str!("jj.rs");
+        // Scan the module's code, not this test's own text.
+        let code = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        let mut unflagged = Vec::new();
+        for (i, _) in code.match_indices("Command::new(\"jj\")") {
+            let tail = &code[i..(i + 400).min(code.len())];
+            if tail.contains(".args(args(") {
+                continue;
+            }
+            let head = &code[..i];
+            let name = head
+                .rfind("pub fn ")
+                .map(|j| head[j + "pub fn ".len()..].split('(').next().unwrap_or("?"))
+                .unwrap_or("?");
+            unflagged.push(name.to_string());
+        }
+        unflagged.sort();
+        assert_eq!(
+            unflagged,
+            vec!["available", "snapshot"],
+            "a jj call would snapshot the working copy without being asked"
+        );
     }
 
     /// A directory with no `.jj` anywhere above it must not make konoma launch jj at all.

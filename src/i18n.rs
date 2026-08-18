@@ -379,6 +379,18 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// Confirmation before letting jj take a snapshot.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjSyncConfirm,
+    /// Flash after a successful snapshot.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjSyncDone,
+    /// Flash when the snapshot could not be taken.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjSyncFailed,
+    /// Flash on `R` outside a jj repository.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjSyncNotJj,
     /// `!` failed to launch, when jj is the backend and the tool is jj's.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjToolFailed,
@@ -805,6 +817,10 @@ fn en(msg: Msg) -> &'static str {
         HintDetailsToggle => "expand/collapse the focused <details>",
         GitToolFailed => "git tool failed: ",
         JjToolFailed => "jj tool failed: ",
+        JjSyncConfirm => "Let jj snapshot the working copy? (jj undo reverses it)",
+        JjSyncDone => "jj snapshotted the working copy",
+        JjSyncFailed => "jj could not snapshot the working copy",
+        JjSyncNotJj => "nothing to sync: this is not a jj repository",
         GlobalApp => "global",
         HScroll => "horizontal scroll",
         GitHScrollEnds => "hscroll / line ends",
@@ -888,7 +904,7 @@ fn en(msg: Msg) -> &'static str {
         ResetFit => "reset to fit",
         Root => "root",
         StGitHubKeys => "s/S:stage(all) u/U:unstage(all) x:discard c:commit Enter:diff d:diff-all l:log g:graph b:branch w:worktrees !:tool q:close",
-        StJjHubKeys => "Enter:diff d:diff-all l:log g:graph b:bookmarks !:tool q:close",
+        StJjHubKeys => "Enter:diff d:diff-all l:log g:graph b:bookmarks R:sync !:tool q:close",
         Scroll => "scroll",
         Scroll10Lines => "scroll 10 lines",
         SearchHint => "search (code/text); next / prev match",
@@ -1288,6 +1304,10 @@ fn jp(msg: Msg) -> &'static str {
         HintDetailsToggle => "フォーカス中の <details> を開閉",
         GitToolFailed => "git ツール起動失敗: ",
         JjToolFailed => "jj ツール起動失敗: ",
+        JjSyncConfirm => "jj に作業コピーを取り込ませますか?(jj undo で戻せます)",
+        JjSyncDone => "jj が作業コピーを取り込みました",
+        JjSyncFailed => "jj が作業コピーを取り込めませんでした",
+        JjSyncNotJj => "同期する対象がありません(jj リポジトリではありません)",
         GlobalApp => "グローバル",
         HScroll => "横スクロール(非折返し時)",
         GitHScrollEnds => "横スクロール / 行頭・行末",
@@ -1367,7 +1387,7 @@ fn jp(msg: Msg) -> &'static str {
         ResetFit => "フィットに戻す",
         Root => "ルート",
         StGitHubKeys => "s/S:ステージ(全) u/U:解除(全) x:破棄 c:コミット Enter:差分 d:全変更差分 l:ログ g:グラフ b:ブランチ w:ワークツリー !:ツール q:閉じる",
-        StJjHubKeys => "Enter:差分  d:全差分  l:ログ  g:グラフ  b:ブックマーク  !:ツール  q:閉じる",
+        StJjHubKeys => "Enter:差分  d:全差分  l:ログ  g:グラフ  b:ブックマーク  R:同期  !:ツール  q:閉じる",
         Scroll => "スクロール",
         Scroll10Lines => "10 行スクロール",
         SearchHint => "検索(コード/テキスト); 次 / 前の一致",
@@ -1834,6 +1854,10 @@ mod tests {
         Msg::HintDetailsToggle,
         Msg::GitToolFailed,
         Msg::JjToolFailed,
+        Msg::JjSyncConfirm,
+        Msg::JjSyncDone,
+        Msg::JjSyncFailed,
+        Msg::JjSyncNotJj,
         Msg::GlobalApp,
         Msg::HScroll,
         Msg::GitHScrollEnds,

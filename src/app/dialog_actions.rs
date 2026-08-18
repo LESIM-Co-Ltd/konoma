@@ -343,6 +343,7 @@ impl App {
             | PendingOp::GitDeleteBranch { .. }
             | PendingOp::DropTransfer { .. }
             | PendingOp::BookmarkOverwrite { .. }
+            | PendingOp::JjSync
             | PendingOp::Quit => {}
         }
         Ok(())
@@ -406,6 +407,10 @@ impl App {
             // Runs in the background too (design principle #4) — restoring a large file from the
             // index is a working-tree write like any other. Returning from the GitDiff preview to
             // the Git view (came_from_git_view) happens in `apply_git_op`.
+            #[cfg(feature = "git")]
+            PendingOp::JjSync => self.jj_run_sync(),
+            #[cfg(not(feature = "git"))]
+            PendingOp::JjSync => {}
             PendingOp::GitDiscard { path } => {
                 let label = self.format_path(&path);
                 self.start_git_op(crate::app::GitOpJob {

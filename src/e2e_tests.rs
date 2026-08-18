@@ -8057,6 +8057,10 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
         ),
     ),
     (
+        "confirm_jj_sync",
+        Coverage::CoveredByUnitTest("ui_confirm_jj_sync_gates_the_only_write"),
+    ),
+    (
         "confirm_bookmark_overwrite",
         Coverage::CoveredElsewhere(
             "e2e_bookmark_overwrite_prompts_confirm_then_applies / e2e_bookmark_overwrite_off_applies_silently",

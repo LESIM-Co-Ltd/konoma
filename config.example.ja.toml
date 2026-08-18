@@ -109,6 +109,10 @@ confirm_quit = true
 #   true  (既定) … 上書き前に確認(y / Enter = 上書き, n / Esc = 取消)
 #   false        … 確認なしで即上書き
 confirm_bookmark_overwrite = true
+confirm_jj_sync            = true   # ハブで `R` を押して jj に作業コピーを取り込ませる前に確認する。
+                                    # konoma が jj リポジトリに書き込むのはここだけで、しかも指示されたときのみ。
+                                    # konoma 自身では気づけない「更新時刻が変わらないまま中身が変わった」
+                                    # ファイルのための逃げ道。
 
 # CSV/TSV テーブルプレビューの列レインボー。列ごとに色を回して見分けやすくする(Rainbow CSV / csvlens 流)。
 #   true  (既定) … 列ごとに色付け。

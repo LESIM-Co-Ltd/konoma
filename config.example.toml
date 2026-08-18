@@ -117,6 +117,10 @@ confirm_quit = true
 #   true  (default) … confirm before overwriting (y / Enter = overwrite, n / Esc = cancel).
 #   false           … overwrite immediately without confirmation.
 confirm_bookmark_overwrite = true
+confirm_jj_sync            = true   # Ask before `R` in the hub lets jj snapshot the working copy.
+                                    # That is the one thing konoma writes to a jj repository, and only
+                                    # when asked: it exists for the case konoma cannot see on its own,
+                                    # a file whose contents changed while its timestamp did not.
 
 # Rainbow columns in the CSV/TSV table preview. Rotates a color per column for easier scanning (Rainbow CSV /
 # csvlens style).

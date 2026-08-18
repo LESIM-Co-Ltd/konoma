@@ -1511,6 +1511,50 @@ impl App {
         ));
     }
 
+    /// `R`: ask jj to take a snapshot.
+    ///
+    /// konoma tracks changes itself and never writes, which leaves one thing it cannot see: a file
+    /// whose contents changed while its modification time did not. This is the way out of that, and
+    /// the only write konoma makes to a jj repository — so it says so first, unless
+    /// `[ui] confirm_jj_sync` is off.
+    #[cfg(feature = "git")]
+    pub fn jj_start_sync(&mut self) {
+        if crate::vcs::detect(&self.tab.root) != crate::vcs::VcsKind::Jj {
+            self.flash = Some(crate::i18n::tr(self.lang, crate::i18n::Msg::JjSyncNotJj).into());
+            return;
+        }
+        if !self.cfg.ui.confirm_jj_sync {
+            self.jj_run_sync();
+            return;
+        }
+        self.dialog = Some(crate::app::Dialog {
+            op: crate::app::PendingOp::JjSync,
+            kind: crate::app::DialogKind::Confirm {
+                message: crate::i18n::tr(self.lang, crate::i18n::Msg::JjSyncConfirm).to_string(),
+                allow_permanent: false,
+            },
+        });
+    }
+
+    /// Takes the snapshot and re-reads, so the tree shows what jj now knows.
+    #[cfg(feature = "git")]
+    pub(super) fn jj_run_sync(&mut self) {
+        let ok = crate::vcs::jj::snapshot(&self.tab.root);
+        self.git_status_for = None;
+        self.git_status_dirty = true;
+        self.flash = Some(
+            crate::i18n::tr(
+                self.lang,
+                if ok {
+                    crate::i18n::Msg::JjSyncDone
+                } else {
+                    crate::i18n::Msg::JjSyncFailed
+                },
+            )
+            .into(),
+        );
+    }
+
     /// `a`: widen the graph to every revision, or narrow it back.
     ///
     /// Only jj keeps a narrower default — it rewrites commits as you work, and every predecessor
