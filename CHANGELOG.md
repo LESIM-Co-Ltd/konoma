@@ -6,6 +6,45 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **jj (Jujutsu) repositories now work.** A repository created with `jj git init --no-colocate`, and
+  every `jj workspace`, has no `.git` — so konoma showed nothing at all for them: no change markers,
+  no chip, `d` answering "no changes" and `o` answering "not a git repo". They now get the same
+  views a git repository does: the tree's markers and ignore dimming, the full-screen diff, the
+  changed-file list, follow mode, the change gutter, and the hub (`o`) with its log, graph,
+  bookmarks and per-revision detail.
+
+  What jj gets is jj's, not git's wearing jj's data. The chip names the working-copy commit the way
+  jj does (`@ owyqxpku side B`) rather than claiming a branch, because jj tracks none and leaves git
+  detached — "HEAD" would be a lie. A new file reads as added rather than modified, since jj has no
+  untracked state. The graph uses jj's own range and symbols: `@` for the working copy, `○` for an
+  ordinary commit, `◆` for immutable, `×` for a conflict, and only *this* workspace's checkout gets
+  `@` — another workspace's is an ordinary commit carrying a `ws-second@` label. Rows are named by
+  change ID, the name a commit keeps across rewrites. The pointer list is titled bookmarks and marks
+  none of them current, because a bookmark does not follow the working copy the way a branch follows
+  HEAD.
+
+  **konoma only reads a jj repository.** Every call carries `--ignore-working-copy`, attached in one
+  place and held there by a test: without it *any* jj command snapshots the working copy into a new
+  commit, and konoma re-reads status on every file-watch event — which is how a read turns into a
+  write loop. Keys that would write are hidden rather than offered, and explain themselves if
+  pressed anyway.
+
+  That flag answers from the last snapshot somebody else took, so `jj diff` alone goes stale. konoma
+  closes the gap itself: it walks the tree anyway, so files newer than the snapshot are checked
+  against the parent's content. A file written by an agent with no jj command in between — invisible
+  to `jj diff --summary --ignore-working-copy` — still shows up, and follow mode still jumps to it.
+
+- `[external] vcs` (`"auto"` | `"git"` | `"jj"`) decides which system answers. `auto` prefers jj
+  wherever a `.jj` exists and falls back to git everywhere else, including when the `jj` binary is
+  missing; the explicit values pin a colocated repository to the system you actually work in.
+
+### Changed
+- The commit graph's node symbols are now chosen from a table keyed by what the node *means*, and
+  the node cell is located by position rather than by matching on the character. Rendering is
+  unchanged for git; the previous arrangement would have silently lost the branch legend's colours
+  and the selected row's emphasis the moment a second system drew a node differently.
+
 ## [0.26.0] - 2026-08-17
 
 ### Fixed

@@ -652,4 +652,114 @@ mod tests {
     fn no_marker_means_no_workspace() {
         assert!(workspace_root(Path::new("/")).is_none());
     }
+
+    /// Builds a throwaway jj repository with no colocated `.git`, so the assertions below can only
+    /// pass through the jj backend. Returns None when this machine has no jj, which is the same
+    /// answer konoma gives at runtime — the suite must stay green without it.
+    fn scratch_repo(name: &str) -> Option<PathBuf> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                // A fresh HOME and an explicit identity: the machine running this may have no jj
+                // config at all, and must not have this repository written into the one it does have.
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("kept.txt"), b"one\n").ok()?;
+        std::fs::write(dir.join("changed.txt"), b"before\n").ok()?;
+        if !jj(&["commit", "-m", "seed"]) {
+            return None;
+        }
+        std::fs::write(dir.join("changed.txt"), b"after\n").ok()?;
+        std::fs::write(dir.join("added.txt"), b"new\n").ok()?;
+        Some(dir)
+    }
+
+    /// The backend has to see a change jj itself has not snapshotted yet — that gap is the whole
+    /// reason konoma walks the tree instead of trusting `jj diff`.
+    #[test]
+    fn reports_changes_jj_has_not_snapshotted() {
+        let Some(dir) = scratch_repo("statuses") else {
+            return;
+        };
+        let st = statuses(&dir);
+        assert_eq!(
+            st.get(&dir.join("changed.txt")),
+            Some(&FileStatus::Modified),
+            "an edited file must be modified: {st:?}"
+        );
+        assert_eq!(
+            st.get(&dir.join("added.txt")),
+            Some(&FileStatus::Added),
+            "a new file must be added, not untracked — jj has no untracked state: {st:?}"
+        );
+        assert!(
+            !st.contains_key(&dir.join("kept.txt")),
+            "an untouched file must carry no marker: {st:?}"
+        );
+        let files = changed_files(&dir);
+        assert_eq!(files.len(), 2, "one entry per changed file: {files:?}");
+        assert!(
+            files.iter().all(|f| !f.staged),
+            "jj has no index, so nothing can be staged: {files:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The diff is taken against the working-copy commit's parent and read off disk, so it shows the
+    /// edit rather than the last snapshot.
+    #[test]
+    fn diffs_against_the_parent_commit() {
+        let Some(dir) = scratch_repo("diff") else {
+            return;
+        };
+        let lines = file_diff(&dir, &dir.join("changed.txt"));
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"before"),
+            "the parent's line is missing: {text:?}"
+        );
+        assert!(
+            text.contains(&"after"),
+            "the working copy's line is missing: {text:?}"
+        );
+        let added = file_diff(&dir, &dir.join("added.txt"));
+        assert!(
+            added.iter().all(|l| l.old_no.is_none()),
+            "a file the parent does not have must read as all-added: {added:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The chip names the working-copy commit the way jj does, and never claims a branch.
+    #[test]
+    fn chip_names_the_working_copy_commit() {
+        let Some(dir) = scratch_repo("chip") else {
+            return;
+        };
+        let chip = branch(&dir).expect("a jj workspace always has a working-copy commit");
+        assert!(
+            chip.starts_with("@ "),
+            "the chip must open with jj's own marker: {chip}"
+        );
+        assert!(
+            !chip.contains("HEAD"),
+            "jj tracks no branch and leaves git detached, so HEAD would be a lie: {chip}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

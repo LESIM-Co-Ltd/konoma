@@ -198,6 +198,7 @@ konoma が起動する外部プロセスを1個ずつ on/off できます。全�
 |---|---|---|
 | `git` | `true` | git 連携: status の色・ガター・Git ビュー・stage/unstage/commit/checkout/branch(`src/git.rs`・git CLI + 組込み git2/libgit2 経由)。`false` は `--no-default-features`(git feature 無し)でビルドしたのと**全く同じ挙動**(読み取りは全て空/`None`、書き込みは全てエラー)。`o`(Git ビューを開く)は「repo でない」とは別の文言で無効を知らせます。なお**この設定に関わらず、`git` 実行ファイルが見つからない環境では git 連携は自動でオフになります**(初回使用時に一度だけ判定)。その場合 `o` は「ディレクトリが repo でない」ではなく「git が見つかりません」と知らせます。 |
 | `git_tool` | `true` | `!` で起動する外部 git ツール(上の `[git] tool`・既定 lazygit)。 |
+| `vcs` | `"auto"` | どのバージョン管理システムが答えるか: `"auto"` \| `"git"` \| `"jj"`。`auto` は `.jj` があれば jj を優先し、それ以外(および `jj` バイナリが無いとき)は git。colocated を固定したいときは `"git"` / `"jj"` を明示する。konoma は jj リポジトリを**読むだけ**で、全呼び出しに `--ignore-working-copy` が付くためスナップショットを取らず、書き込み系のキーも提示しない。 |
 | `pdf` | `true` | **外部フォールバック**のラスタライザ(macOS 同梱の `qlmanage`/`sips`)。主レンダラ(`hayro`・純 Rust・このフラグに関係なくプロセス内で解析/描画)がその PDF の1ページ目を描画できなかった時(暗号化・破損など)だけ試されます。`false` にするとこれらの外部ツールは一切起動しませんが、PDF プレビュー自体(ページ描画・ページ数取得)は `hayro` により動作し続けます。**macOS 以外ではこのフラグは実質無効**です(起動する外部 PDF ツールがそもそも無いため)。 |
 | `video` | `true` | **外部フォールバック**の抽出ツール(`ffmpegthumbnailer`/`ffmpeg`)。内蔵デコーダ(純 Rust・このフラグに関係なくプロセス内で常に動く)が扱えないファイル=`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm` の H.264/HEVC 以外の時だけ使う。`false` でもそれらを起動しないだけで、これらのコンテナの H.264/HEVC のサムネイルは出る(上の `pdf` と `hayro` の関係と同じ)。 |
 | `remote_images` | `true` | Markdown 内の `http(s)://` 画像取得。konoma が行う唯一の外向きネットワーク通信です。`curl` 等の外部プロセスではなく `ureq`(rustls)でプロセス内実行します。 |

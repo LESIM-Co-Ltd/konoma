@@ -524,6 +524,13 @@ git              = true   # git integration (status colors, gutter, Git views, s
                            # Whatever this says, git integration also turns itself off automatically when no `git`
                            # executable is found on the machine (checked once, on first use), and `o` says so.
 git_tool         = true   # The external git tool launched with `!` (see [git] tool above).
+vcs              = "auto" # Which version-control system answers: "auto" | "git" | "jj".
+                          # "auto" prefers jj wherever a .jj exists — whoever created it works in jj —
+                          # and falls back to git everywhere else, including when the jj binary is
+                          # missing. Pin a colocated repository (.git and .jj side by side) to the
+                          # system you actually work in with "git" or "jj". konoma only reads a jj
+                          # repository: every jj call carries --ignore-working-copy, so it never
+                          # snapshots the working copy, and write keys are hidden rather than offered.
 pdf              = true   # The external fallback rasterizer: macOS's bundled qlmanage/sips, tried only when the primary
                            # renderer (hayro, pure Rust, always active regardless of this flag) fails on page 1 of a
                            # given PDF (encrypted/corrupt/unsupported). false never launches those tools; PDF preview
