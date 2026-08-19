@@ -298,6 +298,34 @@ impl Vcs for Jj {
     }
 }
 
+/// Pure decision function behind [`detect`]: given already-resolved inputs, decides which backend
+/// answers for `root`. This precedence must never change — see the inline comment below — but the
+/// logic is worth being able to drive from a test with an arbitrary combination of inputs, which is
+/// why it takes them as parameters rather than reading them itself:
+///
+/// - [`preference()`] reads a process-wide `AtomicU8` (`PREFERENCE`) shared by every test binary
+///   runs concurrently; a test that called `set_preference` to exercise one case would leak that
+///   choice into every other test running in parallel.
+/// - [`jj::available()`] caches its probe in a `OnceLock` for the life of the process — once it has
+///   observed a working `jj` binary it can never report `false` again, so "no jj binary on this
+///   machine" could never be exercised from a process where the probe already ran and succeeded.
+///
+/// `root` has neither problem (a fixture directory is not shared state), so it is passed straight
+/// through unchanged; `detect` is a thin wrapper that supplies the two global reads.
+#[cfg(feature = "git")]
+pub(crate) fn detect_with(pref: Preference, root: &Path, jj_available: bool) -> VcsKind {
+    if pref == Preference::Git {
+        return VcsKind::Git;
+    }
+    // Under `auto`, git keeps whatever it can already answer; jj fills the gap where there is no
+    // git repository to ask. `jj` asks for jj wherever it can answer at all.
+    let git_answers = pref == Preference::Auto && crate::git::workdir(root).is_some();
+    if !git_answers && jj::workspace_root(root).is_some() && jj_available {
+        return VcsKind::Jj;
+    }
+    VcsKind::Git
+}
+
 /// Which version-control system answers for `root`. See [`Preference`] for what decides it.
 ///
 /// git also answers where a `.jj` exists but the `jj` binary does not: falling back shows something
@@ -305,19 +333,13 @@ impl Vcs for Jj {
 pub fn detect(root: &Path) -> VcsKind {
     #[cfg(feature = "git")]
     {
-        let pref = preference();
-        if pref == Preference::Git {
-            return VcsKind::Git;
-        }
-        // Under `auto`, git keeps whatever it can already answer; jj fills the gap where there is no
-        // git repository to ask. `jj` asks for jj wherever it can answer at all.
-        let git_answers = pref == Preference::Auto && crate::git::workdir(root).is_some();
-        if !git_answers && jj::workspace_root(root).is_some() && jj::available() {
-            return VcsKind::Jj;
-        }
+        detect_with(preference(), root, jj::available())
     }
-    let _ = root;
-    VcsKind::Git
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = root;
+        VcsKind::Git
+    }
 }
 
 /// The backend that answers for `root`.
@@ -415,6 +437,12 @@ mod tests {
 
     /// The seam must not change what a caller sees: going through the backend has to agree with the
     /// free functions it delegates to, for a real repository and for a plain directory alike.
+    ///
+    /// **This is a git-only safety net.** Both `root`s below resolve through `detect`/`detect_with`
+    /// to `VcsKind::Git` (the crate's own directory has a `.git` and no `.jj`; `/` has neither), so
+    /// this test never exercises the jj branch of `backend_for`'s routing — see
+    /// `detect_with_covers_every_combination_of_pref_form_and_jj_availability` and
+    /// `backend_for_a_jj_only_directory_is_read_only` for that.
     #[test]
     fn backend_agrees_with_the_free_functions() {
         for root in [
@@ -447,5 +475,226 @@ mod tests {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let handle = std::thread::spawn(move || backend_for(&root).workdir(&root));
         assert!(handle.join().is_ok());
+    }
+
+    // --- Preference::parse ---------------------------------------------------------------------
+
+    /// Anything not literally `"git"` or `"jj"` (after trim + lowercase) must fall back to `Auto` —
+    /// a typo in `[external] vcs` must never silently take a repository's markers away.
+    #[test]
+    fn preference_parse_table() {
+        let cases: &[(&str, Preference)] = &[
+            ("git", Preference::Git),
+            ("jj", Preference::Jj),
+            ("auto", Preference::Auto),
+            ("GIT", Preference::Git),
+            ("Jj", Preference::Jj),
+            ("AUTO", Preference::Auto),
+            (" git\n", Preference::Git),
+            ("\tjj\t", Preference::Jj),
+            ("  auto  ", Preference::Auto),
+            ("", Preference::Auto),
+            ("   ", Preference::Auto),
+            ("gti", Preference::Auto),       // typo
+            ("mercurial", Preference::Auto), // unrelated VCS name
+            ("Git ", Preference::Git),
+            ("\njj", Preference::Jj),
+        ];
+        for (input, expected) in cases.iter().copied() {
+            assert_eq!(
+                Preference::parse(input),
+                expected,
+                "Preference::parse({input:?})"
+            );
+        }
+    }
+
+    // --- detect_with -----------------------------------------------------------------------------
+    // Every fixture below is built through `test_support::unique_tmp`, which is rooted at
+    // `std::env::temp_dir()` — never a fixed path, and (checked empirically before writing these:
+    // `git -C "$(dirname "$(mktemp -u)")" rev-parse --show-toplevel` fails with "not a git
+    // repository") never itself inside a git repository. That matters here specifically: unlike a
+    // path under `CARGO_MANIFEST_DIR` (which IS konoma's own git repository — `crate::git::workdir`
+    // walks up through ancestors via libgit2 `Repository::discover`), a fixture under `temp_dir()`
+    // is guaranteed not to be swallowed by some unrelated ancestor repository, so a "plain
+    // directory" fixture really does resolve to `workdir(..) == None`.
+
+    #[cfg(feature = "git")]
+    fn detect_with_empty_dir(prefix: &str) -> PathBuf {
+        let dir = crate::test_support::unique_tmp(prefix);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A directory with only `.git` — a real (tiny) repository, via the same `git2::Repository::init`
+    /// pattern `git::tests::init_repo` uses.
+    #[cfg(feature = "git")]
+    fn detect_with_git_only_dir() -> PathBuf {
+        let dir = detect_with_empty_dir("konoma_vcs_detect_git_only");
+        git2::Repository::init(&dir).unwrap();
+        dir
+    }
+
+    /// A directory with only `.jj`. No `jj git init` needed: `jj::workspace_root` is a pure
+    /// filesystem walk for the nearest ancestor holding `.jj` (see its own doc comment) — jj is
+    /// never actually launched to build this fixture.
+    #[cfg(feature = "git")]
+    fn detect_with_jj_only_dir() -> PathBuf {
+        let dir = detect_with_empty_dir("konoma_vcs_detect_jj_only");
+        std::fs::create_dir_all(dir.join(".jj")).unwrap();
+        dir
+    }
+
+    /// Colocated: `.git` and `.jj` side by side — the shape `jj git init --colocate` produces, and
+    /// the one real-world onboarding path this repository had zero fixtures for before this.
+    #[cfg(feature = "git")]
+    fn detect_with_colocated_dir() -> PathBuf {
+        let dir = detect_with_empty_dir("konoma_vcs_detect_colocated");
+        git2::Repository::init(&dir).unwrap();
+        std::fs::create_dir_all(dir.join(".jj")).unwrap();
+        dir
+    }
+
+    /// Neither — a plain directory with no VCS marker at all.
+    #[cfg(feature = "git")]
+    fn detect_with_neither_dir() -> PathBuf {
+        detect_with_empty_dir("konoma_vcs_detect_neither")
+    }
+
+    /// The full 3 (pref) x 4 (form) x 2 (jj_available) = 24-case table. Column meanings:
+    /// - pref: `[external] vcs` as parsed by `Preference::parse`.
+    /// - form: which VCS marker(s) the fixture directory has.
+    /// - jj_available: whether `jj::available()` would have reported true.
+    /// - expected: the backend `detect_with` must choose.
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_covers_every_combination_of_pref_form_and_jj_availability() {
+        let git_only = detect_with_git_only_dir();
+        let jj_only = detect_with_jj_only_dir();
+        let colocated = detect_with_colocated_dir();
+        let neither = detect_with_neither_dir();
+
+        use Preference::{Auto, Git as G, Jj as J};
+        use VcsKind::{Git, Jj};
+        let cases: &[(Preference, &str, &Path, bool, VcsKind)] = &[
+            // --- vcs = "git": always git, no matter the directory or jj availability.
+            (G, "git_only", git_only.as_path(), true, Git),
+            (G, "git_only", git_only.as_path(), false, Git),
+            (G, "jj_only", jj_only.as_path(), true, Git),
+            (G, "jj_only", jj_only.as_path(), false, Git),
+            (G, "colocated", colocated.as_path(), true, Git),
+            (G, "colocated", colocated.as_path(), false, Git),
+            (G, "neither", neither.as_path(), true, Git),
+            (G, "neither", neither.as_path(), false, Git),
+            // --- vcs = "auto": git wherever git can answer; jj only fills the gap.
+            (Auto, "git_only", git_only.as_path(), true, Git),
+            (Auto, "git_only", git_only.as_path(), false, Git),
+            (Auto, "jj_only", jj_only.as_path(), true, Jj),
+            (Auto, "jj_only", jj_only.as_path(), false, Git), // no jj binary -> falls back to git
+            (Auto, "colocated", colocated.as_path(), true, Git), // existing git users: unchanged
+            (Auto, "colocated", colocated.as_path(), false, Git),
+            (Auto, "neither", neither.as_path(), true, Git),
+            (Auto, "neither", neither.as_path(), false, Git),
+            // --- vcs = "jj": jj wherever a `.jj` exists, colocated or not.
+            (J, "git_only", git_only.as_path(), true, Git), // no `.jj` at all -> can't be jj
+            (J, "git_only", git_only.as_path(), false, Git),
+            (J, "jj_only", jj_only.as_path(), true, Jj),
+            (J, "jj_only", jj_only.as_path(), false, Git), // no jj binary -> falls back to git
+            (J, "colocated", colocated.as_path(), true, Jj), // pinned to jj despite the `.git`
+            (J, "colocated", colocated.as_path(), false, Git),
+            (J, "neither", neither.as_path(), true, Git),
+            (J, "neither", neither.as_path(), false, Git),
+        ];
+
+        for (pref, form, root, jj_available, expected) in cases.iter().copied() {
+            assert_eq!(
+                detect_with(pref, root, jj_available),
+                expected,
+                "pref={pref:?} form={form} jj_available={jj_available}"
+            );
+        }
+
+        std::fs::remove_dir_all(&git_only).ok();
+        std::fs::remove_dir_all(&jj_only).ok();
+        std::fs::remove_dir_all(&colocated).ok();
+        std::fs::remove_dir_all(&neither).ok();
+    }
+
+    /// The single most important promise in this file: upgrading konoma must never change what an
+    /// existing git repository shows, even after `jj git init --colocate` was run inside it and even
+    /// when jj is installed and working. `auto` keeps git wherever git can already answer.
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_colocated_under_auto_stays_git() {
+        let dir = detect_with_colocated_dir();
+        assert_eq!(detect_with(Preference::Auto, &dir, true), VcsKind::Git);
+        assert_eq!(detect_with(Preference::Auto, &dir, false), VcsKind::Git);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The matching promise on the other side: `[external] vcs = "jj"` pins a colocated repository
+    /// to jj, overriding what `auto` would have chosen.
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_colocated_under_explicit_jj_pref_becomes_jj() {
+        let dir = detect_with_colocated_dir();
+        assert_eq!(detect_with(Preference::Jj, &dir, true), VcsKind::Jj);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `vcs = "git"` always wins, even in a `.jj`-only directory that has no git repository to fall
+    /// back to (there is nothing else `detect_with` could return, but this pins that it does not
+    /// e.g. panic or treat the absence of git as license to use jj anyway).
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_jj_only_under_explicit_git_pref_stays_git() {
+        let dir = detect_with_jj_only_dir();
+        assert_eq!(detect_with(Preference::Git, &dir, true), VcsKind::Git);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a working `jj` binary, `auto` must fall back to git rather than choosing a backend it
+    /// cannot actually run — "falling back shows something rather than nothing" (see `detect`'s doc).
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_jj_only_under_auto_without_jj_binary_stays_git() {
+        let dir = detect_with_jj_only_dir();
+        assert_eq!(detect_with(Preference::Auto, &dir, false), VcsKind::Git);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- backend_for's routing, not just detect's answer -----------------------------------------
+
+    /// `backend_for` must not just *decide* jj, it must actually *route* to a backend whose `caps()`
+    /// reports read-only — the property the rest of the app (write-gating menus, etc.) depends on.
+    /// `backend_agrees_with_the_free_functions` never exercises this (see its doc comment): both its
+    /// roots resolve to git. This needs a real `jj` binary (`detect` calls `jj::available()`
+    /// directly, not through the injectable `detect_with`), so it skips itself where jj is not
+    /// installed rather than asserting anything about an environment it cannot probe.
+    #[cfg(feature = "git")]
+    #[test]
+    fn backend_for_a_jj_only_directory_is_read_only() {
+        if !jj::available() {
+            eprintln!("skipping: no working `jj` binary on this machine");
+            return;
+        }
+        let dir = detect_with_jj_only_dir();
+        // `backend_for` reads the process-wide preference, which every `App::new` in the suite
+        // writes -- always to `auto`, since they all start from `Config::default()`. Pinning it to
+        // the same value here is therefore a no-op today, and keeps this test's meaning from
+        // depending on suite ordering if that ever stops being true. This is the one place a test
+        // touches that global: everything else about detection goes through `detect_with`.
+        set_preference(Preference::Auto);
+        assert_eq!(
+            detect(&dir),
+            VcsKind::Jj,
+            "sanity: detect must pick jj here"
+        );
+        let backend = backend_for(&dir);
+        assert!(
+            !backend.caps().write,
+            "a .jj-only directory's backend must be read-only"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

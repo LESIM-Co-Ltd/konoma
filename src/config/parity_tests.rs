@@ -1676,6 +1676,24 @@ fn cfg_git_parses_from_toml() {
 }
 
 // =============================================================================
+// [jj] — jj (Jujutsu) settings that have no git counterpart
+// =============================================================================
+
+#[test]
+fn cfg_jj_tool_default_and_roundtrip() {
+    let d = JjConfig::default();
+    assert_eq!(d.tool, "lazyjj");
+    assert_eq!(Config::default().jj.tool, "lazyjj");
+
+    let cfg: Config = toml::from_str("[jj]\ntool = \"jjui\"\n").unwrap();
+    assert_eq!(cfg.jj.tool, "jjui");
+
+    // Absent `[jj]` section entirely keeps the default, same as every other sub-table in this file.
+    let cfg: Config = toml::from_str("[ui]\n").unwrap();
+    assert_eq!(cfg.jj.tool, "lazyjj");
+}
+
+// =============================================================================
 // [external] — on/off switches for every external process konoma can launch
 // =============================================================================
 
@@ -1720,6 +1738,39 @@ fn cfg_external_defaults_all_true() {
     assert!(cfg2.external.remote_images);
     assert!(cfg2.external.open_links);
     assert!(cfg2.external.preview_commands);
+}
+
+/// `[external] vcs`: default `"auto"`; `"git"`/`"jj"` round-trip through TOML verbatim, and so does
+/// an unrecognized value — this parsing layer stores the raw string with no validation at all.
+/// Deciding what an unrecognized value *means* ("unknown -> auto") is `Preference::parse`'s job, not
+/// this one's, same split as `filter_mode`/`md_details`/every other mode string in this file. Had
+/// zero coverage before this: `cfg_external_defaults_all_true` and its siblings above only ever
+/// exercised the six boolean toggles, never this field — which is exactly how `detect()`'s explicit
+/// `"git"`/`"jj"` path went untested end to end (see `src/vcs/mod.rs`'s `detect_with` tests).
+#[test]
+fn cfg_external_vcs_default_and_roundtrip() {
+    assert_eq!(ExternalConfig::default().vcs, "auto");
+    assert_eq!(Config::default().external.vcs, "auto");
+
+    let cfg: Config = toml::from_str("[external]\nvcs = \"git\"\n").unwrap();
+    assert_eq!(cfg.external.vcs, "git");
+    let cfg: Config = toml::from_str("[external]\nvcs = \"jj\"\n").unwrap();
+    assert_eq!(cfg.external.vcs, "jj");
+
+    // Absent `[external]` section entirely, and a present-but-empty one, both keep the default.
+    let cfg: Config = toml::from_str("[ui]\n").unwrap();
+    assert_eq!(cfg.external.vcs, "auto");
+    let cfg: Config = toml::from_str("[external]\n").unwrap();
+    assert_eq!(cfg.external.vcs, "auto");
+
+    // No validation at this layer: an unrecognized value is stored verbatim...
+    let cfg: Config = toml::from_str("[external]\nvcs = \"mercurial\"\n").unwrap();
+    assert_eq!(cfg.external.vcs, "mercurial");
+    // ...and it is `Preference::parse` — not this struct — that decides an unknown value means auto.
+    assert_eq!(
+        crate::vcs::Preference::parse(&cfg.external.vcs),
+        crate::vcs::Preference::Auto
+    );
 }
 
 /// (field name, its accessor) — used by `cfg_external_each_field_parses_independently`.
