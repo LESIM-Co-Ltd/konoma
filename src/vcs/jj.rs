@@ -1637,6 +1637,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `chip_names_the_working_copy_commit` above only checks the marker and the absence of
+    /// "HEAD" — not that the chip's contents are the actual change id and description `branch()`
+    /// promises (`"@ <change id> <description first line>"`, per its own doc comment). This checks
+    /// the branch where the working-copy commit is undescribed: the chip must be exactly the
+    /// marker and the change id, with nothing left over from a summary that doesn't exist.
+    #[test]
+    fn chip_with_no_description_is_the_change_id_alone() {
+        let Some(dir) = scratch_repo("chip_empty_desc") else {
+            return;
+        };
+        let ws = workspace_root(&dir).expect("scratch_repo always sets up a jj workspace");
+        let m = meta(&ws).expect("a jj workspace always has a working-copy commit");
+        assert!(
+            m.summary.is_empty(),
+            "test assumption: scratch_repo's working copy is left undescribed: {m:?}"
+        );
+        let chip = branch(&dir).expect("a jj workspace always has a working-copy commit");
+        assert_eq!(
+            chip,
+            format!("@ {}", m.change),
+            "with no description the chip must be exactly the marker plus the change id"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other branch of `branch()`: once the working-copy commit is described, the chip must
+    /// contain **both** the real change id and the real description — not merely start with `"@ "`
+    /// and avoid the word "HEAD", which a chip built from the wrong commit or a stale/placeholder
+    /// string could also satisfy.
+    #[test]
+    fn chip_includes_both_the_change_id_and_the_description() {
+        let Some(dir) = scratch_repo("chip_with_desc") else {
+            return;
+        };
+        // `run()` (this module's normal jj entry point) always appends `--ignore-working-copy` and
+        // is meant only for reads (see `every_invocation_refuses_to_snapshot`) — a real `jj
+        // describe` has to bypass it, the same way every other fixture's local `jj` closure does.
+        let described = std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(["describe", "-m", "hand-set description for konoma test"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(described, "test setup: `jj describe` must succeed");
+
+        let ws = workspace_root(&dir).expect("scratch_repo always sets up a jj workspace");
+        let m = meta(&ws).expect("a jj workspace always has a working-copy commit");
+        assert_eq!(
+            m.summary, "hand-set description for konoma test",
+            "test setup: the describe above must have taken"
+        );
+
+        let chip = branch(&dir).expect("a jj workspace always has a working-copy commit");
+        assert!(
+            chip.contains(&m.change),
+            "the chip must include the real change id: chip={chip:?} change={}",
+            m.change
+        );
+        assert!(
+            chip.contains("hand-set description for konoma test"),
+            "the chip must include the real description: chip={chip:?}"
+        );
+        assert_eq!(
+            chip,
+            format!("@ {} hand-set description for konoma test", m.change),
+            "exact shape: marker, change id, description"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Regression for bug 1: a path beginning with `-` must be read like any other path, not
     /// dropped because jj's argument parser mistook it for a flag.
     #[test]
@@ -2426,6 +2499,98 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// Two workspaces on one repository: `default` (the primary, returned first) and `ws-second`
+    /// (added with `jj workspace add`, returned second). No fixture in this module had ever called
+    /// `jj workspace add` before this one, so `graph()`'s handling of a *second* workspace's
+    /// checkout — konoma's documented promise that `@` marks only the local workspace's checkout,
+    /// while another workspace's checkout is an ordinary commit carrying a `<name>@` label — went
+    /// untested.
+    ///
+    /// The shape of `working_copies` / `current_working_copy` below is not guessed: it was captured
+    /// first against a real jj 0.44.0 repository built by hand in scratchpad (`HOME` redirected,
+    /// `JJ_USER`/`JJ_EMAIL` set, run outside this repository, per this task's ground rules). From
+    /// the `default` workspace, `jj log --no-graph -T '... working_copies ... current_working_copy
+    /// ...'` over `all()` printed (change id / working_copies / current_working_copy / subject):
+    /// `ourmpvnz / ws-second@ / (false) / (empty)` for `ws-second`'s checkout, and
+    /// `snktrqsl / default@ / true / primary wc` for `default`'s own — i.e. the label is exactly
+    /// `"<name>@"` (`ws-second@`, matching CHANGELOG/README/site's `ws-second@` example verbatim),
+    /// and `current_working_copy` is true only for the workspace the command actually ran in, never
+    /// for the other one.
+    fn scratch_repo_second_workspace(name: &str) -> Option<(PathBuf, PathBuf)> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let second =
+            std::env::temp_dir().join(format!("konoma_jj_{name}_ws2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&second);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("a.txt"), b"hello\n").ok()?;
+        if !jj(&["commit", "-m", "genesis"]) {
+            return None;
+        }
+        // Describe (not commit) so `default`'s checkout keeps a recognizable subject while staying
+        // the live working-copy commit `graph()` reads with `current_working_copy=true`.
+        if !jj(&["describe", "-m", "primary wc"]) {
+            return None;
+        }
+        let second_str = second.to_str()?;
+        if !jj(&["workspace", "add", "--name", "ws-second", second_str]) {
+            return None;
+        }
+        Some((dir, second))
+    }
+
+    /// konoma's documented promise (CHANGELOG/README/site): `@` marks only *this* workspace's
+    /// checkout; a second workspace's checkout is an ordinary commit that happens to carry a
+    /// `<name>@` label. Read from the `default` workspace, `ws-second`'s row must therefore never
+    /// read as [`crate::git::NodeKind::WorkingCopy`], while `default`'s own row must.
+    #[test]
+    fn graph_from_the_primary_workspace_never_marks_a_second_workspaces_checkout_as_here() {
+        let Some((dir, second)) = scratch_repo_second_workspace("second_ws") else {
+            return;
+        };
+        let rows = graph(&dir, Some("all()"), 50);
+
+        let mine = rows.iter().find(|r| r.subject == "primary wc").expect(
+            "default's own working-copy commit must be in the log, described \"primary wc\"",
+        );
+        assert_eq!(
+            mine.node,
+            Some(crate::git::NodeKind::WorkingCopy),
+            "default's own checkout must read as the working-copy kind: {mine:?}"
+        );
+
+        let theirs = rows
+            .iter()
+            .find(|r| r.refs.contains("ws-second@"))
+            .expect("ws-second's checkout must appear, decorated with its workspace label");
+        assert_ne!(
+            theirs.node,
+            Some(crate::git::NodeKind::WorkingCopy),
+            "a second workspace's checkout is an ordinary commit from here — only ws-second's own \
+             `jj log` would see current_working_copy=true for it: {theirs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&second);
     }
 
     /// A jj repository with two bookmarks, created in an order (`zeta` before `alpha`) that would

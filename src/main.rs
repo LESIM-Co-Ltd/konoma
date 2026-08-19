@@ -1190,18 +1190,32 @@ fn run_editor(
     Ok(())
 }
 
-/// Launch the configured `git.tool` (default lazygit) synchronously in the repo workdir. The command
+/// Resolve which command line `!` should launch for `vcs`: reads `[git] tool` / `[jj] tool` from
+/// `cfg`, trims surrounding whitespace, and falls back to the well-known default (`lazygit` /
+/// `lazyjj`) when the configured value is empty (or all whitespace, since trimming it first makes
+/// that collapse to empty too). Pulled out of `run_git_tool` as a pure function — that function
+/// needs a real `ratatui::DefaultTerminal` to suspend/restore and spawns a real process, so the
+/// selection logic (which section is consulted per `VcsKind`, and the fallback behavior) was
+/// previously unreachable from a test. Returns `(resolved command line, default tool name)`; the
+/// default name is echoed back mainly so tests can assert it directly rather than re-deriving it.
+fn tool_command(vcs: crate::vcs::VcsKind, cfg: &config::Config) -> (String, &'static str) {
+    // `!` launches the tool for whichever system owns the directory: lazygit knows nothing about a
+    // jj repository, and running it there would show a repository the user is not working in.
+    let (tmpl, fallback) = match vcs {
+        crate::vcs::VcsKind::Git => (cfg.git.tool.trim(), "lazygit"),
+        #[cfg(feature = "git")]
+        crate::vcs::VcsKind::Jj => (cfg.jj.tool.trim(), "lazyjj"),
+    };
+    let resolved = if tmpl.is_empty() { fallback } else { tmpl };
+    (resolved.to_string(), fallback)
+}
+
+/// Launch the backend's own external tool synchronously in the repo workdir -- `[git] tool`
+/// (default lazygit) for git, `[jj] tool` (default lazyjj) for jj; see [`tool_command`]. The command
 /// is split on whitespace into prog + args. The cwd is the workdir discovered from app.tab.root via git
 /// (or root if none). A launch failure (not installed, etc.) is reported as an error via flash.
 fn run_git_tool(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
-    // `!` launches the tool for whichever system owns the directory: lazygit knows nothing about a
-    // jj repository, and running it there would show a repository the user is not working in.
-    let (tmpl, fallback) = match app.git_vcs {
-        crate::vcs::VcsKind::Git => (app.cfg.git.tool.trim(), "lazygit"),
-        #[cfg(feature = "git")]
-        crate::vcs::VcsKind::Jj => (app.cfg.jj.tool.trim(), "lazyjj"),
-    };
-    let tmpl = if tmpl.is_empty() { fallback } else { tmpl };
+    let (tmpl, _fallback) = tool_command(app.git_vcs, &app.cfg);
     let mut parts = tmpl.split_whitespace().map(|s| s.to_string());
     let Some(prog) = parts.next() else {
         return Ok(());
@@ -3471,5 +3485,72 @@ mod tests {
         assert_eq!(poll_timeout(&app), idle, "着地したら元の待ちに戻る");
         app::set_filter_scan_budget(None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- tool_command (the `!` tool-selection logic pulled out of run_git_tool) ------------
+
+    #[test]
+    fn tool_command_uses_the_git_tool_setting_for_a_git_repo() {
+        let mut cfg = Config::default();
+        cfg.git.tool = "gitui".into();
+        let (cmd, fallback) = tool_command(crate::vcs::VcsKind::Git, &cfg);
+        assert_eq!(cmd, "gitui");
+        assert_eq!(fallback, "lazygit");
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn tool_command_uses_the_jj_tool_setting_for_a_jj_repo() {
+        let mut cfg = Config::default();
+        cfg.jj.tool = "jjui".into();
+        let (cmd, fallback) = tool_command(crate::vcs::VcsKind::Jj, &cfg);
+        assert_eq!(cmd, "jjui");
+        assert_eq!(fallback, "lazyjj");
+    }
+
+    #[test]
+    fn tool_command_falls_back_to_lazygit_when_git_tool_is_empty() {
+        let mut cfg = Config::default();
+        cfg.git.tool = String::new();
+        let (cmd, fallback) = tool_command(crate::vcs::VcsKind::Git, &cfg);
+        assert_eq!(cmd, "lazygit");
+        assert_eq!(fallback, "lazygit");
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn tool_command_falls_back_to_lazyjj_when_jj_tool_is_empty() {
+        let mut cfg = Config::default();
+        cfg.jj.tool = String::new();
+        let (cmd, fallback) = tool_command(crate::vcs::VcsKind::Jj, &cfg);
+        assert_eq!(cmd, "lazyjj");
+        assert_eq!(fallback, "lazyjj");
+    }
+
+    #[test]
+    fn tool_command_treats_a_whitespace_only_git_tool_as_empty() {
+        let mut cfg = Config::default();
+        cfg.git.tool = "   \t  ".into();
+        let (cmd, _) = tool_command(crate::vcs::VcsKind::Git, &cfg);
+        assert_eq!(cmd, "lazygit", "空白だけの設定は空扱いでフォールバックする");
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn tool_command_treats_a_whitespace_only_jj_tool_as_empty() {
+        let mut cfg = Config::default();
+        cfg.jj.tool = "  ".into();
+        let (cmd, _) = tool_command(crate::vcs::VcsKind::Jj, &cfg);
+        assert_eq!(cmd, "lazyjj", "空白だけの設定は空扱いでフォールバックする");
+    }
+
+    #[test]
+    fn tool_command_preserves_a_multi_word_command_line_as_is() {
+        // run_git_tool splits the resolved string on whitespace to get prog + args, so a
+        // non-empty, non-fallback setting must be returned exactly as configured.
+        let mut cfg = Config::default();
+        cfg.git.tool = "tig status".into();
+        let (cmd, _) = tool_command(crate::vcs::VcsKind::Git, &cfg);
+        assert_eq!(cmd, "tig status");
     }
 }

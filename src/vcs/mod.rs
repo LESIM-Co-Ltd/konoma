@@ -693,6 +693,66 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // --- [external] git = false's effect on detect_with's `auto` gap-filling ----------------------
+    // The 24-case table above (`detect_with_covers_every_combination_of_pref_form_and_jj_availability`)
+    // never turns `external_git_enabled` off, so this combination — the one place `[external] git`
+    // can change which *backend* answers, not just whether git itself answers — went unexercised.
+
+    /// `crate::git::set_external_git_enabled(false)` (config `[external] git = false`) makes
+    /// `crate::git::workdir` answer `None` for every directory, including a real repository — see
+    /// `external_git_disabled_returns_empty_for_a_real_repo` in `git.rs` for the read-side proof.
+    /// `detect_with`'s `git_answers` check under `auto` is exactly `crate::git::workdir(root).is_some()`,
+    /// so with git integration off, a **colocated** directory (`.git` and `.jj` side by side — the
+    /// one `detect_with_colocated_under_auto_stays_git` pins as staying git under normal conditions)
+    /// silently falls through to jj instead, as long as a jj binary is available.
+    ///
+    /// This is the **current, intended** behavior — konoma has one config knob for turning off git
+    /// integration, and `auto` has always meant "git wherever git can answer"; if git cannot answer
+    /// because the user turned it off, jj filling the gap is the same rule already governing every
+    /// other case in the table above, just triggered by a different reason `workdir` returned `None`.
+    /// This test exists to pin that reading with a test, not to bless it as unquestionably right —
+    /// see this task's report for the reasoning spelled out.
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_colocated_falls_back_to_jj_when_git_integration_is_disabled() {
+        let dir = detect_with_colocated_dir();
+        // Thread-local (see `EXTERNAL_GIT_ENABLED`'s doc in git.rs): scoped to this test's own
+        // thread, so it cannot leak into a concurrently running test.
+        crate::git::set_external_git_enabled(false);
+        assert_eq!(
+            detect_with(Preference::Auto, &dir, true),
+            VcsKind::Jj,
+            "with git integration off, crate::git::workdir reads None, so `auto` falls through to \
+             jj even though `.git` is right there"
+        );
+        crate::git::set_external_git_enabled(true);
+        assert_eq!(
+            detect_with(Preference::Auto, &dir, true),
+            VcsKind::Git,
+            "sanity: re-enabling restores the usual colocated-stays-git answer, proving the flag \
+             is not stuck off"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The matching guardrail on the other side: an explicit `[external] vcs = "git"` preference
+    /// must keep winning even with git integration disabled. `detect_with`'s `Preference::Git`
+    /// branch returns before it ever calls `crate::git::workdir`, so it cannot be swayed by this
+    /// flag — unlike `auto`, above.
+    #[cfg(feature = "git")]
+    #[test]
+    fn detect_with_colocated_under_explicit_git_pref_ignores_the_disabled_flag() {
+        let dir = detect_with_colocated_dir();
+        crate::git::set_external_git_enabled(false);
+        assert_eq!(
+            detect_with(Preference::Git, &dir, true),
+            VcsKind::Git,
+            "an explicit git preference must not be swayed by [external] git"
+        );
+        crate::git::set_external_git_enabled(true);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // --- backend_for's routing, not just detect's answer -----------------------------------------
 
     /// The asymmetric counterpart to `backend_for_a_jj_only_directory_is_read_only` below: jj's

@@ -134,6 +134,22 @@ fn cfg_ui_confirm_bookmark_overwrite_default_and_parse() {
 }
 
 #[test]
+fn cfg_ui_confirm_jj_sync_default_and_parse() {
+    assert!(
+        toml::from_str::<Config>("[ui]\n")
+            .unwrap()
+            .ui
+            .confirm_jj_sync
+    );
+    assert!(
+        !toml::from_str::<Config>("[ui]\nconfirm_jj_sync = false\n")
+            .unwrap()
+            .ui
+            .confirm_jj_sync
+    );
+}
+
+#[test]
 fn cfg_ui_csv_rainbow_default_and_parse() {
     assert!(toml::from_str::<Config>("[ui]\n").unwrap().ui.csv_rainbow);
     assert!(
