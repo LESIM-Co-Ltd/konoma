@@ -125,12 +125,32 @@ pub struct Meta {
     /// When the working copy was last snapshotted, in epoch seconds. Files newer than this are the
     /// ones jj has not seen yet.
     pub snapshot_epoch: i64,
+    /// The working copy's **first** parent, as a full commit id.
+    ///
+    /// Every read below that needs "the commit konoma diffs the working copy against" is anchored
+    /// to this instead of asking jj to resolve the `@-` revset itself. `@-` means "parents of
+    /// `@`", and the moment `@` is a merge (`jj new A B`, an ordinary jj operation) it has more
+    /// than one parent, so jj's revset resolver refuses to pick one: `jj log -r '@-'` and `jj file
+    /// show -r '@-' ...` both fail outright with "Revset `@-` resolved to more than one revision".
+    /// `run()` folds that failure into `None`, which is what used to make `tracked()` come back
+    /// empty and silently misclassify every real edit as a fresh addition (and every deletion as
+    /// nothing at all).
+    ///
+    /// Reading it through the *template* engine sidesteps that: `parents()` is just the ordered
+    /// list jj already recorded for this commit when it was created, so it never asks the revset
+    /// resolver to disambiguate anything. The order is `jj new`'s own argument order (confirmed
+    /// against jj 0.44.0: `jj new A B` records `A`'s commit id before `B`'s), and konoma treats
+    /// the first one as the well-defined base for its two-sided comparisons — the same role HEAD's
+    /// single parent plays for the git backend. `None` only for the repository's root commit,
+    /// which has no parent to report.
+    pub parent: Option<String>,
 }
 
 /// The template is one line of tab-separated fields rather than jj's `json()`, so konoma needs no
 /// JSON parser and works with jj builds that predate `json()`.
 const META_TEMPLATE: &str = concat!(
     r#"change_id.shortest(8) ++ "\t" ++ committer.timestamp().format("%s")"#,
+    r#" ++ "\t" ++ parents.map(|p| p.commit_id()).join(" ")"#,
     r#" ++ "\t" ++ description.first_line() ++ "\n""#,
 );
 
@@ -140,13 +160,16 @@ pub fn meta(ws: &Path) -> Option<Meta> {
     parse_meta_line(line)
 }
 
-/// Parses one [`META_TEMPLATE`] line. `splitn(3, ...)` rather than a plain `split` so a tab
+/// Parses one [`META_TEMPLATE`] line. `splitn(4, ...)` rather than a plain `split` so a tab
 /// embedded in the trailing `summary` field — the only free-text field here — is kept whole
 /// instead of silently truncating `summary` at the first tab it happens to contain.
 fn parse_meta_line(line: &str) -> Option<Meta> {
-    let mut f = line.splitn(3, '\t');
+    let mut f = line.splitn(4, '\t');
     let change = f.next()?.to_string();
     let snapshot_epoch = f.next()?.trim().parse::<i64>().ok()?;
+    // Only the first (space-separated) parent id is kept — see `Meta::parent`'s doc for why the
+    // rest of this module is anchored to it instead of the ambiguous `@-` revset.
+    let parent = f.next()?.split_whitespace().next().map(str::to_string);
     let summary = f.next().unwrap_or("").to_string();
     if change.is_empty() {
         return None;
@@ -155,6 +178,7 @@ fn parse_meta_line(line: &str) -> Option<Meta> {
         change,
         summary,
         snapshot_epoch,
+        parent,
     })
 }
 
@@ -359,10 +383,19 @@ fn known_changes(ws: &Path) -> HashMap<String, FileStatus> {
         .collect()
 }
 
-/// The files the parent commit tracks. Anything on disk that is not here is an addition; anything
-/// here that is not on disk is a deletion.
-fn tracked(ws: &Path) -> HashSet<String> {
-    run(ws, &["file", "list", "-r", "@-"])
+/// The files the working copy's first parent tracks. Anything on disk that is not here is an
+/// addition; anything here that is not on disk is a deletion.
+///
+/// Takes the parent's own commit id — resolved once by [`meta`] — rather than asking jj for `@-`
+/// itself; see [`Meta::parent`]'s doc for why `@-` cannot be trusted here. `None` (the repository's
+/// root commit has no parent) means there is nothing to compare against, so nothing counts as
+/// already tracked: every file on disk correctly reads as a fresh addition, the same as a
+/// repository's very first commit.
+fn tracked(ws: &Path, parent: Option<&str>) -> HashSet<String> {
+    let Some(parent) = parent else {
+        return HashSet::new();
+    };
+    run(ws, &["file", "list", "-r", parent])
         .map(|o| parse_file_list(&o))
         .unwrap_or_default()
 }
@@ -373,18 +406,19 @@ fn parse_file_list(out: &str) -> HashSet<String> {
     out.lines().map(|l| l.to_string()).collect()
 }
 
-/// Whether `rel` really differs from the parent commit, by reading both sides.
-fn differs_from_parent(ws: &Path, rel: &str, disk: &Path) -> bool {
+/// Whether `rel` really differs from the working copy's first parent, by reading both sides.
+fn differs_from_parent(ws: &Path, rel: &str, disk: &Path, parent: Option<&str>) -> bool {
     let Ok(now) = std::fs::read(disk) else {
         return true; // unreadable: report it rather than hide it
     };
-    match parent_bytes(ws, rel) {
+    match parent_bytes(ws, rel, parent) {
         Some(before) => before != now,
         None => true,
     }
 }
 
-/// One scan of the working copy: every file that differs from `@-`, as an absolute path.
+/// One scan of the working copy: every file that differs from the working copy's first parent, as
+/// an absolute path.
 ///
 /// **This is the only place the comparison is made** — both the tree's markers and the changed-file
 /// list are derived from it, so they cannot drift apart.
@@ -399,7 +433,7 @@ fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
         return out; // jj could not answer: stay quiet rather than guess
     };
     let known = known_changes(ws);
-    let tracked = tracked(ws);
+    let tracked = tracked(ws, m.parent.as_deref());
     let mut seen: HashSet<String> = HashSet::new();
     let mut confirmed = 0usize;
 
@@ -439,7 +473,7 @@ fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
             FileStatus::Modified
         } else if confirmed < CONFIRM_CAP {
             confirmed += 1;
-            if differs_from_parent(ws, &rel, entry.path()) {
+            if differs_from_parent(ws, &rel, entry.path(), m.parent.as_deref()) {
                 FileStatus::Modified
             } else {
                 continue;
@@ -456,8 +490,8 @@ fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
     out
 }
 
-/// Status of everything that differs from `@-`, as absolute paths, with directories rolled up the
-/// same way the git backend does it.
+/// Status of everything that differs from the working copy's first parent, as absolute paths, with
+/// directories rolled up the same way the git backend does it.
 pub fn statuses(root: &Path) -> HashMap<PathBuf, FileStatus> {
     let mut map = HashMap::new();
     let Some(ws) = workspace_root(root) else {
@@ -490,20 +524,49 @@ pub fn changed_files(root: &Path) -> Vec<crate::git::ChangeEntry> {
     out
 }
 
-/// Working-copy diff of one file: the parent commit (`@-`) against what is on disk right now.
+/// Working-copy diff of one file: the working copy's first parent against what is on disk right
+/// now.
 ///
-/// That base is what `jj diff` itself shows, and reading the current bytes off disk rather than
-/// asking jj for them is what keeps the answer honest — jj would report its last snapshot, which
-/// can be older than the file.
+/// That base is what `jj diff` itself shows (see [`Meta::parent`]'s doc for why it is read as a
+/// resolved commit id rather than jj's own `@-` revset), and reading the current bytes off disk
+/// rather than asking jj for them is what keeps the answer honest — jj would report its last
+/// snapshot, which can be older than the file.
 ///
 /// A file the parent does not have reads as all-added, matching how the git backend treats an
-/// untracked file. Returns an empty diff when the file is outside the workspace or jj cannot
-/// answer, the same "quietly render blank" contract as everywhere else here.
+/// untracked file. Returns an empty diff when the file is outside the workspace, is a symlink (see
+/// below), or jj cannot answer — the same "quietly render blank" contract as everywhere else here.
+///
+/// A symlink is declined outright rather than diffed, for two compounding reasons:
+///
+/// - `jj file show` reports a *tracked* symlink's content as zero bytes — it does not print the
+///   target string the way `readlink` would — so the "before" side can never honestly represent
+///   what the symlink used to point at.
+/// - Below this point, `file` gets canonicalized to build `rel` — and `Path::canonicalize`
+///   resolves every symlink in the path, including a trailing one that is the whole path. Left
+///   unguarded, a symlink's `file_diff` would silently diff its *target's* history instead of
+///   ever touching the link itself: harmless when the target is untouched (both sides agree,
+///   nothing to show), but for a target the parent commit never had — e.g. `link.txt` pointing at
+///   a file added since — the "before" side reads `None` and `std::fs::read` on the "after" side
+///   reads the target's full real content, rendering it entirely as newly added under a query
+///   that was never about that file at all.
+///
+/// There is no way through the CLI to read what a symlink used to point at, and no path through
+/// `canonicalize` that keeps the comparison anchored to the symlink itself rather than whatever it
+/// resolves to — so rather than synthesize a diff from sides that cannot be compared, this returns
+/// no diff at all: the same "cannot answer" contract as an unreadable file, and that beats a
+/// fabricated one.
 pub fn file_diff(root: &Path, file: &Path) -> Vec<crate::git::DiffLine> {
     let mut out = Vec::new();
     let Some(ws) = workspace_root(root) else {
         return out;
     };
+    // Checked on `file` itself, before it is ever canonicalized: `Path::canonicalize` resolves
+    // *every* symlink in the path, including a symlink `file` itself — so checking the resolved
+    // `abs` below would silently test the target's own metadata instead and never see the
+    // symlink at all. `file` is what the caller actually asked about.
+    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return out; // decline rather than compare two unrelated things — see the doc above
+    }
     let abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
     let ws_abs = ws.canonicalize().unwrap_or_else(|_| ws.clone());
     let Ok(rel) = abs.strip_prefix(&ws_abs) else {
@@ -512,15 +575,19 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<crate::git::DiffLine> {
     let Some(rel_str) = rel.to_str() else {
         return out;
     };
-    let before = parent_bytes(&ws, rel_str);
+    let Some(m) = meta(&ws) else {
+        return out; // jj could not answer: stay quiet rather than guess
+    };
+    let before = parent_bytes(&ws, rel_str, m.parent.as_deref());
     let after = std::fs::read(&abs).ok();
     crate::git::push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), false);
     out
 }
 
-/// The parent commit's bytes for one path, or None when the parent does not have it.
-fn parent_bytes(ws: &Path, rel: &str) -> Option<Vec<u8>> {
-    revision_bytes(ws, "@-", rel)
+/// The working copy's first parent's bytes for one path, or None when that parent does not have
+/// it (or there is no parent at all — the repository's root commit).
+fn parent_bytes(ws: &Path, rel: &str, parent: Option<&str>) -> Option<Vec<u8>> {
+    revision_bytes(ws, parent?, rel)
 }
 
 /// Paths the ignore rules exclude, as absolute paths, with a fully ignored directory collapsed to a
@@ -800,6 +867,16 @@ fn parse_bookmark_list(out: &str) -> Vec<crate::git::BranchInfo> {
 }
 
 /// The commit a bookmark points at.
+///
+/// `None` is ambiguous by construction: `jj log -r <name>` fails outright — `Error: Name
+/// '<name>' is conflicted` — when `name` is a conflicted bookmark (the same bookmark pointing at
+/// more than one commit, e.g. after a concurrent push), and `run()` folds that failure into `None`
+/// exactly like it does for "no such bookmark". A caller cannot tell "does not exist" from "exists
+/// but is conflicted" from this return value alone. Left as-is rather than threading a distinct
+/// error case through, because every current caller only ever asks about bookmarks konoma itself
+/// listed via [`bookmarks`] — a jj-specific path this backend does not otherwise exercise yet — so
+/// there is nothing depending on the distinction today. Revisit if a caller ever needs to tell the
+/// two apart.
 pub fn bookmark_tip(root: &Path, name: &str) -> Option<String> {
     let ws = workspace_root(root)?;
     let out = run(&ws, &["log", "-r", name, "--no-graph", "-T", "commit_id"])?;
@@ -844,6 +921,28 @@ fn parse_commit_meta(out: &str) -> Option<crate::git::CommitMeta> {
     })
 }
 
+/// The template [`first_parent`] reads: the same `parents()` expression [`META_TEMPLATE`] uses for
+/// `@`, standalone, so it can be pointed at an arbitrary revision instead.
+const PARENT_ONLY_TEMPLATE: &str = r#"parents.map(|p| p.commit_id()).join(" ") ++ "\n""#;
+
+/// Resolves `id`'s first parent commit id — the [`commit_diff`] counterpart of [`Meta::parent`],
+/// for a revision that need not be `@`. `-r id` alone is never ambiguous (it names one concrete
+/// revision), so nothing here risks the failure [`Meta::parent`]'s doc describes; only the old
+/// `format!("{id}-")` spelling did, because `-` is the "parents of" revset operator and `id` may
+/// itself be a merge with more than one. `None` when `id` is the root commit (no parents) or jj
+/// could not answer.
+fn first_parent(ws: &Path, id: &str) -> Option<String> {
+    let out = run(
+        ws,
+        &["log", "-r", id, "--no-graph", "-T", PARENT_ONLY_TEMPLATE],
+    )?;
+    out.lines()
+        .next()?
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
 /// Everything one revision changed, file by file, with a header per file — the same shape the git
 /// backend produces, so the detail view renders it unchanged.
 pub fn commit_diff(root: &Path, id: &str) -> Vec<crate::git::DiffLine> {
@@ -851,14 +950,16 @@ pub fn commit_diff(root: &Path, id: &str) -> Vec<crate::git::DiffLine> {
     let Some(ws) = workspace_root(root) else {
         return out;
     };
-    let parent = format!("{id}-");
+    let parent = first_parent(&ws, id);
     for entry in diff_entries(&ws, Some(id)) {
         // A rename's "before" content lives at the origin path, not the destination — the
         // destination is new in the parent's tree and reading it there always answers None,
         // which used to make every renamed file's diff render as all-added. `from` is set only
         // for a rename; every other status reads the same path on both sides, unchanged.
         let before_rel = entry.from.as_deref().unwrap_or(&entry.path);
-        let before = revision_bytes(&ws, &parent, before_rel);
+        let before = parent
+            .as_deref()
+            .and_then(|p| revision_bytes(&ws, p, before_rel));
         let after = revision_bytes(&ws, id, &entry.path);
         crate::git::push_file_diff(
             &mut out,
@@ -1247,34 +1348,57 @@ mod tests {
         assert_eq!(row.epoch, 0);
     }
 
-    fn meta_line(epoch: &str, summary: &str) -> String {
-        format!("change1\t{epoch}\t{summary}")
+    fn meta_line(epoch: &str, parents: &str, summary: &str) -> String {
+        format!("change1\t{epoch}\t{parents}\t{summary}")
     }
 
     #[test]
     fn meta_line_parses_normally() {
-        let m = parse_meta_line(&meta_line("1755600000", "subject")).expect("well-formed");
+        let m =
+            parse_meta_line(&meta_line("1755600000", "parent1", "subject")).expect("well-formed");
         assert_eq!(m.change, "change1");
         assert_eq!(m.snapshot_epoch, 1_755_600_000);
         assert_eq!(m.summary, "subject");
+        assert_eq!(m.parent.as_deref(), Some("parent1"));
     }
 
     /// The regression for bug 4's `META_TEMPLATE` half: a tab inside the trailing summary field
     /// must survive rather than being cut at the first tab `split` (not `splitn`) would stop at.
     #[test]
     fn meta_line_keeps_a_tab_inside_the_summary() {
-        let m = parse_meta_line(&meta_line("1755600000", "first\tsecond")).expect("well-formed");
+        let m = parse_meta_line(&meta_line("1755600000", "parent1", "first\tsecond"))
+            .expect("well-formed");
         assert_eq!(m.summary, "first\tsecond");
     }
 
     #[test]
     fn meta_line_with_empty_change_is_none() {
-        assert!(parse_meta_line("\t1755600000\tsubject").is_none());
+        assert!(parse_meta_line("\t1755600000\tparent1\tsubject").is_none());
     }
 
     #[test]
     fn meta_line_with_non_numeric_epoch_is_none() {
-        assert!(parse_meta_line("change1\tnot-a-number\tsubject").is_none());
+        assert!(parse_meta_line("change1\tnot-a-number\tparent1\tsubject").is_none());
+    }
+
+    /// Regression for the ambiguous-`@-`-on-a-merge fix: `META_TEMPLATE` prints every parent,
+    /// space-separated, and only the first is kept — `self.parents()` on a merge working copy
+    /// returns both, in `jj new`'s own call order (confirmed against jj 0.44.0), and the first is
+    /// the well-defined base the rest of this module diffs against. See `Meta::parent`'s doc.
+    #[test]
+    fn meta_line_keeps_only_the_first_of_two_parents() {
+        let m = parse_meta_line(&meta_line("1755600000", "parentA parentB", "merge"))
+            .expect("well-formed");
+        assert_eq!(m.parent.as_deref(), Some("parentA"));
+    }
+
+    /// The root commit has no parent at all — an empty parents field, not a missing one.
+    /// `Meta::parent` must read that as `None`, the same sentinel `tracked`/`parent_bytes` already
+    /// treat as "nothing to compare against".
+    #[test]
+    fn meta_line_with_no_parents_reads_as_none() {
+        let m = parse_meta_line(&meta_line("1755600000", "", "root")).expect("well-formed");
+        assert_eq!(m.parent, None);
     }
 
     #[test]
@@ -1720,6 +1844,309 @@ mod tests {
         assert!(
             text.contains(&"line five extended"),
             "the destination's content must be present too: {text:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No test exercised `ignored` at all before this. Modeled on `git.rs`'s
+    /// `ignored_collapses_dirs_and_excludes_tracked`, which checks the same three properties for
+    /// the git backend.
+    #[test]
+    fn ignored_collapses_dirs_and_excludes_tracked() {
+        let Some(dir) = scratch_repo("ignored") else {
+            return;
+        };
+        std::fs::write(dir.join(".gitignore"), b"target/\nnode_modules/\n*.log\n")
+            .expect("write .gitignore");
+        std::fs::create_dir_all(dir.join("target/deep")).expect("mkdir target/deep");
+        std::fs::create_dir_all(dir.join("node_modules/pkg")).expect("mkdir node_modules/pkg");
+        std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
+        std::fs::write(dir.join("target/a.o"), b"x").expect("write target/a.o");
+        std::fs::write(dir.join("target/deep/b.o"), b"x").expect("write target/deep/b.o");
+        std::fs::write(dir.join("node_modules/pkg/index.js"), b"x")
+            .expect("write node_modules/pkg/index.js");
+        std::fs::write(dir.join("app.log"), b"x").expect("write app.log");
+        std::fs::write(dir.join("src/main.rs"), b"fn main(){}\n").expect("write src/main.rs");
+
+        let set = ignored(&dir);
+        // Unlike the git backend's `ignored`, this one never canonicalizes `ws` — it walks
+        // exactly the path `workspace_root` returned, so the expected paths here are plain
+        // `dir.join(...)`, matching every other assertion in this module (e.g.
+        // `reports_changes_jj_has_not_snapshotted`'s `st.get(&dir.join(...))`), not a
+        // canonicalized one.
+        //
+        // `.gitignore` must apply even though this repo has no `.git` at all — `scratch_repo`
+        // always creates one with `jj git init --no-colocate`, exactly the shape `walk`'s
+        // `require_git(false)` exists for.
+        assert!(
+            set.contains(&dir.join("target")),
+            "target/ must collapse to one entry: {set:?}"
+        );
+        assert!(
+            set.contains(&dir.join("node_modules")),
+            "node_modules/ must collapse to one entry: {set:?}"
+        );
+        assert!(
+            set.contains(&dir.join("app.log")),
+            "the *.log rule must match the plain file: {set:?}"
+        );
+        assert!(
+            !set.contains(&dir.join("target/a.o")),
+            "a collapsed dir's contents must not be walked into: {set:?}"
+        );
+        assert!(
+            !set.contains(&dir.join("src/main.rs")),
+            "a tracked file must not read as ignored: {set:?}"
+        );
+        assert!(
+            !set.contains(&dir.join(".jj")),
+            "jj's own directory must never appear in the ignored set: {set:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression fixture for the ambiguous-`@-`-on-a-merge bug: builds a jj repository whose
+    /// working copy `@` has **two parents**, the shape that makes the bare `-` ("parents of")
+    /// revset operator ambiguous — `jj log -r '@-'` and `jj file show -r '@-' ...` both fail with
+    /// "Revset `@-` resolved to more than one revision" the moment `@` has more than one parent
+    /// (confirmed against jj 0.44.0). See `Meta::parent`'s doc for the fix this regresses.
+    ///
+    /// Layout: `base` commits `only_a.txt` (three lines) and `deleteme.txt`. `sideA` (built on
+    /// `base`) edits `only_a.txt`'s middle line; `sideB` (also built on `base`, independently)
+    /// touches neither file, so the two sides never conflict over the same line and `jj new sideA
+    /// sideB` auto-merges cleanly with no conflict markers. The merge is created **first parent
+    /// sideA, second parent sideB** — `jj new sideA sideB`, in that call order — because the
+    /// regression tests depend on `self.parents()` returning them in exactly that order; see
+    /// `Meta::parent`'s doc for why the order is load-bearing rather than incidental.
+    ///
+    /// After the merge is checked out, this also makes the two changes the regression tests
+    /// exercise, both still uncommitted when the fixture returns: `only_a.txt`'s last line is
+    /// edited again (the "still not snapshotted" edit `scan`'s tree walk exists to catch) and
+    /// `deleteme.txt` is removed from disk entirely. Both are changes relative to `sideA` — the
+    /// resolved first parent — not relative to `sideB` or to jj's own last snapshot of the merge,
+    /// which is exactly the distinction the fix has to get right.
+    ///
+    /// The 1.1s pause between the merge being checked out and these edits is the same reasoning
+    /// `scratch_repo`'s own pause documents: jj's timestamps are second-resolution, and without the
+    /// gap `newer_than` could read the edit as no newer than the merge's own snapshot purely by
+    /// landing in the same wall-clock second.
+    fn scratch_repo_merge(name: &str) -> Option<PathBuf> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let run_jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let jj_stdout = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        const CHANGE_ID: &[&str] = &[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "change_id.shortest(12)",
+        ];
+
+        if !run_jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("only_a.txt"), b"line1\nline2\nline3\n").ok()?;
+        std::fs::write(dir.join("deleteme.txt"), b"delete me\n").ok()?;
+        if !run_jj(&["commit", "-m", "base"]) {
+            return None;
+        }
+        let base = jj_stdout(CHANGE_ID)?;
+
+        std::fs::write(dir.join("only_a.txt"), b"line1\nCHANGED-A\nline3\n").ok()?;
+        if !run_jj(&["commit", "-m", "sideA"]) {
+            return None;
+        }
+        let side_a = jj_stdout(CHANGE_ID)?;
+
+        if !run_jj(&["new", &base]) {
+            return None;
+        }
+        // sideB is committed with no edits of its own — its tree is identical to base's, so the
+        // merge below has nothing to reconcile between the two sides for either file.
+        if !run_jj(&["commit", "-m", "sideB"]) {
+            return None;
+        }
+        let side_b = jj_stdout(CHANGE_ID)?;
+
+        // @ now has two parents — side_a first, side_b second, in call order.
+        if !run_jj(&["new", &side_a, &side_b]) {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        std::fs::write(dir.join("only_a.txt"), b"line1\nCHANGED-A\nline3-edited\n").ok()?;
+        std::fs::remove_file(dir.join("deleteme.txt")).ok()?;
+        Some(dir)
+    }
+
+    /// Regression: with `@` a merge, `tracked()`'s old `jj file list -r "@-"` failed outright
+    /// (ambiguous revset) and `run()` folded that into `None`, so `tracked()` came back empty.
+    /// That made every file jj had actually tracked since `sideA` read as untracked, and `scan`
+    /// then misclassified a plain edit as `FileStatus::Added` and made a deletion disappear
+    /// entirely (`tracked.difference` of an empty set is always empty). See `Meta::parent`'s doc
+    /// for the fix.
+    #[test]
+    fn merge_working_copy_reports_real_edits_not_added() {
+        let Some(dir) = scratch_repo_merge("merge_status") else {
+            return;
+        };
+        let st = statuses(&dir);
+        assert_eq!(
+            st.get(&dir.join("only_a.txt")),
+            Some(&FileStatus::Modified),
+            "a file jj has tracked since sideA must read as an edit, not a fresh addition, even \
+             while @ is a merge: {st:?}"
+        );
+        assert_eq!(
+            st.get(&dir.join("deleteme.txt")),
+            Some(&FileStatus::Deleted),
+            "a file removed from a merge working copy must not simply vanish: {st:?}"
+        );
+
+        let files = changed_files(&dir);
+        let by_path: HashMap<PathBuf, FileStatus> =
+            files.iter().map(|f| (f.path.clone(), f.status)).collect();
+        assert_eq!(
+            by_path.get(&dir.join("only_a.txt")),
+            Some(&FileStatus::Modified),
+            "the changed-file list must agree with statuses(): {files:?}"
+        );
+        assert_eq!(
+            by_path.get(&dir.join("deleteme.txt")),
+            Some(&FileStatus::Deleted),
+            "the changed-file list must agree with statuses(): {files:?}"
+        );
+
+        let lines = file_diff(&dir, &dir.join("only_a.txt"));
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"CHANGED-A"),
+            "the line shared with the resolved first parent (sideA) must survive as context, \
+             proving this is a real comparison and not a fabricated all-added one: {text:?}"
+        );
+        assert!(
+            !lines.iter().all(|l| l.old_no.is_none()),
+            "every line carrying no old-side number is the bug's symptom: with the parent lookup \
+             silently failing on the ambiguous `@-`, this file rendered as though entirely new: \
+             {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: `commit_diff`'s old `format!("{{id}}-")` is exactly the same ambiguous revset
+    /// as `@-`, just applied to an arbitrary revision instead of `@` — it fails identically the
+    /// moment `id` itself names a merge commit. `first_parent` (used instead) resolves the same
+    /// parent by reading the template's own `parents()` list for `id`, which never asks the
+    /// revset resolver to disambiguate `id-`.
+    #[test]
+    fn merge_commit_diff_is_not_all_added() {
+        let Some(dir) = scratch_repo_merge("merge_commit_diff") else {
+            return;
+        };
+        // Finalize the merge-with-edits into a permanent two-parent commit, so this reads a
+        // concrete historical revision rather than the live working copy.
+        let committed = std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(["commit", "-m", "merge-edit"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(
+            committed,
+            "the fixture's jj must accept committing the merge's local edits"
+        );
+
+        let merge = log(&dir, 10)
+            .into_iter()
+            .find(|c| c.summary == "merge-edit")
+            .expect("the fixture always creates a commit described \"merge-edit\"");
+
+        let lines = commit_diff(&dir, &merge.id);
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"only_a.txt"),
+            "the edited file must have a header entry in the commit diff at all: {text:?}"
+        );
+        assert!(
+            text.contains(&"CHANGED-A"),
+            "the line shared with the resolved first parent must survive as context: {text:?}"
+        );
+        assert!(
+            text.contains(&"deleteme.txt"),
+            "the deleted file must have a header entry in the commit diff — with the parent \
+             lookup failing, both sides read as absent and `push_file_diff` drops a file whose \
+             two sides are both None entirely, so this file vanished from the diff altogether: \
+             {text:?}"
+        );
+        assert!(
+            !lines.iter().all(|l| l.old_no.is_none()),
+            "every line carrying no old-side number is the bug's symptom: with `{{id}}-` failing \
+             on a merge commit, the whole diff rendered as though entirely new: {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for bug 2 (symlink-through-`file_diff`): `jj file show` reports a tracked
+    /// symlink's content as zero bytes, but `std::fs::read` on the *working copy* side follows the
+    /// link to its target file's real bytes. Comparing those two used to render the entire target
+    /// file's content as newly added. `link.txt` (from `scratch_repo`) points at `kept.txt`,
+    /// which holds real content ("one\n") never touched since the seed commit — if the guard were
+    /// missing, that content would show up here as an added line.
+    #[test]
+    fn file_diff_declines_to_follow_a_symlink_through_to_its_target() {
+        let Some(dir) = scratch_repo("symlink_diff") else {
+            return;
+        };
+        // `link.txt` (from `scratch_repo`) points at `kept.txt`, whose content is unchanged since
+        // the seed commit — that alone can't tell guarded from unguarded, since `Path::canonicalize`
+        // resolves a symlink to its target before `file_diff` ever runs a comparison, and an
+        // *unchanged* target legitimately produces an empty diff either way. `added.txt` is what
+        // makes the guard's absence observable: it exists only on disk, added after the seed
+        // commit and never tracked at the parent revision — a link resolved through to it would
+        // ask jj for a path the parent never had, get `None` back for the "before" side, and
+        // render `added.txt`'s entire real content as newly added, under the query for a symlink
+        // whose own state has nothing to do with `added.txt` at all.
+        let link = dir.join("link_to_added.txt");
+        std::os::unix::fs::symlink("added.txt", &link).expect("create a fresh symlink");
+
+        let lines = file_diff(&dir, &link);
+        assert!(
+            lines.is_empty(),
+            "a symlink's diff must decline outright rather than let `canonicalize` silently \
+             substitute its target's identity and diff that instead — for a target absent from \
+             the parent, that substitution renders the whole target file as newly added: {lines:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
