@@ -21720,3 +21720,215 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
     std::fs::remove_dir_all(&jj_dir).ok();
     std::fs::remove_dir_all(&git_dir).ok();
 }
+
+// =============================================================================
+// jj write-safety audit (2026-08): the read-only gate itself
+// (`Action::writes_repository()` + `dispatch_action`'s check, `src/main.rs`), which had no test
+// coverage of its own before this. The key-driven walk through every reachable write action lives
+// in `src/e2e_tests.rs` (needs `Sim`); what stays here needs either private `PerTab` field access
+// (only visible inside `app` and its submodules) or is a pure source/logic check unrelated to keys.
+// =============================================================================
+
+/// `WorktreeCreate` cannot be reached through real navigation in a jj repository: `w` from the
+/// changes hub redirects to the `JjWorkspacesUnlisted` flash before `Surface::GitWorktrees` is ever
+/// entered (`open_git_worktrees`, `src/app/git_view.rs`) — see
+/// `e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list` (`src/e2e_tests.rs`). That
+/// unreachability is exactly why this needs its own test: the gate in `dispatch_action` must hold
+/// even if the surface is somehow reached anyway — a future regression in `open_git_worktrees`'s own
+/// redirect, or stale per-tab state. Forcing `tab.git_worktrees` open directly (rather than pressing
+/// `w`) is what lets this test exist despite the surface being unreachable through keys; it needs
+/// `PerTab`'s private fields, which is why it lives here rather than in `e2e_tests.rs`.
+#[cfg(feature = "git")]
+#[test]
+fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_open() {
+    let Some(dir) = jj_scratch("konoma_worktree_create_gate") else {
+        return;
+    };
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    assert!(
+        !crate::vcs::caps(&app.tab.root).write,
+        "sanity: the fixture must resolve to the read-only jj backend, or this test proves nothing"
+    );
+    app.tab.git_worktrees = Some(Vec::new()); // force the surface open; `w` cannot reach it in jj
+    app.tab.git_worktree_sel = 0;
+    assert_eq!(
+        app.surface(),
+        crate::keymap::Surface::GitWorktrees,
+        "sanity: the forced state must read as the worktree list"
+    );
+
+    let res = crate::handle_key(
+        &mut app,
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    assert!(
+        res.is_ok(),
+        "the gate must return Ok(false), not error: {res:?}"
+    );
+    assert!(
+        app.flash
+            .as_deref()
+            .is_some_and(|f| f.contains(crate::i18n::tr(app.lang, crate::i18n::Msg::VcsReadOnly))),
+        "expected the VcsReadOnly flash, got {:?}",
+        app.flash
+    );
+    assert!(
+        !app.is_dialog(),
+        "n must not have opened the new-worktree input dialog"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The read-only gate in `dispatch_action` only protects a write if it is reached through an
+/// `Action` — a git write that bypasses `run_git_op` (the one place every `crate::git::` write call
+/// lives, `src/app/git_view.rs`) would bypass the gate entirely, no matter what
+/// `Action::writes_repository()` says. This scans the actual source of `git_view.rs` at compile time
+/// (`include_str!`) and confirms every one of the write API's call sites is still exactly the one
+/// inside `run_git_op`.
+///
+/// What this catches: a write call added, or moved, to somewhere else in this file, outside
+/// `run_git_op` — the concrete way today's single gate could stop covering a write that already
+/// exists. What this does **not** catch: a brand new write-shaped `Action` that calls a brand new
+/// `crate::git::` function correctly routed *through* `run_git_op`, but never added to
+/// `writes_repository()` in the first place — see `writes_repository_set_is_pinned...` below for
+/// that (still incomplete) half of the picture.
+#[cfg(feature = "git")]
+#[test]
+fn git_write_api_calls_stay_confined_to_run_git_op() {
+    let src = include_str!("git_view.rs");
+    let start = src.find("fn run_git_op(").expect(
+        "run_git_op not found — did the write dispatch move or get renamed? update this test's search string",
+    );
+    let after_start = &src[start..];
+    // Every method in this file is `    fn `/`    pub fn ` at the same 4-space indent as
+    // `run_git_op` itself (optionally preceded by its own doc comment) — the next such line marks
+    // where this function's body ends.
+    let next_fn = after_start[1..].find("\n    fn ");
+    let next_pub_fn = after_start[1..].find("\n    pub fn ");
+    let rel_end = match (next_fn, next_pub_fn) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => panic!("could not find the end of run_git_op — did the next method move?"),
+    };
+    let body = &after_start[..rel_end + 1];
+
+    // Exactly what `run_git_op`'s match calls today (mirrors `GitOpKind`, `src/app.rs`).
+    let write_calls = [
+        "crate::git::stage(",
+        "crate::git::unstage(",
+        "crate::git::stage_all(",
+        "crate::git::unstage_all(",
+        "crate::git::discard(",
+        "crate::git::commit(",
+        "crate::git::checkout(",
+        "crate::git::create_branch(",
+        "crate::git::delete_branch(",
+        "crate::git::worktree_add(",
+    ];
+    for needle in write_calls {
+        let total = src.matches(needle).count();
+        assert_eq!(
+            total, 1,
+            "{needle} must appear exactly once in git_view.rs (inside run_git_op). More than once \
+             means a write path was added outside run_git_op — route it through \
+             start_git_op/run_git_op like every other write here, so dispatch_action's \
+             writes_repository() gate (src/main.rs) still covers it. Zero means this needle itself \
+             needs updating (the function was renamed, removed, or its call site changed shape)."
+        );
+        let inside = body.matches(needle).count();
+        assert_eq!(
+            inside, 1,
+            "{needle} exists in git_view.rs but not inside run_git_op — it moved outside the gate's \
+             one known entry point. Every git write must go through start_git_op/run_git_op."
+        );
+    }
+}
+
+/// `writes_repository()` (`src/keymap.rs`) is a hand-written list — the only thing that decides
+/// which `Action`s `dispatch_action`'s read-only gate refuses in a jj repository. Pinning its answer
+/// here means any change to the SET it returns true for breaks this test and forces a human to look.
+///
+/// If you just **added** a new write-shaped Action and correctly included it in
+/// `writes_repository()`, this test fails with a diff — add the new variant to both `candidates` and
+/// `want` below, AND add a real key press for it to
+/// `e2e_jj_write_actions_are_gated_by_the_read_only_backend` (`src/e2e_tests.rs`), so the new action
+/// is actually exercised against jj rather than merely declared correctly.
+///
+/// What this test **cannot** catch: a new write-shaped Action that was never added to
+/// `writes_repository()` at all. `Action` has no enumerable list of its own variants (unlike
+/// `i18n::Msg`'s `ALL_MSGS`, which `all_msg_variants_are_covered_by_all_msgs` checks against the
+/// enum source directly) — there is no way, from outside `src/keymap.rs`, to ask "what are all the
+/// Action variants", and therefore no way to mechanically prove none of them was left out of this
+/// list. That is a real, standing gap that only a human reviewing a diff to `keymap.rs` can close;
+/// the closest mechanical mitigation is `git_write_api_calls_stay_confined_to_run_git_op` (above),
+/// which at least confirms no git write call exists outside the one path this gate is meant to guard.
+#[cfg(feature = "git")]
+#[test]
+fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
+    use crate::keymap::{action_name, Action};
+    let candidates = [
+        Action::GitStage,
+        Action::GitUnstage,
+        Action::GitStageAll,
+        Action::GitUnstageAll,
+        Action::GitDiscard,
+        Action::GitDiffDiscard,
+        Action::GitCommit,
+        Action::BranchCheckout,
+        Action::BranchCreate,
+        Action::BranchDelete,
+        Action::WorktreeCreate,
+    ];
+    let mut got: Vec<String> = candidates
+        .into_iter()
+        .filter(|a| a.writes_repository())
+        .map(action_name)
+        .collect();
+    got.sort();
+
+    let mut want: Vec<String> = [
+        "branch_checkout",
+        "branch_create",
+        "branch_delete",
+        "git_commit",
+        "git_diff_discard",
+        "git_discard",
+        "git_stage",
+        "git_stage_all",
+        "git_unstage",
+        "git_unstage_all",
+        "worktree_create",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    want.sort();
+
+    assert_eq!(
+        got, want,
+        "writes_repository()'s answer for the known write actions changed. If you removed one, the \
+         jj gate just got weaker — put it back unless that was deliberate. If you added a brand new \
+         write action, this candidate list (and the pinned `want` list) also needs the new variant, \
+         AND it needs a real key press in e2e_jj_write_actions_are_gated_by_the_read_only_backend \
+         (src/e2e_tests.rs) — this test alone cannot see Action variants it was never told about."
+    );
+
+    // Sanity: some read/navigation Actions must stay ungated, or the pinned lists above could
+    // vacuously agree even if writes_repository() had degenerated into "gate everything".
+    for (name, a) in [
+        ("jj_sync", Action::JjSync),
+        ("git_open_worktrees", Action::GitOpenWorktrees),
+        ("git_open_branches", Action::GitOpenBranches),
+        ("git_close", Action::GitClose),
+        ("git_graph_toggle_all", Action::GitGraphToggleAll),
+    ] {
+        assert!(
+            !a.writes_repository(),
+            "{name} is a read/navigation action and must not be gated as a write"
+        );
+    }
+}

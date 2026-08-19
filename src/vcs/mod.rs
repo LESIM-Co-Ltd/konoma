@@ -206,8 +206,36 @@ pub fn set_preference(p: Preference) {
     PREFERENCE.store(v, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(all(test, feature = "git"))]
+thread_local! {
+    /// Test-only override of the preference above.
+    ///
+    /// The real one has to be process-wide, but that makes it unusable *from* a test: every other
+    /// test's `App::new` writes it too, so a test that pinned `jj` would have it overwritten
+    /// mid-run by an unrelated test starting up in parallel — measured, not theoretical. Writing
+    /// the global from a test is the same hazard pointed the other way, since the pinned value
+    /// then leaks into whatever else is running.
+    ///
+    /// Thread-local for the same reason as `git`'s own test overrides, and sufficient for the same
+    /// reason: the only code that reads this from another thread is the background status scan,
+    /// which no test attaches.
+    static PREFERENCE_OVERRIDE: std::cell::Cell<Option<Preference>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Pin the backend preference on the current thread (`None` = follow the process-wide setting).
+/// Tests must reset it to `None` when done.
+#[cfg(all(test, feature = "git"))]
+pub fn set_preference_for_test(p: Option<Preference>) {
+    PREFERENCE_OVERRIDE.with(|c| c.set(p));
+}
+
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn preference() -> Preference {
+    #[cfg(all(test, feature = "git"))]
+    if let Some(p) = PREFERENCE_OVERRIDE.with(|c| c.get()) {
+        return p;
+    }
     match PREFERENCE.load(std::sync::atomic::Ordering::Relaxed) {
         1 => Preference::Git,
         2 => Preference::Jj,
@@ -679,12 +707,9 @@ mod tests {
             return;
         }
         let dir = detect_with_jj_only_dir();
-        // `backend_for` reads the process-wide preference, which every `App::new` in the suite
-        // writes -- always to `auto`, since they all start from `Config::default()`. Pinning it to
-        // the same value here is therefore a no-op today, and keeps this test's meaning from
-        // depending on suite ordering if that ever stops being true. This is the one place a test
-        // touches that global: everything else about detection goes through `detect_with`.
-        set_preference(Preference::Auto);
+        // `backend_for` reads the preference, which every `App::new` in the suite writes. Pin it
+        // for this thread only, so neither direction of that can reach across tests.
+        set_preference_for_test(Some(Preference::Auto));
         assert_eq!(
             detect(&dir),
             VcsKind::Jj,
@@ -695,6 +720,7 @@ mod tests {
             !backend.caps().write,
             "a .jj-only directory's backend must be read-only"
         );
+        set_preference_for_test(None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

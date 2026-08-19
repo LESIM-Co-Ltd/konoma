@@ -2428,6 +2428,449 @@ fn e2e_git_graph_branch_picker_toggles() {
 }
 
 // =============================================================================
+// jj: the read-only gate (`Action::writes_repository()` + `dispatch_action`'s check in
+// src/main.rs), and jj-specific key behavior (R sync, w worktrees, a graph range).
+//
+// konoma never writes to a jj repository (see `crate::vcs::jj`'s module docs): every write-shaped
+// `Action` is refused before it runs whenever `crate::vcs::caps(root).write` is false, which is
+// jj's answer unconditionally. This section is what pins that down — before the 2026-08 audit that
+// added it, the gate had no test coverage at all.
+// =============================================================================
+
+/// A throwaway jj workspace with no colocated `.git` — the jj analog of `seed_repo`, with one
+/// bookmark (so the branch list has something to open) and one uncommitted change (so the changed
+/// list, the diff view, and the working-copy status are non-empty). None when this machine has no
+/// jj, mirroring `app/tests.rs`'s `jj_scratch` — the suite must stay green without it.
+#[cfg(feature = "git")]
+fn jj_seed_repo(name: &str) -> Option<std::path::PathBuf> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = sandbox(name);
+    let jj = |args: &[&str]| -> bool {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir) // never touch the running machine's own jj config
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !jj(&["git", "init", "--no-colocate", "."]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+    if !jj(&["commit", "-m", "seed"]) {
+        return None;
+    }
+    // A bookmark, so `open_git_branches` finds something to show — without one, the branch list
+    // never opens at all (`NoBranches`), and `BranchCheckout`/`BranchCreate`/`BranchDelete` could
+    // never be reached to prove their gate holds.
+    if !jj(&["bookmark", "create", "main", "-r", "@-"]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+    Some(dir)
+}
+
+/// A **colocated** repository — both `.git` and `.jj` — with `main`/`master` already a bookmark
+/// (jj auto-imports it from the colocated git branch), and one real uncommitted change. Built by
+/// following jj's own documented on-ramp for an existing git repository (`jj git init --colocate`
+/// inside it); verified working in a scratch directory before use here. None when this machine has
+/// no jj.
+#[cfg(feature = "git")]
+fn jj_colocated_seed_repo(name: &str) -> Option<std::path::PathBuf> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = sandbox(name);
+    let git = |args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    let jj = |args: &[&str]| -> bool {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q", "."])
+        || !git(&["config", "user.email", "t@t"])
+        || !git(&["config", "user.name", "t"])
+    {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+    if !git(&["add", "-A"]) || !git(&["commit", "-q", "-m", "init"]) {
+        return None;
+    }
+    // The documented way to add jj on top of an existing git repository.
+    if !jj(&["git", "init", "--colocate", "."]) {
+        return None;
+    }
+    // A real uncommitted change `git status --porcelain` can show a diff against (measured in a
+    // scratch directory: `.jj` itself never shows up in `git status`, colocated or not, so this is
+    // the only source of "before" state the test needs).
+    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+    Some(dir)
+}
+
+/// Walks every key that reaches a write-shaped `Action` (`Action::writes_repository()` in
+/// `src/keymap.rs`) in a jj repository, and confirms each one is refused — the `VcsReadOnly` flash,
+/// no dialog opened, no navigation away from wherever the key was pressed. `writes_repository()`
+/// has no enumerable list of variants to iterate (`Action` derives no `EnumIter`-style trait, unlike
+/// `i18n::Msg`'s `ALL_MSGS`), so the (surface, key) pairs below are transcribed by hand from
+/// `src/keymap.rs`'s per-surface maps rather than generated — see this test's sibling
+/// `writes_repository_set_is_pinned...` (`app/tests.rs`) for the trip-wire that catches this list
+/// (and `writes_repository()` itself) drifting apart.
+///
+/// `WorktreeCreate` is deliberately not exercised here: `w` never reaches `Surface::GitWorktrees` in
+/// a jj repository at all (`open_git_worktrees` redirects to the `JjWorkspacesUnlisted` flash
+/// first — see `e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list` below), so the key
+/// that would fire it cannot be pressed through real navigation. It is covered separately in
+/// `app/tests.rs`, by forcing the surface open directly.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
+    let Some(dir) = jj_seed_repo("jj_write_gate") else {
+        return;
+    };
+    let root = canon(&dir);
+    let mut s = Sim::new(&root);
+    assert!(
+        !crate::vcs::caps(&s.app.tab.root).write,
+        "sanity: this fixture must resolve to the read-only jj backend, or the test proves nothing"
+    );
+
+    fn refused(s: &Sim, key: char) {
+        assert!(
+            s.app.flash.as_deref().is_some_and(
+                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
+            ),
+            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
+            s.app.flash
+        );
+        assert!(
+            !s.app.is_dialog(),
+            "key {key:?}: a refused write must not open a dialog"
+        );
+    }
+
+    // --- The changes hub: stage / unstage / stage_all / unstage_all / discard / commit ---
+    s.key('o');
+    assert!(s.app.is_git_view(), "o must still open the (read-only) hub");
+    for key in ['s', 'u', 'S', 'U', 'x', 'c'] {
+        s.key(key);
+        refused(&s, key);
+        assert!(
+            s.app.is_git_view(),
+            "key {key:?}: a refused write must not leave the hub"
+        );
+    }
+
+    // --- The branch list: checkout / create / delete ---
+    s.key('b');
+    assert!(
+        s.app.is_git_branches(),
+        "the bookmark fixture must open the branch list"
+    );
+    for key in ['l', 'n', 'd'] {
+        s.key(key);
+        refused(&s, key);
+        assert!(
+            s.app.is_git_branches(),
+            "key {key:?}: a refused write must not leave the branch list"
+        );
+    }
+    s.key('q'); // branches -> hub
+    s.key('q'); // hub -> tree
+    assert_eq!(
+        s.app.tab.mode,
+        Mode::Tree,
+        "both q's must have returned to the tree"
+    );
+
+    // --- The full-screen diff: discard-from-diff ---
+    s.select("a.txt");
+    s.key('d');
+    assert!(
+        s.app.is_git_diff_preview(),
+        "d must still open the (read-only) diff"
+    );
+    s.key('x');
+    refused(&s, 'x');
+    assert!(
+        s.app.is_git_diff_preview(),
+        "a refused GitDiffDiscard must not leave the diff view"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Pins `[external] vcs = "jj"` for **this thread only**.
+///
+/// The real preference is process-wide, because the background status scan has to detect the same
+/// backend the UI thread does. That makes it useless to a test: every `App::new` in this binary
+/// writes it, so a parallel test starting up flips it back mid-run -- observed directly, as a
+/// colocated fixture reading back `caps().write == true` right after being pinned to jj. Writing
+/// the global from here would leak the pin into those tests in return. `set_preference_for_test`
+/// is the thread-local override that avoids both directions; reset it with `unpin_vcs`.
+#[cfg(feature = "git")]
+fn pin_vcs_to_jj() {
+    crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Jj));
+}
+
+/// Hands the thread back to the process-wide preference. Paired with [`pin_vcs_to_jj`].
+#[cfg(feature = "git")]
+fn unpin_vcs() {
+    crate::vcs::set_preference_for_test(None);
+}
+
+/// The worst case the jj write-safety audit (2026-08) flagged: a **colocated** repository (both
+/// `.git` and `.jj`) with `[external] vcs = "jj"` set explicitly, so a real, writable `.git` sits
+/// right there while konoma is pinned to read jj instead. If the gate in `dispatch_action` ever
+/// regressed to asking the wrong backend, konoma would run `git add`/`git commit`/`git switch`
+/// against a repository the user explicitly chose to only read through jj. Checking the flash alone
+/// would not catch a gate that *looked* closed but let the write through anyway, so this reads
+/// `git status --porcelain` before and after every key and requires it to be byte-for-byte
+/// identical.
+///
+/// The preference is pinned for this thread only; see [`pin_vcs_to_jj`].
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj() {
+    let Some(dir) = jj_colocated_seed_repo("jj_colocated_gate") else {
+        return;
+    };
+    let root = canon(&dir);
+    let git_status = || -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git status --porcelain: {out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let before = git_status();
+    assert!(
+        !before.is_empty(),
+        "the fixture must leave real uncommitted git state, or a broken gate has nothing to prove itself against"
+    );
+
+    let mut cfg = Config::default();
+    cfg.external.vcs = "jj".into();
+    pin_vcs_to_jj();
+    let mut s = Sim::with_config(&root, cfg);
+    assert!(
+        !crate::vcs::caps(&s.app.tab.root).write,
+        "sanity: [external] vcs = \"jj\" must resolve this colocated repo to the read-only jj backend"
+    );
+
+    s.key('o');
+    assert!(s.app.is_git_view(), "o must still open the (read-only) hub");
+    for key in ['s', 'u', 'S', 'U', 'x', 'c'] {
+        s.key(key);
+        assert!(
+            s.app.flash.as_deref().is_some_and(
+                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
+            ),
+            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
+            s.app.flash
+        );
+        assert!(
+            !s.app.is_dialog(),
+            "key {key:?}: a refused write must not open a dialog"
+        );
+    }
+
+    s.key('b');
+    assert!(
+        s.app.is_git_branches(),
+        "the colocated repo's auto-imported bookmark must open the branch list"
+    );
+    for key in ['l', 'n', 'd'] {
+        s.key(key);
+        assert!(
+            s.app.flash.as_deref().is_some_and(
+                |f| f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::VcsReadOnly))
+            ),
+            "key {key:?}: expected the VcsReadOnly flash, got {:?}",
+            s.app.flash
+        );
+        assert!(
+            !s.app.is_dialog(),
+            "key {key:?}: a refused write must not open a dialog"
+        );
+    }
+
+    unpin_vcs();
+    let after = git_status();
+    assert_eq!(
+        before, after,
+        "the read-only gate must leave the real .git untouched, byte for byte"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `R` (`jj_start_sync`) on a repository that is not jj — this needs no jj binary at all: the check
+/// that refuses it runs before jj is ever invoked.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
+    let dir = sandbox("jj_sync_not_jj");
+    seed_repo(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.key('R');
+    assert!(
+        s.app.flash.as_deref().is_some_and(|f| f.contains(
+            crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncNotJj)
+        )),
+        "expected the JjSyncNotJj flash, got {:?}",
+        s.app.flash
+    );
+    assert!(
+        !s.app.is_dialog(),
+        "R on a non-jj repository must not open the sync confirmation"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The full `R` round trip on an actual jj repository: ask (`confirm_jj_sync` defaults on) → `y`
+/// confirms → `jj_run_sync` actually runs → the flash reports what happened. This is the one write
+/// konoma makes to a jj repository, by design (`crate::vcs::jj`'s module docs) — `dialog_confirm`'s
+/// `y`/Enter key is a **fixed key**, resolved before `dispatch_action`'s `Action`-based gate ever
+/// sees it (`Surface::DialogConfirmDelete` in `src/main.rs`'s `handle_key`), so nothing in this path
+/// is `writes_repository()`-gated; it relies entirely on `jj_start_sync`'s own
+/// `detect() != VcsKind::Jj` check having already been true when the dialog was opened.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_sync_full_round_trip_confirms_and_reports_completion() {
+    let Some(dir) = jj_seed_repo("jj_sync_round_trip") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir)); // confirm_jj_sync defaults on
+    s.key('o');
+    s.key('R');
+    assert!(s.app.is_dialog(), "R must ask before letting jj snapshot");
+    s.key('y');
+    assert!(!s.app.is_dialog(), "confirming must close the dialog");
+    assert!(
+        s.app.flash.as_deref().is_some_and(|f| {
+            f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncDone))
+                || f.contains(crate::i18n::tr(s.app.lang, crate::i18n::Msg::JjSyncFailed))
+        }),
+        "the confirmed sync must report completion or failure, got {:?}",
+        s.app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `w` (worktree list) in a jj repository: konoma does not list jj workspaces yet, and a colocated
+/// repository's git worktree list would describe a checkout the user is not working in — so it
+/// flashes an explanation instead of opening the (git-only) list.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list() {
+    let Some(dir) = jj_seed_repo("jj_worktrees_unlisted") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    assert!(s.app.is_git_view());
+    s.key('w');
+    assert!(
+        s.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains(crate::i18n::tr(
+                s.app.lang,
+                crate::i18n::Msg::JjWorkspacesUnlisted
+            ))),
+        "expected the JjWorkspacesUnlisted flash, got {:?}",
+        s.app.flash
+    );
+    assert!(
+        !s.app.is_git_worktrees(),
+        "the git worktree list must not open for a jj repository"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `a` (`GitGraphToggleAll`) means different things per backend: git's graph is already every
+/// reachable commit, so it just says so; jj's graph defaults to a narrower range (it rewrites
+/// commits as you work), so `a` really does widen/narrow it.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
+    let git_dir = sandbox("graph_toggle_git");
+    seed_repo(&git_dir);
+    let mut sg = Sim::new(&canon(&git_dir));
+    sg.key('o');
+    sg.key('g');
+    assert!(sg.app.is_git_graph(), "g must open the graph");
+    sg.key('a');
+    assert!(
+        sg.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains(crate::i18n::tr(
+                sg.app.lang,
+                crate::i18n::Msg::GraphAlreadyAll
+            ))),
+        "git's graph must say it already shows everything rather than toggle a range, got {:?}",
+        sg.app.flash
+    );
+    std::fs::remove_dir_all(&git_dir).ok();
+
+    let Some(jj_dir) = jj_seed_repo("graph_toggle_jj") else {
+        return;
+    };
+    let mut sj = Sim::new(&canon(&jj_dir));
+    sj.key('o');
+    sj.key('g');
+    assert!(sj.app.is_git_graph(), "g must open the graph");
+    sj.key('a');
+    assert!(
+        sj.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains(crate::i18n::tr(
+                sj.app.lang,
+                crate::i18n::Msg::GraphShowingAll
+            ))),
+        "jj's graph must widen to every revision, got {:?}",
+        sj.app.flash
+    );
+    sj.key('a');
+    assert!(
+        sj.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains(crate::i18n::tr(
+                sj.app.lang,
+                crate::i18n::Msg::GraphShowingDefault
+            ))),
+        "pressing a again must narrow back to the default range, got {:?}",
+        sj.app.flash
+    );
+    std::fs::remove_dir_all(&jj_dir).ok();
+}
+
+// =============================================================================
 // Verifying "actual values" for copy (clipboard-independent — verified via computation functions/getters)
 // =============================================================================
 
