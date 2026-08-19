@@ -2150,4 +2150,589 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // --- The hub: graph()/bookmarks()/bookmark_tip()/commit_meta() against real jj ------------
+    //
+    // Everything above this point either parses text this module built by hand (a fixture-free
+    // unit test) or drives `statuses`/`file_diff`/`branch` — never the four functions the hub
+    // actually calls to draw history. Nothing here checked what `graph()` puts in a row, whether
+    // `bookmarks()` sorts, whether `bookmark_tip()` resolves to jj's own answer, or whether
+    // `commit_meta()` reads anything at all: `graph()`/`bookmarks()` were only exercised through
+    // e2e, which asserts on the flash message and the screen transition, not on a single row,
+    // lane or bookmark name.
+
+    /// Builds a jj repository whose default log revset (`revsets.log`, jj's `builtin_log()` —
+    /// `present(@) | ancestors(immutable_heads().., 2) | trunk()`) is narrower than `all()` **by
+    /// construction**, so [`graph`]'s `None` path and its `Some("all()")` path can be told apart
+    /// by row count alone.
+    ///
+    /// That narrowing needs `trunk()` to resolve to something other than the repository root:
+    /// with no bookmark and no remote, `trunk()` falls back to `root()` (confirmed against jj
+    /// 0.44.0), and once `trunk()` *is* the root, `immutable_heads()` is `{root}`, so
+    /// `ancestors(immutable_heads().., 2)` — "ancestors, within 2 generations, of every strict
+    /// descendant of an immutable head" — trivially covers the *entire* descendant set (each
+    /// commit is depth-0 ancestor of itself), and the default revset degenerates to "everything
+    /// reachable from root", i.e. the same answer `all()` gives. Every earlier fixture in this
+    /// module never needed a real trunk, which is exactly why none of them exercises this.
+    ///
+    /// The fix used here is a real `main@origin` bookmark on a local bare git remote — not
+    /// `jj config set --repo`, which was tried first and rejected: jj 0.44 stores "per-repo"
+    /// config in the user's own config directory rather than inside `.jj/`, keyed off the
+    /// invocation's `$HOME` ("Per-repo config is stored in the same directory as your user
+    /// config for security reasons", jj's own words). This module's production `run()` never
+    /// overrides `$HOME` — it inherits whatever `cargo test` runs under — so a config written
+    /// under this fixture's own scoped `$HOME` (as every other fixture here does, for identity)
+    /// would be invisible to the very `graph()` call the test then makes, and writing it under
+    /// the *real* `$HOME` instead would leak a stray per-repo config into the developer's actual
+    /// jj configuration on every test run. A git remote carries no such split: the bookmark lives
+    /// inside `.jj`/the pushed git object store, so it reads back identically regardless of which
+    /// `$HOME` is asking. Verified directly: the row counts below were captured with `$HOME`
+    /// unset (i.e. the real ambient one, standing in for `run()`'s), not the fixture's scoped one.
+    ///
+    /// Layout: `root -> c1 -> c2 -> c3trunktip` (pushed to `origin` as bookmark `main`, so
+    /// `trunk()` resolves to it and `root`/`c1`/`c2`/`c3trunktip` all pick up jj's `immutable`
+    /// flag), then `c3trunktip` forks into two children: `branchA` (committed, an ordinary mutable
+    /// commit) and a second child left checked out as `@` (described but never committed) — so
+    /// the same fixture also covers a fork and a real `NodeKind::WorkingCopy` row.
+    ///
+    /// Returns `(workspace root, bare remote's directory — the caller must remove it too, since
+    /// it lives beside rather than inside the workspace)`.
+    fn scratch_repo_pinned_trunk(name: &str) -> Option<(PathBuf, PathBuf)> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let remote = std::env::temp_dir().join(format!(
+            "konoma_jj_{name}_remote_{}.git",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+        std::fs::create_dir_all(&dir).ok()?;
+        if !std::process::Command::new("git")
+            .args(["init", "--quiet", "--bare"])
+            .arg(&remote)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let jj_stdout = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        let remote_str = remote.to_str()?;
+        if !jj(&["git", "remote", "add", "origin", remote_str]) {
+            return None;
+        }
+        if !jj(&["commit", "-m", "c1"]) {
+            return None;
+        }
+        if !jj(&["commit", "-m", "c2"]) {
+            return None;
+        }
+        if !jj(&["commit", "-m", "c3trunktip"]) {
+            return None;
+        }
+        let c3 = jj_stdout(&[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "commit_id",
+        ])?;
+        if !jj(&["bookmark", "create", "-r", &c3, "main"]) {
+            return None;
+        }
+        if !jj(&["git", "push", "--remote", "origin", "--bookmark", "main"]) {
+            return None;
+        }
+        if !jj(&["commit", "-m", "branchA"]) {
+            return None;
+        }
+        if !jj(&["new", &c3]) {
+            return None;
+        }
+        if !jj(&["describe", "-m", "branchB-wc"]) {
+            return None;
+        }
+        Some((dir, remote))
+    }
+
+    /// The default revset is what `graph()` uses when the caller passes `None` — the branch- and
+    /// commit-list `l`/`G` take. It must not merely differ from `all()`; it has to be the
+    /// *narrower* of the two, and by exactly the rows the fixture's doc comment predicts: the
+    /// pinned trunk tip and everything after it, but not `root`/`c1`/`c2` before the pin.
+    #[test]
+    fn graph_default_revset_excludes_history_before_the_pinned_trunk() {
+        let Some((dir, remote)) = scratch_repo_pinned_trunk("graph_narrow") else {
+            return;
+        };
+        let default_rows = graph(&dir, None, 50);
+        let all_rows = graph(&dir, Some("all()"), 50);
+        let default_commits = default_rows.iter().filter(|r| r.commit.is_some()).count();
+        let all_commits = all_rows.iter().filter(|r| r.commit.is_some()).count();
+        assert_eq!(
+            default_commits, 3,
+            "the default revset must show only c3trunktip, branchA and the checked-out working \
+             copy — not root/c1/c2, which sit before the pin: {default_rows:?}"
+        );
+        assert_eq!(
+            all_commits, 6,
+            "all() must reach the full history, including root/c1/c2 the default hides: {all_rows:?}"
+        );
+        assert!(
+            default_commits < all_commits,
+            "the default revset exists to be narrower than all() — if this ever stops holding, \
+             graph()'s `None` path is no longer doing anything: default={default_commits} \
+             all={all_commits}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The row for jj's own checked-out commit must carry [`crate::git::NodeKind::WorkingCopy`] —
+    /// not merely `Normal`, which is what it would fall back to as an ordinary single-parent
+    /// commit if `node_kind()`'s `r.here` check were ever dropped or misordered.
+    #[test]
+    fn graph_marks_the_checked_out_row_as_the_working_copy_kind() {
+        let Some((dir, remote)) = scratch_repo_pinned_trunk("graph_wc_kind") else {
+            return;
+        };
+        let rows = graph(&dir, Some("all()"), 50);
+        let wc_row = rows
+            .iter()
+            .find(|r| r.subject == "branchB-wc")
+            .expect("the fixture always describes its checked-out commit \"branchB-wc\"");
+        assert_eq!(
+            wc_row.node,
+            Some(crate::git::NodeKind::WorkingCopy),
+            "the checked-out commit must read as jj's working-copy kind: {wc_row:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// Regression coverage for the one branch in `graph()` no test had ever reached: `if
+    /// r.immutable && r.parents.is_empty() && r.subject.is_empty()`, which renames the root
+    /// commit's blank subject to `"root()"`. Reaching it needs a revset wide enough to surface
+    /// the root row at all — `all()`, not the default (see [`scratch_repo_pinned_trunk`]'s doc).
+    #[test]
+    fn graph_root_row_is_immutable_with_the_synthesized_root_subject() {
+        let Some((dir, remote)) = scratch_repo_pinned_trunk("graph_root_row") else {
+            return;
+        };
+        let rows = graph(&dir, Some("all()"), 50);
+        let root_id = "0".repeat(40);
+        let root_row = rows
+            .iter()
+            .find(|r| r.commit.as_deref() == Some(root_id.as_str()))
+            .expect("all() must reach the repository's root commit");
+        assert_eq!(
+            root_row.short, "zzzzzzzz",
+            "jj's own shortest change id for the root commit (measured against jj 0.44.0)"
+        );
+        assert_eq!(
+            root_row.subject, "root()",
+            "the root commit's real subject is empty; graph() must have replaced it — the branch \
+             this test exists to cover: {root_row:?}"
+        );
+        assert_eq!(
+            root_row.node,
+            Some(crate::git::NodeKind::Immutable),
+            "the root commit is always immutable: {root_row:?}"
+        );
+        assert!(
+            root_row.author.is_empty() && root_row.date.is_empty(),
+            "the root commit has no real author or committer timestamp (epoch 0 is graph()'s \
+             sentinel for blanking both), so both must read empty rather than \"1970-01-01\" or \
+             a bogus name: {root_row:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The invariant `legend_from_rows` (and the graph's row-selection color lookup) depends on:
+    /// for every row that has a node, `node_col` must index the exact cell in `graph` holding the
+    /// glyph [`crate::ui::icons::node_glyph`] draws for that row's `NodeKind`, under
+    /// [`crate::vcs::VcsKind::Jj`]. `git.rs` has this same check for `lay_out_lanes` fed synthetic
+    /// `DagCommit`s; this is its counterpart fed rows `graph()` itself produced from real jj
+    /// output, so a mistake in how `graph()` maps a `Row` to a `DagCommit` — not just in
+    /// `lay_out_lanes` — would be caught here too.
+    #[test]
+    fn graph_node_col_always_points_at_the_row_kinds_own_glyph() {
+        let Some((dir, remote)) = scratch_repo_pinned_trunk("graph_node_col") else {
+            return;
+        };
+        let rows = graph(&dir, Some("all()"), 50);
+        let mut saw_immutable = false;
+        let mut saw_working_copy = false;
+        let mut saw_normal = false;
+        for r in &rows {
+            let (Some(kind), Some(col)) = (r.node, r.node_col) else {
+                continue; // connector-only rows carry neither
+            };
+            match kind {
+                crate::git::NodeKind::Immutable => saw_immutable = true,
+                crate::git::NodeKind::WorkingCopy => saw_working_copy = true,
+                crate::git::NodeKind::Normal => saw_normal = true,
+                crate::git::NodeKind::Merge | crate::git::NodeKind::Conflict => {}
+            }
+            let cell = r
+                .graph
+                .get(col)
+                .unwrap_or_else(|| panic!("node_col={col} is out of range for {r:?}"));
+            assert_eq!(
+                cell.0,
+                crate::ui::icons::node_glyph(kind, crate::vcs::VcsKind::Jj).to_string(),
+                "node_col must locate the cell holding this row's own glyph: {r:?}"
+            );
+        }
+        assert!(
+            saw_immutable && saw_working_copy && saw_normal,
+            "the fixture must actually exercise more than one NodeKind for this check to mean \
+             anything: immutable={saw_immutable} working_copy={saw_working_copy} \
+             normal={saw_normal}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A jj repository with two bookmarks, created in an order (`zeta` before `alpha`) that would
+    /// have been a meaningful check of [`bookmarks`]'s own `v.sort_by` if jj's own `bookmark list`
+    /// were not already alphabetical — measured against jj 0.44.0, it always is, creation order
+    /// included, so this fixture cannot tell "sorted because we sorted" from "sorted because jj
+    /// already does". That distinction is instead pinned by the pure unit test
+    /// `bookmark_list_dedups_and_sorts` above, which feeds `parse_bookmark_list` a hand-written,
+    /// out-of-order string no real jj output would ever produce. What this fixture is for is
+    /// everything a synthetic string cannot stand in for: that `bookmarks()` actually reaches real
+    /// jj, that its output parses into the names jj really holds, and that `is_current` reads
+    /// false for both — not that the sort survives, which real jj's own ordering can never
+    /// exercise here.
+    ///
+    /// Returns `(workspace root, the commit id both bookmarks point at)`.
+    fn scratch_repo_bookmarks(name: &str) -> Option<(PathBuf, String)> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let jj_stdout = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("f.txt"), b"hello\n").ok()?;
+        if !jj(&["commit", "-m", "genesis"]) {
+            return None;
+        }
+        let genesis = jj_stdout(&[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "commit_id",
+        ])?;
+        if !jj(&["bookmark", "create", "-r", "@-", "zeta"]) {
+            return None;
+        }
+        if !jj(&["bookmark", "create", "-r", "@-", "alpha"]) {
+            return None;
+        }
+        Some((dir, genesis))
+    }
+
+    #[test]
+    fn bookmarks_returns_names_sorted_and_none_marked_current() {
+        let Some((dir, _commit)) = scratch_repo_bookmarks("bookmarks_sorted") else {
+            return;
+        };
+        let b = bookmarks(&dir);
+        let names: Vec<&str> = b.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha", "zeta"],
+            "the real bookmark names, in the order konoma's branch list shows them (`bookmarks()` \
+             own sort is pinned separately by `bookmark_list_dedups_and_sorts`, since real jj \
+             already returns them alphabetical): {b:?}"
+        );
+        assert!(
+            b.iter().all(|x| !x.is_current),
+            "a jj bookmark never follows the working copy the way a git branch follows HEAD, so \
+             none of them can be \"current\": {b:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bookmark_tip_resolves_to_jjs_own_commit_id_and_none_for_a_missing_name() {
+        let Some((dir, commit)) = scratch_repo_bookmarks("bookmark_tip") else {
+            return;
+        };
+        assert_eq!(
+            bookmark_tip(&dir, "alpha"),
+            Some(commit.clone()),
+            "must match the commit id `jj log` itself reports for the bookmark"
+        );
+        assert_eq!(
+            bookmark_tip(&dir, "zeta"),
+            Some(commit),
+            "both bookmarks point at the same commit"
+        );
+        assert_eq!(
+            bookmark_tip(&dir, "does-not-exist"),
+            None,
+            "a name jj has never heard of must not resolve to anything"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A jj repository holding one finalized commit whose description is set, after the fact via
+    /// `jj describe --stdin`, to three lines — the shape [`commit_meta`]'s `message` field has to
+    /// preserve verbatim (embedded newlines and all) rather than truncate at the first line
+    /// break the way reading only `out.lines().next()` would.
+    ///
+    /// Returns `(workspace root, the commit's commit id, the commit's change id)` —
+    /// [`commit_meta`]'s own doc comment claims either can be used to look the revision up, so
+    /// the test needs both, read *after* `describe` rewrites the commit (which changes its commit
+    /// id but not its change id).
+    fn scratch_repo_commit_meta(name: &str) -> Option<(PathBuf, String, String)> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let jj_stdout = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("f.txt"), b"hello\n").ok()?;
+        if !jj(&["commit", "-m", "placeholder"]) {
+            return None;
+        }
+        let mut child = std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(["describe", "-r", "@-", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .take()?
+                .write_all(b"line one\nline two\nline three")
+                .ok()?;
+        }
+        if !child.wait().map(|s| s.success()).unwrap_or(false) {
+            return None;
+        }
+        let commit_id = jj_stdout(&[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "commit_id",
+        ])?;
+        let change_id = jj_stdout(&[
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "--ignore-working-copy",
+            "-T",
+            "change_id.shortest(8)",
+        ])?;
+        Some((dir, commit_id, change_id))
+    }
+
+    #[test]
+    fn commit_meta_reads_a_real_revision_by_either_id_and_keeps_a_multiline_message() {
+        let Some((dir, commit_id, change_id)) = scratch_repo_commit_meta("commit_meta") else {
+            return;
+        };
+        let by_commit = commit_meta(&dir, &commit_id).expect("a real commit id must resolve");
+        assert_eq!(by_commit.id, commit_id);
+        assert_eq!(
+            by_commit.short, change_id,
+            "the doc comment's own claim about `short`: it is the change id, not a short hash"
+        );
+        assert_eq!(by_commit.author, "konoma test");
+        assert!(
+            !by_commit.date.is_empty(),
+            "the date field must be populated for a real commit: {by_commit:?}"
+        );
+        assert_eq!(
+            by_commit.message, "line one\nline two\nline three",
+            "a multi-line description must survive whole, not truncate at the first line break"
+        );
+
+        let by_change =
+            commit_meta(&dir, &change_id).expect("the doc comment claims a change id resolves too");
+        assert_eq!(
+            by_change.id, commit_id,
+            "both lookups must land on the same commit"
+        );
+        assert_eq!(by_change.message, by_commit.message);
+
+        assert!(
+            commit_meta(&dir, "deadbeef00").is_none(),
+            "a revision jj has never heard of must resolve to nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A jj repository the instant after `jj git init --no-colocate` — no commit the user made
+    /// yet, only the root commit and jj's own empty working-copy commit on top of it. Nothing
+    /// exercised this shape before: every other fixture in this module commits at least once.
+    fn scratch_repo_empty(name: &str) -> Option<PathBuf> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let ok = std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(["git", "init", "--no-colocate", "."])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            return None;
+        }
+        Some(dir)
+    }
+
+    /// A wide-enough revset must reach the root commit even when it is the *only* commit — and
+    /// must not panic getting there. Measured against jj 0.44.0: the root commit's
+    /// `change_id.shortest(8)` is `zzzzzzzz`, its committer timestamp is `0`, and it has no
+    /// parents (see [`scratch_repo_pinned_trunk`]'s sibling tests for the same facts in a
+    /// non-empty repository).
+    #[test]
+    fn empty_repository_graph_reaches_the_root_without_panicking() {
+        let Some(dir) = scratch_repo_empty("empty_graph") else {
+            return;
+        };
+        let rows = graph(&dir, Some("all()"), 50);
+        let root_id = "0".repeat(40);
+        let root_row = rows
+            .iter()
+            .find(|r| r.commit.as_deref() == Some(root_id.as_str()))
+            .expect("even a repository with no commits of its own has jj's root commit");
+        assert_eq!(root_row.short, "zzzzzzzz");
+        assert_eq!(root_row.subject, "root()");
+        assert_eq!(root_row.node, Some(crate::git::NodeKind::Immutable));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rest of the hub's read surface must survive an empty repository too, without
+    /// panicking — and where a concrete answer is knowable ahead of time (nothing has changed,
+    /// because nothing has ever been committed), assert it rather than merely calling the
+    /// function.
+    #[test]
+    fn empty_repository_hub_reads_do_not_panic() {
+        let Some(dir) = scratch_repo_empty("empty_hub") else {
+            return;
+        };
+        let chip = branch(&dir);
+        assert!(
+            chip.as_deref().is_some_and(|c| c.starts_with("@ ")),
+            "even with nothing committed, jj always has a working-copy commit to name: {chip:?}"
+        );
+        assert!(
+            statuses(&dir).is_empty(),
+            "nothing has changed in a repository with no commits and no files"
+        );
+        assert!(
+            changed_files(&dir).is_empty(),
+            "nothing has changed in a repository with no commits and no files"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
