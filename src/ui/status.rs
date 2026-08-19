@@ -878,4 +878,433 @@ mod tests {
 
         std::fs::remove_dir_all(&base).ok();
     }
+
+    // -----------------------------------------------------------------------------------------
+    // jj display-layer coverage (2026-08-19 audit). `src/vcs/jj.rs` (the data layer) is well
+    // tested, but nothing checked that jj's own words actually reach the footer/chip on screen
+    // instead of git's — the `?` help bug fixed on 2026-08-18 slipped through exactly this hole.
+    // Each test below is **paired**: it checks jj's text shows up and git's does not, then checks
+    // the opposite for a real git repository, so an implementation that shows the same text for
+    // both backends is caught either way.
+    // -----------------------------------------------------------------------------------------
+
+    /// Same recipe as `App::tests::jj_scratch` (`src/app/tests.rs`), duplicated here per-file as
+    /// instructed rather than shared. Returns `None` (every caller must silently skip) when `jj`
+    /// isn't installed.
+    #[cfg(feature = "git")]
+    fn jj_scratch(name: &str) -> Option<std::path::PathBuf> {
+        if !crate::vcs::jj::available() {
+            return None;
+        }
+        let dir = unique_tmp(name);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir) // never touch the running machine's own jj config
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+        if !jj(&["commit", "-m", "seed"]) {
+            return None;
+        }
+        std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+        Some(dir)
+    }
+
+    /// Runs one `jj` subcommand against a `jj_scratch` workspace (same env as the fixture above).
+    /// Used to create a bookmark — `jj_scratch` deliberately leaves none, since most tests don't
+    /// need one.
+    #[cfg(feature = "git")]
+    fn jj_cmd(dir: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("jj")
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// The "git" half of each pair below. Mirrors `ui::git`'s own `init_repo` test helper.
+    #[cfg(feature = "git")]
+    fn init_test_git_repo(dir: &std::path::Path) {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut c = repo.config().unwrap();
+        c.set_str("user.name", "T").unwrap();
+        c.set_str("user.email", "t@t").unwrap();
+        c.set_str("commit.gpgsign", "false").ok();
+    }
+    #[cfg(feature = "git")]
+    fn git_sh(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    }
+
+    /// (status.rs item 1) The jj changes-hub footer (`Msg::StJjHubKeys`): `R:sync`/`b:bookmarks`/
+    /// `!:tool`, never git's write words (`stage`/`unstage`/`commit`/`worktree`). Checked in both
+    /// languages (jp coverage #1). Paired with a git repository's hub, which must show the
+    /// opposite. `mode_footer`'s `InternalMode::GitChanges` branch reads
+    /// `crate::vcs::caps(&app.tab.root).write` straight from the path, so no
+    /// `refresh_git_if_needed()` call is needed to reach either branch.
+    #[cfg(feature = "git")]
+    #[test]
+    fn jj_changes_hub_footer_uses_jj_words_never_git_write_words() {
+        let Some(jj_dir) = jj_scratch("konoma_status_jj_hub_footer") else {
+            return;
+        };
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.open_git_view();
+        assert!(app.is_git_view(), "jj でも changes ハブが開くはず");
+
+        for lang in [Lang::En, Lang::Jp] {
+            app.lang = lang;
+            let footer: String = footer_spans(&app, 200)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(
+                footer,
+                tr(lang, Msg::StJjHubKeys),
+                "{lang:?}: jj の changes ハブフッターが StJjHubKeys と一致しない: {footer}"
+            );
+            for word in ["stage", "unstage", "commit", "worktree"] {
+                assert!(
+                    !footer.contains(word),
+                    "{lang:?}: jj フッターに git 専用語 {word:?} が出ている: {footer}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        // Pair: a git repository's hub shows the write words and none of jj's.
+        let git_dir = unique_tmp("konoma_status_git_hub_footer");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.open_git_view();
+        assert!(git_app.is_git_view(), "git でも changes ハブが開くはず");
+        let footer: String = footer_spans(&git_app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::StGitHubKeys));
+        for word in ["stage", "unstage", "commit", "worktree"] {
+            assert!(
+                footer.contains(word),
+                "git フッターに {word:?} が無い: {footer}"
+            );
+        }
+        for word in ["sync", "bookmarks"] {
+            assert!(
+                !footer.contains(word),
+                "git フッターに jj 専用語 {word:?} が出ている: {footer}"
+            );
+        }
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 2, graph) The jj graph footer (`Msg::JjGraphNavHint`): `a:all revisions`/
+    /// `b:bookmarks`, never git's base-pinning keys (`s:base`/`x/0:base off`/`b:branches`, i.e.
+    /// `Msg::GitNavDetailCommitHint`). Paired with a git repository's graph footer.
+    #[cfg(feature = "git")]
+    #[test]
+    fn jj_graph_footer_shows_jj_hint_not_git_base_pin_hint() {
+        let Some(jj_dir) = jj_scratch("konoma_status_jj_graph_footer") else {
+            return;
+        };
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.open_git_graph();
+        assert!(app.is_git_graph(), "jj でもグラフが開くはず");
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::JjGraphNavHint));
+        assert!(
+            !footer.contains("base"),
+            "jj のグラフフッターに base 固定語が出ている: {footer}"
+        );
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        let git_dir = unique_tmp("konoma_status_git_graph_footer");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.open_git_graph();
+        assert!(git_app.is_git_graph());
+        let footer: String = footer_spans(&git_app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::GitNavDetailCommitHint));
+        assert!(
+            !footer.contains("all revisions"),
+            "git のグラフフッターに jj 専用語が出ている: {footer}"
+        );
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 2, bookmarks) The jj bookmark-list footer (`Msg::BookmarksNavHint`):
+    /// nav/search only, never git's checkout/new/delete ops (`Msg::BranchesNavHint`). Paired with
+    /// a git repository's branch-list footer.
+    #[cfg(feature = "git")]
+    #[test]
+    fn jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops() {
+        let Some(jj_dir) = jj_scratch("konoma_status_jj_bookmarks_footer") else {
+            return;
+        };
+        assert!(
+            jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
+            "jj bookmark create に失敗"
+        );
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.open_git_branches();
+        assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::BookmarksNavHint));
+        for word in ["checkout", "new", "delete"] {
+            assert!(
+                !footer.contains(word),
+                "jj のブックマークフッターに {word:?} が出ている: {footer}"
+            );
+        }
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        let git_dir = unique_tmp("konoma_status_git_branches_footer");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        git_sh(&git_dir, &["branch", "feature"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.open_git_branches();
+        assert!(git_app.is_git_branches());
+        let footer: String = footer_spans(&git_app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::BranchesNavHint));
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 2, diff) The GitDiff footer hides the discard key for a read-only backend
+    /// (`Msg::DiffScrollNoDiscardHint`) and shows it for git (`Msg::DiffScrollDiscardHint`). Uses
+    /// `open_git_diff` directly with a path that need not actually exist — the footer only reads
+    /// `crate::vcs::caps(&app.tab.root).write`, never the diff content itself.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_footer_hides_discard_for_read_only_backend_shows_for_git() {
+        let Some(jj_dir) = jj_scratch("konoma_status_jj_diff_footer") else {
+            return;
+        };
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.open_git_diff(&jj_dir.join("a.txt"));
+        assert!(app.is_git_diff_preview());
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::DiffScrollNoDiscardHint));
+        assert!(
+            !footer.contains("discard"),
+            "jj は書けないので discard を出してはいけない: {footer}"
+        );
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        let git_dir = unique_tmp("konoma_status_git_diff_footer");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        let git_dir = git_dir.canonicalize().unwrap();
+        let mut git_app = App::new(git_dir.clone(), Config::default()).unwrap();
+        git_app.open_git_diff(&git_dir.join("a.txt"));
+        assert!(git_app.is_git_diff_preview());
+        let footer: String = footer_spans(&git_app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(footer, tr(Lang::En, Msg::DiffScrollDiscardHint));
+        assert!(footer.contains("discard"));
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 3) The `JJ` chip (`Msg::StJj`) shows in the git view for a jj repository,
+    /// never for git (which shows `GIT`/`Git` via `Msg::StGit` instead). Checked in both languages
+    /// (jp coverage #2). Unlike the footer/help tests above, `display_chip` reads the cached
+    /// `app.git_vcs` field, which only the status scan populates — hence `refresh_git_if_needed()`.
+    #[cfg(feature = "git")]
+    #[test]
+    fn jj_chip_shows_in_git_view_for_jj_not_for_git() {
+        let Some(jj_dir) = jj_scratch("konoma_status_jj_chip") else {
+            return;
+        };
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.refresh_git_if_needed();
+        assert_eq!(
+            app.git_vcs,
+            crate::vcs::VcsKind::Jj,
+            "jj と検出されているはず"
+        );
+        app.open_git_view();
+        assert!(app.is_git_view());
+        for lang in [Lang::En, Lang::Jp] {
+            app.lang = lang;
+            let chip = display_chip(&app);
+            assert_eq!(
+                chip.content.as_ref().trim(),
+                tr(lang, Msg::StJj),
+                "{lang:?}: jj の Git ビューに JJ チップが出ていない"
+            );
+        }
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        let git_dir = unique_tmp("konoma_status_git_chip");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.refresh_git_if_needed();
+        assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
+        git_app.open_git_view();
+        assert!(git_app.is_git_view());
+        let chip = display_chip(&git_app);
+        assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StGit));
+        assert_ne!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StJj));
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 4) The `BOOKMARK` chip (`Msg::StBookmark`) shows for jj's bookmark list;
+    /// git's branch list keeps showing `BRANCH` (`Msg::StBranch`). `jj::bookmarks` always reports
+    /// `is_current: false` (a jj bookmark doesn't follow the working copy the way a branch follows
+    /// HEAD), so this also indirectly backs up the "no current marker" property `ui::git`'s render
+    /// test checks directly.
+    #[cfg(feature = "git")]
+    #[test]
+    fn bookmark_chip_shows_for_jj_list_branch_chip_for_git_list() {
+        let Some(jj_dir) = jj_scratch("konoma_status_bookmark_chip") else {
+            return;
+        };
+        assert!(
+            jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
+            "jj bookmark create に失敗"
+        );
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.refresh_git_if_needed();
+        app.open_git_branches();
+        assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
+        for lang in [Lang::En, Lang::Jp] {
+            app.lang = lang;
+            let chip = internal_chip(&app).expect("Bookmarks の内部チップが無い");
+            assert_eq!(
+                chip.content.as_ref().trim(),
+                tr(lang, Msg::StBookmark),
+                "{lang:?}: BOOKMARK チップが出ていない"
+            );
+        }
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        let git_dir = unique_tmp("konoma_status_branch_chip");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.refresh_git_if_needed();
+        git_app.open_git_branches();
+        assert!(git_app.is_git_branches());
+        let chip = internal_chip(&git_app).expect("Branch の内部チップが無い");
+        assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StBranch));
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (status.rs item 5) The copy menu's read-back: jj shows `WkChangeId` ("change id") where
+    /// git shows `WkShortHash` ("short hash"), and jj's `WkCommitId` ("commit id") replaces git's
+    /// `WkFullHash` ("full hash"). Checked at the function level (`relabel_for_backend`) and
+    /// through the real which-key footer a user actually sees — opened via `LeaderId::GitCopy`,
+    /// which is what `y` binds to in the git log/detail surfaces (`Surface::GitLog`), not the
+    /// plain `LeaderId::Copy` the tree/preview `y` binds to.
+    #[cfg(feature = "git")]
+    #[test]
+    fn copy_menu_relabels_short_hash_to_change_id_for_jj_not_git() {
+        let Some(jj_dir) = jj_scratch("konoma_status_relabel_jj") else {
+            return;
+        };
+        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        app.refresh_git_if_needed();
+        assert_eq!(app.git_vcs, crate::vcs::VcsKind::Jj);
+        assert_eq!(relabel_for_backend(&app, Msg::WkShortHash), Msg::WkChangeId);
+        assert_eq!(relabel_for_backend(&app, Msg::WkFullHash), Msg::WkCommitId);
+
+        app.pending_leader = Some(crate::keymap::LeaderId::GitCopy);
+        let menu: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            menu.contains(tr(Lang::En, Msg::WkChangeId)),
+            "jj のコピーメニューに change id が無い: {menu}"
+        );
+        assert!(
+            !menu.contains(tr(Lang::En, Msg::WkShortHash)),
+            "jj のコピーメニューに short hash が残っている: {menu}"
+        );
+        std::fs::remove_dir_all(&jj_dir).ok();
+
+        // Pair: a git repository keeps "short hash" and never shows "change id".
+        let git_dir = unique_tmp("konoma_status_relabel_git");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_test_git_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        git_sh(&git_dir, &["add", "-A"]);
+        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.refresh_git_if_needed();
+        assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
+        assert_eq!(
+            relabel_for_backend(&git_app, Msg::WkShortHash),
+            Msg::WkShortHash
+        );
+        git_app.pending_leader = Some(crate::keymap::LeaderId::GitCopy);
+        let menu: String = footer_spans(&git_app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(menu.contains(tr(Lang::En, Msg::WkShortHash)));
+        assert!(!menu.contains(tr(Lang::En, Msg::WkChangeId)));
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
 }

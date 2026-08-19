@@ -1563,4 +1563,240 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // -----------------------------------------------------------------------------------------
+    // jj display-layer coverage (2026-08-19 audit). See the matching section in `ui::status`'s
+    // tests for the full rationale; the short version: the data layer (`src/vcs/jj.rs`) is well
+    // tested, but nothing checked that jj's own `?`-help wording and `jj bookmarks` render
+    // actually reach the screen instead of git's. Every test below is paired with git.
+    // -----------------------------------------------------------------------------------------
+
+    /// Same recipe as `App::tests::jj_scratch` (`src/app/tests.rs`), duplicated here per-file as
+    /// instructed. Returns `None` (every caller must silently skip) when `jj` isn't installed.
+    fn jj_scratch(name: &str) -> Option<std::path::PathBuf> {
+        if !crate::vcs::jj::available() {
+            return None;
+        }
+        let dir = unique_tmp(name);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir) // never touch the running machine's own jj config
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+        if !jj(&["commit", "-m", "seed"]) {
+            return None;
+        }
+        std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+        Some(dir)
+    }
+
+    /// Runs one `jj` subcommand against a `jj_scratch` workspace (same env as the fixture above).
+    fn jj_cmd(dir: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("jj")
+            .current_dir(dir)
+            .env("HOME", dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// (git.rs item 7) The `?` help's changes-hub section shows jj's rows (`JjChangesLabel`/
+    /// `JjCloseView`/`JjDiffAll`/`JjBookmarksRow`/`JjExternalTool`/`JjSyncRow`) and none of git's
+    /// write-only keys (stage/unstage/commit/worktree). Goes through the real `?` overlay body
+    /// (`ui::help::help_lines`), not just `help_sections`, the same way `ui::status`'s
+    /// `preview_help_screen_keeps_the_long_select_explanation` does — that's what a user actually
+    /// reads, and it's also what the 2026-08-18 bug (`?` describing a screen jj doesn't have)
+    /// actually broke. Paired with a git repository's changes-hub help.
+    #[test]
+    fn changes_hub_help_shows_jj_section_and_hides_git_write_keys() {
+        let Some(dir) = jj_scratch("konoma_git_help_jj_changes") else {
+            return;
+        };
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.open_git_view();
+        assert!(app.is_git_view(), "jj でも changes ハブが開くはず");
+
+        let help: String = crate::ui::help::help_lines(&app)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        for m in [
+            crate::i18n::Msg::JjChangesLabel,
+            crate::i18n::Msg::JjCloseView,
+            crate::i18n::Msg::JjDiffAll,
+            crate::i18n::Msg::JjBookmarksRow,
+            crate::i18n::Msg::JjExternalTool,
+            crate::i18n::Msg::JjSyncRow,
+        ] {
+            let want = tr(app.lang, m);
+            assert!(help.contains(want), "jj ヘルプに {want:?} が無い: {help}");
+        }
+        for word in ["stage", "unstage", "commit", "worktree"] {
+            assert!(
+                !help.contains(word),
+                "jj ヘルプに git 専用語 {word:?} が出ている: {help}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Pair: a git repository's changes-hub help keeps the write keys.
+        let git_dir = unique_tmp("konoma_git_help_git_changes");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        sh(&git_dir, &["add", "-A"]);
+        sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.open_git_view();
+        assert!(git_app.is_git_view(), "git でも changes ハブが開くはず");
+        let ghelp: String = crate::ui::help::help_lines(&git_app)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        for word in ["stage", "unstage", "commit", "worktree"] {
+            assert!(
+                ghelp.contains(word),
+                "git ヘルプに {word:?} が無い: {ghelp}"
+            );
+        }
+        assert!(
+            !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjChangesLabel)),
+            "git ヘルプに jj 節見出しが出ている: {ghelp}"
+        );
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (git.rs item 8) The `?` help's graph section shows `JjGraphLabel` ("jj graph (g)") and
+    /// `JjGraphAllRow` ("show every revision"), and none of git's base-pinning rows
+    /// (`GraphSetBaseHelp`/`GraphClearBaseHelp`). Paired with a git repository's graph help, whose
+    /// label is `GitGraphLabel` ("Git graph (g)") — same key notation, different backend word, so
+    /// the pairing has to compare the full label text, not just presence of "(g)".
+    #[test]
+    fn graph_help_shows_jj_section_and_all_revisions_row() {
+        let Some(dir) = jj_scratch("konoma_git_help_jj_graph") else {
+            return;
+        };
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.open_git_graph();
+        assert!(app.is_git_graph(), "jj でもグラフが開くはず");
+
+        let help: String = crate::ui::help::help_lines(&app)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        for m in [
+            crate::i18n::Msg::JjGraphLabel,
+            crate::i18n::Msg::JjGraphAllRow,
+        ] {
+            let want = tr(app.lang, m);
+            assert!(
+                help.contains(want),
+                "jj のグラフヘルプに {want:?} が無い: {help}"
+            );
+        }
+        for word in [
+            tr(crate::i18n::Lang::En, crate::i18n::Msg::GraphSetBaseHelp),
+            tr(crate::i18n::Lang::En, crate::i18n::Msg::GraphClearBaseHelp),
+        ] {
+            assert!(
+                !help.contains(word),
+                "jj のグラフヘルプに git の基準固定行が出ている: {help}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Pair: a git repository's graph help keeps the base-pin rows and its own label.
+        let git_dir = unique_tmp("konoma_git_help_git_graph");
+        let _ = std::fs::remove_dir_all(&git_dir);
+        std::fs::create_dir_all(&git_dir).unwrap();
+        init_repo(&git_dir);
+        std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
+        sh(&git_dir, &["add", "-A"]);
+        sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        sh(&git_dir, &["branch", "-M", "trunk"]);
+        let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
+        git_app.open_git_graph();
+        assert!(git_app.is_git_graph());
+        let ghelp: String = crate::ui::help::help_lines(&git_app)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::GitGraphLabel)));
+        assert!(ghelp.contains(tr(
+            crate::i18n::Lang::En,
+            crate::i18n::Msg::GraphSetBaseHelp
+        )));
+        assert!(
+            !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjGraphAllRow)),
+            "git のグラフヘルプに jj 専用行が出ている: {ghelp}"
+        );
+        std::fs::remove_dir_all(&git_dir).ok();
+    }
+
+    /// (git.rs item 9) `render_branches` on a jj repository: the title reads "jj bookmarks" (not
+    /// "Git branches"), the bookmark shows up, and — unlike `git_branches_render_shows_current_marker`
+    /// above — **no `*` current-branch marker ever appears**. `jj::bookmarks` hard-codes
+    /// `is_current: false` for every row (a jj bookmark doesn't follow the working copy the way a
+    /// branch follows HEAD), so this pins that property at the render layer, not just the data layer.
+    #[test]
+    fn jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker() {
+        let Some(dir) = jj_scratch("konoma_git_bookmarks_render") else {
+            return;
+        };
+        assert!(
+            jj_cmd(&dir, &["bookmark", "create", "-r", "@", "main"]),
+            "jj bookmark create に失敗"
+        );
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.refresh_git_if_needed();
+        app.open_git_branches();
+        assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
+
+        let mut term = Terminal::new(TestBackend::new(50, 8)).unwrap();
+        term.draw(|f| render_branches(f, &app, f.area())).unwrap();
+        let s: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            s.contains("bookmarks"),
+            "タイトルが 'jj bookmarks' でない: {s}"
+        );
+        assert!(
+            !s.contains("Git branches"),
+            "jj のタイトルに 'Git branches' が出ている: {s}"
+        );
+        assert!(s.contains("main"), "ブックマーク名が無い: {s}");
+        assert!(
+            !s.contains('*'),
+            "jj のブックマーク一覧に現在ブランチマーカー * が出てはいけない: {s}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
