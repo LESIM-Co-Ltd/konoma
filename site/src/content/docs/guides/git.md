@@ -79,10 +79,8 @@ can, so a colocated repository (`.git` and `.jj` side by side) looks exactly as 
 where there is no git repository to ask: one created with `jj git init --no-colocate`, and every
 `jj workspace`. Set `[external] vcs = "jj"` to use jj in a colocated repository too.
 
-A repository jj created without a colocated `.git`, and every `jj workspace`,
-gets the same views this page describes — the tree's markers and dimming, the
-diffs, the changed-file list, follow mode, and the hub. `[external] vcs` decides which
-backend answers.
+Where jj does answer, it answers for everything this page describes: the tree's markers and
+dimming, the diffs, the changed-file list, follow mode, and the hub.
 
 What you see is jj's, not git's wearing jj's data:
 

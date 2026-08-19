@@ -73,10 +73,8 @@ colocated(`.git` と `.jj` が並ぶ)は従来どおり。jj が答えるのは 
 `jj git init --no-colocate` で作ったものと、すべての `jj workspace` ——だけ。colocated でも jj を使いたい
 場合は `[external] vcs = "jj"` を設定する。
 
-colocated な `.git` を持たない jj リポジトリと、すべての `jj workspace` でも、
-このページの機能がそのまま使える(ツリーのマーカーと淡色化・diff・変更ファイル一覧・
-フォロー・ハブ)。どのバックエンドが答えるかは
-`[external] vcs` で決まる。
+jj が答える場所では、このページの機能がそのまま使える(ツリーのマーカーと淡色化・diff・
+変更ファイル一覧・フォロー・ハブ)。
 
 表示は jj のもので、git の見た目に jj のデータを流し込んだものではない:
 
