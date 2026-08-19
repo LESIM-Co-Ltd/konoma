@@ -154,3 +154,134 @@ pub fn chip_marker(vcs: crate::vcs::VcsKind, icons: bool) -> &'static str {
         crate::vcs::VcsKind::Jj => "",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::NodeKind;
+    use crate::vcs::VcsKind;
+
+    // --- node_glyph: the backend picks the *meaning* (NodeKind), this table picks the *glyph*.
+    // git and jj deliberately fold different pairs of kinds together (see the asymmetry test
+    // below) — these tests spell out all 5*2=10 (kind, vcs) combinations as an outside promise
+    // ("jj's working copy is @", "a conflict is x"), not a copy of the match arms, so a swapped
+    // glyph breaks a test whose name says what should have been drawn.
+
+    #[test]
+    fn node_glyph_git_all_five_kinds() {
+        assert_eq!(
+            node_glyph(NodeKind::Normal, VcsKind::Git),
+            '\u{25cf}',
+            "git の通常コミットは ●"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Merge, VcsKind::Git),
+            '\u{25c6}',
+            "git のマージは ◆"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::WorkingCopy, VcsKind::Git),
+            '\u{25cf}',
+            "git に作業コピー専用の字は無く、Normal と同じ ●(擬似行は色で後から塗り分ける)"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Immutable, VcsKind::Git),
+            '\u{25c6}',
+            "git に Immutable の概念は無く、Merge と同じ ◆ に落ちる"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Conflict, VcsKind::Git),
+            '\u{00d7}',
+            "衝突は ×"
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn node_glyph_jj_all_five_kinds() {
+        assert_eq!(
+            node_glyph(NodeKind::WorkingCopy, VcsKind::Jj),
+            '@',
+            "jj の作業コピーは @"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Normal, VcsKind::Jj),
+            '\u{25cb}',
+            "jj の通常コミットは ○"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Merge, VcsKind::Jj),
+            '\u{25cb}',
+            "jj はマージを通常コミットと同じ ○ に畳む(git と違い ◆ にはしない)"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Immutable, VcsKind::Jj),
+            '\u{25c6}',
+            "jj の不変コミットは ◆"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Conflict, VcsKind::Jj),
+            '\u{00d7}',
+            "衝突は ×"
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn git_and_jj_fold_different_kind_pairs_into_the_same_glyph() {
+        // The asymmetry this table exists to protect: git has no "immutable" concept, so it
+        // reuses Merge's ◆ for Immutable too — but jj *does* distinguish them (◆ is Immutable
+        // only). jj instead folds Merge into Normal's ○ — but git keeps those two apart (● vs
+        // ◆). Losing either distinction (e.g. by copy-pasting one backend's fallback arm into the
+        // other's branch) would silently mislabel a commit's meaning.
+        assert_eq!(
+            node_glyph(NodeKind::Merge, VcsKind::Git),
+            node_glyph(NodeKind::Immutable, VcsKind::Git),
+            "git: Merge と Immutable は同じ字のはず"
+        );
+        assert_ne!(
+            node_glyph(NodeKind::Merge, VcsKind::Jj),
+            node_glyph(NodeKind::Immutable, VcsKind::Jj),
+            "jj: Merge と Immutable は別の字でなければならない"
+        );
+        assert_eq!(
+            node_glyph(NodeKind::Normal, VcsKind::Jj),
+            node_glyph(NodeKind::Merge, VcsKind::Jj),
+            "jj: Normal と Merge は同じ字のはず"
+        );
+        assert_ne!(
+            node_glyph(NodeKind::Normal, VcsKind::Git),
+            node_glyph(NodeKind::Merge, VcsKind::Git),
+            "git: Normal と Merge は別の字でなければならない"
+        );
+    }
+
+    // --- chip_marker: the tree title chip's leading marker. git names a branch (gets the branch
+    // glyph/label); jj's working-copy label already opens with its own `@`, so a second marker
+    // would just repeat it.
+
+    #[test]
+    fn chip_marker_git_both_icon_settings() {
+        assert_eq!(
+            chip_marker(VcsKind::Git, true),
+            "\u{2387}",
+            "git+icons=true は ⎇"
+        );
+        assert_eq!(
+            chip_marker(VcsKind::Git, false),
+            "br:",
+            "git+icons=false は ASCII ラベル br:"
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn chip_marker_jj_is_always_empty() {
+        assert_eq!(
+            chip_marker(VcsKind::Jj, true),
+            "",
+            "jj+icons=true はチップ記号を足さない(ラベルが既に @ で始まる)"
+        );
+        assert_eq!(chip_marker(VcsKind::Jj, false), "", "jj+icons=false も同様");
+    }
+}

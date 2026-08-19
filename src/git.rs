@@ -5453,4 +5453,207 @@ mod tests {
             "1000 コミットのレーン割当が遅すぎる(回帰?): {dt:?}"
         );
     }
+
+    // --- jj path: `lay_out_lanes` is VCS-agnostic in its lane/connector algorithm; only the glyph
+    // painted into the node cell depends on `vcs`. The six tests above never pass anything but
+    // `VcsKind::Git`, so the jj path (and `node_col`'s own correctness) was completely
+    // unexercised before. These tests route the same kind of synthetic DAGs through
+    // `VcsKind::Jj`.
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn lay_out_lanes_jj_uses_jjs_glyphs_not_gits_for_a_fork_and_merge() {
+        // Same DAG shape as `lay_out_lanes_draws_angular_fork_and_merge` (M merges B and F, both
+        // from R), routed through jj instead. All four kinds here are inferred structurally
+        // (`kind: None`), and jj folds Normal+Merge into the same ○ (unlike git, which draws a
+        // distinct ◆ for the merge) — so every commit row renders the same glyph, and neither of
+        // git's node glyphs (●/◆) appears anywhere.
+        let dc = |id: &str, parents: &[&str]| DagCommit {
+            kind: None,
+            id: id.into(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            short: id.into(),
+            subject: format!("{id} subj"),
+            author: "a".into(),
+            date: "d".into(),
+            refs: String::new(),
+        };
+        let commits = vec![
+            dc("M", &["B", "F"]),
+            dc("B", &["R"]),
+            dc("F", &["R"]),
+            dc("R", &[]),
+        ];
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Jj);
+        let joined: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                r.graph
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            joined,
+            vec!["○", "├─┐", "○ │", "│ ○", "├─┘", "○"],
+            "jj 経路のグラフが期待と不一致(git の字が混ざっていないか): {joined:?}"
+        );
+        let all: String = rows
+            .iter()
+            .flat_map(|r| r.graph.iter().map(|(s, _)| s.clone()))
+            .collect();
+        assert!(
+            !all.contains('●') && !all.contains('◆'),
+            "jj 経路に git 専用の字(●/◆)が混ざっている: {all}"
+        );
+        assert_eq!(
+            all.matches('○').count(),
+            4,
+            "jj の丸ノード○は4個(全コミット分)"
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn lay_out_lanes_jj_renders_working_copy_immutable_and_conflict_kinds() {
+        // jj marks kinds the DAG shape alone can't tell (`DagCommit::kind`, set by the jj backend
+        // — not exercised here, since this is a pure-function test on synthetic data). A linear
+        // chain W(working copy) -> I(immutable) -> X(conflict) -> R(ordinary root, kind inferred)
+        // must render @ / ◆ / × / ○ respectively. jj never synthesizes an "uncommitted changes"
+        // pseudo-row (its working copy is already a real commit in the DAG), so `wt` is `None`
+        // here — unlike the git worktree-row tests above, which always pass `Some(..)`.
+        let dc = |id: &str, parents: &[&str], kind: Option<NodeKind>| DagCommit {
+            kind,
+            id: id.into(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            short: id.into(),
+            subject: id.into(),
+            author: "a".into(),
+            date: "d".into(),
+            refs: String::new(),
+        };
+        let commits = vec![
+            dc("W", &["I"], Some(NodeKind::WorkingCopy)),
+            dc("I", &["X"], Some(NodeKind::Immutable)),
+            dc("X", &["R"], Some(NodeKind::Conflict)),
+            dc("R", &[], None), // no explicit kind => structural Normal
+        ];
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Jj);
+        let glyph_of = |id: &str| -> (Option<NodeKind>, String) {
+            let r = rows
+                .iter()
+                .find(|r| r.commit.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("commit {id} の行が無い: {rows:?}"));
+            let cell = r
+                .node_col
+                .and_then(|c| r.graph.get(c))
+                .map(|(s, _)| s.clone())
+                .unwrap_or_default();
+            (r.node, cell)
+        };
+        assert_eq!(
+            glyph_of("W"),
+            (Some(NodeKind::WorkingCopy), "@".to_string()),
+            "jj の作業コピー行は @"
+        );
+        assert_eq!(
+            glyph_of("I"),
+            (Some(NodeKind::Immutable), "◆".to_string()),
+            "jj の不変コミット行は ◆"
+        );
+        assert_eq!(
+            glyph_of("X"),
+            (Some(NodeKind::Conflict), "×".to_string()),
+            "jj の衝突コミット行は ×"
+        );
+        assert_eq!(
+            glyph_of("R"),
+            (Some(NodeKind::Normal), "○".to_string()),
+            "kind 未指定は構造(親1個)から Normal(○)と推定"
+        );
+    }
+
+    /// `node_col`, on every row that has a node, must point at the cell holding exactly the glyph
+    /// `ui::icons::node_glyph(kind, vcs)` draws for that row's kind — the invariant the graph
+    /// legend's color lookup (`legend_from_rows`) depends on ("locate the node by position, never
+    /// by matching the character"). VCS-agnostic, so one helper checks both backends.
+    #[cfg(feature = "git")]
+    fn assert_node_col_points_at_its_own_glyph(rows: &[GraphRow], vcs: crate::vcs::VcsKind) {
+        for r in rows {
+            let (Some(kind), Some(col)) = (r.node, r.node_col) else {
+                continue; // connector-only rows have neither
+            };
+            let cell = r
+                .graph
+                .get(col)
+                .unwrap_or_else(|| panic!("node_col={col} が graph の範囲外: {r:?}"));
+            assert_eq!(
+                cell.0,
+                crate::ui::icons::node_glyph(kind, vcs).to_string(),
+                "node_col の位置の字が node_glyph(kind, vcs) と不一致: row={r:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn lay_out_lanes_node_col_matches_its_glyph_git() {
+        // Reuses `lay_out_lanes_base_pins_branch_to_lane0`'s two-branch/base-pin shape, which
+        // moves nodes across several lanes.
+        let dc = |id: &str, parents: &[&str]| DagCommit {
+            kind: None,
+            id: id.into(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            short: id.into(),
+            subject: id.into(),
+            author: "a".into(),
+            date: "d".into(),
+            refs: String::new(),
+        };
+        let commits = vec![
+            dc("A1", &["A2"]),
+            dc("A2", &["R"]),
+            dc("B1", &["B2"]),
+            dc("B2", &["R"]),
+            dc("R", &[]),
+        ];
+        let rows = lay_out_lanes(&commits, Some("B1"), None, crate::vcs::VcsKind::Git);
+        assert_eq!(rows.iter().filter(|r| r.commit.is_some()).count(), 5);
+        assert_node_col_points_at_its_own_glyph(&rows, crate::vcs::VcsKind::Git);
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn lay_out_lanes_node_col_matches_its_glyph_jj() {
+        // A merge (H, structural) folding two branches (A=immutable, B=conflict) back into R,
+        // with a working-copy tip on top: multiple lanes, a fork connector, a merge connector,
+        // and all five NodeKinds in one DAG.
+        let dc = |id: &str, parents: &[&str], kind: Option<NodeKind>| DagCommit {
+            kind,
+            id: id.into(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            short: id.into(),
+            subject: id.into(),
+            author: "a".into(),
+            date: "d".into(),
+            refs: String::new(),
+        };
+        let commits = vec![
+            dc("W", &["H"], Some(NodeKind::WorkingCopy)),
+            dc("H", &["A", "B"], None), // 2 parents => structural Merge
+            dc("A", &["R"], Some(NodeKind::Immutable)),
+            dc("B", &["R"], Some(NodeKind::Conflict)),
+            dc("R", &[], None), // root => structural Normal
+        ];
+        let rows = lay_out_lanes(&commits, None, None, crate::vcs::VcsKind::Jj);
+        assert_eq!(
+            rows.iter().filter(|r| r.commit.is_some()).count(),
+            5,
+            "全コミットが行として残る"
+        );
+        assert_node_col_points_at_its_own_glyph(&rows, crate::vcs::VcsKind::Jj);
+    }
 }
