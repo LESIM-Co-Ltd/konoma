@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.2] - 2026-08-19
+
 ### Fixed
 - **jj: a path beginning with `-` was read as a flag, not a path.** `jj file show` rejected it
   outright, and the failure was silent: an unchanged file showed a change marker, and a real diff
@@ -37,7 +39,6 @@ All notable changes to konoma are documented in this file. The format is based o
 - **jj: a symlink created since the last snapshot showed as modified rather than added**, and
   asking for a symlink's diff followed it through to its target, rendering the target's entire
   contents as new.
-
 - **jj: `o` was refused on a machine with jj but no git.** Opening the hub asked whether git was
   installed and whether the git integration was switched on before asking which backend answers,
   so a jj workspace drew its chip and change markers in the tree and then answered "git is not
@@ -1909,7 +1910,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.24.1...v0.25.0
