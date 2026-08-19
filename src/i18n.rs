@@ -379,6 +379,30 @@ pub enum Msg {
     StQuit,
     StQuitHint,
     StFilter,
+    /// Help heading for the hub when jj answers.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjChangesLabel,
+    /// Help heading for the graph when jj answers.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjGraphLabel,
+    /// Help row: closing the hub, named after the system that filled it.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjCloseView,
+    /// Help row: the whole working copy's diff, in jj's words.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjDiffAll,
+    /// Help row: bookmarks, jj's name for its named pointers.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjBookmarksRow,
+    /// Help row: the external tool `!` opens in a jj repository.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjExternalTool,
+    /// Help row: `R` asks jj to snapshot the working copy.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjSyncRow,
+    /// Help row: `a` widens the graph to every revision.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    JjGraphAllRow,
     /// Flash on `w` in a jj repository: konoma does not list jj workspaces yet.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     JjWorkspacesUnlisted,
@@ -820,6 +844,14 @@ fn en(msg: Msg) -> &'static str {
         HintDetailsToggle => "expand/collapse the focused <details>",
         GitToolFailed => "git tool failed: ",
         JjToolFailed => "jj tool failed: ",
+        JjChangesLabel => "jj changes (o)",
+        JjGraphLabel => "jj graph (g)",
+        JjCloseView => "close jj view",
+        JjDiffAll => "diff of everything against @-",
+        JjBookmarksRow => "bookmarks",
+        JjExternalTool => "external jj tool (lazyjj)",
+        JjSyncRow => "let jj snapshot the working copy (confirm)",
+        JjGraphAllRow => "show every revision",
         JjWorkspacesUnlisted => "konoma does not list jj workspaces yet — `jj workspace list` does",
         JjSyncConfirm => "Let jj snapshot the working copy? (jj undo reverses it)",
         JjSyncDone => "jj snapshotted the working copy",
@@ -1308,6 +1340,14 @@ fn jp(msg: Msg) -> &'static str {
         HintDetailsToggle => "フォーカス中の <details> を開閉",
         GitToolFailed => "git ツール起動失敗: ",
         JjToolFailed => "jj ツール起動失敗: ",
+        JjChangesLabel => "jj 変更ハブ (o)",
+        JjGraphLabel => "jj グラフ (g)",
+        JjCloseView => "jj ビューを閉じる",
+        JjDiffAll => "@- との差分をまとめて表示",
+        JjBookmarksRow => "ブックマーク",
+        JjExternalTool => "外部 jj ツール (lazyjj)",
+        JjSyncRow => "jj に作業コピーを取り込ませる (確認)",
+        JjGraphAllRow => "全リビジョンを表示",
         JjWorkspacesUnlisted => "jj の workspace 一覧は未対応です — `jj workspace list` で見られます",
         JjSyncConfirm => "jj に作業コピーを取り込ませますか?(jj undo で戻せます)",
         JjSyncDone => "jj が作業コピーを取り込みました",
@@ -1859,6 +1899,14 @@ mod tests {
         Msg::HintDetailsToggle,
         Msg::GitToolFailed,
         Msg::JjToolFailed,
+        Msg::JjChangesLabel,
+        Msg::JjGraphLabel,
+        Msg::JjCloseView,
+        Msg::JjDiffAll,
+        Msg::JjBookmarksRow,
+        Msg::JjExternalTool,
+        Msg::JjSyncRow,
+        Msg::JjGraphAllRow,
         Msg::JjWorkspacesUnlisted,
         Msg::JjSyncConfirm,
         Msg::JjSyncDone,

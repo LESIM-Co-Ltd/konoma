@@ -841,6 +841,15 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("g / G", l(crate::i18n::Msg::TopBottom))
             .row("Enter / l", l(crate::i18n::Msg::GitCommitDetail))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
+    } else if app.is_git_graph() && !crate::vcs::caps(&app.tab.root).write {
+        // Pinning a base is git's; widening the range is jj's, since only jj draws a narrower one.
+        HelpSection::new(l(crate::i18n::Msg::JjGraphLabel))
+            .row("j / k", l(crate::i18n::Msg::GitMoveCommit))
+            .row("g / G", l(crate::i18n::Msg::TopBottom))
+            .row("Enter / l", l(crate::i18n::Msg::GitDetail))
+            .row("a", l(crate::i18n::Msg::JjGraphAllRow))
+            .row("b", l(crate::i18n::Msg::JjBookmarksRow))
+            .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
     } else if app.is_git_graph() {
         HelpSection::new(l(crate::i18n::Msg::GitGraphLabel))
             .row("j / k", l(crate::i18n::Msg::GitMoveCommit))
@@ -867,6 +876,19 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("d", l(crate::i18n::Msg::WorktreeShowChangesHelp))
             .row("/", l(crate::i18n::Msg::GitFilterByName))
             .row("q / Esc", l(crate::i18n::Msg::BackToChanges))
+    } else if !crate::vcs::caps(&app.tab.root).write {
+        // Changes hub (o), answered by a backend that only reads: the staging keys, the commit and
+        // the worktree list are git's alone, and listing them here would be a key reference for a
+        // screen that does not have them.
+        HelpSection::new(l(crate::i18n::Msg::JjChangesLabel))
+            .row("j / k", l(crate::i18n::Msg::GitMove))
+            .row("Enter", l(crate::i18n::Msg::GitFileDiff))
+            .row("d", l(crate::i18n::Msg::JjDiffAll))
+            .row("l / g", l(crate::i18n::Msg::GitLogGraph))
+            .row("b", l(crate::i18n::Msg::JjBookmarksRow))
+            .row("R", l(crate::i18n::Msg::JjSyncRow))
+            .row("!", l(crate::i18n::Msg::JjExternalTool))
+            .row("q / Esc", l(crate::i18n::Msg::JjCloseView))
     } else {
         // Changes hub (o)
         HelpSection::new(l(crate::i18n::Msg::GitChangesLabel))
