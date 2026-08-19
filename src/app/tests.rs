@@ -21642,6 +21642,82 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The jj backend never shells out to `git` — `src/vcs/jj.rs` only ever runs the `jj` executable —
+/// so a machine with no `git` executable at all must not block `o` on a jj workspace. Before the fix,
+/// `open_git_view` probed `git_binary_available()` before it had even decided which backend would
+/// answer, so this refused with `GitNotInstalled` on a directory the tree was already rendering jj's
+/// chip and change markers for (see `open_git_view_reports_a_missing_git_binary_distinctly` for the
+/// matching git-repo case, which this must not regress).
+#[cfg(feature = "git")]
+#[test]
+fn jj_hub_opens_even_when_the_git_binary_is_missing() {
+    let Some(dir) = jj_scratch("konoma_jj_hub_no_git_binary") else {
+        return;
+    };
+    crate::git::set_git_binary_available_for_test(Some(false));
+    let mut app = App::new(dir.clone(), Config::default()).unwrap(); // external.git = true (default)
+    assert_eq!(
+        crate::vcs::detect(&app.tab.root),
+        crate::vcs::VcsKind::Jj,
+        "sanity: the fixture must resolve to the jj backend, or this test proves nothing"
+    );
+
+    app.open_git_view();
+    assert!(
+        app.is_git_view(),
+        "the jj hub must open even though this machine has no git executable"
+    );
+    assert_ne!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::GitNotInstalled)),
+        "the jj backend never touches the git executable, so this reason must never fire for it"
+    );
+
+    crate::git::set_git_binary_available_for_test(None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The matching case for `[external] git = false`: turning git integration off must not close the jj
+/// hub either — jj never asks that setting. This is also where the tree/hub inconsistency the bug
+/// report described gets pinned directly: the tree's markers (`crate::vcs::statuses`, driving the
+/// `M a.txt`-style rows and the `@ ...` chip) already ignore `[external] git` for the jj backend, so
+/// the hub refusing to open on the same directory was the two views disagreeing about the same repo.
+#[cfg(feature = "git")]
+#[test]
+fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
+    let Some(dir) = jj_scratch("konoma_jj_hub_git_disabled") else {
+        return;
+    };
+    let mut cfg = Config::default();
+    cfg.external.git = false;
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    assert_eq!(
+        crate::vcs::detect(&app.tab.root),
+        crate::vcs::VcsKind::Jj,
+        "sanity: the fixture must resolve to the jj backend, or this test proves nothing"
+    );
+
+    // The tree side of the same inconsistency: jj's status markers don't consult `[external] git`,
+    // so the tree already shows this workspace's uncommitted change regardless of the setting.
+    assert!(
+        !crate::vcs::statuses(&app.tab.root).is_empty(),
+        "sanity: the tree's markers come from jj regardless of [external] git"
+    );
+
+    app.open_git_view();
+    assert!(
+        app.is_git_view(),
+        "external.git=false must not block the jj hub — the tree and the hub must agree on this repo"
+    );
+    assert_ne!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::ExternalGitDisabled)),
+        "jj never asks [external] git, so this reason must never fire for it"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Moving to a different repository has to settle **which backend answers** right away, not when
 /// the background scan lands. `git_vcs` is not just a label: `!` reads it to choose between lazygit
 /// and lazyjj, and the hub reads it to decide whether it is listing branches or bookmarks. Leaving

@@ -26,8 +26,22 @@ impl App {
     /// missing binary. The no-git build has no way to probe for a git executable (git support itself is
     /// compiled out, independent of what is actually installed), so it never claims "git is not
     /// installed" and keeps flashing "not a repo" as before.
+    ///
+    /// The two gates below (`[external] git` and the git-binary probe) only apply when the backend
+    /// that will actually answer is git. The jj backend (`src/vcs/jj.rs`) never shells out to `git` at
+    /// all — it only ever runs the `jj` executable — so neither "git is disabled" nor "no git binary"
+    /// is a real reason to refuse it. Applying them unconditionally used to make this view disagree
+    /// with the tree: a jj workspace with no colocated `.git` already renders its chip and change
+    /// markers (`crate::vcs::branch`/`statuses` for the jj backend don't consult `[external] git` or
+    /// the git binary either), yet `o` refused to open on the very same directory. Deciding the
+    /// backend first (`crate::vcs::detect`) and only gating on the git-specific reasons when it is
+    /// actually git keeps the hub's answer consistent with what the tree already showed.
     pub fn open_git_view(&mut self) {
-        if !self.cfg.external.git {
+        // `detect` always returns `VcsKind::Git` in a `--no-default-features` build (jj support is
+        // compiled out with the rest of `git`), so this flag is unconditionally true there and the
+        // two gates below behave exactly as before — the no-git build's behavior is unchanged.
+        let backend_is_git = crate::vcs::detect(&self.tab.root) == crate::vcs::VcsKind::Git;
+        if backend_is_git && !self.cfg.external.git {
             // Explicitly disabled by config (the feature itself is on, and it could still be a repo): notify distinctly from "not a repo".
             self.flash =
                 Some(crate::i18n::tr(self.lang, crate::i18n::Msg::ExternalGitDisabled).into());
@@ -35,7 +49,7 @@ impl App {
         }
         #[cfg(feature = "git")]
         {
-            if !crate::git::git_binary_available() {
+            if backend_is_git && !crate::git::git_binary_available() {
                 // Config allows it but there's no git executable. We haven't determined whether this
                 // is a repo (discover goes through in-process libgit2), so we don't say "not a repo".
                 self.flash =
