@@ -3595,7 +3595,8 @@ impl App {
         self.pending_edit.take()
     }
 
-    /// `O`: request launching an external git tool (lazygit, etc.) (the run loop picks it up, suspends, then launches).
+    /// `!`: request launching the backend's own external tool (lazygit for git, `[jj] tool` --
+    /// lazyjj by default -- for jj); the run loop picks it up, suspends, then launches.
     /// No-op (flash) when `[external] git_tool = false`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn launch_git_tool(&mut self) {
