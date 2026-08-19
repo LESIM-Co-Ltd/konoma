@@ -21641,3 +21641,82 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Moving to a different repository has to settle **which backend answers** right away, not when
+/// the background scan lands. `git_vcs` is not just a label: `!` reads it to choose between lazygit
+/// and lazyjj, and the hub reads it to decide whether it is listing branches or bookmarks. Leaving
+/// the previous repository's answer in place hands whoever presses a key in that window the wrong
+/// tool for the repository they are looking at.
+#[cfg(feature = "git")]
+#[test]
+fn moving_to_another_repository_settles_the_backend_before_the_scan_lands() {
+    let root = unique_tmp("konoma_git_vcs_switch");
+    let _ = std::fs::remove_dir_all(&root);
+    let from = root.join("from");
+    let to = root.join("to");
+    std::fs::create_dir_all(&from).unwrap();
+    std::fs::create_dir_all(&to).unwrap();
+    init_git_repo(&from);
+    init_git_repo(&to);
+    let from = from.canonicalize().unwrap();
+    let to = to.canonicalize().unwrap();
+
+    let mut app = App::new(from, Config::default()).unwrap();
+    // Nothing drains the channel, so the scan's answer never arrives — the window it leaves open is
+    // exactly what this test is about.
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed();
+
+    // Stand in for having arrived from a jj repository.
+    app.git_vcs = crate::vcs::VcsKind::Jj;
+    app.tab.root = to;
+    app.refresh_git_if_needed();
+    assert!(
+        app.git_status_pending.is_some(),
+        "the scan has to still be in flight, or this proves nothing"
+    );
+    assert_eq!(
+        app.git_vcs,
+        crate::vcs::VcsKind::Git,
+        "a git repository must not keep answering as jj until the scan lands"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// The same window, the other way round: arriving in a jj workspace has to read as jj immediately,
+/// or `!` launches lazygit for a repository lazygit cannot see.
+#[cfg(feature = "git")]
+#[test]
+fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
+    let Some(jj_dir) = jj_scratch("konoma_git_vcs_to_jj") else {
+        return;
+    };
+    let git_dir = unique_tmp("konoma_git_vcs_to_jj_git");
+    let _ = std::fs::remove_dir_all(&git_dir);
+    std::fs::create_dir_all(&git_dir).unwrap();
+    init_git_repo(&git_dir);
+    let git_dir = git_dir.canonicalize().unwrap();
+    let jj_dir = jj_dir.canonicalize().unwrap();
+
+    let mut app = App::new(git_dir.clone(), Config::default()).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_status_loader(tx);
+    app.refresh_git_if_needed();
+
+    app.tab.root = jj_dir.clone();
+    app.refresh_git_if_needed();
+    assert!(
+        app.git_status_pending.is_some(),
+        "the scan has to still be in flight, or this proves nothing"
+    );
+    assert_eq!(
+        app.git_vcs,
+        crate::vcs::VcsKind::Jj,
+        "a jj workspace must not keep answering as git until the scan lands"
+    );
+
+    std::fs::remove_dir_all(&jj_dir).ok();
+    std::fs::remove_dir_all(&git_dir).ok();
+}

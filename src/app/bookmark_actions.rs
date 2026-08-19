@@ -1168,6 +1168,12 @@ impl App {
             self.git_branch = None;
             self.git_worktree_origin = None;
             self.git_status_workdir = None;
+            // `git_vcs` has no "unknown" value to clear to, and leaving the previous repository's
+            // backend in place is not harmless: `!` reads it to choose between lazygit and lazyjj,
+            // and the hub reads it to decide whether it is showing branches or bookmarks. Detection
+            // is a filesystem lookup plus a cached probe, so settle it here rather than describing
+            // the previous repository until the scan lands.
+            self.git_vcs = crate::vcs::detect(&self.tab.root);
         }
         self.git_status_gen = self.git_status_gen.wrapping_add(1);
         self.git_status_pending = Some(self.tab.root.clone());

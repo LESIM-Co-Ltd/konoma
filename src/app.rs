@@ -1435,7 +1435,10 @@ pub struct App {
     diff_layout: DiffLayout,
     /// The current branch name (fetched at the same time as git status). None if not a repo.
     git_branch: Option<String>,
-    /// Which backend produced `git_branch`/`git_status`. Same lifecycle as `git_branch`.
+    /// Which backend produced `git_branch`/`git_status`. Settled at the same points as
+    /// `git_branch`, but where that one clears to None on a repository change this has no
+    /// "unknown" value, so it is re-detected there instead — `!` (lazygit vs lazyjj) and the
+    /// hub's vocabulary both read it before the scan lands.
     pub(crate) git_vcs: crate::vcs::VcsKind,
     /// The origin repo name when the current root is inside a **linked worktree** (`git worktree
     /// add`), else `None`. Same lifecycle/cache as `git_branch` — fetched by the same background
