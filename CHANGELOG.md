@@ -25,6 +25,18 @@ All notable changes to konoma are documented in this file. The format is based o
 - **jj: moving between repositories kept the previous one's backend until the scan finished.**
   Stepping from a git repository into a jj workspace and pressing `!` in that window launched
   lazygit against a repository lazygit cannot see.
+- **jj: merging broke the whole view while the merge was in progress.** A merged working copy has
+  two parents, and asking jj for `@-` then names both, which it refuses to resolve. konoma read
+  that refusal as "no answer": every file on disk showed as newly added, every deletion became
+  invisible, and the diff showed each file as though it were new. Reads now name the first
+  parent's commit id, which the same query already had to hand.
+- **jj: renames whose filename contains `{`, `}` or `" => "` were dropped or resolved to a path
+  that does not exist.** `jj diff --summary` compresses a rename for a human reader, and the
+  compression is ambiguous for those names; konoma asks jj for the source and target as separate
+  fields now, and keeps the old reader only for a jj too old to answer that way.
+- **jj: a symlink created since the last snapshot showed as modified rather than added**, and
+  asking for a symlink's diff followed it through to its target, rendering the target's entire
+  contents as new.
 
 ### Changed
 - The `[external] vcs` doc comment in the source said `auto` prefers jj; it has kept git wherever
