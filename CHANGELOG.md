@@ -49,6 +49,8 @@ All notable changes to konoma are documented in this file. The format is based o
   git can answer since v0.26.1, as every other description of the setting already said.
 - CI installs jj on the macOS job as well, so the jj tests stop skipping silently on the platform
   konoma is developed on.
+- The crate's own description names jj, so the crates.io page says what the tree already does. It
+  says "in preview" there too, for the same reason every other surface does.
 
 ## [0.26.1] - 2026-08-18
 
