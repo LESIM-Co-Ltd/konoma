@@ -222,14 +222,21 @@ konoma never breaks when an external tool is missing — the relevant preview ju
 (principle: "unsupported is shown safely, never a crash"). Install these to enable richer previews:
 
 ```bash
-brew install ffmpeg git lazygit           # macOS
-brew install jj lazyjj                    # macOS — only if you work in jj (preview)
-sudo apt install ffmpeg git lazygit       # Debian / Ubuntu
+brew install git ffmpeg                   # macOS
+sudo apt install git ffmpeg               # Debian / Ubuntu
+brew install jj                           # only if you work in jj (preview)
+brew install lazygit lazyjj               # only if you want `!` to open a TUI
 ```
+
+`git` is what the git suite runs on, and `jj` likewise for the jj backend — without either, konoma
+simply shows no repository information for that system. `ffmpeg` covers the video formats konoma
+cannot decode itself. **`lazygit` and `lazyjj` are neither required nor used by anything except the
+`!` key**, which opens them inside the hub; without them that one key says so and nothing else
+changes.
 
 jj is not in Debian/Ubuntu's archives; install it from [its own
 instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt binary, or
-`cargo binstall jj-cli lazyjj`).
+`cargo binstall jj-cli`).
 
 - **ffmpeg** or **ffmpegthumbnailer** — thumbnails for the video formats konoma cannot decode itself:
   **VP9**, **AV1** and the older codecs (Xvid, MPEG-2, WMV, …), the `.avi` container, and the
