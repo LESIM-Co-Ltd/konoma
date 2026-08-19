@@ -22,6 +22,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # jj (Jujutsu) for the jj backend's tests. Installed here as well as on Linux because macOS is
+      # the platform konoma is developed on: without it the jj tests skip silently, and the suite
+      # looks green on the machine that matters most while checking nothing. Pinned for the same
+      # reason as the Linux job below.
+      - name: Install jj
+        run: |
+          ver=v0.44.0
+          tmp=$(mktemp -d)
+          curl -sSfL "https://github.com/jj-vcs/jj/releases/download/$ver/jj-$ver-aarch64-apple-darwin.tar.gz" \
+            | tar xz -C "$tmp"
+          sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
+          jj --version
+
       - name: Format
         run: cargo fmt --all --check
 
