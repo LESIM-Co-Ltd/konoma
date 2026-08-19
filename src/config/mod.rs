@@ -43,9 +43,14 @@ pub struct ExternalConfig {
     pub git_tool: bool,
     /// Which version-control system answers for a directory: `"auto"` (default), `"git"` or `"jj"`.
     ///
-    /// `auto` prefers jj wherever a `.jj` exists — whoever created it works in jj — and falls back
-    /// to git everywhere else, including when the `jj` binary is missing. Set it explicitly to pin
-    /// a colocated repository, where both systems can answer, to the one you actually work in.
+    /// `auto` keeps git wherever git can answer, so a repository that already worked shows exactly
+    /// what it showed before; jj answers only where there is no git repository to ask (one created
+    /// with `jj git init --no-colocate`, or a `jj workspace`). git answers anyway when the `jj`
+    /// binary is missing. Set it to `"jj"` to pin a colocated repository, where both systems can
+    /// answer, to the one you actually work in.
+    ///
+    /// Parsed by [`crate::vcs::Preference`], which is where the precedence is decided; anything
+    /// unrecognised means `auto`.
     pub vcs: String,
     /// The external PDF fallback tools — macOS's bundled `qlmanage`/`sips`, used only when the
     /// primary renderer (`hayro`, pure Rust — always active regardless of this flag) fails to render
