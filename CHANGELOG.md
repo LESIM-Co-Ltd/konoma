@@ -6,6 +6,32 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **jj: a path beginning with `-` was read as a flag, not a path.** `jj file show` rejected it
+  outright, and the failure was silent: an unchanged file showed a change marker, and a real diff
+  rendered as though the whole file were new. Paths now go to jj as fileset literals, which also
+  carry spaces and quotes safely.
+- **jj: renamed files disappeared from a commit's diff, and their destination never got a marker.**
+  `jj diff --summary` prints a rename compressed (`R {orig => renamed}`, with the common prefix and
+  suffix hoisted out, and one side empty when a directory component is dropped). konoma cut the
+  line at its first space, which produced a path that existed on neither side.
+- **jj: every symlink in the repository showed as deleted.** jj tracks symlinks; konoma's walk
+  skipped everything that was not a regular file, so a tracked link never entered the comparison
+  and fell out the other end as a deletion. Retargeting a link is now noticed too — that changes
+  the link's own timestamp, which is the one konoma reads.
+- **jj: a tab inside a commit message broke the graph row it belonged to.** Every field after the
+  description shifted by one: the author read as the date, the timestamp failed to parse and fell
+  back to the sentinel meaning "root commit", and the working copy stopped being drawn as `@`.
+- **jj: moving between repositories kept the previous one's backend until the scan finished.**
+  Stepping from a git repository into a jj workspace and pressing `!` in that window launched
+  lazygit against a repository lazygit cannot see.
+
+### Changed
+- The `[external] vcs` doc comment in the source said `auto` prefers jj; it has kept git wherever
+  git can answer since v0.26.1, as every other description of the setting already said.
+- CI installs jj on the macOS job as well, so the jj tests stop skipping silently on the platform
+  konoma is developed on.
+
 ## [0.26.1] - 2026-08-18
 
 ### Added
