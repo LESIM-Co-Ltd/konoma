@@ -743,4 +743,78 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&base).ok();
     }
+
+    /// #2 (jj): the same scenario as `session_restore_reopens_git_diff_preview` above, but the
+    /// repository is a jj workspace (no colocated `.git`) instead of git. `apply_saved_tab`'s diff
+    /// restore reads through `crate::vcs::file_diff`, which dispatches on the detected backend
+    /// (`crate::vcs::detect`) rather than assuming git, so this pins that the restore path was never
+    /// only proven against git. `None` from `jj::available()` = skip (this machine has no jj),
+    /// matching every other jj-gated fixture in this codebase.
+    ///
+    /// mtime note: unlike `crate::vcs::jj`'s own `scratch_repo` fixture, this needs no sleep before
+    /// the seed commit — `a.txt` is edited strictly *after* `jj commit` returns, and jj's
+    /// `newer_than` check (`mtime_secs >= snapshot_epoch`, both second-granularity) is inclusive of a
+    /// same-second write, so the edit is deterministically visible as a change regardless of how
+    /// close the two land on the wall clock. `scratch_repo`'s sleep exists to protect *unedited*
+    /// files from the opposite false positive — this test has none (only `a.txt` is ever touched
+    /// after the commit), so it needs no equivalent.
+    #[cfg(feature = "git")]
+    #[test]
+    fn session_restore_reopens_jj_diff_preview() {
+        let (dir, base) = setup("konoma_sess_jjdiff_test");
+        if !crate::vcs::jj::available() {
+            fs::remove_dir_all(&dir).ok();
+            fs::remove_dir_all(&base).ok();
+            return;
+        }
+        let jj = |args: &[&str]| -> bool {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir) // never touch the running machine's own jj config
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) || !jj(&["commit", "-m", "seed"]) {
+            fs::remove_dir_all(&dir).ok();
+            fs::remove_dir_all(&base).ok();
+            return;
+        }
+        fs::write(dir.join("a.txt"), "alpha\nCHANGED\n").unwrap();
+
+        // session1: open a.txt as a (jj-backed) diff, save.
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let a = dir.join("a.txt");
+        let _ = app.reveal_path_deep(&a);
+        assert!(
+            !crate::vcs::file_diff(&dir, &a).is_empty(),
+            "前提: jj バックエンドが a.txt の差分を返す(fixture の検証)"
+        );
+        app.open_git_diff(&a);
+        assert!(app.is_git_diff_preview(), "前提: diff プレビュー");
+        app.save_session();
+        drop(app);
+
+        // session2: restore → still a diff (jj-backed), not a plain preview.
+        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+        app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        app2.restore_session();
+        assert!(matches!(app2.tab.mode, Mode::Preview));
+        assert!(
+            app2.is_git_diff_preview(),
+            "jj の diff タブも diff で復元される(素のプレビューに落ちない)"
+        );
+        assert_eq!(
+            app2.tab.preview_path.as_deref(),
+            Some(a.as_path()),
+            "復元後のプレビュー対象は a.txt のまま"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
 }

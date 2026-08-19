@@ -2871,6 +2871,302 @@ fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
 }
 
 // =============================================================================
+// jj cross-cutting: konoma's git-agnostic features (tab switching / follow / changed filter / the
+// change gutter) driven by a **jj** backend, not just git. Before the 2026-08 audit that added this
+// section, none of these had ever been exercised through a real jj repository — `App::git_vcs` (the
+// single App-level "which backend answers" slot, re-detected on every root change) had no coverage
+// of a real tab-switch round trip between a git repo and a jj workspace, and follow/`C`/`n`/`N`/the
+// gutter had only ever been driven by `seed_repo` (git).
+// =============================================================================
+
+/// Writes the same seed recipe as `jj_seed_repo`, but **into an existing directory** rather than
+/// allocating its own sandbox — so a jj workspace can sit as a sibling of a git repository and real
+/// tree navigation (`h`/`l`) can move between the two, which
+/// `e2e_tab_switch_between_git_and_jj_settles_the_backend_each_time` needs. Returns `false` (and
+/// creates nothing further) when this machine has no jj.
+#[cfg(feature = "git")]
+fn jj_init_in(dir: &std::path::Path) -> bool {
+    if !crate::vcs::jj::available() {
+        return false;
+    }
+    let jj = |args: &[&str]| -> bool {
+        std::process::Command::new("jj")
+            .current_dir(dir)
+            .env("HOME", dir) // never touch the running machine's own jj config
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !jj(&["git", "init", "--no-colocate", "."]) {
+        return false;
+    }
+    if std::fs::write(dir.join("j.txt"), b"one\n").is_err() {
+        return false;
+    }
+    if !jj(&["commit", "-m", "seed"]) {
+        return false;
+    }
+    std::fs::write(dir.join("j.txt"), b"two\n").is_ok()
+}
+
+/// `App::git_vcs` lives directly on `App`, not per-tab — it is re-detected every time the active
+/// root changes (`kick_status_refresh`). This walks the **real key-driven path** that has to keep it
+/// honest across a tab switch: two sibling repositories (one git, one jj) under a common parent,
+/// reached by real tree descend/ascend (`l`/`h`) and real tab operations (`t`/`[`/`]`) — not by
+/// assigning `tab.root` directly the way
+/// `moving_to_another_repository_settles_the_backend_before_the_scan_lands` (`app/tests.rs`) does.
+/// A regression where `git_status_dirty = true` stopped being set on tab switch (see
+/// `load_active`'s doc comment) would leave a stale backend answering for the newly active tab —
+/// this is what would catch it.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_tab_switch_between_git_and_jj_settles_the_backend_each_time() {
+    let parent = sandbox("tab_git_jj_switch");
+    let git_dir = parent.join("repo_git");
+    let jj_dir = parent.join("repo_jj");
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::create_dir_all(&jj_dir).unwrap();
+    seed_repo(&git_dir);
+    if !jj_init_in(&jj_dir) {
+        std::fs::remove_dir_all(&parent).ok();
+        return; // no jj on this machine
+    }
+
+    let mut s = Sim::new(&canon(&parent));
+
+    // Tab 1: descend (`l`) into the git repository.
+    s.select("repo_git");
+    s.key('l');
+    assert!(
+        s.app.tab.root.ends_with("repo_git"),
+        "タブ1は git リポジトリへ降りる"
+    );
+    assert_eq!(
+        s.app.git_vcs,
+        crate::vcs::VcsKind::Git,
+        "git リポジトリへ降りたら git_vcs=Git"
+    );
+
+    // Open a second tab (starts at the same root = repo_git), then move *that* tab into the jj
+    // workspace via real navigation (`h` up to the parent, select, `l` down).
+    s.key('t');
+    assert_eq!(s.app.tab_count(), 2, "タブが2つ");
+    assert_eq!(s.app.active_tab_index(), 1, "新タブがアクティブ");
+    s.key('h');
+    s.select("repo_jj");
+    s.key('l');
+    assert!(
+        s.app.tab.root.ends_with("repo_jj"),
+        "タブ2は jj ワークスペースへ降りる"
+    );
+    assert_eq!(
+        s.app.git_vcs,
+        crate::vcs::VcsKind::Jj,
+        "jj ワークスペースへ降りたら git_vcs=Jj"
+    );
+
+    // Switch back and forth through the real tab-switch keys (`[`=tab_prev / `]`=tab_next), and
+    // confirm the backend settles correctly *every* time, not just on the first crossing.
+    s.key('['); // -> tab 1 (git)
+    assert_eq!(s.app.active_tab_index(), 0);
+    assert!(s.app.tab.root.ends_with("repo_git"));
+    assert_eq!(
+        s.app.git_vcs,
+        crate::vcs::VcsKind::Git,
+        "タブ1に戻ったら git_vcs は Git に戻る"
+    );
+
+    s.key(']'); // -> tab 2 (jj)
+    assert_eq!(s.app.active_tab_index(), 1);
+    assert!(s.app.tab.root.ends_with("repo_jj"));
+    assert_eq!(
+        s.app.git_vcs,
+        crate::vcs::VcsKind::Jj,
+        "タブ2に戻ったら git_vcs は Jj に戻る"
+    );
+
+    s.key('['); // -> tab 1 (git) again: a second round trip, not just the first crossing
+    assert_eq!(
+        s.app.git_vcs,
+        crate::vcs::VcsKind::Git,
+        "2周目のタブ切替でも git_vcs は正しく戻る"
+    );
+
+    std::fs::remove_dir_all(&parent).ok();
+}
+
+/// The jj-backed sibling of `e2e_follow_opens_full_screen_diff`: same scenario, but the repository
+/// behind it is a jj workspace. `follow_jump`/`compute_gitdiff_lines` read through
+/// `crate::vcs::file_diff`/`follow_baseline_diff` (backend-agnostic once the file is already dirty at
+/// follow-start, which it is here), so this pins that follow was never only proven against git.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_follow_opens_full_screen_diff() {
+    let Some(dir) = jj_seed_repo("jj_follow_diff") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir)); // a.txt is already dirty ("one" -> "two") from the fixture
+    s.key('F');
+    assert!(s.app.follow_enabled(), "F でフォロー ON");
+
+    let a = s.app.tab.root.join("a.txt");
+    // Equivalent to a real-world AI edit landing after F: a second, external write.
+    std::fs::write(&a, "three\n").unwrap();
+    assert!(s.app.follow_note_change(&a), "変更ファイルは有効な追尾対象");
+    s.app.follow_jump(&a);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "jj バックエンドでも追尾先は全画面 diff で開く"
+    );
+    assert_eq!(s.app.tab.mode, Mode::Preview);
+    s.see("diff");
+    assert_eq!(
+        s.app.diff_change_position(),
+        Some((1, 1)),
+        "セッションに 1 ファイル → (1/1)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A jj workspace like `jj_seed_repo`, but with **three tracked files** so a test can leave one
+/// untouched (a control that must not show as changed) while editing the other two after the seed
+/// commit — enough for `C`'s changed-only filter to genuinely narrow, and for `n`/`N` to have more
+/// than one changed file to cycle between.
+///
+/// mtime note (flagged by the 2026-08 audit that added this section): unlike `jj_seed_repo`, this
+/// sleeps for over a second **before** the seed commit. `newer_than`'s check (`mtime_secs >=
+/// snapshot_epoch`, both second-granularity) is inclusive, so a file created in the very same
+/// wall-clock second as the commit could alias into looking "changed" too, purely by timing luck —
+/// without the sleep, `c.txt` (meant to stay a clean control) could not be trusted to read as
+/// unchanged deterministically. `crate::vcs::jj`'s own `scratch_repo` test fixture uses the same
+/// sleep for the same reason. The two post-commit edits below need no equivalent sleep: they always
+/// land strictly after `jj commit` returns, so `newer_than` is unambiguously true for them regardless
+/// of same-second timing.
+#[cfg(feature = "git")]
+fn jj_seed_repo_multi(name: &str) -> Option<std::path::PathBuf> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = sandbox(name);
+    let jj = |args: &[&str]| -> bool {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !jj(&["git", "init", "--no-colocate", "."]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+    std::fs::write(dir.join("b.txt"), b"one\n").ok()?;
+    std::fs::write(dir.join("c.txt"), b"one\n").ok()?; // stays untouched: the "unchanged" control
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    if !jj(&["commit", "-m", "seed"]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+    std::fs::write(dir.join("b.txt"), b"two\n").ok()?;
+    Some(dir)
+}
+
+/// The jj-backed sibling of `e2e_changed_filter_and_jumps` + `e2e_git_changed_filter_n_jumps_between_changed_files`,
+/// combined: `C`/`n`/`N` all read through `crate::vcs::statuses`/`changed_paths`, which are
+/// backend-agnostic — pin that a jj workspace drives the changed-only filter and cross-file jumps the
+/// same way git does, including that `c.txt` (untouched since the seed commit) is correctly excluded.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_changed_filter_narrows_and_n_jumps_between_changed_files() {
+    let Some(dir) = jj_seed_repo_multi("jj_changed_filter") else {
+        return;
+    };
+    let mut s = Sim::new(&canon(&dir));
+    let all = s.app.tab.entries.len();
+    assert_eq!(all, 3, "前提: a.txt/b.txt/c.txt の3枚(fixture の検証)");
+
+    s.key('C');
+    assert!(s.app.changed_filter());
+    assert_eq!(
+        s.app.tab.entries.len(),
+        2,
+        "C で a.txt/b.txt だけに絞られる(未変更の c.txt は除外される)"
+    );
+    s.see("a.txt");
+    s.see("b.txt");
+    s.dont_see("c.txt");
+
+    s.select("a.txt");
+    assert!(s.app.tab.entries[s.app.tab.selected]
+        .path
+        .ends_with("a.txt"));
+    s.key('n');
+    assert!(
+        s.app.tab.entries[s.app.tab.selected]
+            .path
+            .ends_with("b.txt"),
+        "n で次の変更ファイル(b.txt)へ"
+    );
+    s.key('n');
+    assert!(
+        s.app.tab.entries[s.app.tab.selected]
+            .path
+            .ends_with("a.txt"),
+        "n はラップして a.txt へ戻る"
+    );
+    s.key('N');
+    assert!(
+        s.app.tab.entries[s.app.tab.selected]
+            .path
+            .ends_with("b.txt"),
+        "N は逆方向に b.txt へ"
+    );
+
+    s.key('C');
+    assert!(!s.app.changed_filter(), "C 再押下で解除");
+    assert_eq!(s.app.tab.entries.len(), all, "解除で全件(3枚)に戻る");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The jj-backed sibling of `e2e_ui_git_gutter_toggle_shows_or_hides_change_marker`: same scenario,
+/// jj-backed repository. `git_gutter_marks` reads through `crate::vcs::file_diff`
+/// (backend-agnostic), so this pins that the left-edge change gutter (▌) was never only proven
+/// against git.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_git_gutter_toggle_shows_or_hides_change_marker_jj() {
+    let Some(dir) = jj_seed_repo("ui_git_gutter_jj") else {
+        return;
+    };
+    let dir = canon(&dir);
+
+    let mut cfg_on = Config::default();
+    cfg_on.ui.syntax_highlight = false; // determinism: don't depend on cold/warm grammar state
+    let mut s_on = Sim::with_config(&dir, cfg_on);
+    s_on.select("a.txt");
+    s_on.enter();
+    s_on.see("▌"); // default git_gutter=true: jj's diff also feeds the same gutter marker
+
+    let mut cfg_off = Config::default();
+    cfg_off.ui.syntax_highlight = false;
+    cfg_off.ui.git_gutter = false;
+    let mut s_off = Sim::with_config(&dir, cfg_off);
+    s_off.select("a.txt");
+    s_off.enter();
+    s_off.dont_see("▌");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
 // Verifying "actual values" for copy (clipboard-independent — verified via computation functions/getters)
 // =============================================================================
 
