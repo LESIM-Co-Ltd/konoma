@@ -8,11 +8,20 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# A push that supersedes another one cancels its run. Without this, two runs of the same branch sat
+# stuck on the same hung apt mirror at once (2026-08-19) and neither could be cancelled without
+# admin rights on the repository.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     # konoma targets macOS on Apple Silicon; macos-14 runners are arm64.
     name: fmt / clippy / test (macOS Apple Silicon)
     runs-on: macos-14
+    # Measured at ~3 minutes; a job that runs this long is hung, not slow.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -57,6 +66,8 @@ jobs:
   check-linux:
     name: clippy / test (Linux x86_64)
     runs-on: ubuntu-latest
+    # Measured at ~3 minutes; a job that runs this long is hung, not slow.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -69,14 +80,26 @@ jobs:
           key: linux-check
 
       # System libraries for the C-backed dependencies (libgit2 / arboard / trash).
+      # Each attempt is bounded: on 2026-08-19 this step hung on a mirror for 90 minutes, having
+      # taken 35 seconds on the run before it. A stuck connection now fails in minutes and is
+      # retried on a fresh one rather than holding the whole job open.
       - name: Install Linux system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config cmake \
-            libssl-dev libssh2-1-dev zlib1g-dev \
-            libdbus-1-dev \
-            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          set -eu
+          for attempt in 1 2 3; do
+            if timeout 180 sudo apt-get update \
+              && timeout 420 sudo apt-get install -y --no-install-recommends \
+                pkg-config cmake \
+                libssl-dev libssh2-1-dev zlib1g-dev \
+                libdbus-1-dev \
+                libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev; then
+              exit 0
+            fi
+            echo "apt attempt $attempt did not finish; retrying"
+            sleep 15
+          done
+          echo "apt failed three times" >&2
+          exit 1
 
       # jj (Jujutsu) for the jj backend's tests. Pinned rather than tracking latest: jj is pre-1.0
       # and ships breaking changes monthly, and a CI run should fail because konoma changed, not
@@ -113,6 +136,8 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # Measured at ~3 minutes; a job that runs this long is hung, not slow.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
