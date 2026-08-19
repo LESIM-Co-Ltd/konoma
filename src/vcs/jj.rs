@@ -173,9 +173,10 @@ pub fn branch(root: &Path) -> Option<String> {
     })
 }
 
-/// One line of `jj diff --summary`, parsed. `path` is always where the file ends up — the plain
-/// path for an add/modify/delete, the destination for a rename. `from` is only set for a rename
-/// and holds the origin path, which the raw summary line never repeats on its own.
+/// One line of a jj diff read, parsed. `path` is always where the file ends up — the plain path
+/// for an add/modify/delete, the destination for a rename or copy. `from` is only set when a
+/// rename or copy makes the origin path different from `path`; it is None whenever the two sides
+/// are the same file at the same path.
 struct SummaryEntry {
     status: FileStatus,
     path: String,
@@ -184,10 +185,19 @@ struct SummaryEntry {
 
 /// Parses `jj diff --summary` into one [`SummaryEntry`] per line.
 ///
+/// **This is the fallback path**, used only when [`diff_template_available`] says this jj cannot
+/// parse [`DIFF_TEMPLATE`] — see [`diff_entries`], which is what every caller in this module
+/// actually goes through. It is kept, and kept tested, because it is what genuinely runs on an
+/// older jj, not because it is retained for history's sake.
+///
 /// Every line is `<mark> <path>`, except a rename (`R`), which compresses the common prefix and
 /// suffix around the part that changed: `PREFIX{FROM => TO}SUFFIX` (see [`split_rename`]). Only
 /// `R` lines are treated that way — a plain `A`/`M`/`D`/`C` path is used verbatim, so a filename
 /// that happens to contain literal `{... => ...}` text is never mistaken for a rename shape.
+/// That compression is genuinely ambiguous for two shapes of filename at once — one containing a
+/// literal `{`/`}`, one containing the literal `" => "` separator itself — which [`split_rename`]
+/// cannot resolve correctly for both; [`diff_entries`] prefers the template precisely so this
+/// parse, and its ambiguity, is never reached on a jj new enough to avoid it.
 fn parse_diff_summary(out: &str) -> Vec<SummaryEntry> {
     let mut v = Vec::new();
     for line in out.lines() {
@@ -250,13 +260,100 @@ fn join_rename_side(prefix: &str, part: &str, suffix: &str) -> String {
     collapsed.trim_start_matches('/').to_string()
 }
 
+/// The `-T` template [`diff_entries`] prefers over `--summary`: one line per changed entry,
+/// printing the *actual* source and target path rather than compressing them into `--summary`'s
+/// `PREFIX{FROM => TO}SUFFIX` shape. `self.` is required on every method — jj's diff-entry template
+/// language binds nothing bare.
+const DIFF_TEMPLATE: &str = concat!(
+    r#"self.status_char() ++ "\t" ++ self.source().path() ++ "\t""#,
+    r#" ++ self.target().path() ++ "\n""#,
+);
+
+/// Whether this jj understands the diff-entry template methods [`DIFF_TEMPLATE`] uses
+/// (`self.status_char()`, `self.source()`, `self.target()`). Probed once, by running the query
+/// itself rather than comparing version numbers — the same reasoning as [`available`]: pre-1.0 jj
+/// moves too fast for a version compare to be trustworthy, and only actually running the template
+/// proves the parser accepts it. Probing against `@` (which always exists, unlike a caller-supplied
+/// revision) keeps the verdict a property of this jj binary, not of what a particular call happens
+/// to be asking about.
+///
+/// `OnceLock` means at most one extra jj invocation is ever spent finding this out, and only for
+/// the very first diff read in the process; every read after it already knows the answer and goes
+/// straight to the template or straight to `--summary`.
+fn diff_template_available(ws: &Path) -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| run(ws, &["diff", "-r", "@", "-T", DIFF_TEMPLATE]).is_some())
+}
+
+/// Reads one jj diff — the working-copy commit against its parent when `revset` is None, or a
+/// specific revision's diff when `Some` — into [`SummaryEntry`] rows.
+///
+/// **Both [`known_changes`] and [`commit_diff`] read through here.** That is deliberate: they must
+/// always agree on what counts as a rename, and routing both through one function is what makes
+/// that automatic instead of something to keep in sync by hand as the two evolve separately.
+///
+/// Prefers the `-T` template ([`parse_diff_template`]): it prints the real source and target path
+/// of every entry, so there is no compressed shape to reverse — which is what makes it correct
+/// where `--summary`'s compression is not (see [`parse_diff_summary`]'s doc comment). Falls back to
+/// `--summary` ([`parse_diff_summary`]) when [`diff_template_available`] says this jj cannot parse
+/// the template.
+fn diff_entries(ws: &Path, revset: Option<&str>) -> Vec<SummaryEntry> {
+    let mut call = vec!["diff"];
+    if let Some(r) = revset {
+        call.push("-r");
+        call.push(r);
+    }
+    if diff_template_available(ws) {
+        call.push("-T");
+        call.push(DIFF_TEMPLATE);
+        return run(ws, &call)
+            .map(|out| parse_diff_template(&out))
+            .unwrap_or_default();
+    }
+    call.push("--summary");
+    run(ws, &call)
+        .map(|out| parse_diff_summary(&out))
+        .unwrap_or_default()
+}
+
+/// Parses one line of [`DIFF_TEMPLATE`]'s output: `<status_char>\t<source path>\t<target path>`.
+///
+/// Unlike `--summary`, the source and target are printed in full rather than compressed, so there
+/// is nothing to reverse-engineer: a rename or copy is exactly the case where the two differ, and
+/// every other status (`A`/`M`/`D`) prints the same path on both sides.
+///
+/// `splitn(3, '\t')`, for the same reason [`parse_dag_line`] and [`parse_meta_line`] do it: a path
+/// could itself contain a tab, and the trailing field (the target) is the only one that needs to
+/// survive that here, so letting it absorb everything after the second tab is what keeps such a
+/// path whole instead of splitting it into more fields than the line actually carries. A line with
+/// fewer than three fields is dropped — there is nothing meaningful to report from it.
+fn parse_diff_template(out: &str) -> Vec<SummaryEntry> {
+    let mut v = Vec::new();
+    for line in out.lines() {
+        let mut f = line.splitn(3, '\t');
+        let Some(mark) = f.next() else { continue };
+        let Some(source) = f.next() else { continue };
+        let Some(target) = f.next() else { continue };
+        let status = match mark {
+            "A" => FileStatus::Added,
+            "D" => FileStatus::Deleted,
+            "C" | "R" => FileStatus::Renamed, // copy: jj has no separate FileStatus for it
+            _ => FileStatus::Modified,
+        };
+        let from = (source != target).then(|| source.to_string());
+        v.push(SummaryEntry {
+            status,
+            path: target.to_string(),
+            from,
+        });
+    }
+    v
+}
+
 /// Paths jj already knows differ, as of the last snapshot. Stale by construction — the walk below
 /// is what makes the answer current.
 fn known_changes(ws: &Path) -> HashMap<String, FileStatus> {
-    let Some(out) = run(ws, &["diff", "--summary"]) else {
-        return HashMap::new();
-    };
-    parse_diff_summary(&out)
+    diff_entries(ws, None)
         .into_iter()
         .map(|e| (e.path, e.status))
         .collect()
@@ -323,18 +420,23 @@ fn scan(ws: &Path) -> Vec<(PathBuf, FileStatus)> {
             st
         } else if !newer_than(entry.path(), m.snapshot_epoch) {
             continue; // jj has seen this file and reported nothing about it
-        } else if is_symlink {
-            // A symlink that changed since the last snapshot, but jj has not reported anything
-            // about it yet (it is not in `known`). It cannot be confirmed the way a regular file
-            // is below: `jj file show` returns zero bytes for a symlink rather than its target
-            // path (see the module docs' note on the CLI's read-only surface), so comparing that
-            // against `std::fs::read` of the link — which follows it to the *target file's*
-            // content — would compare two unrelated things and could misreport either way. Rather
-            // than guess, take the same optimistic stance the CONFIRM_CAP overflow path takes:
-            // report Modified, erring towards showing a live change over hiding one.
-            FileStatus::Modified
         } else if !tracked.contains(&rel) {
+            // Untracked as of the parent commit, and jj has not reported anything about it yet
+            // either (it is not in `known`) — this must be a fresh addition, symlink or not. This
+            // check has to come before the `is_symlink` branch below: that branch's fallback
+            // reasoning only holds for a symlink jj already tracks, so checking it first would
+            // read every never-tracked symlink as Modified instead of Added.
             FileStatus::Added
+        } else if is_symlink {
+            // A tracked symlink that changed since the last snapshot, but jj has not reported
+            // anything about it yet (it is not in `known`). It cannot be confirmed the way a
+            // regular file is below: `jj file show` returns zero bytes for a symlink rather than
+            // its target path (see the module docs' note on the CLI's read-only surface), so
+            // comparing that against `std::fs::read` of the link — which follows it to the *target
+            // file's* content — would compare two unrelated things and could misreport either way.
+            // Rather than guess, take the same optimistic stance the CONFIRM_CAP overflow path
+            // takes: report Modified, erring towards showing a live change over hiding one.
+            FileStatus::Modified
         } else if confirmed < CONFIRM_CAP {
             confirmed += 1;
             if differs_from_parent(ws, &rel, entry.path()) {
@@ -749,11 +851,8 @@ pub fn commit_diff(root: &Path, id: &str) -> Vec<crate::git::DiffLine> {
     let Some(ws) = workspace_root(root) else {
         return out;
     };
-    let Some(summary) = run(&ws, &["diff", "--summary", "-r", id]) else {
-        return out;
-    };
     let parent = format!("{id}-");
-    for entry in parse_diff_summary(&summary) {
+    for entry in diff_entries(&ws, Some(id)) {
         // A rename's "before" content lives at the origin path, not the destination — the
         // destination is new in the parent's tree and reading it there always answers None,
         // which used to make every renamed file's diff render as all-added. `from` is set only
@@ -1009,6 +1108,93 @@ mod tests {
         assert_eq!(entries[0].path, "added.txt");
     }
 
+    /// The `-T` template's own rename shape: full paths, not `--summary`'s compressed
+    /// `PREFIX{FROM => TO}SUFFIX`, so a filename containing a literal `{`/`}` is read correctly
+    /// where `split_rename` would mistake the file's own braces for the compression markers.
+    #[test]
+    fn diff_template_reads_a_rename_whose_name_contains_curly_braces() {
+        let entries = parse_diff_template("R\tweird{a}.txt\tweird{b}.txt\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, FileStatus::Renamed);
+        assert_eq!(entries[0].from.as_deref(), Some("weird{a}.txt"));
+        assert_eq!(entries[0].path, "weird{b}.txt");
+    }
+
+    /// The other shape `--summary`'s compression cannot resolve: a filename containing the literal
+    /// `" => "` separator itself. Reading full paths means there is nothing to reverse, so this
+    /// never risks synthesizing a path (like `"src.txt => plaindest.txt"`) that does not exist.
+    #[test]
+    fn diff_template_reads_a_rename_whose_name_contains_the_literal_arrow() {
+        let entries = parse_diff_template("R\tarrow => src.txt\tplaindest.txt\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, FileStatus::Renamed);
+        assert_eq!(entries[0].from.as_deref(), Some("arrow => src.txt"));
+        assert_eq!(entries[0].path, "plaindest.txt");
+    }
+
+    /// Add/modify/delete always print the same path on both sides — `from` must read None, not
+    /// `Some` of the same string, since [`SummaryEntry::from`] means "the origin differs".
+    #[test]
+    fn diff_template_reads_add_modify_delete_with_no_from() {
+        let entries = parse_diff_template(
+            "A\tadded.txt\tadded.txt\n\
+             M\tmodified.txt\tmodified.txt\n\
+             D\tdeleted.txt\tdeleted.txt\n",
+        );
+        let got: Vec<(FileStatus, &str, Option<&str>)> = entries
+            .iter()
+            .map(|e| (e.status, e.path.as_str(), e.from.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (FileStatus::Added, "added.txt", None),
+                (FileStatus::Modified, "modified.txt", None),
+                (FileStatus::Deleted, "deleted.txt", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_template_reads_a_copy() {
+        let entries = parse_diff_template("C\tsrc.txt\tcopy.txt\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, FileStatus::Renamed); // jj has no separate FileStatus for it
+        assert_eq!(entries[0].from.as_deref(), Some("src.txt"));
+        assert_eq!(entries[0].path, "copy.txt");
+    }
+
+    #[test]
+    fn diff_template_drops_a_line_with_too_few_fields() {
+        assert!(parse_diff_template("A\tonly-one-field\n").is_empty());
+        assert!(parse_diff_template("just-one-field-no-tab\n").is_empty());
+    }
+
+    #[test]
+    fn diff_template_of_empty_input_is_empty() {
+        assert!(parse_diff_template("").is_empty());
+    }
+
+    #[test]
+    fn diff_template_tolerates_a_trailing_newline() {
+        let entries = parse_diff_template("A\tadded.txt\tadded.txt\n\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "added.txt");
+    }
+
+    /// The regression this parser exists to avoid: a path can contain a tab, and it is always the
+    /// trailing field (the target) here, since `splitn(3, ...)` only splits on the first two tabs.
+    #[test]
+    fn diff_template_keeps_a_tab_embedded_in_the_target_path() {
+        let entries = parse_diff_template("R\tplain.txt\tweird\tname.txt\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].path, "weird\tname.txt",
+            "the target must absorb everything after the second tab, unsplit"
+        );
+        assert_eq!(entries[0].from.as_deref(), Some("plain.txt"));
+    }
+
     fn dag_line(subject: &str, flags: &str) -> String {
         format!("commit1\tparent1\tchange1\tauthor\t2026-08-19\t1755600000\t\t\t{flags}\t{subject}")
     }
@@ -1182,6 +1368,67 @@ mod tests {
         std::fs::write(dir.join("changed.txt"), b"after\n").ok()?;
         std::fs::write(dir.join("added.txt"), b"new\n").ok()?;
         std::fs::write(dir.join("-dash.txt"), b"dash after\n").ok()?;
+        Some(dir)
+    }
+
+    /// A scratch repo whose seed commit renames two files whose names defeat `--summary`'s
+    /// compressed `PREFIX{FROM => TO}SUFFIX` shape: one containing a literal `{`/`}`, one
+    /// containing the literal `" => "` separator itself. `diff_entries` reads these through the
+    /// `-T` template ([`DIFF_TEMPLATE`]) instead, which prints the source and target in full, so
+    /// there is no compressed shape to reverse-engineer for either name.
+    ///
+    /// Same shape as `scratch_repo`'s own rename dance (mostly unchanged multi-line content, one
+    /// line extended) for the same reason: jj's rename detection is similarity-based, and a file
+    /// rewritten wholesale reads as a delete plus an add rather than a rename.
+    fn scratch_repo_with_ambiguous_renames(name: &str) -> Option<PathBuf> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(
+            dir.join("weird{a}.txt"),
+            b"line one\nline two\nline three\nline four\nline five\n",
+        )
+        .ok()?;
+        std::fs::write(
+            dir.join("arrow => src.txt"),
+            b"line one\nline two\nline three\nline four\nline five\n",
+        )
+        .ok()?;
+        if !jj(&["commit", "-m", "genesis"]) {
+            return None;
+        }
+        std::fs::rename(dir.join("weird{a}.txt"), dir.join("weird{b}.txt")).ok()?;
+        std::fs::write(
+            dir.join("weird{b}.txt"),
+            b"line one\nline two\nline three\nline four\nline five extended\n",
+        )
+        .ok()?;
+        std::fs::rename(dir.join("arrow => src.txt"), dir.join("plaindest.txt")).ok()?;
+        std::fs::write(
+            dir.join("plaindest.txt"),
+            b"line one\nline two\nline three\nline four\nline five extended\n",
+        )
+        .ok()?;
+        if !jj(&["commit", "-m", "seed"]) {
+            return None;
+        }
         Some(dir)
     }
 
@@ -1369,6 +1616,106 @@ mod tests {
         assert!(
             text.contains(&"line five"),
             "the origin's content must be readable from the move-from path: {text:?}"
+        );
+        assert!(
+            text.contains(&"line five extended"),
+            "the destination's content must be present too: {text:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for the `Added` vs `Modified` ordering fix: a symlink created after the seed
+    /// commit — jj has never tracked it — must read as `Added`, the same as a brand-new regular
+    /// file. Before the fix, `scan`'s `is_symlink` branch ran before the untracked check, so every
+    /// never-tracked symlink read as `Modified` instead.
+    #[test]
+    fn symlink_created_after_the_last_snapshot_is_added_not_modified() {
+        let Some(dir) = scratch_repo("symlink_added") else {
+            return;
+        };
+        let link = dir.join("brand-new-link.txt");
+        std::os::unix::fs::symlink("kept.txt", &link)
+            .expect("create a fresh symlink jj has never tracked");
+
+        let st = statuses(&dir);
+        assert_eq!(
+            st.get(&link),
+            Some(&FileStatus::Added),
+            "a symlink jj has never tracked must be Added, not Modified: {st:?}"
+        );
+        let files = changed_files(&dir);
+        let entry = files
+            .iter()
+            .find(|f| f.path == link)
+            .expect("the new symlink must appear in the changed-file list");
+        assert_eq!(entry.status, FileStatus::Added);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for the rename-ambiguity fix: a literal `{`/`}` in a filename used to defeat
+    /// `split_rename`'s `spec.find('{')` — the file's own braces were mistaken for the compression
+    /// markers around `PREFIX{FROM => TO}SUFFIX`, so the inner `split_once(" => ")` failed and
+    /// `parse_diff_summary` dropped the whole rename (see `split_rename`'s doc comment). Reading
+    /// `-T DIFF_TEMPLATE` prints the source and target in full, so there is nothing to misparse.
+    #[test]
+    fn rename_with_curly_braces_in_the_name_survives_commit_diff() {
+        let Some(dir) = scratch_repo_with_ambiguous_renames("curly") else {
+            return;
+        };
+        let seed = log(&dir, 10)
+            .into_iter()
+            .find(|c| c.summary == "seed")
+            .expect("the fixture always creates a commit described \"seed\"");
+        let lines = commit_diff(&dir, &seed.id);
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"weird{b}.txt"),
+            "the renamed file must have a header entry in the commit diff at all: {text:?}"
+        );
+        assert!(
+            text.contains(&"line five"),
+            "the origin's content must be readable from the move-from path: {text:?}"
+        );
+        assert!(
+            text.contains(&"line five extended"),
+            "the destination's content must be present too: {text:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other shape `--summary`'s compression cannot resolve: a filename containing the literal
+    /// `" => "` separator itself. Before this fix, `split_rename` read the file's own text as the
+    /// compression markers and handed back a path that does not exist on disk — for a rename of
+    /// `arrow => src.txt` to `plaindest.txt`, it produced `from="arrow"`, `to="src.txt =>
+    /// plaindest.txt"`. Reading `-T DIFF_TEMPLATE` prints the real source and target verbatim, so no
+    /// such path can ever be synthesized.
+    #[test]
+    fn rename_with_the_literal_arrow_in_the_name_never_synthesizes_a_bogus_path() {
+        let Some(dir) = scratch_repo_with_ambiguous_renames("arrow") else {
+            return;
+        };
+        let seed = log(&dir, 10)
+            .into_iter()
+            .find(|c| c.summary == "seed")
+            .expect("the fixture always creates a commit described \"seed\"");
+        let lines = commit_diff(&dir, &seed.id);
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"plaindest.txt"),
+            "the real destination must have a header entry: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|t| t.contains("src.txt => plaindest.txt")),
+            "no entry may carry a path that does not exist on disk — this is the bug-shape \
+             mangled destination `split_rename` used to synthesize: {text:?}"
+        );
+        assert!(
+            !text.contains(&"arrow"),
+            "no entry may carry the bug-shape mangled origin either: {text:?}"
+        );
+        assert!(
+            text.contains(&"line five"),
+            "the origin's content (read from \"arrow => src.txt\") must be readable: {text:?}"
         );
         assert!(
             text.contains(&"line five extended"),
