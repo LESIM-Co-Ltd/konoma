@@ -415,7 +415,11 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
-#   Git グラフ   : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
+#                  "jj_sync"(R= ハブで jj に作業コピーを取り込ませる。konoma が jj リポジトリに
+#                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
+#   Git グラフ   : "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。
+#                    狭い既定を持つのは jj だけ)
+#                  "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
 #                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
 #                  "git_graph_picker_move_up" "git_graph_picker_move_down"
 #   Git ワークツリー: "git_open_worktrees"(w・変更ハブ内: リンクワークツリー一覧を開く。

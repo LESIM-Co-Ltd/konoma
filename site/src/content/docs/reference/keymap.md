@@ -102,6 +102,10 @@ information contextually inside the app.
 | Worktrees (`w`): `Enter` / `Ctrl-t` | switch this tab to it / open it in a new tab |
 | Worktrees: `d` / `/` | diff it against its base branch / filter |
 | Worktrees: `n` | create one — asks for a branch name, then switches into it |
+| **jj** — hub: `R` | ask jj to snapshot the working copy (the only write; confirmed first) |
+| **jj** — hub: `b` | bookmarks (jj's pointers; none is marked current) |
+| **jj** — graph: `a` | show every revision instead of jj's own range |
+| **jj** — hub | no `s`/`u`/`S`/`U`/`c`/`x`/`w`: jj has no index, and konoma only reads |
 
 ## Tab list (`T`)
 

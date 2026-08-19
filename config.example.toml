@@ -432,7 +432,12 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
+#                  "jj_sync" (R, in the hub: let jj snapshot the working copy — konoma's only
+#                    write to a jj repository, and only after a confirmation. Does nothing in a
+#                    git repository.)
 #   Git graph    : "git_graph_set_base" "git_graph_clear_base" "git_graph_open_picker"
+#                  "git_graph_toggle_all" (a: show every revision instead of the range the
+#                    backend considers current — only jj has a narrower one)
 #                  "git_graph_picker_toggle" "git_graph_picker_all" "git_graph_picker_current_only"
 #                  "git_graph_picker_move_up" "git_graph_picker_move_down"
 #   Git worktrees: "git_open_worktrees" (w, in the changes hub: open the linked-worktree list — a
