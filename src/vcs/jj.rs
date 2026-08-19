@@ -1002,6 +1002,10 @@ fn revision_bytes(ws: &Path, rev: &str, rel: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only needed for `an_ordinary_directory_answers_empty_for_every_read`'s direct call to
+    // `crate::vcs::Jj::worktree_origin` — a trait method call requires the trait itself in scope,
+    // even when the receiver's type is already spelled out in full.
+    use crate::vcs::Vcs;
 
     /// The one invariant that keeps konoma from writing to a jj repository. If a call is ever built
     /// without going through `args`, this test is the thing that should have caught it.
@@ -2734,5 +2738,188 @@ mod tests {
             "nothing has changed in a repository with no commits and no files"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `worktree_origin`'s jj side ([`crate::vcs::Jj::worktree_origin`]) always answers `None`,
+    /// no matter what `root` is — not "not implemented yet", but deliberately out of scope: jj's
+    /// own equivalent of a linked worktree is `jj workspace`, which this backend does not model at
+    /// all (see that method's own doc comment). Every other method on `Vcs` has at least one test
+    /// that reaches the jj backend; before this test, this was the sole exception, so a future `jj
+    /// workspace` implementation that started returning `Some(..)` here could ship unnoticed.
+    ///
+    /// Goes through the facade (`crate::vcs::worktree_origin`) — the way every real caller reaches
+    /// it — rather than calling `Jj::worktree_origin` directly, so this also pins that `detect`
+    /// actually routes a `.jj`-only directory to the jj backend for this call, not merely that the
+    /// method body is a stub. `set_preference_for_test` pins the thread-local override to `Auto`
+    /// for the same reason `backend_for_a_jj_only_directory_is_read_only` (src/vcs/mod.rs) does:
+    /// `PREFERENCE` is process-wide, and every other test's `App::new` writes it too.
+    #[test]
+    fn worktree_origin_through_the_facade_is_always_none() {
+        let Some(dir) = scratch_repo("worktree_origin") else {
+            return;
+        };
+        crate::vcs::set_preference_for_test(Some(crate::vcs::Preference::Auto));
+        assert_eq!(
+            crate::vcs::detect(&dir),
+            crate::vcs::VcsKind::Jj,
+            "sanity: detect must pick jj here"
+        );
+        assert_eq!(
+            crate::vcs::worktree_origin(&dir),
+            None,
+            "jj models no worktree_origin — jj workspace is deliberately out of scope"
+        );
+        crate::vcs::set_preference_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch repo for `changed_files_is_sorted_by_path` below, built so that `scan`'s own
+    /// natural order disagrees with alphabetical order: two modified files and three added files
+    /// come out of [`walk`] in whatever order the filesystem hands them back (not sorted), and the
+    /// one deleted file (`delta.txt`) is appended afterwards from `tracked.difference(&seen)` — a
+    /// `HashSet` iteration, genuinely unordered — so it lands wherever that iteration happens to
+    /// put it, not necessarily where it alphabetically belongs (second). Only `changed_files`'s own
+    /// `sort_by` can make the result come out as `alpha, delta, kappa, mango, sierra, zulu`.
+    fn scratch_repo_changed_files_order(name: &str) -> Option<PathBuf> {
+        if !available() {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("konoma_jj_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let jj = |args: &[&str]| {
+            std::process::Command::new("jj")
+                .current_dir(&dir)
+                .env("HOME", &dir)
+                .env("JJ_USER", "konoma test")
+                .env("JJ_EMAIL", "test@example.invalid")
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !jj(&["git", "init", "--no-colocate", "."]) {
+            return None;
+        }
+        std::fs::write(dir.join("mango.txt"), b"one\n").ok()?;
+        std::fs::write(dir.join("delta.txt"), b"one\n").ok()?;
+        std::fs::write(dir.join("sierra.txt"), b"one\n").ok()?;
+        if !jj(&["commit", "-m", "genesis"]) {
+            return None;
+        }
+        // See `scratch_repo`'s doc for why this pause matters: jj's timestamps are
+        // second-resolution, and `newer_than` decides whether the walk even looks at a modified
+        // file's content, so every edit below must land at least a full second after the commit.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("mango.txt"), b"two\n").ok()?;
+        std::fs::write(dir.join("sierra.txt"), b"two\n").ok()?;
+        std::fs::remove_file(dir.join("delta.txt")).ok()?;
+        std::fs::write(dir.join("zulu.txt"), b"new\n").ok()?;
+        std::fs::write(dir.join("kappa.txt"), b"new\n").ok()?;
+        std::fs::write(dir.join("alpha.txt"), b"new\n").ok()?;
+        Some(dir)
+    }
+
+    /// The doc contract on `changed_files`: "sorted by path". The existing coverage
+    /// (`reports_changes_jj_has_not_snapshotted` et al.) only ever has 1-3 entries, so it could
+    /// never have caught `changed_files`'s `sort_by` being removed — see
+    /// `scratch_repo_changed_files_order`'s doc for why this fixture actually would.
+    #[test]
+    fn changed_files_is_sorted_by_path() {
+        let Some(dir) = scratch_repo_changed_files_order("changed_files_order") else {
+            return;
+        };
+        let names: Vec<String> = changed_files(&dir)
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "alpha.txt",
+                "delta.txt",
+                "kappa.txt",
+                "mango.txt",
+                "sierra.txt",
+                "zulu.txt",
+            ],
+            "changed_files must be sorted by path, not by scan's own walk-then-deletions order: \
+             {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `root` may be any directory inside the workspace, not just its top — `workspace_root` walks
+    /// up from wherever it is asked to find `.jj` (see its own doc), and every public function in
+    /// this module resolves through it. The git backend verifies the analogous property explicitly
+    /// (`src/git.rs`'s reftable test, and `workdir` from a subdirectory); this was jj's
+    /// counterpart, with none before this. Checked end to end — the caller-visible answer, not just
+    /// `workspace_root`'s own return value — since a real bug would show up as the two diverging,
+    /// not as `workspace_root` itself misresolving.
+    #[test]
+    fn statuses_and_changed_files_agree_from_a_subdirectory() {
+        let Some(dir) = scratch_repo("subdir") else {
+            return;
+        };
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        assert_eq!(
+            statuses(&sub),
+            statuses(&dir),
+            "same repository, same answer, no matter which directory root points at"
+        );
+        let to_tuples = |v: Vec<crate::git::ChangeEntry>| -> Vec<(PathBuf, FileStatus, bool)> {
+            v.into_iter()
+                .map(|e| (e.path, e.status, e.staged))
+                .collect()
+        };
+        assert_eq!(
+            to_tuples(changed_files(&sub)),
+            to_tuples(changed_files(&dir)),
+            "same repository, same answer, no matter which directory root points at"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every public read function in this module must answer empty/None for a directory that is
+    /// not a jj workspace at all — no `.jj` anywhere above it — including `/` itself. Deliberately
+    /// does **not** skip when `available()` is false, unlike every fixture-based test above:
+    /// `workspace_root` is a pure filesystem walk (`no_marker_means_no_workspace` pins that), and
+    /// every function below gates on it before ever building a `Command` (confirmed by reading each
+    /// one above), so this holds regardless of whether this machine has a working `jj` binary at
+    /// all. The git-side counterpart is `an_ordinary_directory_never_spawns_a_discovery_process`
+    /// (`src/git.rs`), which is likewise unconditional.
+    #[test]
+    fn an_ordinary_directory_answers_empty_for_every_read() {
+        let dir =
+            std::env::temp_dir().join(format!("konoma_jj_no_marker_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for probe in [dir.as_path(), Path::new("/")] {
+            assert!(statuses(probe).is_empty(), "statuses {probe:?}");
+            assert!(ignored(probe).is_empty(), "ignored {probe:?}");
+            assert!(branch(probe).is_none(), "branch {probe:?}");
+            assert!(
+                crate::vcs::Jj.worktree_origin(probe).is_none(),
+                "worktree_origin {probe:?}"
+            );
+            assert!(
+                file_diff(probe, &probe.join("nope.txt")).is_empty(),
+                "file_diff {probe:?}"
+            );
+            assert!(changed_files(probe).is_empty(), "changed_files {probe:?}");
+            assert!(log(probe, 10).is_empty(), "log {probe:?}");
+            assert!(graph(probe, None, 100).is_empty(), "graph {probe:?}");
+            assert!(bookmarks(probe).is_empty(), "bookmarks {probe:?}");
+            assert!(
+                bookmark_tip(probe, "main").is_none(),
+                "bookmark_tip {probe:?}"
+            );
+            assert!(commit_meta(probe, "@").is_none(), "commit_meta {probe:?}");
+            assert!(commit_diff(probe, "@").is_empty(), "commit_diff {probe:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

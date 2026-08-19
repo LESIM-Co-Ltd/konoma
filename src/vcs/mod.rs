@@ -33,10 +33,12 @@ pub struct Caps {
 ///
 /// `Send + Sync` because the status scan runs on a worker thread (`spawn_or_sync_statuses`).
 ///
-/// Every method has the same "quietly return nothing" contract as the free functions in
-/// [`crate::git`]: outside a repository, on failure, or when the integration is switched off, they
-/// return an empty/None answer rather than an error, so a caller never has to special-case
-/// "no repository here".
+/// Every method that takes a `root` has the same "quietly return nothing" contract as the free
+/// functions in [`crate::git`]: outside a repository, on failure, or when the integration is
+/// switched off, they return an empty/None answer rather than an error, so a caller never has to
+/// special-case "no repository here". [`Vcs::caps`] is the one exception — it takes no `root` at
+/// all, because it answers a static question about the backend already chosen for it, not about
+/// any particular directory.
 pub trait Vcs: Send + Sync {
     /// What this backend can do beyond reading. See [`Caps`].
     fn caps(&self) -> Caps;
@@ -692,6 +694,19 @@ mod tests {
     }
 
     // --- backend_for's routing, not just detect's answer -----------------------------------------
+
+    /// The asymmetric counterpart to `backend_for_a_jj_only_directory_is_read_only` below: jj's
+    /// `caps().write == false` is asserted there (and `src/e2e_tests.rs` separately covers the
+    /// reverse pin, git after having been jj), but nothing previously asserted git's own
+    /// `caps().write == true` directly — it was only ever true "by construction", never checked.
+    /// No fixture needed: `Git::caps` answers the same way regardless of `root`.
+    #[test]
+    fn git_backend_caps_reports_write_true() {
+        assert!(
+            Git.caps().write,
+            "git can change the repository — unlike jj, see Jj::caps"
+        );
+    }
 
     /// `backend_for` must not just *decide* jj, it must actually *route* to a backend whose `caps()`
     /// reports read-only — the property the rest of the app (write-gating menus, etc.) depends on.

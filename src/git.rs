@@ -3335,6 +3335,10 @@ mod tests {
         stage(&dir, &file).unwrap();
         commit(&dir, "init").unwrap();
         assert!(branch(&dir).is_some(), "sanity: has a branch after commit");
+        // Resolved while still enabled, the same way the branch-name lookups further down are —
+        // `commit_meta`/`commit_diff` need a real commit id to look up, but must still fail once
+        // the gate is off.
+        let commit_id = head_commit_id(&dir).expect("sanity: head resolves to a commit id");
         std::fs::write(&file, b"two\n").unwrap();
 
         set_external_git_enabled(false);
@@ -3353,6 +3357,11 @@ mod tests {
         assert!(file_diff(&dir, &file).is_empty(), "file_diff");
         assert!(changed_files(&dir).is_empty(), "changed_files");
         assert!(log(&dir, 10).is_empty(), "log");
+        // These two are the only entries missing from every other backend's twelve-method
+        // coverage of this same gate — a commit id resolved *before* disabling still fails to
+        // look anything up once the gate is off, same as `branch_tip`'s hardcoded name below.
+        assert!(commit_meta(&dir, &commit_id).is_none(), "commit_meta");
+        assert!(commit_diff(&dir, &commit_id).is_empty(), "commit_diff");
         assert!(worktree_diff(&dir).is_empty(), "worktree_diff");
         assert!(head_commit_id(&dir).is_none(), "head_commit_id");
         // Mutations: all route through the shared `run_git` gate.
@@ -4289,6 +4298,20 @@ mod tests {
                 assert!(ignored(&probe).is_empty());
                 assert!(changed_files(&probe).is_empty());
                 assert!(worktrees(&probe).is_empty());
+                assert!(log(&probe, 10).is_empty());
+                assert!(branches(&probe).is_empty());
+                assert!(branch_tip(&probe, "main").is_none());
+                assert!(commit_meta(&probe, "abc123").is_none());
+                assert!(commit_diff(&probe, "abc123").is_empty());
+                // `graph_with_base` is the one exception in this list: unlike every assertion
+                // above, it *does* spawn a real child process outside a repository — `dag_commits`
+                // (behind it) builds its own `Command` directly from `workdir_of` rather than
+                // going through `resolve_repo_dirs`/`cli_dir`, and is one of the "long-standing CLI
+                // implementations" `count_read_cli_calls`'s doc comment calls out as deliberately
+                // excluded from both counters. So this only pins that it still *answers* empty,
+                // not that it spawns nothing — the "0 discovery spawns" assertion below stays true
+                // regardless, because that spawn was never a *discovery* spawn to begin with.
+                assert!(graph_with_base(&probe, None, crate::i18n::Lang::En, None).is_empty());
             }
         });
         set_git_binary_available_for_test(None);
@@ -5359,6 +5382,53 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert!(after[0].staged, "add 後は staged=true のはず");
         assert!(after[0].path.ends_with("a.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The doc contract: `changed_files`'s result is "sorted by path" — not "happens to be", which
+    /// is all `changed_files_lists_staged_flag` above (one file) or `stage_commit_then_log_and_commit_diff`
+    /// (also one file) could ever have shown. `git status --porcelain` itself reports tracked
+    /// changes and untracked files as **two separately-sorted blocks**, not one merged alphabetical
+    /// list — confirmed empirically: with `delta.txt`/`mango.txt` modified and new untracked
+    /// `alpha.txt`/`kappa.txt`/`zulu.txt`, `git status --porcelain=v1` prints `delta, mango, alpha,
+    /// kappa, zulu`, the untracked block trailing the tracked one regardless of path. Only
+    /// `changed_files`'s own `sort_by` turns that into one merged alphabetical list.
+    #[cfg(feature = "git")]
+    #[test]
+    fn changed_files_is_sorted_by_path_across_tracked_and_untracked() {
+        let dir = unique_tmp("konoma_git_changed_files_sorted");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        for name in ["mango.txt", "delta.txt"] {
+            std::fs::write(dir.join(name), b"one\n").unwrap();
+        }
+        stage_all(&dir).unwrap();
+        commit(&dir, "init").unwrap();
+        // Tracked edits, out of alphabetical order relative to each other and to the untracked
+        // files added next.
+        std::fs::write(dir.join("mango.txt"), b"two\n").unwrap();
+        std::fs::write(dir.join("delta.txt"), b"two\n").unwrap();
+        // New, untracked — git reports this as a separate block, after the tracked block above.
+        for name in ["zulu.txt", "kappa.txt", "alpha.txt"] {
+            std::fs::write(dir.join(name), b"new\n").unwrap();
+        }
+        let names: Vec<String> = changed_files(&dir)
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "alpha.txt",
+                "delta.txt",
+                "kappa.txt",
+                "mango.txt",
+                "zulu.txt"
+            ],
+            "changed_files must be sorted by path, not grouped by tracked/untracked (git's own \
+             report order here is delta, mango, alpha, kappa, zulu): {names:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
