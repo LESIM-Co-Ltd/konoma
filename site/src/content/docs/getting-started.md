@@ -50,7 +50,8 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 **Optional tools**, all degrading gracefully when absent: `git` (git suite),
 `ffmpegthumbnailer` / `ffmpeg` (thumbnails for the video formats konoma can't
 decode itself — VP9, AV1, the older codecs, `.avi`), `lazygit` (external git
-tool on `!`, inside the changes hub). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code,
+tool on `!`, inside the changes hub), and `jj` / `lazyjj` if you work in jj
+(preview — without them konoma simply falls back to git). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, code,
 **PDF** (any page, via `J`/`K`) and **H.264 / HEVC video thumbnails**
 (`.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`) render natively in Rust — **nothing else to
 install at all**.
@@ -94,13 +95,19 @@ konoma with image previews.
 5. **Optional tools** for richer previews:
    ```sh
    brew install ffmpeg git lazygit
+   brew install jj lazyjj   # only if you work in jj (preview)
    ```
    PDF pages render without any of this (pure-Rust `hayro`, any page via
    `J`/`K`), and macOS's own `qlmanage`/`sips` — already installed — cover the
    rare PDF `hayro` can't handle. H.264 and HEVC video in `.mp4`/`.m4v`/`.mov`
    and `.mkv`/`.webm` is decoded natively too — including what an iPhone records
    by default; `ffmpeg` adds thumbnails for the rest (VP9, AV1, older codecs).
-   `git`/`lazygit` add the git suite.
+   `git`/`lazygit` add the git suite. `jj`/`lazyjj` are needed only if you work
+   in [jj (Jujutsu)](/guides/git/) — konoma
+   falls back to git without them, and reads a jj repository without ever
+   writing to it. jj is not in Debian/Ubuntu's archives: use [its own
+   instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) or
+   `cargo binstall jj-cli lazyjj`.
 6. **Run it** — open Ghostty, then:
    ```sh
    konoma            # the current directory

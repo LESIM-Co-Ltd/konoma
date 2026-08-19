@@ -142,8 +142,8 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit` — are each optional, and a missing one costs you that one feature,
-  never the app.
+  use — `git`, `ffmpeg`, `lazygit`, and `jj`/`lazyjj` for the jj backend — are each optional, and a
+  missing one costs you that one feature, never the app.
 
 ## Status
 
@@ -223,8 +223,13 @@ konoma never breaks when an external tool is missing — the relevant preview ju
 
 ```bash
 brew install ffmpeg git lazygit           # macOS
+brew install jj lazyjj                    # macOS — only if you work in jj (preview)
 sudo apt install ffmpeg git lazygit       # Debian / Ubuntu
 ```
+
+jj is not in Debian/Ubuntu's archives; install it from [its own
+instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt binary, or
+`cargo binstall jj-cli lazyjj`).
 
 - **ffmpeg** or **ffmpegthumbnailer** — thumbnails for the video formats konoma cannot decode itself:
   **VP9**, **AV1** and the older codecs (Xvid, MPEG-2, WMV, …), the `.avi` container, and the
@@ -236,9 +241,11 @@ sudo apt install ffmpeg git lazygit       # Debian / Ubuntu
   build with `--no-default-features` to drop it.
 - **lazygit** — the external git tool launched with `!` inside the changes hub. Any other TUI works
   too: set `[git] tool` in the config (e.g. `"tig status"`).
-- **jj** — needed only for the jj backend (preview). Without it konoma falls back to git, so a
-  machine with no jj behaves exactly as before. `[jj] tool` (default `lazyjj`) is what `!` launches
-  inside a jj repository.
+- **jj** — needed only for the jj backend (preview): without it konoma falls back to git, so a
+  machine with no jj behaves exactly as before. konoma runs it read-only — every call carries
+  `--ignore-working-copy`, so it never snapshots your working copy.
+- **lazyjj** — the external tool `!` launches inside a jj repository, the way lazygit is for git.
+  Any other TUI works too: set `[jj] tool` (e.g. `"jjui"`).
 
 Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
