@@ -38,6 +38,11 @@ All notable changes to konoma are documented in this file. The format is based o
   asking for a symlink's diff followed it through to its target, rendering the target's entire
   contents as new.
 
+- **jj: `o` was refused on a machine with jj but no git.** Opening the hub asked whether git was
+  installed and whether the git integration was switched on before asking which backend answers,
+  so a jj workspace drew its chip and change markers in the tree and then answered "git is not
+  installed". Both questions now apply only when git is the backend.
+
 ### Changed
 - The `[external] vcs` doc comment in the source said `auto` prefers jj; it has kept git wherever
   git can answer since v0.26.1, as every other description of the setting already said.
