@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::git::FileStatus;
 
@@ -301,13 +301,41 @@ const DIFF_TEMPLATE: &str = concat!(
 /// revision) keeps the verdict a property of this jj binary, not of what a particular call happens
 /// to be asking about.
 ///
-/// `OnceLock` means at most one extra jj invocation is ever spent finding this out, and only for
-/// the very first diff read in the process; every read after it already knows the answer and goes
-/// straight to the template or straight to `--summary`.
+/// The verdict is remembered **per workspace** (in [`TEMPLATE_OK`]) rather than once for the whole
+/// process. `run` folds every non-zero exit into `None`, so this probe cannot tell "this jj is too
+/// old for the template" apart from "this particular repository could not be read at all" — a
+/// repository whose `.jj/repo/store` is unreadable answers with an internal error, exit 255
+/// (measured against jj 0.44.0). Latched process-wide, that one repository would decide the answer
+/// for every other one opened afterwards, and jj would not even be launched to check: konoma holds
+/// several workspaces open at once across tabs, so one broken repository would quietly push all of
+/// them onto the `--summary` fallback, whose known ambiguity (a rename whose filename contains `{`,
+/// `}` or `" => "`) silently drops the file. Keying by workspace confines a repository-specific
+/// failure to that repository.
 fn diff_template_available(ws: &Path) -> bool {
-    static OK: OnceLock<bool> = OnceLock::new();
-    *OK.get_or_init(|| run(ws, &["diff", "-r", "@", "-T", DIFF_TEMPLATE]).is_some())
+    let cache = TEMPLATE_OK.get_or_init(|| Mutex::new(HashMap::new()));
+    // Never hold the lock across the jj invocation below: spawning a process can take hundreds of
+    // milliseconds, and this is called from the UI thread and from worker threads alike, so holding
+    // it that long would queue every other caller behind whichever one happens to be probing. The
+    // lock is dropped before probing and taken again only to record the answer, which lets two
+    // callers race to probe the same never-before-seen workspace — that spends one extra jj
+    // invocation, but both are asking the identical question of the identical workspace, so they
+    // agree. A poisoned lock is treated as a miss rather than propagated: the worst case is the same
+    // wasted probe. This mirrors `git.rs`'s `REPO_DIRS_CACHE`.
+    if let Ok(map) = cache.lock() {
+        if let Some(&ok) = map.get(ws) {
+            return ok;
+        }
+    }
+    let ok = run(ws, &["diff", "-r", "@", "-T", DIFF_TEMPLATE]).is_some();
+    if let Ok(mut map) = cache.lock() {
+        map.insert(ws.to_path_buf(), ok);
+    }
+    ok
 }
+
+/// Per-workspace verdicts for [`diff_template_available`]. See its doc for why this is not a single
+/// process-wide flag.
+static TEMPLATE_OK: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
 
 /// Reads one jj diff — the working-copy commit against its parent when `revset` is None, or a
 /// specific revision's diff when `Some` — into [`SummaryEntry`] rows.
@@ -1851,6 +1879,66 @@ mod tests {
             .expect("the new symlink must appear in the changed-file list");
         assert_eq!(entry.status, FileStatus::Added);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The verdict on whether this jj speaks the diff template is remembered per workspace, not
+    /// once for the whole process. `run` cannot tell a jj too old for the template apart from a
+    /// repository it simply could not read, so a single unreadable repository latched process-wide
+    /// would push every workspace opened afterwards onto the `--summary` fallback -- and that
+    /// fallback is exactly what cannot resolve a rename whose filename contains `{`, `}` or
+    /// `" => "`. Probing a broken workspace first must therefore leave a healthy one untouched.
+    ///
+    /// The broken workspace is made unreadable with `chmod 000` on its store and is put back and
+    /// removed **before** the assertions about the healthy one, so a failure below cannot leave an
+    /// undeletable directory behind.
+    #[test]
+    fn diff_template_verdict_is_scoped_to_its_own_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(broken) = scratch_repo("template_scope_broken") else {
+            return;
+        };
+        let Some(healthy) = scratch_repo_with_ambiguous_renames("template_scope_healthy") else {
+            let _ = std::fs::remove_dir_all(&broken);
+            return;
+        };
+
+        let store = broken.join(".jj/repo/store");
+        let restore =
+            std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o000)).is_ok();
+        let broken_verdict = restore.then(|| diff_template_available(&broken));
+        if restore {
+            let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755));
+        }
+        let _ = std::fs::remove_dir_all(&broken);
+        assert!(
+            !broken.exists(),
+            "the unreadable workspace must be cleaned up before anything else can fail"
+        );
+        assert_eq!(
+            broken_verdict,
+            Some(false),
+            "a workspace whose store cannot be read has to answer that the template is unusable"
+        );
+
+        // The healthy workspace is probed second, and must reach its own verdict rather than
+        // inheriting the broken one's.
+        let seed = log(&healthy, 10)
+            .into_iter()
+            .find(|c| c.summary == "seed")
+            .expect("the fixture always creates a commit described \"seed\"");
+        let lines = commit_diff(&healthy, &seed.id);
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(&"weird{b}.txt") && text.contains(&"plaindest.txt"),
+            "a healthy workspace probed after a broken one must still resolve both ambiguous \
+             renames -- this is the difference between the template path and `--summary`: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|t| t.contains("src.txt => plaindest.txt")),
+            "and must not contain the path `--summary` would have synthesised: {text:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&healthy);
     }
 
     /// Regression for the rename-ambiguity fix: a literal `{`/`}` in a filename used to defeat
