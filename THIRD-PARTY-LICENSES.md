@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (375)
+- MIT License (376)
 - Apache License 2.0 (12)
 - BSD 3-Clause "New" or "Revised" License (10)
 - Unicode License v3 (6)
@@ -1714,7 +1714,7 @@ Used by:
 - num-integer 0.1.46
 - num-rational 0.4.2
 - num-traits 0.2.19
-- regex-automata 0.4.14
+- regex-automata 0.4.18
 - regex-lite 0.1.9
 - regex-syntax 0.8.11
 - regex 1.12.4
@@ -5624,7 +5624,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- konoma 0.23.9
+- konoma 0.26.2
 
 ```
 MIT License
@@ -6504,6 +6504,7 @@ Used by:
 - csv-core 0.1.13
 - csv 1.4.0
 - globset 0.4.18
+- ignore 0.4.33
 - memchr 2.8.2
 - ucd-trie 0.1.7
 - walkdir 2.5.0
