@@ -6,6 +6,11 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **Going up a directory (`h`) now puts the cursor on the directory you just left**, instead of the
+  first row. Stepping into a folder, looking at something and coming back out used to lose your
+  place in the listing every time. `[ui] tree_cursor = "top"` restores the previous behaviour.
+
 ## [0.26.3] - 2026-08-21
 
 ### Fixed

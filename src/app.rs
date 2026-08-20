@@ -3111,6 +3111,13 @@ impl App {
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
+    ///
+    /// Cursor placement in the parent listing is governed by `ui.tree_cursor`. The literal `"top"`
+    /// always resets to row 0 (the legacy behavior); everything else — including the default
+    /// `"origin"` and any unrecognized value — puts the cursor back on the directory just left,
+    /// located by path in the rebuilt `entries` (matched after `rebuild_tree`, not before, since a
+    /// rebuild can re-sort). If that directory isn't present in the parent's listing (e.g. it's
+    /// hidden and `show_hidden` is off), this falls back to row 0 same as `"top"`.
     pub fn tree_leave(&mut self) -> Result<()> {
         if self.tab.tree_filter.is_some() {
             self.filter_clear();
@@ -3121,11 +3128,17 @@ impl App {
             return Ok(());
         }
         if let Some(parent) = self.tab.root.parent().map(Path::to_path_buf) {
+            let left_dir = self.tab.root.clone();
             self.clear_for_root_change();
             self.tab.root = parent;
             self.tab.entries.clear();
             self.tab.selected = 0;
             self.rebuild_tree()?;
+            if self.cfg.ui.tree_cursor != "top" {
+                if let Some(idx) = self.tab.entries.iter().position(|e| e.path == left_dir) {
+                    self.tab.selected = idx;
+                }
+            }
         }
         Ok(())
     }

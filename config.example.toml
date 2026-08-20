@@ -252,6 +252,15 @@ restore_tabs = true
 # file so the next launch starts fresh; sessions with two or more tabs still save/restore.
 restore_single_tab = true
 
+# Where the cursor lands after moving to the parent directory (h).
+#   "origin" (default) … put it on the directory you just left (the same spirit as q returning from
+#                        a preview: you land back where you came from, not at the top).
+#   "top"              … the older behavior: always land on the first row.
+# An unrecognized value is treated as "origin". If the directory you left isn't in the parent's
+# listing (e.g. it's hidden and show_hidden is off), this falls back to the top too. Either way,
+# descending into a directory (l) always starts at the top — there is no "came from" row there.
+tree_cursor = "origin"
+
 # Default tree sort (at startup). At runtime, switch with the `s` sort menu
 # (key n/s/m/e, r=reverse, .=dirs first).
 [ui.sort]

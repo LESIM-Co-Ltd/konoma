@@ -437,6 +437,23 @@ fn cfg_ui_follow_view_default_and_parse() {
     );
 }
 
+#[test]
+fn cfg_ui_tree_cursor_default_and_parse() {
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\n").unwrap().ui.tree_cursor,
+        "origin"
+    );
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\ntree_cursor = \"top\"\n")
+            .unwrap()
+            .ui
+            .tree_cursor,
+        "top"
+    );
+    // No `[ui]` table at all still resolves to the default via `#[serde(default)]`.
+    assert_eq!(Config::default().ui.tree_cursor, "origin");
+}
+
 /// `filter_mode`: default `"fuzzy"`; `"substring"` selects the legacy path; the raw field stores
 /// verbatim (like the other mode strings) but `.filter_mode()` is the permissive accessor — only
 /// the literal `"substring"` opts out of fuzzy, anything else (including a typo) is `"fuzzy"`.

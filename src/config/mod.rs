@@ -512,6 +512,12 @@ pub struct UiConfig {
     /// with a lone tab deletes that directory's session file and next launch starts fresh; sessions with
     /// two or more tabs still restore.
     pub restore_single_tab: bool,
+    /// Where the cursor lands after moving to the parent directory (`h`). `"origin"` (default) puts
+    /// it on the directory just left (the same spirit as `q` returning from a preview: you land back
+    /// where you came from, not at the top). `"top"` restores the legacy behavior of always landing on
+    /// the first row. Any other value is treated as `"origin"`. Descending into a directory (`l`)
+    /// always starts at the top either way — there is no "came from" row to return to there.
+    pub tree_cursor: String,
 }
 
 impl UiConfig {
@@ -757,6 +763,7 @@ impl Default for UiConfig {
             mermaid_rows: 24,
             restore_tabs: true,
             restore_single_tab: true,
+            tree_cursor: "origin".into(),
         }
     }
 }

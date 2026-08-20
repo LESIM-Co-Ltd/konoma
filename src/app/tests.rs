@@ -4243,6 +4243,161 @@ fn tree_descend_sets_root_to_selected_dir() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `ui.tree_cursor` default (`"origin"`): ascending (`h`) out of a directory that was not the
+/// first row puts the cursor back on that directory, not on row 0. Regression guard for the old
+/// unconditional `self.tab.selected = 0`, which this test would catch (it fails if `tree_leave`
+/// stops restoring the cursor).
+#[test]
+fn ascend_puts_the_cursor_on_the_directory_just_left() {
+    let dir = unique_tmp("konoma_ascend_origin_test");
+    std::fs::create_dir_all(dir.join("alpha")).unwrap();
+    std::fs::create_dir_all(dir.join("beta")).unwrap();
+    std::fs::create_dir_all(dir.join("gamma")).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("beta"))
+        .expect("beta が無い");
+    assert_ne!(
+        i, 0,
+        "土台: beta は一覧の先頭ではない(name昇順・dirs_firstでも alpha が先)"
+    );
+    app.tab.selected = i;
+    app.tree_descend().unwrap();
+    assert_eq!(app.tab.root, dir.join("beta"), "root が beta になる");
+
+    app.tree_leave().unwrap();
+    assert_eq!(app.tab.root, dir, "root は親に戻る");
+    let expect_idx = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("beta"))
+        .expect("戻った先の一覧に beta が無い");
+    assert_eq!(
+        app.tab.selected, expect_idx,
+        "カーソルは出てきた beta の行に乗る"
+    );
+    assert_ne!(app.tab.selected, 0, "先頭(alpha)に飛んではいけない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `ui.tree_cursor = "top"` restores the legacy behavior: `h` always lands on row 0 regardless of
+/// which directory was left.
+#[test]
+fn ascend_with_tree_cursor_top_goes_back_to_the_first_row() {
+    let dir = unique_tmp("konoma_ascend_top_test");
+    std::fs::create_dir_all(dir.join("alpha")).unwrap();
+    std::fs::create_dir_all(dir.join("beta")).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.tree_cursor = "top".into();
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("beta"))
+        .expect("beta が無い");
+    app.tab.selected = i;
+    app.tree_descend().unwrap();
+    app.tree_leave().unwrap();
+    assert_eq!(app.tab.root, dir, "root は親に戻る");
+    assert_eq!(app.tab.selected, 0, "tree_cursor=\"top\" は常に先頭に戻す");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// When the directory just left is not present in the parent's rebuilt listing (here: it is
+/// hidden and `show_hidden` was turned off in between), `h` falls back to row 0 instead of
+/// pointing at a stale/nonexistent index.
+#[test]
+fn ascend_falls_back_to_the_top_when_the_directory_it_left_is_not_listed() {
+    let dir = unique_tmp("konoma_ascend_hidden_fallback_test");
+    std::fs::create_dir_all(dir.join(".secret")).unwrap();
+    std::fs::create_dir_all(dir.join("visible")).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // Reveal the hidden directory just long enough to descend into it.
+    app.tab.show_hidden = true;
+    app.rebuild_tree().unwrap();
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with(".secret"))
+        .expect(".secret が無い");
+    app.tab.selected = i;
+    app.tree_descend().unwrap();
+    assert_eq!(app.tab.root, dir.join(".secret"));
+
+    // Hide dotfiles again before ascending: the parent listing tree_leave rebuilds will no longer
+    // contain `.secret`, so the by-path lookup must fail closed to row 0 rather than panic or
+    // silently leave a stale index.
+    app.tab.show_hidden = false;
+    app.tree_leave().unwrap();
+    assert_eq!(app.tab.root, dir, "root は親に戻る");
+    assert_eq!(
+        app.tab.selected, 0,
+        "戻り先の一覧に無ければ先頭にフォールバック"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression: descending (`l`) is untouched by `ui.tree_cursor` — it always starts at the top of
+/// the newly-entered directory, since there is no "came from" row to return to there.
+#[test]
+fn descend_still_starts_at_the_top_of_the_new_directory() {
+    let dir = unique_tmp("konoma_descend_top_test");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("a_first.txt"), b"x").unwrap();
+    std::fs::write(dir.join("sub").join("z_last.txt"), b"x").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("sub"))
+        .expect("sub が無い");
+    app.tab.selected = i;
+    app.tree_descend().unwrap();
+    assert_eq!(app.tab.root, dir.join("sub"));
+    assert_eq!(app.tab.selected, 0, "l は常に先頭から始まる");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An unrecognized `tree_cursor` value (a typo) must not silently disable the new behavior —
+/// permissive fallback treats it the same as `"origin"` (only the literal `"top"` opts out).
+#[test]
+fn ascend_treats_an_unknown_tree_cursor_value_as_origin() {
+    let dir = unique_tmp("konoma_ascend_bogus_test");
+    std::fs::create_dir_all(dir.join("alpha")).unwrap();
+    std::fs::create_dir_all(dir.join("beta")).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.tree_cursor = "bogus".into();
+    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.is_dir && e.path.ends_with("beta"))
+        .expect("beta が無い");
+    app.tab.selected = i;
+    app.tree_descend().unwrap();
+    app.tree_leave().unwrap();
+    let expect_idx = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.ends_with("beta"))
+        .expect("戻った先の一覧に beta が無い");
+    assert_eq!(
+        app.tab.selected, expect_idx,
+        "未知の値は origin として扱われる"
+    );
+    assert_ne!(app.tab.selected, 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn jump_to_dir_clears_selection_on_root_change() {
     // bug #2: changing root used to leave the old root's selection lingering by path, invisibly

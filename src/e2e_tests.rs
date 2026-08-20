@@ -8901,6 +8901,12 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
             "session_actions::restore_single_tab_true_saves_a_lone_tab / restore_single_tab_false_deletes_a_lone_tab_session / restore_single_tab_false_still_saves_multi_tab / restore_single_tab_false_skips_and_deletes_stale_single_tab_file",
         ),
     ),
+    (
+        "tree_cursor",
+        Coverage::CoveredByUnitTest(
+            "ascend_puts_the_cursor_on_the_directory_just_left (default \"origin\") / ascend_with_tree_cursor_top_goes_back_to_the_first_row (\"top\") / ascend_falls_back_to_the_top_when_the_directory_it_left_is_not_listed / descend_still_starts_at_the_top_of_the_new_directory (l unaffected) / ascend_treats_an_unknown_tree_cursor_value_as_origin",
+        ),
+    ),
 ];
 
 /// Extract `UiConfig`'s field names directly from `config/mod.rs`'s own source text: locate
