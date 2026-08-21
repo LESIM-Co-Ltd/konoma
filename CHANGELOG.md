@@ -6,6 +6,21 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.3] - 2026-08-21
+
+### Fixed
+- **jj: one unreadable repository could silently downgrade every other one.** Whether this jj
+  understands the diff template was probed once and remembered for the whole process, and the probe
+  cannot tell "this jj is too old" apart from "this repository could not be read at all". Opening an
+  unreadable repository first therefore decided the answer for every workspace opened afterwards --
+  without launching jj again to check -- and pushed them onto the fallback reader, which is exactly
+  the one that drops a rename whose filename contains `{`, `}` or `" => "`. The verdict is kept per
+  workspace now, so a repository-specific failure stays with that repository.
+- **The license notice shipped with the binaries was missing `ignore`.** The jj backend links it for
+  its working-copy walk and it was never added to `THIRD-PARTY-LICENSES.md`, so v0.26.1 and v0.26.2
+  both shipped without attributing it. Regenerated, and the release preflight now refuses to publish
+  when a direct dependency has no entry at all.
+
 ## [0.26.2] - 2026-08-19
 
 ### Fixed
@@ -1912,7 +1927,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...HEAD
+[0.26.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.25.0...v0.26.0
