@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.4] - 2026-08-21
+
 ### Changed
 - **Going up a directory (`h`) now puts the cursor on the directory you just left**, instead of the
   first row. Stepping into a folder, looking at something and coming back out used to lose your
@@ -1932,7 +1934,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...HEAD
+[0.26.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.0...v0.26.1
