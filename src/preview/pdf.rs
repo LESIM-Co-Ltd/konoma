@@ -172,7 +172,7 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     // content reaches almost immediately. Only a genuinely all-transparent buffer forces the full
     // scan — and that is exactly the case that is about to pay for an external-tool process spawn
     // anyway, so one extra linear pass over already-resident memory is noise beside it.
-    if rgba.chunks_exact(4).all(|px| px[3] == 0) {
+    if rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
         return None;
     }
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
