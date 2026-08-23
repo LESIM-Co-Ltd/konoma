@@ -199,7 +199,7 @@ emojis = "0.9"
 
 # 設定
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 
 # OS 既定言語の判定(`[ui] lang = "auto"`)。旧 `defaults read -g AppleLanguages` 子プロセスの代わり。
 # 依存クレート 0。macOS は CoreFoundation(CFLocaleCopyPreferredLanguages)を直接 `#[link]` するので

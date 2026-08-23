@@ -1681,10 +1681,14 @@ mermaid_rows = 100000
             "型エラーの理由(map 期待)がメッセージに含まれるべき: {msg2:?}"
         );
 
-        // A plain syntax error (unclosed table header) — its `Error::message()` itself spans two
-        // lines ("invalid table header\nexpected `.`, `]`"), so this also checks that the formatter
-        // collapses embedded newlines rather than letting a multi-line reason leak into what is
-        // shown as a single-line startup flash.
+        // A plain syntax error (unclosed table header). Under toml 0.8, `Error::message()` for
+        // this shape spanned two lines ("invalid table header\nexpected `.`, `]`"), which is what
+        // motivated the `\n` -> `; ` collapse in `format_config_load_error`. As of toml >=0.9's
+        // rewritten parser, `message()` no longer embeds newlines for any malformed-TOML shape
+        // probed here (confirmed across ~10 distinct syntax errors) -- the reason text itself
+        // changed too ("unclosed table, expected `]`", arguably more accurate for this input than
+        // the old wording). The `!contains('\n')` assertion below is kept as a still-true defensive
+        // invariant, even though no known toml::de::Error currently exercises the collapse it guards.
         let syntax_broken = "[ui\nshow_hidden = true\n";
         let e3 = toml::from_str::<Config>(syntax_broken).unwrap_err();
         let msg3 = format_config_load_error(&e3);
@@ -1693,7 +1697,7 @@ mermaid_rows = 100000
             "flash は1行なので、複数行に渡る reason は改行を潰して1行化すべき: {msg3:?}"
         );
         assert!(
-            msg3.contains("invalid table header"),
+            msg3.contains("unclosed table"),
             "構文エラーの理由も含まれるべき: {msg3:?}"
         );
     }

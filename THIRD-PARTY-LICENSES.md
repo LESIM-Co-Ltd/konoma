@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (385)
+- MIT License (382)
 - Apache License 2.0 (12)
 - BSD 3-Clause "New" or "Revised" License (10)
 - Unicode License v3 (6)
@@ -3983,14 +3983,12 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- serde_spanned 0.6.9
-- toml 0.8.23
-- toml_datetime 0.6.11
+- serde_spanned 1.1.1
+- toml 1.1.4+spec-1.1.0
 - toml_datetime 1.1.1+spec-1.1.0
-- toml_edit 0.22.27
 - toml_edit 0.25.13+spec-1.1.0
 - toml_parser 1.1.3+spec-1.1.0
-- toml_write 0.1.2
+- toml_writer 1.1.2+spec-1.1.0
 
 ```
 Copyright (c) Individual contributors
@@ -6341,7 +6339,6 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- winnow 0.7.15
 - winnow 1.0.4
 
 ```
