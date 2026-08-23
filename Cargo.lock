@@ -1669,7 +1669,7 @@ version = "0.26.4"
 dependencies = [
  "anyhow",
  "arboard",
- "base64 0.22.1",
+ "base64 0.23.1",
  "crossterm",
  "csv",
  "emojis",

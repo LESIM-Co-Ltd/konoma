@@ -65,7 +65,7 @@ image = "0.25"
 # (ratatui-image は非圧縮 RGBA を送る＝スクショ/図で転送量が数十倍になる)。両者とも既に推移依存として
 # ツリーに在り重複ビルドなし。詳細は docs/PERF-IMAGE-TRANSFER-2026-07.md。
 flate2 = "1"
-base64 = "0.22"
+base64 = "0.23"
 # SVG プレビュー: 純 Rust(usvg/tiny-skia/rustybuzz/fontdb)でラスタライズ→既存の画像経路へ流す。
 # chafa(C)/onig(C) を避けたのと同じ方針で、外部ライブラリ不要＝配布容易性(PRD §5)を維持。
 # default features に text/system-fonts/raster-images 等を含む(SVG 内テキスト/埋め込み画像対応)。
