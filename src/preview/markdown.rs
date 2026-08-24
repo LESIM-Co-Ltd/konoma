@@ -1,30 +1,31 @@
 // Built-in Markdown / Mermaid renderer (M3).
 //
-// Structure (settled 2026-06):
-//   - Markdown decoration: `tui-markdown`'s `from_str` (ratatui-core 0.1 = the same type as our
-//                 0.30). Decorates headings/emphasis/code/lists/tables/blockquotes/links etc.
-//                 tui-markdown's highlight-code (syntect default = the oniguruma C library) is
-//                 disabled, and code inside ```lang fences is instead colored on konoma's side
-//                 with pure-Rust syntect (`preview::code::highlight_lang`) = no oniguruma needed,
+// Structure:
+//   - Markdown decoration: konoma's own renderer (`markdown::render::render_doc`, driven by
+//                 `markdown::model::Doc`'s pulldown-cmark walk). Decorates
+//                 headings/emphasis/code/lists/tables/blockquotes/links etc. itself. This was
+//                 originally built on top of the `tui-markdown` crate (settled 2026-06); the
+//                 single-renderer migration replaced that dependency with konoma's own block-walk
+//                 renderer, and `tui-markdown` was dropped entirely once nothing called into it
+//                 (v0.26.x). Code inside ```lang fences is colored on konoma's side with
+//                 pure-Rust syntect (`preview::code::highlight_lang`) = no oniguruma needed,
 //                 preserving ease of distribution (PRD §5). Same path as a standalone code file.
 //   - Mermaid   : rendered as Unicode box-drawing text via `mermaid-text` (its only dependency is
 //                 unicode-width, pure Rust). No browser or image protocol needed. ```mermaid
 //                 fences inside the md are intercepted and composed.
 //
 // The initially considered `ratatui-markdown` depends on ratatui ^0.29, which is incompatible with
-// image preview (ratatui-image 11 requires ratatui 0.30), so it was rejected. See the comment in
-// Cargo.toml for details.
+// image preview (ratatui-image 11 requires ratatui 0.30), so it was rejected.
 //
 // Safe fallback on failure (design principle 3): if mermaid rendering fails or is unsupported
 // (e.g. a state diagram), show the raw source full-screen in a dim color (never crash).
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-// The parser's own option type takes the name tui-markdown itself uses for it internally
-// (`ParseOptions`) — see `tui_markdown_parse_options`, which must stay in lockstep with
-// tui-markdown's own set.
+// The parser's own option type keeps the name (`ParseOptions`) it was given while konoma's
+// renderer sat on top of `tui-markdown` — see `markdown_parse_options`, which is now konoma's own
+// option set (no upstream crate to stay in lockstep with).
 use pulldown_cmark::Options as ParseOptions;
-use tui_markdown::StyleSheet;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) mod model;
@@ -61,7 +62,7 @@ struct KonomaStyles {
     code_bg: Option<Color>,
 }
 
-impl StyleSheet for KonomaStyles {
+impl KonomaStyles {
     fn heading(&self, level: u8) -> Style {
         let base = Style::new().fg(HEAD_FG).add_modifier(Modifier::BOLD);
         match level {
@@ -1454,16 +1455,22 @@ fn skip_indented_code_block(lines: &[&str], i: &mut usize) {
     }
 }
 
-/// The pulldown-cmark parse options — **kept identical to tui-markdown's own** (written down in
-/// `tui-markdown-0.3.7/src/lib.rs`, `from_str_with_options`), because the scanners below ask the very
-/// parser the renderer renders through where the code blocks are. Letting the two option sets drift
-/// re-creates exactly the scanner-vs-renderer disagreement asking the parser exists to eliminate.
+/// The pulldown-cmark parse options konoma's own renderer walks with — used by both the renderer
+/// and the scanners below, so the scanners ask the very parser the renderer renders through where
+/// the code blocks are. These six flags used to have to be kept identical to `tui-markdown`'s own
+/// set (written down in `tui-markdown-0.3.7/src/lib.rs`, `from_str_with_options`), because a second,
+/// independently drifting option set reading the same document would re-create exactly the
+/// scanner-vs-renderer disagreement asking the parser exists to eliminate. Since the single-renderer
+/// migration dropped the `tui-markdown` dependency entirely, that upstream crate no longer exists to
+/// drift against — this option set is now konoma's own spec, not a mirror of anything external — but
+/// the reasoning still holds *within* konoma: every caller below asks this one function rather than
+/// re-deriving its own flags, so the renderer and its scanners can never independently disagree.
 ///
-/// Note what is deliberately **absent**: `ENABLE_TABLES`. tui-markdown collapses a GFM table into one
-/// line, which is why konoma intercepts table blocks with its own renderer (`split_tables`) before the
-/// text ever reaches the parser — see `render_md_text_inner`. Adding it here would make the scanner
-/// see tables the renderer never shows it.
-fn tui_markdown_parse_options() -> ParseOptions {
+/// Note what is deliberately **absent**: `ENABLE_TABLES`. konoma intercepts table blocks with its own
+/// renderer (`split_tables`) before the text ever reaches this parser — see `render_md_text_inner` —
+/// so this parser is never asked to understand a table at all; turning `ENABLE_TABLES` on here would
+/// make the scanners below see tables the renderer never shows them.
+fn markdown_parse_options() -> ParseOptions {
     let mut o = ParseOptions::empty();
     o.insert(ParseOptions::ENABLE_STRIKETHROUGH);
     o.insert(ParseOptions::ENABLE_TASKLISTS);
@@ -1502,7 +1509,7 @@ fn parser_code_blocks(text: &str, out: &mut Vec<String>) {
     // `Some` while inside a code block (they never nest), accumulating its content.
     let mut body: Option<String> = None;
     let mut drawn = false;
-    for ev in Parser::new_ext(text, tui_markdown_parse_options()) {
+    for ev in Parser::new_ext(text, markdown_parse_options()) {
         match ev {
             Event::Start(Tag::BlockQuote(_)) => quote_depth += 1,
             Event::End(TagEnd::BlockQuote(_)) => quote_depth = quote_depth.saturating_sub(1),
@@ -3130,7 +3137,7 @@ fn fence_mask(lines: &[&str]) -> Vec<bool> {
 /// `parser_code_blocks` does.
 ///
 /// Implementation: parse `lines` (rejoined with `\n`) via `Parser::new_ext` using
-/// `tui_markdown_parse_options()` — **the same option set the renderer itself parses with, reused
+/// `markdown_parse_options()` — **the same option set the renderer itself parses with, reused
 /// rather than redeclared**, so this mask can never drift from what *that parser* would call a code
 /// block when it reads `lines` as one raw run — through `into_offset_iter()`, so each
 /// `Event::Start(Tag::CodeBlock(_))` carries the block's byte range in that text. A line is marked
@@ -3195,7 +3202,7 @@ fn code_block_mask(lines: &[&str]) -> Vec<bool> {
     starts.push(pos);
 
     let mut mask = vec![false; lines.len()];
-    for (ev, range) in Parser::new_ext(&text, tui_markdown_parse_options()).into_offset_iter() {
+    for (ev, range) in Parser::new_ext(&text, markdown_parse_options()).into_offset_iter() {
         let Event::Start(Tag::CodeBlock(_)) = ev else {
             continue;
         };
@@ -4578,11 +4585,11 @@ struct FootnoteDef {
 }
 
 /// Parse options for locating footnote definitions. Deliberately a *separate* value from
-/// [`tui_markdown_parse_options`] — enabling `ENABLE_FOOTNOTES` there would change what the renderer
+/// [`markdown_parse_options`] — enabling `ENABLE_FOOTNOTES` there would change what the renderer
 /// itself parses, and the whole point of `process_footnotes` is that footnotes are rewritten into
 /// plain Markdown *before* the renderer ever sees them.
 fn footnote_parse_options() -> ParseOptions {
-    let mut o = tui_markdown_parse_options();
+    let mut o = markdown_parse_options();
     o.insert(ParseOptions::ENABLE_FOOTNOTES);
     o
 }

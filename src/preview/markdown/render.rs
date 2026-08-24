@@ -143,7 +143,6 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use tui_markdown::StyleSheet;
 
 use super::model::{code_body_text, html_body_text, AlertKind, Block, BlockKind, Doc, Task};
 use super::{

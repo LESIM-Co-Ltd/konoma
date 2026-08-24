@@ -10,13 +10,6 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     ignore:
-      # Capped below 0.3.9 in Cargo.toml on purpose: that release renders GFM alerts, footnotes,
-      # tables, and math natively, colliding with konoma's own implementations of the same blocks
-      # (two tests fail). Adopting it needs a design decision, not a version bump -- see
-      # docs/STATUS.md. The Cargo.toml requirement already blocks it; this keeps dependabot from
-      # reopening a PR that can never be merged as-is.
-      - dependency-name: "tui-markdown"
-        versions: [">=0.3.9"]
       # Vendored as a local fork under vendor/mermaid-text via [patch.crates-io], carrying a
       # CJK char-boundary fix upstream has not applied to its class-diagram parser. Bumping the
       # version in Cargo.toml without re-syncing that vendored tree by hand produces a build that

@@ -4088,10 +4088,10 @@ fn e2e_markdown_front_matter_off_leaves_body_intact() {
     s.see("title");
     s.see("body text");
     // What actually proves it's off: konoma's own pre-pass never ran, so the raw `---`...`---` block
-    // reaches tui-markdown unstripped. tui-markdown's parser unconditionally recognizes YAML-style
-    // metadata blocks (`ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS`, always on — see
-    // `tui_markdown_parse_options` in preview/markdown.rs) and renders the *whole* block with its own
-    // `metadata_block()` style — plain LightYellow, no separate key/value coloring. Confirmed by hand
+    // reaches the parser unstripped. konoma's own pulldown-cmark options unconditionally recognize
+    // YAML-style metadata blocks (`ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS`, always on — see
+    // `markdown_parse_options` in preview/markdown.rs) and the renderer draws the *whole* block with
+    // `KonomaStyles::metadata_block()` — plain LightYellow, no separate key/value coloring. Confirmed by hand
     // (`cargo test -- --nocapture`, dumping `style_of("title")`) that this is exactly the opposite of
     // the `on` test's Cyan+DIM key style, so the two needles are mutually exclusive.
     s.see_styled(

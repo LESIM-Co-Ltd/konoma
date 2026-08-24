@@ -469,18 +469,18 @@ impl<'a> Doc<'a> {
 }
 
 /// The `pulldown-cmark` options this model's walk uses. Built from the render pipeline's own
-/// `tui_markdown_parse_options` — by calling it, not by copying its six `insert` calls — so the two
+/// `markdown_parse_options` — by calling it, not by copying its six `insert` calls — so the two
 /// option sets can never independently drift the way that function's own doc comment warns two
 /// *different* option sets reading the same document eventually do; this model asks about
 /// everything the renderer's own scanners already ask about, plus exactly one extension:
 ///
-/// * `ENABLE_TABLES` — the render pipeline turns this **off** (see
-///   `tui_markdown_parse_options`'s doc comment: tui-markdown collapses a GFM table into a single
-///   line, so konoma's own hand-written table renderer, `split_tables`, intercepts table text
-///   *before* it ever reaches tui-markdown, and turning this on would let tui-markdown see a table
-///   it isn't meant to render). This model has no such renderer standing between it and the table —
-///   it is the thing a future renderer would *read* structure from — so it needs pulldown-cmark's
-///   real `Table`/`TableHead`/`TableRow`/`TableCell` events to fill in `BlockKind::Table`.
+/// * `ENABLE_TABLES` — the render pipeline turns this **off** (see `markdown_parse_options`'s doc
+///   comment: konoma's own hand-written table renderer, `split_tables`, intercepts table text
+///   *before* it ever reaches this parser, so the render pipeline's own parser is never asked to
+///   understand a table at all). This model has no such renderer standing between it and the
+///   table — it is the thing a future renderer would *read* structure from — so it needs
+///   pulldown-cmark's real `Table`/`TableHead`/`TableRow`/`TableCell` events to fill in
+///   `BlockKind::Table`.
 ///
 /// Two extensions that would add whole new *event kinds* stay off, on purpose, because konoma
 /// already has a hand-written source pre-pass for each, run on `src` *before* it reaches any
@@ -502,12 +502,12 @@ impl<'a> Doc<'a> {
 ///
 /// `pub(crate)`: `md_model_snapshot_tests` (in `src/app/`) drives its own independent,
 /// tree-free reading of the same event stream — `scan_reference_events` — off *this exact*
-/// function too, for the same reason `Doc::parse` itself calls `tui_markdown_parse_options`
+/// function too, for the same reason `Doc::parse` itself calls `markdown_parse_options`
 /// instead of copying it: a completeness check built on a second, hand-copied option set could
 /// pass or fail for reasons that have nothing to do with whether `Doc::parse` actually covers
 /// everything the real parser reports.
 pub(crate) fn parse_options() -> Options {
-    let mut o = super::tui_markdown_parse_options();
+    let mut o = super::markdown_parse_options();
     o.insert(Options::ENABLE_TABLES);
     o
 }

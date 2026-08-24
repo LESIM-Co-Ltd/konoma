@@ -14,6 +14,14 @@ All notable changes to konoma are documented in this file. The format is based o
   `#`, `---`, ```` ``` ````, `[!NOTE]`, or `[ ]` text instead of being drawn. All of them render
   properly now. GitHub alerts (`> [!NOTE]`) were already decorated and are unchanged.
 
+### Changed
+- Markdown preview rendering is now handled end to end by a single, built-in renderer, and the
+  `tui-markdown` crate it used to sit on top of has been removed as a dependency entirely. This
+  frees konoma from the upstream crate's own input-handling panics (previously caught and
+  degraded to raw text rather than crashing konoma, but still a rendering loss) and from a few
+  small mismatches between how it and konoma's own extraction logic read GFM syntax. No change in
+  how any supported Markdown document is drawn.
+
 ## [0.26.5] - 2026-08-24
 
 ### Fixed
