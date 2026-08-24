@@ -107,13 +107,21 @@
 //! reopening the reference-link gap the rest of this section describes closing.
 //!
 //! What this file *does* reimplement is the handful of `tui_markdown::TextWriter` methods that
-//! matter for the block kinds this pass covers (see the pinned `tui-markdown = "0.3.7"` dependency's
-//! own `src/lib.rs`, `impl<I, S> TextWriter<'_, I, S>`) — `Writer`, below, is that reimplementation,
-//! one method per `TextWriter` method it mirrors, walking `model::Block`'s tree instead of a raw
-//! `pulldown_cmark::Event` stream. See `Writer`'s own doc comment for the shape of that
-//! correspondence and why it has to hold onto more state than a plain inline-content walk needed
-//! (`list_indices`/`line_prefixes`/`line_styles`/`needs_newline` — all four exist in `TextWriter`
-//! itself, under the identical names, for the identical reasons).
+//! matter for the block kinds this pass covers (`tui-markdown`'s own `src/lib.rs`,
+//! `impl<I, S> TextWriter<'_, I, S>`, as of the `0.3.8` version this reimplementation was last
+//! checked against — `tui-markdown` is no longer a Cargo dependency, see below) — `Writer`, below,
+//! is that reimplementation, one method per `TextWriter` method it mirrors, walking
+//! `model::Block`'s tree instead of a raw `pulldown_cmark::Event` stream. See `Writer`'s own doc
+//! comment for the shape of that correspondence and why it has to hold onto more state than a
+//! plain inline-content walk needed (`list_indices`/`line_prefixes`/`line_styles`/`needs_newline`
+//! — all four exist in `TextWriter` itself, under the identical names, for the identical reasons).
+//!
+//! `tui-markdown` (MIT) stopped being a dependency once this file's block-model reimplementation
+//! replaced it, so `cargo-about` no longer lists it in `THIRD-PARTY-LICENSES.md` — but `Writer` is
+//! still derived code under `tui-markdown`'s MIT license, and the notice that license requires
+//! travels with the binary regardless of whether the crate is still linked. That notice is
+//! reproduced under "Derived code (not a dependency)" in `THIRD-PARTY-LICENSES.md` (kept there by
+//! hand in `about.hbs`, since `cargo-about` only walks the dependency graph).
 //!
 //! `Image` renders only its alt text — tui-markdown's own `Tag::Image` arm is a no-op `warn!`, so the
 //! URL is dropped and never appended anywhere, and nothing about the tag itself changes the writer's
