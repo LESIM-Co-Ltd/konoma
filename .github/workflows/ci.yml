@@ -23,7 +23,7 @@ jobs:
     # Measured at ~3 minutes; a job that runs this long is hung, not slow.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,7 +69,7 @@ jobs:
     # Measured at ~3 minutes; a job that runs this long is hung, not slow.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -144,7 +144,7 @@ jobs:
         include:
           - { os: macos-14, target: x86_64-apple-darwin }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -179,7 +179,7 @@ jobs:
     # Reads Cargo.lock against the advisory database; it never builds the project.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
