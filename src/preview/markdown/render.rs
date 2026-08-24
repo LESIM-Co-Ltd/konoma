@@ -147,7 +147,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet;
 
-use super::model::{code_body_text, AlertKind, Block, BlockKind, Doc, Task};
+use super::model::{code_body_text, html_body_text, AlertKind, Block, BlockKind, Doc, Task};
 use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
     details_marker_line, gutter_span, highlight_body, image_loading_line, image_placeholder_lines,
@@ -510,7 +510,9 @@ pub(crate) fn render_doc(
             // `Quote` — see `contains_unsupported`'s own doc comment on the parameter), so both are
             // always drawn here, never reported unsupported.
             BlockKind::Table { .. } => render_table_from_model(&mut w, src, block.src.clone()),
-            BlockKind::Html { .. } => render_html_block_from_model(&mut w, src, block.src.clone()),
+            BlockKind::Html { body_spans, .. } => {
+                render_html_block_from_model(&mut w, src, body_spans)
+            }
         }
     }
     let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
@@ -526,55 +528,66 @@ pub(crate) fn render_doc(
 /// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body (alert or not), a
 /// `Details`'s own body, or (recursively) any of those nested arbitrarily deep inside more of the
 /// same — contains, anywhere inside it, a block kind this pass cannot safely render at *this*
-/// position: a `Table` or an `Html` block found **nested inside a `Quote`** (`in_quote`, below — see
-/// its own doc comment for exactly why quote nesting, specifically, is the one shape that breaks
-/// them). `CodeBlock`, and (as of an earlier pass) `Quote { alert: Some(_), .. }`/`Details`, used to
-/// be names this function screened out too — see `render_code_block`'s own doc comment for why a
-/// `CodeBlock` no longer needs this treatment at all, at any nesting depth, quote included, and the
-/// module doc comment for the identical reasoning now extended to an alert/`<details>`: all three
-/// have real renderers now, so they recurse into their own `children` here (checking for a *still*-
-/// unsupported `Table`/`Html` nested inside *them*) the same way `List`/plain-`Quote` already do,
-/// rather than being reported unsupported outright. `Table`/`Html` themselves are no longer
-/// *unconditionally* unsupported either, as of this pass — see `in_quote`'s own doc comment for
-/// exactly which nesting shapes now render (`render_table_from_model`/`render_html_block_from_model`)
-/// and which still don't.
+/// position: a `Table` found **nested inside a `Quote`** (`in_quote`, below — see its own doc comment
+/// for exactly why quote nesting, specifically, is the one shape that still breaks it).
+/// `CodeBlock`, and (as of an earlier pass) `Quote { alert: Some(_), .. }`/`Details`, used to be names
+/// this function screened out too — see `render_code_block`'s own doc comment for why a `CodeBlock`
+/// no longer needs this treatment at all, at any nesting depth, quote included, and the module doc
+/// comment for the identical reasoning now extended to an alert/`<details>`: all three have real
+/// renderers now, so they recurse into their own `children` here (checking for a *still*-unsupported
+/// `Table` nested inside *them*) the same way `List`/plain-`Quote` already do, rather than being
+/// reported unsupported outright. `Html` used to be a second name reported here under the identical
+/// `in_quote` condition — see `in_quote`'s own doc comment for why that gate existed and what closed
+/// it (`model::BlockKind::Html.body_spans`) — but is no longer, at any nesting depth: it now recurses
+/// the same inert way every other leaf kind with no `children` of its own does (there is nothing
+/// nested *inside* an `Html` block for this function to find), rather than being matched here at all.
+/// `Table` remains genuinely unsupported when quote-nested — see `in_quote`'s own doc comment for
+/// exactly why, and why `Html` no longer shares its fate.
 ///
 /// `in_quote`: whether the walk reaching this call is currently *inside* a `Quote`'s own subtree (the
 /// call site itself is what sets this — `true` the moment `Quote { .. }`, below, recurses into its
-/// own `children`; unchanged for every other container kind). A `Table`/`Html` is reported
-/// unsupported **only** when found while this is `true` — because both are rendered from a *naive*
-/// whole-block slice of `Block.src` (`render_table_from_model`/`render_html_block_from_model`,
-/// reusing `markdown.rs`'s own line-based `render_table`/`render_html_block` directly, per the
-/// module doc comment's own "Scope" section on why that reuse — not a re-derivation — is the right
-/// choice for a table, a *self-contained* structure with no reference to any other block), and a
-/// blockquote's own `>` marker survives on **every continuation line** of anything nested inside it
-/// (the identical asymmetric-range property `render_paragraph_math`'s own doc comment already
-/// documents for a quoted paragraph — confirmed directly, the same way, for a `Table`: parsing
-/// `"> | a | b |\n> |---|---|\n> | 1 | 2 |\n"` reports the table's own `Block.src` slice as
-/// `"| a | b |\n> |---|---|\n> | 1 | 2 |\n"` — the *first* line's marker excluded, every later
-/// line's kept), which breaks both `render_table`'s own line-based delimiter/cell parsing (the
-/// `>`-prefixed delimiter row no longer matches `is_table_delimiter`'s own character set, so the
-/// whole table degrades to garbled literal rows) and `render_html_block`'s own tag-stripping (the
-/// `>` survives into the displayed text verbatim) the same naive way. `List`/`Details` nesting never
-/// has this problem at all — no marker character survives on a list item's own continuation lines
-/// the way a blockquote's own repeats (`BlockCtx.math_here`'s own doc comment covers the identical
-/// point for image/mermaid extraction's own line-based checks) and `<details>` adds no per-line
-/// marker to begin with — so neither ever sets `in_quote`, and a `Table`/`Html` reached purely
-/// through either renders correctly.
+/// own `children`; unchanged for every other container kind). A `Table` is reported unsupported
+/// **only** when found while this is `true` — because it is rendered from a *naive* whole-block slice
+/// of `Block.src` (`render_table_from_model`, reusing `markdown.rs`'s own line-based `render_table`
+/// directly, per the module doc comment's own "Scope" section on why that reuse — not a re-
+/// derivation — is the right choice for a table, a *self-contained* structure with no reference to
+/// any other block), and a blockquote's own `>` marker survives on **every continuation line** of
+/// anything nested inside it (the identical asymmetric-range property `render_paragraph_math`'s own
+/// doc comment already documents for a quoted paragraph — confirmed directly, the same way, for a
+/// `Table`: parsing `"> | a | b |\n> |---|---|\n> | 1 | 2 |\n"` reports the table's own `Block.src`
+/// slice as `"| a | b |\n> |---|---|\n> | 1 | 2 |\n"` — the *first* line's marker excluded, every
+/// later line's kept), which breaks `render_table`'s own line-based delimiter/cell parsing (the
+/// `>`-prefixed delimiter row no longer matches `is_table_delimiter`'s own character set, so the whole
+/// table degrades to garbled literal rows). `List`/`Details` nesting never has this problem at all —
+/// no marker character survives on a list item's own continuation lines the way a blockquote's own
+/// repeats (`BlockCtx.math_here`'s own doc comment covers the identical point for image/mermaid
+/// extraction's own line-based checks) and `<details>` adds no per-line marker to begin with — so
+/// neither ever sets `in_quote`, and a `Table` reached purely through either renders correctly.
 ///
-/// This mirrors production's own real, confirmed limitation for the identical shape (not a defect
-/// unique to this stage's own reuse choice): `split_tables`'s/`split_html_blocks`'s own raw-line
-/// scans are *equally* defeated by a quote-nested table's/HTML block's own `>`-prefixed continuation
-/// lines (`is_table_delimiter`'s own character set has no `>` in it at all; `is_html_block_start`
-/// reads `line.trim_start()`, which never strips one either) — a quote-nested table stays
-/// undetected, its pipe-delimited syntax rendered as literal wrapped text through tui-markdown
-/// instead of a real, box-drawn table; a quote-nested HTML block is silently dropped entirely
-/// (tui-markdown's own `Event::Html` handling, the very defect `split_html_blocks` exists to rescue
-/// from elsewhere — see that function's own doc comment — reaching exactly the case its own
-/// rescue cannot reach). Reporting the whole enclosing `Quote` unsupported here, rather than
-/// reproducing either of those two very different degradations, is the honest choice for this
-/// stage — the identical judgment call the module doc comment already makes for every other
-/// not-yet-covered shape.
+/// `Html` used to share this exact defect — `render_html_block_from_model` used to take the identical
+/// naive `&src[block_src]` slice `render_table_from_model` still does, so a quote-nested `Html`
+/// block's own continuation lines carried the same surviving `>` marker into `render_html_block`'s own
+/// tag-stripping. That is fixed now: `model::BlockKind::Html.body_spans` names the block's own content
+/// as one byte range per `Event::Html` pulldown-cmark itself reports, and pulldown-cmark's own
+/// per-line ranges already exclude a quote's `>` marker on every line, first or not (see that field's
+/// own doc comment for the confirmed dump) — `render_html_block_from_model` reads `body_spans`, not
+/// `Block.src`, so it draws a quote-nested `Html` block exactly as correctly as a top-level one. A
+/// `Table` has no equivalent per-cell "already marker-free" range pulldown-cmark reports on its own
+/// (a cell's `Range<usize>` is still a slice of the same marker-carrying `Block.src`) — this is a
+/// genuine, remaining asymmetry between the two, not an oversight that `Html`'s own fix simply forgot
+/// to extend to `Table` as well.
+///
+/// This mirrors production's own real, confirmed limitation for the identical `Table` shape (not a
+/// defect unique to this stage's own reuse choice): `split_tables`'s own raw-line scan is *equally*
+/// defeated by a quote-nested table's own `>`-prefixed continuation lines (`is_table_delimiter`'s own
+/// character set has no `>` in it at all) — a quote-nested table stays undetected, its pipe-delimited
+/// syntax rendered as literal wrapped text through tui-markdown instead of a real, box-drawn table.
+/// Reporting the whole enclosing `Quote` unsupported here, rather than reproducing that degradation,
+/// is the honest choice for this stage — the identical judgment call the module doc comment already
+/// makes for every other not-yet-covered shape. (Production has an analogous, now-closed limitation
+/// for `Html`, too — `split_html_blocks`'s own `is_html_block_start` reads `line.trim_start()`, which
+/// never strips a `>` marker either, so a quote-nested HTML block was silently dropped entirely there;
+/// this stage no longer reproduces that one, `Html`'s own real fix above being the reason why.)
 ///
 /// Returns the *first* such kind's name found, in document order, for the caller (`render_doc`'s own
 /// top-level dispatch, or a nested recursive call from this same function walking back up) to record
@@ -583,9 +596,8 @@ pub(crate) fn render_doc(
 /// "report the container as unsupported and skip the whole subtree" choice (see the module doc
 /// comment) honest for `List`/`Quote`/`Details`: a three-item list with a quote-nested table buried
 /// in the third item's own nested sublist is not partially rendered with a hole where that block
-/// would have gone — the whole list, all three items, is skipped, called out under whichever nested
-/// kind's own name `contains_unsupported` actually found, exactly like a bare top-level quote-nested
-/// `Table` always has been.
+/// would have gone — the whole list, all three items, is skipped, called out under `"Table"`, exactly
+/// like a bare top-level quote-nested `Table` always has been.
 ///
 /// A **loose list item that has a task marker** used to be excluded here too, under a synthetic
 /// `"LooseTask"` name — not a real `BlockKind` variant at all — because that exact shape crashed
@@ -597,14 +609,13 @@ pub(crate) fn render_doc(
 /// `render_item`'s own doc comment) instead of being reported unsupported.
 ///
 /// A leaf kind with no `Block::children` of its own (`Heading`/`Paragraph`/`ThematicBreak`/
-/// `CodeBlock`, and the two `BlockKind` variants this function itself is checking for) never
-/// recurses — there is nothing further to walk under any of them (see `model::Block.children`'s own
-/// doc comment: "Empty for every leaf kind").
+/// `CodeBlock`/`Html`, and `Table`, the one `BlockKind` variant this function itself still checks for)
+/// never recurses — there is nothing further to walk under any of them (see `model::Block.children`'s
+/// own doc comment: "Empty for every leaf kind").
 fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
             BlockKind::Table { .. } if in_quote => return Some("Table"),
-            BlockKind::Html { .. } if in_quote => return Some("Html"),
             BlockKind::Table { .. } | BlockKind::Html { .. } => {}
             BlockKind::Heading { .. }
             | BlockKind::Paragraph { .. }
@@ -3657,13 +3668,17 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
     w.fresh_boundary = true;
 }
 
-/// Renders an `Html` block's own raw source directly into `w`, in place — mirroring production's own
-/// two-pass split line by line, rather than treating the block as one opaque blob. Only ever called for
-/// an `Html` block `contains_unsupported` has already confirmed is not nested inside any `Quote` — see
-/// that function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead
-/// (a quote-nested HTML block is silently *dropped entirely* in production — this file's own naive
-/// slice, `>`-prefix and all, would be a real, if different, degradation of its own, not an
-/// improvement worth reproducing).
+/// Renders an `Html` block's own content directly into `w`, in place — mirroring production's own
+/// two-pass split line by line, rather than treating the block as one opaque blob. Reads that content
+/// from `body_spans` (`model::BlockKind::Html.body_spans`), not a single `&src[block_src]` slice: a
+/// block quote's own `>` marker survives on every continuation line of `Block::src` (`contains_unsupported`'s
+/// own doc comment covers this in full for why a naive whole-block slice cannot be used here), but not
+/// on any individual `Event::Html` range `body_spans` is built from — see that field's own doc comment
+/// for the confirmed dump. This is what lets this function draw a quote-nested `Html` block correctly
+/// (production silently *drops* one entirely — this was, until this field existed, an unfixed defect
+/// this file reproduced too by falling the whole enclosing `Quote` back to the legacy renderer via
+/// `contains_unsupported`'s `Html { .. } if in_quote` arm; that arm no longer fires for `Html` at all —
+/// see its own doc comment).
 ///
 /// ## Every standalone-image line is its own image, not just the block's first `<img>`
 ///
@@ -3690,8 +3705,8 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
 /// READMEs — `static_assertions`/`raw-window-metal`/`tinytemplate`, the corpus cases this closes — hit
 /// this constantly.)
 ///
-/// Walks `raw`'s own physical lines (`split_inclusive('\n')`, so a final line with no trailing newline —
-/// `block_src` need not carry one — is handled the same as every other). A line that is itself a
+/// Walks `raw`'s own physical lines (`split_inclusive('\n')`, so a final line with no trailing newline
+/// — `html_body_text` need not produce one — is handled the same as every other). A line that is itself a
 /// standalone image (`super::extract_block_image` on that one line, trimmed — the identical per-line
 /// check `split_block_parts_masked` runs) first flushes whatever tag-only/text lines have accumulated so
 /// far through `render_html_block` (so an image mid-banner does not end up sandwiched inside the *next*
@@ -3725,8 +3740,8 @@ fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize
 /// reads `fresh_boundary` specifically, not `needs_newline` — see `render_table_from_model`'s own doc
 /// comment for the concrete case that caught this), matching that same already-baked-in trailing
 /// blank exactly.
-fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
-    let raw = &src[block_src];
+fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>]) {
+    let raw = html_body_text(body_spans, src);
     let mut buf = String::new();
     let flush = |w: &mut Writer<'_>, buf: &mut String| {
         if !buf.is_empty() {
@@ -3870,7 +3885,7 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
             ctx,
         ),
         BlockKind::Table { .. } => render_table_from_model(w, src, block.src.clone()),
-        BlockKind::Html { .. } => render_html_block_from_model(w, src, block.src.clone()),
+        BlockKind::Html { body_spans, .. } => render_html_block_from_model(w, src, body_spans),
         // Never reachable — see the doc comment above.
         BlockKind::ListItem { .. } => {}
     }
@@ -5709,13 +5724,19 @@ mod tests {
         );
     }
 
-    /// A `Table`/`Html` block nested inside a `Quote` is reported `Unsupported` (`render_table`'s own
+    /// A `Table` block nested inside a `Quote` is reported `Unsupported` (`render_table`'s own
     /// line-based parsing breaks on the quote's own `>`-prefixed continuation lines — see
     /// `contains_unsupported`'s own doc comment on `in_quote`) — the safety net this test exists to
     /// pin: a regression that quietly started rendering one anyway (instead of screening it out)
-    /// would show up as garbled output somewhere downstream, not as a clean failure here.
+    /// would show up as garbled output somewhere downstream, not as a clean failure here. A quote-
+    /// nested `Html` block used to be reported unsupported here too — this test used to be named
+    /// `quote_nested_table_and_html_are_reported_unsupported` — until `model::BlockKind::Html.body_spans`
+    /// closed that gap (see `contains_unsupported`'s own doc comment): asserting `None` for it here
+    /// is this test's own safety net for *that* fix, the flip side of the `Table` assertion above —
+    /// a regression that quietly stopped rendering a quote-nested `Html` block again (falling back to
+    /// screening it out) would show up as a silently dropped block, not as a clean failure here.
     #[test]
-    fn quote_nested_table_and_html_are_reported_unsupported() {
+    fn quote_nested_table_is_reported_unsupported_html_is_not() {
         let table_src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         let doc = Doc::parse(table_src);
         assert_eq!(
@@ -5727,7 +5748,7 @@ mod tests {
         let doc = Doc::parse(html_src);
         assert_eq!(
             contains_unsupported(&doc.blocks[0].children, true),
-            Some("Html"),
+            None,
             "src: {html_src:?}"
         );
     }
@@ -5737,6 +5758,62 @@ mod tests {
     /// tags: `render_html_block`'s own scan has no concept of nested structure at all, everything
     /// between `<` and `>` is dropped uniformly), and the trailing blank line
     /// `render_html_block_from_model` never adds a second one of its own on top of.
+    ///
+    /// A **quote-nested** `Html` block used to be a total content loss: the pre-`body_spans` legacy
+    /// fallback (`tui-markdown`'s own `Event::Html` handling — see `model::BlockKind::Html.body_spans`'s
+    /// own doc comment for the confirmed dump this pins) simply cannot draw this shape at all, and
+    /// `contains_unsupported` used to fall the whole enclosing `Quote` back to it whenever an `Html`
+    /// block showed up nested inside one — so the block's content vanished from the screen outright,
+    /// not merely mis-rendered. `body_spans` is what lets this pass draw it directly instead: pins
+    /// both halves of the fix — `unsupported` stays empty (no more legacy fallback for this shape),
+    /// and the block's own text (`HTML-INSIDE-QUOTE`) actually reaches the output, `>`-quoted like any
+    /// other content inside this `Quote`.
+    #[test]
+    fn html_block_nested_inside_a_quote_renders_its_content_instead_of_vanishing() {
+        let src = "> <div align=\"center\">\n> HTML-INSIDE-QUOTE\n> </div>\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let rendered: Vec<String> = out
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        // Exact match, not a mere `.contains("HTML-INSIDE-QUOTE")` substring check: a naive
+        // `&src[block_src]` slice (this test's own regression target — see `render_html_block_from_model`'s
+        // own doc comment) still leaves that substring *somewhere* in the output — it doubles the `>`
+        // marker onto a second, stray copy of the quote prefix (`"> > HTML-INSIDE-QUOTE"`, confirmed
+        // directly by temporarily reverting the fix and running this exact test) rather than dropping
+        // the text outright — so only an exact-line assertion, not a substring one, actually catches
+        // that regression.
+        assert_eq!(
+            rendered,
+            vec!["> HTML-INSIDE-QUOTE".to_string(), "> ".to_string()],
+            "the quote-nested HTML block did not render cleanly (no doubled `>` marker, no dropped \
+             content): {rendered:#?}"
+        );
+    }
+
     #[test]
     fn html_block_strips_tags_drops_comments_and_decodes_entities_from_the_model() {
         let src = "<div class=\"x\">\n<!-- hidden -->\nHello <b>world</b> &amp; friends\n</div>\n";

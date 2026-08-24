@@ -1,6 +1,6 @@
 === code_corpus: 4-column-indented HTML inside a centered banner is an HTML block, not indented code ===
 -- BLOCKS (2) --
-Html{tag=Some("div")} src=0..71 text="<div align=\"center\">\n    <a href=\"https://example.com\">Docs</a>\n</div>\n"
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..64:"    <a href=\"https://example.com\">Docs</a>\n", 64..71:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://example.com\">Docs</a>\n</div>\n"} src=0..71 text="<div align=\"center\">\n    <a href=\"https://example.com\">Docs</a>\n</div>\n"
 Paragraph{inline=6..7:"para"} src=72..77 text="para\n"
 
 === code_corpus: KNOWN FAILURE: list item fence glued to a following inline-code paragraph (no blank line) drops the header ===
@@ -30,7 +30,7 @@ CodeBlock{lang=None, fenced=true, body_spans=[53..57:"bbb\n"], text="bbb"} src=4
 
 === code_corpus: a centered banner whose links wrap images (registry: criterion README.md) ===
 -- BLOCKS (2) --
-Html{tag=Some("div")} src=0..224 text="<div align=\"center\">\n    <a href=\"https://example.com/ci\"><img src=\"https://img."…
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..113:"    <a href=\"https://example.com/ci\"><img src=\"https://img.example/badge.svg\" al"…, 113..119:"    |\n", 119..217:"    <a href=\"https://example.com/crate\"><img src=\"https://img.example/v.svg\" alt"…, 217..224:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://example.com/ci\"><img src=\"https://img."…} src=0..224 text="<div align=\"center\">\n    <a href=\"https://example.com/ci\"><img src=\"https://img."…
 Paragraph{inline=8..9:"para"} src=225..230 text="para\n"
 
 === code_corpus: a checkbox after a fence whose closing line has trailing text (list ended by a paragraph) ===
@@ -124,7 +124,7 @@ Quote{alert=None, alert_title=""} src=0..20 text="> para\n>\n>     code\n"
 
 === code_corpus: a real HTML block and a tag-shaped indented block in one document ===
 -- BLOCKS (3) --
-Html{tag=Some("div")} src=0..40 text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..33:"  <b>hi</b>\n", 33..40:"</div>\n"], text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"} src=0..40 text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"
 Paragraph{inline=6..7:"para"} src=41..46 text="para\n"
 CodeBlock{lang=None, fenced=false, body_spans=[51..57:"<div>\n"], text="<div>"} src=51..57 text="<div>\n"
 
@@ -169,6 +169,11 @@ List{ordered=true, start=Some(10)} src=0..41 text="10. Step:\n\n    ```sh\n    e
     Paragraph{inline=3..4:"Step:"} src=4..10 text="Step:\n"
     CodeBlock{lang=Some("sh"), fenced=true, body_spans=[25..33:"echo hi\n"], text="echo hi"} src=15..40 text="```sh\n    echo hi\n    ```"
 
+=== code_corpus: an HTML block nested inside a blockquote is drawn instead of dropped entirely ===
+-- BLOCKS (1) --
+Quote{alert=None, alert_title=""} src=0..52 text="> <div align=\"center\">\n> HTML-INSIDE-QUOTE\n> </div>\n"
+  Html{tag=Some("div"), body_spans=[2..23:"<div align=\"center\">\n", 25..43:"HTML-INSIDE-QUOTE\n", 45..52:"</div>\n"], text="<div align=\"center\">\nHTML-INSIDE-QUOTE\n</div>\n"} src=2..52 text="<div align=\"center\">\n> HTML-INSIDE-QUOTE\n> </div>\n"
+
 === code_corpus: an alert after a fence whose closing line has trailing text ===
 -- BLOCKS (2) --
 List{ordered=false, start=None} src=0..53 text="- item\n\n  ```rust\n  let x = 1;\n  ``` (note)\n\n- next\n\n"
@@ -195,7 +200,7 @@ Table{aligns=[None, None], rows=[[1..4:" a ", 5..8:" b "], [24..33:"code here", 
 
 === code_corpus: an indented line swallowed by an HTML comment block is not code ===
 -- BLOCKS (2) --
-Html{tag=None} src=0..14 text="<!-- note -->\n"
+Html{tag=None, body_spans=[0..14:"<!-- note -->\n"], text="<!-- note -->\n"} src=0..14 text="<!-- note -->\n"
 CodeBlock{lang=None, fenced=false, body_spans=[18..28:"code here\n"], text="code here"} src=18..28 text="code here\n"
 
 === code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph ===
@@ -223,17 +228,17 @@ List{ordered=false, start=None} src=0..37 text="- item\n\n  > quoted:\n  >\n  > 
 === code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md) ===
 -- BLOCKS (3) --
 Paragraph{inline=1..6:"Banner"} src=0..70 text="[![Banner](https://img.example/banner.png)](https://example.com/repo)\n"
-Html{tag=Some("div")} src=71..386 text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…
+Html{tag=Some("div"), body_spans=[71..92:"<div align=\"center\">\n", 92..135:"    <a href=\"https://crates.io/crates/sa\">\n", 135..197:"        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n", 197..206:"    </a>\n", 206..264:"    <img src=\"https://img.example/rustc.svg\" alt=\"rustc\">\n", 264..306:"    <a href=\"https://example.com/patron\">\n", 306..370:"        <img src=\"https://img.example/patron.png\" alt=\"Patron\">\n", 370..379:"    </a>\n", 379..386:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…} src=71..386 text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…
 Paragraph{inline=19..20:"tail."} src=387..393 text="tail.\n"
 
 === code_corpus: centered banner whose <img> lines are cut out of it stays HTML ===
 -- BLOCKS (2) --
-Html{tag=Some("p")} src=0..220 text="<p align=\"center\">\n    <a href=\"https://example.com/y\">\n      <img src=\"https://"…
+Html{tag=Some("p"), body_spans=[0..19:"<p align=\"center\">\n", 19..56:"    <a href=\"https://example.com/y\">\n", 56..108:"      <img src=\"https://img.example/a.svg\" alt=\"a\">\n", 108..117:"    </a>\n", 117..154:"    <a href=\"https://example.com/x\">\n", 154..206:"      <img src=\"https://img.example/b.svg\" alt=\"b\">\n", 206..215:"    </a>\n", 215..220:"</p>\n"], text="<p align=\"center\">\n    <a href=\"https://example.com/y\">\n      <img src=\"https://"…} src=0..220 text="<p align=\"center\">\n    <a href=\"https://example.com/y\">\n      <img src=\"https://"…
 Paragraph{inline=11..12:"tail"} src=221..226 text="tail\n"
 
 === code_corpus: centered banner with a bare <br> line in it (registry: raw-window-metal README.md) ===
 -- BLOCKS (2) --
-Html{tag=Some("p")} src=0..239 text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…
+Html{tag=Some("p"), body_spans=[0..19:"<p align=\"center\">\n", 19..63:"    <a href=\"https://crates.io/crates/rwm\">\n", 63..123:"      <img src=\"https://img.example/v.svg\" alt=\"crates.io\">\n", 123..132:"    </a>\n", 132..159:"    <a href=\"LICENSE-MIT\">\n", 159..225:"      <img src=\"https://img.example/mit.svg\" alt=\"License - MIT\">\n", 225..234:"    </a>\n", 234..239:"</p>\n"], text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…} src=0..239 text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…
 Paragraph{inline=11..12:"tail"} src=240..245 text="tail\n"
 
 === code_corpus: checkbox in a nested list item written with three spaces after the bullet (registry: zerocopy agent_docs) ===
@@ -385,9 +390,9 @@ List{ordered=true, start=Some(1)} src=0..39 text="1. item:\n   ```\n   aaa\n   `
 
 === code_corpus: crlf centered banner with no <br> (registry: tinytemplate README.md) ===
 -- BLOCKS (4) --
-Html{tag=Some("h1")} src=0..27 text="<h1 align=\"center\">TT</h1>\n"
-Html{tag=Some("div")} src=28..176 text="<div align=\"center\">\n    <a href=\"https://docs.rs/tt/\">API Documentation</a>\n   "…
-Html{tag=Some("div")} src=177..313 text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…
+Html{tag=Some("h1"), body_spans=[0..27:"<h1 align=\"center\">TT</h1>\n"], text="<h1 align=\"center\">TT</h1>\n"} src=0..27 text="<h1 align=\"center\">TT</h1>\n"
+Html{tag=Some("div"), body_spans=[28..49:"<div align=\"center\">\n", 49..105:"    <a href=\"https://docs.rs/tt/\">API Documentation</a>\n", 105..111:"    |\n", 111..169:"    <a href=\"https://example.com/changelog\">Changelog</a>\n", 169..176:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://docs.rs/tt/\">API Documentation</a>\n   "…} src=28..176 text="<div align=\"center\">\n    <a href=\"https://docs.rs/tt/\">API Documentation</a>\n   "…
+Html{tag=Some("div"), body_spans=[177..198:"<div align=\"center\">\n", 198..241:"    <a href=\"https://example.com/actions\">\n", 241..297:"        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\n", 297..306:"    </a>\n", 306..313:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…} src=177..313 text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…
 Paragraph{inline=18..19:"tail"} src=314..319 text="tail\n"
 
 === code_corpus: crlf indented block ===
@@ -820,7 +825,7 @@ List{ordered=true, start=Some(1)} src=53..61 text="1. note\n"
 
 === code_span_corpus: bare br line inside a centered banner is removed, the rest byte-identical ===
 -- BLOCKS (1) --
-Html{tag=Some("p")} src=0..74 text="<p align=\"center\">\n    <a href=\"https://a\">\n    <a href=\"https://b\">\n</p>\n"
+Html{tag=Some("p"), body_spans=[0..19:"<p align=\"center\">\n", 19..44:"    <a href=\"https://a\">\n", 44..69:"    <a href=\"https://b\">\n", 69..74:"</p>\n"], text="<p align=\"center\">\n    <a href=\"https://a\">\n    <a href=\"https://b\">\n</p>\n"} src=0..74 text="<p align=\"center\">\n    <a href=\"https://a\">\n    <a href=\"https://b\">\n</p>\n"
 
 === code_span_corpus: br inside an indented code block and outside ===
 -- BLOCKS (2) --
@@ -1161,7 +1166,7 @@ CodeBlock{lang=None, fenced=true, body_spans=[], text=""} src=0..5 text="````\n"
 
 === code_span_corpus: mid-line br inside a centered banner is still a hard break ===
 -- BLOCKS (1) --
-Html{tag=Some("div")} src=0..45 text="<div align=\"center\">\n  before  \nafter\n</div>\n"
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..32:"  before  \n", 32..38:"after\n", 38..45:"</div>\n"], text="<div align=\"center\">\n  before  \nafter\n</div>\n"} src=0..45 text="<div align=\"center\">\n  before  \nafter\n</div>\n"
 
 === code_span_corpus: no backticks at all (the control for every case above) ===
 -- BLOCKS (4) --
@@ -1994,7 +1999,7 @@ Paragraph{inline=7..12:"See https://example.com too."} src=33..64 text="See <htt
 
 === preprocess_corpus: bare br line inside an html block ===
 -- BLOCKS (1) --
-Html{tag=Some("p")} src=0..160 text="<p align=\"center\">\n  <a href=\"https://a\">\n    <img src=\"https://a.svg\" alt=\"a\">\n"…
+Html{tag=Some("p"), body_spans=[0..19:"<p align=\"center\">\n", 19..42:"  <a href=\"https://a\">\n", 42..80:"    <img src=\"https://a.svg\" alt=\"a\">\n", 80..87:"  </a>\n", 87..110:"  <a href=\"https://b\">\n", 110..148:"    <img src=\"https://b.svg\" alt=\"b\">\n", 148..155:"  </a>\n", 155..160:"</p>\n"], text="<p align=\"center\">\n  <a href=\"https://a\">\n    <img src=\"https://a.svg\" alt=\"a\">\n"…} src=0..160 text="<p align=\"center\">\n  <a href=\"https://a\">\n    <img src=\"https://a.svg\" alt=\"a\">\n"…
 
 === preprocess_corpus: br after a fence ===
 -- BLOCKS (2) --
@@ -2098,7 +2103,7 @@ Paragraph{inline=1..4:"before\nafter"} src=0..15 text="before  \nafter\n"
 
 === preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md) ===
 -- BLOCKS (2) --
-Html{tag=Some("p")} src=0..239 text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…
+Html{tag=Some("p"), body_spans=[0..19:"<p align=\"center\">\n", 19..63:"    <a href=\"https://crates.io/crates/rwm\">\n", 63..123:"      <img src=\"https://img.example/v.svg\" alt=\"crates.io\">\n", 123..132:"    </a>\n", 132..159:"    <a href=\"LICENSE-MIT\">\n", 159..225:"      <img src=\"https://img.example/mit.svg\" alt=\"License - MIT\">\n", 225..234:"    </a>\n", 234..239:"</p>\n"], text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…} src=0..239 text="<p align=\"center\">\n    <a href=\"https://crates.io/crates/rwm\">\n      <img src=\"h"…
 Paragraph{inline=11..12:"tail"} src=240..245 text="tail\n"
 
 === preprocess_corpus: checkbox carrying a ref ===
@@ -2184,13 +2189,13 @@ List{ordered=true, start=Some(1)} src=72..89 text="1. first\n   more\n"
 
 === preprocess_corpus: closing-tag indented code beside a real html block ===
 -- BLOCKS (3) --
-Html{tag=Some("div")} src=0..40 text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..33:"  <b>hi</b>\n", 33..40:"</div>\n"], text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"} src=0..40 text="<div align=\"center\">\n  <b>hi</b>\n</div>\n"
 Paragraph{inline=6..7:"para"} src=41..46 text="para\n"
 CodeBlock{lang=None, fenced=false, body_spans=[51..56:"</a>\n"], text="</a>"} src=51..56 text="</a>\n"
 
 === preprocess_corpus: comment-shaped indented code beside a real comment block ===
 -- BLOCKS (3) --
-Html{tag=None} src=0..20 text="<!-- real block -->\n"
+Html{tag=None, body_spans=[0..20:"<!-- real block -->\n"], text="<!-- real block -->\n"} src=0..20 text="<!-- real block -->\n"
 Paragraph{inline=4..5:"para"} src=21..26 text="para\n"
 CodeBlock{lang=None, fenced=false, body_spans=[31..50:"<!-- a comment -->\n"], text="<!-- a comment -->"} src=31..50 text="<!-- a comment -->\n"
 
@@ -2267,8 +2272,8 @@ List{ordered=true, start=Some(1)} src=16..33 text="1. first\n   more\n"
 
 === preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md) ===
 -- BLOCKS (3) --
-Html{tag=Some("h1")} src=0..27 text="<h1 align=\"center\">TT</h1>\n"
-Html{tag=Some("div")} src=28..278 text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…
+Html{tag=Some("h1"), body_spans=[0..27:"<h1 align=\"center\">TT</h1>\n"], text="<h1 align=\"center\">TT</h1>\n"} src=0..27 text="<h1 align=\"center\">TT</h1>\n"
+Html{tag=Some("div"), body_spans=[28..49:"<div align=\"center\">\n", 49..92:"    <a href=\"https://example.com/actions\">\n", 92..148:"        <img src=\"https://img.example/ci.svg\" alt=\"CI\">\n", 148..157:"    </a>\n", 157..200:"    <a href=\"https://crates.io/crates/tt\">\n", 200..262:"        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n", 262..271:"    </a>\n", 271..278:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…} src=28..278 text="<div align=\"center\">\n    <a href=\"https://example.com/actions\">\n        <img src"…
 Paragraph{inline=14..15:"tail"} src=279..284 text="tail\n"
 
 === preprocess_corpus: crlf with a continued def ===
@@ -2423,12 +2428,12 @@ List{ordered=false, start=None} src=0..16 text="- [ ] press `x`\n"
 === preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md) ===
 -- BLOCKS (3) --
 Paragraph{inline=1..6:"Banner"} src=0..70 text="[![Banner](https://img.example/banner.png)](https://example.com/repo)\n"
-Html{tag=Some("div")} src=71..386 text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…
+Html{tag=Some("div"), body_spans=[71..92:"<div align=\"center\">\n", 92..135:"    <a href=\"https://crates.io/crates/sa\">\n", 135..197:"        <img src=\"https://img.example/v.svg\" alt=\"Crates.io\">\n", 197..206:"    </a>\n", 206..264:"    <img src=\"https://img.example/rustc.svg\" alt=\"rustc\">\n", 264..306:"    <a href=\"https://example.com/patron\">\n", 306..370:"        <img src=\"https://img.example/patron.png\" alt=\"Patron\">\n", 370..379:"    </a>\n", 379..386:"</div>\n"], text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…} src=71..386 text="<div align=\"center\">\n    <a href=\"https://crates.io/crates/sa\">\n        <img src"…
 Paragraph{inline=19..20:"tail."} src=387..393 text="tail.\n"
 
 === preprocess_corpus: mid-line br inside an html block ===
 -- BLOCKS (1) --
-Html{tag=Some("div")} src=0..45 text="<div align=\"center\">\n  before  \nafter\n</div>\n"
+Html{tag=Some("div"), body_spans=[0..21:"<div align=\"center\">\n", 21..32:"  before  \n", 32..38:"after\n", 38..45:"</div>\n"], text="<div align=\"center\">\n  before  \nafter\n</div>\n"} src=0..45 text="<div align=\"center\">\n  before  \nafter\n</div>\n"
 
 === preprocess_corpus: no trailing newline br ===
 -- BLOCKS (1) --
@@ -2582,7 +2587,7 @@ Paragraph{inline=19..22:"konoma sample image"} src=318..353 text="![konoma sampl
 Paragraph{inline=24..25:"Text between the two images, so you can see the spacing and scrolling behavior."} src=354..434 text="Text between the two images, so you can see the spacing and scrolling behavior.\n"
 Paragraph{inline=27..30:"a smaller sample"} src=435..467 text="![a smaller sample](sample.jpg)\n"
 Heading{level=2, inline=32..35:"HTML <img> (the same form the README uses)", id=None, classes=[], attrs=[]} src=468..516 text="## HTML `<img>` (the same form the README uses)\n"
-Html{tag=Some("p")} src=517..596 text="<p align=\"center\"><img src=\"sample.png\" width=\"480\" alt=\"html image form\"></p>\n"
+Html{tag=Some("p"), body_spans=[517..596:"<p align=\"center\"><img src=\"sample.png\" width=\"480\" alt=\"html image form\"></p>\n"], text="<p align=\"center\"><img src=\"sample.png\" width=\"480\" alt=\"html image form\"></p>\n"} src=517..596 text="<p align=\"center\"><img src=\"sample.png\" width=\"480\" alt=\"html image form\"></p>\n"
 Heading{level=2, inline=40..41:"Animated GIF", id=None, classes=[], attrs=[]} src=597..613 text="## Animated GIF\n"
 Paragraph{inline=43..44:"Inline GIFs cycle in place, the same way the full-screen preview animates them:"} src=614..694 text="Inline GIFs cycle in place, the same way the full-screen preview animates them:\n"
 Paragraph{inline=46..49:"animated sample"} src=695..726 text="![animated sample](sample.gif)\n"
@@ -2695,14 +2700,14 @@ Paragraph{inline=174..191:"チェックボックスは操作できる: Tab で�
 Heading{level=2, inline=193..194:"HTML ブロック", id=None, classes=[], attrs=[]} src=1552..1573 text="## HTML ブロック\n"
 Paragraph{inline=196..216:"<details> は折りたたみセクションになる: ▸/▾ のマーカー付きで、Tab で要約行に フォーカス → Space か Enter で開閉。既定は G"…} src=1574..1851 text="`<details>` は折りたたみセクションになる: `▸`/`▾` のマーカー付きで、`Tab` で要約行に\nフォーカス → `Space` か `Ente"…
 Details{open_attr=false, summary="閉じた details（クリックで開く相当・Tab→Space で開く）", glued_body=None} src=1852..2104 text="<details>\n<summary>閉じた details（クリックで開く相当・Tab→Space で開く）</summary>\n中身は Markdown と"…
-  Html{tag=None} src=1956..2035 text="中身は Markdown として描画される。**太字**やリストも効く:\n"
+  Html{tag=None, body_spans=[1956..2035:"中身は Markdown として描画される。**太字**やリストも効く:\n"], text="中身は Markdown として描画される。**太字**やリストも効く:\n"} src=1956..2035 text="中身は Markdown として描画される。**太字**やリストも効く:\n"
   List{ordered=false, start=None} src=2036..2093 text="- 折りたたみの中の項目\n- もう一つの項目\n"
     ListItem{task=None} src=2036..2069 text="- 折りたたみの中の項目\n"
       Paragraph{inline=224..225:"折りたたみの中の項目"} src=2038..2068 text="折りたたみの中の項目"
     ListItem{task=None} src=2069..2093 text="- もう一つの項目\n"
       Paragraph{inline=227..228:"もう一つの項目"} src=2071..2092 text="もう一つの項目"
 Details{open_attr=true, summary="open 属性つき details（最初から開いている）", glued_body=Some(2197..2291:"\n`<details open>` は既定（`md_details = \"auto\"`）で最初から展開表示される。\n")} src=2105..2302 text="<details open>\n<summary>open 属性つき details（最初から開いている）</summary>\n`<details open>` "…
-Html{tag=None} src=2303..2358 text="<!-- この HTML コメントは表示されない -->\n"
+Html{tag=None, body_spans=[2303..2358:"<!-- この HTML コメントは表示されない -->\n"], text="<!-- この HTML コメントは表示されない -->\n"} src=2303..2358 text="<!-- この HTML コメントは表示されない -->\n"
 Heading{level=2, inline=243..244:"アラート（GitHub 形式）", id=None, classes=[], attrs=[]} src=2359..2394 text="## アラート（GitHub 形式）\n"
 Paragraph{inline=246..250:"> [!TYPE] の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（[ui] md_alerts）。"} src=2395..2523 text="`> [!TYPE]` の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（`[ui] md_alerts`）。\n"
 Quote{alert=Some(Note), alert_title=""} src=2524..2630 text="> [!NOTE]\n> 補足情報。裸 URL も自動リンク化される: https://github.com/LESIM-Co-Ltd/konoma\n"
@@ -2772,14 +2777,14 @@ Paragraph{inline=174..189:"Checkboxes are interactive: Tab to focus (same cycle 
 Heading{level=2, inline=191..192:"HTML blocks", id=None, classes=[], attrs=[]} src=1267..1282 text="## HTML blocks\n"
 Paragraph{inline=194..214:"<details> becomes a collapsible section with a ▸/▾ marker: Tab focuses the summa"…} src=1283..1528 text="`<details>` becomes a collapsible section with a `▸`/`▾` marker: `Tab` focuses t"…
 Details{open_attr=false, summary="Closed details (like \"click to expand\" — open with Tab→Space)", glued_body=None} src=1529..1740 text="<details>\n<summary>Closed details (like \"click to expand\" — open with Tab→Space)"…
-  Html{tag=None} src=1624..1687 text="The body is rendered as Markdown. **Bold** and lists work too:\n"
+  Html{tag=None, body_spans=[1624..1687:"The body is rendered as Markdown. **Bold** and lists work too:\n"], text="The body is rendered as Markdown. **Bold** and lists work too:\n"} src=1624..1687 text="The body is rendered as Markdown. **Bold** and lists work too:\n"
   List{ordered=false, start=None} src=1688..1729 text="- an item inside the fold\n- another item\n"
     ListItem{task=None} src=1688..1714 text="- an item inside the fold\n"
       Paragraph{inline=222..223:"an item inside the fold"} src=1690..1713 text="an item inside the fold"
     ListItem{task=None} src=1714..1729 text="- another item\n"
       Paragraph{inline=225..226:"another item"} src=1716..1728 text="another item"
 Details{open_attr=true, summary="Details with the open attribute (expanded from the start)", glued_body=Some(1832..1902:"\n`<details open>` starts expanded by default (`md_details = \"auto\"`).\n")} src=1741..1913 text="<details open>\n<summary>Details with the open attribute (expanded from the start"…
-Html{tag=None} src=1914..1954 text="<!-- This HTML comment is not shown -->\n"
+Html{tag=None, body_spans=[1914..1954:"<!-- This HTML comment is not shown -->\n"], text="<!-- This HTML comment is not shown -->\n"} src=1914..1954 text="<!-- This HTML comment is not shown -->\n"
 Heading{level=2, inline=241..242:"Alerts (GitHub-style)", id=None, classes=[], attrs=[]} src=1955..1980 text="## Alerts (GitHub-style)\n"
 Paragraph{inline=244..249:"A > [!TYPE] blockquote renders as a colored callout box (icon + label) ([ui] md_"…} src=1981..2074 text="A `> [!TYPE]` blockquote renders as a colored callout box (icon + label) (`[ui] "…
 Quote{alert=Some(Note), alert_title=""} src=2075..2176 text="> [!NOTE]\n> Supplementary info. A bare URL is autolinked too: https://github.com"…
@@ -3312,7 +3317,7 @@ List{ordered=false, start=None} src=15..23 text="- [ ] b\n"
 
 === task_corpus: html block then task ===
 -- BLOCKS (2) --
-Html{tag=Some("div")} src=0..14 text="<div>hi</div>\n"
+Html{tag=Some("div"), body_spans=[0..14:"<div>hi</div>\n"], text="<div>hi</div>\n"} src=0..14 text="<div>hi</div>\n"
 List{ordered=false, start=None} src=15..32 text="- [ ] after html\n"
   ListItem{task=Some(state=' ', state_at=18)} src=15..32 text="- [ ] after html\n"
     Paragraph{inline=6..7:"after html"} src=21..31 text="after html"

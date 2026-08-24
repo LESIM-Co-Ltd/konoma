@@ -8719,32 +8719,37 @@ plain body
                 images, 2,
                 "{name}: バッジが失われている(片方だけ抽出された): {texts:#?}"
             );
-            // The leftover `</a>` fragments are rescued as HTML rather than drawn as markup —
-            // except in a quote, where they still carry their `>` marker and so are invisible to
-            // `split_html_blocks`, which matches on the raw line. That gap predates both 2026-08
-            // fixes and is orthogonal to this one (it costs a stray fragment on screen, never an
-            // image); see `banner_quoted_multiline_still_leaks_its_leftover_fragments`.
-            if !name.starts_with("quote/multi") {
-                assert!(
-                    !texts.iter().any(|t| t.contains("</a>")),
-                    "{name}: 生の HTML タグが画面に漏れている: {texts:#?}"
-                );
-            }
+            // The leftover `</a>` fragments are rescued as HTML rather than drawn as markup. This
+            // used to fail for `"quote/multi-line"` specifically — a quote's own `>` marker survived
+            // on every continuation line of the legacy fallback's raw slice, invisible to
+            // `split_html_blocks`, which matches on the raw line — but `render::render_doc`
+            // (`model::BlockKind::Html.body_spans`, see that field's own doc comment) no longer falls
+            // back to that legacy path for a quote-nested `Html` block at all, so the leak is gone
+            // for every one of these shapes now, `"quote/multi-line"` included; see
+            // `md_model_snapshot_tests`/`render::tests::quote_nested_table_is_reported_unsupported_html_is_not`
+            // for the fix's own dedicated coverage.
+            assert!(
+                !texts.iter().any(|t| t.contains("</a>")),
+                "{name}: 生の HTML タグが画面に漏れている: {texts:#?}"
+            );
         }
     }
 
-    /// The one shape the fix above does **not** clean up completely, pinned so it is a known
-    /// limitation rather than a surprise: a multi-line badge banner inside a **blockquote** keeps
-    /// both images, but the `    </a>` fragments `split_block_parts` leaves behind still draw as a
-    /// code block inside the quote.
+    /// A shape the pre-`body_spans` legacy fallback did **not** clean up completely — this test used
+    /// to be named `banner_quoted_multiline_still_leaks_its_leftover_fragments`, pinning that gap as
+    /// a known limitation rather than a surprise: a multi-line badge banner inside a **blockquote**
+    /// kept both images, but the `    </a>` fragments `split_block_parts` left behind still drew as a
+    /// code block inside the quote (`split_html_blocks` asks `is_html_block_start` about the raw
+    /// line, and a quoted fragment begins with `>`, not `<`, so the rescue never fired there).
     ///
-    /// Different root cause, and pre-existing on both sides of the 2026-08 pair: `split_html_blocks`
-    /// asks `is_html_block_start` about the raw line, and a quoted fragment begins with `>`, not
-    /// `<` — so the rescue never fires and the 4-column-indented remains reach tui-markdown, which
-    /// correctly calls them indented code *within the quote*. Fixing it means teaching the HTML
-    /// splitter to peel quote markers, which is a far wider change than relabelling a mask.
+    /// `model::BlockKind::Html.body_spans` (see its own doc comment) closes this: `render::render_doc`
+    /// no longer reports a quote-nested `Html` block unsupported at all, so `render_markdown_with_images`
+    /// never falls back to this legacy path for this shape any more — the fragments render as ordinary,
+    /// tag-stripped `Html` content instead of leaking or degrading to a code block. Flipped from a
+    /// known-limitation pin to a fix regression test rather than deleted outright, so this exact shape
+    /// stays covered either way.
     #[test]
-    fn banner_quoted_multiline_still_leaks_its_leftover_fragments() {
+    fn banner_quoted_multiline_no_longer_leaks_its_leftover_fragments() {
         let src = concat!(
             "> <p align=\"center\">\n",
             ">     <a href=\"u\">\n",
@@ -8759,8 +8764,8 @@ plain body
         let (texts, headers, images) = banner_render(src);
         assert_eq!((headers, images), (0, 2), "画像は両方とも残る: {texts:#?}");
         assert!(
-            texts.iter().any(|t| t.contains("</a>")),
-            "既知の残存(引用内の断片が救済されない)が消えていたらこのテストを畳んでよい: {texts:#?}"
+            !texts.iter().any(|t| t.contains("</a>")),
+            "生の HTML タグが画面に漏れている: {texts:#?}"
         );
     }
 
@@ -10118,6 +10123,29 @@ pub(crate) mod code_corpus {
             (
                 "4-column-indented HTML inside a centered banner is an HTML block, not indented code",
                 "<div align=\"center\">\n    <a href=\"https://example.com\">Docs</a>\n</div>\n\npara\n",
+            ),
+            // Not `KNOWN_MISMATCHES`/`INTENDED_IMPROVEMENTS`/`BEHAVIOR_DECISIONS` in `md_render_diff_tests`
+            // at all, despite `render_doc` visibly *fixing* a real content-loss bug here (an `Html`
+            // block nested inside a `Quote` used to vanish from the screen entirely — see
+            // `model::BlockKind::Html.body_spans`'s own doc comment for the confirmed per-line
+            // `Event::Html` dump the fix relies on): `render_case` — this harness's own "production"
+            // side — calls the real `render_markdown_with_images` *dispatcher*, not the legacy
+            // renderer directly, and that dispatcher now routes this exact shape to `render::render_doc`
+            // too (`RenderOut::unsupported` is empty for it, post-fix), the identical function
+            // `render_case_new` (the "new renderer" side) also calls — so both sides of *this*
+            // harness's comparison are the same function call on the same input, an exact match by
+            // construction, not a case this stage's own architecture merely happens to draw the same
+            // way production's separate legacy path does. See
+            // `render::tests::html_block_nested_inside_a_quote_renders_its_content_instead_of_vanishing`
+            // for the dedicated regression test that pins the actual fixed *content*, and the legacy
+            // fallback's own (`markdown.rs`'s `banner_quoted_multiline_no_longer_leaks_its_leftover_fragments`)
+            // for what changed on that separate, no-longer-reached path. Kept in this corpus anyway —
+            // exercising the shape here still catches a regression that made this stage stop matching
+            // (or, worse, start reporting `Unsupported`/mismatching again), it is simply not the *kind*
+            // of gap those three lists exist to catalogue.
+            (
+                "an HTML block nested inside a blockquote is drawn instead of dropped entirely",
+                "> <div align=\"center\">\n> HTML-INSIDE-QUOTE\n> </div>\n",
             ),
             // konoma draws GFM tables itself (tui-markdown collapses them), so the parser never sees
             // those lines — and with `ENABLE_TABLES` off it would read them as an ordinary paragraph,

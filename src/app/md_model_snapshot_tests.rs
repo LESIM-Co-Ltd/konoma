@@ -29,7 +29,8 @@ use pulldown_cmark::{Event, Parser, Tag};
 
 use crate::config::Config;
 use crate::preview::markdown::model::{
-    self, code_body_text, is_stray_inline_leaf, is_unmodeled_container_tag, Block, BlockKind, Doc,
+    self, code_body_text, html_body_text, is_stray_inline_leaf, is_unmodeled_container_tag, Block,
+    BlockKind, Doc,
 };
 
 use super::md_snapshot_tests::{all_cases, assert_matches_snapshot, pre_src_for};
@@ -147,7 +148,17 @@ fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> S
             s.push_str("]}");
             s
         }
-        BlockKind::Html { tag } => format!("Html{{tag={tag:?}}}"),
+        BlockKind::Html { tag, body_spans } => {
+            let spans: Vec<String> = body_spans
+                .iter()
+                .map(|r| format!("{}:{}", fmt_range(r), snippet(&src[r.clone()])))
+                .collect();
+            format!(
+                "Html{{tag={tag:?}, body_spans=[{}], text={}}}",
+                spans.join(", "),
+                snippet(&html_body_text(body_spans, src))
+            )
+        }
         BlockKind::Details {
             open_attr,
             summary,

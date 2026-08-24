@@ -289,7 +289,26 @@ pub(crate) enum BlockKind {
     /// silent content loss: a caller (`render.rs`'s own `contains_unsupported`) that does not know
     /// how to draw a raw `Html` leaf already reports the *whole* enclosing construct as out of scope
     /// rather than rendering something incomplete — see that function's own doc comment.
-    Html { tag: Option<String> },
+    ///
+    /// `body_spans` names this block's own content the identical way `CodeBlock.body_spans` does —
+    /// one byte range per `Event::Html` pulldown-cmark reports, in source order, rather than a single
+    /// range into `src` — and for the identical reason: `Block::src` (the whole `HtmlBlock`, fence-
+    /// to-fence) is one un-split byte range, so inside a block quote its later lines still carry that
+    /// quote's own `>` marker verbatim, while pulldown-cmark's own per-line `Event::Html` ranges do
+    /// not (confirmed directly, the same way `CodeBlock.body_spans`'s own doc comment describes for
+    /// `Event::Text`: parsing `"> <div>\n> body\n> </div>\n"` reports `Start(HtmlBlock)` at
+    /// `2..len`, its slice still `>`-prefixed on every line but the first, while each `Event::Html`
+    /// range — `2..23`, `25..43`, `45..52` for that exact input — already excludes the marker). Empty
+    /// for a block pulldown-cmark reports as `HtmlBlock` with no `Event::Html` at all (not observed in
+    /// practice — every CommonMark HTML-block type has at least one line of content by construction —
+    /// but not assumed away either, the same defensive stance `collect_code_body_spans` takes).
+    /// `html_body_text(&body_spans, src)` reconstructs the content; see its own doc comment for
+    /// exactly what "reconstructs" means here (unlike `code_body_text`, no trailing-newline stripping
+    /// — see that function's own doc comment for why the two conventions differ).
+    Html {
+        tag: Option<String>,
+        body_spans: Vec<Range<usize>>,
+    },
     /// A `<details>` … `</details>` block, folded from what `Doc::parse` itself would otherwise have
     /// reported for its opening and closing tags (see `Html`'s own doc comment on exactly which
     /// shapes qualify, and `fold_details` for the folding algorithm). Two different shapes fold into
@@ -628,7 +647,7 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
     let mut rest: std::collections::VecDeque<Block> = blocks.into();
     while let Some(b) = rest.pop_front() {
         let open_attr = match &b.kind {
-            BlockKind::Html { tag: Some(t) } if t == "details" => {
+            BlockKind::Html { tag: Some(t), .. } if t == "details" => {
                 super::details_open_tag(first_source_line(src, &b.src))
             }
             _ => None,
@@ -782,10 +801,30 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
         }
         .min(b.src.end);
         if real_body_start < b.src.end && !src[real_body_start..b.src.end].trim().is_empty() {
+            // `b` (the open tag's own leaf) is itself a `Html` block, and its own `body_spans`
+            // already cover this whole leaf's content, one clean range per physical source line
+            // (`real_body_start` is line-rounded, via `line_after` above, to exactly one of those
+            // lines' own start) — this rescued child's own `body_spans` is just the tail of that
+            // same list, not a fresh scan: correct inside a block quote too, the same way `b`'s own
+            // were, with no separate `>`-marker handling needed here.
+            let rescued_body_spans = match &b.kind {
+                BlockKind::Html { body_spans, .. } => body_spans
+                    .iter()
+                    .filter(|r| r.start >= real_body_start)
+                    .cloned()
+                    .collect(),
+                // Not reachable: `open_attr` above is only `Some` when `b.kind` already matched
+                // `Html { tag: Some(t) } if t == "details"` — kept as a defensive fallback rather
+                // than assumed away, per `CLAUDE.md` principle #3 (never crash).
+                _ => Vec::new(),
+            };
             children.insert(
                 0,
                 Block {
-                    kind: BlockKind::Html { tag: None },
+                    kind: BlockKind::Html {
+                        tag: None,
+                        body_spans: rescued_body_spans,
+                    },
                     src: real_body_start..b.src.end,
                     children: Vec::new(),
                 },
@@ -804,11 +843,11 @@ fn fold_details(blocks: Vec<Block>, src: &str) -> Vec<Block> {
     out
 }
 
-/// The first physical line of `src[r]`, trailing-whitespace-trimmed — mirrors
-/// `collect_html_tag`'s own identical read exactly (kept as a separate one-liner rather than shared
-/// with it, since that function additionally needs to consume `events` down to the block's own
-/// `End`, which `fold_details`'s own callers have no need of: the block is already fully parsed by
-/// the time it reaches this function). Used by `fold_details` to decide, for a `Html { tag:
+/// The first physical line of `src[r]`, trailing-whitespace-trimmed — mirrors `html_tag_of`'s own
+/// identical read exactly (kept as a separate one-liner rather than shared with it, since that
+/// function reads off a `body_spans` slice instead of a raw `Block::src` range — the two agree here
+/// only because `r` is already a whole, already-parsed block's own range, not a fresh one this
+/// function would need `events` to build). Used by `fold_details` to decide, for a `Html { tag:
 /// Some("details") }` leaf, whether its own first line is an opening or a closing details tag.
 fn first_source_line<'a>(src: &'a str, r: &Range<usize>) -> &'a str {
     src[r.clone()].lines().next().unwrap_or("").trim_end()
@@ -816,11 +855,11 @@ fn first_source_line<'a>(src: &'a str, r: &Range<usize>) -> &'a str {
 
 /// Whether `c` is a `Html { tag: Some("details") }` leaf whose own first source line is a
 /// `</details>`-closing tag (as opposed to an opening `<details ...>` one — both share the same
-/// `tag` value, see `collect_html_tag`'s own doc comment on why: this is the one place that tells
+/// `tag` value, see `html_tag_of`'s own doc comment on why: this is the one place that tells
 /// them apart, by re-checking `is_details_close` on the block's own first line, the identical
 /// predicate `split_details` itself uses).
 fn is_details_close_block(c: &Block, src: &str) -> bool {
-    matches!(&c.kind, BlockKind::Html { tag: Some(t) } if t == "details")
+    matches!(&c.kind, BlockKind::Html { tag: Some(t), .. } if t == "details")
         && super::is_details_close(first_source_line(src, &c.src))
 }
 
@@ -1027,8 +1066,9 @@ fn parse_container(tag: Tag, range: Range<usize>, events: &mut Walker, src: &str
             Some(leaf(BlockKind::Table { aligns, rows }, range))
         }
         Tag::HtmlBlock => {
-            let tag = collect_html_tag(events, &range, src);
-            Some(leaf(BlockKind::Html { tag }, range))
+            let body_spans = collect_html_body_spans(events);
+            let tag = html_tag_of(&body_spans, src);
+            Some(leaf(BlockKind::Html { tag, body_spans }, range))
         }
         // A YAML/`+++`-style metadata block (only reachable if the caller did not strip front
         // matter first — see the module doc comment), a footnote definition, or a definition list:
@@ -1363,20 +1403,56 @@ fn collect_row_cells(events: &mut Walker, end: TagEnd) -> Vec<Range<usize>> {
     cells
 }
 
-/// Consumes an `HtmlBlock`'s `Event::Html` lines up to and including its own `End(HtmlBlock)`,
-/// then reads a best-effort tag name off the block's own opening line — see `BlockKind::Html`'s
-/// doc comment for exactly what this does and does not distinguish.
-fn collect_html_tag(events: &mut Walker, block_range: &Range<usize>, src: &str) -> Option<String> {
-    while let Some((ev, _)) = events.next() {
+/// Collects an `HtmlBlock`'s content as one byte range per `Event::Html` pulldown-cmark reports, in
+/// order — mirrors `collect_code_body_spans` exactly (see that function's own doc comment for the
+/// walk itself), for the identical reason: see `BlockKind::Html.body_spans`'s own doc comment for why
+/// a list of ranges, not one, is needed here and what each range does and does not include. Consumes
+/// up to and including the block's own `End(HtmlBlock)`.
+fn collect_html_body_spans(events: &mut Walker) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    while let Some((ev, range)) = events.next() {
         match ev {
+            Event::Html(_) => spans.push(range),
             Event::End(TagEnd::HtmlBlock) => break,
-            Event::Start(t) => skip_inline_to(events, t.to_end()), // defensive; not reachable
+            // Not reachable for well-formed input (an HTML block's content is never itself a
+            // container), balanced defensively rather than assumed away — see `parse_blocks`'s doc
+            // comment on never desyncing the stream.
+            Event::Start(t) => skip_inline_to(events, t.to_end()),
             _ => {}
         }
     }
-    let first_line = src[block_range.clone()]
-        .lines()
-        .next()
+    spans
+}
+
+/// Reconstructs an HTML block's content from its `body_spans` — concatenating each range's slice of
+/// `src`, in order — with **no** trailing-newline stripping, unlike `code_body_text`: every
+/// `Event::Html` range already includes its own physical line's trailing `\n` verbatim (confirmed by
+/// the same dump `BlockKind::Html.body_spans`'s own doc comment quotes), and `render_html_block_from_model`
+/// (`render.rs`) walks the result back apart one physical line at a time (`split_inclusive('\n')`) —
+/// the identical way it walked `&src[block_src]` before this field existed — so stripping a trailing
+/// newline here would silently glue the block's last two lines into one for that walk. A block whose
+/// very last line in the source carries no trailing `\n` at all (end of file) is reproduced exactly
+/// that way too, since nothing here invents one.
+pub(crate) fn html_body_text(body_spans: &[Range<usize>], src: &str) -> String {
+    let mut s = String::new();
+    for r in body_spans {
+        s.push_str(&src[r.clone()]);
+    }
+    s
+}
+
+/// Reads a best-effort tag name off an `HtmlBlock`'s own opening line — see `BlockKind::Html`'s doc
+/// comment for exactly what this does and does not distinguish. `body_spans` must be this same
+/// block's own `collect_html_body_spans` result: its first entry is exactly the block's first
+/// physical line, `>`-marker-free even inside a block quote (see that function's own doc comment),
+/// which is what makes reading the tag name off it — rather than off `src[block_range]` directly —
+/// correct inside a block quote too, not merely for the top-level case where the two happen to
+/// already agree (a block's *first* line is never `>`-marked even inside a quote; only its
+/// *continuation* lines are — see `BlockKind::Html.body_spans`'s own doc comment).
+fn html_tag_of(body_spans: &[Range<usize>], src: &str) -> Option<String> {
+    let first_line = body_spans
+        .first()
+        .map(|r| src[r.clone()].lines().next().unwrap_or(""))
         .unwrap_or("")
         .trim_end();
     if super::details_open_tag(first_line).is_some() || super::is_details_close(first_line) {
@@ -1877,7 +1953,7 @@ mod tests {
     #[test]
     fn html_block_tag_name_is_read_from_the_opening_line() {
         let doc = Doc::parse("<div class=\"x\">\nhello\n</div>\n");
-        let BlockKind::Html { tag } = &doc.blocks[0].kind else {
+        let BlockKind::Html { tag, .. } = &doc.blocks[0].kind else {
             panic!("expected an html block")
         };
         assert_eq!(tag.as_deref(), Some("div"));
@@ -1886,7 +1962,7 @@ mod tests {
     #[test]
     fn html_comment_block_has_no_tag_name() {
         let doc = Doc::parse("<!-- a comment -->\n");
-        let BlockKind::Html { tag } = &doc.blocks[0].kind else {
+        let BlockKind::Html { tag, .. } = &doc.blocks[0].kind else {
             panic!("expected an html block")
         };
         assert_eq!(*tag, None);
@@ -2002,7 +2078,7 @@ mod tests {
         assert_eq!(doc.blocks[0].children.len(), 2);
         assert!(matches!(
             doc.blocks[0].children[0].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
         let BlockKind::Paragraph { inline } = &doc.blocks[0].children[1].kind else {
             panic!("expected the inner body paragraph")
@@ -2012,7 +2088,7 @@ mod tests {
         assert!(matches!(doc.blocks[1].kind, BlockKind::Paragraph { .. }));
         assert!(matches!(
             doc.blocks[2].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
     }
 
@@ -2027,7 +2103,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         assert!(matches!(
             doc.blocks[0].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
     }
 
@@ -2067,7 +2143,7 @@ mod tests {
     #[test]
     fn a_tag_name_prefix_is_not_confused_with_details_itself() {
         let doc = Doc::parse("<detailsx>\nhi\n</detailsx>\n");
-        let BlockKind::Html { tag } = &doc.blocks[0].kind else {
+        let BlockKind::Html { tag, .. } = &doc.blocks[0].kind else {
             panic!("expected an html block")
         };
         assert_eq!(
@@ -3226,17 +3302,30 @@ mod tests {
     }
 
     #[test]
-    fn collect_html_tag_defensively_skips_an_unexpected_start_event() {
+    fn collect_html_body_spans_defensively_skips_an_unexpected_start_event() {
+        // Mirrors `collect_code_body_spans_defensively_skips_an_unexpected_start_event` exactly —
+        // this stream is not an `HtmlBlock`'s at all (`walker_for` hands back raw events starting at
+        // `Start(Paragraph)`), so the first event hits `collect_html_body_spans`'s own defensive
+        // `Event::Start(t) => skip_inline_to` branch, and no `End(HtmlBlock)` ever follows to break
+        // on — this pins that the walk simply stops with whatever it collected (nothing) instead of
+        // panicking or looping.
         let src = "**bold** x\n";
         let mut w = walker_for(src);
-        let range = 0..src.len();
-        let tag = collect_html_tag(&mut w, &range, src);
-        // `first_line` is read from `src[block_range]` regardless of what the (unrelated) event
-        // walk consumed — `**bold** x` starts with `*`, not `<`, so `html_tag_name` reports `None`
-        // via its own early `?` (a different branch than the one this test targets — see
+        let spans = collect_html_body_spans(&mut w);
+        assert!(spans.is_empty(), "no Event::Html was ever seen: {spans:?}");
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a real body_spans is a Vec<Range<usize>>; one span is the normal case
+    fn html_tag_of_reports_none_for_a_body_that_does_not_start_with_a_tag() {
+        // `html_tag_of` reads no events at all (unlike the old, since-split `collect_html_tag`) — it
+        // is a pure read off `body_spans`/`src` — so this pins its own scope directly: a first line
+        // starting with `*`, not `<`, reports `None` via `html_tag_name`'s own early `?` (a different
+        // branch than the one this test targets — see
         // `html_tag_name_reports_none_when_no_name_characters_follow_the_opening_bracket` below for
-        // that one directly), but reaching this point at all with no panic and an empty consumed
-        // stream is what this test pins.
+        // that one directly).
+        let src = "**bold** x\n";
+        let tag = html_tag_of(&[0..src.len()], src);
         assert_eq!(tag, None);
     }
 
@@ -3288,7 +3377,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         assert!(matches!(
             doc.blocks[0].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
     }
 
@@ -3304,7 +3393,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         assert!(matches!(
             doc.blocks[0].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
         assert_eq!(
             &src[doc.blocks[0].src.clone()],
@@ -3323,7 +3412,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 1);
         assert!(matches!(
             doc.blocks[0].kind,
-            BlockKind::Html { tag: Some(ref t) } if t == "details"
+            BlockKind::Html { tag: Some(ref t), .. } if t == "details"
         ));
         assert_eq!(doc.blocks[0].src, 0..src.len());
     }

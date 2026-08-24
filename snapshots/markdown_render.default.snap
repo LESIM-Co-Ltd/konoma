@@ -811,6 +811,22 @@ L0005 style=fg=-,bg=rgb(43,48,59),mod=- align=-
 -- ITEMS (1) --
   m00 line=0003 kind=CodeBlock
 
+=== code_corpus: an HTML block nested inside a blockquote is drawn instead of dropped entirely ===
+-- LINES (2) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "HTML-INSIDE-QUOTE"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === code_corpus: an alert after a fence whose closing line has trailing text ===
 -- LINES (11) --
 L0000 style=fg=-,bg=-,mod=- align=-
