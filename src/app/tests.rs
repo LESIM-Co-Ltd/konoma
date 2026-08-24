@@ -16965,12 +16965,6 @@ fn model_render_records_exactly_the_sentinels_it_draws_across_the_corpus() {
             &|_: &str, _: bool| crate::preview::markdown::MathSlot::Raw,
             false,
         );
-        // The legacy fallback (`RenderOut::unsupported` non-empty) has no model record of its own
-        // to check at all — `MdRenderExtras::model_based == false` there, both `Vec`s always empty
-        // by construction (see that field's own doc comment) — nothing to compare.
-        if !extras.model_based {
-            continue;
-        }
         let all_spans = || lines.iter().flat_map(|l| l.spans.iter());
         let drawn_tasks = all_spans()
             .filter(|s| crate::preview::markdown::is_task_span(s))

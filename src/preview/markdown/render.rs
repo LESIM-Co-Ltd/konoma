@@ -5091,11 +5091,6 @@ fn render_bar_prefixed_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `#[cfg(test)]`-local, not added to the file's own top-level `use super::{..}` import: neither
-    // is read outside `decorate_code_blocks_is_idempotent_on_render_docs_own_output`, and a plain,
-    // non-test build already never calls `render_doc` at all (see the module doc comment) — importing
-    // them unconditionally would just be an `unused_imports` warning waiting to happen there.
-    use super::super::{decorate_code_blocks, is_code_header_span};
     // `Span::dim()` (the `Stylize` trait) — needed by the two math regression tests below to build
     // the exact same dimmed placeholder `math_raw_lines` itself constructs (see that function's own
     // `Span::from(text).dim()`), for a byte-for-byte `Line` equality check against `render_doc`'s
@@ -5326,72 +5321,6 @@ mod tests {
         assert!(
             rendered.iter().any(|l| l.contains("[ ] nested")),
             "rendered lines: {rendered:?}"
-        );
-    }
-
-    /// Structural proof (not merely an assumption) that `decorate_md_lines`'s split into
-    /// `decorate_code_blocks` + `decorate_headings_and_extras` (see that function's own doc comment
-    /// in the parent module) is safe for `render_doc` to skip the first half of: running
-    /// `decorate_code_blocks` a *second* time over `render_doc`'s own already-fully-decorated output
-    /// changes nothing at all. Exercises every position `render_code_block` covers in one document —
-    /// top level, inside a list item, inside a quote, and an indented (non-fenced) block — plus a
-    /// heading and a plain paragraph as neighbors, so a regression that made *any* of
-    /// `render_code_block`'s own output lines start matching `is_code_block_line`'s `fg(White)`
-    /// signal (the one thing that would make a second pass over them do anything at all — see
-    /// `decorate_code_blocks`'s own doc comment) would show up here as a genuine diff, not silently
-    /// pass because the corpus happened not to exercise that shape.
-    #[test]
-    fn decorate_code_blocks_is_idempotent_on_render_docs_own_output() {
-        let src = "# Heading\n\npara text\n\n```rust\nfn a() {}\n```\n\n\
-                    - item\n\n  ```sh\n  echo hi\n  ```\n\n\
-                    > quoted\n>\n> ```\n> quoted code\n> ```\n\n    indented one\n    indented two\n";
-        let doc = Doc::parse(src);
-        let code = CodeStyle {
-            bg: Some(Color::Rgb(43, 48, 59)),
-            label_bg: Some(Color::Rgb(70, 78, 99)),
-            label_right: true,
-            tab_width: 4,
-            wrap: true,
-        };
-        let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let out = render_doc(
-            &doc,
-            src,
-            80,
-            code,
-            "TwoDark",
-            false,
-            &[' ', 'x'],
-            &no_images,
-            &no_mermaid,
-            "Enter: full screen",
-            true,
-            &math_slot,
-            true,
-        );
-        assert!(
-            out.unsupported.is_empty(),
-            "fixture should be fully supported: {:?}",
-            out.unsupported
-        );
-        // Sanity: the fixture really does exercise `render_code_block` more than once (one header
-        // per code block — a run over an *empty* document would trivially "pass" this test for the
-        // wrong reason).
-        let header_count = out
-            .lines
-            .iter()
-            .filter(|l| l.spans.iter().any(is_code_header_span))
-            .count();
-        assert_eq!(
-            header_count, 4,
-            "fixture doesn't exercise all four render_code_block positions: {:?}",
-            out.lines
-        );
-        let redecorated = decorate_code_blocks(out.lines.clone(), 80, code, "TwoDark");
-        assert_eq!(
-            out.lines, redecorated,
-            "a second decorate_code_blocks pass changed render_doc's own output — \
-             render_code_block's own output lines must never match is_code_block_line"
         );
     }
 
@@ -8713,75 +8642,6 @@ mod tests {
                 .any(|s| s.content.as_ref() == "title: My Doc")),
             "front matter content missing from render_doc's own output: {:?}",
             out.lines
-        );
-    }
-
-    /// The most important regression this change has to satisfy: for an **un-stripped** front-matter
-    /// document, `render_doc`'s own line-for-line, span-for-span, style-for-style output must exactly
-    /// equal `render_markdown_with_images_legacy`'s (`markdown.rs`) — tui-markdown's own native
-    /// `Event::Start(Tag::MetadataBlock(_))` handling, the renderer that used to draw this exact shape
-    /// whenever `render_doc` reported it `Unsupported` (see the fixture's own doc comment). `Line`/
-    /// `Span`/`Style` all derive `PartialEq`, so `assert_eq!` on the two `Vec<Line<'static>>`s directly
-    /// is exact — content, span boundaries, and every style field — the identical comparison
-    /// `app::md_render_diff_tests::first_diff_index` makes for the parity corpus at large (see that
-    /// module's own doc comment), just spelled out for this one fixture instead of run through the
-    /// whole-corpus harness.
-    #[test]
-    fn render_doc_matches_legacy_renderer_byte_for_byte_on_front_matter() {
-        let doc = Doc::parse(FRONT_MATTER_SRC);
-        let code = CodeStyle::default();
-        let theme = "TwoDark";
-        let icons = false;
-        let tasks: &[char] = &[' ', 'x'];
-        let mermaid_caption = "Enter: full screen";
-        let alerts = true;
-        let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let math_on = true;
-
-        let new_out = render_doc(
-            &doc,
-            FRONT_MATTER_SRC,
-            80,
-            code,
-            theme,
-            icons,
-            tasks,
-            &no_images,
-            &no_mermaid,
-            mermaid_caption,
-            alerts,
-            &math_slot,
-            math_on,
-        );
-        assert!(
-            new_out.unsupported.is_empty(),
-            "fixture should be fully supported: {:?}",
-            new_out.unsupported
-        );
-
-        let (legacy_lines, legacy_images) = super::super::render_markdown_with_images_legacy(
-            FRONT_MATTER_SRC,
-            80,
-            code,
-            theme,
-            icons,
-            tasks,
-            &no_images,
-            &no_mermaid,
-            mermaid_caption,
-            alerts,
-            &math_slot,
-            math_on,
-        );
-
-        assert_eq!(
-            new_out.lines, legacy_lines,
-            "render_doc's own front-matter output must match the legacy (tui-markdown-native) \
-             renderer's, line for line and span for span"
-        );
-        assert_eq!(
-            new_out.images, legacy_images,
-            "no image/mermaid/math placements in this fixture on either side"
         );
     }
 }

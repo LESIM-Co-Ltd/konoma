@@ -492,35 +492,11 @@ impl App {
                         &math_slot,
                         math_on,
                     );
-                // `extras.model_based == false`: this document took the legacy renderer fallback
-                // (`render::RenderOut::unsupported` — the one remaining gap, a `Table`/`Html` nested
-                // inside a `Quote`; see `render_markdown_with_images`'s own doc comment). It has no
-                // model of its own to have recorded `code_blocks`/`tasks` from, so this fills the
-                // identical two fields the same way `y c`/the checkbox toggle always used to get their
-                // data before this migration — a single scan of the legacy renderer's own splitter
-                // functions (`code_block_source_locs`/`task_source_locs`, which share `split_block_parts`/
-                // `splitter_code_mask` with the legacy renderer itself, not a hand-rolled re-derivation
-                // — see either's own doc comment), run **once here**, not once per `y c` press/toggle
-                // the way it used to be. No document-wide count guard: `build_md_items`'s own ordinal
-                // lookup into these two `Vec`s already degrades per-item (`None` for that one item
-                // only) rather than refusing the whole document — see `MdItemKind::CodeBlock`/`Task`'s
-                // own doc comments.
-                let (code_blocks, tasks_at) = if extras.model_based {
-                    (extras.code_blocks, extras.tasks)
-                } else {
-                    let task_states = self.cfg.ui.md_task_state_chars();
-                    let blocks =
-                        crate::preview::markdown::code_block_source_locs(&pre_src, &details_states);
-                    let marks: Vec<(char, usize)> = crate::preview::markdown::task_source_locs(
-                        &pre_src,
-                        &task_states,
-                        &details_states,
-                    )
-                    .iter()
-                    .filter_map(|loc| loc.absolute(&pre_src))
-                    .collect();
-                    (blocks, marks)
-                };
+                // `render_markdown_with_images`'s own record, straight from the same parse it
+                // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox toggle
+                // read a focused item's source straight off this list, by ordinal, with no re-scan
+                // and no count-guard reconciliation of any kind.
+                let (code_blocks, tasks_at) = (extras.code_blocks, extras.tasks);
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
                 } else {

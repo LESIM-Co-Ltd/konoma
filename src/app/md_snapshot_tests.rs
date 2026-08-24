@@ -44,11 +44,7 @@ use super::*;
 /// this mirrors (`app_faithful_parity_tests::drawn_code`/`drawn_tasks` in `markdown.rs`) — wide
 /// enough that the corpus's short lines don't force awkward wraps, narrow enough to keep the dump
 /// readable.
-///
-/// `pub(super)`: `md_render_diff_tests` (a sibling module) renders its own new-renderer side at this
-/// exact same width, so the two sides of that comparison can never quietly drift onto different
-/// widths.
-pub(super) const SNAPSHOT_WIDTH: u16 = 100;
+const SNAPSHOT_WIDTH: u16 = 100;
 
 /// `samples/*.md` included alongside the corpora, read from disk (not `include_str!`) so a build
 /// from the *published* crate — where `/samples` is excluded (see `Cargo.toml`) — degrades to
@@ -148,19 +144,9 @@ pub(super) fn pre_src_for(cfg: &Config, src: &str) -> String {
 }
 
 /// Everything one case renders to, over the app's real Markdown pipeline.
-///
-/// `pub(super)`: `md_render_diff_tests` (a sibling module) reads `lines` **and** `images` back out of
-/// this as the "old renderer" side of its own comparison — see `render_case`'s own doc comment. Both
-/// fields carry the identical `pub(super)` visibility for the identical reason: neither is more or
-/// less "the production answer" than the other, and a diff harness that only ever looked at one of
-/// the two would have no way to notice a placement-only regression (wrong `url`/`line`/`cols`/`rows`)
-/// that leaves every rendered `Line` byte-for-byte unchanged — exactly the shape a wrong
-/// `ImagePlacement.url` is (the rendered placeholder rows look identical either way; only the
-/// synthetic cache key inside `url` differs) — see `run_case`'s own doc comment in
-/// `md_render_diff_tests` for where this is actually compared.
-pub(super) struct CaseRender {
-    pub(super) lines: Vec<Line<'static>>,
-    pub(super) images: Vec<crate::preview::markdown::ImagePlacement>,
+struct CaseRender {
+    lines: Vec<Line<'static>>,
+    images: Vec<crate::preview::markdown::ImagePlacement>,
     items: Vec<MdItem>,
     anchors: Vec<(String, usize)>,
     code_blocks: Vec<String>,
@@ -168,59 +154,22 @@ pub(super) struct CaseRender {
     details_states: Vec<bool>,
 }
 
-/// Which Markdown backend `render_case_with` drives. Only the single call inside `render_case_with`
-/// that actually produces `(lines, images)` differs between the two variants — every other step
-/// (front matter, `pre_src_for`, `<details>` state, the app-side post-process, the source scanners,
-/// `build_md_items`/`compute_md_anchors`) is identical regardless of which one is picked, which is the
-/// entire point of funneling both through one function instead of two near-duplicate ones (see
-/// `render_case_with`'s own doc comment for why that duplication would be worse than a match arm).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Renderer {
-    /// `crate::preview::markdown::render_markdown_with_images` — the dispatcher every real preview
-    /// path calls. It tries `render::render_doc` (the new block-model renderer) first and only falls
-    /// back to `Legacy` when `render_doc` itself reports part of the document `unsupported`. This is
-    /// what `render_case`/the golden snapshot use, because the snapshot's job is to pin *production's*
-    /// answer, whichever backend produced it.
-    Dispatcher,
-    /// `crate::preview::markdown::render_markdown_with_images_legacy` — the pre-`md-block-walk`
-    /// implementation, called directly, unconditionally, bypassing the dispatcher's `render_doc`-first
-    /// logic entirely.
-    ///
-    /// This is the only variant `md_render_diff_tests` may use for its "old renderer" side. Using
-    /// `Dispatcher` there would be self-defeating: `render_doc` now covers every shape the parity
-    /// corpus exercises (`unsupported` is empty on all 468 cases as of this writing — see
-    /// `md_render_diff_tests`'s own module doc comment), so `Dispatcher` always resolves to
-    /// `render_doc` too, making the "diff" compare `render_doc` against itself. That is exactly what
-    /// happened here from v0.26.0 (the commit that wired `render_doc` into the dispatcher) until this
-    /// enum was introduced: `markdown_render_diff_report` reported 468/468 exact matches no matter what
-    /// — verified by temporarily sentinel-poisoning `render_paragraph`'s output and re-running the
-    /// report, which still printed 0 mismatches, while the *golden snapshot* tests (which pin
-    /// `Dispatcher`'s/production's actual output, not a self-comparison) correctly failed. `Legacy`
-    /// fixes this by anchoring the "old" side to the one implementation that cannot itself start
-    /// calling `render_doc` out from under this comparison.
-    Legacy,
-}
-
 /// Renders `src` exactly the way `App::build_decorated`'s Markdown branch
 /// (`src/app/md_render.rs`) does, followed by `App::ensure_md_cache`'s post-process
 /// (`src/app/md_text.rs`'s `collapse_links` / `autolink_bare_urls` / `substitute_emoji`) and item
 /// builders (`build_md_items` / `compute_md_anchors`) — the same order, the same arguments, driven
-/// off the same `cfg` fields `build_decorated` reads — **except** for which Markdown backend actually
-/// turns `pre_src` into `(lines, images)`, selected by `renderer` (see [`Renderer`]'s own doc comment
-/// for what each variant means and, in `Legacy`'s case, why `md_render_diff_tests` must use it).
+/// off the same `cfg` fields `build_decorated` reads — through the production Markdown dispatcher
+/// (`render_markdown_with_images`, which resolves to `render::render_doc` for every document — see
+/// that function's own doc comment).
 ///
-/// The one deliberate departure from `build_decorated`, independent of `renderer`: the image/mermaid/
-/// math *slot* closures there depend on a live `Picker` (font metrics) and on-disk file state, neither
-/// of which exists in a unit test and neither of which is deterministic across machines. Per the task
-/// brief, they are fixed here to the same values `app_faithful_parity_tests` already uses for the same
-/// reason: images "unavailable" (as with no image backend), mermaid fences and math expressions always
-/// "extracted" (`Image{cols:20,rows:5}` / `Raw`) so the extraction and placement logic itself is
-/// still exercised end to end, just not the picker-dependent raster step.
-///
-/// `pub(super)`: `md_render_diff_tests` (a sibling module) calls this directly (with `Renderer::Legacy`)
-/// for the "old renderer" side of its own comparison, rather than a second, hand-copied assembly of the
-/// same pipeline — see that module's own doc comment.
-pub(super) fn render_case_with(cfg: &Config, src: &str, renderer: Renderer) -> CaseRender {
+/// The one deliberate departure from `build_decorated`: the image/mermaid/math *slot* closures there
+/// depend on a live `Picker` (font metrics) and on-disk file state, neither of which exists in a unit
+/// test and neither of which is deterministic across machines. Per the task brief, they are fixed
+/// here to the same values `app_faithful_parity_tests` already uses for the same reason: images
+/// "unavailable" (as with no image backend), mermaid fences and math expressions always "extracted"
+/// (`Image{cols:20,rows:5}` / `Raw`) so the extraction and placement logic itself is still exercised
+/// end to end, just not the picker-dependent raster step.
+fn render_case(cfg: &Config, src: &str) -> CaseRender {
     let icons = cfg.ui.icons;
     let code = crate::preview::markdown::CodeStyle {
         bg: cfg.ui.theme.code_bg(),
@@ -255,43 +204,20 @@ pub(super) fn render_case_with(cfg: &Config, src: &str, renderer: Renderer) -> C
     let slot_of = |_: &str| crate::preview::markdown::ImageSlot::Unavailable;
     let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
-    // The only step `renderer` actually selects (see [`Renderer`]'s own doc comment): which Markdown
-    // backend turns `pre_src` into `(lines, images)`. `Dispatcher` additionally returns `MdRenderExtras`
-    // (`render_case_with` never reads it — see `CaseRender`'s own fields), so it is dropped right here
-    // rather than threaded any further, keeping the two match arms the same shape.
-    let (mut lines, mut images) = match renderer {
-        Renderer::Dispatcher => {
-            let (lines, images, _extras) = crate::preview::markdown::render_markdown_with_images(
-                &pre_src,
-                SNAPSHOT_WIDTH,
-                code,
-                theme,
-                icons,
-                &tasks,
-                &slot_of,
-                &mermaid_slot,
-                "mermaid",
-                cfg.ui.md_alerts,
-                &math_slot,
-                true, // math_on: extraction "on" (mirrors the default `math = "image"` + a live picker)
-            );
-            (lines, images)
-        }
-        Renderer::Legacy => crate::preview::markdown::render_markdown_with_images_legacy(
-            &pre_src,
-            SNAPSHOT_WIDTH,
-            code,
-            theme,
-            icons,
-            &tasks,
-            &slot_of,
-            &mermaid_slot,
-            "mermaid",
-            cfg.ui.md_alerts,
-            &math_slot,
-            true, // math_on: extraction "on" (mirrors the default `math = "image"` + a live picker)
-        ),
-    };
+    let (mut lines, mut images, _extras) = crate::preview::markdown::render_markdown_with_images(
+        &pre_src,
+        SNAPSHOT_WIDTH,
+        code,
+        theme,
+        icons,
+        &tasks,
+        &slot_of,
+        &mermaid_slot,
+        "mermaid",
+        cfg.ui.md_alerts,
+        &math_slot,
+        true, // math_on: extraction "on" (mirrors the default `math = "image"` + a live picker)
+    );
 
     // Prepend the front-matter metadata block, shifting image placements down past it — verbatim
     // from `build_decorated`.
@@ -338,17 +264,6 @@ pub(super) fn render_case_with(cfg: &Config, src: &str, renderer: Renderer) -> C
         task_locs,
         details_states,
     }
-}
-
-/// The golden-snapshot entry point: `render_case_with(cfg, src, Renderer::Dispatcher)`, pinned to the
-/// dispatcher production actually calls (see [`Renderer::Dispatcher`]'s own doc comment). Kept as its
-/// own thin wrapper — rather than every existing caller switching to `render_case_with(cfg, src,
-/// Renderer::Dispatcher)` inline — specifically so `markdown_render_snapshot_default`/
-/// `_code_bg_none`/`md_model_snapshot_tests` (all of which mean "the production answer", not "one of
-/// two selectable backends") keep reading as unconditional production dumps, unaffected by
-/// `md_render_diff_tests`'s need to select `Renderer::Legacy` on its own, separate call.
-pub(super) fn render_case(cfg: &Config, src: &str) -> CaseRender {
-    render_case_with(cfg, src, Renderer::Dispatcher)
 }
 
 /// `None` -> `"-"`; every other color exhaustively (a new `Color` variant is a compile error here,
