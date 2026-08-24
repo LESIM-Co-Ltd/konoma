@@ -118,8 +118,18 @@ pub fn render_markdown(
 pub(crate) const DEFAULT_TASK_STATES: &[char] = &[' ', 'x'];
 
 /// `render_markdown` plus the configured task-list states (`ui.md_task_states`): custom state
-/// chars (e.g. `/`) are also recognized as toggleable task markers. Test-only shorthand — production
-/// calls `render_markdown_tasks_opts` (with the `ui.md_alerts` flag) via `render_markdown_with_images`.
+/// chars (e.g. `/`) are also recognized as toggleable task markers. Test-only shorthand that now
+/// drives the same dispatcher production calls (`render_markdown_with_images`, which tries
+/// `render::render_doc` first — see that function's own doc comment) instead of the retired
+/// `render_markdown_tasks_opts` direct call: since `3318a5b`, `render::render_doc`'s
+/// `unsupported` is always empty, so `render_markdown_with_images` never falls back to the legacy
+/// renderer, and this helper's 56 callers now exercise the production block-model path. The
+/// image/mermaid/math slot closures below are fixed answers (no live `Picker`/on-disk state in a
+/// unit test), matching the exact values `md_snapshot_tests::render_case_with` and
+/// `md_render_diff_tests::render_case_new` already use for the same reason: images "unavailable",
+/// mermaid fences "extracted" to a placeholder `Image { cols: 20, rows: 5 }`, math expressions
+/// "extracted" to `Raw` — so extraction/placement logic is still exercised end to end, just not
+/// the picker-dependent raster step.
 #[cfg(test)]
 pub fn render_markdown_tasks(
     src: &str,
@@ -132,18 +142,27 @@ pub fn render_markdown_tasks(
     // Reset the per-render `<details>` state so tests are deterministic (production seeds it via
     // `set_details_open` before every draw). Empty = every block honors its own `open` attribute.
     set_details_open(Vec::new());
-    // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on. `src` is a whole
-    // document here (production enters through `render_markdown_with_images`, which splits it into
-    // runs first), so `SourceRun::parse` is the right constructor — see that type's doc comment.
-    render_markdown_tasks_opts(
-        &SourceRun::parse(src.to_string()),
+    let slot_of = |_: &str| ImageSlot::Unavailable;
+    let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
+    let math_slot = |_: &str, _: bool| MathSlot::Raw;
+    // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on, math extraction on
+    // (mirrors the default `math = "image"` config), the same literal `"mermaid"` caption the other
+    // two test harnesses pass (this helper never varies `ui.lang`).
+    render_markdown_with_images(
+        src,
         width,
         code,
         theme,
         icons,
         tasks,
+        &slot_of,
+        &mermaid_slot,
+        "mermaid",
+        true,
+        &math_slot,
         true,
     )
+    .0
 }
 
 /// Shared trailing render options threaded through the alert/details/text-block renderers
@@ -7458,22 +7477,39 @@ mod tests {
 
     #[test]
     fn loose_list_task_item_does_not_panic() {
-        // tui-markdown 0.3.7/0.3.8 panics on "a task item inside a loose list (blank-line separated)"
-        // (insertion index should be <= len). konoma catches it and **retries by bisecting at a
-        // blank-line boundary**, and each resulting half renders normally = decoration (task markers
-        // etc.) survives. Back when the whole thing degraded to plain text, just one instance of this
-        // syntax turned an entire real document undecorated (reported against an actual document).
+        // Real, upstream tui-markdown 0.3.7/0.3.8 panics parsing "a task item inside a loose list
+        // (blank-line separated)" (insertion index should be <= len) — see
+        // `INTENDED_IMPROVEMENTS`'s own "list_corpus: task item inside a loose list" entry in
+        // `md_render_diff_tests.rs` for the confirmed mechanism. `render_markdown` (via
+        // `render_markdown_tasks`) now goes through `render::render_doc`, the production dispatcher
+        // since `3318a5b`, which never calls tui-markdown's `from_str` for an ordinary block like
+        // this at all (see `render.rs`'s own module doc comment) — so this exact shape has no panic
+        // to avoid any more, and the old bisect-and-retry workaround this test used to pin
+        // (`split_block_for_retry`, still exercised directly by the tests below) never runs for it.
+        // What's asserted now is the *correct* loose-list layout `render_doc` draws instead: a loose
+        // item's own marker lands on its own line, separate from its text (see `render_item`'s own
+        // doc comment) — the real CommonMark-correct shape the legacy bisect-and-retry used to
+        // silently disturb by turning the one loose list into two independent tight one-item lists
+        // glued back together (marker and text sharing one line — the layout the old assertion here,
+        // `all.iter().any(|t| t.contains("- a"))`, was written to expect).
         let md = "# title\n\n- a\n\n- [ ] b\n\n**bold**\n";
         let lines = render_markdown(md, 60, BG, "TwoDark", false);
         let all: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(
-            all.iter().any(|t| t.contains("- a")),
-            "内容は読める形で残る: {all:?}"
+        // "- " (the marker, alone) is immediately followed by "a" (the item's own text) on the next
+        // line — content is readable, just laid out across two lines instead of one.
+        let marker_idx = all
+            .iter()
+            .position(|t| t == "- ")
+            .unwrap_or_else(|| panic!("箇条書きマーカーの行が見つからない: {all:?}"));
+        assert_eq!(
+            all.get(marker_idx + 1).map(String::as_str),
+            Some("a"),
+            "マーカーの直後の行が項目の本文: {all:?}"
         );
-        // Decoration survives the bisect-and-retry: the task gets its dedicated marker span, and bold has its markers stripped.
+        // Decoration still applies to every construct: the task gets its dedicated marker span, and bold has its markers stripped.
         let markers: Vec<String> = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -11917,9 +11953,47 @@ mod task_scan_parity_tests {
             .count()
     }
 
+    /// Corpus cases where the write-back scanner (`task_source_locs`) is **known, permanently** not
+    /// to find a checkbox the renderer draws inside a **plain** (non-alert) block quote.
+    /// `render::render_doc` — the production renderer since `3318a5b` (`RenderOut::unsupported` is
+    /// always empty, so `render_markdown_with_images` never falls back to the legacy renderer) —
+    /// reads a plain quote's real block structure and draws its own task-list items as real,
+    /// toggleable checkboxes, exactly like the identical content outside a quote. `task_source_locs`
+    /// only strips a leading `>` for a GitHub **alert** header (`> [!TYPE]`, its own
+    /// `parse_alert_header` branch); an *ordinary* quote's `>` is left in place, so its hand-written
+    /// block-structure walk never recognizes the unindented `- [ ]` line inside one as a task-list
+    /// item at all — `task_prefix_state` never matches a line that still starts with `>`.
+    ///
+    /// This is exactly the shape `INTENDED_IMPROVEMENTS` (private to `md_render_diff_tests.rs`)
+    /// tracks under its "Category 4" entries (a plain block quote's `"> "`-every-line prefix
+    /// defeating the legacy renderer's row-based decoration, now fixed by reading the real model
+    /// instead) — these five case names are exactly the task-bearing subset of that same list. Not
+    /// reachable through a real keystroke today: `app::md_render::build_decorated` only ever calls
+    /// `task_source_locs` inside its `extras.model_based == false` branch (`md_render.rs:508`),
+    /// which `render_doc`'s now-total `BlockKind` coverage has made permanently unreachable — the
+    /// checkbox-toggle count guard a real press of Space/Enter goes through reads `RenderOut::tasks`
+    /// (the model renderer's own record) directly, never this scanner. `task_source_locs` is
+    /// exercised here only as a standalone unit, pinned so a further, *unexpected* drift (the
+    /// scanner start matching MORE than these five, or the renderer stop drawing one of them as a
+    /// real checkbox) still fails loudly.
+    ///
+    /// `pub(super)`: `app_faithful_parity_tests` (a sibling module) pins the identical gap over its
+    /// own, app-faithful-preprocessed input — see that module's own
+    /// `task_scanner_matches_the_render_through_the_app_pipeline`, which reuses this exact list
+    /// rather than hand-copying the five names a second time.
+    pub(super) const PLAIN_QUOTE_TASK_SCANNER_GAP: &[&str] = &[
+        "plain blockquote",
+        "nested plain blockquote (two levels)",
+        "plain blockquote nested inside an alert",
+        "alert nested inside a plain blockquote",
+        "checkbox inside a plain block quote",
+    ];
+
     /// The write-back scanner must find **exactly** the checkboxes the renderer draws, for every
-    /// construct. When the two disagree the safety check in `md_tasks` cancels *every* toggle in the
-    /// document (a safe fallback, principle #3), so a single stray construct breaks the whole file.
+    /// construct, **except** the five [`PLAIN_QUOTE_TASK_SCANNER_GAP`] cases (pinned there instead,
+    /// with the reasoning). When the two disagree the safety check in `md_tasks` cancels *every*
+    /// toggle in the document (a safe fallback, principle #3), so a single stray construct breaks
+    /// the whole file.
     ///
     /// Regressions this pins: a task inside a GitHub alert (`> [!NOTE]`) is rendered as a checkbox —
     /// the renderer strips the `>` — but the scanner matched only `-`/`*`/`+` at line start and found
@@ -11930,6 +12004,15 @@ mod task_scan_parity_tests {
             set_details_open(Vec::new());
             let drawn = rendered_tasks(src);
             let scanned = task_source_locs(src, &[' ', 'x'], &[]).len();
+            if PLAIN_QUOTE_TASK_SCANNER_GAP.contains(&name) {
+                assert_eq!(
+                    (drawn, scanned),
+                    (1, 0),
+                    "{name}: 既知のプレーン引用チェックボックス差異の形が変わった\
+                     (PLAIN_QUOTE_TASK_SCANNER_GAP のコメント参照)\n--- src ---\n{src}"
+                );
+                continue;
+            }
             assert_eq!(
                 drawn, scanned,
                 "{name}: 画面のチェックボックス数と書き戻しスキャナの数が食い違う\
@@ -12097,17 +12180,33 @@ mod task_scan_parity_tests {
     /// (`render::contains_unsupported`'s own doc comment): `render_markdown_with_images` never falls
     /// back to the legacy renderer for *any* document any more (`extras.model_based` is always
     /// `true`), so that test's own subject — legacy-routed-scanner agreement — has gone unreachable,
-    /// its `at_least_one_legacy_routed` guard failing on every run. This test is unaffected by that
-    /// same change: `rendered_tasks` (below) calls `render_markdown_tasks`, the always-legacy
-    /// pipeline directly, unconditionally, never through `render_markdown_with_images`'s own
-    /// model/legacy dispatch — so it never depended on any document actually being *routed* to the
-    /// legacy renderer to begin with, and stays exactly as meaningful now as before this change.
+    /// its `at_least_one_legacy_routed` guard failing on every run.
+    ///
+    /// `rendered_tasks` (below) used to call `render_markdown_tasks` as the always-legacy pipeline
+    /// directly, unconditionally, never through `render_markdown_with_images`'s own model/legacy
+    /// dispatch — so this test used to never depend on any document actually being *routed* to the
+    /// legacy renderer to begin with. That changed once `render_markdown_tasks` itself was
+    /// repointed to the real dispatcher (`render_markdown_with_images`, which resolves to
+    /// `render::render_doc` for every document since `3318a5b` — see `render_markdown_tasks`'s own
+    /// doc comment), so this test now hits the identical [`PLAIN_QUOTE_TASK_SCANNER_GAP`] this
+    /// module's sibling test pins — `code_corpus`'s own `"checkbox inside a plain block quote"` case
+    /// is the one member of that list that also happens to live in `code_corpus` rather than
+    /// `task_corpus`.
     #[test]
     fn task_scanner_matches_renderer_across_indented_code_corpus() {
         for (name, src) in code_corpus::cases() {
             set_details_open(Vec::new());
             let drawn = rendered_tasks(src);
             let scanned = task_source_locs(src, &[' ', 'x'], &[]).len();
+            if PLAIN_QUOTE_TASK_SCANNER_GAP.contains(&name) {
+                assert_eq!(
+                    (drawn, scanned),
+                    (1, 0),
+                    "{name}: 既知のプレーン引用チェックボックス差異の形が変わった\
+                     (PLAIN_QUOTE_TASK_SCANNER_GAP のコメント参照)\n--- src ---\n{src}"
+                );
+                continue;
+            }
             assert_eq!(
                 drawn, scanned,
                 "{name}: 画面のチェックボックス数と書き戻しスキャナの数が食い違う\
@@ -14651,13 +14750,29 @@ mod app_faithful_parity_tests {
         }
     }
 
-    /// The same for the checkbox toggle's screen-parity half.
+    /// The same for the checkbox toggle's screen-parity half, over the app's own preprocessed text
+    /// (front matter stripped, footnotes and inline HTML folded in) instead of the raw corpus
+    /// string — same `task_source_locs`-vs-renderer concern `task_scan_parity_tests` pins, just
+    /// measured through the app's real wiring rather than a bare corpus string. Same five known,
+    /// permanent exceptions: `task_scan_parity_tests::PLAIN_QUOTE_TASK_SCANNER_GAP` (see that
+    /// list's own doc comment) — `task_source_locs` never recognizes a checkbox nested inside a
+    /// plain (non-alert) block quote, a shape `render::render_doc` now draws correctly.
     #[test]
     fn task_scanner_matches_the_render_through_the_app_pipeline() {
         for (name, raw) in all_cases() {
             let (pre, _) = app_pre(raw);
             let drawn = drawn_tasks(&pre);
             let scanned = task_source_locs(&pre, &[' ', 'x'], &[]).len();
+            if task_scan_parity_tests::PLAIN_QUOTE_TASK_SCANNER_GAP.contains(&name) {
+                assert_eq!(
+                    (drawn, scanned),
+                    (1, 0),
+                    "{name}: 既知のプレーン引用チェックボックス差異の形が変わった\
+                     (PLAIN_QUOTE_TASK_SCANNER_GAP のコメント参照)\
+                     \n--- raw ---\n{raw}\n--- preprocessed ---\n{pre}"
+                );
+                continue;
+            }
             assert_eq!(
                 drawn, scanned,
                 "{name}: アプリ経路で画面のチェックボックス数と書き戻しスキャナの数が食い違う\
