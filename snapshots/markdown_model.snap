@@ -1888,6 +1888,12 @@ List{ordered=false, start=None} src=0..18 text="- [ ] a\n  - [x] b\n"
       ListItem{task=Some(state='x', state_at=13)} src=10..18 text="- [x] b\n"
         Paragraph{inline=7..8:"b"} src=16..17 text="b"
 
+=== list_corpus: tight list item that is only a standalone image ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..16 text="- ![alt](x.png)\n"
+  ListItem{task=None} src=0..16 text="- ![alt](x.png)\n"
+    Paragraph{inline=2..5:"alt"} src=2..15 text="![alt](x.png)"
+
 === list_corpus: tight ordered list two items ===
 -- BLOCKS (1) --
 List{ordered=true, start=Some(1)} src=0..10 text="1. a\n2. b\n"
@@ -1941,6 +1947,14 @@ List{ordered=false, start=None} src=0..8 text="- [X] a\n"
 List{ordered=false, start=None} src=0..8 text="- [ ] a\n"
   ListItem{task=Some(state=' ', state_at=3)} src=0..8 text="- [ ] a\n"
     Paragraph{inline=3..4:"a"} src=6..7 text="a"
+
+=== list_corpus: two tight list items each only a standalone image ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..28 text="- ![a](x.png)\n- ![b](y.png)\n"
+  ListItem{task=None} src=0..14 text="- ![a](x.png)\n"
+    Paragraph{inline=2..5:"a"} src=2..13 text="![a](x.png)"
+  ListItem{task=None} src=14..28 text="- ![b](y.png)\n"
+    Paragraph{inline=7..10:"b"} src=16..27 text="![b](y.png)"
 
 === list_corpus: unordered bullet dash ===
 -- BLOCKS (1) --

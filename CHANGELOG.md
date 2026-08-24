@@ -13,6 +13,14 @@ All notable changes to konoma are documented in this file. The format is based o
   heading, thematic break, code fence, GitHub alert, or task checkbox nested in one kept its raw
   `#`, `---`, ```` ``` ````, `[!NOTE]`, or `[ ]` text instead of being drawn. All of them render
   properly now. GitHub alerts (`> [!NOTE]`) were already decorated and are unchanged.
+- **A list item whose own content is nothing but an image (`- ![alt](x.png)`, the common "one
+  image per bullet" idiom) rendered as bare alt text instead of a real image.** A list item's own
+  *first* child paragraph took a special "continue on the marker's own row" code path that never
+  checked for a standalone image at all — every *later* paragraph in the same item already did, so
+  a two-paragraph item (`- a\n\n  ![img](x.png)`) drew the second paragraph as a real image while
+  the same shape as an item's sole/first content stayed text-only. Now checked before that
+  splice's decision is made, so a first-child-only image is drawn as a real image block, same as
+  any other position.
 
 ### Changed
 - Markdown preview rendering is now handled end to end by a single, built-in renderer, and the

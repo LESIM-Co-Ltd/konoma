@@ -2183,10 +2183,20 @@ fn flush_row_group(w: &mut Writer<'_>, group: &mut Vec<(String, String, u16, u16
 /// Renders a `Paragraph` block into `w`, in place — first checking whether it is actually a
 /// standalone block image (`try_render_paragraph_as_image`, gated by `extract_here`), then choosing
 /// between `render_paragraph_math` (lifts any LaTeX math the paragraph's own text contains onto its
-/// own placeholder line(s)) and plain `render_paragraph` — the one call site every `Paragraph`-
-/// rendering path in this file (`render_doc`'s own top-level dispatch, `render_block`'s generic one,
-/// and `render_item`'s first-child special case — see `walk_inline_math`, its own analogous split)
-/// goes through, so neither decision ever gets duplicated. `math_here`/`extract_here` are
+/// own placeholder line(s)) and plain `render_paragraph` — the call site `render_doc`'s own top-level
+/// dispatch and `render_block`'s generic one both go through for every `Paragraph` in the tree
+/// *except* a list item's own first child, which `render_item` special-cases (see that function's own
+/// doc comment on why: continuing text directly onto the marker's own row is incompatible with this
+/// function's `start_paragraph`/`end_paragraph`-equivalent bookkeeping). That special case *does*
+/// still route back through `render_block` — and so through this function — for the one shape where
+/// bypassing it would silently drop image extraction entirely: a first child that is nothing but
+/// standalone block image(s) (`- ![alt](x)`; found live — see `render_item`'s own doc comment for the
+/// bug this closes). Any other first-child paragraph (plain text, or text mixed with a
+/// leading/trailing image) still bypasses this function, via `walk_inline`/`walk_inline_math` called
+/// directly — a real, narrower gap this fix does not close (only the "entirely image(s)" shape is
+/// covered) — so `math_here`/`extract_here` being propagated to `render_item` at all is only ever
+/// consulted there for that one narrow re-dispatch decision, not for driving this function's own
+/// leading/trailing-image branches on that first child. `math_here`/`extract_here` are
 /// `render_block`/`render_list`/`render_item`'s own propagated answers to "is math lifting"/"is
 /// image/mermaid extraction" active at this position in the tree (see `BlockCtx`'s own doc comment
 /// for why the two are separate fields, not one shared flag); `w.math.is_some()` is `render_doc`'s
@@ -4293,37 +4303,64 @@ fn render_item(
     let mut rest = children;
     if let Some(first) = children.first() {
         if let BlockKind::Paragraph { inline } = &first.kind {
-            // Tight or loose, the item's own first paragraph's content continues directly on
-            // whichever line is already open — the marker's own (tight), or the blank one
-            // `loose_first` just opened above (loose) — never a *second* blank-line push of its
-            // own; that is exactly what distinguishes this from `render_paragraph`, which this
-            // call deliberately bypasses for the item's own first child.
-            if ctx.math_here {
-                walk_inline_math(
-                    &mut events_iter_ranged(&doc.events[inline.clone()]),
-                    w,
-                    src,
-                    first.src.start,
-                );
+            // A first-child paragraph that is nothing but standalone block image(s) — `- ![alt](x)`,
+            // the common "one image per list item" idiom — must never take the marker-row splice
+            // below. That splice's whole premise is "continue on whichever line is already open"; an
+            // image is a multi-row block (`render_image_group`/`flush_row_group` reserve and draw a
+            // whole band of rows), fundamentally incompatible with continuing text onto a single
+            // shared row. Route it through the exact same dispatcher every *later* sibling paragraph
+            // in this same item already goes through instead (`render_block`'s own `Paragraph` arm,
+            // which sends a real paragraph to `render_paragraph_dispatch` and a tight item's bare one
+            // to `render_bare_paragraph` — both try `try_render_paragraph_as_image` before anything
+            // else). Confirmed against `tight_list_bare_paragraph_that_is_only_an_image_returns_early`
+            // (a *later* bare-paragraph sibling that is only an image, already covered): that path
+            // draws the marker's own row first (unchanged — nothing here touches `push_item_marker`'s
+            // own call, above), then the image band on the row(s) directly below it, exactly what this
+            // arm now reuses. Before this fix, neither `try_render_paragraph_as_image` nor
+            // `paragraph_trailing_images`/`paragraph_leading_images` was ever reachable from an item's
+            // own *first* child at all — `walk_inline`, below, renders an `Event::Start(Image)` as
+            // nothing but its own literal alt text (see `Writer`'s inline walk), so a first-child-only
+            // image silently degraded to bare alt text while every later paragraph in the identical
+            // list rendered the real thing — the exact "1 item 1 image, only the first fails"
+            // inconsistency this arm closes. Gated on `ctx.extract_here` for the same reason every
+            // other image-extraction call site in this file is (see `BlockCtx.extract_here`'s own doc
+            // comment) — mirrors `try_render_paragraph_as_image`'s own eligibility gate exactly, so
+            // this decision and that function's are never out of sync with each other.
+            if ctx.extract_here && paragraph_as_block_images(doc, src, inline).is_some() {
+                render_block(first, w, doc, src, ctx);
             } else {
-                walk_inline(&mut events_iter(&doc.events[inline.clone()]), w, None);
+                // Tight or loose, an ordinary (non-image-only) first paragraph's content continues
+                // directly on whichever line is already open — the marker's own (tight), or the blank
+                // one `loose_first` just opened above (loose) — never a *second* blank-line push of
+                // its own; that is exactly what distinguishes this from `render_paragraph`, which this
+                // call deliberately bypasses for the item's own first child.
+                if ctx.math_here {
+                    walk_inline_math(
+                        &mut events_iter_ranged(&doc.events[inline.clone()]),
+                        w,
+                        src,
+                        first.src.start,
+                    );
+                } else {
+                    walk_inline(&mut events_iter(&doc.events[inline.clone()]), w, None);
+                }
+                // `loose_first == true`: this was a *real* paragraph — `end_paragraph()`'s own
+                // unconditional `needs_newline = true` applies, exactly as it would via
+                // `render_paragraph`, *unless* its own trailing content was a math lift (`w.after_math`
+                // — see this function's own doc comment). `loose_first == false` (tight): there was no
+                // wrapping paragraph tag at all, so no `end_paragraph()` ever ran — `walk_inline`'s own
+                // inline-only calls (`Writer::text` chief among them; see its own doc comment) leave
+                // `needs_newline` exactly as `false` as `start_item` set it. Setting this unconditionally
+                // to `true` here — an earlier version of this function did — inserted a spurious blank
+                // line before any `Quote`/`Heading`/`ThematicBreak` directly interrupting a tight item's
+                // own paragraph with no blank line in the source; see `list_corpus`'s own "block quote
+                // can interrupt a tight item's own paragraph with no blank line" case, which is exactly
+                // what caught this. `checkbox_shares_the_marker_row`: whenever a task collapsed this
+                // item onto the marker's own row (see that binding's own doc comment, above), no
+                // `start_paragraph()`-equivalent blank line ever opened for it either — behaviorally
+                // tight, regardless of `loose_first`'s own value — so the exit state has to match.
+                w.needs_newline = loose_first && !checkbox_shares_the_marker_row && !w.after_math;
             }
-            // `loose_first == true`: this was a *real* paragraph — `end_paragraph()`'s own
-            // unconditional `needs_newline = true` applies, exactly as it would via
-            // `render_paragraph`, *unless* its own trailing content was a math lift (`w.after_math`
-            // — see this function's own doc comment). `loose_first == false` (tight): there was no
-            // wrapping paragraph tag at all, so no `end_paragraph()` ever ran — `walk_inline`'s own
-            // inline-only calls (`Writer::text` chief among them; see its own doc comment) leave
-            // `needs_newline` exactly as `false` as `start_item` set it. Setting this unconditionally
-            // to `true` here — an earlier version of this function did — inserted a spurious blank
-            // line before any `Quote`/`Heading`/`ThematicBreak` directly interrupting a tight item's
-            // own paragraph with no blank line in the source; see `list_corpus`'s own "block quote
-            // can interrupt a tight item's own paragraph with no blank line" case, which is exactly
-            // what caught this. `checkbox_shares_the_marker_row`: whenever a task collapsed this
-            // item onto the marker's own row (see that binding's own doc comment, above), no
-            // `start_paragraph()`-equivalent blank line ever opened for it either — behaviorally
-            // tight, regardless of `loose_first`'s own value — so the exit state has to match.
-            w.needs_newline = loose_first && !checkbox_shares_the_marker_row && !w.after_math;
         } else {
             render_block(first, w, doc, src, ctx);
         }
@@ -8405,6 +8442,52 @@ mod tests {
     #[test]
     fn tight_list_bare_paragraph_that_is_only_an_image_returns_early() {
         let out = render_with_images("- a\n  # h\n  ![badge](u.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "u.png");
+    }
+
+    /// **The bug this task exists to fix**: a tight list item's own *first* child paragraph, when it
+    /// is nothing but a standalone image (`- ![alt](x)` — the common "one image per bullet" idiom),
+    /// used to bypass image extraction entirely. `render_item`'s own marker-row splice (drawing the
+    /// item's inline content directly onto the same row as `- `) never called
+    /// `try_render_paragraph_as_image`/`paragraph_trailing_images`/`paragraph_leading_images` at
+    /// all — only a *later* sibling paragraph in the same item did (see
+    /// `tight_list_bare_paragraph_that_is_only_an_image_returns_early`, immediately above), by going
+    /// through the ordinary `render_block` dispatch. Before the fix, this rendered nothing but the
+    /// literal alt text on the marker's own row (`"- alt"`) and `out.images` stayed empty; pins that
+    /// `render_doc` now returns a real `ImagePlacement` for this exact shape instead.
+    #[test]
+    fn tight_list_first_child_that_is_only_an_image_becomes_a_real_placement() {
+        let out = render_with_images("- ![alt](u.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "u.png");
+        assert_eq!(out.images[0].alt, "alt");
+    }
+
+    /// The identical shape as above, but with **two** consecutive items, each solely an image — pins
+    /// that the fix applies uniformly to every item in the list, not just the one first encountered.
+    /// `render_item` runs its own marker-row-splice decision fresh for every item (`render_list`'s
+    /// own per-item loop), so a fix that only happened to patch some list-level, once-per-list piece
+    /// of bookkeeping rather than the splice itself could plausibly repair the first item and leave
+    /// every later one broken — this is exactly the "same list, only the first item's image fails"
+    /// inconsistency the bug report described, fixed for both positions at once.
+    #[test]
+    fn two_tight_list_items_each_only_an_image_both_become_real_placements() {
+        let out = render_with_images("- ![a](x.png)\n- ![b](y.png)\n", true, true, 5, 2);
+        assert_eq!(out.images.len(), 2, "images: {:?}", out.images);
+        assert_eq!(out.images[0].url, "x.png");
+        assert_eq!(out.images[1].url, "y.png");
+    }
+
+    /// The same "first child is only an image" shape, but in a **loose** list (`loose_first == true`,
+    /// a real `Tag::Paragraph`, reached through `render_block`'s `is_real_paragraph` arm —
+    /// `render_paragraph_dispatch`, not `render_bare_paragraph`) — pins that the fix's `ctx.extract_\
+    /// here && paragraph_as_block_images(..).is_some()` re-dispatch check in `render_item` covers
+    /// both the tight and loose paths through `render_block`'s own `Paragraph` arm, not just the
+    /// tight (bare-paragraph) one every other new test here exercises.
+    #[test]
+    fn loose_list_first_child_that_is_only_an_image_becomes_a_real_placement() {
+        let out = render_with_images("- ![alt](u.png)\n\n- b\n", true, true, 5, 2);
         assert_eq!(out.images.len(), 1, "images: {:?}", out.images);
         assert_eq!(out.images[0].url, "u.png");
     }

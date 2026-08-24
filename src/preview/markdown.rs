@@ -13384,6 +13384,20 @@ pub(crate) mod list_corpus {
             // ---- edges: empty item, single item, list next to a paragraph ----
             ("single-item list", "- only\n"),
             ("empty list item followed by a real one", "- \n- b\n"),
+            // A list item's own *first* child is a special case in `render.rs::render_item` (the
+            // marker-row splice) — the common "one image per bullet" idiom (`- ![alt](x)`) used to
+            // fall through that splice as bare alt text, unlike a *later* sibling paragraph in the
+            // same item, which already went through `render_block`'s ordinary image extraction. Two
+            // cases: a single such item, and two consecutive ones (the exact "item 1 vs item 2"
+            // shape a fix here has to hold for both, not just the first).
+            (
+                "tight list item that is only a standalone image",
+                "- ![alt](x.png)\n",
+            ),
+            (
+                "two tight list items each only a standalone image",
+                "- ![a](x.png)\n- ![b](y.png)\n",
+            ),
             (
                 "list followed by a paragraph after a blank line",
                 "- a\n- b\n\nafter.\n",

@@ -6893,6 +6893,19 @@ L0001 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=Task{state=' '}
   m01 line=0001 kind=Task{state='x'}
 
+=== list_corpus: tight list item that is only a standalone image ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 alt — x.png"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === list_corpus: tight ordered list two items ===
 -- LINES (2) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -7014,6 +7027,23 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (1) --
   m00 line=0000 kind=Task{state=' '}
+
+=== list_corpus: two tight list items each only a standalone image ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 a — x.png"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0003 style=fg=-,bg=-,mod=D align=-
+  s00 fg=-,bg=-,mod=- "🖼 b — y.png"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
 
 === list_corpus: unordered bullet dash ===
 -- LINES (2) --
