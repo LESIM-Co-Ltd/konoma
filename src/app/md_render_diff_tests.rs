@@ -60,6 +60,21 @@
 //! outright — a future regression back to reporting any of the four `Unsupported` should read as
 //! "this got worse," not as a mystery.
 //!
+//! A narrower, later gap closed the identical way: `contains_unsupported` went on reporting an `Html`
+//! block **nested inside a `Quote`** unsupported specifically (not the unconditional case above —
+//! `render_html_block_from_model` itself, once it existed, could draw a top-level one fine) until
+//! `model::BlockKind::Html.body_spans` closed that too — see that field's own doc comment, and
+//! `render.rs`'s own `contains_unsupported` doc comment, for the mechanism. This corpus's own
+//! `"an HTML block nested inside a blockquote is drawn instead of dropped entirely"` case (`code_corpus`)
+//! exercises the fixed shape, but is **not** listed in any of the three lists below: this harness's
+//! own "production" side (`render_case`) calls the real dispatcher, which now routes this exact shape
+//! to `render::render_doc` too, so both sides of the comparison are the same function call — an exact
+//! match by construction, not a mismatch this stage's own architecture merely happens to improve on.
+//! See that corpus case's own comment for the full reasoning. A quote-nested `Table` is a **still-open**
+//! instance of the identical shape of gap — see `contains_unsupported`'s own doc comment for why the
+//! two are not symmetric (a `Table` cell has no `Html.body_spans`-equivalent, already-marker-free range
+//! pulldown-cmark reports on its own).
+//!
 //! Closing these four also **exposed** several corpus cases that were previously invisible to this
 //! harness entirely — a document combining, say, a fenced fence-glue shape (already `KNOWN_MISMATCHES`/
 //! `INTENDED_IMPROVEMENTS`-eligible on its own) with a GFM table elsewhere in the same document was
@@ -411,6 +426,31 @@
 //! stage already knows about and accepts, and not one of the other two lists either (see each one's own
 //! doc comment — three genuinely different kinds of expected difference: a gap, an improvement, and an
 //! unresolved spec-vs-production disagreement).
+//!
+//! ## History: this harness was a self-comparison from v0.26.0 until 2026-08-24
+//!
+//! From the commit that wired `render::render_doc` into `render_markdown_with_images` (the dispatcher;
+//! v0.26.0) until 2026-08-24, `run_case`'s "old" side called plain `render_case`
+//! (`Renderer::Dispatcher`), which itself tries `render_doc` first and only falls back to the legacy
+//! renderer when `render_doc` reports part of a document `unsupported`. Because `render_doc` already
+//! covered every shape this corpus exercises, that fallback never triggered, so both sides of every
+//! comparison resolved to `render_doc` — this harness was silently comparing `render_doc` against
+//! itself and reporting a match no matter what it actually produced (see `run_case`'s own doc comment
+//! for the sentinel-poisoning proof). Fixed by anchoring the "old" side to `Renderer::Legacy` — see
+//! that function's own doc comment — with
+//! [`run_case_old_side_is_really_the_legacy_renderer_not_render_doc`] added as a permanent, mechanical
+//! tripwire against the identical regression recurring unnoticed a second time.
+//!
+//! Fixing it surfaced **eleven** previously invisible mismatches, all among cases this stage claims to
+//! support. Every one of the eleven was found, read, and classified by hand: ten are
+//! [`INTENDED_IMPROVEMENTS`]'s own Category 4 (a plain block quote's `"> "`-every-line prefix defeating
+//! production's row-based decorators — the identical root cause Category 2 already named for a
+//! quote-nested fence, now confirmed for six more constructs a quote can wrap), and one is
+//! [`BEHAVIOR_DECISIONS`]'s two-level-nested-quote spacing entry (both sides draw the nesting correctly;
+//! they disagree only on how many spaces to put after each level's own `>`). **None of the eleven is a
+//! new regression** — production's own output on all of them is unchanged by this fix; only this
+//! harness's own ability to see the difference is. See each entry's own comment, at its list's own
+//! definition site, for the full mechanism.
 
 use std::fmt::Write as _;
 
@@ -418,7 +458,9 @@ use std::fmt::Write as _;
 // `Line`/`Span`, and the `md_text` free functions `collapse_links`/`autolink_bare_urls`/
 // `substitute_emoji` glob-imported into `app`'s own scope by `app.rs`'s `use md_text::*;`) — see that
 // module's own doc comment for the precedent.
-use super::md_snapshot_tests::{all_cases, pre_src_for, render_case, SNAPSHOT_WIDTH};
+use super::md_snapshot_tests::{
+    all_cases, pre_src_for, render_case_with, Renderer, SNAPSHOT_WIDTH,
+};
 use super::*;
 use crate::preview::markdown::ImagePlacement;
 
@@ -493,6 +535,17 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
     // own "A `<details>`/`<summary>` with no blank line before its own body (closed — history, not a
     // live gap)" section for how, and for the separate, unrelated multi-line-math bug closing them
     // exposed and fixed along the way.
+    //
+    // Both sides draw a two-level-deep nested quote (`"> a\n>> b\n"`) without losing anything, but
+    // disagree on how to *space* the second level's own marker: production's tui-markdown packs the
+    // two `>` characters together and puts exactly one space after the pair (confirmed directly:
+    // `old = [">", ">", " ", "b"]`), while `render_doc` puts a space after *each* level's own `>`
+    // (`new = [">", " ", ">", " ", "b"]`) — the identical per-level spacing a single-level quote
+    // already uses on both sides. Neither drops content and neither shifts a column relative to its
+    // own single-level baseline; this is a formatting choice, not a bug on either side, so resolving
+    // it (if ever) is a product decision for whoever wires `render_doc` into a real preview path, not
+    // something this harness can settle by picking a side.
+    "list_corpus: nested quotes two levels",
 ];
 
 /// **`render_doc` is better than production on purpose, and is not expected to ever start matching
@@ -600,6 +653,46 @@ const BEHAVIOR_DECISIONS: &[&str] = &[
 /// with a trailing GFM table specifically so that, before this pass added `Table` support, the whole
 /// case reported `Unsupported` and never reached this harness's comparison at all (see the module doc
 /// comment's own "Tables, HTML blocks, ..." section).
+///
+/// **Category 4 — the identical `"> "`-every-line defect Category 2 already names, for six more
+/// constructs a plain (non-alert) block quote can wrap.** The Category 2 entry `"code_corpus: fence
+/// inside a plain block quote draws no header (tui-markdown prefixes every line)"` already names the
+/// root cause for one construct nested in a quote (a fence); the same tui-markdown behavior — prepending
+/// `"> "` to **every** line of an open blockquote, not just its own first line — defeats every one of
+/// production's own row-based decorators the identical way, whichever construct happens to sit inside
+/// the quote. Confirmed directly for each shape below:
+///
+/// * an `Html` block nested inside a plain quote is dropped **entirely** — zero rows — where
+///   `render_doc` draws its own two lines correctly (`"code_corpus: an HTML block nested inside a
+///   blockquote is drawn instead of dropped entirely"`);
+/// * a task checkbox's own `[ ] ` marker is emitted as raw text **ahead of** its own list bullet
+///   (confirmed: `old = [">", "[ ] ", " ", "- ", "quoted"]`), not as the styled sentinel span
+///   `render_doc` draws in its place (`new = [">", " ", "- ", "\u{f096} "` (cyan, bold), `"quoted"]`) —
+///   `"code_corpus: checkbox inside a plain block quote"`;
+/// * a fence nested two plain-quote levels deep, or a fence inside an alert that is itself nested
+///   inside a plain quote, is left as raw ` ```sh ` text — no code gutter, no language badge —
+///   `"code_corpus: fence inside a nested plain block quote (two levels)"` and `"code_corpus: fence
+///   inside an alert nested inside a plain block quote"`;
+/// * a heading inside a plain quote keeps its own raw `# ` marker and draws no underline rule —
+///   `"list_corpus: quote containing a heading"`;
+/// * a thematic break inside a plain quote keeps its own raw `---` text instead of becoming a
+///   full-width rule — `"list_corpus: quote containing a thematic break"`;
+/// * a task checkbox inside an alert nested inside a plain quote, inside a plain quote nested two
+///   levels deep, inside a bare plain quote, or inside a plain quote nested inside an alert, all break
+///   the identical marker-before-bullet way the second bullet above already describes —
+///   `"task_corpus: alert nested inside a plain blockquote"`, `"task_corpus: nested plain blockquote
+///   (two levels)"`, `"task_corpus: plain blockquote"`, and `"task_corpus: plain blockquote nested
+///   inside an alert"`.
+///
+/// `render_doc` walks the quote as real block structure (`Doc::parse`'s own `Quote` node, recursed into
+/// exactly like the `CodeBlock`-in-`Quote` case Category 2 already covers), so every one of these draws
+/// the identical way it would at the top level, prefixed correctly by the quote's own `"> "` gutter
+/// (`Writer::push_line`) — it has no row-based "does this line start with a literal marker" check for
+/// tui-markdown's `"> "` prefix to ever defeat. **None of these six shapes is a new regression**: they
+/// were simply invisible to this harness until `run_case`'s "old" side was fixed, on 2026-08-24, to call
+/// the real legacy renderer instead of comparing `render_doc` against itself — see the module doc
+/// comment's own history section. Production's own behavior on all ten cases above is unchanged by that
+/// fix; only this harness's ability to see it is.
 const INTENDED_IMPROVEMENTS: &[&str] = &[
     "list_corpus: task item inside a loose list",
     "task_corpus: a real task at a list item's own indentation is still a real task",
@@ -661,6 +754,19 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
     "preprocess_corpus: centered banner with a bare br line (registry: raw-window-metal README.md)",
     "preprocess_corpus: crlf centered banner with no br (registry: tinytemplate README.md)",
     "preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md)",
+    // ---- Category 4: the identical "> "-every-line defect, for six more constructs a plain
+    // (non-alert) block quote can wrap (see above) — surfaced only once run_case's "old" side was
+    // fixed on 2026-08-24 to call the real legacy renderer instead of render_doc against itself ----
+    "code_corpus: an HTML block nested inside a blockquote is drawn instead of dropped entirely",
+    "code_corpus: checkbox inside a plain block quote",
+    "code_corpus: fence inside a nested plain block quote (two levels)",
+    "code_corpus: fence inside an alert nested inside a plain block quote",
+    "list_corpus: quote containing a heading",
+    "list_corpus: quote containing a thematic break",
+    "task_corpus: alert nested inside a plain blockquote",
+    "task_corpus: nested plain blockquote (two levels)",
+    "task_corpus: plain blockquote",
+    "task_corpus: plain blockquote nested inside an alert",
 ];
 
 /// Renders `src` through `render::render_doc` (the block-model renderer under test) and the exact
@@ -822,8 +928,27 @@ fn diff_message<T: std::fmt::Debug>(label: &str, old: &[T], new: &[T], i: usize)
 /// concatenated, so a case combining, say, a real `render_doc` regression in its rendered rows with
 /// a stale `ImagePlacement.line` from the same underlying cause is not silently reported as only one
 /// kind of mismatch.
+///
+/// The "old" side is `render_case_with(cfg, src, Renderer::Legacy)` — **never** `render_case`/
+/// `Renderer::Dispatcher`. This was not always true, and the difference is not cosmetic: from the
+/// commit that wired `render::render_doc` into `render_markdown_with_images` (the dispatcher; v0.26.0)
+/// until this module switched to `Renderer::Legacy`, `run_case` called plain `render_case`, whose
+/// `render_markdown_with_images` call tries `render_doc` first and only falls back to the legacy
+/// renderer when `render_doc` itself reports `unsupported`. Because `render_doc` covers every shape
+/// this corpus exercises (`unsupported` is empty on all 468 cases — see the module doc comment), that
+/// fallback never triggered, so the dispatcher *always* resolved to `render_doc` on both sides: this
+/// function was comparing `render_doc`'s own output against itself and reporting a match no matter
+/// what `render_doc` actually produced. Confirmed by deliberately poisoning `render_paragraph`'s output
+/// with a sentinel line and re-running `markdown_render_diff_report`: it still printed 468/468 exact
+/// matches, 0 mismatches — while the golden snapshot tests (`markdown_render_snapshot_default`/
+/// `_code_bg_none`, which pin `Renderer::Dispatcher`'s real output, not a self-comparison) correctly
+/// failed on the same poisoned build. `Renderer::Legacy` calls
+/// `render_markdown_with_images_legacy` directly, unconditionally, bypassing the dispatcher's
+/// `render_doc`-first logic entirely — the one implementation that cannot itself start resolving to
+/// `render_doc` out from under this comparison no matter how much of the corpus `render_doc` comes to
+/// cover. See [`Renderer`]'s own doc comment for the full mechanism.
 fn run_case(cfg: &Config, src: &str) -> (Outcome, Vec<Line<'static>>, Vec<Line<'static>>) {
-    let old = render_case(cfg, src);
+    let old = render_case_with(cfg, src, Renderer::Legacy);
     let (new_lines, new_images, unsupported) = render_case_new(cfg, src);
     if !unsupported.is_empty() {
         return (Outcome::Unsupported, old.lines, new_lines);
@@ -1001,6 +1126,126 @@ fn markdown_render_diff_report() {
 #[test]
 fn markdown_render_diff_corpus_is_not_empty() {
     assert!(all_cases().len() > 100);
+}
+
+/// **Guard against the exact regression this module suffered once already**: `run_case`'s "old" side
+/// silently resolving to `render_doc` (the *new* renderer) instead of the legacy one, turning the
+/// whole diff report into a self-comparison that always "passes" no matter what `render_doc` actually
+/// produces — see `run_case`'s own doc comment for the full history (live, undetected, from the
+/// v0.26.0 commit that wired `render_doc` into the dispatcher, until it was found and fixed on
+/// 2026-08-24). That doc comment explains *why* `run_case` calls `Renderer::Legacy`; this test is the
+/// mechanical tripwire that keeps it that way — if a future edit ever swaps `Renderer::Legacy` back to
+/// `Renderer::Dispatcher` (or plain `render_case`) inside `run_case`, this test fails immediately. Same
+/// role `code_block_scanner_matches_renderer_across_indented_code_corpus`'s own
+/// `at_least_one_legacy_routed` assertion (`src/preview/markdown.rs`) plays for a sibling harness with
+/// the identical shape of hollowing-out risk: a comparison whose "other side" quietly stops being
+/// exercised once some threshold of corpus coverage closes.
+///
+/// The fixture is a real, still-open gap between the two renderers, not a hypothetical: a pipe table
+/// nested inside a block quote. Confirmed directly (not assumed) against both renderers on this exact
+/// input:
+/// * `render::render_doc` reports the whole enclosing quote `unsupported` (its `Quote` support does not
+///   recurse into a nested `Table` yet — see that module's own doc comment on scope), so
+///   `render_markdown_with_images` (`Renderer::Dispatcher`) falls back to
+///   `render_markdown_with_images_legacy` for this input too, same as `Renderer::Legacy` calls
+///   directly — this fixture's assertions hold under either variant name, which is exactly why a
+///   regression back to `Dispatcher` would *not* make this test fail via a different code path than the
+///   one it exists to catch.
+/// * `render_markdown_with_images_legacy` (`tui-markdown`'s block-quote handling) does not detect pipe-\
+///   table syntax nested under `>` at all: it renders the quote as an ordinary paragraph, so the
+///   source's own `|` characters and `---` separator survive verbatim in the flattened output, and none
+///   of the box-drawing glyphs a real ruled table would use (`┌`/`┐`/`└`/`┘`/`│`/`─`) appear anywhere.
+#[test]
+fn run_case_old_side_is_really_the_legacy_renderer_not_render_doc() {
+    let cfg = Config::default();
+    let src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+    let old = render_case_with(&cfg, src, Renderer::Legacy);
+    let flat = flatten_all(&old.lines);
+    assert!(
+        flat.contains('|'),
+        "expected the legacy renderer's raw, un-tabled pipe text to survive in a quoted table; got: {flat:?}"
+    );
+    for glyph in ['┌', '┐', '└', '┘', '│', '─'] {
+        assert!(
+            !flat.contains(glyph),
+            "found a ruled-table box-drawing glyph ({glyph:?}) in `Renderer::Legacy` output — that would \
+             be `render_doc`'s own table rendering, not tui-markdown's, meaning `run_case`'s \"old\" side \
+             has regressed back to comparing the new renderer against itself. Full output: {flat:?}"
+        );
+    }
+}
+
+/// **Second, complementary tripwire — this one actually calls `run_case`.** The test directly above
+/// (`run_case_old_side_is_really_the_legacy_renderer_not_render_doc`) proves the *mechanism* exists:
+/// `render_case_with(&cfg, src, Renderer::Legacy)`, called directly, really does return legacy, un-
+/// tabled output. It does **not** prove `run_case` itself uses that mechanism — it never calls
+/// `run_case` at all. Confirmed directly, not assumed: temporarily editing `run_case`'s own `let old =
+/// render_case_with(cfg, src, Renderer::Legacy);` line to read `Renderer::Dispatcher` instead (the
+/// exact regression this module's own doc comment history section describes, and the exact one the
+/// test above exists to catch) and re-running `cargo test --bin konoma -- \
+/// run_case_old_side_is_really_the_legacy_renderer` under that mutation still printed `test result:
+/// ok. 1 passed; 0 failed` — the mutation sailed straight through, because the test above never routes
+/// through `run_case`'s own code path in the first place. **This test closes that hole by calling
+/// `run_case` itself.**
+///
+/// The fixture is `task_corpus`'s own `"plain blockquote"` case (`"> - [ ] quoted\n"`,
+/// `src/preview/markdown.rs`), picked for two properties, both confirmed directly against the real
+/// corpus and both renderers, not inferred from a list entry's prose alone:
+/// * `render_doc` **supports** this shape — a bare `Quote{alert: None}` containing a task-list item is
+///   squarely inside this stage's documented scope (see the module doc comment's own opening
+///   paragraph) — so `run_case` does not short-circuit to `Outcome::Unsupported` before ever reaching
+///   the comparison this test needs exercised. A case that returned `Unsupported` would prove nothing
+///   about which renderer `old` resolves to.
+/// * The two renderers are **known, permanently** to disagree on it — this exact case name is listed in
+///   [`INTENDED_IMPROVEMENTS`] ("Category 4": a plain block quote's `"> "`-every-line prefix defeats
+///   production's row-based decorator placement). Measured directly: `old` (legacy) emits `[ ] ` as
+///   ordinary text *ahead of* the bullet marker (`old.lines[0]` flattens to `["> ", "[ ] ", " ", "- ",
+///   "quoted"]`-shaped spans), while `render_doc` reads the real block structure and draws a proper
+///   cyan/bold checkbox glyph *after* the marker instead. Because this divergence is structural (rooted
+///   in `split_segments`'s own row-based, `"> "`-stripping pre-pass — not something either side is ever
+///   expected to fix), a correctly-wired `run_case` (whose `old` side genuinely reaches
+///   `render_markdown_with_images_legacy`) can **never** report `Outcome::Match` on this input.
+///
+/// So: if `run_case`'s own `old` binding is really `Renderer::Legacy`, this fixture must come back as
+/// `Outcome::Mismatch` (the known, `INTENDED_IMPROVEMENTS`-tracked one) — never `Outcome::Match`. If
+/// `old` has instead regressed back to `Renderer::Dispatcher` (or plain `render_case`), both sides
+/// collapse onto `render_doc` again (see this module's own doc comment's "History" section) and this
+/// fixture, like every other corpus case during that regression, reports a spurious `Outcome::Match`,
+/// which is exactly what this test asserts against.
+///
+/// **If this test fails, the first thing to suspect is `run_case`'s own `old` binding having drifted
+/// away from `Renderer::Legacy`** — not this fixture (it is pinned, real corpus data — see
+/// `task_corpus` in `markdown.rs`) and not `render_doc`'s own quote/task-list rendering
+/// ([`INTENDED_IMPROVEMENTS`] already tracks that divergence as permanent and deliberate, not a bug to
+/// chase from this test).
+#[test]
+fn run_case_actually_routes_through_the_legacy_renderer_not_just_render_case_with_directly() {
+    let cfg = Config::default();
+    let src = "> - [ ] quoted\n";
+    let (outcome, old_lines, new_lines) = run_case(&cfg, src);
+    match outcome {
+        Outcome::Match => panic!(
+            "run_case reported Outcome::Match on \"task_corpus: plain blockquote\" \
+             (\"> - [ ] quoted\\n\"), which is listed in INTENDED_IMPROVEMENTS as a permanent, \
+             confirmed divergence between the legacy renderer and render_doc. A Match here means \
+             run_case's \"old\" side is no longer really Renderer::Legacy (both sides have collapsed \
+             onto render_doc) — see this test's own doc comment for the full mechanism. \
+             old lines: {old_lines:?}\nnew lines: {new_lines:?}"
+        ),
+        Outcome::Unsupported => panic!(
+            "run_case reported Outcome::Unsupported for \"> - [ ] quoted\\n\" — a bare blockquote \
+             containing a task item is squarely inside render_doc's documented scope \
+             (Quote{{alert: None}}), so this fixture is expected to reach the comparison, not bail out \
+             early. If this genuinely regressed, that is a real render_doc bug to fix, not something \
+             for this test to tolerate silently."
+        ),
+        Outcome::Mismatch { .. } => {
+            // Expected, and the whole point: this is the known, permanent divergence
+            // INTENDED_IMPROVEMENTS tracks under "task_corpus: plain blockquote". run_case must keep
+            // observing it — a future edit that makes it disappear (Match) is exactly the regression
+            // this test exists to catch, not something to relax the assertion around.
+        }
+    }
 }
 
 // -------------------------------------------------------------------------------------------
