@@ -3,6 +3,59 @@
 All notable changes to `mermaid-text` are documented in this file.
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## 0.57.0 — 2026-07-21 — Opt-in hard `max_width` budget (#32)
+
+### Added
+
+- **`RenderOptions::max_width_strict`** (default `false`). When `true` and
+  `max_width` is `Some(n)`, a render whose widest line still exceeds `n`
+  **display columns** returns the new **`Error::TooWide { requested, actual }`**
+  instead of an over-wide string. This turns `max_width` from a soft hint into
+  a hard budget, so an embedder with a fixed panel width gets a "fits or tells
+  you it can't" contract and can fall back knowingly (e.g. to fenced source)
+  without post-measuring every line. Width is measured in display columns and
+  ignores ANSI escapes emitted by `color`. Requested by @vshylov (#32).
+- **`mermaid-text --strict`** CLI flag: with `--width N`, exit non-zero when
+  the widest line still exceeds `N`.
+
+### Changed (breaking, per 0.x semver)
+
+- `RenderOptions` gains a field and `Error` gains a variant. Callers that
+  construct `RenderOptions` with a full struct literal (rather than
+  `..Default::default()`) or match `Error` exhaustively need a trivial update.
+  Existing `render`/`render_with_width`/`render_with_options` behaviour is
+  unchanged when `max_width_strict` is left at its `false` default.
+
+## 0.56.1 — 2026-07-15 — UTF-8 safety: byte offsets used as char offsets (#29)
+
+### Fixed
+
+- **Panic on non-ASCII keyword-prefixed lines.** `strip_keyword_prefix`
+  sliced at a byte index (`line[..keyword.len()]`) without a char-boundary
+  check, so sequence/state lines such as `loop до готовности` panicked when
+  that byte landed inside a multi-byte char. Now uses `str::get`, which
+  rejects a non-boundary slice instead of crashing. Three local copies of
+  this helper (gantt, timeline, journey) that the central fix had missed
+  were removed and routed to the canonical `parser::common` version.
+- **Silent flowchart label corruption.** `try_consume_pipe_label`,
+  `try_consume_inline_compact_arrow`, and `try_consume_inline_quoted_arrow`
+  returned byte lengths that the char-indexed tokenizer added to its cursor,
+  over-advancing by `byte_len − char_len` on a multi-byte edge label (e.g.
+  `-->|да|`) and eating part of the following node (leaking its `[` bracket
+  into the label, or dropping the node). Now count chars.
+- **Participant alias mis-split.** `parse_participant_decl` searched for
+  ` as ` in a `to_lowercase()` copy and applied the byte offset to the
+  original string, desyncing when case-folding changed byte length (e.g.
+  `İ` → 3-byte `i̇`). Now scans the original string for the ASCII separator.
+
+Reported **and originally fixed** by @vshylov — issue #29 and PR #30, which
+carried the `strip_keyword_prefix`, `try_consume_pipe_label`, and
+`try_consume_inline_compact_arrow` fixes above. The remaining sites (the
+inline-quoted arrow, the participant-alias case-folding split, and the
+gantt/timeline/journey helper copies) were found in a follow-up audit and
+stacked on top. Pinned by 10 new regression tests covering each parser
+(`tests/utf8_multibyte.rs`).
+
 ## 0.56.0 — 2026-05-11 — Sequence-diagram polish basket (self-messages, stacked activations, box groups)
 
 ### Added

@@ -38,7 +38,7 @@
 
 use crate::Error;
 use crate::journey::{JourneyDiagram, Section, Task};
-use crate::parser::common::strip_inline_comment;
+use crate::parser::common::{strip_inline_comment, strip_keyword_prefix as strip_keyword_ci};
 
 /// Parse a `journey` source string into a [`JourneyDiagram`].
 ///
@@ -172,21 +172,6 @@ fn parse_task_line(line: &str) -> Result<Task, Error> {
         score: score_raw as u8,
         actors,
     })
-}
-
-/// Strip a case-insensitive keyword prefix followed by at least one space.
-/// Returns `Some(trimmed_remainder)` on match, `None` otherwise.
-fn strip_keyword_ci<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
-    let klen = keyword.len();
-    if line.len() > klen
-        && line.is_char_boundary(klen)
-        && line[..klen].eq_ignore_ascii_case(keyword)
-        && line.as_bytes()[klen].is_ascii_whitespace()
-    {
-        Some(line[klen..].trim())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------

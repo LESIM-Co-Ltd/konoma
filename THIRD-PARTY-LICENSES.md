@@ -7591,7 +7591,7 @@ THE SOFTWARE.
 ## MIT License
 
 Used by:
-- mermaid-text 0.56.0
+- mermaid-text 0.57.0
 
 ```
 This is a vendored copy of the third-party crate `mermaid-text`, taken from its

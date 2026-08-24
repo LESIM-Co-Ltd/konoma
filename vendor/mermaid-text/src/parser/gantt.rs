@@ -53,7 +53,7 @@ use chrono::NaiveDate;
 
 use crate::Error;
 use crate::gantt::{GanttDiagram, GanttSection, GanttTask};
-use crate::parser::common::strip_inline_comment;
+use crate::parser::common::{strip_inline_comment, strip_keyword_prefix as strip_keyword_ci};
 
 // ---------------------------------------------------------------------------
 // Raw (pre-resolution) types — only used during parsing
@@ -494,22 +494,6 @@ fn validate_id(s: &str, task_name: &str) -> Result<String, Error> {
 // ---------------------------------------------------------------------------
 // Directive helpers
 // ---------------------------------------------------------------------------
-
-/// Strip a case-insensitive keyword prefix followed by at least one space.
-///
-/// Returns `Some(trimmed_remainder)` on match, `None` otherwise.
-fn strip_keyword_ci<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
-    let klen = keyword.len();
-    if line.len() > klen
-        && line.is_char_boundary(klen)
-        && line[..klen].eq_ignore_ascii_case(keyword)
-        && line.as_bytes()[klen].is_ascii_whitespace()
-    {
-        Some(line[klen..].trim())
-    } else {
-        None
-    }
-}
 
 /// Return `true` for directives that are valid Mermaid syntax but not
 /// supported in Phase 1. Silently skipping these is friendlier than erroring

@@ -166,11 +166,7 @@ enum BlockKind {
 fn try_parse_block_header(line: &str) -> Option<(BlockKind, String)> {
     // All block headers end with ` {` or just `{`.
     // We need to strip the trailing `{` and optional whitespace.
-    let body = if let Some(b) = line.strip_suffix('{') {
-        b.trim()
-    } else {
-        return None;
-    };
+    let body = line.strip_suffix('{')?.trim();
 
     // Split on the first whitespace: keyword + name.
     let (keyword, rest) = body.split_once(char::is_whitespace)?;

@@ -40,7 +40,7 @@
 //! ```
 
 use crate::Error;
-use crate::parser::common::strip_inline_comment;
+use crate::parser::common::{strip_inline_comment, strip_keyword_prefix};
 use crate::timeline::{Timeline, TimelineEntry, TimelineSection};
 
 /// Parse a `timeline` source string into a [`Timeline`].
@@ -142,24 +142,6 @@ pub fn parse(src: &str) -> Result<Timeline, Error> {
     }
 
     Ok(diag)
-}
-
-/// Strip a case-insensitive keyword prefix followed by at least one space.
-///
-/// Returns `Some(trimmed_remainder)` on match, `None` otherwise. This is the
-/// same pattern used in the journey parser — kept local to avoid coupling to
-/// the flowchart-oriented helpers in `parser::common`.
-fn strip_keyword_prefix<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
-    let klen = keyword.len();
-    if line.len() > klen
-        && line.is_char_boundary(klen)
-        && line[..klen].eq_ignore_ascii_case(keyword)
-        && line.as_bytes()[klen].is_ascii_whitespace()
-    {
-        Some(line[klen..].trim())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------

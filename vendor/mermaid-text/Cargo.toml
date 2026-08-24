@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.92"
 name = "mermaid-text"
-version = "0.56.0"
+version = "0.57.0"
 build = false
 autolib = false
 autobins = false
@@ -78,6 +78,14 @@ path = "tests/regression_corpus.rs"
 name = "snapshots"
 path = "tests/snapshots.rs"
 
+[[test]]
+name = "strict_max_width"
+path = "tests/strict_max_width.rs"
+
+[[test]]
+name = "utf8_multibyte"
+path = "tests/utf8_multibyte.rs"
+
 [dependencies.ascii-dag]
 version = "0.9.1"
 
@@ -94,3 +102,6 @@ version = "0.2"
 
 [dev-dependencies.insta]
 version = "1"
+
+[dev-dependencies.unicode-width]
+version = "0.2"

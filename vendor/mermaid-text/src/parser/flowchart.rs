@@ -585,7 +585,11 @@ fn try_consume_inline_compact_arrow(s: &str) -> Option<(String, usize)> {
     {
         let label = rest[..end].trim();
         if !label.is_empty() {
-            return Some((format!("-.->|{label}|"), 2 + end + 3));
+            // `2 + end + 3` is a byte offset (`end` comes from `find`); the
+            // caller advances a char cursor, so return the char count of the
+            // consumed prefix `-.<label>.->`.
+            let consumed = s[..2 + end + 3].chars().count();
+            return Some((format!("-.->|{label}|"), consumed));
         }
     }
     if let Some(rest) = s.strip_prefix("==")
@@ -594,7 +598,8 @@ fn try_consume_inline_compact_arrow(s: &str) -> Option<(String, usize)> {
     {
         let label = rest[..end].trim();
         if !label.is_empty() {
-            return Some((format!("==>|{label}|"), 2 + end + 3));
+            let consumed = s[..2 + end + 3].chars().count();
+            return Some((format!("==>|{label}|"), consumed));
         }
     }
     None
@@ -676,10 +681,11 @@ fn classify_arrow(arrow: &str) -> (EdgeStyle, EdgeEndpoint, EdgeEndpoint) {
 ///
 /// Returns `None` when `s` does not start with a recognised inline-quoted prefix.
 fn try_consume_inline_quoted_arrow(s: &str) -> Option<(String, usize)> {
-    // All characters in the arrow tokens and ASCII quotes are single-byte UTF-8,
-    // so byte length == char count for consumption purposes. The label text
-    // itself may contain multi-byte chars, but we don't need to count it
-    // separately — we measure the whole consumed slice as `s.len() - tail.len()`.
+    // The arrow syntax and ASCII quotes are single-byte, but the consumed slice
+    // INCLUDES the quoted label, which may contain multi-byte chars. The caller
+    // advances a char cursor, so the consumed length must be counted in chars —
+    // `s.len() - tail.len()` is a byte length and over-advances on non-ASCII
+    // labels. We take the consumed byte prefix and count its chars.
 
     // Dashed: `-. "label" .->`  →  normalised as `-.->|"label"|`
     // `strip_prefix` enforces the opening `-. "` in one step (avoids the
@@ -693,7 +699,7 @@ fn try_consume_inline_quoted_arrow(s: &str) -> Option<(String, usize)> {
         let tail_start = after_open[close_q + 1..].trim_start_matches(' ');
         if let Some(tail) = tail_start.strip_prefix(".->") {
             let pipe_tok = format!("-.->|\"{label}\"|");
-            let consumed = s.len() - tail.len();
+            let consumed = s[..s.len() - tail.len()].chars().count();
             return Some((pipe_tok, consumed));
         }
     }
@@ -706,7 +712,7 @@ fn try_consume_inline_quoted_arrow(s: &str) -> Option<(String, usize)> {
         let tail_start = after_open[close_q + 1..].trim_start_matches(' ');
         if let Some(tail) = tail_start.strip_prefix("==>") {
             let pipe_tok = format!("==>|\"{label}\"|");
-            let consumed = s.len() - tail.len();
+            let consumed = s[..s.len() - tail.len()].chars().count();
             return Some((pipe_tok, consumed));
         }
     }
@@ -734,7 +740,10 @@ fn try_consume_pipe_label(s: &str) -> (String, usize) {
         && let Some(end) = inner.find('|')
     {
         let portion = &s[..end + 2]; // includes both pipes
-        return (portion.to_string(), end + 2);
+        // The caller advances a *char* cursor by this value, so return a char
+        // count — `end + 2` is a byte offset and over-advances by
+        // `byte_len - char_len` whenever the label contains multi-byte chars.
+        return (portion.to_string(), portion.chars().count());
     }
     (String::new(), 0)
 }

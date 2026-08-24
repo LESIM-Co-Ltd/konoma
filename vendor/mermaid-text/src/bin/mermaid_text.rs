@@ -40,6 +40,7 @@ fn main() {
     let mut args = std::env::args().skip(1).peekable();
 
     let mut max_width: Option<usize> = None;
+    let mut strict_width = false;
     let mut ascii_mode = false;
     let mut color_mode = false;
     // Default is Sugiyama since 0.17.0. `--native` reverts to the in-house
@@ -59,6 +60,9 @@ fn main() {
                     });
                 max_width = Some(n);
             }
+            "--strict" => {
+                strict_width = true;
+            }
             "--ascii" => {
                 ascii_mode = true;
             }
@@ -73,7 +77,9 @@ fn main() {
                 backend_mode = mermaid_text::layout::LayoutBackend::Native;
             }
             "--help" | "-h" => {
-                println!("Usage: mermaid-text [--width N] [--ascii] [--color] [--native] [FILE]");
+                println!(
+                    "Usage: mermaid-text [--width N] [--strict] [--ascii] [--color] [--native] [FILE]"
+                );
                 println!();
                 println!("Render a Mermaid graph/flowchart diagram as text.");
                 println!();
@@ -82,6 +88,8 @@ fn main() {
                 println!();
                 println!("Options:");
                 println!("  --width N   Compact output to fit within N terminal columns");
+                println!("  --strict    With --width, exit non-zero if the widest line still");
+                println!("              exceeds N (a hard budget instead of a soft hint).");
                 println!(
                     "  --ascii     Emit plain ASCII characters instead of Unicode box-drawing."
                 );
@@ -127,6 +135,7 @@ fn main() {
         &source,
         &mermaid_text::RenderOptions {
             max_width,
+            max_width_strict: strict_width,
             ascii: ascii_mode,
             color: color_mode,
             backend: backend_mode,

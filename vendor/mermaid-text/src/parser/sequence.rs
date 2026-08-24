@@ -483,12 +483,21 @@ fn finalize_activations(events: &[ActEvent], diag: &mut SequenceDiagram) -> Resu
 /// joining with a space produces a clean readable label instead of leaking
 /// the literal `<br>` tag into the output.
 fn parse_participant_decl(rest: &str) -> Result<Participant, Error> {
-    // Look for ` as ` separator (case-insensitive, surrounded by whitespace).
-    // We split on the first occurrence.
-    let lower = rest.to_lowercase();
+    // Find the ` as ` separator (case-insensitive) directly in the ORIGINAL
+    // string. ` as ` is pure ASCII, and ASCII bytes never occur inside a
+    // multi-byte UTF-8 sequence, so a matched byte offset is always a char
+    // boundary. Searching a `to_lowercase()` copy (as this once did) desyncs
+    // the offset whenever case-folding changes byte length — e.g. `İ`
+    // (U+0130) lowercases to a 3-byte `i̇` — and then slicing `rest` at that
+    // shifted offset panics or mis-splits the id/alias.
+    let sep = rest.as_bytes().windows(4).position(|w| {
+        w[0] == b' '
+            && w[1].eq_ignore_ascii_case(&b'a')
+            && w[2].eq_ignore_ascii_case(&b's')
+            && w[3] == b' '
+    });
 
-    // Find " as " with surrounding whitespace.
-    if let Some(as_idx) = lower.find(" as ") {
+    if let Some(as_idx) = sep {
         let id = rest[..as_idx].trim().to_string();
         let label = strip_br_tags(rest[as_idx + 4..].trim());
         if id.is_empty() {

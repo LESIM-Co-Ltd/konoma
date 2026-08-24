@@ -616,12 +616,22 @@ fn strip_inline_multiplicity(tok: &str) -> (Option<String>, &str, Option<String>
 
 /// Strip a case-insensitive keyword prefix followed by whitespace. Returns the
 /// trimmed remainder on match, `None` otherwise.
+///
+/// konoma local patch (see `vendor/mermaid-text/README.md` note in the main
+/// Cargo.toml near `[patch.crates-io]`): upstream's own `common::strip_keyword_prefix`
+/// was fixed in 0.9.0 to use `str::get` instead of `line[..len]` so a non-ASCII line
+/// whose byte at `len` lands mid-char is rejected instead of panicking, but this
+/// copy in `class.rs` was never migrated to share that helper and still panics the
+/// same way upstream at mermaid-text-0.57.0 (confirmed by reading that tag's source
+/// directly). Applying the identical fix here, in upstream's own idiom.
 fn strip_keyword_prefix_ci<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
     let len = kw.len();
-    if line.len() > len
-        && line.is_char_boundary(len)
-        && line[..len].eq_ignore_ascii_case(kw)
-        && line.as_bytes()[len].is_ascii_whitespace()
+    let head = line.get(..len)?;
+    if head.eq_ignore_ascii_case(kw)
+        && line
+            .as_bytes()
+            .get(len)
+            .is_some_and(u8::is_ascii_whitespace)
     {
         Some(line[len..].trim())
     } else {

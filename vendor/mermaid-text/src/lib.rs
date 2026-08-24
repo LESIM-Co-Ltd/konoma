@@ -175,6 +175,17 @@ pub enum Error {
     ///
     /// The inner string is a human-readable description of the problem.
     ParseError(String),
+    /// The rendered diagram is wider than the requested hard budget.
+    ///
+    /// Only returned when [`RenderOptions::max_width_strict`] is `true` and
+    /// [`RenderOptions::max_width`] is `Some(requested)`. `actual` is the
+    /// widest rendered line in display columns; it is always `> requested`.
+    TooWide {
+        /// The requested hard budget in display columns.
+        requested: usize,
+        /// The widest rendered line in display columns.
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -185,6 +196,10 @@ impl std::fmt::Display for Error {
                 write!(f, "unsupported diagram type: '{kind}'")
             }
             Error::ParseError(msg) => write!(f, "parse error: {msg}"),
+            Error::TooWide { requested, actual } => write!(
+                f,
+                "rendered diagram is {actual} columns wide, exceeding the strict budget of {requested}"
+            ),
         }
     }
 }
@@ -524,7 +539,26 @@ pub fn render_ascii_with_width(input: &str, max_width: Option<usize>) -> Result<
 pub struct RenderOptions {
     /// Optional column budget. When `Some(n)`, progressive compaction is
     /// attempted to keep the longest line within `n` cells.
+    ///
+    /// By default this is a **soft hint**: some diagram kinds (sequence, pie,
+    /// ER) have fixed layouts and ignore it, and even the kinds that honour it
+    /// can overflow their minimum column widths. Set [`max_width_strict`] to
+    /// turn it into a hard budget.
+    ///
+    /// [`max_width_strict`]: RenderOptions::max_width_strict
     pub max_width: Option<usize>,
+    /// Make [`max_width`] a **hard budget** rather than a soft hint. When
+    /// `true` and `max_width` is `Some(n)`, a render whose widest line still
+    /// exceeds `n` display columns returns [`Error::TooWide`] instead of an
+    /// over-wide string — letting an embedder with a fixed panel width fall
+    /// back knowingly (e.g. to fenced source) without post-measuring every
+    /// line itself. Width is measured in display columns and ignores ANSI
+    /// escapes emitted by `color`. No effect when `max_width` is `None`.
+    ///
+    /// Off by default, so existing callers see no behaviour change.
+    ///
+    /// [`max_width`]: RenderOptions::max_width
+    pub max_width_strict: bool,
     /// Replace Unicode box-drawing glyphs with ASCII equivalents (see
     /// [`to_ascii`]). Composes freely with `color`.
     pub ascii: bool,
@@ -710,11 +744,80 @@ pub fn render_with_options(input: &str, opts: &RenderOptions) -> Result<String, 
         }
     };
 
-    if opts.ascii {
-        Ok(to_ascii(&unicode))
+    let out = if opts.ascii {
+        to_ascii(&unicode)
     } else {
-        Ok(unicode)
+        unicode
+    };
+
+    // Hard width budget. When strict mode is on and a budget is set, the
+    // widest rendered line must fit or we surface `Error::TooWide` so the
+    // caller can fall back knowingly instead of post-measuring every line.
+    // Measured after the ASCII pass (ASCII substitution is width-preserving,
+    // but this also covers any future non-1:1 mapping).
+    if opts.max_width_strict
+        && let Some(budget) = opts.max_width
+    {
+        let actual = out.lines().map(visible_width).max().unwrap_or(0);
+        if actual > budget {
+            return Err(Error::TooWide {
+                requested: budget,
+                actual,
+            });
+        }
     }
+
+    Ok(out)
+}
+
+/// Display-column width of a single line, ignoring the ANSI escape sequences
+/// that `color: true` may emit (24-bit SGR colour runs and OSC-8 hyperlinks).
+///
+/// When `color` is off the output contains zero escapes and this is exactly
+/// `UnicodeWidthStr::width`; the escape-skipping states only matter for the
+/// coloured path. Escape bytes must not count toward the width budget — they
+/// occupy no terminal cells.
+fn visible_width(line: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    let mut width = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                // CSI (e.g. SGR `\x1b[…m`): consume up to and including the
+                // final byte in the 0x40..=0x7E range.
+                Some('[') => {
+                    for f in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&f) {
+                            break;
+                        }
+                    }
+                }
+                // OSC (e.g. OSC-8 hyperlink `\x1b]8;;…`): terminated by BEL
+                // (`\x07`) or ST (`\x1b\`).
+                Some(']') => {
+                    while let Some(f) = chars.next() {
+                        if f == '\x07' {
+                            break;
+                        }
+                        if f == '\x1b' {
+                            // Consume the `\` of the ST terminator if present.
+                            let mut lookahead = chars.clone();
+                            if lookahead.next() == Some('\\') {
+                                chars = lookahead;
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Lone ESC or other escape form: contributes no width.
+                _ => {}
+            }
+            continue;
+        }
+        width += UnicodeWidthChar::width(c).unwrap_or(0);
+    }
+    width
 }
 
 /// Run the flowchart compaction pipeline and emit the chosen result with or

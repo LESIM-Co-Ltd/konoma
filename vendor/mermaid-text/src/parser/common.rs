@@ -41,10 +41,18 @@ pub(crate) fn strip_inline_comment(line: &str) -> &str {
 /// per call). This canonical implementation is the ASCII-fast one.
 pub(crate) fn strip_keyword_prefix<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
     let len = keyword.len();
-    if line.len() > len
-        && line.is_char_boundary(len)
-        && line[..len].eq_ignore_ascii_case(keyword)
-        && line.as_bytes()[len].is_ascii_whitespace()
+    // `str::get` returns `None` (instead of panicking) when `len` falls inside
+    // a multi-byte char — so a non-ASCII line like `loop до готовности`, whose
+    // byte at `keyword.len()` lands mid-char, is rejected rather than crashing.
+    // The keyword itself is ASCII, so a match implies `len` is a char boundary
+    // and the following slice/index operations are safe. Preserves the
+    // ASCII-fast path (no allocation, case-insensitive compare on the head).
+    let head = line.get(..len)?;
+    if head.eq_ignore_ascii_case(keyword)
+        && line
+            .as_bytes()
+            .get(len)
+            .is_some_and(u8::is_ascii_whitespace)
     {
         Some(line[len..].trim())
     } else {
