@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.26.5] - 2026-08-24
+
 ### Fixed
 - **CJK class diagrams (`classDiagram`) in Mermaid previews could panic instead of rendering.**
   A relation or directive line with a non-ASCII (e.g. CJK) class name, appearing outside a
@@ -15,6 +17,11 @@ All notable changes to konoma are documented in this file. The format is based o
   for every diagram kind except `classDiagram`; patched that one remaining case the same way
   upstream fixed the others. Sequence/flowchart/gantt/timeline/journey diagrams were unaffected
   by this bug and are unchanged.
+
+### Changed
+- Refreshed dependencies (`base64`, `infer`, `resvg`, `toml`, and a general `cargo update`),
+  including a fix for an unsound `lru` use-after-free advisory (RUSTSEC-2026-0253) pulled in
+  transitively through the TUI framework. No user-visible behaviour change beyond the fix above.
 
 ## [0.26.4] - 2026-08-21
 
@@ -1944,7 +1951,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...HEAD
+[0.26.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.1...v0.26.2

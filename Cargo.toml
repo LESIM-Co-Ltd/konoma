@@ -1,8 +1,8 @@
 [package]
 name = "konoma"
-version = "0.26.4"
+version = "0.26.5"
 edition = "2021"
-# 依存 mermaid-text 0.56 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
+# 依存 mermaid-text 0.57 が edition2024 / MSRV 1.92 を要求するため、実効 MSRV は 1.92。
 rust-version = "1.92"
 description = "Terminal file browser built for AI pair-programming — full-screen previews (Markdown, images, PDF, CSV), a git suite (jj/Jujutsu in preview), and an agent-watch mode that follows your AI's edits (macOS and Linux)"
 license = "MIT"
