@@ -13587,7 +13587,7 @@ pub(crate) mod list_corpus {
     /// `contains_unsupported` screens this one out on purpose, before `render_doc` ever draws a line
     /// of it — see that function's own `"LooseTask"` arm for exactly why: a loose item's own task
     /// marker always lands on a fresh, empty line, and splicing it in there
-    /// (`Writer::task_list_marker`) panics — `insertion index (is 1) should be <= len (is 0)` — the
+    /// (`Writer::write_task_marker`) panics — `insertion index (is 1) should be <= len (is 0)` — the
     /// *identical* crash real tui-markdown 0.3.7/0.3.8 has for this exact shape (confirmed
     /// empirically while building this corpus, and independently by `task_corpus`'s own "a real task
     /// at a list item's own indentation is still a real task" case, whose *outer* item is loose too;
