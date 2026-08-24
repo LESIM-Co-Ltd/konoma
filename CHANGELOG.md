@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **CJK class diagrams (`classDiagram`) in Mermaid previews could panic instead of rendering.**
+  A relation or directive line with a non-ASCII (e.g. CJK) class name, appearing outside a
+  `class Name { ... }` body, could crash the parser (`byte index N is not a char boundary`) --
+  caught by an existing safety net so konoma itself never crashed, but the diagram degraded to
+  raw source text. Bumped the bundled `mermaid-text` fork to 0.57.0, which upstream-fixed this
+  for every diagram kind except `classDiagram`; patched that one remaining case the same way
+  upstream fixed the others. Sequence/flowchart/gantt/timeline/journey diagrams were unaffected
+  by this bug and are unchanged.
+
 ## [0.26.4] - 2026-08-21
 
 ### Changed
