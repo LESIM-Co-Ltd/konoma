@@ -16,7 +16,7 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Create GitHub Release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -40,7 +40,7 @@ jobs:
           # Windows excluded: konoma uses Unix-only std APIs and Windows terminals
           # lack the kitty graphics protocol the previews need. See ci.yml.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Same C-dependency system libraries as the CI build job.
       - name: Install Linux build dependencies
