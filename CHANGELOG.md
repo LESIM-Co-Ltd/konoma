@@ -6,6 +6,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Markdown nested inside a plain `>` blockquote is now decorated the same way it is anywhere
+  else.** A quote used to be a dead zone: a table in one collapsed to a single wrapped line of raw
+  `|` and `-` characters, an HTML block inside one **disappeared from the screen entirely**, and a
+  heading, thematic break, code fence, GitHub alert, or task checkbox nested in one kept its raw
+  `#`, `---`, ```` ``` ````, `[!NOTE]`, or `[ ]` text instead of being drawn. All of them render
+  properly now. GitHub alerts (`> [!NOTE]`) were already decorated and are unchanged.
+
 ## [0.26.5] - 2026-08-24
 
 ### Fixed

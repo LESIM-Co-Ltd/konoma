@@ -1663,6 +1663,11 @@ Paragraph{inline=1..2:"word 通常のテキスト word 通常のテキスト wor
 === inline_corpus: whitespace-only line produces no block ===
 -- BLOCKS (0) --
 
+=== list_corpus: alert containing a table with no blank line before it ===
+-- BLOCKS (1) --
+Quote{alert=Some(Important), alert_title=""} src=0..41 text="> [!IMPORTANT]\n> a | b\n> ---|---\n> 1 | 2\n"
+  Paragraph{inline=2..11:"[!IMPORTANT] a | b ---|--- 1 | 2"} src=2..41 text="[!IMPORTANT]\n> a | b\n> ---|---\n> 1 | 2\n"
+
 === list_corpus: block quote can interrupt a tight item's own paragraph with no blank line ===
 -- BLOCKS (1) --
 List{ordered=false, start=None} src=0..15 text="- a\n  > quoted\n"
@@ -1847,6 +1852,11 @@ Quote{alert=None, alert_title=""} src=0..12 text="> - a\n> - b\n"
       Paragraph{inline=3..4:"a"} src=4..5 text="a"
     ListItem{task=None} src=8..12 text="- b\n"
       Paragraph{inline=6..7:"b"} src=10..11 text="b"
+
+=== list_corpus: quote containing a table ===
+-- BLOCKS (1) --
+Quote{alert=None, alert_title=""} src=0..36 text="> | a | b |\n> |---|---|\n> | 1 | 2 |\n"
+  Table{aligns=[None, None], rows=[[3..6:" a ", 7..10:" b "], [27..30:" 1 ", 31..34:" 2 "]]} src=2..36 text="| a | b |\n> |---|---|\n> | 1 | 2 |\n"
 
 === list_corpus: quote containing a thematic break ===
 -- BLOCKS (1) --

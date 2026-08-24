@@ -17,19 +17,17 @@
 //! callout box `render_alert` draws, just with the *body* rendered from this file's own tree
 //! (`Block.children`) instead of a re-parsed string; see that function's own doc comment. A
 //! `Details` block is drawn the identical way, via `render_details_from_model` and
-//! `markdown.rs`'s own `details_marker_line`/`details_bar`. The one remaining `BlockKind` a `Doc`
-//! can contain (`Table`/`Html`) is recorded in `RenderOut::unsupported` and produces **no output at
-//! all** — not even its own inline content, if a block this pass *does* cover happens to nest one of
-//! them (a table three levels down inside a list item, say). Rendering only the *rest* of that
-//! container, working around the one nested piece it cannot draw, would produce something the
-//! production renderer never draws (a list with a hole in the middle of it), and the diff harness
-//! would have no way to tell that apart from an actual match — so `contains_unsupported` walks a
-//! `List`/`Quote`/`Details`'s *entire* subtree before rendering a single line of it, and the whole
-//! thing is reported unsupported (under whichever nested kind's own name it actually found) the
-//! moment a `Table`/`Html` turns up anywhere inside it, at any depth. Reporting the container as
-//! unsupported and skipping the whole subtree is the honest choice for a skeleton stage; `render_doc`
-//! therefore only ever draws lines for a `List`/`Quote`/`Details` whose entire contents this pass
-//! already knows how to render.
+//! `markdown.rs`'s own `details_marker_line`/`details_bar`. `Table` and `Html`, the two remaining
+//! `BlockKind`s a `Doc` can contain, are drawn too now (`render_table_from_model`/
+//! `render_html_block_from_model`), at any nesting depth — top level, inside a list item, inside a
+//! quote, included — closing the one gap this pass used to have: `contains_unsupported` (below) no
+//! longer finds anything to screen out, so `RenderOut::unsupported` is always empty in practice and
+//! `render_doc` never actually skips a subtree any more. The machinery for that skip — `unsupported`
+//! itself, `contains_unsupported`, and `render_markdown_with_images`'s own fallback to the legacy,
+//! tui-markdown-based renderer whenever `unsupported` is non-empty — is kept regardless, unused in
+//! practice rather than deleted, since removing the legacy renderer it falls back to is a separate
+//! piece of work this pass does not do; see `contains_unsupported`'s own doc comment for the same
+//! point made where the code itself lives.
 //!
 //! ## Alert/`<details>` interactivity — `BlockCtx.details_interactive`
 //!
@@ -142,7 +140,7 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet;
@@ -152,9 +150,11 @@ use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
     details_marker_line, gutter_span, highlight_body, image_loading_line, image_placeholder_lines,
     image_text_fallback, is_mermaid_info, math_placeholder_lines, math_raw_lines, math_url,
-    mermaid_fence_url, mermaid_placeholder_lines, next_details_open, pad_to_width,
-    render_html_block, render_mermaid_block, render_table, scan_inline_math, task_prefix_state,
-    CodeStyle, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    mermaid_fence_url, mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
+    parse_cell_segments, prefix_link_icons, render_html_block, render_mermaid_block,
+    render_table_cells, scan_inline_math, task_prefix_state, CellSeg, CodeStyle, ColAlign,
+    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -162,9 +162,11 @@ use super::{
 /// extracted ```mermaid fence, and lifted LaTeX math (`math_slot` answering anything but
 /// `MathSlot::Raw`) all push into this one, shared `Vec`, exactly the way `render_markdown_with_images`
 /// itself returns a single, unified `placements` list regardless of which of the three produced each
-/// entry — and the name of every top-level `BlockKind` this pass encountered but does not yet render
-/// (see `contains_unsupported`'s own doc comment for why a name recorded here can come from several
-/// levels deep inside a `List` or `Quote`, not only from a block sitting directly in `doc.blocks`).
+/// entry — and (`unsupported`, below) the name of every top-level `BlockKind` this pass encountered
+/// but could not render. As of this pass covering every `BlockKind` a `Doc` can contain, `unsupported`
+/// is always empty in practice (`contains_unsupported`'s own doc comment) — the field, and the
+/// `render_markdown_with_images` legacy fallback that reads it, are kept rather than removed for now;
+/// see that doc comment for why.
 pub(crate) struct RenderOut {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<ImagePlacement>,
@@ -394,6 +396,12 @@ pub(crate) fn render_doc(
     // already stripped, so `doc.events` never carries a `MetadataBlock` event to find at all — see
     // that function's own doc comment).
     render_metadata_block(&mut w, doc);
+    // Nothing pushes into this any more — `contains_unsupported` never returns `Some` (see its own
+    // doc comment), and the only other push site left, `BlockKind::ListItem` a few arms down, can
+    // never legitimately fire either (a `ListItem` only ever exists as a `List`'s own child, always
+    // unwrapped before this loop sees one). `RenderOut::unsupported` and the machinery around it
+    // (this `Vec`, `contains_unsupported` itself, `render_markdown_with_images`'s own legacy
+    // fallback) are kept, not removed, for this pass — see this file's own module doc comment.
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
         match &block.kind {
@@ -506,10 +514,10 @@ pub(crate) fn render_doc(
             // rather than assumed unreachable — see `render_block`'s own doc comment for why that
             // convention holds throughout this file.
             BlockKind::ListItem { .. } => unsupported.push("ListItem"),
-            // A top-level `Table`/`Html` is never `in_quote` (the top level is never inside any
-            // `Quote` — see `contains_unsupported`'s own doc comment on the parameter), so both are
-            // always drawn here, never reported unsupported.
-            BlockKind::Table { .. } => render_table_from_model(&mut w, src, block.src.clone()),
+            // A top-level `Table`/`Html` is drawn directly — never reported unsupported, at this or
+            // any nesting depth (`contains_unsupported` never returns for either name any more; see
+            // its own doc comment for why the check it used to make here is now permanently moot).
+            BlockKind::Table { aligns, rows } => render_table_from_model(&mut w, src, aligns, rows),
             BlockKind::Html { body_spans, .. } => {
                 render_html_block_from_model(&mut w, src, body_spans)
             }
@@ -525,97 +533,54 @@ pub(crate) fn render_doc(
     }
 }
 
-/// Whether `blocks` — a `List`'s own item children, a `Quote`'s own body (alert or not), a
-/// `Details`'s own body, or (recursively) any of those nested arbitrarily deep inside more of the
-/// same — contains, anywhere inside it, a block kind this pass cannot safely render at *this*
-/// position: a `Table` found **nested inside a `Quote`** (`in_quote`, below — see its own doc comment
-/// for exactly why quote nesting, specifically, is the one shape that still breaks it).
-/// `CodeBlock`, and (as of an earlier pass) `Quote { alert: Some(_), .. }`/`Details`, used to be names
-/// this function screened out too — see `render_code_block`'s own doc comment for why a `CodeBlock`
-/// no longer needs this treatment at all, at any nesting depth, quote included, and the module doc
-/// comment for the identical reasoning now extended to an alert/`<details>`: all three have real
-/// renderers now, so they recurse into their own `children` here (checking for a *still*-unsupported
-/// `Table` nested inside *them*) the same way `List`/plain-`Quote` already do, rather than being
-/// reported unsupported outright. `Html` used to be a second name reported here under the identical
-/// `in_quote` condition — see `in_quote`'s own doc comment for why that gate existed and what closed
-/// it (`model::BlockKind::Html.body_spans`) — but is no longer, at any nesting depth: it now recurses
-/// the same inert way every other leaf kind with no `children` of its own does (there is nothing
-/// nested *inside* an `Html` block for this function to find), rather than being matched here at all.
-/// `Table` remains genuinely unsupported when quote-nested — see `in_quote`'s own doc comment for
-/// exactly why, and why `Html` no longer shares its fate.
+/// **Now a permanent no-op — always returns `None`.** Kept, not deleted or inlined away, because the
+/// machinery around it (`RenderOut::unsupported`, `render_markdown_with_images`'s own legacy
+/// fallback, this function's own `in_quote` parameter) is not being removed by this pass either; see
+/// this file's own module doc comment ("Scope") for the plan that removes both together.
 ///
-/// `in_quote`: whether the walk reaching this call is currently *inside* a `Quote`'s own subtree (the
-/// call site itself is what sets this — `true` the moment `Quote { .. }`, below, recurses into its
-/// own `children`; unchanged for every other container kind). A `Table` is reported unsupported
-/// **only** when found while this is `true` — because it is rendered from a *naive* whole-block slice
-/// of `Block.src` (`render_table_from_model`, reusing `markdown.rs`'s own line-based `render_table`
-/// directly, per the module doc comment's own "Scope" section on why that reuse — not a re-
-/// derivation — is the right choice for a table, a *self-contained* structure with no reference to
-/// any other block), and a blockquote's own `>` marker survives on **every continuation line** of
-/// anything nested inside it (the identical asymmetric-range property `render_paragraph_math`'s own
-/// doc comment already documents for a quoted paragraph — confirmed directly, the same way, for a
-/// `Table`: parsing `"> | a | b |\n> |---|---|\n> | 1 | 2 |\n"` reports the table's own `Block.src`
+/// This last held out for a `Table` found **nested inside a `Quote`**: it used to be reported
+/// unsupported whenever `in_quote` (below) was `true` at the point a `Table` turned up, because
+/// `render_table_from_model` used to render one from a *naive* whole-block slice of `Block.src`, and
+/// a blockquote's own `>` marker survives on every continuation line of that slice (confirmed
+/// directly: parsing `"> | a | b |\n> |---|---|\n> | 1 | 2 |\n"` reported the table's own `Block.src`
 /// slice as `"| a | b |\n> |---|---|\n> | 1 | 2 |\n"` — the *first* line's marker excluded, every
-/// later line's kept), which breaks `render_table`'s own line-based delimiter/cell parsing (the
-/// `>`-prefixed delimiter row no longer matches `is_table_delimiter`'s own character set, so the whole
-/// table degrades to garbled literal rows). `List`/`Details` nesting never has this problem at all —
-/// no marker character survives on a list item's own continuation lines the way a blockquote's own
-/// repeats (`BlockCtx.math_here`'s own doc comment covers the identical point for image/mermaid
-/// extraction's own line-based checks) and `<details>` adds no per-line marker to begin with — so
-/// neither ever sets `in_quote`, and a `Table` reached purely through either renders correctly.
+/// later line's kept), which broke `render_table`'s own line-based delimiter/cell parsing (the
+/// `>`-prefixed delimiter row no longer matched `is_table_delimiter`'s own character set, so the
+/// whole table degraded to garbled literal rows — this was production's own real, confirmed
+/// limitation too: `split_tables`'s own raw-line scan is equally defeated by the same `>`-prefixed
+/// continuation lines, so a quote-nested table rendered as literal wrapped text there as well, not a
+/// defect unique to this stage's own reuse choice). `render_table_from_model` no longer takes that
+/// slice at all — it builds `markdown.rs`'s own `TableCells` directly from
+/// `model::BlockKind::Table.aligns`/`.rows`, whose cell ranges are pulldown-cmark's own per-cell
+/// ranges on `src`, already free of the enclosing `>` marker regardless of nesting depth (see that
+/// function's own doc comment) — the identical fix `model::BlockKind::Html.body_spans` already made
+/// for `Html`'s own, now-closed instance of this same defect, which is why `Html` stopped being
+/// reported here first (see the version-control history of this doc comment for that earlier text,
+/// if useful — it walked through the two side by side while `Table` was still the one remaining gap).
 ///
-/// `Html` used to share this exact defect — `render_html_block_from_model` used to take the identical
-/// naive `&src[block_src]` slice `render_table_from_model` still does, so a quote-nested `Html`
-/// block's own continuation lines carried the same surviving `>` marker into `render_html_block`'s own
-/// tag-stripping. That is fixed now: `model::BlockKind::Html.body_spans` names the block's own content
-/// as one byte range per `Event::Html` pulldown-cmark itself reports, and pulldown-cmark's own
-/// per-line ranges already exclude a quote's `>` marker on every line, first or not (see that field's
-/// own doc comment for the confirmed dump) — `render_html_block_from_model` reads `body_spans`, not
-/// `Block.src`, so it draws a quote-nested `Html` block exactly as correctly as a top-level one. A
-/// `Table` has no equivalent per-cell "already marker-free" range pulldown-cmark reports on its own
-/// (a cell's `Range<usize>` is still a slice of the same marker-carrying `Block.src`) — this is a
-/// genuine, remaining asymmetry between the two, not an oversight that `Html`'s own fix simply forgot
-/// to extend to `Table` as well.
+/// `CodeBlock`, `Quote { alert: Some(_), .. }`/`Details`, and a **loose list item with a task marker**
+/// were three further names this function used to screen out, at various earlier points — see
+/// `render_code_block`'s own doc comment (`CodeBlock`), the module doc comment (alert/`<details>`),
+/// and `Writer::task_list_marker`'s own doc comment (the task-marker crash a synthetic `"LooseTask"`
+/// name used to work around here) for why each of those closed constructively instead, the same
+/// pattern `Table` and `Html` both followed: give the shape a real renderer (or fix the underlying
+/// crash), rather than leave this function permanently screening it out.
 ///
-/// This mirrors production's own real, confirmed limitation for the identical `Table` shape (not a
-/// defect unique to this stage's own reuse choice): `split_tables`'s own raw-line scan is *equally*
-/// defeated by a quote-nested table's own `>`-prefixed continuation lines (`is_table_delimiter`'s own
-/// character set has no `>` in it at all) — a quote-nested table stays undetected, its pipe-delimited
-/// syntax rendered as literal wrapped text through tui-markdown instead of a real, box-drawn table.
-/// Reporting the whole enclosing `Quote` unsupported here, rather than reproducing that degradation,
-/// is the honest choice for this stage — the identical judgment call the module doc comment already
-/// makes for every other not-yet-covered shape. (Production has an analogous, now-closed limitation
-/// for `Html`, too — `split_html_blocks`'s own `is_html_block_start` reads `line.trim_start()`, which
-/// never strips a `>` marker either, so a quote-nested HTML block was silently dropped entirely there;
-/// this stage no longer reproduces that one, `Html`'s own real fix above being the reason why.)
+/// `blocks`/`in_quote`: unchanged from before — `blocks` is a `List`'s own item children, a `Quote`'s
+/// own body (alert or not), or a `Details`'s own body, walked recursively; `in_quote` still tracks
+/// whether the walk is currently inside a `Quote`'s own subtree (`true` the moment `Quote { .. }`,
+/// below, recurses into its own `children`), even though nothing left in this function's own body
+/// reads it for a decision any more — every call site above still threads it through, and removing
+/// the parameter itself is exactly the kind of "this function is dead weight now" cleanup that
+/// belongs with removing the rest of the fallback machinery, not with this fix in isolation.
 ///
-/// Returns the *first* such kind's name found, in document order, for the caller (`render_doc`'s own
-/// top-level dispatch, or a nested recursive call from this same function walking back up) to record
-/// in `RenderOut::unsupported` — the exact same reporting a *directly* unsupported top-level block
-/// already gets, just discovered one or more levels deeper. This is what keeps `render_doc`'s own
-/// "report the container as unsupported and skip the whole subtree" choice (see the module doc
-/// comment) honest for `List`/`Quote`/`Details`: a three-item list with a quote-nested table buried
-/// in the third item's own nested sublist is not partially rendered with a hole where that block
-/// would have gone — the whole list, all three items, is skipped, called out under `"Table"`, exactly
-/// like a bare top-level quote-nested `Table` always has been.
-///
-/// A **loose list item that has a task marker** used to be excluded here too, under a synthetic
-/// `"LooseTask"` name — not a real `BlockKind` variant at all — because that exact shape crashed
-/// `Writer::task_list_marker` (`line.spans.insert(1, ..)` against an empty `Vec`; see that method's
-/// own doc comment for the fix). Principle #3 (`CLAUDE.md`) is "never crash", not "never render a
-/// shape this stage happens to mishandle" — so once the underlying panic was fixed constructively,
-/// screening the shape out here stopped being necessary and was removed: a loose task item now
-/// renders (matching tui-markdown's own real, if visually surprising, layout for it — see
-/// `render_item`'s own doc comment) instead of being reported unsupported.
-///
-/// A leaf kind with no `Block::children` of its own (`Heading`/`Paragraph`/`ThematicBreak`/
-/// `CodeBlock`/`Html`, and `Table`, the one `BlockKind` variant this function itself still checks for)
-/// never recurses — there is nothing further to walk under any of them (see `model::Block.children`'s
-/// own doc comment: "Empty for every leaf kind").
+/// `clippy::only_used_in_recursion` fires on `in_quote` for exactly that reason — every read of it
+/// left is a recursive call passing it along, never a branch — and is silenced below rather than
+/// acted on for the identical reason the parameter itself is kept.
+#[allow(clippy::only_used_in_recursion)]
 fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
-            BlockKind::Table { .. } if in_quote => return Some("Table"),
             BlockKind::Table { .. } | BlockKind::Html { .. } => {}
             BlockKind::Heading { .. }
             | BlockKind::Paragraph { .. }
@@ -3631,22 +3596,42 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
     w.fresh_boundary = true;
 }
 
-/// Renders a `Table` block's own raw source directly into `w`, in place, by reusing `markdown.rs`'s
-/// own `render_table` (cell links, inline styling, alignment colons, CJK width, and the `\|` escape
-/// are all already correct there — not reimplemented) on a plain slice of `src`
-/// (`&src[block_src]`) — safe *because* a table is a self-contained structure with no reference to
-/// any other block (see `model::BlockKind::Table`'s own doc comment: every cell's own content is
-/// inline, walked past by the model, never turned into a nested `Block` this function would otherwise
-/// need to reach through the slice some other way). Only ever called for a `Table`
-/// `contains_unsupported` has already confirmed is not nested inside any `Quote` — see that
-/// function's own doc comment on `in_quote` for exactly why a quote-nested one is excluded instead of
-/// handled here the same way, and for the confirmed `Block.src` slice that would result if it were
-/// not.
+/// Renders a `Table` block into `w`, in place, by building `markdown.rs`'s own `TableCells` (the
+/// intermediate shape its `parse_table_text` produces from a raw line scan — see that type's own doc
+/// comment) directly from the model's `BlockKind::Table.aligns`/`.rows`, then handing it to
+/// `render_table_cells` — the same layout/wrapping/box-drawing phase `markdown.rs`'s own `render_table`
+/// itself calls (cell links, inline styling, alignment colons, CJK width all already correct there,
+/// not reimplemented). **Not** a slice of `Block.src` fed to the raw-line-scanning phase (`parse_table_text`)
+/// the way this function used to work: each cell is a `Range<usize>` directly on `src`
+/// (`model::BlockKind::Table.rows`'s own doc comment — "the pipe-delimited span including its padding
+/// spaces"), already free of the enclosing `Quote`'s own `>` marker regardless of nesting depth — the
+/// identical reason `model::BlockKind::Html.body_spans` fixed the same defect for `Html` (see
+/// `contains_unsupported`'s own doc comment for the full, confirmed-by-dump asymmetry between "a
+/// whole-block raw slice" and "pulldown-cmark's own per-element ranges" this rewrite closes for
+/// `Table` too). `normalize_cell` (shared with `parse_table_text`'s own line-based split, so the two
+/// paths can never disagree on it) resolves the `\|` escape and trims padding off each raw range
+/// before `parse_cell_segments` parses it into inline segments — the identical two-step
+/// `parse_table_row`'s own final `.map` used to do inline, on an already-split line.
+///
+/// `aligns`: `Alignment::None`/`Alignment::Left` both map to `ColAlign::Left` — the identical default
+/// `markdown.rs`'s own `parse_table_aligns` falls back to for a delimiter cell with no `:` colon at
+/// all (`_ => ColAlign::Left`) — so this mapping is total, not a lossy narrowing of some case
+/// `ColAlign` cannot represent; `pulldown_cmark::Alignment` simply has no "unspecified" *variant*
+/// distinct from `None`, the same distinction `model::BlockKind::Table`'s own doc comment already
+/// draws between the two types.
+///
+/// `header_rows`: `rows[0]` is always the header row when `rows` is non-empty (a GFM table has
+/// exactly one header row by construction — `model::BlockKind::Table.rows`'s own doc comment), so
+/// this is `1` whenever there is anything to draw at all, `0` for the pathological empty case
+/// `render_table_cells`'s own `rows.is_empty()` guard already handles by drawing nothing.
 ///
 /// `w.width.saturating_sub(w.prefix_width())`: mirrors `render_code_block`'s own identical width
-/// reduction — defensive here, not load-bearing, since `w.prefix_width()` is always `0` at any
-/// position this function is actually reachable from (`contains_unsupported`'s own `in_quote`
-/// guarantee already rules out `w.line_prefixes` being non-empty here at all).
+/// reduction. Unlike before this rewrite, `w.prefix_width()` is no longer guaranteed `0` here — a
+/// quote-nested `Table` now reaches this function with `w.line_prefixes` non-empty (the enclosing
+/// `Quote`'s own `>` prefix), the same live prefix every other block type already renders under; the
+/// reduction is what keeps the table's own box drawing within the space actually left after that
+/// prefix, not merely defensive the way it was when only a `List`/`Details`-nested table (never
+/// prefixed) could reach here.
 ///
 /// No leading-blank-line check and a "fresh reparse boundary" exit (`needs_newline = false; after_math
 /// = true; fresh_boundary = true`), matching `render_image_slot`'s/`render_mermaid_slot`'s own (see
@@ -3657,10 +3642,40 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
 /// between them) from getting a spurious extra blank row of its own — confirmed directly:
 /// `task_corpus`'s own "everything" case (a GFM table immediately followed by a fence with no blank
 /// line) showed exactly this extra row before this field was set here.
-fn render_table_from_model(w: &mut Writer<'_>, src: &str, block_src: Range<usize>) {
-    let raw = &src[block_src];
+fn render_table_from_model(
+    w: &mut Writer<'_>,
+    src: &str,
+    aligns: &[Alignment],
+    rows: &[Vec<Range<usize>>],
+) {
+    let cells: Vec<Vec<Vec<CellSeg>>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|range| {
+                    let mut segs = parse_cell_segments(&normalize_cell(&src[range.clone()]));
+                    prefix_link_icons(&mut segs, w.icons);
+                    segs
+                })
+                .collect()
+        })
+        .collect();
+    let col_aligns: Vec<ColAlign> = aligns
+        .iter()
+        .map(|a| match a {
+            Alignment::Center => ColAlign::Center,
+            Alignment::Right => ColAlign::Right,
+            Alignment::None | Alignment::Left => ColAlign::Left,
+        })
+        .collect();
+    let header_rows = if rows.is_empty() { 0 } else { 1 };
+    let table = TableCells {
+        rows: cells,
+        header_rows,
+        aligns: col_aligns,
+    };
     let content_w = (w.width as usize).saturating_sub(w.prefix_width());
-    for line in render_table(raw, content_w as u16, w.icons) {
+    for line in render_table_cells(&table, content_w as u16) {
         w.push_line(line);
     }
     w.needs_newline = false;
@@ -3774,14 +3789,14 @@ fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, body_spans: &[Ran
 /// list item after the first. Mirrors `TextWriter::start_tag`'s own top-level dispatch for the block
 /// kinds this pass covers.
 ///
-/// A **quote-nested** `Table`/`Html` never legitimately reaches this function: every caller that
-/// walks into a `List`/`Quote`/`Details`'s own children only does so after `contains_unsupported` has
-/// already confirmed no such block appears anywhere in that subtree (see `render_doc`'s own dispatch,
-/// and that function's own doc comment on `in_quote`) — a `List`/`Details`-nested one (never
-/// `in_quote`, so never screened out) *does* reach here, rendered by
-/// `render_table_from_model`/`render_html_block_from_model`, the identical two functions
-/// `render_doc`'s own top-level dispatch calls. `ListItem` never legitimately reaches this function
-/// either — it only ever exists as a `List`'s own child (see `model::BlockKind::ListItem`'s doc
+/// A quote-nested `Table`/`Html` reaches this function too, exactly like a `List`/`Details`-nested
+/// one — `contains_unsupported` no longer screens either out at any nesting depth (see that
+/// function's own doc comment) — rendered by the identical
+/// `render_table_from_model`/`render_html_block_from_model` pair `render_doc`'s own top-level
+/// dispatch calls, both of which read a block's own `model`-derived ranges rather than a naive
+/// `Block.src` slice, so neither cares whether `ctx`'s own enclosing chain happens to include a
+/// `Quote`. `ListItem` never legitimately reaches this function — it only ever exists as a `List`'s
+/// own child (see `model::BlockKind::ListItem`'s doc
 /// comment), and `render_list` unwraps every one of those itself. Matched defensively (silently
 /// rendering nothing further) rather than assumed unreachable all the same, so a bug elsewhere
 /// degrades to "this one block goes missing" instead of a panic — principle #3 (`CLAUDE.md`).
@@ -3884,7 +3899,7 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
             glued_body.clone(),
             ctx,
         ),
-        BlockKind::Table { .. } => render_table_from_model(w, src, block.src.clone()),
+        BlockKind::Table { aligns, rows } => render_table_from_model(w, src, aligns, rows),
         BlockKind::Html { body_spans, .. } => render_html_block_from_model(w, src, body_spans),
         // Never reachable — see the doc comment above.
         BlockKind::ListItem { .. } => {}
@@ -4577,6 +4592,58 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
 /// why (both `math_here` and `details_interactive`, unconditionally, matching production's own
 /// `render_md_body_nested` — the single body-rendering entry point both an alert's and a `Details`
 /// block's own body funnel through).
+///
+/// ## The glued-header case — the one place *this* function re-parses anything
+///
+/// `> [!NOTE] title` is not real CommonMark syntax (see `trim_leading_header`'s own doc comment): it
+/// is ordinary blockquote text that just happens to look like a header, so CommonMark's own lazy-
+/// continuation rule can glue it into the *same* `Paragraph` as whatever non-blank line follows it —
+/// `"> [!IMPORTANT]\n> Crate | Note\n> ------|------\n> ndk   | x\n"` parses as **one** `Paragraph`
+/// spanning all four lines, not a `Paragraph` (the header) followed by a `Table` (the rows), because a
+/// GFM table can never start mid-paragraph — CommonMark only recognizes one at the *top* of a block.
+/// `trim_leading_header` copes with this by trimming the header's own leading `Event`s off that one
+/// straddling `Paragraph` and rendering what is left of it as a paragraph — correct as far as it goes,
+/// but it can never turn those trailing lines into a `Table`, `List`, or anything else a real,
+/// block-level parse would have found, because nothing here re-derives block structure from raw text.
+/// A **blank line** after the header avoids this entirely (the header becomes its own, separate,
+/// complete `Paragraph`, and the table starts fresh right after it — CommonMark's normal case, the one
+/// `trim_leading_header`'s "starts cleanly after the header" branch already handles without any
+/// reparse) — this whole mechanism exists only for the no-blank-line shape.
+///
+/// `glued_alert_body` detects exactly this straddle (mirroring `trim_leading_header`'s own boundary
+/// scan) and, when it fires, hands back one raw byte range: from right after the header line through
+/// the **last** child's own `src.end` — the straddling block's own trailing text *and* every child
+/// after it, not just the one straddling block. Everything from that point on is re-parsed and
+/// re-rendered as a single unit rather than split at the straddle boundary — an earlier version of
+/// this function split there (isolated `Doc::parse` of just the straddling block, then a second,
+/// separate `render_bar_prefixed_body` call for the untouched children after it) and a real regression
+/// caught that: `code_corpus: indented block nested inside an open alert` (`"> [!NOTE]\n> para\n>\n>
+/// indented in alert\n"`) lost the blank line between `para` and the indented block that followed it,
+/// because each `render_bar_prefixed_body` call starts its own brand-new sub-`Writer` (`needs_newline:
+/// false`), and the blank-line-before-a-block-boundary spacing `push_line` inserts depends on *that*
+/// state carrying over within one continuous `Writer` session — which two separate calls, by
+/// construction, cannot give it. Reparsing everything from the header on as one text run and handing
+/// it to `render_bar_prefixed_body` exactly once restores that continuity (the identical reason
+/// `render_details_from_model`'s own `glued_body` reparses a `<details>` block's *entire* raw body in
+/// one shot, never split at whatever sibling boundary the pathological gluing happened to fall on).
+///
+/// This function then does the identical thing `render_details_from_model` already does for a glued
+/// `<details>` body (`model::BlockKind::Details.glued_body`): copies that raw range out, strips its own
+/// per-line blockquote marker (`dequote_alert_body` — every physical line in that range still carries
+/// its own literal `>`, since `Block::src` is a contiguous byte range into the *whole* document, not a
+/// marker-free reconstruction; see that function's own doc comment), and runs a **fresh, isolated**
+/// `Doc::parse` over the result — a real block-level parse this time, since a bare "table" written as
+/// three lines of plain pipes-and-dashes text (no leading `>` at all) is exactly the input a real
+/// parser needs to recognize a `Table`. The isolated parse's own `blocks`/`events` are rendered
+/// immediately through `render_bar_prefixed_body` and never touched again, the same narrow, self-
+/// contained exception `render_details_from_model`'s own doc comment already carves out of this file's
+/// "never re-parses anything" promise — not a second instance of that exception, the *same* one,
+/// reused for a second call site with the identical safety argument.
+///
+/// When `glued_alert_body` finds no straddle (children is empty, entirely header, or already starts
+/// cleanly after it) this function's behavior is **byte-for-byte unchanged** from before this case
+/// existed: `trim_leading_header` still runs, and `render_bar_prefixed_body` is still called exactly
+/// once, on its output — the fast path this mechanism intentionally leaves alone.
 fn render_alert_from_model(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -4588,10 +4655,146 @@ fn render_alert_from_model(
 ) {
     w.push_line(alert_header_line(kind, title, w.icons));
     let header_end = line_after(src, quote_src_start);
-    let trimmed = trim_leading_header(children, doc, header_end);
-    render_bar_prefixed_body(w, doc, src, &trimmed, alert_bar(kind.color()));
+    let bar = alert_bar(kind.color());
+    match glued_alert_body(children, header_end) {
+        Some(glued_range) => {
+            // Owned, not borrowed from `src`: `Doc::parse` needs a string that outlives this whole
+            // call — mirrors `render_details_from_model`'s own identical `body_src` for
+            // `glued_body`, see that function's own doc comment for why an isolated copy, not a
+            // slice of `src`, is the right shape here.
+            let base = glued_range.start;
+            let (body_src, line_map) = dequote_alert_body(&src[glued_range]);
+            let nested = Doc::parse(&body_src);
+            // `render_bar_prefixed_body` merges its own inner `Writer`'s `task_marks` onto `w`'s
+            // (`w.task_marks.extend(inner.task_marks)`) — always appended, never inserted — so the
+            // slice pushed by *this* call is exactly the tail starting at `marks_before`. Every one of
+            // those offsets was computed against `body_src` (`Writer::render_item`'s own `t.state_at`/
+            // `item_src_start + off`, both "absolute byte offset into `src`" for whichever `src` this
+            // particular call was handed — `body_src` here, not the real file) — see
+            // `remap_glued_alert_offset`'s own doc comment for why translating them back is not just
+            // "add `base`": `dequote_alert_body` does not merely slice, it strips a different number of
+            // marker bytes off every physical line, so no single constant offset holds across a line
+            // boundary. Left unmapped, `Space`/`Enter` on a real task inside a glued alert body writes
+            // its new state character at the *wrong* byte in the user's actual file — confirmed
+            // directly: `app::tests::md_task_toggle_is_byte_exact_across_the_corpus` failed on exactly
+            // this shape (`task_corpus: task-lookalike inside an indented block nested in an alert
+            // stays literal`) before this remap existed, "別の位置を書き換えた" against a real temp
+            // file, not merely a mismatched assertion in isolation.
+            let marks_before = w.task_marks.len();
+            render_bar_prefixed_body(w, &nested, &body_src, &nested.blocks, bar);
+            for mark in &mut w.task_marks[marks_before..] {
+                mark.1 = base + remap_glued_alert_offset(mark.1, &line_map);
+            }
+        }
+        None => {
+            let trimmed = trim_leading_header(children, doc, header_end);
+            render_bar_prefixed_body(w, doc, src, &trimmed, bar);
+        }
+    }
     w.needs_newline = false;
     w.fresh_boundary = true;
+}
+
+/// Detects the "header glued into the same `Paragraph` as its own body" shape
+/// `render_alert_from_model`'s own doc comment describes in full, mirroring `trim_leading_header`'s
+/// own boundary scan exactly (same three shapes, same order) but reporting the straddle instead of
+/// papering over it: `None` for the two shapes `trim_leading_header` already handles correctly on its
+/// own (nothing before `header_end` needs a reparse, or nothing straddles it at all), `Some(range)`
+/// only for the one shape it cannot — a `Paragraph` whose own `src` starts before `header_end` and ends
+/// after it. `range` runs from `header_end` through the **last** child's own `src.end` (not just the
+/// straddling block's) — see `render_alert_from_model`'s own doc comment for why a split there
+/// regressed a real corpus case. A non-`Paragraph` straddle is impossible by construction (every other
+/// block kind always starts fresh at its own line — see `trim_leading_header`'s own doc comment) but
+/// matched defensively all the same, `None`, falling back to `trim_leading_header`'s own identical
+/// defensive branch (principle #3, `CLAUDE.md`): keeping the block unmodified is safer than a reparse
+/// this shape was never actually tested against.
+fn glued_alert_body(children: &[Block], header_end: usize) -> Option<Range<usize>> {
+    let b = children.iter().find(|b| b.src.end > header_end)?;
+    if b.src.start >= header_end {
+        return None; // starts cleanly after the header — trim_leading_header's fast path applies
+    }
+    if !matches!(b.kind, BlockKind::Paragraph { .. }) {
+        return None; // can't legitimately straddle — defensive fallback, matches trim_leading_header
+    }
+    // `children` is in non-decreasing source order (`model::Doc::parse`'s own invariant), so the last
+    // child's own `src.end` is this alert body's own last byte — always `>= b.src.end`, `b` itself
+    // included when it happens to be the only child.
+    Some(
+        header_end
+            ..children
+                .last()
+                .expect("b came from this slice, so it is non-empty")
+                .src
+                .end,
+    )
+}
+
+/// Strips one level of blockquote marker (`markdown.rs`'s own `strip_blockquote`/`is_blockquote_line`
+/// pair — the exact per-line strip `split_alerts` already does for this same shape in the legacy
+/// pipeline, reused rather than re-derived) from every physical line of `raw`. Needed because `raw`
+/// (`glued_alert_body`'s own `range`, a raw slice of the whole document's `src`) is *not* marker-free:
+/// `Block::src` is a contiguous byte range into the full document, so only the straddling paragraph's
+/// own **first** line has its leading `> ` excluded (`header_end` — see `glued_alert_body`'s own doc
+/// comment — always lands exactly on the *next* physical line's own leading `>`, since that is where
+/// the header's line ends); every line after that still carries its own literal `>` verbatim, the same
+/// way a `<details>` block's `glued_body` never needed this step at all (an HTML block's own raw
+/// interior has no quote marker to begin with). Feeding `raw` to `Doc::parse` unstripped would parse
+/// every continuation line as its own nested block quote instead of the table/list/etc. it actually
+/// is — confirmed directly (an isolated reparse of an un-dequoted `"> a\n> b\n"`-shaped slice reports a
+/// second, spurious `BlockQuote` around everything past the first line).
+///
+/// Also returns a `line_map`, `(dequoted_line_start, raw_line_start)` pairs in source order, one per
+/// physical line — `remap_glued_alert_offset`'s own input, and the reason this function does *not*
+/// just return `String` the way an earlier version did: unlike `render_details_from_model`'s own
+/// `glued_body` (whose `body_src` is a plain, unmodified slice of `src`, so `range.start` alone is
+/// already the right correction for anything the isolated re-render reports), this function *removes*
+/// bytes — a different number per line (a bare `>` strips one, `> ` strips two, an already-marker-free
+/// line strips zero) — so no single constant offset can translate a `body_src`-relative position back
+/// into `raw`'s own coordinate space; only a per-line table can. `raw`'s own EOL sequence (`\n` or a
+/// CRLF document's own `\r\n`) is preserved byte-for-byte on the dequoted side too, both so a CRLF
+/// alert body's own isolated reparse sees exactly the line endings a real `Doc::parse` of a top-level
+/// CRLF document would, and so `raw_pos` below (this function's own running position in `raw`) advances
+/// by each line's *actual* raw byte length, not an assumed constant.
+fn dequote_alert_body(raw: &str) -> (String, Vec<(usize, usize)>) {
+    let mut out = String::with_capacity(raw.len());
+    let mut line_map = Vec::new();
+    let mut raw_pos = 0usize;
+    for line in raw.split_inclusive('\n') {
+        let (text, term) = match line.strip_suffix("\r\n") {
+            Some(t) => (t, "\r\n"),
+            None => match line.strip_suffix('\n') {
+                Some(t) => (t, "\n"),
+                None => (line, ""), // final line, no trailing newline at all
+            },
+        };
+        let stripped = super::strip_blockquote(text);
+        let marker_len = text.len() - stripped.len();
+        line_map.push((out.len(), raw_pos + marker_len));
+        out.push_str(&stripped);
+        out.push_str(term);
+        raw_pos += line.len();
+    }
+    (out, line_map)
+}
+
+/// Translates `body_offset` — an absolute byte offset into `dequote_alert_body`'s own dequoted output
+/// — back into that same call's `raw` argument's own coordinate space, via `line_map` (that function's
+/// own second return value; see its doc comment for why a per-line table, not a constant, is needed at
+/// all). Finds the physical line `body_offset` falls on (the last entry whose own dequoted-side start
+/// is `<= body_offset` — `line_map` is in non-decreasing source order by construction, one entry per
+/// line in the order `dequote_alert_body`'s own loop visited them, so `partition_point` applies) and
+/// carries the same within-line distance over to the raw side: the dequoted and raw text are
+/// byte-identical from the marker's own end through that line's own terminator, so an offset `d` bytes
+/// into the dequoted line is also `d` bytes into the raw one. `render_alert_from_model`'s own call site
+/// adds `glued_range.start` on top of this function's own result — `line_map`'s "raw" side is relative
+/// to `raw` (`dequote_alert_body`'s own parameter, itself already `src[glued_range]`), not to the whole
+/// document, so this function alone cannot produce an absolute `src` offset on its own.
+fn remap_glued_alert_offset(body_offset: usize, line_map: &[(usize, usize)]) -> usize {
+    let idx = line_map
+        .partition_point(|&(body_start, _)| body_start <= body_offset)
+        .saturating_sub(1);
+    let (body_start, raw_start) = line_map[idx];
+    raw_start + (body_offset - body_start)
 }
 
 /// The byte position right after the next `'\n'` at or after `start` — `src.len()` if there is
@@ -5724,24 +5927,21 @@ mod tests {
         );
     }
 
-    /// A `Table` block nested inside a `Quote` is reported `Unsupported` (`render_table`'s own
-    /// line-based parsing breaks on the quote's own `>`-prefixed continuation lines — see
-    /// `contains_unsupported`'s own doc comment on `in_quote`) — the safety net this test exists to
-    /// pin: a regression that quietly started rendering one anyway (instead of screening it out)
-    /// would show up as garbled output somewhere downstream, not as a clean failure here. A quote-
-    /// nested `Html` block used to be reported unsupported here too — this test used to be named
-    /// `quote_nested_table_and_html_are_reported_unsupported` — until `model::BlockKind::Html.body_spans`
-    /// closed that gap (see `contains_unsupported`'s own doc comment): asserting `None` for it here
-    /// is this test's own safety net for *that* fix, the flip side of the `Table` assertion above —
-    /// a regression that quietly stopped rendering a quote-nested `Html` block again (falling back to
-    /// screening it out) would show up as a silently dropped block, not as a clean failure here.
+    /// Neither a `Table` nor an `Html` block nested inside a `Quote` is reported unsupported any
+    /// more — `contains_unsupported` is a permanent no-op now (see its own doc comment). This test
+    /// used to pin the opposite for `Table` (`quote_nested_table_and_html_are_reported_unsupported`,
+    /// then `quote_nested_table_is_reported_unsupported_html_is_not` once `Html`'s own instance of
+    /// the same defect closed first — see either name's own git history for that intermediate state)
+    /// — kept, renamed and re-pointed at `None` for both, as the safety net for *this* fix: a
+    /// regression that quietly started reporting a quote-nested `Table` unsupported again would show
+    /// up as a silently skipped subtree, not as a clean failure here.
     #[test]
-    fn quote_nested_table_is_reported_unsupported_html_is_not() {
+    fn quote_nested_table_and_html_are_neither_reported_unsupported() {
         let table_src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         let doc = Doc::parse(table_src);
         assert_eq!(
             contains_unsupported(&doc.blocks[0].children, true),
-            Some("Table"),
+            None,
             "src: {table_src:?}"
         );
         let html_src = "> <div>x</div>\n> more\n";
@@ -7097,57 +7297,198 @@ mod tests {
         out.lines.iter().map(line_text).collect()
     }
 
-    // ---- `contains_unsupported`/`render_doc` top-level dispatch: lines 444, 468, 483, 508, 525,
-    // 632, 637 — every "a Table/Html turned up nested inside a Quote somewhere in this List's/
-    // alert's/Details's own subtree" reporting path, at every position `render_doc`'s own top-level
-    // dispatch can reach one from. ----
+    // ---- `contains_unsupported`/`render_doc` top-level dispatch: every position a Table/Html
+    // nested inside a Quote, somewhere in a List's/alert's/Details's own subtree, can be reached
+    // from — all four render correctly now (`contains_unsupported` is a permanent no-op; see its own
+    // doc comment), not reported unsupported the way they used to be. ----
 
-    /// A `List` whose only item's own content is a plain `Quote` containing a GFM table: the
-    /// table's own `in_quote` check fires immediately (base case, already covered elsewhere), the
-    /// enclosing `Quote` arm's own recursive "found a violation in my own children" propagates it
-    /// (line 637), and the outer `List` arm's identical propagation does too (line 632) — both
-    /// `contains_unsupported`'s own two "if let Some(bad) = ... return Some(bad)" recursion sites,
-    /// reached from two different nesting depths in the same document — before `render_doc`'s own
-    /// top-level `List` dispatch records it (line 444).
+    /// Whether `out` drew a table's own header/body divider rule (`├───┼───┤`) anywhere —
+    /// `render_table_cells`'s own `if header_rows > 0 && ri + 1 == header_rows` arm, which only
+    /// fires once `is_table_delimiter` actually recognized the delimiter row. This is a stronger
+    /// check than "does *any* box-drawing glyph (`┌`) appear" for the four tests below, and
+    /// deliberately so: reverting `render_table_from_model` to the pre-fix naive `&src[block_src]`
+    /// slice (confirmed directly, by making that exact change and rerunning this group) still draws
+    /// *a* box — any parsed set of cells does, delimiter recognized or not — because the quote's own
+    /// `>` marker surviving on the delimiter row's own continuation line defeats
+    /// `is_table_delimiter`'s own character set (no `>` in it), so `header_rows` stays `0` and the
+    /// corrupted delimiter row is folded in as a bogus extra *data* row instead of drawing this
+    /// divider — a regression a bare "`┌` appears somewhere" assertion does not catch, but this one
+    /// does.
+    fn has_table_divider(out: &RenderOut) -> bool {
+        out.lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('├')))
+    }
+
+    /// A `List` whose only item's own content is a plain `Quote` containing a GFM table: the whole
+    /// document renders — the outer `List` arm, the enclosing `Quote` arm, and `render_table_from_model`
+    /// itself for the table's own body — with a real, box-drawn table, `>`-quoted like the rest of
+    /// the quote's own body.
     #[test]
-    fn list_with_a_quote_nested_table_is_reported_unsupported_by_the_list_arm() {
+    fn list_with_a_quote_nested_table_renders_a_real_table() {
         let src = "- item\n  > | a | b |\n  > |---|---|\n  > | 1 | 2 |\n";
         let out = render(src, true, false);
-        assert_eq!(out.unsupported, vec!["Table"]);
-        assert!(out.lines.is_empty(), "an unsupported block draws nothing");
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('┌')));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table: {:?}",
+            out.lines
+        );
+        assert!(
+            has_table_divider(&out),
+            "expected the header/body divider rule (proof the delimiter row itself parsed \
+             correctly, not as a bogus extra data row): {:?}",
+            out.lines
+        );
     }
 
     /// A `<details>` block whose body is a plain `Quote` containing a table — the identical nested
-    /// shape as above, but reached via `render_doc`'s own `Details` arm (line 508) instead of
-    /// `List`'s.
+    /// shape as above, but reached via `render_doc`'s own `Details` arm instead of `List`'s.
     #[test]
-    fn details_with_a_quote_nested_table_is_reported_unsupported_by_the_details_arm() {
-        let src = "<details>\n<summary>s</summary>\n\n\
+    fn details_with_a_quote_nested_table_renders_a_real_table() {
+        // `open` — otherwise the body (the table this test exists to check) never renders at all,
+        // closed being every `<details>` block's own default state (`model::BlockKind::Details`'s
+        // own `open_attr`), for a reason that has nothing to do with this test's own subject.
+        let src = "<details open>\n<summary>s</summary>\n\n\
                     > | a | b |\n> |---|---|\n> | 1 | 2 |\n\n\
                     </details>\n";
         let out = render(src, true, false);
-        assert_eq!(out.unsupported, vec!["Table"]);
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('┌')));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table: {:?}",
+            out.lines
+        );
+        assert!(
+            has_table_divider(&out),
+            "expected the header/body divider rule (proof the delimiter row itself parsed \
+             correctly, not as a bogus extra data row): {:?}",
+            out.lines
+        );
     }
 
-    /// A GitHub-alert-headed quote (`> [!NOTE]`) whose own body — already `in_quote: true` from the
-    /// moment its header is recognized (see `contains_unsupported`'s own doc comment) — directly
-    /// contains a table, with `alerts: false`: reaches `render_doc`'s own "`Quote { alert: Some(_)
-    /// }` but `!w.alerts`" arm (line 466-471), not the interactive-alert one below.
+    /// A GitHub-alert-headed quote (`> [!NOTE]`) whose own body directly contains a table, with
+    /// `alerts: false`: reaches `render_doc`'s own "`Quote { alert: Some(_) }` but `!w.alerts`" arm,
+    /// not the interactive-alert one below — the table still renders for real either way.
     #[test]
-    fn alert_headed_quote_with_alerts_off_and_a_nested_table_is_reported_unsupported() {
+    fn alert_headed_quote_with_alerts_off_and_a_nested_table_renders_a_real_table() {
         let src = "> [!NOTE]\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         let out = render(src, false, false);
-        assert_eq!(out.unsupported, vec!["Table"]);
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('┌')));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table: {:?}",
+            out.lines
+        );
+        assert!(
+            has_table_divider(&out),
+            "expected the header/body divider rule (proof the delimiter row itself parsed \
+             correctly, not as a bogus extra data row): {:?}",
+            out.lines
+        );
     }
 
     /// The identical document, `alerts: true` this time — reaches `render_doc`'s own real,
-    /// interactive alert arm (line 479-493) instead, which reports the same "Table" name before
-    /// ever calling `render_alert_from_model`.
+    /// interactive alert arm instead (`render_alert_from_model`), which draws the table the
+    /// identical way through the same `render_table_from_model`.
     #[test]
-    fn alert_headed_quote_with_alerts_on_and_a_nested_table_is_reported_unsupported() {
+    fn alert_headed_quote_with_alerts_on_and_a_nested_table_renders_a_real_table() {
         let src = "> [!NOTE]\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         let out = render(src, true, false);
-        assert_eq!(out.unsupported, vec!["Table"]);
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('┌')));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table: {:?}",
+            out.lines
+        );
+        assert!(
+            has_table_divider(&out),
+            "expected the header/body divider rule (proof the delimiter row itself parsed \
+             correctly, not as a bogus extra data row): {:?}",
+            out.lines
+        );
+    }
+
+    /// The two tests above use `| a | b |`-style rows, whose *leading pipe* makes pulldown-cmark
+    /// treat the table as able to interrupt the header's own paragraph on its own — `Doc::parse`
+    /// already reports two separate sibling blocks (`Paragraph` then `Table`) with no glue for
+    /// `render_alert_from_model` to cope with at all (confirmed directly, by dumping
+    /// `Parser::new_ext(..).into_offset_iter()` for this exact source: `Start(Paragraph)`..
+    /// `End(Paragraph)` covering only `"[!NOTE]"`, then `Start(Table(..))` starting fresh right
+    /// after it). A real-world GFM table (an `ndk` README's own alert box, the report that prompted
+    /// this fix) is written *without* a leading/trailing pipe — `Crate | Note` / `------|------` —
+    /// and that shape genuinely does glue: pulldown-cmark reports **one** `Paragraph` spanning the
+    /// header and all three table lines, no `Table` event anywhere, because a table can never start
+    /// mid-paragraph and this row shape gives pulldown-cmark no earlier signal to split on. Before
+    /// `glued_alert_body`/`dequote_alert_body` existed, `render_alert_from_model` had no way to
+    /// recover a `Table` from that one straddling `Paragraph` — it rendered the header's own
+    /// left-over text as a single, wrapped plain-text line (`Crate | Note ------|------ ndk   | x`),
+    /// not a table at all: a real regression, since the *legacy* renderer's own line-based
+    /// `split_tables` never needed block-level structure to find this same table in the first place
+    /// and drew a real one. Checks **both** `┌` (any box at all) **and** `has_table_divider`'s own
+    /// `├` (the header/delimiter rule specifically) for the identical reason `has_table_divider`'s
+    /// own doc comment already gives for the tests above: a `┌`-only check cannot tell a real table
+    /// from one whose header row count came out `0` (every row folded in as a bogus data row) —
+    /// confirmed directly by reverting `glued_alert_body` to always return `None` (the pre-fix
+    /// behavior) and rerunning this test, which fails on the `┌` assertion first, before ever
+    /// reaching the `├` one — the shape this test exists to pin.
+    #[test]
+    fn alert_headed_quote_with_a_table_glued_to_the_header_no_blank_line_renders_a_real_table() {
+        let src = "> [!IMPORTANT]\n> Crate | Note\n> ------|------\n> ndk   | x\n";
+        let out = render(src, true, false);
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        let has_border = out
+            .lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('┌')));
+        assert!(
+            has_border,
+            "expected a real, box-drawn table even though the header line glued into the same \
+             paragraph as the table's own raw text: {:?}",
+            out.lines
+        );
+        assert!(
+            has_table_divider(&out),
+            "expected the header/body divider rule (proof the delimiter row itself parsed \
+             correctly, not as a bogus extra data row): {:?}",
+            out.lines
+        );
     }
 
     /// `render_doc`'s own top-level `BlockKind::ListItem { .. } => unsupported.push("ListItem")`

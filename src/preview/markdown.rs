@@ -5841,6 +5841,27 @@ fn split_tables(run: &SourceRun) -> Vec<MdPart> {
     parts
 }
 
+/// Normalize one table cell's raw text into displayable form: unescape `\|` into a literal `|`,
+/// then trim surrounding whitespace. Shared by both `parse_table_row`'s own line-based split
+/// below (a text-row cell, already boundary-trimmed by that function's own pipe scan) and the
+/// model-based path (`render_table_from_model` in `render.rs`), whose cell text instead comes
+/// straight from pulldown-cmark's own byte range on `Block::src` — `" a "`, escapes and padding
+/// both still literally present, never re-split from a line — so the two paths cannot drift apart
+/// on this one shared transformation the way they would if each re-implemented it separately.
+fn normalize_cell(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() == Some(&'|') {
+            out.push('|');
+            chars.next();
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim().to_string()
+}
+
 /// Split one line of the form `| a | b |` into cell columns. Drops the leading/trailing empty cells from the boundary pipes.
 fn parse_table_row(line: &str) -> Vec<String> {
     let t = line.trim();
@@ -5851,13 +5872,17 @@ fn parse_table_row(line: &str) -> Vec<String> {
     } else {
         t
     };
-    // GFM: split cells on an **unescaped** `|`, and turn `\|` back into a literal `|`.
+    // GFM: split cells on an **unescaped** `|`. The escape itself (`\|` -> `|`) is left for
+    // `normalize_cell` below to resolve, on the whole cell at once, once boundaries are known —
+    // only *recognizing* `\|` here (to not split on it) still has to happen mid-scan, since that's
+    // the one thing that decides where a cell actually ends.
     let mut cells = Vec::new();
     let mut cur = String::new();
     let mut chars = t.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '\\' if chars.peek() == Some(&'|') => {
+                cur.push('\\');
                 cur.push('|');
                 chars.next();
             }
@@ -5866,7 +5891,7 @@ fn parse_table_row(line: &str) -> Vec<String> {
         }
     }
     cells.push(cur);
-    cells.into_iter().map(|c| c.trim().to_string()).collect()
+    cells.into_iter().map(|c| normalize_cell(&c)).collect()
 }
 
 /// Column alignment from the delimiter row (`:---` left / `:---:` center / `---:` right).
@@ -6142,10 +6167,56 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
     lines
 }
 
-/// Render a table block with box-drawing lines. `width` is the column count of the display area (inside the frame).
-/// Cell text is parsed into inline segments so `[label](url)` links render as links (label only,
-/// hidden target span) instead of raw Markdown; column widths are measured on the displayed form.
-fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
+/// Prepend the Nerd Font link glyph (`ui.icons`) to every link label in `segs`, in place — the
+/// identical treatment a paragraph link gets. Shared between `parse_table_text`'s own text-row path
+/// below and the model-based path (`render_table_from_model` in `render.rs`), which builds its own
+/// `Vec<CellSeg>` straight from `parse_cell_segments` rather than through this function, so without
+/// this shared call the two paths would silently need to remember to apply the identical prefix in
+/// the identical order on their own. Applied **before** any width calculation ever reads these
+/// segments (`parse_table_text`'s own call site, immediately after `parse_cell_segments`) — doing it
+/// after would leave the icon's own width uncounted and break column alignment.
+fn prefix_link_icons(segs: &mut [CellSeg], icons: bool) {
+    if !icons {
+        return;
+    }
+    for seg in segs {
+        if let CellSeg::Link { label, .. } = seg {
+            *label = format!("{} {label}", crate::ui::icons::link_icon());
+        }
+    }
+}
+
+/// One table's cells, already parsed from its raw source text into inline segments (links resolved,
+/// icon prefix applied) and its delimiter row's alignment — but not yet laid out into a fixed-width
+/// grid. The split from `render_table`'s own former single body: this is everything phase A (text ->
+/// cells) produces, and everything phase B (cells -> displayed rows, `render_table_cells`) needs, no
+/// more and no less — so a second cell-producing path (`render_table_from_model` in `render.rs`,
+/// building this same shape straight from the block model's own `aligns`/`rows` instead of a raw
+/// line scan) can hand its result to the identical phase B rather than reimplement column-width
+/// measurement, wrapping, or box-drawing a second time. `rows` is every row in source order, header
+/// row(s) first (`rows[..header_rows]`) then body rows — mirrors `model::BlockKind::Table.rows`'s own
+/// "header first" convention exactly, so the model path's `header_rows` is a one-line computation
+/// (see that function's own doc comment), not a re-derivation of which rows are header rows.
+struct TableCells {
+    rows: Vec<Vec<Vec<CellSeg>>>,
+    /// Number of rows, from the start of `rows`, that are the header (0 or 1 for every real GFM
+    /// table — a table has exactly one header row by construction — but not hard-coded to `1` here:
+    /// `render_table_cells` only ever reads this as a row-index cutoff, and `parse_table_text`'s own
+    /// text-scanning phase naturally computes `rows.len()` at the moment it sees the delimiter line,
+    /// which is `0` for the pathological "no delimiter row was ever found" input `render_table`'s own
+    /// `ncol == 0` guard already handles further down).
+    header_rows: usize,
+    aligns: Vec<ColAlign>,
+}
+
+/// Phase A of table rendering: parse `raw` (a table's own raw source, `\n`-joined lines including
+/// its delimiter row) into `TableCells` — text -> cells, with no notion yet of a target display
+/// width. `render_table` (below) is the thin wrapper reassembling this with phase B
+/// (`render_table_cells`) into the single function every existing caller/test already knows; see
+/// `TableCells`'s own doc comment for why this split exists at all — the model-based path has a
+/// second way to arrive at a `TableCells`, straight from the parsed document instead of a raw-line
+/// re-scan, without touching phase B.
+fn parse_table_text(raw: &str, icons: bool) -> TableCells {
     let mut rows: Vec<Vec<Vec<CellSeg>>> = Vec::new();
     let mut header_rows = 0usize; // number of rows before the delimiter row (= the header)
     let mut aligns: Vec<ColAlign> = Vec::new();
@@ -6160,20 +6231,30 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
                 .into_iter()
                 .map(|c| {
                     let mut segs = parse_cell_segments(&c);
-                    // Make it look the same as a paragraph link: if icons are enabled, prepend to the
-                    // label and fold it in **before the width calculation** (adding it after would break column alignment).
-                    if icons {
-                        for seg in &mut segs {
-                            if let CellSeg::Link { label, .. } = seg {
-                                *label = format!("{} {label}", crate::ui::icons::link_icon());
-                            }
-                        }
-                    }
+                    prefix_link_icons(&mut segs, icons);
                     segs
                 })
                 .collect(),
         );
     }
+    TableCells {
+        rows,
+        header_rows,
+        aligns,
+    }
+}
+
+/// Phase B of table rendering: lay `t`'s already-parsed cells out as box-drawn `Line`s no wider than
+/// `width` (the column count of the display area, inside the frame) — column-width measurement,
+/// width-budget shaving, per-cell wrapping, and the border/rule drawing. Cell text was already
+/// parsed into inline segments by whichever phase A produced `t` (`parse_table_text`'s own raw-line
+/// scan, or the model-based path's direct build), so `[label](url)` links render as links (label
+/// only, hidden target span) instead of raw Markdown here too; column widths are measured on that
+/// already-displayed form.
+fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
+    let mut rows = t.rows.clone();
+    let header_rows = t.header_rows;
+    let aligns = &t.aligns;
     let ncol = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if rows.is_empty() || ncol == 0 {
         return Vec::new();
@@ -6270,6 +6351,15 @@ fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
     }
     out.push(rule('└', '┴', '┘'));
     out
+}
+
+/// Render a table block with box-drawing lines. `width` is the column count of the display area
+/// (inside the frame). A thin wrapper over the two phases above (`parse_table_text` then
+/// `render_table_cells`) — kept as one function because every existing caller/test names it this
+/// way and the split into phases only matters to the model-based path (`render_table_from_model` in
+/// `render.rs`), which calls `render_table_cells` directly on its own `TableCells` instead.
+fn render_table(raw: &str, width: u16, icons: bool) -> Vec<Line<'static>> {
+    render_table_cells(&parse_table_text(raw, icons), width)
 }
 
 #[cfg(test)]
@@ -11996,96 +12086,22 @@ mod task_scan_parity_tests {
             .count()
     }
 
-    /// Root cause (indented code blocks): a top-level 4+-column indented code block was not
-    /// recognized by the write-back scanner at all — any document containing one refused `y c` for
-    /// **every** code block in it, fenced ones included (the count guard is document-wide). Runs
-    /// `code_corpus` the same way `code_block_scanner_counts_exactly_what_the_renderer_draws` runs
-    /// its own hand-picked cases, covering indented blocks alone and interacting with every other
-    /// construct the scanner special-cases (fences, alerts, `<details>`, front matter, CRLF, lists).
-    ///
-    /// Since the `md-block-walk` copy/toggle migration, `code_block_source_locs` matters to `y c`
-    /// only on the narrow slice of documents that actually reach `app::md_render::build_decorated`'s
-    /// legacy fallback branch (`render::RenderOut::unsupported` non-empty — a `Table`/`Html` nested
-    /// inside a `Quote`, the one remaining gap): every other document is copied straight from the
-    /// model renderer's own record (`render::RenderOut::code_blocks`), which never consults this
-    /// scanner at all — see `app_faithful_parity_tests::code_scanner_matches_the_render_through_the_app_pipeline`
-    /// for the test that actually matters for those. So each case is routed by
-    /// `render_markdown_with_images`'s own real dispatch decision (`extras.model_based`, the identical
-    /// choice production makes) rather than assumed: a model-handled case skips the comparison
-    /// entirely (`code_block_source_locs`'s own count for it is not a correctness concern — nothing
-    /// downstream ever reads it), and only a genuinely legacy-routed case is checked, against the
-    /// **legacy** renderer specifically (`rendered_code_blocks_legacy`) — the renderer this scanner
-    /// is actually still paired with for that one document, not the model renderer `code_corpus`'s
-    /// own comment already documents several intentional divergences from (a code block directly
-    /// inside a plain, non-alert block quote; a mermaid fence within three columns of a list item's
-    /// own content column) nor the legacy renderer's own, separately-known "fence glued to a
-    /// following inline-code paragraph" gap that `code_block_source_locs` itself no longer has (it
-    /// now asks the real parser — `parser_code_blocks`'s own doc comment) but the legacy *renderer*
-    /// still does — comparing the two on a **model**-routed document would fail on either, for a
-    /// reason that has nothing to do with what this test exists to catch.
-    #[test]
-    fn code_block_scanner_matches_renderer_across_indented_code_corpus() {
-        // A genuine `render::RenderOut::unsupported` trigger (a `Table` nested inside a plain
-        // `Quote` — `contains_unsupported`'s own documented gap), with a code fence alongside it so
-        // this exercises the exact shape `y c` would have to resolve through the legacy fallback for.
-        // `code_corpus` itself has none (it is a *code*-focused corpus, not a quote/table one), so
-        // without this the loop below would never actually reach the legacy-routed branch at all —
-        // pinning `at_least_one_legacy_routed` below is what stops that from happening silently.
-        const GENUINELY_UNSUPPORTED: (&str, &str) = (
-            "quote wrapping a table (forces the legacy fallback) alongside a top-level fence",
-            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n\n```rust\nfn a(){}\n```\n",
-        );
-        let mut at_least_one_legacy_routed = false;
-        for (name, raw) in code_corpus::cases()
-            .into_iter()
-            .chain([GENUINELY_UNSUPPORTED])
-        {
-            // Front matter is stripped before `render_markdown_with_images` ever sees the text in
-            // production (`app::md_render::build_decorated`'s own leading step) — done here too, so
-            // "this case happens to still carry a YAML block" cannot masquerade as a genuine
-            // `unsupported` trigger the way it would if `raw` were handed to the renderer as-is (see
-            // `render::render_doc`'s own doc comment: it bails to the legacy renderer the moment it
-            // sees *any* metadata-block event, anywhere in the document).
-            let src = strip_front_matter(raw).1;
-            set_details_open(Vec::new());
-            let (_, _, extras) = render_markdown_with_images(
-                &src,
-                100,
-                CodeStyle::default(),
-                "TwoDark",
-                false,
-                &[' ', 'x'],
-                &|_: &str| ImageSlot::Unavailable,
-                &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
-                "mermaid",
-                true,
-                &|_: &str, _: bool| MathSlot::Raw,
-                false,
-            );
-            if extras.model_based {
-                continue; // this document is copied from the model's own record; the scanner is unused for it
-            }
-            at_least_one_legacy_routed = true;
-            set_details_open(Vec::new());
-            let drawn = rendered_code_blocks_legacy(&src);
-            let scanned = code_block_source_locs(&src, &[]).len();
-            assert_eq!(
-                drawn, scanned,
-                "{name}: レガシー経路(unsupported)で画面のコードブロック数とコピー用スキャナの数が\
-                 食い違う(この文書では `y c` が全部拒否される)\n--- src ---\n{src}"
-            );
-        }
-        assert!(
-            at_least_one_legacy_routed,
-            "このテストの本題(レガシー経路でのスキャナ整合性)が一度も検査されていない\
-             (全件が model 経路に成功した)"
-        );
-    }
-
     /// Same corpus, same rule, for the checkbox toggle scanner (`task_source_locs`) — pins the
     /// "task-lookalike inside an indented block" entries added to `task_corpus` for this fix (a
     /// `- [ ] fake` example the renderer draws as *code* must not be counted, or the toggle's
     /// count guard cancels every checkbox in the document, this one included).
+    ///
+    /// This test's own former sibling here, `code_block_scanner_matches_renderer_across_indented_code_corpus`
+    /// (the identical rule for `code_block_source_locs`/`rendered_code_blocks_legacy`), is retired —
+    /// not merely fixed — now that the model renderer covers every `BlockKind` a `Doc` can contain
+    /// (`render::contains_unsupported`'s own doc comment): `render_markdown_with_images` never falls
+    /// back to the legacy renderer for *any* document any more (`extras.model_based` is always
+    /// `true`), so that test's own subject — legacy-routed-scanner agreement — has gone unreachable,
+    /// its `at_least_one_legacy_routed` guard failing on every run. This test is unaffected by that
+    /// same change: `rendered_tasks` (below) calls `render_markdown_tasks`, the always-legacy
+    /// pipeline directly, unconditionally, never through `render_markdown_with_images`'s own
+    /// model/legacy dispatch — so it never depended on any document actually being *routed* to the
+    /// legacy renderer to begin with, and stays exactly as meaningful now as before this change.
     #[test]
     fn task_scanner_matches_renderer_across_indented_code_corpus() {
         for (name, src) in code_corpus::cases() {
@@ -14414,6 +14430,42 @@ pub(crate) mod list_corpus {
             (
                 "quote containing a thematic break",
                 "> above\n>\n> ---\n>\n> below\n",
+            ),
+            // A GFM table nested inside a plain block quote: the *legacy* renderer's own line-based
+            // `split_tables` never detects it at all (`is_table_delimiter`'s own character set has no
+            // `>` in it — the quote's own marker survives on every continuation line, the delimiter
+            // row included), so it degrades to a single literal, wrapped-text line of raw pipes; the
+            // model renderer draws a real, box-drawn table instead — `render::render_table_from_model`
+            // reads each cell straight off `model::BlockKind::Table.rows`'s own per-cell ranges,
+            // already free of the `>` marker regardless of nesting depth. See
+            // `md_render_diff_tests::INTENDED_IMPROVEMENTS`'s own entry for this case.
+            (
+                "quote containing a table",
+                "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+            ),
+            // A GFM table glued directly onto a GitHub alert's own header line, no blank line in
+            // between (real-world shape: an `ndk` README wraps a table in `> [!IMPORTANT]` this way).
+            // `[!IMPORTANT]` is not real CommonMark syntax — it is ordinary blockquote text that
+            // happens to look like a header — so, with no blank line to separate them, CommonMark's
+            // own lazy-continuation rule glues the header and the table's raw pipe/dash text into one
+            // single `Paragraph`; a GFM table can never start mid-paragraph, so neither renderer's own
+            // block-level parser ever sees a `Table` here at all, only a `Paragraph`. The *legacy*
+            // renderer degrades gracefully anyway — `split_alerts` peels the header off by raw line
+            // scan (not by asking pulldown-cmark), leaving the table's own three lines as its own
+            // fragment for `split_tables`' own line-based detector to still recognize as a real table
+            // from raw pipe characters, no block-level parse needed. `render::render_alert_from_model`
+            // (`glued_alert_body`/`dequote_alert_body`) matches that by re-parsing everything after the
+            // header line, in isolation, as its own fresh document — the identical mechanism
+            // `render_details_from_model` already uses for a glued `<details>` body
+            // (`model::BlockKind::Details.glued_body`) — recovering the real `Table` a first,
+            // whole-document parse could never have reported. See
+            // `md_render_diff_tests::run_case`'s own comparison for why this now matches exactly
+            // rather than needing an `INTENDED_IMPROVEMENTS`/`KNOWN_MISMATCHES` entry the way "quote
+            // containing a table" above does (a *plain* quote has no header of its own for anything to
+            // glue onto, so the legacy/model gap that case pins never applied here to begin with).
+            (
+                "alert containing a table with no blank line before it",
+                "> [!IMPORTANT]\n> a | b\n> ---|---\n> 1 | 2\n",
             ),
             // ---- checkboxes: unchecked/checked, bullet variants, ordered, nested, loose ----
             ("tight unordered task unchecked", "- [ ] a\n"),

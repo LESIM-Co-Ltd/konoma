@@ -6343,6 +6343,50 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== list_corpus: alert containing a table with no blank line before it ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=magenta,bg=-,mod=- "\u{f0a1} "
+  s02 fg=magenta,bg=-,mod=B "Important"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s02 fg=cyan,bg=-,mod=B " "
+  s03 fg=cyan,bg=-,mod=B "a"
+  s04 fg=cyan,bg=-,mod=B " "
+  s05 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s06 fg=cyan,bg=-,mod=B " "
+  s07 fg=cyan,bg=-,mod=B "b"
+  s08 fg=cyan,bg=-,mod=B " "
+  s09 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=- "1"
+  s04 fg=-,bg=-,mod=- " "
+  s05 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s06 fg=-,bg=-,mod=- " "
+  s07 fg=-,bg=-,mod=- "2"
+  s08 fg=-,bg=-,mod=- " "
+  s09 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=magenta,bg=-,mod=- "▌ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === list_corpus: block quote can interrupt a tight item's own paragraph with no blank line ===
 -- LINES (2) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -6718,6 +6762,51 @@ L0001 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "- "
   s03 fg=-,bg=-,mod=- "b"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== list_corpus: quote containing a table ===
+-- LINES (5) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=cyan,bg=-,mod=B "a"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=cyan,bg=-,mod=B "b"
+  s09 fg=cyan,bg=-,mod=B " "
+  s10 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0003 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "1"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "2"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --

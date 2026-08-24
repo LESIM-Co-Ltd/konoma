@@ -762,6 +762,7 @@ const INTENDED_IMPROVEMENTS: &[&str] = &[
     "code_corpus: fence inside a nested plain block quote (two levels)",
     "code_corpus: fence inside an alert nested inside a plain block quote",
     "list_corpus: quote containing a heading",
+    "list_corpus: quote containing a table",
     "list_corpus: quote containing a thematic break",
     "task_corpus: alert nested inside a plain blockquote",
     "task_corpus: nested plain blockquote (two levels)",
