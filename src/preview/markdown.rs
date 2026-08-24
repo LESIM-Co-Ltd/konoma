@@ -236,6 +236,28 @@ pub struct ImagePlacement {
     pub alt: String,
     /// Index of the first reserved row within the decorated line list.
     pub line: usize,
+    /// Column offset (in terminal cells) of the image's left edge, measured from the left edge of
+    /// the enclosing `Writer`'s own available width (`Writer.width` at the point this placement was
+    /// recorded) — **not** always the same as the preview pane's `inner.width` (see below).
+    ///
+    /// At the top level (the common case — `render_doc`'s own incoming `width` argument, which is
+    /// always called with the preview pane's `inner.width`; confirmed directly: the one production
+    /// call site, `App::ensure_md_cache`, is reached only via `App::md_layout(inner.width)`), `col`
+    /// *is* the offset from `inner.x` — `ui::preview::overlay_inline_images` uses it exactly that way
+    /// (`inner.x + col`). Several images sharing one row (the badge-row idiom) are packed left to
+    /// right with a 1-cell gap and the whole row centered, so `col` increases left to right across a
+    /// group and a single-image "group of one" reduces to the pre-existing centered placement
+    /// (`(width - cols) / 2`) exactly.
+    ///
+    /// Inside a nested sub-`Writer` (a blockquote/alert/`<details>` body, which renders at a
+    /// *narrower* `width` — see `render_bar_prefixed_body`) `col` is still measured from that
+    /// sub-`Writer`'s own left edge, which is **not** `inner.x`-relative — this is a pre-existing
+    /// quirk this field does not newly introduce: before `col` existed, a nested image's real overlay
+    /// position was already computed from `inner.width` alone (ignoring quote/list indentation)
+    /// while its own placeholder padding was computed from the narrower nested width, so the two
+    /// already disagreed for a nested image. `col` simply keeps that pre-existing disagreement rather
+    /// than resolving it (out of scope for this change).
+    pub col: u16,
     /// Display width in terminal cells.
     pub cols: u16,
     /// Display height in terminal cells (== number of reserved rows).
@@ -953,21 +975,42 @@ fn extract_md_img(t: &str) -> Option<(String, String)> {
     Some((alt, url))
 }
 
-/// Reserved rows for an inline image (covered by the real image once it is decoded and fully visible).
-/// The first row shows a dim `🖼 alt` label so the user sees an image is present while it loads.
-fn image_placeholder_lines(cols: u16, rows: u16, alt: &str, width: u16) -> Vec<Line<'static>> {
+/// Reserved rows for one **row group** of inline images (covered by the real images once each is
+/// decoded and fully visible) — the multi-image generalization of what used to be a single-image-only
+/// function. `items` is `(col, cols, alt)` per image, already laid out left to right by the caller
+/// (`render_image_group` in `render.rs`, which packs a run of images onto shared rows and centers the
+/// whole group — see that function's own doc comment for the layout itself; this function only draws
+/// the label row it decided on). The first row shows each image's own dim `🖼 alt` label at its own
+/// `col` (each truncated to its own `cols` width) so the user sees every image is present while it
+/// loads; the remaining `rows - 1` rows are blank.
+///
+/// A single-item group — `items == [(col, cols, alt)]` with `col == (width - cols) / 2` — reproduces
+/// the old single-image-only version of this function byte for byte: one label at that same padded
+/// column, everything else identical. `render_image_group` centers a group of one exactly that way, so
+/// every pre-existing single-image call site keeps its exact prior output (confirmed by the untouched
+/// golden Markdown snapshots — see `md_snapshot_tests`).
+fn image_placeholder_lines(items: &[(u16, u16, &str)], rows: u16) -> Vec<Line<'static>> {
     let rows = rows.max(1);
-    let pad = (width.saturating_sub(cols) / 2) as usize;
-    let indent = " ".repeat(pad);
-    let alt = alt.trim();
-    let label = if alt.is_empty() {
-        "🖼 image".to_string()
-    } else {
-        format!("🖼 {alt}")
-    };
-    let label = truncate_width(&label, cols as usize);
+    let mut row = String::new();
+    let mut cur: usize = 0;
+    for &(col, cols, alt) in items {
+        let alt = alt.trim();
+        let label = if alt.is_empty() {
+            "🖼 image".to_string()
+        } else {
+            format!("🖼 {alt}")
+        };
+        let label = truncate_width(&label, cols as usize);
+        let col = col as usize;
+        if col > cur {
+            row.push_str(&" ".repeat(col - cur));
+            cur = col;
+        }
+        cur += label.width();
+        row.push_str(&label);
+    }
     let mut lines = Vec::with_capacity(rows as usize);
-    lines.push(Line::from(format!("{indent}{label}")).dim());
+    lines.push(Line::from(row).dim());
     for _ in 1..rows {
         lines.push(Line::from(String::new()));
     }

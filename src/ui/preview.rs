@@ -657,7 +657,16 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
         if cols == 0 || vis_rows == 0 {
             continue;
         }
-        let x = inner.x + (inner.width.saturating_sub(cols)) / 2;
+        // `p.col` is the offset `render_doc` baked into the placeholder text (see
+        // `ImagePlacement.col`'s own doc comment): at the top level this is measured from the same
+        // origin as `inner.x` — the only call site (`App::ensure_md_cache`, via
+        // `App::md_layout(inner.width)`) always renders at `width == inner.width`. Several images
+        // sharing one row (the badge-row idiom) are packed left to right by `render_image_group`, so
+        // `p.col` already places each one at its own column within that shared row; clamped against
+        // `inner.width - cols` the same defensive way the old always-centered formula was implicitly
+        // bounded, in case a placement's own `cols` alone already exceeds the pane (a very narrow pane
+        // or an unusually wide single image).
+        let x = inner.x + p.col.min(inner.width.saturating_sub(cols));
         let target = Rect {
             x,
             y: vis_top as u16,

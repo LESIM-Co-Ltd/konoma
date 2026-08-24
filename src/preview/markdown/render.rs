@@ -693,7 +693,7 @@ struct Writer<'m> {
     /// construction site).
     mermaid: MermaidCtx<'m>,
     /// `render_doc`'s own incoming `slot_of` — how the app wants a standalone block image
-    /// (`![alt](url)` as a paragraph's *entire* content) rendered; read by `render_image_slot`. Like
+    /// (`![alt](url)` as a paragraph's *entire* content) rendered; read by `render_image_group`. Like
     /// `mermaid`, unconditional: production's own block-image extraction (`split_block_parts`) is
     /// never gated by anything analogous to `math_on`/mermaid's own `fences_on` probe — a qualifying
     /// paragraph is *always* handed to `slot_of`, whatever it answers.
@@ -852,7 +852,7 @@ struct Writer<'m> {
     /// `RenderOut::lines` — the *fully decorated* array a real preview overlay actually reads
     /// positions from — but every placement is recorded *during* the walk, i.e. against
     /// `self.lines.len()` **before** that single, whole-document decoration pass has run at all
-    /// (`render_image_slot`/`render_mermaid_slot`/`render_math_slot` all read `self.lines.len()` the
+    /// (`render_image_group`/`render_mermaid_slot`/`render_math_slot` all read `self.lines.len()` the
     /// moment their own reserved rows are about to be pushed, the identical instant production
     /// itself reads `out.len()` — see `render_markdown_with_images`'s own `BlockPart::Image`/
     /// `BlockPart::Mermaid`/`BlockPart::Math` arms). Production never has this gap at all: it
@@ -1310,9 +1310,7 @@ fn render_heading(
         w.heading_rule_shift += 1;
     }
     w.needs_newline = true;
-    for (alt, url) in &images {
-        render_image_slot(w, alt, url);
-    }
+    render_image_group(w, &images);
 }
 
 /// Renders one **real** `Paragraph` block into `w`, in place — mirrors `TextWriter::start_paragraph`/
@@ -1587,9 +1585,9 @@ fn segment_as_block_image(
 /// the "real" one and returns `None` for the *whole* segment — which used to mean the *whole
 /// paragraph* fell through to ordinary inline rendering, where a bare `Tag::Image` shows only its
 /// own alt text (`start_inline_tag`'s `Tag::Image` arm — `walk_inline` on its own children, no
-/// `render_image_slot` call, no URL recorded anywhere), losing **both** badges' own image URLs
+/// `render_image_group` call, no URL recorded anywhere), losing **both** badges' own image URLs
 /// entirely (not just the wrapping links' own `href`s, already excluded by design — see
-/// `render_image_slot`) — confirmed directly against the real registry sweep this function exists to
+/// `render_image_group`) — confirmed directly against the real registry sweep this function exists to
 /// close: `vello_common`/`vello_cpu`/`fearless_simd`/`rangemap`/`atomic`/`base64`/`bit-set`/`bit-vec`
 /// and more all write two or more shields.io badges on one shared line this same way.
 ///
@@ -2022,12 +2020,13 @@ fn image_alt_text(events: &[(Event<'_>, Range<usize>)]) -> String {
 
 /// If `extract_eligible` and `inline` is nothing but one or more standalone block images
 /// (`paragraph_as_block_images` — one per physical source line when several sit end to end with no
-/// blank line between them, the common "badge row" README idiom), renders each in document order via
-/// `render_image_slot` and returns `true`; otherwise renders nothing and returns `false`, leaving the
-/// caller (`render_paragraph_dispatch`/`render_bare_paragraph`) to fall through to its own ordinary
-/// paragraph handling. The one shared checkpoint both of those functions' own `Paragraph` dispatch runs
-/// through first, so the "is this paragraph actually just image(s)" decision — and its own eligibility
-/// gate — never gets duplicated between them.
+/// blank line between them, the common "badge row" README idiom), renders them all in document order
+/// via `render_image_group` (packed left to right onto shared rows — see that function's own doc
+/// comment) and returns `true`; otherwise renders nothing and returns `false`, leaving the caller
+/// (`render_paragraph_dispatch`/`render_bare_paragraph`) to fall through to its own ordinary paragraph
+/// handling. The one shared checkpoint both of those functions' own `Paragraph` dispatch runs through
+/// first, so the "is this paragraph actually just image(s)" decision — and its own eligibility gate —
+/// never gets duplicated between them.
 fn try_render_paragraph_as_image(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -2041,48 +2040,77 @@ fn try_render_paragraph_as_image(
     let Some(images) = paragraph_as_block_images(doc, src, inline) else {
         return false;
     };
-    for (alt, url) in &images {
-        render_image_slot(w, alt, url);
-    }
+    render_image_group(w, &images);
     true
 }
 
-/// Renders one block-level image placement into `w`, in place — the block-image analogue of
-/// `render_math_slot`, mirroring its own structure exactly: `w.slot_of(url)` decides between a real
-/// `Inline` placement (reserved rows + an `ImagePlacement`), a `Loading` line, or the `Unavailable`
-/// text fallback (`super::image_placeholder_lines`/`image_loading_line`/`image_text_fallback` — the
-/// identical three functions `render_markdown_with_images`'s own `BlockPart::Image` arm calls). No
-/// leading-blank-line check of any kind, matching production's own `out.extend(image_placeholder_lines
-/// (..))` — a standalone image (unlike an *ordinary* paragraph) is extracted *before* tui-markdown, or
-/// this file's own `render_paragraph`, ever sees any surrounding text at all, so nothing here owes the
-/// page a `start_paragraph`-style separator; see `render_math_slot`'s own doc comment (and
-/// `pending_para_start`'s) for the identical reasoning already established for a lifted math
-/// expression that is a paragraph's own *entire* content — a standalone image *always* is, by
-/// construction (`paragraph_as_block_image`'s own "nothing but one image" check), so it always gets
-/// this treatment, never the eager, two-part push `render_paragraph` still applies for real text.
-/// Sets `needs_newline = false`/`after_math = true` on the way out, the identical "fresh reparse
-/// boundary" a lifted math expression leaves behind — reused rather than a second, image-specific
-/// flag, since the two are the same mechanism for the same underlying reason (see `after_math`'s own
-/// doc comment).
-fn render_image_slot(w: &mut Writer<'_>, alt: &str, url: &str) {
-    let width = w.width;
-    match (w.slot_of)(url) {
-        ImageSlot::Inline { cols, rows } => {
-            let placement_line = w.lines.len() + w.heading_rule_shift;
-            w.lines
-                .extend(image_placeholder_lines(cols, rows, alt, width));
-            w.images.push(ImagePlacement {
-                url: url.to_string(),
-                alt: alt.to_string(),
-                line: placement_line,
-                cols,
-                rows,
-                fence_ord: None,
-            });
-        }
-        ImageSlot::Loading => w.lines.extend(image_loading_line(alt, url, width)),
-        ImageSlot::Unavailable => w.lines.extend(image_text_fallback(alt, url, width)),
+/// Renders one run of block-level image placements into `w`, in place, packing consecutive `Inline`
+/// slot answers left to right onto shared rows instead of the one-row-per-image stack this file used
+/// to draw (the real bug this exists to fix: GitHub/crates.io lay out a `[![a](x)](u1)
+/// [![b](y)](u2) [![c](z)](u3)` badge row horizontally; konoma used to draw it as three stacked rows).
+/// The block-image analogue of `render_math_slot`/`render_mermaid_slot`, generalized from what used to
+/// be a strictly one-image-at-a-time `render_image_slot`: `w.slot_of(url)` decides, per image, between
+/// a real `Inline` placement (reserved cells, packed into the current row group), a `Loading` line, or
+/// the `Unavailable` text fallback (`image_loading_line`/`image_text_fallback`, unchanged — the
+/// identical two functions `render_markdown_with_images`'s own `BlockPart::Image` arm calls for those
+/// two slots).
+///
+/// ## Row-group packing
+///
+/// Consecutive `Inline` answers accumulate into one pending group; each next image is appended if it
+/// fits (`current group width + 1-cell gap + this image's own cols <= w.width`), otherwise the pending
+/// group is flushed (drawn, centered, as its own row) and a fresh group starts with just that image. A
+/// `Loading`/`Unavailable` answer flushes whatever `Inline` group preceded it — its own single dim line
+/// is drawn immediately, unconditionally on its own row, exactly as before this change — and starts a
+/// *fresh* group for whatever `Inline` image(s) follow (never packed onto a row a text placeholder line
+/// already occupies; the simplest rule that changes existing Loading/Unavailable behavior not at all).
+///
+/// A group of exactly one image reduces to the pre-existing single-image placement byte for byte: see
+/// `flush_row_group`'s own doc comment for why.
+///
+/// No leading-blank-line check of any kind, matching production's own prior `render_image_slot`
+/// unconditional draw — a standalone image (unlike an *ordinary* paragraph) is extracted *before*
+/// tui-markdown, or this file's own `render_paragraph`, ever sees any surrounding text at all, so
+/// nothing here owes the page a `start_paragraph`-style separator; see `render_math_slot`'s own doc
+/// comment (and `pending_para_start`'s) for the identical reasoning already established for a lifted
+/// math expression that is a paragraph's own *entire* content. Sets `needs_newline = false`/
+/// `after_math = true`/`fresh_boundary = true` on the way out, unconditionally, once for the whole run
+/// — the identical trailing state the old per-image `render_image_slot` left after *every* image, so a
+/// multi-image run leaves the writer in exactly the state a single-image run always did.
+///
+/// An **empty** `images` is a true no-op — no lines, no placements, and none of that trailing state
+/// touched either. This matters: `render_heading`'s own call site passes `Vec::new()` whenever
+/// `heading_trailing_images` found no trailing badges at all, and the old `for (alt, url) in &images
+/// { render_image_slot(..) }` loop it replaced never ran its body (and so never touched `w`) in that
+/// case — silently forcing `needs_newline = false` here instead would stomp the `needs_newline = true`
+/// `render_heading` had just set for an ordinary (badge-less) heading.
+fn render_image_group(w: &mut Writer<'_>, images: &[(String, String)]) {
+    if images.is_empty() {
+        return;
     }
+    // (alt, url, cols, rows) for the `Inline`-slot images currently pending a row.
+    let mut group: Vec<(String, String, u16, u16)> = Vec::new();
+    for (alt, url) in images {
+        match (w.slot_of)(url) {
+            ImageSlot::Inline { cols, rows } => {
+                let would_be =
+                    row_group_width(&group) + if group.is_empty() { 0 } else { 1 } + cols as usize;
+                if !group.is_empty() && would_be > w.width as usize {
+                    flush_row_group(w, &mut group);
+                }
+                group.push((alt.clone(), url.clone(), cols, rows));
+            }
+            ImageSlot::Loading => {
+                flush_row_group(w, &mut group);
+                w.lines.extend(image_loading_line(alt, url, w.width));
+            }
+            ImageSlot::Unavailable => {
+                flush_row_group(w, &mut group);
+                w.lines.extend(image_text_fallback(alt, url, w.width));
+            }
+        }
+    }
+    flush_row_group(w, &mut group);
     w.needs_newline = false;
     w.after_math = true;
     // `render_code_block`'s own leading-blank-line check is gated on `fresh_boundary`, not
@@ -2092,6 +2120,64 @@ fn render_image_slot(w: &mut Writer<'_>, alt: &str, url: &str) {
     // `render_table_from_model`'s own doc comment for the concrete corpus case (a table, not an
     // image, but the identical mechanism) that caught this before this field was added here.
     w.fresh_boundary = true;
+}
+
+/// The total cell width a row group of `Inline` images occupies once packed: every image's own `cols`
+/// plus a 1-cell gap between each adjacent pair (`len - 1` gaps for `len` images, `0` for an empty or
+/// single-image group).
+fn row_group_width(group: &[(String, String, u16, u16)]) -> usize {
+    if group.is_empty() {
+        return 0;
+    }
+    let cols_sum: usize = group.iter().map(|(_, _, cols, _)| *cols as usize).sum();
+    cols_sum + (group.len() - 1)
+}
+
+/// Draws one pending row group of `Inline` images — centers the whole packed row inside `w.width`
+/// (mirroring the pre-existing single-image centering formula, `(width - total) / 2`), records each
+/// image's own `ImagePlacement` (with its own real `cols`/`rows`, at its own `col` within the row), and
+/// reserves rows equal to the group's own **tallest** image (design: a shorter image in the same row
+/// group still gets the taller image's full row count reserved beneath it, so the next block never
+/// starts inside another image's own reserved band). A no-op on an empty group (both call sites in
+/// `render_image_group` call this unconditionally, including once no group is pending).
+///
+/// A group of exactly one image has `row_group_width == cols` (no gap term) and thus `start_col ==
+/// (w.width - cols) / 2` — the *exact* pre-existing single-image centering formula
+/// `image_placeholder_lines`'s old signature used to compute inline. `image_placeholder_lines`'s own
+/// new, general form draws that one label at that same `col`, so the emitted lines are byte-for-byte
+/// identical to before this change (confirmed directly: the golden Markdown snapshots — every existing
+/// single-image case in `md_snapshot_tests`/`samples/*.md` — are unchanged by this refactor).
+fn flush_row_group(w: &mut Writer<'_>, group: &mut Vec<(String, String, u16, u16)>) {
+    if group.is_empty() {
+        return;
+    }
+    let width = w.width;
+    let rows = group
+        .iter()
+        .map(|(_, _, _, rows)| *rows)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let total = row_group_width(group) as u16;
+    let start_col = width.saturating_sub(total) / 2;
+    let placement_line = w.lines.len() + w.heading_rule_shift;
+    let mut items: Vec<(u16, u16, &str)> = Vec::with_capacity(group.len());
+    let mut col = start_col;
+    for (alt, url, cols, item_rows) in group.iter() {
+        items.push((col, *cols, alt.as_str()));
+        w.images.push(ImagePlacement {
+            url: url.clone(),
+            alt: alt.clone(),
+            line: placement_line,
+            col,
+            cols: *cols,
+            rows: *item_rows,
+            fence_ord: None,
+        });
+        col += cols + 1; // this image's own width, plus the 1-cell gap before the next one.
+    }
+    w.lines.extend(image_placeholder_lines(&items, rows));
+    group.clear();
 }
 
 /// Renders a `Paragraph` block into `w`, in place — first checking whether it is actually a
@@ -2140,14 +2226,12 @@ fn render_paragraph_dispatch(
             } else {
                 render_paragraph(w, doc, text_range);
             }
-            for (alt, url) in &images {
-                render_image_slot(w, alt, url);
-            }
+            render_image_group(w, &images);
             return;
         }
         // The mirror shape — see `paragraph_leading_images`'s own doc comment for the confirmed
         // real-content shape this closes: one or more standalone image lines *first*, real text
-        // lazily continuing right after with no blank line between them. `render_image_slot` itself
+        // lazily continuing right after with no blank line between them. `render_image_group` itself
         // has no leading-blank-line check of its own (that function's own doc comment) — unlike the
         // trailing-image case above, where `render_paragraph`'s own leading check already ran first,
         // here the *first* thing drawn for this whole paragraph is an image, so this block owns that
@@ -2158,9 +2242,7 @@ fn render_paragraph_dispatch(
                 w.push_blank_line();
             }
             w.needs_newline = false;
-            for (alt, url) in &images {
-                render_image_slot(w, alt, url);
-            }
+            render_image_group(w, &images);
             if math_here && w.math.is_some() {
                 render_paragraph_math(w, doc, src, text_range, block_start);
             } else {
@@ -3274,10 +3356,19 @@ fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool) {
             let placement_line = w.lines.len() + w.heading_rule_shift;
             w.lines
                 .extend(math_placeholder_lines(cols, rows, width, display));
+            // Mirrors `math_placeholder_lines`'s own `pad` exactly (display math is centered, inline
+            // math is left-aligned at column 0) — the identical single-item centering formula
+            // `flush_row_group` uses for a block image's own `col`.
+            let col = if display {
+                width.saturating_sub(cols) / 2
+            } else {
+                0
+            };
             w.images.push(ImagePlacement {
                 url: math_url(latex, display),
                 alt: "math".into(),
                 line: placement_line,
+                col,
                 cols,
                 rows,
                 fence_ord: None,
@@ -3478,7 +3569,7 @@ fn render_code_block(
 }
 
 /// Renders one extracted ```mermaid fence into `w`, in place — the mermaid analogue of
-/// `render_math_slot`/`render_image_slot`, mirroring production's own `BlockPart::Mermaid` handling in
+/// `render_math_slot`/`render_image_group`, mirroring production's own `BlockPart::Mermaid` handling in
 /// `render_markdown_with_images` almost exactly. `code` (below) is this fence's own body,
 /// reconstructed via `model::code_body_text(body_spans, src)` — the identical reconstruction
 /// `render_code_block` itself already uses for an *ordinary* fence's own body, so a quote-nested
@@ -3526,11 +3617,11 @@ fn render_code_block(
 /// depending on whether an earlier, empty one happened to slot successfully (see `MermaidCtx::ord`'s
 /// own doc comment).
 ///
-/// No leading-blank-line check, matching `render_image_slot`'s own (see that function's own doc
+/// No leading-blank-line check, matching `render_image_group`'s own (see that function's own doc
 /// comment for why): production's own mermaid placement is extracted the identical way, before
 /// tui-markdown ever sees any surrounding text, so nothing here owes the page a separator either.
 /// Sets `needs_newline = false`/`after_math = true`/`fresh_boundary = true` on the way out, same
-/// reasoning (see `render_image_slot`'s own doc comment on why `fresh_boundary` specifically matters
+/// reasoning (see `render_image_group`'s own doc comment on why `fresh_boundary` specifically matters
 /// too — `render_code_block`'s own leading-blank check reads it, not `needs_newline`), for every one
 /// of its own four exits (empty-fence fallback included).
 fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>]) {
@@ -3584,10 +3675,14 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
             // placement overlays start right after it, matching production's own identical split.
             w.lines.push(ls.remove(0));
             let placement_line = w.lines.len() + w.heading_rule_shift;
+            // Mirrors `mermaid_placeholder_lines`'s own `pad` exactly — the identical single-item
+            // centering formula `flush_row_group` uses for a block image's own `col`.
+            let col = width.saturating_sub(cols) / 2;
             w.images.push(ImagePlacement {
                 url,
                 alt: "mermaid".into(),
                 line: placement_line,
+                col,
                 cols,
                 rows,
                 fence_ord: Some(ord),
@@ -3601,7 +3696,7 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
     }
     w.needs_newline = false;
     w.after_math = true;
-    // See `render_image_slot`'s own doc comment on why `fresh_boundary` (not just `needs_newline`)
+    // See `render_image_group`'s own doc comment on why `fresh_boundary` (not just `needs_newline`)
     // has to be set too — `render_code_block`'s own leading-blank check reads that flag specifically.
     w.fresh_boundary = true;
 }
@@ -3644,7 +3739,7 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
 /// prefixed) could reach here.
 ///
 /// No leading-blank-line check and a "fresh reparse boundary" exit (`needs_newline = false; after_math
-/// = true; fresh_boundary = true`), matching `render_image_slot`'s/`render_mermaid_slot`'s own (see
+/// = true; fresh_boundary = true`), matching `render_image_group`'s/`render_mermaid_slot`'s own (see
 /// either's doc comment for why): production's own table placement (`MdPart::Table`) is likewise
 /// extracted before tui-markdown ever sees any surrounding text — `render_md_text_inner`'s own
 /// `out.extend(render_table(&raw, ..))` carries no separator logic of any kind either side of it.
@@ -3735,7 +3830,7 @@ fn render_table_from_model(
 /// standalone image (`super::extract_block_image` on that one line, trimmed — the identical per-line
 /// check `split_block_parts_masked` runs) first flushes whatever tag-only/text lines have accumulated so
 /// far through `render_html_block` (so an image mid-banner does not end up sandwiched inside the *next*
-/// image's own tag-stripped run), then renders via `render_image_slot` — the same block-image renderer a
+/// image's own tag-stripped run), then renders via `render_image_group` — the same block-image renderer a
 /// standalone Markdown `![alt](url)` paragraph already goes through (`try_render_paragraph_as_image`).
 /// Every other line accumulates into that buffer; whatever is left over at the end (the common case —
 /// most `Html` blocks carry no image line at all — and a banner's own tail, e.g. its closing `</div>`) is
@@ -3756,7 +3851,7 @@ fn render_table_from_model(
 /// comment) — `render_html_block`'s own output already ends with its own trailing blank line
 /// (`render_html_block`'s own final `if !out.is_empty() { out.push(Line::from("")) }`), so a second,
 /// separately-pushed one here would be a real, visible double blank row production never shows.
-/// `render_image_slot`'s own trailing state (`needs_newline = false`/`after_math = true`/
+/// `render_image_group`'s own trailing state (`needs_newline = false`/`after_math = true`/
 /// `fresh_boundary = true`) already matches this function's own unconditional exit state exactly (see
 /// both fields' own doc comments below), so interleaving it with `render_html_block` flushes leaves
 /// nothing to reconcile between calls.
@@ -3768,7 +3863,8 @@ fn render_table_from_model(
 fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>]) {
     let raw = html_body_text(body_spans, src);
     let mut buf = String::new();
-    let flush = |w: &mut Writer<'_>, buf: &mut String| {
+    let mut pending_images: Vec<(String, String)> = Vec::new();
+    let flush_text = |w: &mut Writer<'_>, buf: &mut String| {
         if !buf.is_empty() {
             for l in render_html_block(buf) {
                 w.push_line(l);
@@ -3776,17 +3872,31 @@ fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, body_spans: &[Ran
             buf.clear();
         }
     };
+    // `render_image_group` (see its own doc comment) packs a *run* of images onto shared rows —
+    // consecutive `<img>` lines with no intervening tag-only/text line between them (a plain
+    // `<img/><img/><img/>` banner, with no per-badge `<a>` wrapper) now share a row exactly like the
+    // Markdown badge-row idiom does. An `<img>` line individually wrapped in its own `<a>…</a>` (the
+    // common real-README shape, confirmed against `static_assertions`/`raw-window-metal`/
+    // `tinytemplate` by the sweep `render_html_block_from_model`'s own doc comment above cites) still
+    // renders one image per group — the `</a>` line right after it is *not* an image line, so it
+    // flushes that group of one before the next `<img>` line even starts a new one — reproducing this
+    // function's own pre-existing per-image output exactly.
     for line in raw.split_inclusive('\n') {
         let bare = line.strip_suffix('\n').unwrap_or(line);
         match super::extract_block_image(bare) {
             Some((alt, url)) => {
-                flush(w, &mut buf);
-                render_image_slot(w, &alt, &url);
+                flush_text(w, &mut buf);
+                pending_images.push((alt, url));
             }
-            None => buf.push_str(line),
+            None => {
+                render_image_group(w, &pending_images);
+                pending_images.clear();
+                buf.push_str(line);
+            }
         }
     }
-    flush(w, &mut buf);
+    render_image_group(w, &pending_images);
+    flush_text(w, &mut buf);
     w.needs_newline = false;
     w.after_math = true;
     w.fresh_boundary = true;
@@ -4351,9 +4461,7 @@ fn render_bare_paragraph(
             } else {
                 walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
             }
-            for (alt, url) in &images {
-                render_image_slot(w, alt, url);
-            }
+            render_image_group(w, &images);
             return;
         }
         // See the identical branch in `render_paragraph_dispatch` — `paragraph_leading_images`'s own
@@ -4361,9 +4469,7 @@ fn render_bare_paragraph(
         // (unlike that other call site): this function's own `if w.needs_newline { .. }` at its very
         // start, above, already ran before any dispatch decision was made.
         if let Some((images, text_range)) = paragraph_leading_images(doc, src, &inline) {
-            for (alt, url) in &images {
-                render_image_slot(w, alt, url);
-            }
+            render_image_group(w, &images);
             if math_here {
                 walk_inline_math(
                     &mut events_iter_ranged(&doc.events[text_range]),
@@ -5953,6 +6059,61 @@ mod tests {
         );
     }
 
+    /// The HTML `<img>` path (`render_html_block_from_model`) is routed through the identical
+    /// `render_image_group` packer a Markdown `![alt](url)` badge row goes through — design point 5
+    /// of the row-packing change (see `render_html_block_from_model`'s own doc comment for exactly how
+    /// it batches a *run* of consecutive `<img>` lines). Three bare `<img>` tags with no per-badge
+    /// `<a>` wrapper between them (unlike the real-README shape every other HTML-image test/corpus
+    /// case here uses) are the one shape where that batching is actually observable: nothing but
+    /// whitespace-only lines separates them, so all three should land on the identical `line`,
+    /// packed left to right, exactly like the Markdown badge-row tests above.
+    #[test]
+    fn html_img_tags_with_no_intervening_tag_lines_pack_onto_one_row() {
+        let src = "<div>\n<img src=\"a.svg\" alt=\"a\">\n<img src=\"b.svg\" alt=\"b\">\n\
+                   <img src=\"c.svg\" alt=\"c\">\n</div>\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let lines: Vec<usize> = out.images.iter().map(|p| p.line).collect();
+        assert_eq!(
+            lines,
+            vec![0, 0, 0],
+            "three bare <img> lines with nothing but blank tag-only content between them must pack \
+             onto one shared row via the same `render_image_group` a Markdown badge row uses — not \
+             three stacked rows: {:?}",
+            out.images
+        );
+        let cols: Vec<u16> = out.images.iter().map(|p| p.col).collect();
+        assert_eq!(
+            cols,
+            vec![11, 17, 23],
+            "cols must increase strictly left to right, same as the Markdown-only badge-row tests: \
+             {:?}",
+            out.images
+        );
+    }
+
     #[test]
     fn html_block_strips_tags_drops_comments_and_decodes_entities_from_the_model() {
         let src = "<div class=\"x\">\n<!-- hidden -->\nHello <b>world</b> &amp; friends\n</div>\n";
@@ -6031,6 +6192,7 @@ mod tests {
                 url: "cat.png".to_string(),
                 alt: "a cat".to_string(),
                 line: 0,
+                col: 16, // (width 40 - cols 7) / 2, the single-image group centering formula
                 cols: 7,
                 rows: 3,
                 fence_ord: None,
@@ -6126,6 +6288,13 @@ mod tests {
     /// URL kept). Two badges here, each independently link-wrapped, one per line — the minimal shape
     /// that reproduces it — must extract as **two separate placements**, each with its own real URL,
     /// not as one merged placement or one placement with the second badge's own information dropped.
+    ///
+    /// Both placements share `line: 0` here — `render_image_group`'s own row-packing (added after this
+    /// test was first written; see that function's own doc comment) lays every image `paragraph_as_\
+    /// block_images` returns for one paragraph onto shared rows, left to right, exactly the way GitHub/
+    /// crates.io render this same badge-row idiom. `col` (14, then 14 + 5 + 1 gap = 20) is the other
+    /// half of that fix: the two placements no longer just avoid data loss, they no longer stack
+    /// vertically either.
     #[test]
     fn consecutive_badge_lines_extract_every_image_not_just_the_first() {
         let src = "[![Build Status](build.svg)](https://ci.example/build)\n\
@@ -6161,6 +6330,7 @@ mod tests {
                     url: "build.svg".to_string(),
                     alt: "Build Status".to_string(),
                     line: 0,
+                    col: 14, // (width 40 - (cols 5 + gap 1 + cols 5)) / 2
                     cols: 5,
                     rows: 1,
                     fence_ord: None,
@@ -6168,14 +6338,16 @@ mod tests {
                 ImagePlacement {
                     url: "docs.svg".to_string(),
                     alt: "Docs".to_string(),
-                    line: 1,
+                    line: 0,
+                    col: 20, // 14 + cols 5 + 1-cell gap
                     cols: 5,
                     rows: 1,
                     fence_ord: None,
                 },
             ],
-            "both badges must extract as separate placements, each with its own URL — not one \
-             merged placement missing the second badge's own URL: {:?}",
+            "both badges must extract as separate placements, each with its own URL, packed onto the \
+             same row left to right — not one merged placement missing the second badge's own URL, \
+             and not stacked one row below the other: {:?}",
             out.images
         );
     }
@@ -6206,6 +6378,12 @@ mod tests {
     /// `split_top_level_image_units` can tell "two separate units sharing one line" apart from "one
     /// truly ambiguous merge" (still `segment_as_block_image`'s own `image_starts != 1` guard, for a
     /// shape like two images glued inside one *un-split-able* wrapper) precisely.
+    ///
+    /// Both placements share `line: 0` here (`col` 14/20 — see `render_image_group`'s own doc comment
+    /// and `consecutive_badge_lines_extract_every_image_not_just_the_first`'s identical note above,
+    /// which computes the same two numbers for the same `cols`/gap/width): row-packing lays every
+    /// image one paragraph's own `paragraph_as_block_images` call returns onto shared rows, so two
+    /// badges already sharing one physical *source* line now also share one rendered row, not two.
     #[test]
     fn two_images_sharing_one_line_segment_both_extract_as_separate_placements() {
         let src = "[![a](u1)](h1) [![b](u2)](h2)\n";
@@ -6240,6 +6418,7 @@ mod tests {
                     url: "u1".to_string(),
                     alt: "a".to_string(),
                     line: 0,
+                    col: 14, // (width 40 - (cols 5 + gap 1 + cols 5)) / 2
                     cols: 5,
                     rows: 1,
                     fence_ord: None,
@@ -6247,16 +6426,205 @@ mod tests {
                 ImagePlacement {
                     url: "u2".to_string(),
                     alt: "b".to_string(),
-                    line: 1,
+                    line: 0,
+                    col: 20, // 14 + cols 5 + 1-cell gap
                     cols: 5,
                     rows: 1,
                     fence_ord: None,
                 },
             ],
             "both badges sharing one physical line must extract as separate placements, each with \
-             its own URL — not rejected outright, and not merged into one with the second badge's \
-             own information dropped: {:?}",
+             its own URL, packed onto the same row left to right — not rejected outright, and not \
+             merged into one with the second badge's own information dropped: {:?}",
             out.images
+        );
+    }
+
+    /// Three badges on one physical source line (bare spaces between them, no `SoftBreak` at all) —
+    /// the shape `README.md`'s own "CI · crates.io · License" badge row is written as in the wild.
+    /// GitHub/crates.io lay these out horizontally; before `render_image_group`'s own row-packing
+    /// existed, konoma stacked each one on its own row instead (the real bug this whole change fixes).
+    /// All three must land on the *same* `line`, in left-to-right `col` order, each `col` the previous
+    /// one's own `col + cols + 1` (the packer's 1-cell gap) — not three separate `line`s.
+    #[test]
+    fn three_badges_on_one_line_pack_onto_one_row_left_to_right() {
+        let src = "[![a](x.svg)](u1) [![b](y.svg)](u2) [![c](z.svg)](u3)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        assert_eq!(
+            out.images,
+            vec![
+                ImagePlacement {
+                    url: "x.svg".to_string(),
+                    alt: "a".to_string(),
+                    line: 0,
+                    col: 11, // (width 40 - (5+1+5+1+5)) / 2 = (40-17)/2 = 11
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+                ImagePlacement {
+                    url: "y.svg".to_string(),
+                    alt: "b".to_string(),
+                    line: 0,
+                    col: 17, // 11 + 5 + 1
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+                ImagePlacement {
+                    url: "z.svg".to_string(),
+                    alt: "c".to_string(),
+                    line: 0,
+                    col: 23, // 17 + 5 + 1
+                    cols: 5,
+                    rows: 1,
+                    fence_ord: None,
+                },
+            ],
+            "three badges sharing one physical source line must pack onto one shared row, left to \
+             right — not stack one per row: {:?}",
+            out.images
+        );
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "one shared row for all three badges (rows: 1 each) — three stacked rows would be a \
+             regression to the pre-row-packing bug: {:?}",
+            out.lines
+        );
+    }
+
+    /// The README idiom itself: three badges on three *separate* physical source lines with no blank
+    /// line between them (a lazy-continuation paragraph, `SoftBreak`-joined) — the exact shape
+    /// `consecutive_badge_lines_extract_every_image_not_just_the_first` already covers for two badges;
+    /// this pins the same row-packing for three, confirming the fix generalizes past the two-image
+    /// case (a group-of-3 walks a different, less-exercised branch of `render_image_group`'s own
+    /// width-accumulation loop than a group-of-2 does).
+    #[test]
+    fn three_badges_on_separate_lines_still_pack_onto_one_row() {
+        let src = "[![a](x.svg)](u1)\n[![b](y.svg)](u2)\n[![c](z.svg)](u3)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let lines: Vec<usize> = out.images.iter().map(|p| p.line).collect();
+        assert_eq!(
+            lines,
+            vec![0, 0, 0],
+            "three badges on separate source lines, joined lazily with no blank line, must still \
+             pack onto one shared rendered row (the README badge-row idiom): {:?}",
+            out.images
+        );
+        let cols: Vec<u16> = out.images.iter().map(|p| p.col).collect();
+        assert_eq!(
+            cols,
+            vec![11, 17, 23],
+            "cols must increase strictly left to right by cols(5) + gap(1) each step: {:?}",
+            out.images
+        );
+    }
+
+    /// A row group that does not fit `w.width` wraps to a fresh row-group instead of overflowing —
+    /// the "otherwise flush the pending group and start a new one" rule `render_image_group`'s own
+    /// packing loop applies whenever the running width would exceed `w.width`. Four 5-cell-wide
+    /// images (each `+ 1` gap) need `5*4 + 3 = 23` cells; at `width: 13` only two fit on a row
+    /// (`5+1+5 = 11 <= 13`; a third would need `11+1+5 = 17 > 13`), so this must wrap into two row
+    /// groups of two images each (`[a, b]`, then `[c, d]` — the same two-image-per-row capacity
+    /// applies again once the second group starts fresh). Assert the exact `line` grouping (not just
+    /// "some wrap happened") so a capacity miscount is caught, not just total absence of wrapping.
+    #[test]
+    fn a_row_group_that_does_not_fit_wraps_to_a_new_line() {
+        let src = "[![a](a.svg)](u1) [![b](b.svg)](u2) [![c](c.svg)](u3) [![d](d.svg)](u4)\n";
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let out = render_doc(
+            &doc,
+            src,
+            13,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot_of,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "src: {src:?}, unsupported: {:?}",
+            out.unsupported
+        );
+        let lines: Vec<usize> = out.images.iter().map(|p| p.line).collect();
+        assert_eq!(
+            lines,
+            vec![0, 0, 1, 1],
+            "at width 13, two 5-cell images (11 <= 13) share row 0; the third no longer fits \
+             (11 + 1 + 5 = 17 > 13) and wraps to row 1 along with the fourth: {:?}",
+            out.images
+        );
+        let cols: Vec<u16> = out.images.iter().map(|p| p.col).collect();
+        assert_eq!(
+            cols,
+            vec![1, 7, 1, 7],
+            "each row group is independently centered — both rows hold two 5-cell images with a \
+             1-cell gap, so both rows compute the identical (13 - 11) / 2 = 1 start column: {:?}",
+            out.images
+        );
+        assert_eq!(
+            out.lines.len(),
+            2,
+            "two reserved rows (one per row group, rows: 1 each) — a group that fit everything onto \
+             one row, or overflowed past width without wrapping, would both show up here as a wrong \
+             row count: {:?}",
+            out.lines
         );
     }
 
@@ -6302,6 +6670,7 @@ mod tests {
                 url: "cat.png".to_string(),
                 alt: "a cat".to_string(),
                 line: 1,
+                col: 16, // (width 40 - cols 7) / 2, the single-image group centering formula
                 cols: 7,
                 rows: 3,
                 fence_ord: None,
@@ -7993,7 +8362,7 @@ mod tests {
 
     // ---- `render_paragraph_dispatch`/`render_bare_paragraph`: the math-lifting branches of the
     // leading/trailing standalone-image split (lines 2110, 2129, 2138-2139, 4168, 4174-4187,
-    // 4194-4207) — and `render_image_slot`'s `Unavailable` fallback (`no_images`, lines 4640-4642)
+    // 4194-4207) — and `render_image_group`'s `Unavailable` fallback (`no_images`, lines 4640-4642)
     // ----
 
     /// A top-level paragraph whose text lifts inline math, immediately followed (no blank line) by
@@ -8095,7 +8464,7 @@ mod tests {
     /// actually *render* a real standalone image through it (all of `render.rs`'s own pre-existing
     /// image tests use a live `ImageSlot::Inline`-returning closure instead — see e.g. the
     /// `slot_of` closures a few hundred lines above). A standalone image rendered with `no_images`
-    /// as the real slot answer is what finally calls its body, and confirms `render_image_slot`'s
+    /// as the real slot answer is what finally calls its body, and confirms `render_image_group`'s
     /// own `Unavailable` arm degrades to the one-line text fallback rather than reserving any rows.
     #[test]
     fn a_standalone_image_with_no_live_slot_degrades_to_the_text_fallback() {
