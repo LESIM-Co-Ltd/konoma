@@ -315,44 +315,6 @@ pub(crate) fn render_doc(
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> RenderOut {
-    // ## A raw, un-stripped YAML front-matter block falls back whole, like a quote-nested
-    // `Table`/`Html`
-    //
-    // `Options::ENABLE_YAML_STYLE_METADATA_BLOCKS` is always on (`model::parse_options`, shared with
-    // the legacy path's own `tui_markdown_parse_options` — see that function's own doc comment), so a
-    // document whose caller did *not* run `strip_front_matter` first (`[ui] md_frontmatter = false`,
-    // the one real, reachable production case — every other caller strips it before any text reaches
-    // a parser at all, matching `model::is_unmodeled_container_tag`'s own doc comment) hands
-    // `Doc::parse` a leading `Event::Start(Tag::MetadataBlock(_))`. This model's own `parse_container`
-    // deliberately does not represent that construct at all (`model::is_unmodeled_container_tag`), so
-    // it never becomes a `Block` the loop below could see, unlike a quote-nested `Table`/`Html` —
-    // there is no top-level entry left behind for `contains_unsupported` to have found,
-    // whole-document or otherwise. Checked here, over `doc.events` directly (the one place this file
-    // reads them without going through a `Block`'s own `inline`/`body_spans` range), rather than
-    // inside the block loop below, because there is nothing to loop into: `doc.blocks` already has no
-    // representation of the missing bytes to inspect.
-    //
-    // Reported the identical way a quote-nested `Table`/`Html` is (`unsupported.push(..)`, discarding
-    // whatever this function would otherwise have rendered) so `render_markdown_with_images` falls
-    // back to the *whole* document via the legacy path, which renders a metadata block correctly
-    // (tui-markdown's own native `Event::Start(Tag::MetadataBlock(_))` handling — plain, unstyled
-    // text, confirmed by the `e2e_markdown_front_matter_off_leaves_body_intact` test this closes)
-    // instead of the block silently vanishing along with every byte inside it (found 2026-08,
-    // switching production over to this file: `title`/`author: Me` disappeared from the screen
-    // entirely with `md_frontmatter` off, principle #3).
-    if doc
-        .events
-        .iter()
-        .any(|(ev, _)| matches!(ev, Event::Start(Tag::MetadataBlock(_))))
-    {
-        return RenderOut {
-            lines: Vec::new(),
-            images: Vec::new(),
-            unsupported: vec!["MetadataBlock"],
-            code_blocks: Vec::new(),
-            tasks: Vec::new(),
-        };
-    }
     let styles = KonomaStyles { code_bg: code.bg };
     let math = math_on.then_some(MathCtx {
         slot: math_slot,
@@ -411,6 +373,27 @@ pub(crate) fn render_doc(
         tasks,
         alerts,
     };
+    // ## A raw, un-stripped YAML front-matter block draws directly from `doc.events`
+    //
+    // `Options::ENABLE_YAML_STYLE_METADATA_BLOCKS` is always on (`model::parse_options`, shared with
+    // the legacy path's own `tui_markdown_parse_options` — see that function's own doc comment), so a
+    // document whose caller did *not* run `strip_front_matter` first (`[ui] md_frontmatter = false`,
+    // the one real, reachable production case — every other caller strips it before any text reaches
+    // a parser at all, matching `model::is_unmodeled_container_tag`'s own doc comment) hands
+    // `Doc::parse` a leading `Event::Start(Tag::MetadataBlock(_))`/`Event::End(TagEnd::
+    // MetadataBlock(_))` pair. This model's own `parse_container` deliberately does not represent
+    // that construct as a `Block` at all (`model::is_unmodeled_container_tag`), so there is no
+    // top-level entry in `doc.blocks` for the loop below to ever see — unlike a quote-nested
+    // `Table`/`Html`, there is nothing here for `contains_unsupported` to have found. `doc.events`
+    // still carries every event pulldown-cmark reported for it regardless (`Doc.events`'s own doc
+    // comment: "every `Event`/byte-range pair ... for the *whole* document, not merely the ones some
+    // `Block` below happens to reference") — `render_metadata_block` is the one further place in this
+    // file (besides this function's own top-level dispatch below) that reads that stream directly,
+    // rather than through a `Block`'s own `inline`/`body_spans` range, for the identical reason: there
+    // is no `Block` to name a range on. A no-op, immediately, for every other caller (front matter
+    // already stripped, so `doc.events` never carries a `MetadataBlock` event to find at all — see
+    // that function's own doc comment).
+    render_metadata_block(&mut w, doc);
     let mut unsupported: Vec<&'static str> = Vec::new();
     for block in &doc.blocks {
         match &block.kind {
@@ -1030,9 +1013,14 @@ impl<'m> Writer<'m> {
         self.push_span(Span::styled(code.to_string(), self.styles.code()));
     }
 
-    /// `TextWriter::soft_break` — the `in_metadata_block` branch there never applies here: this walk
-    /// never sees `Tag::MetadataBlock` at all, front matter having already been stripped from `src`
-    /// before `Doc::parse` ever ran (see the model module's own doc comment on what text it expects).
+    /// `TextWriter::soft_break` — the `in_metadata_block` branch there never applies to *this* method:
+    /// `walk_inline`, this method's only caller, only ever walks a `Heading`'s or `Paragraph`'s own
+    /// inline content (see that function's own doc comment), never a metadata block's raw text — that
+    /// one further shape `Doc::parse` never turns into a `Block` at all (see `model::
+    /// is_unmodeled_container_tag`'s own doc comment) is read straight out of `doc.events` instead, by
+    /// `render_metadata_block`, which calls `hard_break` directly for a stray `Event::SoftBreak` rather
+    /// than routing through this method (see that function's own doc comment for why real front matter
+    /// never actually produces one to route in the first place).
     fn soft_break(&mut self) {
         self.push_span(Span::raw(" "));
     }
@@ -1356,6 +1344,61 @@ fn render_paragraph(w: &mut Writer<'_>, doc: &Doc<'_>, inline: Range<usize>) {
     w.push_blank_line();
     w.needs_newline = false;
     walk_inline(&mut events_iter(&doc.events[inline]), w, None);
+    w.needs_newline = true;
+}
+
+/// Renders a leading YAML/pluses-style front-matter block straight out of `doc.events`, in place —
+/// mirrors `tui_markdown::TextWriter::start_metadata_block`/`text`/`soft_break`/`end_metadata_block`
+/// exactly (pinned `tui-markdown-0.3.8`'s own `src/lib.rs`; see `render_doc`'s own "raw, un-stripped
+/// YAML front-matter" doc comment for why this reads `doc.events` directly instead of through a
+/// `Block`). A no-op — `doc` is left exactly as `render_doc`'s own top-level dispatch found it — when
+/// `doc.events` carries no `Event::Start(Tag::MetadataBlock(_))` at all, which is every caller except
+/// `[ui] md_frontmatter = false` (see `render_doc`'s own call site).
+///
+/// Confirmed directly against pulldown-cmark 0.13.4's own event stream for a metadata block
+/// (`Parser::new_ext` with `Options::ENABLE_YAML_STYLE_METADATA_BLOCKS`, dumped via `into_offset_iter`):
+/// the block's *entire* raw text arrives as a **single** `Event::Text`, its internal line breaks
+/// embedded literally rather than reported as separate `Event::SoftBreak`s — `parse_metadata_block`
+/// (`firstpass.rs`) appends each raw source line the identical, non-inline-parsed way an indented code
+/// block's own body does (`append_code_text`), so there is never a container boundary for pulldown-cmark
+/// to have reported a soft break *at* in the first place. `Writer::text`'s own `.lines()` split — already
+/// written for exactly this shape, see that method's own doc comment — is what actually turns each YAML
+/// source line into its own screen row here, matching `TextWriter::text`'s identical split. The
+/// `Event::SoftBreak` arm below is therefore never reached by real front matter; it stays only because
+/// `TextWriter::soft_break`'s own `in_metadata_block` branch exists in the code this file mirrors, and
+/// reproducing tui-markdown's *dispatch* faithfully — not merely the shape today's pulldown-cmark
+/// happens to produce — is the whole point of this function.
+fn render_metadata_block(w: &mut Writer<'_>, doc: &Doc<'_>) {
+    let Some(start) = doc
+        .events
+        .iter()
+        .position(|(ev, _)| matches!(ev, Event::Start(Tag::MetadataBlock(_))))
+    else {
+        return;
+    };
+    // `TextWriter::start_metadata_block`.
+    if w.needs_newline {
+        w.push_blank_line();
+    }
+    w.line_styles.push(w.styles.metadata_block());
+    w.push_line(Line::from("---"));
+    w.push_blank_line();
+    for ev in events_iter(&doc.events[start + 1..]) {
+        match ev {
+            Event::End(TagEnd::MetadataBlock(_)) => break,
+            Event::Text(t) => w.text(&t),
+            // `TextWriter::soft_break`'s own `in_metadata_block` branch — see this function's own doc
+            // comment for why real front matter never actually reaches it.
+            Event::SoftBreak => w.hard_break(),
+            // Nothing else can legitimately appear inside a metadata block's own raw content (see
+            // this function's own doc comment). Dropped the same defensive way `walk_inline`'s own
+            // catch-all is, rather than assumed unreachable.
+            _ => {}
+        }
+    }
+    // `TextWriter::end_metadata_block`.
+    w.push_line(Line::from("---"));
+    w.line_styles.pop();
     w.needs_newline = true;
 }
 
@@ -8188,5 +8231,139 @@ mod tests {
         src.push('\n');
         let out = render(&src, true, true);
         assert!(!out.lines.is_empty());
+    }
+
+    /// Fixture for the two front-matter tests below: an **un-stripped** YAML metadata block — the
+    /// exact shape `render_metadata_block` exists for (`[ui] md_frontmatter = false` hands
+    /// `Doc::parse` this source unmodified; see `render_doc`'s own "raw, un-stripped YAML front-matter"
+    /// doc comment). Multi-line YAML (exercises `Writer::text`'s own `.lines()` split inside the
+    /// block), no blank source line between the closing `---` and the very next block, then an
+    /// ordinary heading and paragraph — closely mirrors `e2e_tests::FRONT_MATTER_BODY`'s own shape
+    /// (the fixture `e2e_markdown_front_matter_off_leaves_body_intact` — the acceptance test this
+    /// change has to keep passing — exercises), so both tests below and that e2e test are really
+    /// checking the identical handoff from `render_metadata_block` into the ordinary block loop.
+    const FRONT_MATTER_SRC: &str = concat!(
+        "---\n",
+        "title: My Doc\n",
+        "author: Me\n",
+        "---\n",
+        "body text\n",
+        "\n",
+        "# Heading\n",
+        "\n",
+        "more text\n",
+    );
+
+    /// `render_doc` no longer reports a leading, un-stripped metadata block as `Unsupported` — see the
+    /// module doc comment's own "raw, un-stripped YAML front-matter" section and `render_metadata_block`'s
+    /// own doc comment. Before that change, this exact fixture's `unsupported` was `vec!["MetadataBlock"]`
+    /// and `render_markdown_with_images` (`markdown.rs`) fell back to the legacy renderer for the *whole*
+    /// document whenever `[ui] md_frontmatter = false`; `markdown_render_diff_report`'s own corpus check
+    /// (`unsupported: 0` across the whole corpus) is the whole-corpus version of this same assertion —
+    /// this is the narrow, single-fixture pin for it.
+    #[test]
+    fn render_doc_front_matter_is_no_longer_unsupported() {
+        let doc = Doc::parse(FRONT_MATTER_SRC);
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let out = render_doc(
+            &doc,
+            FRONT_MATTER_SRC,
+            80,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            true,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "a leading metadata block should render directly, not fall back: {:?}",
+            out.unsupported
+        );
+        // Sanity: the metadata block's own content actually made it into `out.lines` (not silently
+        // dropped along with `unsupported` — the exact failure mode this change fixed; see
+        // `render_doc`'s own doc comment on the bug this closed).
+        assert!(
+            out.lines.iter().any(|l| l
+                .spans
+                .iter()
+                .any(|s| s.content.as_ref() == "title: My Doc")),
+            "front matter content missing from render_doc's own output: {:?}",
+            out.lines
+        );
+    }
+
+    /// The most important regression this change has to satisfy: for an **un-stripped** front-matter
+    /// document, `render_doc`'s own line-for-line, span-for-span, style-for-style output must exactly
+    /// equal `render_markdown_with_images_legacy`'s (`markdown.rs`) — tui-markdown's own native
+    /// `Event::Start(Tag::MetadataBlock(_))` handling, the renderer that used to draw this exact shape
+    /// whenever `render_doc` reported it `Unsupported` (see the fixture's own doc comment). `Line`/
+    /// `Span`/`Style` all derive `PartialEq`, so `assert_eq!` on the two `Vec<Line<'static>>`s directly
+    /// is exact — content, span boundaries, and every style field — the identical comparison
+    /// `app::md_render_diff_tests::first_diff_index` makes for the parity corpus at large (see that
+    /// module's own doc comment), just spelled out for this one fixture instead of run through the
+    /// whole-corpus harness.
+    #[test]
+    fn render_doc_matches_legacy_renderer_byte_for_byte_on_front_matter() {
+        let doc = Doc::parse(FRONT_MATTER_SRC);
+        let code = CodeStyle::default();
+        let theme = "TwoDark";
+        let icons = false;
+        let tasks: &[char] = &[' ', 'x'];
+        let mermaid_caption = "Enter: full screen";
+        let alerts = true;
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let math_on = true;
+
+        let new_out = render_doc(
+            &doc,
+            FRONT_MATTER_SRC,
+            80,
+            code,
+            theme,
+            icons,
+            tasks,
+            &no_images,
+            &no_mermaid,
+            mermaid_caption,
+            alerts,
+            &math_slot,
+            math_on,
+        );
+        assert!(
+            new_out.unsupported.is_empty(),
+            "fixture should be fully supported: {:?}",
+            new_out.unsupported
+        );
+
+        let (legacy_lines, legacy_images) = super::super::render_markdown_with_images_legacy(
+            FRONT_MATTER_SRC,
+            80,
+            code,
+            theme,
+            icons,
+            tasks,
+            &no_images,
+            &no_mermaid,
+            mermaid_caption,
+            alerts,
+            &math_slot,
+            math_on,
+        );
+
+        assert_eq!(
+            new_out.lines, legacy_lines,
+            "render_doc's own front-matter output must match the legacy (tui-markdown-native) \
+             renderer's, line for line and span for span"
+        );
+        assert_eq!(
+            new_out.images, legacy_images,
+            "no image/mermaid/math placements in this fixture on either side"
+        );
     }
 }
