@@ -107,12 +107,15 @@
 //! `Writer`, below, is the accumulator every block-rendering function in this file writes rendered
 //! output into: it owns the growing `Vec<Line>` the whole render produces, walks `model::Block`'s tree
 //! (not a raw `pulldown_cmark::Event` stream), and carries the small amount of extra state a block walk
-//! needs on top of a plain inline-content walk — which lists are currently open and their running item
-//! numbers, and whether the next block owes the page a blank separator line before it starts. A
-//! blockquote's own `>` prefix/style is *not* state `Writer` carries at all — see
+//! needs on top of a plain inline-content walk — the running item number of whichever list is
+//! *currently being rendered*, and whether the next block owes the page a blank separator line before
+//! it starts. Two further things a naive port of the same idea would have piled onto `Writer` are
+//! deliberately *not* there. A blockquote's own `>` prefix/style is not — see
 //! `Writer::emit_row_prefixed`'s own doc comment for why a tree walk never needs a stack for that the
-//! way a flat event-stream walk would. See `Writer`'s own doc comment for what each field holds and
-//! why (`list_counters`/`pending_block_gap`).
+//! way a flat event-stream walk would. Nor is how many levels of list nesting are currently open —
+//! see `BlockCtx::list_depth`'s own doc comment for why a tree walk's own call stack already carries
+//! that, the same principle applied to a second, unrelated stack. See `Writer`'s own doc comment for
+//! what each field holds and why (`pending_block_gap`).
 //!
 //! `Writer`'s row-building methods (`emit_row`/`append_span`/`join_with_space`/`end_row`, and the rest
 //! of the small set `Writer`'s own doc comment covers) are derived from `tui-markdown`'s own
@@ -270,13 +273,51 @@ struct BlockCtx {
     /// Tab-toggle ordinal sequence (`super::next_details_open`) — see the module doc comment's own
     /// "Alert/`<details>` interactivity" section for the full contract this mirrors.
     details_interactive: bool,
+    /// How many `List`s are currently open around this position — `0` at the top of a fresh render
+    /// (or the top of any isolated sub-`Writer`'s own children, e.g. `render_quote`'s/
+    /// `render_bar_prefixed_body`'s), incremented by exactly `1` in the `BlockCtx` `render_list`
+    /// passes down to its own items and, through them, to every one of an item's own children —
+    /// list or not (see `render_list`'s own doc comment for exactly where that `+1` happens).
+    /// `push_item_marker` reads this directly to size a marker's own column width; `render_list`
+    /// reads it, still at its *incoming* value (before the `+1`), to tell "no list at all is
+    /// currently open" apart from "already inside an enclosing list" for its own leading blank-line
+    /// decision.
+    ///
+    /// Used to be a `Vec<Option<u64>>` (`list_counters`) on `Writer` instead — one entry per
+    /// currently-open list, pushed by `render_list` and popped again on its way out, with `.len()`
+    /// read back for marker width the same way this field is now. That was the right shape for
+    /// tracking a list's own running item *number*: it changes on every single item, and the
+    /// function actually incrementing it (`push_item_marker`, called once per item by `render_item`)
+    /// is nested two calls below the function that owns the list as a whole (`render_list`) — a
+    /// plain local variable can't reach that deep without being threaded down explicitly, which is
+    /// exactly what happens now: `render_list` keeps that counter as its own local, mutable
+    /// `Option<u64>` and passes it to `render_item`/`push_item_marker` by `&mut` reference, one list
+    /// at a time, no stack needed (a nested list's own counter is a *different* local variable in a
+    /// *different*, later call to `render_list` — never a second entry sharing one `Vec` with the
+    /// first).
+    ///
+    /// *Depth*, by contrast, never changes within a single call to `render_list` at all — it is
+    /// fixed for the whole lifetime of one list, decided once, by whichever caller is already
+    /// however many levels deep, before that list's own first item ever renders. That is exactly the
+    /// shape `BlockCtx`'s other two fields already have (see `math_here`'s/`extract_here`'s own doc
+    /// comments), and exactly what a tree walk's own call stack already tracks for free — a
+    /// recursive `render_list` call sitting `N` frames below the outermost one *is* the fact that
+    /// `N` lists are currently open, with no separate bookkeeping required to also say so. Keeping
+    /// depth on `Writer` as a `Vec` alongside the ordinal one used to work, but conflated two
+    /// different kinds of state behind one field — the same principle `row_prefixes`/`row_styles`
+    /// were retired under (see this struct's own module, `Writer`'s doc comment): a tree walk's
+    /// immutable "how deep am I" question belongs to the call stack (here, `BlockCtx`, threaded
+    /// through parameters the way `math_here`/`extract_here` already were), and only a genuinely
+    /// *mutable*, per-list value like the running item number needs a variable of its own at all.
+    list_depth: usize,
 }
 
 /// Renders every top-level block in `doc` this file's own scope covers (see the module doc comment),
 /// in source order, through a single top-level `Writer` — the same instance a `List`'s own items
-/// render into (nesting deeper only ever means a longer `list_counters`), so that
-/// `pending_block_gap`/`list_counters` bookkeeping carries correctly across every block boundary in
-/// the document, top level included (see `Writer`'s own doc comment). A `Quote`'s own body, by
+/// render into (nesting deeper only ever means a taller `BlockCtx::list_depth`; see that field's own
+/// doc comment for why depth lives there, not on `Writer`, now), so that `pending_block_gap`
+/// bookkeeping carries correctly across every block boundary in the document, top level included (see
+/// `Writer`'s own doc comment). A `Quote`'s own body, by
 /// contrast, always renders into its own *isolated* sub-`Writer` first (`render_quote`'s own doc
 /// comment covers why) — this top-level instance never sees a quoted child's lines until they come
 /// back already fully decorated and `>`-prefixed. A block kind
@@ -357,13 +398,13 @@ pub(crate) fn render_doc(
         math_here: math.is_some(),
         extract_here: true,
         details_interactive: true,
+        list_depth: 0,
     };
     let mut w = Writer {
         lines: Vec::new(),
         inline_styles: Vec::new(),
         link: None,
         styles,
-        list_counters: Vec::new(),
         pending_block_gap: false,
         math,
         mermaid,
@@ -612,23 +653,32 @@ fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str
 /// comment). Besides the growing `Vec<Line>` itself (`lines`, below), it holds the small amount of
 /// extra bookkeeping a *block* walk needs on top of a plain inline-content walk:
 ///
-/// * `list_counters` — one entry per currently-open `List`, `None` for an unordered one or `Some(n)`
-///   for an ordered one's own running item counter (see `render_list`/`push_item_marker`). Nesting
-///   depth (`list_counters.len()`) is what sets every item marker's own column width, *regardless* of
-///   how many spaces the source itself used for that level's indentation — konoma's own hand-picked
-///   4-columns-per-level convention, read back unconditionally.
+/// Deliberately *not* here — two separate things a naive port of `tui-markdown`'s own `TextWriter`
+/// would have carried on `Writer` as a stack, and this file does not.
 ///
-/// Deliberately *not* here: anything tracking a currently-open `Quote`'s own `>` prefix/style. An
-/// earlier version of this struct held that the way upstream `tui-markdown` did — a
-/// `row_prefixes: Vec<Span>`/`row_styles: Vec<Style>` pair of stacks every line-emitting method read
-/// from its own top — because that shape was copied wholesale from a renderer that walks a *flat*
-/// `pulldown_cmark::Event` stream, where a stack genuinely is the only way to know, while emitting one
-/// line deep inside a doubly-quoted paragraph, how many `>` markers are currently "open" around it.
-/// This file walks `model::Block`'s tree instead: `render_quote` assembles a whole quoted run of
-/// lines in an isolated sub-`Writer`, decorates it, and only *then* prefixes it — as a plain local
-/// value, never Writer-owned state — before handing it back to its caller (see that function's own
-/// doc comment, and [`Writer::emit_row_prefixed`]'s, for the full mechanism and why it reproduces
-/// nested `"> >"` prefixing without ever needing more than depth `1`).
+/// The first is anything tracking a currently-open `Quote`'s own `>` prefix/style. An earlier version
+/// of this struct held that the way upstream `tui-markdown` did — a `row_prefixes: Vec<Span>`/
+/// `row_styles: Vec<Style>` pair of stacks every line-emitting method read from its own top — because
+/// that shape was copied wholesale from a renderer that walks a *flat* `pulldown_cmark::Event` stream,
+/// where a stack genuinely is the only way to know, while emitting one line deep inside a
+/// doubly-quoted paragraph, how many `>` markers are currently "open" around it. This file walks
+/// `model::Block`'s tree instead: `render_quote` assembles a whole quoted run of lines in an isolated
+/// sub-`Writer`, decorates it, and only *then* prefixes it — as a plain local value, never
+/// Writer-owned state — before handing it back to its caller (see that function's own doc comment,
+/// and [`Writer::emit_row_prefixed`]'s, for the full mechanism and why it reproduces nested `"> >"`
+/// prefixing without ever needing more than depth `1`).
+///
+/// The second is how many `List`s are currently open — an earlier version of *this* struct held that
+/// as `list_counters: Vec<Option<u64>>` too, one entry per open list, `.len()` read back for every
+/// item marker's own column width. That, again, is the right shape for a flat event stream with no
+/// nesting boundary of its own to hang the depth on, but this file's own tree walk already has one:
+/// `BlockCtx::list_depth`, threaded down as an ordinary parameter the same way `math_here`/
+/// `extract_here` already were (see that field's own doc comment for the fuller reasoning, and for why
+/// the *ordinal* half of the old `Vec<Option<u64>>` — a list's own running item number, genuinely
+/// mutable and updated once per item — stays an ordinary local variable in `render_list` instead,
+/// passed to `render_item`/`push_item_marker` by `&mut` reference rather than promoted to `BlockCtx`
+/// alongside depth: unlike depth, it changes within a single list's own lifetime, so it isn't the kind
+/// of thing a `Copy` context struct should carry).
 ///
 /// * `pending_block_gap` — whether the *next* block-level construct owes the page a blank separator line
 ///   before it starts. Starts `false`. Every *block*-rendering function in this file — `render_heading`/
@@ -680,7 +730,6 @@ struct Writer<'m> {
     inline_styles: Vec<Style>,
     link: Option<String>,
     styles: KonomaStyles,
-    list_counters: Vec<Option<u64>>,
     pending_block_gap: bool,
     math: Option<MathCtx<'m>>,
     /// The mermaid-extraction context — unconditional (not `Option`, unlike `math`), since
@@ -4053,13 +4102,25 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
     }
 }
 
-/// Renders a `List`'s own items into `w`, in place — opens the list by pushing a running-counter
-/// entry onto `w.list_counters`, calls `render_item` once per item, then pops it back off. `start` is
+/// Renders a `List`'s own items into `w`, in place — opens the list's own running item counter as a
+/// local variable, calls `render_item` once per item (threading that counter down by `&mut`
+/// reference, along with a `ctx` one level deeper than the one this function itself received), then
+/// lets the counter drop when the loop ends; there is no push/pop pair of any kind, on `w` or
+/// otherwise, because nothing outside this one call needs to see this list's own counter at all (see
+/// `BlockCtx::list_depth`'s own doc comment for the fuller reasoning on why depth and the running
+/// counter ended up split across two different kinds of state this way). `start` is
 /// `BlockKind::List.start` verbatim (`None` for an unordered list, `Some(n)` for an ordered one's own
-/// first number) — the exact value `list_counters` itself holds for this list for as long as it stays
-/// open. Not gated on `BlockKind::List.ordered` — that field is redundant with `start.is_some()` by
-/// construction (see `model::BlockKind::List`'s own doc comment on how `parse_container` computes
-/// it), so there is nothing `ordered` could tell this function that `start` does not already say.
+/// first number) — the counter's own initial value, and the exact value it keeps reading back as
+/// `None` for as long as this list stays unordered. Not gated on `BlockKind::List.ordered` — that
+/// field is redundant with `start.is_some()` by construction (see `model::BlockKind::List`'s own doc
+/// comment on how `parse_container` computes it), so there is nothing `ordered` could tell this
+/// function that `start` does not already say.
+///
+/// The leading-blank-line check reads `ctx.list_depth` — the value *this* call received, before the
+/// `+1` below — rather than `list_ctx`'s: `0` means no list at all is currently open around this
+/// position (this is a top-level list, or the first list found inside an isolated sub-`Writer`'s own
+/// children), the identical question the old `w.list_counters.is_empty()` check answered by reading
+/// `Writer`-owned state instead of a parameter.
 ///
 /// The exit's own `pending_block_gap = true` is *conditional* on `!w.after_math` — unlike every other
 /// container-closing site in this file, this one genuinely can run with the flag still set: the very
@@ -4076,19 +4137,31 @@ fn render_list(
     items: &[Block],
     ctx: BlockCtx,
 ) {
-    if w.list_counters.is_empty() && w.pending_block_gap {
+    if ctx.list_depth == 0 && w.pending_block_gap {
         w.emit_blank_row();
     }
-    w.list_counters.push(start);
+    let list_ctx = BlockCtx {
+        list_depth: ctx.list_depth + 1,
+        ..ctx
+    };
+    let mut counter = start;
     for item in items {
         if let BlockKind::ListItem { task } = &item.kind {
-            render_item(w, doc, src, *task, &item.children, ctx, item.src.start);
+            render_item(
+                w,
+                doc,
+                src,
+                *task,
+                &item.children,
+                list_ctx,
+                item.src.start,
+                &mut counter,
+            );
         }
         // A `List`'s own children are always `ListItem`s (see `model::parse_container`'s own
         // `Tag::List` arm) — the `if let` above is not a lossy filter of some other shape, only the
         // same defensive-match convention this whole file follows rather than an unchecked `panic!`.
     }
-    w.list_counters.pop();
     if !w.after_math {
         w.pending_block_gap = true;
     }
@@ -4169,6 +4242,7 @@ fn render_list(
 /// (nor one this task's own scope — closing three top-level math mismatches against the legacy
 /// renderer — asked for). Left as the pre-existing eager push, unchanged, rather than risked on an
 /// unverified guess at what the legacy renderer would even do there.
+#[allow(clippy::too_many_arguments)] // one call site (render_list); each argument its own distinct piece of state — `counter` is the enclosing list's own running item number, threaded down by `&mut` reference rather than folded into `ctx` because (unlike `ctx`'s own fields) it mutates within this one list's lifetime — see `BlockCtx::list_depth`'s own doc comment
 fn render_item(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -4177,10 +4251,11 @@ fn render_item(
     children: &[Block],
     ctx: BlockCtx,
     item_src_start: usize,
+    counter: &mut Option<u64>,
 ) {
     // start_item(): a fresh physical line, unconditionally, carrying the item's own marker.
     w.emit_row(Line::default());
-    push_item_marker(w);
+    push_item_marker(w, ctx.list_depth, counter);
     w.pending_block_gap = false;
 
     let loose_first = children.first().is_some_and(|b| is_real_paragraph(src, b));
@@ -4276,10 +4351,13 @@ fn render_item(
             // already an absolute byte offset into `src`, read straight off the model, no detection
             // needed.
             //
-            // Only pushed when *this* item's own list is unordered (`list_counters.last() ==
-            // Some(&None)`) — the exact same "is this list's own marker a bullet" test
-            // `push_item_marker`, two calls up the stack, already used to decide between writing a
-            // literal `"- "` or a `"N. "` marker span. `decorate_extras`'s own `replace_task_checkbox`
+            // Only pushed when *this* item's own list is unordered (`counter.is_none()`) — the
+            // exact same "is this list's own marker a bullet" test `push_item_marker`, just above,
+            // already used (via this same `counter` reference) to decide between writing a literal
+            // `"- "` or a `"N. "` marker span — `counter` only ever holds `None` for a list that
+            // started `None`, never flips to `Some` partway through (`push_item_marker`'s own `None`
+            // arm never touches it), so reading it back here, after that call already ran, still
+            // answers the identical question. `decorate_extras`'s own `replace_task_checkbox`
             // (downstream, over the *rendered* text) only ever recognizes a checkbox whose line, after
             // trimming, starts with a bullet byte (`task_prefix_state`'s own "first byte must be
             // `-`/`*`/`+`" contract) — an ordered item's own `"N. "` marker line starts with a digit,
@@ -4296,7 +4374,7 @@ fn render_item(
             // ahead of it in the document, pairing the focused sentinel with a completely different
             // checkbox's byte offset instead of degrading to `None` the way a genuine count mismatch
             // does (principle #3) — a wrong answer is worse than a safe refusal.
-            if matches!(w.list_counters.last(), Some(None)) {
+            if counter.is_none() {
                 w.task_marks.push((t.state, t.state_at));
             }
         }
@@ -4547,23 +4625,21 @@ fn render_bare_paragraph(
 
 /// Builds and pushes the current list item's own marker span onto whatever line `render_item` just
 /// opened — the width formula, the unstyled `"<spaces>- "` for an unordered item, the
-/// `LightBlue`-styled, right-aligned `"N. "` for an ordered one, incrementing `w.list_counters`'s own
-/// top entry as it goes. Always called with
-/// `w.list_counters` non-empty (`render_list` pushes this list's own entry before rendering a single
-/// item), so the `let... else` below is defensive only, never actually reached.
-fn push_item_marker(w: &mut Writer<'_>) {
-    // `saturating_sub`, not a bare `- 3`: `list_counters.len() == 0` (the same "no list is actually
-    // open" shape the `let...else` right below already guards defensively) used to underflow this
-    // `usize` subtraction — `0 * 4 - 3` panics ("attempt to subtract with overflow") *before* that
-    // guard is ever reached, which used to make the guard's own "defensive only, never reached"
-    // doc comment claim false for the *one* shape it exists to protect against. `width`'s own value
-    // is never read in that empty case anyway (the guard returns immediately after), so saturating
-    // to `0` here is not a guess at what the "right" width would be — there is no list open at all.
-    let width = w.list_counters.len().saturating_mul(4).saturating_sub(3);
-    let Some(last_index) = w.list_counters.last_mut() else {
-        return;
-    };
-    let span = match last_index {
+/// `LightBlue`-styled, right-aligned `"N. "` for an ordered one, incrementing `*counter` as it goes.
+///
+/// `depth` and `counter` are `render_item`'s own `ctx.list_depth`/`counter` parameters, passed
+/// straight through unchanged — this function reads/writes neither `Writer` state nor anything of its
+/// own; every input it needs arrives as a plain parameter. `depth` is always `>= 1` here by
+/// construction (`render_list` always calls `render_item` with a `ctx` whose `list_depth` is its own
+/// incoming depth `+ 1` — see that function's own doc comment — so there is always at least one list
+/// open by the time any item's marker renders), unlike the `Vec<Option<u64>>` this used to read
+/// (`list_counters.len()`), which could be observed empty by a direct, low-level test call bypassing
+/// `render_list` entirely (see `BlockCtx::list_depth`'s own doc comment for the fuller history) —
+/// there is no equivalent empty state a plain `usize` parameter can be "caught" in, so the defensive
+/// `let ... else` an empty `Vec` used to require is gone along with the `Vec` itself.
+fn push_item_marker(w: &mut Writer<'_>, depth: usize, counter: &mut Option<u64>) {
+    let width = depth.saturating_mul(4).saturating_sub(3);
+    let span = match counter {
         None => Span::raw(" ".repeat(width - 1) + "- "),
         Some(index) => {
             *index += 1;
@@ -4654,7 +4730,6 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         inline_styles: Vec::new(),
         link: None,
         styles: w.styles,
-        list_counters: Vec::new(),
         pending_block_gap: false,
         math: None,
         mermaid: MermaidCtx {
@@ -4699,11 +4774,16 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
     // comment) — only `details_interactive` is still propagated, not forced, exactly as before (see
     // this function's own doc comment above for why: a plain quote's own body is reached through the
     // *same* top-level interactive scan, unlike an alert's/`<details>`'s own independently re-parsed
-    // one).
+    // one). `list_depth: 0`, always, regardless of `ctx.list_depth` — `inner` is a fresh, isolated
+    // sub-`Writer` (see this function's own doc comment for why), so a `List` found anywhere in this
+    // quote's own body starts counting nesting from scratch, exactly as if it were the first list in
+    // a brand new document; it has no way to see, nor any reason to see, how many lists (if any) were
+    // already open in whatever `w` this quote itself sits inside of.
     let child_ctx = BlockCtx {
         math_here: false,
         extract_here: false,
         details_interactive: ctx.details_interactive,
+        list_depth: 0,
     };
     for child in children {
         render_block(child, &mut inner, doc, src, child_ctx);
@@ -5113,18 +5193,19 @@ fn render_details_from_model(
 /// in complete isolation — a fresh `Vec<Line>`, a fresh `Writer` underneath it — before splicing a
 /// bar prefix onto every resulting line and appending the result to the *caller's* own output.
 ///
-/// The sub-`Writer` starts with every piece of *positional* state reset (`lines`/`list_counters`/
-/// `pending_block_gap`/`pending_para_start`/`after_math`, all fresh or `false`) — a body is a
-/// standalone construct, not a continuation of whatever came before the
-/// alert/`<details>` — but **inherits** `w`'s own `styles`/`code`/`theme`/`icons` (display
-/// configuration, not position) and renders at `w.width - 2` (the two columns
-/// `render_alert_from_model`/`render_details_from_model` reserve for the bar). `math: None`: math is
-/// never lifted inside either body (`structure_mask`'s own exclusion — the same reason `render_quote`
-/// forces `math_here: false` for a plain quote's own children), so there is nothing to share across
-/// the isolation boundary; `BlockCtx { math_here: false, extract_here: false, details_interactive:
-/// false }` is what `children` actually renders with, unconditionally, regardless of what was in
-/// scope at the call site — see `render_details_from_model`'s own doc comment for why *this* block's
-/// own interactivity is a separate question from its children's.
+/// The sub-`Writer` starts with every piece of *positional* state reset (`lines`/`pending_block_gap`/
+/// `pending_para_start`/`after_math`, all fresh or `false`) — a body is a standalone construct, not a
+/// continuation of whatever came before the alert/`<details>` — but **inherits** `w`'s own
+/// `styles`/`code`/`theme`/`icons` (display configuration, not position) and renders at `w.width - 2`
+/// (the two columns `render_alert_from_model`/`render_details_from_model` reserve for the bar).
+/// `math: None`: math is never lifted inside either body (`structure_mask`'s own exclusion — the same
+/// reason `render_quote` forces `math_here: false` for a plain quote's own children), so there is
+/// nothing to share across the isolation boundary; `body_ctx` below (`math_here: false,
+/// extract_here: false, details_interactive: false, list_depth: 0`) is what `children` actually
+/// renders with, unconditionally, regardless of what was in scope at the call site — see
+/// `render_details_from_model`'s own doc comment for why *this* block's own interactivity is a
+/// separate question from its children's, and `render_quote`'s `child_ctx` for why `list_depth`
+/// resets to `0` here for the identical "fresh, isolated sub-`Writer`" reason.
 ///
 /// Once the sub-`Writer` finishes, its own resulting lines are run through
 /// `super::decorate_headings_and_extras` — **before** `bar` gets prepended to any of them — the same
@@ -5165,7 +5246,6 @@ fn render_bar_prefixed_body(
         inline_styles: Vec::new(),
         link: None,
         styles: w.styles,
-        list_counters: Vec::new(),
         pending_block_gap: false,
         math: None,
         // `body_ctx.extract_here: false` (below) keeps both mermaid-fence extraction
@@ -5206,6 +5286,7 @@ fn render_bar_prefixed_body(
         math_here: false,
         extract_here: false,
         details_interactive: false,
+        list_depth: 0,
     };
     for child in children {
         render_block(child, &mut inner, doc, src, body_ctx);
@@ -5262,7 +5343,6 @@ mod tests {
             inline_styles: Vec::new(),
             link: None,
             styles: KonomaStyles::default(),
-            list_counters: Vec::new(),
             pending_block_gap: false,
             math: None,
             mermaid: MermaidCtx {
@@ -5292,18 +5372,21 @@ mod tests {
         }
     }
 
-    /// `BlockCtx` with math off, extraction on, and `Details` interactive — the shape a fresh
-    /// top-level render started with `math_on: false` has (see `render_doc`'s own construction of
-    /// `ctx`: `math_here: math.is_some()`, but `extract_here: true` unconditionally, regardless of
-    /// `math_on` — see `BlockCtx.extract_here`'s own doc comment for why the two are not the same
-    /// question); most of this module's own tests have no math/image/mermaid/`<details>` case to
-    /// exercise any of these flags' *other* value, so this is the default every test below reaches
-    /// for unless a test's own doc comment says otherwise.
+    /// `BlockCtx` with math off, extraction on, `Details` interactive, and no list open — the shape
+    /// a fresh top-level render started with `math_on: false` has (see `render_doc`'s own
+    /// construction of `ctx`: `math_here: math.is_some()`, but `extract_here: true` unconditionally,
+    /// regardless of `math_on` — see `BlockCtx.extract_here`'s own doc comment for why the two are
+    /// not the same question); most of this module's own tests have no math/image/mermaid/`<details>`
+    /// case to exercise any of these flags' *other* value, so this is the default every test below
+    /// reaches for unless a test's own doc comment says otherwise. A test that needs to simulate
+    /// already being inside a list (`render_item`/`push_item_marker`, direct, low-level calls) builds
+    /// its own `BlockCtx { list_depth: 1, ..fresh_ctx() }` rather than reaching for a different helper.
     fn fresh_ctx() -> BlockCtx {
         BlockCtx {
             math_here: false,
             extract_here: true,
             details_interactive: true,
+            list_depth: 0,
         }
     }
 
@@ -5430,21 +5513,25 @@ mod tests {
             "the LooseTask exclusion should be gone"
         );
         let mut w = fresh_writer();
-        w.list_counters.push(None);
         let BlockKind::List { .. } = &doc.blocks[0].kind else {
             panic!("expected a top-level list");
         };
         let BlockKind::ListItem { task } = &doc.blocks[0].children[0].kind else {
             panic!("expected the outer list item");
         };
+        let mut counter = None;
         render_item(
             &mut w,
             &doc,
             src,
             *task,
             &doc.blocks[0].children[0].children,
-            fresh_ctx(),
+            BlockCtx {
+                list_depth: 1,
+                ..fresh_ctx()
+            },
             doc.blocks[0].children[0].src.start,
+            &mut counter,
         );
         let rendered: Vec<String> = w
             .lines
@@ -8823,20 +8910,6 @@ mod tests {
     fn trim_leading_header_on_no_children_at_all_is_empty() {
         let doc = Doc::parse("");
         assert_eq!(trim_leading_header(&[], &doc, 0), Vec::<Block>::new());
-    }
-
-    // ---- `push_item_marker`: line 4230-4231 ----
-
-    /// `push_item_marker`'s own `let Some(last_index) = w.list_counters.last_mut() else { return; }`
-    /// — the doc comment above it says `render_list` always pushes an entry first, so this is
-    /// always reachable in practice; direct, low-level call on a fresh `Writer` (`list_counters`
-    /// empty by construction) confirms the defensive early return, not a panic on an empty `Vec`.
-    #[test]
-    fn push_item_marker_with_no_open_list_returns_without_panicking() {
-        let mut w = fresh_writer();
-        assert!(w.list_counters.is_empty());
-        push_item_marker(&mut w);
-        assert!(w.lines.is_empty());
     }
 
     // =========================================================================================
