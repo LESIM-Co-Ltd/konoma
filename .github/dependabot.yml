@@ -1,0 +1,29 @@
+# Dependency updates. The v0.26.5 refresh was done entirely by hand: nothing in the repository
+# noticed that four direct dependencies had moved on, nor that a transitive one carried an
+# advisory. These PRs are a starting point for that review, not something to merge unread --
+# konoma has repeatedly needed to read an upstream's actual source before taking a bump.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # Capped below 0.3.9 in Cargo.toml on purpose: that release renders GFM alerts, footnotes,
+      # tables, and math natively, colliding with konoma's own implementations of the same blocks
+      # (two tests fail). Adopting it needs a design decision, not a version bump -- see
+      # docs/STATUS.md. The Cargo.toml requirement already blocks it; this keeps dependabot from
+      # reopening a PR that can never be merged as-is.
+      - dependency-name: "tui-markdown"
+        versions: [">=0.3.9"]
+      # Vendored as a local fork under vendor/mermaid-text via [patch.crates-io], carrying a
+      # CJK char-boundary fix upstream has not applied to its class-diagram parser. Bumping the
+      # version in Cargo.toml without re-syncing that vendored tree by hand produces a build that
+      # silently ignores the patch, so this one is upgraded manually.
+      - dependency-name: "mermaid-text"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

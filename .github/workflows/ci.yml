@@ -159,3 +159,35 @@ jobs:
 
       - name: Build (no default features)
         run: cargo build --locked --no-default-features --target ${{ matrix.target }}
+
+  # `cargo audit` against the RustSec advisory database. This job exists because the v0.26.5
+  # dependency refresh turned up an unsound advisory (RUSTSEC-2026-0253, `lru`, reachable only
+  # through `ratatui-core`) that nothing in the repository would have caught -- it was found by
+  # hand. `cargo audit` exits non-zero only for *vulnerabilities*; the informational
+  # `unmaintained` / `unsound` notices konoma carries through transitive dependencies it does not
+  # control (bincode, paste, ttf-parser, yaml-rust) are printed but do not fail the job, so this
+  # gate stays meaningful instead of being permanently red. Verified locally: the current tree
+  # reports four such warnings and still exits 0.
+  #
+  # It lives in this workflow rather than its own because `scripts/release-preflight.sh` requires
+  # every job of the `ci.yml` run for HEAD to be green -- putting it here is what stops a release
+  # from shipping a known vulnerability. Advisories published without a push to this repository are
+  # caught separately by `audit.yml`'s weekly schedule.
+  audit:
+    name: cargo audit (advisories)
+    runs-on: ubuntu-latest
+    # Reads Cargo.lock against the advisory database; it never builds the project.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Prebuilt binary rather than `cargo install cargo-audit`, which compiles for minutes. Same
+      # publisher as the release workflow's `taiki-e/upload-rust-binary-action`.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit
+        run: cargo audit

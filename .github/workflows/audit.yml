@@ -1,0 +1,31 @@
+name: Audit
+
+# A RustSec advisory can be published against a dependency konoma already ships, with no push to
+# this repository to trigger `ci.yml`. This scheduled run is what notices that. It deliberately
+# does not gate releases -- the `audit` job inside `ci.yml` does that, for the exact commit being
+# released -- so its only job is to turn a newly published advisory into a failed run someone sees.
+on:
+  schedule:
+    # Mondays, 03:00 UTC.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit
+        run: cargo audit
