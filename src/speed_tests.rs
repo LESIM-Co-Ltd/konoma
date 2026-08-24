@@ -158,7 +158,7 @@ fn warm_then_highlight_is_fast() {
 }
 
 /// `n` heading+body+link blocks of Markdown, plus a Rust fence sized proportionally to `n` (table/
-/// heading post-processing, tui-markdown parse, and code-fence highlighting all get exercised, and —
+/// heading post-processing, the block-model markdown parse, and code-fence highlighting all get exercised, and —
 /// since every part scales with `n` — doubling `n` should double the total work, keeping the
 /// allocation-scaling check below sensitive instead of being diluted by a fixed-size fence).
 fn md_doc(blocks: usize) -> String {
@@ -175,7 +175,7 @@ fn md_doc(blocks: usize) -> String {
 }
 
 // GUARDS: preview::markdown::render_markdown on a large document stays bounded (table/heading
-// post-processing and tui-markdown parse don't blow up). Converted from a wall-clock bound to a
+// post-processing and the block-model markdown parse don't blow up). Converted from a wall-clock bound to a
 // **deterministic allocation-scaling** check (same reasoning as `highlight_lang_large_source_is_bounded`
 // above): doubling the block count should roughly double the allocation, not quadruple it.
 #[test]

@@ -461,7 +461,7 @@ pub struct UiConfig {
     /// definitions are collected into a numbered footnotes section at the end. Default true. false
     /// leaves `[^1]` and its definition as literal text.
     pub md_footnotes: bool,
-    /// Render common inline HTML that GitHub shows but tui-markdown strips: `<del>`/`<s>`/`<strike>`
+    /// Render common inline HTML that GitHub shows but konoma's own renderer strips by default: `<del>`/`<s>`/`<strike>`
     /// as strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode (when the text
     /// maps), and `<br>` as a hard line break. Default true. `<mark>`/`<ins>` have no faithful
     /// terminal form and keep only their text either way. false leaves all these tags to be stripped.

@@ -4045,8 +4045,9 @@ fn e2e_markdown_front_matter_renders_as_metadata() {
     s.see("author");
     s.see("Real Heading"); // body heading still renders
                            // The needle above ("title" as plain text) is not enough by itself: with `md_frontmatter =
-                           // false` the exact same source still shows the literal word "title" on screen too (tui-markdown
-                           // renders the un-stripped `---`...`---` block itself — see the `off` test below), so the two
+                           // false` the exact same source still shows the literal word "title" on screen too (konoma's
+                           // own block-model renderer draws the un-stripped `---`...`---` block itself via
+                           // `render_metadata_block` — see the `off` test below), so the two
                            // configs are indistinguishable by text alone. What differs is *how* it's styled: konoma's own
                            // `render_front_matter` colors the key Cyan+DIM, closing the block with a rule. Dumped and
                            // confirmed by hand (`cargo test -- --nocapture`) before picking this needle.
@@ -4057,8 +4058,8 @@ fn e2e_markdown_front_matter_renders_as_metadata() {
                 && st.add_modifier.contains(ratatui::style::Modifier::DIM)
         },
         "konoma 自身のフロントマター key 色(Cyan+DIM) — off でも「title」というテキスト自体は\
-         画面に出る(tui-markdown 自身が生の---ブロックを描く)ので、テキストだけでは on/off を\
-         区別できない",
+         画面に出る(konoma 自身の render_metadata_block が生の---ブロックを描く)ので、テキストだけでは\
+         on/off を区別できない",
     );
     // The anchor (computed from the body heading, past the front matter offset) resolves.
     assert_eq!(
@@ -4097,7 +4098,8 @@ fn e2e_markdown_front_matter_off_leaves_body_intact() {
     s.see_styled(
         "title",
         |st| st.fg == Some(ratatui::style::Color::LightYellow),
-        "tui-markdown 自身のネイティブ YAML front-matter 色(LightYellow) — konoma 側の\
+        "konoma 自身の render_metadata_block が描く YAML front-matter 色(LightYellow・かつて\
+         tui-markdown が描いていた挙動を再現したもの) — konoma 側の\
          Cyan+DIM key 色にはならない(pre-pass が走っていない証拠)",
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -4556,11 +4558,14 @@ fn e2e_md_indented_code_block_whose_content_is_a_tag_is_focusable_and_copyable()
         // Drawn as a code block: the content is on screen verbatim, behind the `▎` gutter. Under
         // the bug the tag was stripped and this row was empty.
         //
-        // Both content lines land on the *same* row (`▎ <code>still code`) — tui-markdown runs an
-        // indented block's adjacent lines together, unlike a fenced one. That is upstream behavior
-        // rather than anything this fix does, and it is pinned directly in
-        // `markdown.rs::tui_markdown_runs_an_indented_blocks_adjacent_lines_together`; asserted here
-        // only as "both are present", so this test fails for the reason it is about.
+        // Both content lines land on the *same* row (`▎ <code>still code`) — konoma's own renderer
+        // runs an indented block's adjacent lines together, unlike a fenced one, faithfully
+        // reproducing the upstream tui-markdown behavior this was originally ported from. That
+        // fact used to be pinned by its own dedicated test
+        // (`markdown.rs::tui_markdown_runs_an_indented_blocks_adjacent_lines_together`), which was
+        // removed along with the legacy tui-markdown-based renderer in `479df2c`; it is asserted
+        // here directly instead, only as "both are present", so this test fails for the reason it
+        // is about.
         s.see("▎ <code>");
         s.see("still code");
         // …and the pass that would have rewritten it is demonstrably still running elsewhere, so
@@ -11510,8 +11515,9 @@ fn e2e_md_state_preserved_across_tab_switch() {
 
 /// Every Markdown decoration toggle off at once, on one document that exercises all of them —
 /// front-matter deliberately excluded (`md_frontmatter=false` does NOT restore the literal `---`
-/// text: `ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS` is unconditionally on in tui-markdown
-/// itself, see `e2e_markdown_front_matter_off_leaves_body_intact`'s own comment, so it would need a
+/// text: `ParseOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS` is unconditionally on in konoma's own
+/// pulldown-cmark options (`markdown_parse_options`), see
+/// `e2e_markdown_front_matter_off_leaves_body_intact`'s own comment, so it would need a
 /// style-level assertion, not a text one, and is already covered on its own). A robustness sweep:
 /// disabling every toggle together must never crash and must leave every marker exactly as literal
 /// text as disabling each one individually already proves — no toggle should start firing only when

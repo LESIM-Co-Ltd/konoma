@@ -4,7 +4,7 @@
 // and turns it into ratatui Line values. The heavy SyntaxSet/Theme is loaded only once via OnceLock.
 // Syntax comes from the two-face (bat-derived) extended set; the theme is TwoDark (= Zed's One Dark palette).
 // Regex is pure-Rust fancy-regex (default-fancy) — no oniguruma (C) needed, keeping distribution easy.
-// Fenced code inside md is handled by tui-markdown's own path (separate). Only the foreground color is
+// Fenced code inside md is handled by konoma's own markdown renderer path (separate). Only the foreground color is
 // adopted; the background is left to the terminal/app palette (the same "follow the theme" policy as icons).
 
 use std::collections::{HashMap, HashSet};

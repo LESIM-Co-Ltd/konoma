@@ -25,7 +25,7 @@ use crate::config::Rule;
 /// A resolved preview kind. Determined from the config rule (the first one that matched).
 #[derive(Debug, Clone)]
 pub enum PreviewKind {
-    /// Built-in Markdown renderer (decorated by tui-markdown; mermaid fences inside the md are composited via mermaid-text).
+    /// Built-in Markdown renderer (decorated by konoma's own block-model renderer; mermaid fences inside the md are composited via mermaid-text).
     Markdown(PathBuf),
     /// Built-in Mermaid renderer (standalone .mmd/.mermaid files; draws Unicode box lines via mermaid-text).
     Mermaid(PathBuf),

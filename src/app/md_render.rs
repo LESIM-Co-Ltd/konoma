@@ -347,7 +347,7 @@ impl App {
                 } else {
                     (src, origin)
                 };
-                // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode tui-markdown renders.
+                // Inline HTML (<kbd>/<del>/<sup>/<sub>/<br>) → Markdown/Unicode konoma's own renderer draws.
                 let (src, origin) = if self.cfg.ui.md_inline_html {
                     crate::preview::markdown::process_inline_html_traced(&src, &origin)
                 } else {

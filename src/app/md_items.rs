@@ -3,14 +3,15 @@ use super::*;
 impl App {
     /// Arrange the links in decorated Markdown lines to "show label only", build `md_items` (links +
     /// task checkboxes), and return the line list with the focused item rendered inverted (called just
-    /// before rendering). Since tui-markdown outputs the "label (URL)" form, `collapse_links` folds the
+    /// before rendering). Since konoma's own renderer outputs the "label (URL)" form (mirroring
+    /// tui-markdown's old output shape), `collapse_links` folds the
     /// accompanying URL (the URL is the hidden destination) and styles the label as a link plus (when
     /// configured) an icon. Checkbox markers are recognized by their dedicated style (`is_task_span`).
     /// Test-only equivalent of the production path (`ensure_md_cache` + `md_slice`) over caller-
     /// supplied lines: collapse links, rebuild `md_items`, and invert the focused item. Shares
     /// `build_md_items` / `invert_focused_line` with the cache path so the two cannot drift.
     /// Post-process decorated Markdown lines just before caching/rendering: collapse the `label
-    /// (URL)` links tui-markdown emits, then (when `ui.md_autolink`) auto-link bare URLs/emails, then
+    /// (URL)` links konoma's own renderer emits, then (when `ui.md_autolink`) auto-link bare URLs/emails, then
     /// (when `ui.md_emoji`) convert `:shortcode:` emoji. Shared by the cache build (`ensure_md_cache`)
     /// and the test-only decorate path so link/emoji collection cannot drift between them. Emoji runs
     /// last so width-affecting substitutions are reflected in the caller's reflow/`row_prefix`.

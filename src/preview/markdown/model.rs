@@ -1,15 +1,20 @@
 //! A structural block model of a preprocessed Markdown document, built by walking
-//! `pulldown-cmark`'s own event stream **exactly once** — the first step of a planned rendering
-//! refactor (`md-block-walk`). **This module is not wired into any *production* renderer yet**:
-//! `render_*` in the parent module still derives block structure the way it always has (from
-//! tui-markdown's *rendered output*, re-parsed by half a dozen ad-hoc line scanners —
-//! `code_block_mask`, `structure_mask`, `code_block_source_locs`, `task_source_locs`, ...). Those
-//! keep working exactly as before. `crate::preview::markdown::render` — this module's own sibling —
-//! *is* built on `Doc`, and reads every leaf block's inline content straight out of the single event
-//! stream `Doc::parse` records here (`Doc.events`), with no second parse of any kind; see that
-//! module's own doc comment. That renderer is itself not wired into any *preview* path yet (see its
-//! own module doc comment for the one caller it has today), so none of this changes any observable
-//! behavior of the running app.
+//! `pulldown-cmark`'s own event stream **exactly once** — the first step of what was, when this
+//! comment was originally written, a planned rendering refactor (`md-block-walk`). That refactor has
+//! since completed (`479df2c`, `defd06e`): `crate::preview::markdown::render` — this module's own
+//! sibling, built on `Doc` — is now the **sole** production Markdown renderer
+//! (`render_markdown_with_images` calls `render::render_doc` directly and unconditionally, with no
+//! fallback), and the legacy renderer this paragraph used to contrast it with (deriving block
+//! structure from tui-markdown's *rendered output*) no longer exists — `tui-markdown` itself was
+//! dropped entirely once nothing called into it any more. `Doc::parse` here still records the single
+//! event stream that renderer reads every leaf block's inline content from (`Doc.events`), with no
+//! second parse of any kind; see that module's own doc comment.
+//!
+//! (A handful of line-scanners in the parent module — `code_block_mask`/`structure_mask`/
+//! `code_block_source_locs`/`task_source_locs` and others — still exist independently of `Doc`, for
+//! write-back/copy purposes over the *rendered* lines rather than the model; whether they remain
+//! necessary now that the `Doc`-based renderer is the only one was not re-audited as part of this
+//! comment fix.)
 //!
 //! ## Why this exists
 //!
@@ -70,13 +75,11 @@
 //! synthetic `Paragraph` gets an `inline` range the same way a real one does — see
 //! `collect_stray_inline_run`'s own doc comment for exactly which events it spans.
 //!
-//! `#![allow(dead_code)]`: nothing outside this module's own `#[cfg(test)]` tests, the equally
-//! `#[cfg(test)]`-gated `md_model_snapshot_tests` (in `src/app/`, a sibling module that reuses this
-//! one's `pub(crate)` items — `parse_options`, `is_stray_inline_leaf`, `is_unmodeled_container_tag`
-//! — for its own independent completeness cross-check), or `render.rs` (see above — itself unwired
-//! into any *preview* path), calls into any of this yet — a plain, non-test build has no path from
-//! any preview to `Doc::parse`, so every item here is legitimately dead code in that configuration.
-//! Removing this allow is part of whichever future change actually wires a preview caller in.
+//! `#![allow(dead_code)]`: this comment predates the `md-block-walk` migration completing. `Doc::parse`
+//! itself is no longer dead code in a plain, non-test build — `render.rs`'s `render_doc` (called
+//! unconditionally by the production `render_markdown_with_images`) reads from it directly. Whether
+//! every other item in this module still needs the `allow` was not re-audited as part of this comment
+//! fix; do not assume it still holds without checking.
 #![allow(dead_code)]
 
 use std::ops::Range;

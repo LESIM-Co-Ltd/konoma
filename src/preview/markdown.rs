@@ -9715,11 +9715,13 @@ pub(crate) mod code_corpus {
                 "list item fence nested inside a plain block quote, with an inline-code continuation — masked by the pre-existing block-quote non-detection, not the glue defect",
                 "> - item:\n>   ```\n>   aaa\n>   ```\n>   `inline` after\n",
             ),
-            // Root cause (body side, a related but distinct upstream defect): tui-markdown also runs
-            // a list-item-nested fence's own **body** lines together onto a single rendered row (the
-            // same joining `tui_markdown_runs_an_indented_blocks_adjacent_lines_together` already pins
-            // for *indented* blocks — this is the fenced-in-a-list-item case of the same upstream
-            // behavior; a top-level fence's body is not affected, see that test's control case). This
+            // Root cause (body side, a related but distinct upstream defect): konoma's own renderer
+            // also runs a list-item-nested fence's own **body** lines together onto a single rendered
+            // row, faithfully reproducing the same upstream tui-markdown joining that used to be
+            // pinned for *indented* blocks by its own dedicated test (removed along with the legacy
+            // tui-markdown-based renderer in `479df2c`; see `list_item_fence_body_lines_stay_split_on_screen`
+            // below, whose doc comment covers this same joining) — this is the fenced-in-a-list-item
+            // case of the same upstream behavior; a top-level fence's body is not affected. This
             // does not change how many blocks are drawn, so the count stays in parity here and this
             // entry alone is expected to stay green; the on-screen row split (or lack of it) is
             // checked directly by `list_item_fence_body_lines_stay_split_on_screen` below.
@@ -11327,15 +11329,19 @@ mod task_scan_parity_tests {
     }
 
     /// KNOWN FAILURE, NOT YET FIXED (2026-08): a code fence's own body lines are supposed to reach
-    /// the screen one *source* line per rendered row. `tui_markdown_runs_an_indented_blocks_adjacent_lines_together`
-    /// above already pins that this holds for a **top-level** fence (its `"one"` / `"two"` control
-    /// case) — used here again as the control, to show the defect is specific to the list-nested
-    /// case and not something wrong with this test's own plumbing.
+    /// the screen one *source* line per rendered row. This test's own top-level control case (its
+    /// `"one"` / `"two"` case below) shows that holds for a **top-level** fence — used here again as
+    /// the control, to show the defect is specific to the list-nested case and not something wrong
+    /// with this test's own plumbing. (A former dedicated test,
+    /// `tui_markdown_runs_an_indented_blocks_adjacent_lines_together`, pinned the *indented*-block
+    /// case of the same joining directly; it was removed along with the legacy tui-markdown-based
+    /// renderer in `479df2c`.)
     ///
-    /// It does **not** hold when the fence sits inside a list item: tui-markdown runs the fenced
-    /// block's consecutive body lines together into a single rendered row there too — the
-    /// fenced-in-a-list-item case of the very same upstream joining
-    /// `tui_markdown_runs_an_indented_blocks_adjacent_lines_together` documents for *indented*
+    /// It does **not** hold when the fence sits inside a list item: konoma's own renderer runs the
+    /// fenced block's consecutive body lines together into a single rendered row there too,
+    /// faithfully reproducing the upstream tui-markdown behavior this was ported from — the
+    /// fenced-in-a-list-item case of the very same upstream joining the now-removed
+    /// `tui_markdown_runs_an_indented_blocks_adjacent_lines_together` used to document for *indented*
     /// blocks. The block *count* still matches the write-back scanner for this shape (see the
     /// "list item fence with a two-line body" entry added to `code_corpus`, which stays green), so
     /// this defect is invisible to every count-based test in this module — a document with this

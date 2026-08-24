@@ -25,7 +25,7 @@ fn main() {
 
 | 種別 | ライブラリ | 依存 |
 |------|------------|------|
-| md   | tui-markdown | ratatui-core |
+| md   | konoma（ブロックモデル） | pulldown-cmark |
 | 図   | mermaid-rs-renderer | fontdb |
 
 ### 表のインライン装飾・整列・エスケープ
@@ -118,7 +118,7 @@ x<sup>2</sup>、<del>非推奨</del> は打消し線。<br>で改行も効く。
 ```mermaid
 graph TD
   A[ツリー] -->|Enter| B{種別解決}
-  B -->|.md| C[tui-markdown]
+  B -->|.md| C[ブロックモデルレンダラ]
   B -->|mermaid fence| D[SVG → 実ピクセル]
   C --> E[全画面プレビュー]
   D --> E

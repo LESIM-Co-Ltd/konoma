@@ -1,9 +1,17 @@
-//! A renderer built directly on the block model (`crate::preview::markdown::model`), rather than on
-//! tui-markdown's own rendered output. **Not wired into any preview path yet** — the only caller is
-//! the diff harness in `src/app/md_render_diff_tests.rs`, which measures how closely this renderer's
-//! output matches the production pipeline's (`render_markdown_with_images`) for the block kinds it
-//! currently covers, over the full parity corpus. See that module's own doc comment for the numbers
-//! from the last run.
+//! The renderer built directly on the block model (`crate::preview::markdown::model`), rather than on
+//! tui-markdown's own rendered output (tui-markdown itself no longer exists — it was dropped entirely
+//! once nothing called into it any more; see `markdown.rs`'s own module doc comment). This module is
+//! now the **sole** production Markdown renderer: `render_markdown_with_images` calls `render_doc`
+//! directly and unconditionally, with no fallback to any other renderer.
+//!
+//! (Historical note: this doc comment used to describe an earlier, not-yet-wired-in stage of the
+//! `md-block-walk` migration, when this renderer's output was diffed against a separate legacy,
+//! tui-markdown-based renderer by a dedicated test harness, `src/app/md_render_diff_tests.rs`. Both
+//! the legacy renderer and that harness were deleted once the migration completed — see `479df2c`,
+//! "refactor(markdown): delete the legacy renderer, leaving one renderer". A number of comments
+//! throughout the rest of this file still refer to that harness and to a separate "production
+//! pipeline" as if they were distinct from this one; read those as describing that now-finished
+//! migration, not the current architecture.)
 //!
 //! ## Scope (this pass)
 //!
@@ -23,11 +31,12 @@
 //! quote, included — closing the one gap this pass used to have: `contains_unsupported` (below) no
 //! longer finds anything to screen out, so `RenderOut::unsupported` is always empty in practice and
 //! `render_doc` never actually skips a subtree any more. The machinery for that skip — `unsupported`
-//! itself, `contains_unsupported`, and `render_markdown_with_images`'s own fallback to the legacy,
-//! tui-markdown-based renderer whenever `unsupported` is non-empty — is kept regardless, unused in
-//! practice rather than deleted, since removing the legacy renderer it falls back to is a separate
-//! piece of work this pass does not do; see `contains_unsupported`'s own doc comment for the same
-//! point made where the code itself lives.
+//! itself and `contains_unsupported` — is kept regardless, unused in practice rather than deleted. It
+//! used to back a fallback in `render_markdown_with_images` to a separate legacy, tui-markdown-based
+//! renderer whenever `unsupported` was non-empty; that legacy renderer, and the fallback branch that
+//! called it, were deleted once the migration completed (`479df2c`), so `unsupported` is now read
+//! only by this module's own tests, asserting it stays empty; see `contains_unsupported`'s own doc
+//! comment for the same point made where the code itself lives.
 //!
 //! ## Alert/`<details>` interactivity — `BlockCtx.details_interactive`
 //!
@@ -133,9 +142,11 @@
 //! quoted heading or rule is expected to render identically on both sides — a match, not a mismatch —
 //! precisely *because* neither side gets the special treatment.
 //!
-//! `#![allow(dead_code)]`: like `model.rs` (see its own module doc comment), nothing outside
-//! `md_render_diff_tests` (`#[cfg(test)]`, in `src/app/`) calls into this module yet — a plain,
-//! non-test build has no path from any renderer to `render_doc` at all.
+//! `#![allow(dead_code)]`: this comment predates the `md-block-walk` migration completing. `render_doc`
+//! itself is no longer dead code — `markdown.rs`'s `render_markdown_with_images` (the sole production
+//! Markdown render path) calls it directly and unconditionally now. Whether every other item in this
+//! file still needs the `allow` was not re-audited as part of this comment fix; do not assume it still
+//! holds without checking.
 #![allow(dead_code)]
 
 use std::ops::Range;

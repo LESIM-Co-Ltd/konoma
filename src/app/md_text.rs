@@ -172,7 +172,7 @@ pub(super) fn invert_focused_line(
     Line::from(spans).style(style)
 }
 
-/// Fold the accompanying URL of the "label (URL)" that tui-markdown emits, leaving **only the label** in link style (blue underline,
+/// Fold the accompanying URL of the "label (URL)" that konoma's own renderer emits, leaving **only the label** in link style (blue underline,
 /// with a leading link icon when `icons=true`). The URLs are collected in order into `targets` and returned (hidden destinations).
 /// Pattern: `[label]` `" ("` `[URL(blue underline)]` `")"`. Spans that do not match are passed through unchanged.
 pub(super) fn collapse_links(

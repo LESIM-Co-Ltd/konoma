@@ -1966,7 +1966,7 @@ fn md_task_toggle_star_and_plus_bullets() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("todo.md");
-    // `*`/`+` bullet lists (GFM-compliant). tui-markdown renders checkboxes for all three kinds.
+    // `*`/`+` bullet lists (GFM-compliant). konoma's own renderer draws checkboxes for all three kinds.
     std::fs::write(&f, "* [ ] star task\n+ [ ] plus task\n").unwrap();
     let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
     app.tab.selected = app
@@ -2576,7 +2576,7 @@ fn links_collapse_to_label_only_with_optional_icon() {
     let blue = Style::new()
         .fg(Color::Blue)
         .add_modifier(Modifier::UNDERLINED);
-    // The span sequence corresponding to tui-markdown's "label (URL)". Followed by a trailing ".".
+    // The span sequence corresponding to konoma's own renderer's "label (URL)" output. Followed by a trailing ".".
     let lines = vec![Line::from(vec![
         Span::raw("See "),
         Span::raw("the docs"),
@@ -2712,7 +2712,7 @@ fn bare_url_becomes_a_focusable_md_item() {
     let dir = unique_tmp("konoma_autolink_item_test");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
-    // A plain paragraph line with a bare URL (as tui-markdown emits: one raw span).
+    // A plain paragraph line with a bare URL (as konoma's own renderer emits: one raw span).
     let lines = vec![Line::from(Span::raw(
         "visit https://konoma.example for docs",
     ))];
