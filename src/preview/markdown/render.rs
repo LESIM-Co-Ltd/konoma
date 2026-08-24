@@ -108,9 +108,11 @@
 //! output into: it owns the growing `Vec<Line>` the whole render produces, walks `model::Block`'s tree
 //! (not a raw `pulldown_cmark::Event` stream), and carries the small amount of extra state a block walk
 //! needs on top of a plain inline-content walk — which lists are currently open and their running item
-//! numbers, which blockquotes are currently open and their `>` prefix/style, and whether the next block
-//! owes the page a blank separator line before it starts. See `Writer`'s own doc comment for what each
-//! field holds and why (`list_counters`/`row_prefixes`/`row_styles`/`pending_block_gap`).
+//! numbers, and whether the next block owes the page a blank separator line before it starts. A
+//! blockquote's own `>` prefix/style is *not* state `Writer` carries at all — see
+//! `Writer::emit_row_prefixed`'s own doc comment for why a tree walk never needs a stack for that the
+//! way a flat event-stream walk would. See `Writer`'s own doc comment for what each field holds and
+//! why (`list_counters`/`pending_block_gap`).
 //!
 //! `Writer`'s row-building methods (`emit_row`/`append_span`/`join_with_space`/`end_row`, and the rest
 //! of the small set `Writer`'s own doc comment covers) are derived from `tui-markdown`'s own
@@ -271,10 +273,13 @@ struct BlockCtx {
 }
 
 /// Renders every top-level block in `doc` this file's own scope covers (see the module doc comment),
-/// in source order, through a single `Writer` shared across the whole walk — the same instance a
-/// `List`'s own items, a `Quote`'s own body, and any further nesting of either all render into, so
-/// that `pending_block_gap`/`list_counters`/`row_prefixes` bookkeeping carries correctly across every
-/// block boundary in the document, top level included (see `Writer`'s own doc comment). A block kind
+/// in source order, through a single top-level `Writer` — the same instance a `List`'s own items
+/// render into (nesting deeper only ever means a longer `list_counters`), so that
+/// `pending_block_gap`/`list_counters` bookkeeping carries correctly across every block boundary in
+/// the document, top level included (see `Writer`'s own doc comment). A `Quote`'s own body, by
+/// contrast, always renders into its own *isolated* sub-`Writer` first (`render_quote`'s own doc
+/// comment covers why) — this top-level instance never sees a quoted child's lines until they come
+/// back already fully decorated and `>`-prefixed. A block kind
 /// this pass does not cover — whether sitting directly in `doc.blocks` or found anywhere inside a
 /// `List`'s or `Quote`'s own subtree by `contains_unsupported` — contributes no lines and no
 /// separator at all, and is recorded in `unsupported` instead.
@@ -359,8 +364,6 @@ pub(crate) fn render_doc(
         link: None,
         styles,
         list_counters: Vec::new(),
-        row_prefixes: Vec::new(),
-        row_styles: Vec::new(),
         pending_block_gap: false,
         math,
         mermaid,
@@ -614,13 +617,19 @@ fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str
 ///   depth (`list_counters.len()`) is what sets every item marker's own column width, *regardless* of
 ///   how many spaces the source itself used for that level's indentation — konoma's own hand-picked
 ///   4-columns-per-level convention, read back unconditionally.
-/// * `row_prefixes`/`row_styles` — one entry per currently-open `Quote`, its leading `>` span and
-///   its `KonomaStyles::blockquote()` style. `emit_row` applies *every* currently-open prefix/style
-///   to *every* line it builds, list markers and headings and rules included — not merely paragraph
-///   text — which is exactly how a `Quote` containing a `List` ends up with each item's own marker
-///   line `>`-prefixed too (see `render_doc`'s module doc comment for the flip side of that same
-///   mechanism: a heading or rule *inside* a `Quote`, prefixed this same way, no longer matches the
-///   narrow, no-leading-span shape `decorate_headings_and_extras`'s own passes look for).
+///
+/// Deliberately *not* here: anything tracking a currently-open `Quote`'s own `>` prefix/style. An
+/// earlier version of this struct held that the way upstream `tui-markdown` did — a
+/// `row_prefixes: Vec<Span>`/`row_styles: Vec<Style>` pair of stacks every line-emitting method read
+/// from its own top — because that shape was copied wholesale from a renderer that walks a *flat*
+/// `pulldown_cmark::Event` stream, where a stack genuinely is the only way to know, while emitting one
+/// line deep inside a doubly-quoted paragraph, how many `>` markers are currently "open" around it.
+/// This file walks `model::Block`'s tree instead: `render_quote` assembles a whole quoted run of
+/// lines in an isolated sub-`Writer`, decorates it, and only *then* prefixes it — as a plain local
+/// value, never Writer-owned state — before handing it back to its caller (see that function's own
+/// doc comment, and [`Writer::emit_row_prefixed`]'s, for the full mechanism and why it reproduces
+/// nested `"> >"` prefixing without ever needing more than depth `1`).
+///
 /// * `pending_block_gap` — whether the *next* block-level construct owes the page a blank separator line
 ///   before it starts. Starts `false`. Every *block*-rendering function in this file — `render_heading`/
 ///   `render_paragraph`/`render_rule`/`render_list`/`render_quote` — sets it back to `true` on its own
@@ -672,8 +681,6 @@ struct Writer<'m> {
     link: Option<String>,
     styles: KonomaStyles,
     list_counters: Vec<Option<u64>>,
-    row_prefixes: Vec<Span<'static>>,
-    row_styles: Vec<Style>,
     pending_block_gap: bool,
     math: Option<MathCtx<'m>>,
     /// The mermaid-extraction context — unconditional (not `Option`, unlike `math`), since
@@ -872,39 +879,60 @@ impl<'m> Writer<'m> {
         self.inline_styles.last().copied().unwrap_or_default()
     }
 
-    /// Display-column width `emit_row` currently adds to *every* line via `row_prefixes` — one
-    /// column per currently-open quote's own `">"` span, plus the one further column `emit_row`
-    /// itself inserts (a single leading space) ahead of the innermost prefix, whenever at least one
-    /// quote is open; `0` when none is. Used by `render_code_block` to keep a quote-nested code
-    /// block's own full-width background band from overflowing the terminal once that prefix is
-    /// prepended on top of it — see that function's own doc comment.
-    fn prefix_width(&self) -> usize {
-        if self.row_prefixes.is_empty() {
-            0
-        } else {
-            self.row_prefixes.len() + 1
-        }
+    /// The single place a new `Line` legitimately enters `self.lines` in the ordinary case — no
+    /// prefix, no style patch. `render_math_slot`'s own `self.lines.extend(..)` is the one other,
+    /// deliberate exception (see this struct's own doc comment on `after_math` for why). Two callers
+    /// need a prefix and/or a style patch applied first — `render_quote` (a blockquote's `>` marker)
+    /// and `render_metadata_block` (front matter's own color) — see [`Writer::emit_row_prefixed`],
+    /// which this delegates to.
+    fn emit_row(&mut self, line: Line<'static>) {
+        self.emit_row_prefixed(line, None, None);
     }
 
-    /// Applies every currently-open blockquote prefix/style — see this struct's own doc comment on
-    /// `row_prefixes`/`row_styles` — to `line`, then appends it. The
-    /// only other place a new `Line` legitimately enters `self.lines` in this whole file is
-    /// `render_math_slot`'s own `self.lines.extend(..)` — deliberately bypassing this method, so that
-    /// call *doesn't* clear `after_math` the way every other new line does (see this struct's own doc
-    /// comment on that field for why). Every other method below that starts a fresh line
-    /// (`emit_blank_row`, `append_span`'s own fallback) goes through this one rather than pushing to
-    /// `self.lines` directly, so a prefix can never be accidentally skipped for one particular line
-    /// shape.
-    fn emit_row(&mut self, line: Line<'static>) {
+    /// The explicit form `emit_row` delegates to. `prefix`, when given, is inserted ahead of the
+    /// line's own content together with the single shared space that has always separated a `>`
+    /// (or nested `> >`) from what follows it; `style` patches the whole line, the same way
+    /// `Line::patch_style` always did.
+    ///
+    /// This used to be implicit: a `row_prefixes: Vec<Span>`/`row_styles: Vec<Style>` pair of stacks
+    /// on `Writer` that every `emit_row` call read from its own top, pushed by whichever
+    /// block-rendering function currently had one open and popped on its way out — a shape copied
+    /// from upstream `tui-markdown`, which walks a *flat* `pulldown_cmark::Event` stream and
+    /// therefore genuinely needs a stack: it has no other way to know, while emitting one line deep
+    /// inside a doubly-quoted paragraph, that two `>` markers (or, for metadata, one governing style)
+    /// are currently "open" around it, because nothing has assembled that paragraph's lines as a
+    /// standalone unit it could prefix all at once.
+    ///
+    /// konoma's own renderer walks `model::Block`'s tree instead, and every block-rendering function
+    /// that needs to wrap a prefix/style around a whole run of lines already assembles that run in
+    /// full — via an isolated sub-`Writer`, decorated, *before* handing it back — rather than
+    /// interleaving it, line by line, with its own parent's other output (see `render_quote`'s own
+    /// doc comment for the isolate-then-decorate-then-prefix shape this produces, and
+    /// `render_bar_prefixed_body`'s sibling one for an alert/`<details>` body). By the time either
+    /// caller is ready to call this method, it already holds the exact, single prefix/style that run
+    /// of lines needs, as a plain local value — there is nothing left for a stack to track: no
+    /// caller of this method is ever nested inside another live call to it (confirmed: `render_quote`
+    /// only ever prefixes already-fully-decorated lines, never lines a nested call is still
+    /// assembling; `render_metadata_block` only ever runs at the very top of a document, never inside
+    /// a quote or an alert/`<details>` body). A doubly-quoted line still ends up with two `>` markers
+    /// the same way it always did — not from two entries on one stack read at once, but from two
+    /// *separate* calls to this method, one per nesting level, each on its own `Writer` instance, each
+    /// prefixing what the level below it already finished and handed back.
+    fn emit_row_prefixed(
+        &mut self,
+        line: Line<'static>,
+        prefix: Option<&Span<'static>>,
+        style: Option<Style>,
+    ) {
         self.after_math = false;
         self.fresh_boundary = false;
-        let style = self.row_styles.last().copied().unwrap_or_default();
-        let mut line = line.patch_style(style);
-        if !self.row_prefixes.is_empty() {
+        let mut line = match style {
+            Some(s) => line.patch_style(s),
+            None => line,
+        };
+        if let Some(p) = prefix {
             line.spans.insert(0, Span::raw(" "));
-        }
-        for prefix in self.row_prefixes.iter().rev().cloned() {
-            line.spans.insert(0, prefix);
+            line.spans.insert(0, p.clone());
         }
         self.lines.push(line);
     }
@@ -1243,14 +1271,15 @@ fn events_iter<'a, 'e>(
 /// read directly (no second parse — see the module doc comment).
 ///
 /// Also maintains `w.heading_rule_shift` (see that field's own doc comment for the full mechanism):
-/// incremented by `1` for a level-1/2 heading whose own line is not currently quote-prefixed
-/// (`w.row_prefixes.is_empty()`) — exactly the condition under which `decorate_headings`'s own
-/// `heading_level` check will, later, actually recognize this line and insert a rule directly under
-/// it (see the module doc comment's own note on why a *quoted* heading gets none: `heading_level`
-/// requires the line's own first span to carry no leading prefix at all, which a `>`-prefixed line
-/// never does). A level 3–6 heading never increments this either way — `decorate_headings` only ever
-/// adds a line for level 1/2 (see that function's own body); levels 3–6 have their own leading `#`
-/// span stripped *in place*, changing no line count at all.
+/// incremented by `1` for every level-1/2 heading — `w` here is always the *un-prefixed* Writer a
+/// heading is drawn into (a heading inside a `Quote`/alert/`<details>` renders into that container's
+/// own isolated sub-`Writer`, whose `heading_rule_shift` is a fresh, separately-consulted counter —
+/// see `render_quote`'s/`render_bar_prefixed_body`'s own doc comments — never `w` at any point where
+/// a `>`/bar prefix is actually attached to a line) — exactly the condition under which
+/// `decorate_headings`'s own `heading_level` check will, later, actually recognize this line and
+/// insert a rule directly under it. A level 3–6 heading never increments this either way —
+/// `decorate_headings` only ever adds a line for level 1/2 (see that function's own body); levels 3–6
+/// have their own leading `#` span stripped *in place*, changing no line count at all.
 fn render_heading(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -1279,7 +1308,7 @@ fn render_heading(
     if let Some(suffix) = meta.to_suffix() {
         w.append_span(Span::styled(suffix, w.styles.heading_meta()));
     }
-    if level <= 2 && w.row_prefixes.is_empty() {
+    if level <= 2 {
         w.heading_rule_shift += 1;
     }
     w.pending_block_gap = true;
@@ -1317,11 +1346,21 @@ fn render_paragraph(w: &mut Writer<'_>, doc: &Doc<'_>, inline: Range<usize>) {
 /// embedded literally rather than reported as separate `Event::SoftBreak`s — `parse_metadata_block`
 /// (`firstpass.rs`) appends each raw source line the identical, non-inline-parsed way an indented code
 /// block's own body does (`append_code_text`), so there is never a container boundary for pulldown-cmark
-/// to have reported a soft break *at* in the first place. `Writer::write_text`'s own `.lines()` split —
-/// already written for exactly this shape, see that method's own doc comment — is what actually turns
-/// each YAML source line into its own screen row here. The `Event::SoftBreak` arm below is therefore
+/// to have reported a soft break *at* in the first place. The `.lines()` split below is what actually
+/// turns each YAML source line into its own screen row here. The `Event::SoftBreak` arm is therefore
 /// never reached by real front matter; it stays as a defensive no-op for a shape today's pulldown-cmark
 /// does not currently produce, rather than assumed unreachable.
+///
+/// Builds its own rows locally (`Span`/`Line` directly, `w.emit_row_prefixed(.., Some(style))`)
+/// rather than going through `Writer::write_text`/`append_span`, its shared, generic counterparts
+/// used by every *other* block-rendering function in this file: those two have no style parameter of
+/// their own (they read `w.cur_style()`, the *inline*-emphasis stack `<em>`/`<strong>` push/pop use,
+/// which front matter never touches at all), and front matter is the *only* place in the whole
+/// document that needs every row it produces patched with one particular color the moment each row is
+/// created — the same job `row_styles: Vec<Style>` used to do implicitly, by being read back inside
+/// `emit_row` itself. Keeping that one narrow need local, rather than adding a style parameter to two
+/// widely shared methods for a single caller, is what let `row_styles` disappear from `Writer`
+/// entirely — see [`Writer::emit_row_prefixed`]'s own doc comment for the fuller reasoning.
 fn render_metadata_block(w: &mut Writer<'_>, doc: &Doc<'_>) {
     let Some(start) = doc
         .events
@@ -1335,16 +1374,35 @@ fn render_metadata_block(w: &mut Writer<'_>, doc: &Doc<'_>) {
     if w.pending_block_gap {
         w.emit_blank_row();
     }
-    w.row_styles.push(w.styles.metadata_block());
-    w.emit_row(Line::from("---"));
-    w.emit_blank_row();
+    let style = w.styles.metadata_block();
+    w.emit_row_prefixed(Line::from("---"), None, Some(style));
+    w.emit_row_prefixed(Line::default(), None, Some(style));
     for ev in events_iter(&doc.events[start + 1..]) {
         match ev {
             Event::End(TagEnd::MetadataBlock(_)) => break,
-            Event::Text(t) => w.write_text(&t),
+            // Mirrors `Writer::write_text`'s own `.lines()` split exactly (see this function's own
+            // doc comment for why this doesn't just call that method): a fresh row per embedded line
+            // after the first, each new row's style patched at creation via `emit_row_prefixed`,
+            // every span itself carrying no style of its own (`cur_style()` is always `Style::default()`
+            // here — front matter never opens an inline-emphasis span) so it reads back through the
+            // row's own patched style, the identical mechanism every other styled row in this file
+            // uses.
+            Event::Text(t) => {
+                for (i, line) in t.lines().enumerate() {
+                    if i > 0 {
+                        w.emit_row_prefixed(Line::default(), None, Some(style));
+                    }
+                    let span = Span::styled(line.to_string(), w.cur_style());
+                    match w.lines.last_mut() {
+                        Some(l) => l.push_span(span),
+                        None => w.emit_row_prefixed(Line::from(vec![span]), None, Some(style)),
+                    }
+                }
+                w.pending_block_gap = false;
+            }
             // Defensive: see this function's own doc comment for why real front matter never
             // actually reaches this arm.
-            Event::SoftBreak => w.end_row(),
+            Event::SoftBreak => w.emit_row_prefixed(Line::default(), None, Some(style)),
             // Nothing else can legitimately appear inside a metadata block's own raw content (see
             // this function's own doc comment). Dropped the same defensive way `walk_inline`'s own
             // catch-all is, rather than assumed unreachable.
@@ -1352,8 +1410,7 @@ fn render_metadata_block(w: &mut Writer<'_>, doc: &Doc<'_>) {
         }
     }
     // Closes the front-matter block with a second styled "---" rule.
-    w.emit_row(Line::from("---"));
-    w.row_styles.pop();
+    w.emit_row_prefixed(Line::from("---"), None, Some(style));
     w.pending_block_gap = true;
 }
 
@@ -3466,15 +3523,19 @@ fn render_code_block_dispatch(
 ///
 /// ## The width used for the header/body/padding band
 ///
-/// `w.width` (`render_doc`'s own incoming column count), reduced by whatever quote-prefix width is
-/// currently open (`w.prefix_width()`) — never by list nesting, which (confirmed the same way — see
-/// this function's own leading-blank-line evidence above, gathered by rendering real list content and
-/// reading the columns back) adds no left margin of its own at all, in production or here. Reducing by
-/// the quote-prefix width keeps a quote-nested code block's own full-width background band from
-/// overflowing the terminal once `emit_row` prepends the `"> "` prefix on top of it — a genuine
-/// judgment call, not something checked against a production precedent, because the legacy renderer
-/// never decorated a quote-nested fence at all (its own line-based fence detection never recognized
-/// one — the first rendered row read `"> ```"`, not `"```"`). See
+/// `w.width` (`render_doc`'s own incoming column count) directly, with no further reduction here —
+/// never by list nesting, which (confirmed the same way — see this function's own leading-blank-line
+/// evidence above, gathered by rendering real list content and reading the columns back) adds no left
+/// margin of its own at all, in production or here. A fence nested inside a `Quote` still ends up
+/// narrower, but that narrowing already happened one level up: `render_quote` isolates its own
+/// children into a sub-`Writer` constructed with `width: w.width.saturating_sub(2)` (see that
+/// function's own doc comment) — this function, called with `w` bound to *that* sub-`Writer`, simply
+/// reads the width it was already given, the same way it would for a fence at any other nesting
+/// depth. This keeps a quote-nested code block's own full-width background band from overflowing the
+/// terminal once `render_quote`'s own re-emit loop prepends the `"> "` prefix on top of it — a
+/// genuine judgment call, not something checked against a production precedent, because the legacy
+/// renderer never decorated a quote-nested fence at all (its own line-based fence detection never
+/// recognized one — the first rendered row read `"> ```"`, not `"```"`). See
 /// `model::BlockKind::CodeBlock`'s own doc comment for why this model represents a quote-nested code
 /// block like any other regardless ("an intentional superset of what `parser_code_blocks` reports"),
 /// and `contains_unsupported`'s own doc comment above for where the old, blanket "any `CodeBlock`
@@ -3499,7 +3560,7 @@ fn render_code_block(
     if !w.lines.is_empty() && !w.fresh_boundary {
         w.emit_blank_row();
     }
-    let content_w = (w.width as usize).saturating_sub(w.prefix_width());
+    let content_w = w.width as usize;
     // The legacy renderer had to strip backticks from its own raw opening-fence text
     // (`opening_trimmed.trim_matches('`').trim()`); the model's own `lang` never carries backticks
     // (those are fence syntax, not part of the info string pulldown-cmark reports), so only the
@@ -3697,13 +3758,14 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
 /// this is `1` whenever there is anything to draw at all, `0` for the pathological empty case
 /// `render_table_cells`'s own `rows.is_empty()` guard already handles by drawing nothing.
 ///
-/// `w.width.saturating_sub(w.prefix_width())`: mirrors `render_code_block`'s own identical width
-/// reduction. Unlike before this rewrite, `w.prefix_width()` is no longer guaranteed `0` here — a
-/// quote-nested `Table` now reaches this function with `w.row_prefixes` non-empty (the enclosing
-/// `Quote`'s own `>` prefix), the same live prefix every other block type already renders under; the
-/// reduction is what keeps the table's own box drawing within the space actually left after that
-/// prefix, not merely defensive the way it was when only a `List`/`Details`-nested table (never
-/// prefixed) could reach here.
+/// `w.width` directly, with no further reduction here — mirrors `render_code_block`'s own identical
+/// choice (see that function's own doc comment for the fuller reasoning this borrows): a quote-nested
+/// `Table` renders into `render_quote`'s own already-narrowed sub-`Writer` (`width:
+/// w.width.saturating_sub(2)`), one level up, so by the time this function reads `w.width` the
+/// reduction has already happened — not something this function needs to redo, or can even see
+/// happening, since `render_quote`'s own `>` prefix is only ever attached to a line *after* this
+/// function has already finished producing it (see `Writer::emit_row_prefixed`'s own doc comment on
+/// why no block-rendering function ever runs while a prefix is actually "open").
 ///
 /// No leading-blank-line check and a "fresh boundary" exit (`pending_block_gap = false; after_math
 /// = true; fresh_boundary = true`), matching `render_image_group`'s/`render_mermaid_slot`'s own (see
@@ -3745,7 +3807,7 @@ fn render_table_from_model(
         header_rows,
         aligns: col_aligns,
     };
-    let content_w = (w.width as usize).saturating_sub(w.prefix_width());
+    let content_w = w.width as usize;
     for line in render_table_cells(&table, content_w as u16) {
         w.emit_row(line);
     }
@@ -4514,14 +4576,15 @@ fn push_item_marker(w: &mut Writer<'_>) {
     w.append_span(span);
 }
 
-/// Renders a **plain** `Quote { alert: None, .. }` block's own body into `w`, in place — pushes a `>`
-/// prefix/style onto `w.row_prefixes`/`w.row_styles`, walks the quote's own children (`render_block`,
-/// the same generic dispatcher a list item's non-first children go through — a quote's own body can
-/// contain any of `Heading`/`Paragraph`/`ThematicBreak`/`List`/a further nested `Quote`/`Details`, all
-/// of which get the same `>`-prefix treatment via `Writer::emit_row`; see this module's own `Writer`
-/// doc comment), then pops the prefix/style back off. A nested `Quote` reached this way (`>>`) simply
-/// recurses into this same function again, pushing a *second* `>` onto `w.row_prefixes`. A GitHub
-/// alert (`Quote { alert: Some(_), .. }`) never reaches this function at all — see
+/// Renders a **plain** `Quote { alert: None, .. }` block's own body into `w`, in place — walks the
+/// quote's own children into an isolated sub-`Writer`, decorates that output as a whole, then applies
+/// a `>` prefix/style to every one of its (already-decorated) lines explicitly, via
+/// `w.emit_row_prefixed` — the quote's own body can contain any of `Heading`/`Paragraph`/
+/// `ThematicBreak`/`List`/a further nested `Quote`/`Details`, all of which get the same `>`-prefix
+/// treatment this way. A nested `Quote` reached this way (`>>`) simply recurses into this same
+/// function again — see this function's own body, below, for how a *second* `>` ends up on a doubly-
+/// quoted line without either level ever needing to know about the other's prefix. A GitHub alert
+/// (`Quote { alert: Some(_), .. }`) never reaches this function at all — see
 /// `render_alert_from_model`, this function's own sibling for that shape.
 ///
 /// Always calls `render_block` with `math_here: false, extract_here: false`, regardless of whatever
@@ -4547,56 +4610,51 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         w.emit_blank_row();
         w.pending_block_gap = false;
     }
-    // Renders `children` into an **isolated** sub-`Writer` first — no inherited `row_prefixes` at
-    // all — and decorates *that* raw output (`decorate_headings_and_extras`) before this quote's own
-    // `>` prefix ever gets applied to a single line of it. Mirrors `render_bar_prefixed_body`'s own
-    // "decorate, then prepend the container's own bar" shape exactly (see that function's own doc
-    // comment for the fuller reasoning this borrows) — the identical, already-established pattern
-    // this file already uses for a GitHub alert's or a `<details>` block's own body, not a new
-    // mechanism invented for quotes specifically.
+    // Renders `children` into an **isolated** sub-`Writer` first, and decorates *that* raw output
+    // (`decorate_headings_and_extras`) before this quote's own `>` prefix ever gets applied to a
+    // single line of it. Mirrors `render_bar_prefixed_body`'s own "decorate, then prepend the
+    // container's own bar" shape exactly (see that function's own doc comment for the fuller
+    // reasoning this borrows) — the identical, already-established pattern this file already uses for
+    // a GitHub alert's or a `<details>` block's own body, not a new mechanism invented for quotes
+    // specifically.
     //
     // Root cause this closes (a *pre-existing* gap, not a regression — confirmed directly against
     // the shipped, pre-refactor production build: `"> - [ ] x\n"` shows the same undecorated,
-    // unfocusable `[ ] x` there too): the *previous* version of this function pushed its own `>`
-    // prefix onto the **shared** `w.row_prefixes`/`row_styles` stack and rendered every child
-    // straight into the same, single `w` — so by the time `render_doc`'s own, single, whole-document
-    // `decorate_headings_and_extras` pass finally ran (once, at the very end, over every line this
-    // whole render produced), a quoted child's own lines already carried their `>` prefix span,
-    // permanently. `decorate_extras`'s own `replace_task_checkbox`/`task_prefix_state` (and
-    // `decorate_headings`'s own heading-rule recognition) both require a line's own **first** span to
-    // carry no prefix at all — the module doc comment's own "How inline content is rendered" section
-    // already names this as a known, *accepted* limitation for a quoted heading/rule (matching
-    // production's own, equally `>`-blind `decorate_headings_and_extras` there) — but a checkbox failing to
-    // become interactive is a real, user-visible loss (no Tab focus, no `Space` toggle, no icon),
-    // exactly the shape `render_bar_prefixed_body` was already built to avoid for an alert's/
-    // `<details>`'s own body. This function had simply never been updated to use that same shape.
+    // unfocusable `[ ] x` there too): an *earlier* version of this function rendered every child
+    // straight into the same, single `w` with no isolation at all — so by the time `render_doc`'s
+    // own, single, whole-document `decorate_headings_and_extras` pass finally ran (once, at the very
+    // end, over every line this whole render produced), a quoted child's own lines already carried
+    // their `>` prefix span, permanently. `decorate_extras`'s own `replace_task_checkbox`/
+    // `task_prefix_state` (and `decorate_headings`'s own heading-rule recognition) both require a
+    // line's own **first** span to carry no prefix at all — the module doc comment's own "How inline
+    // content is rendered" section already names this as a known, *accepted* limitation for a quoted
+    // heading/rule (matching production's own, equally `>`-blind `decorate_headings_and_extras`
+    // there) — but a checkbox failing to become interactive is a real, user-visible loss (no Tab
+    // focus, no `Space` toggle, no icon), exactly the shape `render_bar_prefixed_body` was already
+    // built to avoid for an alert's/`<details>`'s own body. This function had simply never been
+    // updated to use that same shape.
     //
-    // Reuses the **unmodified** `Writer::emit_row` prefixing mechanism for the actual `>`-prepending
-    // step (the loop just below, after decoration) — rather than a bar-span manually prepended once
-    // per line the way `render_bar_prefixed_body` does — specifically so **nested** quotes keep
-    // rendering byte-for-byte as before: `emit_row`'s own convention is `N` bare `">"` spans
+    // The actual `>`-prepending step (the loop just below, after decoration) calls
+    // `w.emit_row_prefixed` directly, on the **outer** `w` — not `inner` — with a single, explicit
+    // `Span::raw(">")`/`w.styles.blockquote()` pair built locally right there, rather than mutating
+    // any state on either `Writer`. This is what produces the identical `N` bare `">"` spans
     // (adjacent, no space between them) followed by exactly *one* shared space, then content,
-    // regardless of nesting depth (see `Writer::row_prefixes`'s own doc comment) — a per-level
-    // "bar = '> '" prepend (an alert's/`<details>`'s own convention) would instead produce a space
-    // after *every* level's own `>`, changing `"> > x"` into a visually different shape for a
-    // doubly-quoted line than what this file (and production) have always drawn. Pushing this
-    // level's own `>` onto `w.row_prefixes` *right before* re-emitting the already-decorated lines
-    // (rather than before rendering `children`, as the previous version did) makes `emit_row` do the
-    // *identical* prefixing work as before, just fed already-decorated lines instead of raw ones —
-    // and, for a **nested** quote (recursion: a `Quote` found in `children` reaches this same
-    // function again with `w` bound to *this* level's own `inner`), the inner call's own re-emit loop
-    // sees `inner.row_prefixes` still empty at that point (nothing has pushed onto it yet — this
-    // level's own push happens later, below, *after* every child — nested quotes included — has
-    // already fully rendered into `inner`), so the recursion isolates and decorates one level at a
-    // time, cleanly, from the innermost quote outward.
+    // regardless of nesting depth, that the pre-migration renderer always drew — not from one method
+    // reading `N` entries off a stack in a single call, but from `N` *separate* calls to this method,
+    // one per nesting level, each on its own `Writer` instance: a doubly-quoted line (`"> > x"`)
+    // reaches its final shape because the *inner* quote's own `render_quote` call already prefixed it
+    // with one `"> "` before handing it back (as an ordinary, already-decorated line sitting in
+    // `inner.lines`), and *this* call prefixes it with a second `"> "` on top of that — never because
+    // `inner.row_prefixes.len()` reached `2` inside one shared stack. `inner` itself never receives
+    // any prefix/style of its own at construction (there is no `row_prefixes`/`row_styles` field left
+    // on `Writer` to set) — a quote's own `>` is applied only once, by whichever call is about to hand
+    // its own fully-decorated output back to its parent.
     let mut inner = Writer {
         lines: Vec::new(),
         inline_styles: Vec::new(),
         link: None,
         styles: w.styles,
         list_counters: Vec::new(),
-        row_prefixes: Vec::new(),
-        row_styles: Vec::new(),
         pending_block_gap: false,
         math: None,
         mermaid: MermaidCtx {
@@ -4605,7 +4663,7 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
             // Same `- 2` reduction `render_bar_prefixed_body` uses for an alert's/`<details>`'s own
             // body, applied here for the identical reason (a code block or table directly inside
             // this quote must not overflow once the `>` prefix lands on top of it — see
-            // `render_code_block`'s own doc comment on why `w.prefix_width()` exists at all). Not
+            // `render_code_block`'s own doc comment on how this narrowed width reaches it). Not
             // exact for a **doubly**-nested quote specifically (each isolated level only ever knows
             // its own immediate parent's *un-prefixed* width, not how many quote levels already sit
             // above that — a real, accepted imprecision, not a silent one: see the width field's own
@@ -4625,13 +4683,12 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         heading_rule_shift: 0,
         code: w.code,
         theme: w.theme.clone(),
-        // `w.width - 2`, always — not `w.width - w.prefix_width()`-after-pushing (which would be
-        // exact for a *first*-level quote but is unavailable to compute exactly for a nested one; see
-        // `mermaid.width`'s own comment above for why). Every quote reached through *this* file's own
-        // recursion isolates independently, so a doubly-quoted code block ends up narrower than the
-        // theoretically tightest fit by a column or two, never wider — the direction that keeps
-        // `render_code_block`'s own overflow-prevention guarantee (the reason `prefix_width()` exists
-        // in the first place) intact even where the reduction is not pixel-perfect.
+        // `w.width - 2`, always — not some tighter reduction computed from how many quote levels
+        // actually sit above this one (unavailable here; see `mermaid.width`'s own comment above for
+        // why). Every quote reached through *this* file's own recursion isolates independently, so a
+        // doubly-quoted code block ends up narrower than the theoretically tightest fit by a column
+        // or two, never wider — the direction that keeps `render_code_block`'s own
+        // overflow-prevention guarantee intact even where the reduction is not pixel-perfect.
         width: w.width.saturating_sub(2),
         icons: w.icons,
         tasks: w.tasks,
@@ -4653,13 +4710,11 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
     }
     let decorated =
         decorate_headings_and_extras(inner.lines, inner.width, inner.icons, inner.tasks);
-    w.row_prefixes.push(Span::raw(">"));
-    w.row_styles.push(w.styles.blockquote());
+    let prefix = Span::raw(">");
+    let style = w.styles.blockquote();
     for line in decorated {
-        w.emit_row(line);
+        w.emit_row_prefixed(line, Some(&prefix), Some(style));
     }
-    w.row_prefixes.pop();
-    w.row_styles.pop();
     // Merged back the identical way `render_bar_prefixed_body` merges its own `inner`'s
     // accumulators — see that function's own doc comment on why `images` is always empty here today
     // (`extract_here: false`, defensive all the same) while `code_blocks`/`task_marks` are not
@@ -5059,8 +5114,8 @@ fn render_details_from_model(
 /// bar prefix onto every resulting line and appending the result to the *caller's* own output.
 ///
 /// The sub-`Writer` starts with every piece of *positional* state reset (`lines`/`list_counters`/
-/// `row_prefixes`/`row_styles`/`pending_block_gap`/`pending_para_start`/`after_math`, all fresh or
-/// `false`) — a body is a standalone construct, not a continuation of whatever came before the
+/// `pending_block_gap`/`pending_para_start`/`after_math`, all fresh or `false`) — a body is a
+/// standalone construct, not a continuation of whatever came before the
 /// alert/`<details>` — but **inherits** `w`'s own `styles`/`code`/`theme`/`icons` (display
 /// configuration, not position) and renders at `w.width - 2` (the two columns
 /// `render_alert_from_model`/`render_details_from_model` reserve for the bar). `math: None`: math is
@@ -5094,7 +5149,10 @@ fn render_details_from_model(
 /// one's the same way a real, doubly-nested `> >` quote gets two `>` spans (one bar prepended per
 /// nesting level, from the inside out, each time this function recurses) — and so that an
 /// alert/`<details>` nested inside a **plain** `Quote` still gets that quote's own `>` prefix applied
-/// on top, via the outer `w`'s own `row_prefixes`.
+/// on top: this function's own bar-prefixed lines land in `w.lines` like any other content this
+/// quote's children produce, so the enclosing `render_quote`'s own re-emit loop (see that function's
+/// own doc comment) prepends its `>` to them the identical way it does to everything else in
+/// `inner.lines` once every child has finished.
 fn render_bar_prefixed_body(
     w: &mut Writer<'_>,
     doc: &Doc<'_>,
@@ -5108,8 +5166,6 @@ fn render_bar_prefixed_body(
         link: None,
         styles: w.styles,
         list_counters: Vec::new(),
-        row_prefixes: Vec::new(),
-        row_styles: Vec::new(),
         pending_block_gap: false,
         math: None,
         // `body_ctx.extract_here: false` (below) keeps both mermaid-fence extraction
@@ -5207,8 +5263,6 @@ mod tests {
             link: None,
             styles: KonomaStyles::default(),
             list_counters: Vec::new(),
-            row_prefixes: Vec::new(),
-            row_styles: Vec::new(),
             pending_block_gap: false,
             math: None,
             mermaid: MermaidCtx {
@@ -7388,8 +7442,8 @@ mod tests {
     /// recognized it. `render_quote` now decorates its own children in an isolated sub-`Writer`
     /// *before* the `>` prefix is ever applied (mirroring `render_bar_prefixed_body`'s own,
     /// already-established pattern for an alert's/`<details>`'s own body — see `render_quote`'s own
-    /// doc comment for the full mechanism and why it reuses `emit_row`'s own, unmodified prefixing
-    /// loop rather than a per-level bar-span prepend).
+    /// doc comment for the full mechanism and why it calls `emit_row_prefixed` directly, with an
+    /// explicit `>` span, rather than a per-level bar-span prepend).
     #[test]
     fn checkbox_inside_a_plain_quote_is_decorated_and_recorded() {
         let out = render("> - [ ] quoted task\n", true, false);
@@ -7406,9 +7460,10 @@ mod tests {
 
     /// **Nested** quotes (`> > x`) must keep rendering byte-for-byte as before this fix — `N` bare
     /// `>` spans, no space between them, exactly one shared space before the content, regardless of
-    /// depth (`Writer::row_prefixes`'s own doc comment) — proving the isolate-then-re-prefix
-    /// rewrite reuses `emit_row`'s own unmodified mechanism correctly rather than reproducing an
-    /// alert-bar-style "space after every level" shape.
+    /// depth (`Writer::emit_row_prefixed`'s own doc comment covers how `N` separate calls, one per
+    /// nesting level, reproduce this without a shared stack) — proving the isolate-then-re-prefix
+    /// shape works correctly rather than reproducing an alert-bar-style "space after every level"
+    /// shape.
     #[test]
     fn nested_quotes_keep_the_same_prefix_shape_as_before() {
         let out = render("> > nested\n", true, false);
@@ -8244,26 +8299,6 @@ mod tests {
             blocks: Vec::new(),
         };
         assert_eq!(heading_trailing_images(&doc, src, &(0..1)), None);
-    }
-
-    /// `Writer::prefix_width`'s own non-empty branch (`row_prefixes.len() + 1`) — before the plain-
-    /// quote checkbox fix (see `render_quote`'s own doc comment), this fired for every quote-nested
-    /// code block/table, reached through `render_code_block`/`render_table_from_model`'s own width
-    /// math while `w.row_prefixes` was non-empty. `render_quote` now isolates its own children into
-    /// a sub-`Writer` whose `row_prefixes` stays empty throughout their entire render (the quote's
-    /// own `>` is pushed only for the brief re-emit loop *after* children finish, onto the *caller's*
-    /// writer) — so no current call site ever invokes either function while `row_prefixes` is
-    /// non-empty any more, only `emit_row`'s own identical check does. Direct, low-level call:
-    /// confirms the method itself is still correct, independent of whether any current caller still
-    /// exercises it this way.
-    #[test]
-    fn prefix_width_reflects_open_quote_prefixes() {
-        let mut w = fresh_writer();
-        assert_eq!(w.prefix_width(), 0);
-        w.row_prefixes.push(Span::raw(">"));
-        assert_eq!(w.prefix_width(), 2);
-        w.row_prefixes.push(Span::raw(">"));
-        assert_eq!(w.prefix_width(), 3);
     }
 
     /// `heading_trailing_images`'s own "unbalanced within this heading — treat as real content"
