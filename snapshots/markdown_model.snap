@@ -3449,6 +3449,14 @@ Quote{alert=Some(Note), alert_title=""} src=11..32 text="> [!NOTE]\n> - [ ] in\n
     ListItem{task=Some(state=' ', state_at=26)} src=23..32 text="- [ ] in\n"
       Paragraph{inline=15..16:"in"} src=29..31 text="in"
 
+=== task_corpus: table cell containing a link-wrapped image ===
+-- BLOCKS (1) --
+Table{aligns=[None, None], rows=[[1..8:" crate ", 9..17:" badges "], [30..35:" ndk ", 36..72:" [![CI](a.svg)](https://ci.example) "]]} src=0..74 text="| crate | badges |\n|---|---|\n| ndk | [![CI](a.svg)](https://ci.example) |\n"
+
+=== task_corpus: table cell containing an image ===
+-- BLOCKS (1) --
+Table{aligns=[None, None], rows=[[1..8:" badge ", 9..18:" meaning "], [31..46:" ![AAA](a.svg) ", 47..54:" first "]]} src=0..56 text="| badge | meaning |\n|---|---|\n| ![AAA](a.svg) | first |\n"
+
 === task_corpus: table then task ===
 -- BLOCKS (2) --
 Table{aligns=[None, None], rows=[[1..4:" a ", 5..8:" b "], [21..24:" 1 ", 25..28:" 2 "]]} src=0..30 text="| a | b |\n|---|---|\n| 1 | 2 |\n"

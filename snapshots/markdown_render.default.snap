@@ -13387,6 +13387,77 @@ L0002 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=Task{state=' '}
   m01 line=0002 kind=Task{state=' '}
 
+=== task_corpus: table cell containing a link-wrapped image ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "crate"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "badges"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────┼────────┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "ndk"
+  s03 fg=-,bg=-,mod=- "   "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=blue,bg=-,mod=U "🖼 CI"
+  s07 fg=-,bg=-,mod=- "   "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0003 kind=Link{target="https://ci.example"}
+
+=== task_corpus: table cell containing an image ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬─────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "badge"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "meaning"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────┼─────────┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=D "🖼 AAA"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "first"
+  s07 fg=-,bg=-,mod=- "   "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴─────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === task_corpus: table then task ===
 -- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-

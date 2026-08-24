@@ -5156,11 +5156,30 @@ pub fn is_hidden_link_target(span: &Span<'_>) -> bool {
         && span.style.fg == Some(Color::Blue)
 }
 
-/// One inline piece of a table cell: (possibly styled) text, or a `[label](url)` link.
-#[derive(Clone)]
+/// One inline piece of a table cell: (possibly styled) text, a `[label](url)` link, or a
+/// `![alt](url)` image.
+#[derive(Clone, Debug)]
 enum CellSeg {
-    Text { text: String, style: Style },
-    Link { label: String, url: String },
+    Text {
+        text: String,
+        style: Style,
+    },
+    Link {
+        label: String,
+        url: String,
+    },
+    /// An image reference, shown as alt text only (`🖼 {alt}`), never as real pixels — unlike a
+    /// paragraph image (`image_text_fallback`/inline decode), a table cell cannot go through that
+    /// path today: `slot_of` (the inline-image placement lookup) takes only a URL and has no way to
+    /// carry a cell's width, and `md_image_cache`'s `MdImgEntry` holds a single decoded protocol
+    /// per path — so the same image used once at full pane width and once inside a narrow cell
+    /// would collide on one cache entry sized for whichever renders last. Fixing that needs the
+    /// cache keyed on (path, size) or multiple protocols per entry, which is out of scope here.
+    /// The URL isn't kept: nothing in the cell-rendering path (width measurement, wrapping, the
+    /// hidden-target span machinery `CellSeg::Link` uses) needs it while only alt text is shown.
+    Image {
+        alt: String,
+    },
 }
 
 impl CellSeg {
@@ -5177,6 +5196,29 @@ fn seg_width(seg: &CellSeg) -> usize {
     match seg {
         CellSeg::Text { text, .. } => UnicodeWidthStr::width(text.as_str()),
         CellSeg::Link { label, .. } => UnicodeWidthStr::width(label.as_str()),
+        CellSeg::Image { alt } => UnicodeWidthStr::width(cell_image_label(alt).as_str()),
+    }
+}
+
+/// A cell-local image label: alt text prefixed with the same `🖼` glyph `image_text_fallback` uses
+/// for a paragraph image that can't be shown inline — same icon, same "no alt -> generic word"
+/// fallback, so an image reads consistently whether it's in a paragraph or a table cell. Unlike
+/// `image_text_fallback`, the URL is never appended: a cell's column is usually far narrower than
+/// a full paragraph line, and `render_table_cells` already elides overflow separately via
+/// per-column width shaving, so tacking on a URL here would just get truncated away most of the
+/// time while making every cell wider than it needs to be the rest of the time.
+/// The glyph `cell_image_label` prefixes every label with — pulled out as a constant (rather than
+/// the literal repeated inline) purely so `prefix_link_icons` can check for it by name when
+/// deciding whether a `Link` segment is really a link-wrapped image badge in disguise; see that
+/// function's own doc comment.
+const CELL_IMAGE_GLYPH: &str = "🖼";
+
+fn cell_image_label(alt: &str) -> String {
+    let alt = alt.trim();
+    if alt.is_empty() {
+        format!("{CELL_IMAGE_GLYPH} image")
+    } else {
+        format!("{CELL_IMAGE_GLYPH} {alt}")
     }
 }
 
@@ -5227,8 +5269,86 @@ fn segs_width(segs: &[CellSeg]) -> usize {
     segs.iter().map(seg_width).sum()
 }
 
-/// Parse a cell's text into text/link segments. Only the plain `[label](url)` form (no nesting);
-/// an image `![alt](url)` and unmatched brackets fall through as plain text.
+/// Parse a `[label](url ...)` run starting at `s[0..]` (`s` must start with `[`): the bracket/paren
+/// scan shared by both `parse_cell_segments`'s link case (`[label](url)`) and its image case
+/// (`![alt](url)`, called on `s` with the leading `!` already stripped by the caller) — one
+/// bracket/paren robustness (title-stripping and `<...>` unwrapping via `strip_link_destination`,
+/// tolerance for unmatched brackets/parens) instead of two copies that drift apart. Returns
+/// `(bytes consumed from s, label/alt, url)`, or `None` if `s` doesn't have the full `[...](...)`
+/// shape (caller then leaves the `[`/`![` as plain text, one character at a time).
+/// Empty `label` is allowed here — a real `[](url)`/`![](url)` is valid CommonMark, and an image's
+/// alt text in particular is legitimately empty in the wild (a purely decorative badge). Callers
+/// that don't want an empty *link* label (there was never a matched case for one before images
+/// existed) reject it themselves; see `parse_cell_segments`'s link branch.
+fn parse_link_or_image_body(s: &str) -> Option<(usize, String, String)> {
+    debug_assert!(s.starts_with('['));
+    let close = s.find(']')?;
+    let after = &s[close + 1..];
+    let url_rest = after.strip_prefix('(')?;
+    let par = url_rest.find(')')?;
+    let label = &s[1..close];
+    let url = strip_link_destination(&url_rest[..par]);
+    if url.is_empty() {
+        return None;
+    }
+    // "[" + label + "]" + "(" + url-run + ")".
+    let consumed = close + 2 + par + 1;
+    Some((consumed, label.to_string(), url))
+}
+
+/// Parse a link-wrapped image, `[![alt](img)](href)`, starting at `s[0..]` (`s` must start with
+/// `"[!["`). One nesting level only — deliberately not a recursive-descent parse (this whole
+/// module stays a hand-rolled scanner; see `parse_cell_segments`'s own doc comment on why that
+/// tradeoff is fine for table cells). Returns `(bytes consumed from s, alt, href)` — **`href`, the
+/// *outer* link's own destination, not the image's own URL** (contrast `segment_as_block_image` in
+/// `render.rs`, which resolves this identical shape for a *paragraph* image by unwrapping the outer
+/// link and keeping the image's own `dest_url`, discarding `href`: there, the image is drawn as real
+/// pixels, so the link that merely wraps it has nothing left to point *at* once the image itself is
+/// on screen. A table cell never draws real pixels — `CellSeg::Image`'s own doc comment covers why —
+/// so the only thing a reader can actually open from this cell is a link, and the one destination
+/// that means anything to open is the *badge's own* link, `href`, not the small badge image file
+/// itself). `None` if `s` doesn't have this full nested shape (the image body doesn't parse, or
+/// nothing legible follows it as `(href)`); the caller then falls back to its own plain link/image
+/// handling for `s`, unchanged.
+fn parse_link_wrapped_image_body(s: &str) -> Option<(usize, String, String)> {
+    debug_assert!(s.starts_with("[!["));
+    // The inner image body, `![alt](img)`, starts at s[1..]; `parse_link_or_image_body` wants a
+    // leading `[`, so hand it s[2..] (past both the outer "[" and the image's own "!") the same way
+    // `parse_cell_segments`'s own image branch strips the "!" before calling it.
+    let (img_consumed, alt, _img_url) = parse_link_or_image_body(&s[2..])?;
+    // Index, within `s`, of the "]" that should close the *outer* link's label (i.e. right after the
+    // image body just consumed).
+    let close = 2 + img_consumed;
+    let after = s.get(close..)?.strip_prefix(']')?;
+    let url_rest = after.strip_prefix('(')?;
+    let par = url_rest.find(')')?;
+    let href = strip_link_destination(&url_rest[..par]);
+    if href.is_empty() {
+        return None;
+    }
+    // "[" + image-body + "]" + "(" + href-run + ")".
+    let consumed = close + 2 + par + 1;
+    Some((consumed, alt, href))
+}
+
+/// Parse a cell's text into text/link/image segments. The plain `[label](url)` / `![alt](url)`
+/// forms (no nesting inside the label/alt) are the common case. One nested shape *is* specially
+/// recognized — a link wrapping an image, `[![alt](img)](href)` (the badge-table idiom: GitHub
+/// READMEs commonly write a CI/version badge this way, image plus click-through link together) —
+/// via `parse_link_wrapped_image_body`, tried first whenever `[` is immediately followed by `![`.
+/// It becomes a single `Link` segment: the label is the same `🖼 {alt}` text a bare `CellSeg::Image`
+/// would show (`cell_image_label`, reused rather than duplicated — same icon, same empty-alt
+/// fallback), and the target is the *outer* `href`, not the image's own URL (see that function's own
+/// doc comment for why the two callers of this identical nested shape, this one and
+/// `segment_as_block_image` in `render.rs`, deliberately keep opposite halves of it). Any other
+/// nesting inside a label/alt (a link wrapping something other than a lone image, or nested more
+/// than this one level) is *not* specially recognized: the outer `[` falls through to the plain
+/// `parse_link_or_image_body` scan below, which greedily reads up to the *first* `]`/`(...)` pair it
+/// finds, so it can come out as one `Link` with a garbled label plus leftover trailing text —
+/// unchanged from this function's pre-image-support behavior. Not fixed here: true arbitrary nesting
+/// needs a recursive-descent parse, out of scope for a table cell (see
+/// `cell_segments_leave_unsupported_nesting_unchanged` in tests, which pins this exact fallback
+/// output for a case the special-case above doesn't cover).
 fn parse_cell_segments(cell: &str) -> Vec<CellSeg> {
     let mut out = Vec::new();
     let mut text = String::new();
@@ -5244,27 +5364,46 @@ fn parse_cell_segments(cell: &str) -> Vec<CellSeg> {
             i += consumed;
             continue;
         }
-        if rest.starts_with('[') && !text.ends_with('!') {
-            if let Some(close) = rest.find(']') {
-                let after = &rest[close + 1..];
-                if let Some(url_rest) = after.strip_prefix('(') {
-                    if let Some(par) = url_rest.find(')') {
-                        let label = &rest[1..close];
-                        let url = strip_link_destination(&url_rest[..par]);
-                        let url = url.as_str();
-                        if !label.is_empty() && !url.is_empty() {
-                            if !text.is_empty() {
-                                out.push(CellSeg::plain(std::mem::take(&mut text)));
-                            }
-                            out.push(CellSeg::Link {
-                                label: label.to_string(),
-                                url: url.to_string(),
-                            });
-                            // Consume the whole "[label](url)" and continue from after it.
-                            i += close + 2 + par + 1;
-                            continue;
-                        }
+        if let Some(bang_rest) = rest.strip_prefix('!') {
+            if bang_rest.starts_with('[') {
+                if let Some((consumed, alt, _url)) = parse_link_or_image_body(bang_rest) {
+                    if !text.is_empty() {
+                        out.push(CellSeg::plain(std::mem::take(&mut text)));
                     }
+                    out.push(CellSeg::Image { alt });
+                    // Consume the "!" too.
+                    i += 1 + consumed;
+                    continue;
+                }
+            }
+        } else if rest.starts_with('[') {
+            // A link wrapping a lone image (`[![alt](img)](href)`) — tried before the plain link
+            // scan below, since that one would otherwise greedily match the image's own inner
+            // `]`/`(...)` pair first and garble both halves (see this function's own doc comment).
+            if rest.starts_with("[![") {
+                if let Some((consumed, alt, href)) = parse_link_wrapped_image_body(rest) {
+                    if !text.is_empty() {
+                        out.push(CellSeg::plain(std::mem::take(&mut text)));
+                    }
+                    out.push(CellSeg::Link {
+                        label: cell_image_label(&alt),
+                        url: href,
+                    });
+                    i += consumed;
+                    continue;
+                }
+            }
+            // An empty link label (`[](url)`) is left as plain text — matches this function's
+            // pre-image behavior exactly (see `parse_link_or_image_body`'s own doc comment on why
+            // only the link side, not the image side, keeps this restriction).
+            if let Some((consumed, label, url)) = parse_link_or_image_body(rest) {
+                if !label.is_empty() {
+                    if !text.is_empty() {
+                        out.push(CellSeg::plain(std::mem::take(&mut text)));
+                    }
+                    out.push(CellSeg::Link { label, url });
+                    i += consumed;
+                    continue;
                 }
             }
         }
@@ -5367,6 +5506,30 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
                     url: url.clone(),
                 });
             }
+            // Same atomic-label treatment as `Link` above (a mid-icon split would look worse than
+            // just bumping the whole thing to the next line). No separate hidden-target span to
+            // preserve here, so on the rare "doesn't fit even alone" branch we can just downgrade
+            // straight to a dim `Text` segment holding the already-truncated label — from here on
+            // only the rendered spans matter, not which `CellSeg` variant produced them.
+            CellSeg::Image { alt } => {
+                let label = cell_image_label(alt);
+                let lw = UnicodeWidthStr::width(label.as_str());
+                if cur_w + lw > w && cur_w > 0 {
+                    lines.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
+                if lw > w {
+                    let truncated = truncate_to_width(&label, w);
+                    cur_w += UnicodeWidthStr::width(truncated.as_str());
+                    cur.push(CellSeg::Text {
+                        text: truncated,
+                        style: Style::new().add_modifier(Modifier::DIM),
+                    });
+                } else {
+                    cur_w += lw;
+                    cur.push(CellSeg::Image { alt: alt.clone() });
+                }
+            }
         }
     }
     if !cur.is_empty() {
@@ -5392,7 +5555,16 @@ fn prefix_link_icons(segs: &mut [CellSeg], icons: bool) {
     }
     for seg in segs {
         if let CellSeg::Link { label, .. } = seg {
-            *label = format!("{} {label}", crate::ui::icons::link_icon());
+            // A link-wrapped image (`[![alt](img)](href)`, see `parse_cell_segments`) is already a
+            // `Link` segment whose label is `cell_image_label`'s own `"🖼 {alt}"` — it already reads
+            // as one thing (a badge you can open), so also stacking the link glyph in front of it
+            // would double-brand the same badge with two icons and suggest two separate entities
+            // instead of one. Every *other* `Link` label can never legitimately start with this
+            // glyph on its own (it isn't produced by any other path into this field), so this check
+            // only ever fires for that one shape.
+            if !label.starts_with(CELL_IMAGE_GLYPH) {
+                *label = format!("{} {label}", crate::ui::icons::link_icon());
+            }
         }
     }
 }
@@ -5512,6 +5684,14 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
                         CellSeg::Link { label, url } => {
                             spans.push(Span::styled(label.clone(), link_label_style()));
                             spans.push(Span::styled(url.clone(), hidden_link_target_style()));
+                        }
+                        // Alt text only (`🖼 {alt}`, dim) — see `CellSeg::Image`'s own doc comment
+                        // for why real pixels aren't attempted here.
+                        CellSeg::Image { alt } => {
+                            spans.push(Span::styled(
+                                cell_image_label(alt),
+                                cell_style.patch(Style::new().add_modifier(Modifier::DIM)),
+                            ));
                         }
                     }
                 }
@@ -5860,6 +6040,69 @@ mod tests {
     }
 
     #[test]
+    fn table_cell_image_renders_alt_text_not_raw_markup() {
+        // A ![alt](url) inside a table cell used to fall through parse_cell_segments one character
+        // at a time as literal text, so the raw "![AAA](a.svg)" markup showed up verbatim in the
+        // cell (a bug reported by the user against a real README badge table). It must now render
+        // as the same "🖼 {alt}" fallback a paragraph image uses when it can't be shown inline.
+        let md = "| badge | meaning |\n|---|---|\n| ![AAA](a.svg) | first |\n";
+        let lines = render_markdown(md, 60, BG, "TwoDark", false);
+        let joined_all: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(
+            !joined_all.contains("![AAA]") && !joined_all.contains("a.svg"),
+            "生の Markdown 記法/URL が残っている: {joined_all:?}"
+        );
+        let row = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|sp| sp.content.as_ref().contains("🖼")))
+            .expect("画像セルの行が無い");
+        let label = row
+            .spans
+            .iter()
+            .find(|sp| sp.content.as_ref().contains("🖼"))
+            .unwrap();
+        assert_eq!(label.content.as_ref(), "🖼 AAA");
+        assert!(
+            label.style.add_modifier.contains(Modifier::DIM),
+            "画像フォールバックは dim: {:?}",
+            label.style
+        );
+        // A cell with no alt text falls back to the generic word, same convention as
+        // `image_placeholder_lines`'s own empty-alt case.
+        let md_no_alt = "| x |\n|---|\n| ![](a.svg) |\n";
+        let lines_no_alt = render_markdown(md_no_alt, 60, BG, "TwoDark", false);
+        let joined_no_alt: String = lines_no_alt
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(joined_no_alt.contains("🖼 image"), "{joined_no_alt:?}");
+    }
+
+    #[test]
+    fn table_image_rows_align_after_alt_fallback() {
+        // Column alignment holds with an image cell mixed alongside plain-text cells and a longer
+        // alt-text image cell — every row (including the border) must end up the same display width.
+        let md = "| badge | meaning |\n|---|---|\n| ![AAA](a.svg) | first |\n\
+                  | ![a longer alt text](b.svg) | second |\n| plain | third |\n";
+        let lines = render_markdown(md, 60, BG, "TwoDark", false);
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|sp| UnicodeWidthStr::width(sp.content.as_ref()))
+                    .sum()
+            })
+            .collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    }
+
+    #[test]
     fn table_link_rows_align_after_hiding_targets() {
         // Column alignment holds by "display width excluding the hidden span" (assuming
         // collapse_links strips it before display). Every row (including the border) must end up
@@ -5912,13 +6155,16 @@ mod tests {
     }
 
     #[test]
-    fn cell_segments_parse_links_and_leave_images_as_text() {
-        // The basic form, surrounding text, and an image (with `!`) pass through unchanged; unsupported brackets also pass through unchanged.
+    fn cell_segments_parse_links_and_images() {
+        // The basic link form and surrounding text; unsupported brackets pass through unchanged.
         let segs = parse_cell_segments("see [a](b.md) end");
         assert_eq!(segs.len(), 3);
         assert!(matches!(&segs[1], CellSeg::Link { label, url } if label == "a" && url == "b.md"));
+        // An image `![alt](url)` becomes an Image segment (alt text only — see `CellSeg::Image`'s
+        // own doc comment for why not real pixels). This used to fall through as literal text
+        // one character at a time — the exact bug this test now pins the fix for.
         let img = parse_cell_segments("![alt](x.png)");
-        assert!(matches!(&img[..], [CellSeg::Text { text, .. }] if text == "![alt](x.png)"));
+        assert!(matches!(&img[..], [CellSeg::Image { alt }] if alt == "alt"));
         let broken = parse_cell_segments("[no url] and [y](");
         assert!(broken.iter().all(|s| matches!(s, CellSeg::Text { .. })));
         // A link destination with a title, or wrapped in <>, is reduced to just the URL/path (making it an openable target).
@@ -5931,6 +6177,73 @@ mod tests {
         assert!(
             matches!(&angled[..], [CellSeg::Link { url, .. }] if url == "./with space.md"),
             "<> 囲みは中身だけ"
+        );
+        // The image case shares the same bracket/paren scan (`parse_link_or_image_body`), so it
+        // gets the identical <>/title robustness for free — checked here rather than assumed.
+        let img_angled = parse_cell_segments("![a](<./with space.png> \"Title\")");
+        assert!(matches!(&img_angled[..], [CellSeg::Image { alt }] if alt == "a"));
+        // An empty alt still resolves to an Image segment (rendered later as the generic "image" word).
+        let img_no_alt = parse_cell_segments("![](x.png)");
+        assert!(matches!(&img_no_alt[..], [CellSeg::Image { alt }] if alt.is_empty()));
+        // A bare `!` not immediately followed by `[` is just literal text, same as before.
+        let bang_only = parse_cell_segments("wow! [a](b.md)");
+        assert!(matches!(&bang_only[0], CellSeg::Text { text, .. } if text == "wow! "));
+        assert!(matches!(&bang_only[1], CellSeg::Link { label, .. } if label == "a"));
+    }
+
+    #[test]
+    fn cell_segments_recognize_link_wrapped_image_as_a_badge_link() {
+        // The GitHub-README badge idiom: a click-through link wrapping an image,
+        // `[![alt](img)](href)` (e.g. `[![CI](a.svg)](https://ci.example)`). This becomes a single
+        // `Link` segment whose label is the same `🖼 {alt}` a bare `CellSeg::Image` would show, and
+        // whose target is the *outer* href (the click-through destination) — not the image's own
+        // URL, which is discarded (see `parse_link_wrapped_image_body`'s own doc comment on why a
+        // table cell keeps the opposite half of this shape from a paragraph image).
+        let segs = parse_cell_segments("[![CI](a.svg)](https://ci.example)");
+        assert!(
+            matches!(&segs[..], [CellSeg::Link { label, url }]
+                if label == "🖼 CI" && url == "https://ci.example"),
+            "{segs:?}",
+        );
+        // Empty alt still falls back to the generic "image" word, same as a bare image.
+        let no_alt = parse_cell_segments("[![](a.svg)](https://ci.example)");
+        assert!(
+            matches!(&no_alt[..], [CellSeg::Link { label, url }]
+                if label == "🖼 image" && url == "https://ci.example"),
+            "{no_alt:?}",
+        );
+    }
+
+    #[test]
+    fn cell_segments_leave_unsupported_nesting_unchanged() {
+        // The one nested shape `parse_cell_segments` specially recognizes is a link wrapping a
+        // *lone* image (see the test above). Anything else nested inside a `[...]` label still
+        // isn't specially recognized (documented limitation on `parse_cell_segments`'s own doc
+        // comment): a link wrapping an image with **no** trailing `(href)` at all doesn't match that
+        // special case (`parse_link_wrapped_image_body` returns `None` — nothing follows the image
+        // body as a destination), so it falls through to the same old greedy bracket/paren scan,
+        // landing on the *first* `]`/`(...)` pair — the image's own `![alt]`/`(img)` — and coming out
+        // as one garbled Link plus leftover trailing text. Unchanged from before image support
+        // existed; pinned here so a future change to this fallback is a deliberate one.
+        let segs = parse_cell_segments("[![alt](img.png)] no href here");
+        assert!(
+            matches!(&segs[0], CellSeg::Link { label, url } if label == "![alt" && url == "img.png"),
+            "{segs:?}",
+        );
+    }
+
+    #[test]
+    fn table_link_icon_does_not_double_up_on_a_badge_link() {
+        // `ui.icons=true` prepends the Nerd Font link glyph to an ordinary `Link` label
+        // (`table_link_icon_matches_paragraph_links_and_keeps_alignment`, below) — but a
+        // link-wrapped-image badge's label already carries its own `🖼` glyph, so it must not also
+        // get the link glyph stacked in front (two icons on one badge would read as two things, not
+        // one clickable image). See `prefix_link_icons`'s own doc comment.
+        let mut segs = parse_cell_segments("[![CI](a.svg)](https://ci.example)");
+        prefix_link_icons(&mut segs, true);
+        assert!(
+            matches!(&segs[..], [CellSeg::Link { label, .. }] if label == "🖼 CI"),
+            "{segs:?}",
         );
     }
 
@@ -8957,6 +9270,23 @@ pub(crate) mod task_corpus {
             (
                 "table then task",
                 "| a | b |\n|---|---|\n| 1 | 2 |\n\n- [ ] after table\n",
+            ),
+            // A table cell holding an image (`![alt](url)`, e.g. the badge-table idiom common in
+            // README files such as `ndk`'s) used to fall through `parse_cell_segments` one character
+            // at a time as literal text — the raw `![AAA](a.svg)` markup showed up verbatim instead
+            // of even the alt text. Fixed by giving `CellSeg` an `Image` variant; pinned here through
+            // the golden-snapshot net (no checkboxes in this one — same as "no tasks" above).
+            (
+                "table cell containing an image",
+                "| badge | meaning |\n|---|---|\n| ![AAA](a.svg) | first |\n",
+            ),
+            // The more common real-world shape (shields.io-style CI/version badges in a crate's
+            // README table): the image is itself wrapped in a click-through link,
+            // `[![alt](img)](href)`. See `parse_link_wrapped_image_body`'s own doc comment for why
+            // this renders with the image's alt text but the *link's* own href as the open target.
+            (
+                "table cell containing a link-wrapped image",
+                "| crate | badges |\n|---|---|\n| ndk | [![CI](a.svg)](https://ci.example) |\n",
             ),
             ("html block then task", "<div>hi</div>\n\n- [ ] after html\n"),
             ("inline code lookalike", "- [ ] real `- [ ] fake`\n"),
