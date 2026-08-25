@@ -22,6 +22,22 @@ All notable changes to konoma are documented in this file. The format is based o
   splice's decision is made, so a first-child-only image is drawn as a real image block, same as
   any other position.
 
+### Added
+- **An HTML `<table>` in a Markdown document is now drawn as a real table.** The side-by-side
+  screenshot grid a great many READMEs write as `<table><tr><td>…` (konoma's own included) used to
+  lose its structure completely -- the images rendered one after another and the captions followed
+  as plain left-aligned lines. It now goes through the same box-drawing renderer a GFM `|` table
+  does, including per-cell `align="left|center|right"`, `<th>` header cells (a leading run of
+  all-`<th>` rows gets a header rule; a `<th>` anywhere else is styled on its own), `<thead>`/
+  `<tbody>`/`<tfoot>` wrappers, and `<b>`/`<i>`/`<code>`/`<a href>`/`<img>` inside a cell.
+  Works inside a blockquote and inside `<details>` too. Not modeled in this pass: `colspan`/
+  `rowspan` (drawn as one plain cell), a nested `<table>` (flattened into its enclosing cell),
+  `<caption>` (dropped), `<br>` in a cell (a space, not a line break), an attribute written without
+  quotes (`align=center`), and a `<table>` wrapped in a `<div>` (left as plain text, as before). Two shapes deliberately keep their old rendering rather than becoming a
+  table, so that no text can go missing: a `<table>` interrupted by a blank line (not a single HTML
+  block at all, per CommonMark), and a `<table>` with further content glued onto the same block
+  right after its `</table>`.
+
 ### Changed
 - Markdown preview rendering is now handled end to end by a single, built-in renderer, and the
   `tui-markdown` crate it used to sit on top of has been removed as a dependency entirely. This

@@ -160,16 +160,19 @@ use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::model::{code_body_text, html_body_text, AlertKind, Block, BlockKind, Doc, Task};
+use super::model::{
+    code_body_text, html_body_text, html_body_text_in, AlertKind, Block, BlockKind, Doc,
+    HtmlTableCell, Task,
+};
 use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
-    details_marker_line, gutter_span, highlight_body, image_loading_line, image_placeholder_lines,
-    image_text_fallback, is_mermaid_info, math_placeholder_lines, math_raw_lines, math_url,
-    mermaid_fence_url, mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
-    parse_cell_segments, prefix_link_icons, render_html_block, render_mermaid_block,
-    render_table_cells, scan_inline_math, task_prefix_state, CellSeg, CodeStyle, ColAlign,
-    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
-    TableCells,
+    details_marker_line, gutter_span, highlight_body, html_cell_to_markdown, image_loading_line,
+    image_placeholder_lines, image_text_fallback, is_mermaid_info, math_placeholder_lines,
+    math_raw_lines, math_url, mermaid_fence_url, mermaid_placeholder_lines, next_details_open,
+    normalize_cell, pad_to_width, parse_cell_segments, prefix_link_icons, render_html_block,
+    render_mermaid_block, render_table_cells, scan_inline_math, task_prefix_state, CellAttrs,
+    CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot,
+    MermaidSlot, SourceRun, TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -568,6 +571,9 @@ pub(crate) fn render_doc(
             BlockKind::Html { body_spans, .. } => {
                 render_html_block_from_model(&mut w, src, body_spans)
             }
+            BlockKind::HtmlTable { body_spans, rows } => {
+                render_html_table_from_model(&mut w, src, body_spans, rows)
+            }
         }
     }
     let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
@@ -628,7 +634,7 @@ pub(crate) fn render_doc(
 fn contains_unsupported(blocks: &[Block], in_quote: bool) -> Option<&'static str> {
     for b in blocks {
         match &b.kind {
-            BlockKind::Table { .. } | BlockKind::Html { .. } => {}
+            BlockKind::Table { .. } | BlockKind::Html { .. } | BlockKind::HtmlTable { .. } => {}
             BlockKind::Heading { .. }
             | BlockKind::Paragraph { .. }
             | BlockKind::ThematicBreak
@@ -3855,9 +3861,107 @@ fn render_table_from_model(
         rows: cells,
         header_rows,
         aligns: col_aligns,
+        // A GFM cell carries no alignment or header state of its own — its column's delimiter row
+        // carries both — so there is nothing to override here; see `TableCells::cell_attrs`.
+        cell_attrs: Vec::new(),
     };
     let content_w = w.width as usize;
     for line in render_table_cells(&table, content_w as u16) {
+        w.emit_row(line);
+    }
+    w.pending_block_gap = false;
+    w.after_math = true;
+    w.fresh_boundary = true;
+}
+
+/// Draws a `BlockKind::HtmlTable` — an HTML `<table>` the model was able to read as a real grid (see
+/// that variant's own doc comment for exactly which blocks qualify and what it deliberately does not
+/// model) — through the **same** `TableCells`/`render_table_cells` pair a GFM `BlockKind::Table` goes
+/// through (`render_table_from_model`, right above). There is no second table renderer here: column
+/// measurement, width shaving, per-cell wrapping and the box drawing are all that one function's,
+/// unchanged.
+///
+/// ## Cell text
+///
+/// Read through the block's own `body_spans` (`html_body_text_in`), never `&src[cell.inner]` — a
+/// quote-nested table's continuation lines still carry their `>` marker in `src` but not in those
+/// spans, the identical asymmetry `render_html_block_from_model` reads `body_spans` for. The raw HTML
+/// that comes back goes through `html_cell_to_markdown` (which substitutes the handful of inline tags
+/// that have a Markdown spelling and hands the rest to the pipeline's one tag stripper,
+/// `render_html_block`) and then the identical `normalize_cell` -> `parse_cell_segments` ->
+/// `prefix_link_icons` chain the GFM path uses — so a cell's `[label](url)`, `**bold**`, `` `code` ``
+/// and `![alt](url)` all mean exactly what they mean in a GFM cell, including a `CellSeg::Image`'s own
+/// `🖼 alt` label (real pixels inside a cell are out of scope for both paths alike — see
+/// `CellSeg::Image`'s own doc comment).
+///
+/// ## Alignment and header rows
+///
+/// `aligns` (the **column** alignments) is left empty on purpose: an HTML table has no delimiter row,
+/// so there is no column-level alignment to read, and `render_table_cells` reads a missing entry as
+/// `ColAlign::Left` — the same default a GFM column with no `:` gets. Every alignment an HTML table
+/// *does* declare is a **cell** attribute (`align="center"` on one `<td>`), which travels in
+/// `cell_attrs` and wins over the column for that one cell only; a cell that declares none falls back
+/// to its column, so nothing here changes what a GFM table draws.
+///
+/// `header_rows` is the leading run of rows whose cells are *all* `<th>` — the shape a `<thead>` (or a
+/// hand-written first row of `<th>`) produces, and the only one a horizontal header rule can describe,
+/// since that rule sits between whole rows. A `<th>` anywhere else — one leading column of them, a
+/// stray one mid-table — cannot be expressed as a rule and is drawn as that one cell's own header
+/// styling instead (`CellAttrs::header`), which is why this is a *count of rows* rather than a search
+/// for every `<th>`.
+///
+/// Exit state (`pending_block_gap = false`, `after_math = true`, `fresh_boundary = true`) and the
+/// absence of any leading-blank-line check are `render_table_from_model`'s own, for the reasons its
+/// doc comment gives: a table is a self-contained band with no separator logic on either side.
+fn render_html_table_from_model(
+    w: &mut Writer<'_>,
+    src: &str,
+    body_spans: &[Range<usize>],
+    rows: &[Vec<HtmlTableCell>],
+) {
+    let cells: Vec<Vec<Vec<CellSeg>>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| {
+                    let raw = html_body_text_in(body_spans, src, &cell.inner);
+                    let mut segs =
+                        parse_cell_segments(&normalize_cell(&html_cell_to_markdown(&raw)));
+                    prefix_link_icons(&mut segs, w.icons);
+                    segs
+                })
+                .collect()
+        })
+        .collect();
+    let cell_attrs: Vec<Vec<CellAttrs>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| CellAttrs {
+                    align: cell.align.map(|a| match a {
+                        Alignment::Center => ColAlign::Center,
+                        Alignment::Right => ColAlign::Right,
+                        // `html_align_attr` never reports `Alignment::None` (it maps an absent or
+                        // unrecognized `align=` to `None` at the `Option` level instead), but the
+                        // match is kept total rather than assumed — principle #3.
+                        Alignment::None | Alignment::Left => ColAlign::Left,
+                    }),
+                    header: cell.header,
+                })
+                .collect()
+        })
+        .collect();
+    let header_rows = rows
+        .iter()
+        .take_while(|r| !r.is_empty() && r.iter().all(|c| c.header))
+        .count();
+    let table = TableCells {
+        rows: cells,
+        header_rows,
+        aligns: Vec::new(),
+        cell_attrs,
+    };
+    for line in render_table_cells(&table, w.width) {
         w.emit_row(line);
     }
     w.pending_block_gap = false;
@@ -4097,6 +4201,9 @@ fn render_block(block: &Block, w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, ctx
         ),
         BlockKind::Table { aligns, rows } => render_table_from_model(w, src, aligns, rows),
         BlockKind::Html { body_spans, .. } => render_html_block_from_model(w, src, body_spans),
+        BlockKind::HtmlTable { body_spans, rows } => {
+            render_html_table_from_model(w, src, body_spans, rows)
+        }
         // Never reachable — see the doc comment above.
         BlockKind::ListItem { .. } => {}
     }
@@ -5838,6 +5945,198 @@ mod tests {
                 out.lines[i]
             );
         }
+    }
+
+    // ---- HTML `<table>` (`render_html_table_from_model`) ----
+
+    /// Renders `src` through the whole top-level dispatch, at `width`, and returns each line's own
+    /// visible text — the shorthand every HTML-table test below reaches for. `icons` is off so a
+    /// link's own Nerd Font prefix does not shift the column widths these tests read.
+    fn html_table_lines(src: &str, width: u16) -> Vec<String> {
+        crate::preview::markdown::set_details_open(Vec::new());
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            width,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        out.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// The shape this feature exists for: the README screenshot grid comes out as a real 2x2 box-drawn
+    /// table, not two loose images followed by two loose caption lines.
+    #[test]
+    fn html_table_renders_a_box_drawn_grid() {
+        let src = "<table>\n  <tr>\n    <td><img src=\"a.png\" alt=\"A\"></td>\n    <td><img src=\"b.png\" alt=\"B\"></td>\n  </tr>\n  <tr>\n    <td align=\"center\"><b>One</b></td>\n    <td align=\"center\"><b>Two</b></td>\n  </tr>\n</table>\n";
+        let lines = html_table_lines(src, 60);
+        assert_eq!(lines.len(), 4, "top rule, two rows, bottom rule: {lines:?}");
+        assert!(
+            lines[0].starts_with('┌') && lines[0].ends_with('┐'),
+            "{lines:?}"
+        );
+        assert!(
+            lines[3].starts_with('└') && lines[3].ends_with('┘'),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains("🖼 A") && lines[1].contains("🖼 B"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[2].contains("One") && lines[2].contains("Two"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("<td") || l.contains("<img")),
+            "no raw tag survives: {lines:?}"
+        );
+    }
+
+    /// A cell's own `align=` wins over its column, per cell — the requirement a "round the whole
+    /// column to one alignment" shortcut would have failed. Checked by padding, since that is the
+    /// only observable difference: the same column holds a left-, a centered- and a right-aligned
+    /// cell at once.
+    #[test]
+    fn html_table_cell_align_beats_the_column_one_cell_at_a_time() {
+        let src = "<table>\n<tr><td align=\"left\">x</td></tr>\n<tr><td align=\"center\">x</td></tr>\n<tr><td align=\"right\">x</td></tr>\n<tr><td>wwwwwwwww</td></tr>\n</table>\n";
+        let lines = html_table_lines(src, 60);
+        // Column is 9 wide (`wwwwwwwww`), each cell padded to ` <9 cols> `.
+        assert_eq!(lines[1], "│ x         │", "left: {lines:?}");
+        assert_eq!(lines[2], "│     x     │", "center: {lines:?}");
+        assert_eq!(lines[3], "│         x │", "right: {lines:?}");
+        assert_eq!(
+            lines[4], "│ wwwwwwwww │",
+            "unspecified falls back to the column: {lines:?}"
+        );
+    }
+
+    /// A leading run of all-`<th>` rows becomes real header rows — the horizontal rule sits under the
+    /// *last* of them, not under each.
+    #[test]
+    fn html_table_leading_th_rows_get_one_header_rule() {
+        let one = html_table_lines(
+            "<table>\n<tr><th>H</th></tr>\n<tr><td>a</td></tr>\n<tr><td>b</td></tr>\n</table>\n",
+            40,
+        );
+        assert!(
+            one[2].starts_with('├'),
+            "rule under the single header row: {one:?}"
+        );
+        let two = html_table_lines(
+            "<table>\n<tr><th>H</th></tr>\n<tr><th>I</th></tr>\n<tr><td>a</td></tr>\n</table>\n",
+            40,
+        );
+        assert!(
+            two[3].starts_with('├'),
+            "one rule, under the second header row: {two:?}"
+        );
+        assert_eq!(
+            two.iter().filter(|l| l.starts_with('├')).count(),
+            1,
+            "exactly one header rule: {two:?}"
+        );
+    }
+
+    /// A `<th>` that is *not* part of a leading all-`<th>` row cannot be a header *row* (a rule spans
+    /// the whole width), so it is drawn as that one cell's own header styling instead — and draws no
+    /// rule at all.
+    #[test]
+    fn html_table_stray_th_is_styled_without_a_header_rule() {
+        let src =
+            "<table>\n<tr><td>a</td><th>b</th></tr>\n<tr><td>c</td><td>d</td></tr>\n</table>\n";
+        crate::preview::markdown::set_details_open(Vec::new());
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            40,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        let text: Vec<String> = out
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            !text.iter().any(|l| l.starts_with('├')),
+            "a stray <th> draws no header rule: {text:?}"
+        );
+        let bold_texts: Vec<String> = out.lines[1]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            bold_texts.iter().any(|t| t == "b"),
+            "the <th> cell itself is bold: {bold_texts:?}"
+        );
+        assert!(
+            !bold_texts.iter().any(|t| t == "a"),
+            "its <td> neighbour is not: {bold_texts:?}"
+        );
+    }
+
+    /// A quote-nested table draws inside the quote's own bar, with its cell text free of the `>`
+    /// markers `Block::src` still carries — the reason cells are read back through `body_spans`.
+    #[test]
+    fn html_table_inside_a_quote_draws_inside_the_quote_bar() {
+        let src = "> <table>\n> <tr><td>\n> first\n> second\n> </td></tr>\n> </table>\n";
+        let lines = html_table_lines(src, 60);
+        assert!(
+            lines.iter().all(|l| l.starts_with("> ")),
+            "every line stays inside the quote: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("first second")),
+            "the multi-line cell reads without quote markers: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l[2..].contains('>')),
+            "no stray quote marker inside a cell: {lines:?}"
+        );
+    }
+
+    /// A GFM table in the same document is untouched by any of this — its columns still take their
+    /// alignment from the delimiter row, and no cell overrides anything.
+    #[test]
+    fn a_gfm_table_still_takes_its_alignment_from_the_delimiter_row() {
+        let lines = html_table_lines("| a | b |\n|:--|--:|\n| x | y |\n| wwwww | wwwww |\n", 60);
+        assert_eq!(
+            lines[3], "│ x     │     y │",
+            "left / right columns: {lines:?}"
+        );
     }
 
     /// A **closed** `Details` block (no `open` attribute, and `set_details_open` seeds nothing —

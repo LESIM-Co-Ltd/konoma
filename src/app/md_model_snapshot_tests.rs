@@ -29,8 +29,8 @@ use pulldown_cmark::{Event, Parser, Tag};
 
 use crate::config::Config;
 use crate::preview::markdown::model::{
-    self, code_body_text, html_body_text, is_stray_inline_leaf, is_unmodeled_container_tag, Block,
-    BlockKind, Doc,
+    self, code_body_text, html_body_text, html_body_text_in, is_stray_inline_leaf,
+    is_unmodeled_container_tag, Block, BlockKind, Doc,
 };
 
 use super::md_snapshot_tests::{all_cases, assert_matches_snapshot, pre_src_for};
@@ -158,6 +158,36 @@ fn fmt_kind(k: &BlockKind, src: &str, events: &[(Event<'_>, Range<usize>)]) -> S
                 spans.join(", "),
                 snippet(&html_body_text(body_spans, src))
             )
+        }
+        BlockKind::HtmlTable { body_spans, rows } => {
+            let spans: Vec<String> = body_spans
+                .iter()
+                .map(|r| format!("{}:{}", fmt_range(r), snippet(&src[r.clone()])))
+                .collect();
+            let mut s = format!("HtmlTable{{body_spans=[{}], rows=[", spans.join(", "));
+            for (ri, row) in rows.iter().enumerate() {
+                if ri > 0 {
+                    s.push_str(", ");
+                }
+                s.push('[');
+                for (ci, cell) in row.iter().enumerate() {
+                    if ci > 0 {
+                        s.push_str(", ");
+                    }
+                    write!(
+                        s,
+                        "{}:{}(header={}, align={:?})",
+                        fmt_range(&cell.inner),
+                        snippet(&html_body_text_in(body_spans, src, &cell.inner)),
+                        cell.header,
+                        cell.align,
+                    )
+                    .unwrap();
+                }
+                s.push(']');
+            }
+            s.push_str("]}");
+            s
         }
         BlockKind::Details {
             open_attr,
@@ -390,6 +420,7 @@ fn leaf_ranges(blocks: &[Block], out: &mut Vec<Range<usize>>) {
                 | BlockKind::CodeBlock { .. }
                 | BlockKind::Table { .. }
                 | BlockKind::Html { .. }
+                | BlockKind::HtmlTable { .. }
                 | BlockKind::ThematicBreak
         );
         if is_leaf {

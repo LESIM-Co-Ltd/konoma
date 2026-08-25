@@ -312,6 +312,44 @@ pub(crate) enum BlockKind {
         tag: Option<String>,
         body_spans: Vec<Range<usize>>,
     },
+    /// An HTML block that is one complete `<table> … </table>` — the shape a great many READMEs use
+    /// for a side-by-side screenshot grid, and the one shape of raw HTML this model gives real
+    /// structure to rather than leaving as an opaque `Html` leaf for the renderer to tag-strip line
+    /// by line. Built by [`parse_html_table`] from the *same* `Html` block this would otherwise have
+    /// been (see `parse_container`'s own `Tag::HtmlBlock` arm: the table scan runs on the already-
+    /// collected `body_spans`, so recognizing one costs no second parse of anything and a block that
+    /// fails the scan is emitted as an ordinary `Html` leaf, byte for byte as before this variant
+    /// existed). `render.rs`'s own `render_html_table_from_model` draws it through the identical
+    /// `TableCells`/`render_table_cells` pair a GFM `BlockKind::Table` goes through.
+    ///
+    /// `body_spans` is this block's own `Html.body_spans`, kept verbatim and for the identical reason
+    /// (see that field's own doc comment): inside a block quote, `Block::src`'s own continuation
+    /// lines still carry the `>` marker while these ranges never do. Every `HtmlTableCell.inner`
+    /// below is a range into `src` that is only ever read back *through* these spans
+    /// ([`html_body_text_in`]), so a quote-nested table's cell text comes out marker-free even when
+    /// the cell spans several physical lines.
+    ///
+    /// ## What this deliberately does not model
+    ///
+    /// * **`colspan`/`rowspan`** — read as an ordinary single cell, the attribute ignored. A row
+    ///   written with a `colspan="2"` therefore reports fewer cells than its neighbours and comes out
+    ///   as a ragged row, which `render_table_cells` pads with an empty cell on the right.
+    /// * **A nested `<table>`** — only `<tr>`/`<td>`/`<th>` at the *outer* table's own depth are
+    ///   structural; everything inside a nested table stays part of the enclosing cell's `inner`
+    ///   range and is flattened to text by the cell renderer. The outer table's own grid survives.
+    /// * **`<caption>`** — its text sits outside every `<td>`/`<th>`, so nothing collects it and it
+    ///   is dropped. (A `<table>` that has a caption but no cell at all is not folded at all — see
+    ///   [`parse_html_table`] — so its text is still shown, by the ordinary `Html` path.)
+    ///
+    /// All three are recorded as open items in `docs/STATUS.md`; none of them makes this fold *lose*
+    /// a cell, and the first two are pinned by tests that fix the exact degraded output.
+    HtmlTable {
+        /// Exactly what `Html.body_spans` would have held for this same block — see above.
+        body_spans: Vec<Range<usize>>,
+        /// Every `<tr>`'s cells, in source order. Never empty, and no row is ever empty
+        /// (`parse_html_table` refuses to fold a table with no cell at all).
+        rows: Vec<Vec<HtmlTableCell>>,
+    },
     /// A `<details>` … `</details>` block, folded from what `Doc::parse` itself would otherwise have
     /// reported for its opening and closing tags (see `Html`'s own doc comment on exactly which
     /// shapes qualify, and `fold_details` for the folding algorithm). Two different shapes fold into
@@ -360,6 +398,41 @@ pub(crate) enum BlockKind {
     },
     /// A thematic break (`---` / `***` / `___`).
     ThematicBreak,
+}
+
+/// One `<td>`/`<th>` of a [`BlockKind::HtmlTable`].
+///
+/// Deliberately shaped like a `BlockKind::Table` cell — a byte range into the document `Doc::parse`
+/// was given, never an owned string — so both table paths hand the renderer the same *kind* of thing
+/// and neither one needs a cell-text representation of its own (see `BlockKind::Table.rows`'s own doc
+/// comment for that convention, and `BlockKind::HtmlTable.body_spans` for the one way reading this
+/// range differs: it is sliced *through* the block's own `body_spans`, via [`html_body_text_in`],
+/// never straight off `src`).
+/// `Eq` is deliberately absent (unlike `Task`'s own derive): `pulldown_cmark::Alignment` — the type
+/// `align` reuses rather than duplicating — implements `PartialEq` only, so `Block`'s own
+/// `PartialEq` is all this can (and all it needs to) participate in.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HtmlTableCell {
+    /// Byte range of the cell's own **content** — everything strictly between its `<td …>`/`<th …>`
+    /// tag's own closing `>` and its matching `</td>`/`</th>`'s own opening `<`, with neither tag
+    /// included. Empty (`n..n`) for an empty cell (`<td></td>`). An unclosed cell (`<td>a` with no
+    /// `</td>` before the next `<td>`/`</tr>`/`</table>`) ends where the tag that implicitly closed
+    /// it begins — the same "omitted end tag" rule browsers apply.
+    pub inner: Range<usize>,
+    /// `true` for a `<th>`, `false` for a `<td>`. `render.rs`'s own `render_html_table_from_model` is
+    /// what turns a *leading run of all-`<th>` rows* into `TableCells::header_rows`, and a lone `<th>`
+    /// anywhere else into that one cell's own header styling — deciding that here would bake a
+    /// display choice into the model (see `BlockKind::Table.aligns`'s own doc comment for the same
+    /// model-vs-display split drawn one field over).
+    pub header: bool,
+    /// The cell's own `align="left|center|right"` attribute, matched case-insensitively on both the
+    /// name and the value, `None` when the attribute is absent or names anything else (`justify`,
+    /// `char`, a typo). Reuses `pulldown_cmark::Alignment` — the exact type `BlockKind::Table.aligns`
+    /// already uses — rather than a second three-valued enum, but note `Alignment::None` is *not* how
+    /// "no `align` attribute" is spelled here: this is `Option<Alignment>` precisely so an explicit
+    /// `align` and an absent one stay distinguishable, which is what lets the renderer fall back to
+    /// the *column's* alignment for a cell that declares none.
+    pub align: Option<Alignment>,
 }
 
 /// A task-list checkbox marker (`- [ ]` / `- [x]` / `- [X]`).
@@ -1071,6 +1144,15 @@ fn parse_container(tag: Tag, range: Range<usize>, events: &mut Walker, src: &str
         Tag::HtmlBlock => {
             let body_spans = collect_html_body_spans(events);
             let tag = html_tag_of(&body_spans, src);
+            // One complete `<table> … </table>` gets real structure (`BlockKind::HtmlTable`) instead
+            // of staying an opaque `Html` leaf; anything else — including a `<table>` this scan
+            // cannot read as a whole table — falls through to the `Html` leaf it has always been.
+            // See `parse_html_table`'s own doc comment for exactly which blocks qualify.
+            if tag.as_deref() == Some("table") {
+                if let Some(rows) = parse_html_table(&body_spans, src) {
+                    return Some(leaf(BlockKind::HtmlTable { body_spans, rows }, range));
+                }
+            }
             Some(leaf(BlockKind::Html { tag, body_spans }, range))
         }
         // A YAML/`+++`-style metadata block (only reachable if the caller did not strip front
@@ -1442,6 +1524,225 @@ pub(crate) fn html_body_text(body_spans: &[Range<usize>], src: &str) -> String {
         s.push_str(&src[r.clone()]);
     }
     s
+}
+
+/// The part of [`html_body_text`] that falls inside `want` — every `body_spans` range clipped to
+/// `want`, in order, concatenated.
+///
+/// This, not `&src[want]`, is how an `HtmlTableCell.inner` range is read back. The two agree byte for
+/// byte whenever `body_spans` is contiguous (every HTML block outside a block quote — confirmed by
+/// dump: `"<table>\n<tr>\n<td>a</td>\n"` reports `0..8`, `8..13`, `13..24`, with no gap), and differ
+/// exactly where it is not: inside a block quote each continuation line's own `> ` marker sits in the
+/// *gap between* two spans, so a naive `&src[want]` for a cell spanning two physical lines would
+/// splice that marker into the middle of the cell's text while this skips it — the same asymmetry
+/// `BlockKind::Html.body_spans`'s own doc comment describes, applied one level down.
+pub(crate) fn html_body_text_in(
+    body_spans: &[Range<usize>],
+    src: &str,
+    want: &Range<usize>,
+) -> String {
+    // `body_spans` is ordered and non-overlapping (`collect_html_body_spans` pushes them in event
+    // order; `check_invariants` pins exactly that property for the identically-built
+    // `CodeBlock.body_spans`), so the spans that can overlap `want` are one contiguous run and the
+    // first of them can be found by binary search instead of a scan. That is what keeps reading N
+    // cells out of an N-line table linear rather than quadratic — measured on a generated
+    // 3,000-row table, where the scanning form was already a visible share of the render budget.
+    let first = body_spans.partition_point(|r| r.end <= want.start);
+    let mut s = String::new();
+    for r in &body_spans[first..] {
+        if r.start >= want.end {
+            break;
+        }
+        let start = r.start.max(want.start);
+        let end = r.end.min(want.end);
+        if start < end {
+            s.push_str(&src[start..end]);
+        }
+    }
+    s
+}
+
+/// Every `<tr>`'s cells of an HTML block that is one complete `<table> … </table>`, or `None` for a
+/// block that is not one — the whole of [`BlockKind::HtmlTable`]'s recognition, run once per `Html`
+/// block whose tag name is `table` (`parse_container`'s own `Tag::HtmlBlock` arm).
+///
+/// ## What it scans
+///
+/// [`html_body_text`] — the block's content with every enclosing block quote's `>` markers already
+/// gone — walked once, tag by tag, with each offset mapped straight back to a `src` byte offset
+/// through the same `body_spans` (`span_offset` below). No second `Parser` and no re-slicing of the
+/// document: this reads the bytes the one whole-document walk already named, exactly like every other
+/// function in this file (see the module doc comment).
+///
+/// ## What makes a block a table
+///
+/// All three of:
+///
+/// 1. the first tag is `<table …>` (the caller has already checked the *name*, via `html_tag_of`;
+///    this rejects a block that merely *mentions* `<table>` after some other opening tag),
+/// 2. a matching `</table>` is found — nesting-aware, so an inner table's own close cannot end the
+///    outer one — i.e. the block holds a **complete** table, and
+/// 3. at least one `<td>`/`<th>` was collected.
+///
+/// A block failing any of them stays an ordinary `Html` leaf, rendered exactly as it was before this
+/// function existed. Condition 3 is what keeps a caption-only or an entirely empty `<table>` out:
+/// folding one would silently drop its text (nothing outside a cell is collected), whereas leaving it
+/// alone keeps the current, lossless rendering. Condition 2 is what makes a `<table>` interrupted by
+/// a blank line safe: CommonMark ends an HTML block at a blank line, so such a `<table>`'s own
+/// opening half arrives here with no `</table>` in it at all and is left alone (its trailing half is
+/// a *separate* block whose own first tag is not `<table>`, so it never reaches here).
+///
+/// ## Structural tags, and everything else
+///
+/// `<tr>` opens a row, `</tr>` closes it; `<td>`/`<th>` open a cell, `</td>`/`</th>` close it. End
+/// tags may be omitted the way HTML allows: a new `<tr>`/`<td>`/`<th>`, a `</tr>`, or the table's own
+/// `</table>` all implicitly close whatever cell is open, and a `<tr>`/`</table>` likewise closes an
+/// open row. A `<td>`/`<th>` outside any `<tr>` opens an implicit row of its own rather than being
+/// dropped. Every other tag — `<thead>`/`<tbody>`/`<tfoot>`, `<colgroup>`/`<col>`, `<caption>`, and
+/// all inline markup — is *not* structural: it is simply part of whatever cell is currently open (or,
+/// outside every cell, ignored), which is what makes `<thead>`/`<tbody>` wrappers and arbitrary inline
+/// HTML inside a cell both work with no case of their own. Tag names are matched case-insensitively,
+/// so `<TABLE>`/`<TD>` read the same as the lowercase spellings.
+fn parse_html_table(body_spans: &[Range<usize>], src: &str) -> Option<Vec<Vec<HtmlTableCell>>> {
+    let text = html_body_text(body_spans, src);
+    // Offset in `text` -> offset in `src`. `text` is the spans concatenated in order, so
+    // `starts[i]` — the cumulative length before span `i` — is where span `i`'s own bytes begin in
+    // `text`, and `partition_point` finds which span an offset landed in with a binary search
+    // rather than a scan (this is called twice per cell, so scanning would make a table's parse
+    // cost quadratic in its own line count).
+    let mut starts: Vec<usize> = Vec::with_capacity(body_spans.len());
+    let mut seen = 0usize;
+    for r in body_spans {
+        starts.push(seen);
+        seen += r.end - r.start;
+    }
+    let span_offset = |at: usize| -> usize {
+        // `partition_point` never exceeds `starts.len()`, so `i` always indexes both vectors (they
+        // are built with the same length); `get` all the same, per principle #3. `checked_sub`
+        // fails only for an empty `body_spans`, whose `text` is empty too.
+        let i = starts.partition_point(|&s| s <= at).checked_sub(1);
+        match i.and_then(|i| Some((body_spans.get(i)?, *starts.get(i)?))) {
+            // `at` past the last span's own content (`at == text.len()`, or defensively beyond it)
+            // clamps to that span's end rather than running off it.
+            Some((r, s)) => (r.start + (at - s)).min(r.end),
+            None => body_spans.first().map(|r| r.start).unwrap_or(0),
+        }
+    };
+    // Set to the offset just past the outer `</table>` once it is found, so the trailing-content
+    // check below can look at what (if anything) the block still holds after it.
+    let mut after_close = 0usize;
+
+    let mut rows: Vec<Vec<HtmlTableCell>> = Vec::new();
+    let mut row: Vec<HtmlTableCell> = Vec::new();
+    let mut open_cell: Option<(usize, bool, Option<Alignment>)> = None;
+    let mut in_row = false;
+    // How many `<table>` opens are currently unclosed. The outer table's own structural tags are the
+    // ones seen at depth 1; anything at depth 2+ belongs to a nested table and is left inside the
+    // enclosing cell's own range as ordinary content (see `BlockKind::HtmlTable`'s doc comment).
+    let mut depth = 0usize;
+    let mut closed = false;
+    let mut first_tag = true;
+
+    let mut i = 0usize;
+    while let Some(rel) = text[i..].find('<') {
+        let lt = i + rel;
+        let Some(rel_gt) = text[lt..].find('>') else {
+            break;
+        };
+        let gt = lt + rel_gt;
+        // The tag verbatim, `<`/`>` excluded, plus its name and open/close sense.
+        let tag = &text[lt + 1..gt];
+        i = gt + 1;
+        let close = tag.starts_with('/');
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let name = name.to_ascii_lowercase();
+        if first_tag {
+            first_tag = false;
+            if close || name != "table" {
+                return None;
+            }
+        }
+        let close_cell_at = |end: usize,
+                             open_cell: &mut Option<(usize, bool, Option<Alignment>)>,
+                             row: &mut Vec<HtmlTableCell>| {
+            if let Some((start, header, align)) = open_cell.take() {
+                row.push(HtmlTableCell {
+                    inner: span_offset(start)..span_offset(end.max(start)),
+                    header,
+                    align,
+                });
+            }
+        };
+        match name.as_str() {
+            "table" if !close => depth += 1,
+            "table" if close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close_cell_at(lt, &mut open_cell, &mut row);
+                    if in_row || !row.is_empty() {
+                        rows.push(std::mem::take(&mut row));
+                    }
+                    closed = true;
+                    after_close = i;
+                    break;
+                }
+            }
+            "tr" | "td" | "th" if depth == 1 => {
+                close_cell_at(lt, &mut open_cell, &mut row);
+                if name == "tr" {
+                    if in_row || !row.is_empty() {
+                        rows.push(std::mem::take(&mut row));
+                    }
+                    in_row = !close;
+                } else if !close {
+                    // A `<td>`/`<th>` with no enclosing `<tr>` opens a row of its own.
+                    in_row = true;
+                    open_cell = Some((i, name == "th", html_align_attr(tag)));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !closed || rows.iter().all(|r| r.is_empty()) {
+        return None;
+    }
+    // Anything but whitespace still sitting in this block *after* the table's own `</table>` is not
+    // the table's — CommonMark only ends an HTML block at a blank line, so a `</table>` immediately
+    // followed by a paragraph, a `<br>`, or a wrapper's closing tag arrives here glued onto the very
+    // same block. Nothing in this variant can carry that text, and folding anyway would silently
+    // drop it, so the whole block declines to fold and renders exactly as it always has. This is
+    // `fold_details`'s own choice for the identical situation ("unrelated content following the
+    // found close within it — stays an ordinary, unfolded `Html` leaf"), and the shape is vanishingly
+    // rare in practice: of 8,532 real `.md` files swept while this was written (`~/.cargo/registry`,
+    // `~/work`, `~/.claude`), 18 contained a `<table>` and **none** had content on the line right
+    // after its `</table>`.
+    if !text[after_close..].trim().is_empty() {
+        return None;
+    }
+    rows.retain(|r| !r.is_empty());
+    Some(rows)
+}
+
+/// A cell's own `align="left|center|right"` attribute, read off the tag's own text with the same
+/// attribute reader every other HTML attribute in this pipeline goes through
+/// (`super::html_attr` — the one `extract_html_img` uses for `src`/`alt`, so quoting styles and
+/// name matching can never drift between the two). `None` for an absent attribute, and for any value
+/// this pipeline has no rendering for (`justify`, `char`, …) — see `HtmlTableCell.align`.
+fn html_align_attr(tag: &str) -> Option<Alignment> {
+    match super::html_attr(tag, "align")?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" => Some(Alignment::Left),
+        "center" => Some(Alignment::Center),
+        "right" => Some(Alignment::Right),
+        _ => None,
+    }
 }
 
 /// Reads a best-effort tag name off an `HtmlBlock`'s own opening line — see `BlockKind::Html`'s doc
@@ -1971,6 +2272,240 @@ mod tests {
         assert_eq!(*tag, None);
     }
 
+    // ---- `<table>` folding (`BlockKind::HtmlTable`) ----
+
+    /// The one shape this whole feature exists for: a `<table>` split across physical lines, one
+    /// `<td>` per line, comes back as a real 2x2 grid rather than an opaque `Html` leaf.
+    #[test]
+    fn a_complete_html_table_folds_into_rows_of_cells() {
+        let src = "<table>\n<tr>\n<td>a</td>\n<td>b</td>\n</tr>\n<tr>\n<td>c</td>\n<td>d</td>\n</tr>\n</table>\n";
+        let doc = Doc::parse(src);
+        assert_eq!(doc.blocks.len(), 1);
+        let BlockKind::HtmlTable { body_spans, rows } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable: {:?}", doc.blocks[0].kind)
+        };
+        let text: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|c| html_body_text_in(body_spans, src, &c.inner))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(text, vec![vec!["a", "b"], vec!["c", "d"]]);
+        assert!(
+            doc.blocks[0].children.is_empty(),
+            "an HtmlTable is a leaf, like the Html block it replaces"
+        );
+    }
+
+    /// `inner` names the cell's own content and nothing else — not its tags, not its padding.
+    #[test]
+    fn html_table_cell_inner_excludes_both_of_its_own_tags() {
+        let src = "<table><tr><td>abc</td></tr></table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        let inner = rows[0][0].inner.clone();
+        assert_eq!(&src[inner.clone()], "abc");
+        assert_eq!(&src[inner.start - 4..inner.start], "<td>");
+        assert_eq!(&src[inner.end..inner.end + 5], "</td>");
+    }
+
+    /// A paragraph glued onto the same HTML block right after `</table>` must never go missing: the
+    /// block declines to fold, so its text is still drawn by the ordinary `Html` path. Checked as
+    /// *content preservation*, not merely as "no HtmlTable" — losing a line silently is the failure
+    /// this guard exists to prevent.
+    #[test]
+    fn text_glued_after_the_close_is_never_dropped() {
+        let src = "<table>\n<tr><td>a</td></tr>\n</table>\nafter\n";
+        let doc = Doc::parse(src);
+        let BlockKind::Html { body_spans, .. } = &doc.blocks[0].kind else {
+            panic!("expected a plain Html leaf: {:?}", doc.blocks[0].kind)
+        };
+        assert!(
+            html_body_text(body_spans, src).contains("after"),
+            "the trailing paragraph is still part of what the renderer draws"
+        );
+    }
+
+    /// `<th>` and `align=` travel on the cell, not the column — HTML has no delimiter row, so there
+    /// is nowhere else for either to live (see `HtmlTableCell`'s own doc comment).
+    #[test]
+    fn html_table_reads_th_and_the_align_attribute_per_cell() {
+        let src = "<table>\n<tr><th align=\"center\">H</th><th>P</th></tr>\n<tr><td align='right'>a</td><td align=\"justify\">b</td></tr>\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        assert!(rows[0].iter().all(|c| c.header), "first row is all <th>");
+        assert!(!rows[1].iter().any(|c| c.header), "second row is all <td>");
+        assert_eq!(rows[0][0].align, Some(Alignment::Center));
+        assert_eq!(rows[0][1].align, None, "no align attribute at all");
+        assert_eq!(
+            rows[1][0].align,
+            Some(Alignment::Right),
+            "single-quoted value"
+        );
+        assert_eq!(
+            rows[1][1].align, None,
+            "`justify` has no rendering here, so it reads as unspecified"
+        );
+    }
+
+    /// Tag names are matched case-insensitively, the same way `html_tag_name` already lowercases the
+    /// block's own opening tag.
+    #[test]
+    fn html_table_recognizes_uppercase_tags() {
+        let src = "<TABLE>\n<TR><TH>H</TH></TR>\n<TR><TD>b</TD></TR>\n</TABLE>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable: {:?}", doc.blocks[0].kind)
+        };
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0][0].header);
+        assert!(!rows[1][0].header);
+    }
+
+    /// `<thead>`/`<tbody>`/`<tfoot>`/`<colgroup>` are not structural here — they are simply not
+    /// `<tr>`/`<td>`/`<th>`, so they need no case of their own and change nothing.
+    #[test]
+    fn html_table_ignores_section_wrappers() {
+        let src = "<table>\n<colgroup><col><col></colgroup>\n<thead><tr><th>H</th><th>I</th></tr></thead>\n<tbody><tr><td>a</td><td>b</td></tr></tbody>\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[1].len(), 2);
+    }
+
+    /// HTML lets `</td>`/`</tr>` be omitted; the next opener closes whatever is open.
+    #[test]
+    fn html_table_handles_omitted_end_tags() {
+        let src = "<table>\n<tr><td>a<td>b\n<tr><td>c<td>d\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { body_spans, rows } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        let text: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|c| html_body_text_in(body_spans, src, &c.inner))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(text, vec![vec!["a", "b\n"], vec!["c", "d\n"]]);
+    }
+
+    /// A `<td>` with no enclosing `<tr>` still gets a row rather than being dropped.
+    #[test]
+    fn html_table_cells_outside_any_row_get_an_implicit_one() {
+        let src = "<table>\n<td>a</td><td>b</td>\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+    }
+
+    /// A documented non-goal: an inner `<table>`'s own `</table>` must not end the outer one, and its
+    /// markup stays inside the enclosing cell rather than producing rows of its own.
+    #[test]
+    fn html_table_leaves_a_nested_table_inside_its_enclosing_cell() {
+        let src = "<table>\n<tr><td><table><tr><td>inner</td></tr></table></td><td>outer</td></tr>\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { body_spans, rows } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        assert_eq!(rows.len(), 1, "only the outer table produces rows");
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(
+            html_body_text_in(body_spans, src, &rows[0][0].inner),
+            "<table><tr><td>inner</td></tr></table>",
+            "the nested table's markup is the outer cell's own content"
+        );
+    }
+
+    /// A documented non-goal: `colspan` is one ordinary cell, so the row simply comes out short.
+    #[test]
+    fn html_table_reads_a_colspan_cell_as_one_plain_cell() {
+        let src = "<table>\n<tr><td colspan=\"2\">wide</td></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n";
+        let doc = Doc::parse(src);
+        let BlockKind::HtmlTable { rows, .. } = &doc.blocks[0].kind else {
+            panic!("expected an HtmlTable")
+        };
+        assert_eq!(rows[0].len(), 1);
+        assert_eq!(rows[1].len(), 2);
+    }
+
+    /// Inside a block quote, `Block::src` still carries every continuation line's `>` marker while
+    /// `body_spans` does not — so a cell spanning several lines has to be read back through the
+    /// spans (`html_body_text_in`), never as `&src[inner]`. This pins both halves of that: the
+    /// marker-free reading *and* the fact that the naive slice really would have been wrong.
+    #[test]
+    fn html_table_in_a_quote_reads_a_multi_line_cell_without_the_quote_marker() {
+        let src = "> <table>\n> <tr>\n> <td>\n> first\n> second\n> </td>\n> </tr>\n> </table>\n";
+        let doc = Doc::parse(src);
+        let quote = &doc.blocks[0];
+        assert!(matches!(quote.kind, BlockKind::Quote { .. }));
+        let BlockKind::HtmlTable { body_spans, rows } = &quote.children[0].kind else {
+            panic!("expected an HtmlTable inside the quote")
+        };
+        let inner = rows[0][0].inner.clone();
+        assert_eq!(
+            html_body_text_in(body_spans, src, &inner),
+            "\nfirst\nsecond\n"
+        );
+        assert!(
+            src[inner].contains(">"),
+            "the naive `&src[inner]` slice really does still carry the quote markers"
+        );
+    }
+
+    /// Every shape that is *not* one complete table stays an ordinary `Html` leaf, rendered exactly
+    /// as it was before this variant existed. Grouped into one test on purpose: each of these is the
+    /// same assertion about a different reason to decline, and splitting them would only repeat the
+    /// same three lines six times.
+    #[test]
+    fn a_block_that_is_not_one_complete_table_stays_a_plain_html_leaf() {
+        for (why, src) in [
+            ("no closing tag at all", "<table>\n<tr><td>a</td></tr>\n"),
+            (
+                // Would otherwise silently drop `after` — see `parse_html_table`'s own doc comment.
+                "content glued onto the block after the close",
+                "<table>\n<tr><td>a</td></tr>\n</table>\nafter\n",
+            ),
+            ("no cell at all", "<table>\n</table>\n"),
+            (
+                "only a caption, no cell",
+                "<table>\n<caption>C</caption>\n</table>\n",
+            ),
+            (
+                "the table is not the block's own first tag",
+                "<div>\n<table>\n<tr><td>a</td></tr>\n</table>\n</div>\n",
+            ),
+            (
+                // CommonMark ends an HTML block at a blank line, so this never arrives as one block.
+                "a blank line splits the table into two blocks",
+                "<table>\n<tr>\n\n<td>a</td>\n</tr>\n</table>\n",
+            ),
+        ] {
+            let doc = Doc::parse(src);
+            assert!(
+                !doc.blocks
+                    .iter()
+                    .any(|b| matches!(b.kind, BlockKind::HtmlTable { .. })),
+                "{why}: expected no HtmlTable, got {:?}",
+                doc.blocks.iter().map(|b| &b.kind).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn well_formed_details_folds_into_one_container_with_summary_and_children() {
         let src = "<details>\n<summary>S</summary>\n\nbody\n\n</details>\n";
@@ -2359,6 +2894,9 @@ mod tests {
         }
         for (name, src) in super::super::preprocess_corpus::cases() {
             v.push((format!("preprocess_corpus: {name}"), src.to_string()));
+        }
+        for (name, src) in super::super::html_table_corpus::cases() {
+            v.push((format!("html_table_corpus: {name}"), src.to_string()));
         }
         let mut with_preprocessing: Vec<(String, String)> = Vec::new();
         for (name, raw) in &v {

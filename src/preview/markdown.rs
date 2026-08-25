@@ -3721,6 +3721,129 @@ fn html_text_run(buf: &mut Vec<(&str, bool)>) -> SourceRun {
     SourceRun::new(text, code)
 }
 
+/// The inline HTML a `<td>`/`<th>` can carry that this pipeline has a faithful Markdown spelling for,
+/// as `(tag name, opening replacement, closing replacement)`.
+///
+/// Deliberately short. `<del>`/`<s>`/`<strike>`/`<kbd>`/`<sup>`/`<sub>` are **not** here because
+/// production already rewrites those, document-wide and before any parse, in
+/// [`process_inline_html_traced`] — adding them here would be a second, competing translation of the
+/// same tags. What is left is exactly what that pre-pass does not touch: the two emphasis pairs,
+/// inline code, and (handled separately below, since both need an attribute read) `<a href>` and
+/// `<img>`.
+const CELL_INLINE_TAGS: [(&str, &str, &str); 6] = [
+    ("b", "**", "**"),
+    ("strong", "**", "**"),
+    ("i", "*", "*"),
+    ("em", "*", "*"),
+    ("code", "`", "`"),
+    ("br", " ", " "),
+];
+
+/// Rewrite one HTML table cell's own raw content into the Markdown-flavored text
+/// [`parse_cell_segments`] already knows how to read, so a cell's `<b>`/`<code>`/`<a href>`/`<img>`
+/// come out as real emphasis, links and image labels instead of stripped-away nothing.
+///
+/// **This is not a second tag stripper.** It only ever *substitutes* the handful of tags in
+/// [`CELL_INLINE_TAGS`] (plus `<a>`/`<img>`, which need an attribute read) for their Markdown
+/// spellings, and then hands the result — every other tag still verbatim in it — to
+/// [`render_html_block`], the pipeline's one and only tag/comment/entity pass, exactly as an
+/// un-tabled HTML block's text goes through it. Whatever `render_html_block` strips here is precisely
+/// what it strips there, forever, with no chance of the two drifting apart.
+///
+/// Newlines collapse to spaces: `render_html_block` already trims each line and drops the blank
+/// ones, so joining what it returns with a single space is what turns a cell written across several
+/// physical lines — or one whose `<br>` production's own pre-pass already rewrote into a Markdown
+/// hard break (`"  \n"`) — into the single run of inline content a table cell can actually show.
+/// A `<br>` is therefore a **space**, not a line break: `CellSeg` has no hard-break segment and
+/// `wrap_segments` wraps purely on width, so there is nowhere for a forced break to live yet.
+///
+/// The `<a href>` rewrite is stack-based so `<a href="u"><img src="i" alt="a"></a>` — the badge idiom
+/// — comes out as `[![a](i)](u)`, the one nested shape `parse_cell_segments` recognizes specially. An
+/// `</a>` with nothing open is dropped, and an `<a>` never closed has its own already-emitted `[`
+/// removed again on the way out, so an unbalanced document can never leave a stray bracket behind.
+fn html_cell_to_markdown(raw: &str) -> String {
+    let mut out = String::new();
+    // Output byte offsets of every `[` emitted for an `<a>` whose `</a>` has not been seen yet.
+    let mut open_links: Vec<(usize, String)> = Vec::new();
+    let mut rest = raw;
+    while let Some(lt) = rest.find('<') {
+        // A comment can contain a `>` of its own, so let `render_html_block` own that case entirely:
+        // copy it through untouched and resume after it.
+        if rest[lt..].starts_with("<!--") {
+            let end = rest[lt..]
+                .find("-->")
+                .map(|e| lt + e + 3)
+                .unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        let Some(rel_gt) = rest[lt..].find('>') else {
+            break;
+        };
+        let gt = lt + rel_gt;
+        let tag = &rest[lt + 1..gt];
+        out.push_str(&rest[..lt]);
+        rest = &rest[gt + 1..];
+        let close = tag.starts_with('/');
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let name = name.to_ascii_lowercase();
+        if name == "img" && !close {
+            // Reuses the pipeline's own `<img>` reader rather than a second one — `extract_html_img`
+            // wants a whole tag-only line, which is exactly what re-wrapping the tag gives it.
+            if let Some((alt, url)) = extract_html_img(&format!("<{tag}>")) {
+                out.push_str(&format!("![{alt}]({url})"));
+                continue;
+            }
+        }
+        if name == "a" {
+            if close {
+                if let Some((_, href)) = open_links.pop() {
+                    out.push_str(&format!("]({href})"));
+                }
+                continue;
+            }
+            if let Some(href) = html_attr(tag, "href") {
+                open_links.push((out.len(), href));
+                out.push('[');
+                continue;
+            }
+            continue;
+        }
+        if let Some((_, open_md, close_md)) = CELL_INLINE_TAGS.iter().find(|(n, ..)| *n == name) {
+            out.push_str(if close { close_md } else { open_md });
+            continue;
+        }
+        // Not one this function translates: put it back verbatim for `render_html_block` to deal
+        // with, so there is exactly one place in this pipeline that decides what a tag strips to.
+        out.push('<');
+        out.push_str(tag);
+        out.push('>');
+    }
+    out.push_str(rest);
+    // Every `<a>` left unclosed: drop the `[` it emitted (last first, so earlier offsets stay valid).
+    for (at, _) in open_links.into_iter().rev() {
+        if out.is_char_boundary(at) && out[at..].starts_with('[') {
+            out.remove(at);
+        }
+    }
+    render_html_block(&out)
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|sp| sp.content.as_ref())
+                .collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
 /// Render an HTML block as its tag-stripped text (entities decoded, comments dropped entirely).
 ///
 /// `pub(crate)`, not private: `app::md_real_file_sweep_tests` (a cousin module, not a descendant of
@@ -5582,6 +5705,15 @@ fn prefix_link_icons(segs: &mut [CellSeg], icons: bool) {
 /// (see that function's own doc comment), not a re-derivation of which rows are header rows.
 struct TableCells {
     rows: Vec<Vec<Vec<CellSeg>>>,
+    /// Per-cell overrides, indexed the same way `rows` is (`cell_attrs[row][col]`) — **ragged and
+    /// optional**: a shorter row, a shorter outer `Vec`, or an entirely empty one all read as
+    /// `CellAttrs::default()` for every cell they do not name (`render_table_cells`'s own `attrs_at`).
+    /// That is what keeps the GFM path (`render_table_from_model`, which leaves this empty) rendering
+    /// byte for byte as it did before this field existed: a GFM cell has no alignment or header state
+    /// of its own — its column's delimiter row carries both — so there is nothing for it to fill in.
+    /// The HTML-table path (`render_html_table_from_model`) is the one producer, since `align` and
+    /// `<th>` are *cell* attributes in HTML, not column ones.
+    cell_attrs: Vec<Vec<CellAttrs>>,
     /// Number of rows, from the start of `rows`, that are the header (0 or 1 for every real GFM
     /// table — a table has exactly one header row by construction — but not hard-coded to `1` here:
     /// `render_table_cells` only ever reads this as a row-index cutoff, and `parse_table_text`'s own
@@ -5590,6 +5722,20 @@ struct TableCells {
     /// `ncol == 0` guard already handles further down).
     header_rows: usize,
     aligns: Vec<ColAlign>,
+}
+
+/// One cell's own display overrides, on top of whatever its row and column already say. Defaults
+/// (`align: None`, `header: false`) mean "nothing to override" — see `TableCells::cell_attrs`.
+#[derive(Clone, Copy, Default)]
+struct CellAttrs {
+    /// This cell's own alignment, when it declared one (an HTML `align=` attribute). `None` falls
+    /// back to the *column's* alignment (`TableCells::aligns`), which is what a GFM table's delimiter
+    /// row sets and what an HTML table — having no delimiter row at all — leaves at `ColAlign::Left`.
+    align: Option<ColAlign>,
+    /// Whether this one cell is a header cell (`<th>`) even though its row is not a header row.
+    /// Drawn with the same style a header row's cells get; `TableCells::header_rows` still decides
+    /// where the horizontal rule under the header goes, since a rule is a property of the *row*.
+    header: bool,
 }
 
 /// Phase B of table rendering: lay `t`'s already-parsed cells out as box-drawn `Line`s no wider than
@@ -5644,6 +5790,16 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
         Line::from(Span::styled(s, border))
     };
 
+    // One cell's own overrides, defaulting for every cell `cell_attrs` does not name — see that
+    // field's own doc comment for why it is allowed to be ragged (or entirely absent).
+    let attrs_at = |ri: usize, c: usize| -> CellAttrs {
+        t.cell_attrs
+            .get(ri)
+            .and_then(|row| row.get(c))
+            .copied()
+            .unwrap_or_default()
+    };
+
     let mut out = Vec::new();
     out.push(rule('┌', '┬', '┐'));
     for (ri, r) in rows.iter().enumerate() {
@@ -5655,18 +5811,28 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
             .map(|(c, cell)| wrap_segments(cell, col_w[c]))
             .collect();
         let phys = wrapped.iter().map(|w| w.len().max(1)).max().unwrap_or(1);
-        let cell_style = if is_head {
-            Style::new().fg(HEAD_FG).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new()
-        };
         for p in 0..phys {
             let mut spans: Vec<Span<'static>> = vec![Span::styled("│", border)];
             for c in 0..ncol {
+                let attrs = attrs_at(ri, c);
+                // Header styling comes from the row (a GFM table's own header row, and an HTML
+                // table's leading run of all-`<th>` rows) *or* from the one cell (a `<th>` sitting
+                // anywhere else) — see `CellAttrs::header`.
+                let cell_style = if is_head || attrs.header {
+                    Style::new().fg(HEAD_FG).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                };
                 let segs: &[CellSeg] = wrapped[c].get(p).map(|v| v.as_slice()).unwrap_or(&[]);
                 let pad = col_w[c].saturating_sub(segs_width(segs));
-                // Distribute the padding left/right according to the alignment colons (:---:) (default is left-aligned).
-                let (lp, rp) = match aligns.get(c).copied().unwrap_or(ColAlign::Left) {
+                // Distribute the padding left/right according to the cell's own alignment when it
+                // declared one (HTML `align=`), else the column's (a GFM delimiter row's `:---:`);
+                // default is left-aligned.
+                let (lp, rp) = match attrs
+                    .align
+                    .or_else(|| aligns.get(c).copied())
+                    .unwrap_or(ColAlign::Left)
+                {
                     ColAlign::Left => (0, pad),
                     ColAlign::Right => (pad, 0),
                     ColAlign::Center => (pad / 2, pad - pad / 2),
@@ -8157,6 +8323,94 @@ plain body
             joined_off.contains("[!WARNING]"),
             "alerts off keeps the raw marker: {joined_off:?}"
         );
+    }
+
+    // ---- `html_cell_to_markdown` (HTML table cells) ----
+
+    /// The tags this function owns come back as their Markdown spellings, so `parse_cell_segments`
+    /// — which knows Markdown and nothing about HTML — can read them.
+    #[test]
+    fn html_cell_to_markdown_converts_the_inline_tags_it_owns() {
+        assert_eq!(html_cell_to_markdown("<b>x</b>"), "**x**");
+        assert_eq!(html_cell_to_markdown("<STRONG>x</STRONG>"), "**x**");
+        assert_eq!(html_cell_to_markdown("<i>x</i>"), "*x*");
+        assert_eq!(html_cell_to_markdown("<em>x</em>"), "*x*");
+        assert_eq!(html_cell_to_markdown("<code>x</code>"), "`x`");
+        assert_eq!(
+            html_cell_to_markdown("<a href=\"https://e.com\">site</a>"),
+            "[site](https://e.com)"
+        );
+        assert_eq!(
+            html_cell_to_markdown("<img src=\"a.png\" alt=\"pic\">"),
+            "![pic](a.png)"
+        );
+        assert_eq!(
+            html_cell_to_markdown("<img src='a.png' alt='pic'/>"),
+            "![pic](a.png)"
+        );
+    }
+
+    /// The badge idiom: a link wrapping a lone image is the one nested shape `parse_cell_segments`
+    /// recognizes, so it has to come out in exactly that spelling.
+    #[test]
+    fn html_cell_to_markdown_nests_a_link_wrapped_image() {
+        assert_eq!(
+            html_cell_to_markdown(
+                "<a href=\"https://e.com\"><img src=\"a.png\" alt=\"badge\"></a>"
+            ),
+            "[![badge](a.png)](https://e.com)"
+        );
+    }
+
+    /// A cell can only ever show one run of inline content, so every physical line — and every
+    /// `<br>`, in either the raw spelling or the Markdown hard break production's own pre-pass leaves
+    /// behind — collapses to a single space.
+    #[test]
+    fn html_cell_to_markdown_collapses_breaks_and_newlines_to_spaces() {
+        assert_eq!(html_cell_to_markdown("a<br>b"), "a b");
+        assert_eq!(html_cell_to_markdown("a<br />b"), "a b");
+        assert_eq!(html_cell_to_markdown("\nfirst\nsecond\n"), "first second");
+        assert_eq!(html_cell_to_markdown("a  \nb"), "a b");
+    }
+
+    /// Anything this function does not translate is handed to `render_html_block` still spelled as a
+    /// tag — the pipeline's one and only stripper — rather than stripped a second way here.
+    #[test]
+    fn html_cell_to_markdown_leaves_every_other_tag_to_the_one_stripper() {
+        assert_eq!(html_cell_to_markdown("<span class=\"x\">t</span>"), "t");
+        assert_eq!(html_cell_to_markdown("<a name=\"x\">anchor</a>"), "anchor");
+        assert_eq!(html_cell_to_markdown("a<!-- gone -->b"), "ab");
+        assert_eq!(html_cell_to_markdown("a &amp; b &lt;c&gt;"), "a & b <c>");
+    }
+
+    /// An unbalanced `<a>` must never leave its opening bracket behind — a stray `[` would read as
+    /// the start of a Markdown link to `parse_cell_segments`.
+    #[test]
+    fn html_cell_to_markdown_drops_a_dangling_open_anchor_bracket() {
+        assert_eq!(
+            html_cell_to_markdown("<a href=\"https://e.com\">site"),
+            "site"
+        );
+        assert_eq!(html_cell_to_markdown("site</a>"), "site");
+        assert_eq!(
+            html_cell_to_markdown("<a href=\"https://e.com\">one</a><a href=\"https://f.com\">two"),
+            "[one](https://e.com)two"
+        );
+    }
+
+    /// Never panics on input that is not well-formed HTML at all — principle #3. An unterminated
+    /// `<` swallows the rest of the cell, which is `render_html_block`'s own long-standing behavior
+    /// for an unterminated tag in any HTML block (`rest = ""` once no `>` is found), inherited here
+    /// rather than diverged from — the whole point of routing through that one stripper.
+    #[test]
+    fn html_cell_to_markdown_survives_unterminated_and_multibyte_input() {
+        assert_eq!(html_cell_to_markdown("a <b unterminated"), "a");
+        assert_eq!(
+            html_cell_to_markdown("日本語<b>強調</b>です"),
+            "日本語**強調**です"
+        );
+        assert_eq!(html_cell_to_markdown(""), "");
+        assert_eq!(html_cell_to_markdown("   "), "");
     }
 
     #[test]
@@ -13735,6 +13989,273 @@ pub(crate) mod list_corpus {
             (
                 "paragraph followed by a list after a blank line",
                 "before.\n\n- a\n- b\n",
+            ),
+        ]
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod html_table_corpus {
+    /// Documents exercising the **HTML `<table>`** surface — the one shape of raw HTML the block
+    /// model gives real structure to (`model::BlockKind::HtmlTable`), added with that feature.
+    /// Sibling of `task_corpus`/`code_corpus`/`inline_corpus`/`list_corpus`, and built the same way:
+    /// from the case split HTML's own table grammar implies, not from a list of bugs already met —
+    /// see `preprocess_corpus`'s own doc comment for why that distinction matters.
+    ///
+    /// Why this axis needed its own corpus: before it, **no** corpus and no `samples/*.md` file
+    /// contained a single `<table>`, `<tr>` or `<td>` (confirmed by grep over both at the time this
+    /// was written), so every golden snapshot could have passed with the whole feature broken.
+    ///
+    /// Several cases below deliberately pin a **degraded** rendering rather than a correct one — a
+    /// `colspan`/`rowspan` drawn as one plain cell, a nested `<table>` flattened into its enclosing
+    /// cell's text, a `<caption>` dropped, a table interrupted by a blank line not recognized as a
+    /// table at all. Those are the documented non-goals of the first pass (see
+    /// `model::BlockKind::HtmlTable`'s own doc comment and `docs/STATUS.md`); pinning them here is
+    /// what makes a later pass that fixes one show up as a reviewable snapshot diff instead of
+    /// passing silently.
+    pub fn cases() -> Vec<(&'static str, &'static str)> {
+        vec![
+            // ---- the shape this feature was written for ----
+            (
+                "readme screenshot grid two by two",
+                "## Screenshots\n\n<table>\n  <tr>\n    <td width=\"50%\"><img src=\"tree.png\" alt=\"Tree view with git status colors\"></td>\n    <td width=\"50%\"><img src=\"graph.png\" alt=\"Custom git commit-graph renderer\"></td>\n  </tr>\n  <tr>\n    <td align=\"center\"><b>Tree view</b> — git status colors</td>\n    <td align=\"center\"><b>Git graph</b> — custom commit-graph renderer</td>\n  </tr>\n</table>\n\nafter\n",
+            ),
+            // ---- header cells: present, absent, and in every position ----
+            (
+                "th header row",
+                "<table>\n<tr><th>Name</th><th>Qty</th></tr>\n<tr><td>apple</td><td>3</td></tr>\n</table>\n",
+            ),
+            (
+                "no th at all",
+                "<table>\n<tr><td>apple</td><td>3</td></tr>\n<tr><td>pear</td><td>4</td></tr>\n</table>\n",
+            ),
+            (
+                // Every row is a header row, so the header rule lands under the last one, right above
+                // the bottom border. Shared with the GFM path (a `| a |` table with a delimiter row
+                // and no body rows draws the identical double rule), pinned here rather than changed.
+                "a table of nothing but th rows",
+                "<table>\n<tr><th>H</th></tr>\n</table>\n",
+            ),
+            (
+                "two leading th rows are both header rows",
+                "<table>\n<tr><th>Group</th><th>Group</th></tr>\n<tr><th>Name</th><th>Qty</th></tr>\n<tr><td>apple</td><td>3</td></tr>\n</table>\n",
+            ),
+            (
+                "th as the leading column of every row",
+                "<table>\n<tr><th>Name</th><td>apple</td></tr>\n<tr><th>Qty</th><td>3</td></tr>\n</table>\n",
+            ),
+            (
+                "a stray th in the middle of a body row",
+                "<table>\n<tr><td>a</td><th>b</th><td>c</td></tr>\n</table>\n",
+            ),
+            (
+                "first row mixing th and td is not a header row",
+                "<table>\n<tr><th>Name</th><td>Qty</td></tr>\n<tr><td>apple</td><td>3</td></tr>\n</table>\n",
+            ),
+            // ---- align: the three values, an unknown one, and none ----
+            (
+                "align left center right on one row",
+                "<table>\n<tr><td align=\"left\">L</td><td align=\"center\">C</td><td align=\"right\">R</td></tr>\n<tr><td>wide cell one</td><td>wide cell two</td><td>wide cell three</td></tr>\n</table>\n",
+            ),
+            (
+                "align with an unrecognized value falls back to the column",
+                "<table>\n<tr><td align=\"justify\">J</td></tr>\n<tr><td>wide cell here</td></tr>\n</table>\n",
+            ),
+            (
+                "align spelled in uppercase",
+                "<table>\n<tr><td ALIGN=\"CENTER\">C</td></tr>\n<tr><td>wide cell here</td></tr>\n</table>\n",
+            ),
+            // ---- cell content: images, markdown, inline html, br ----
+            (
+                "cell with an img",
+                "<table>\n<tr><td><img src=\"a.png\" alt=\"picture a\"></td><td>text</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with a self closing img",
+                "<table>\n<tr><td><img src='a.png' alt='picture a'/></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an img wrapped in a link",
+                "<table>\n<tr><td><a href=\"https://example.com\"><img src=\"a.png\" alt=\"badge\"></a></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with markdown emphasis",
+                "<table>\n<tr><td>**bold** and *italic* and `code`</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with a markdown link",
+                "<table>\n<tr><td>[label](https://example.com)</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with html b i code",
+                "<table>\n<tr><td><b>bold</b> <i>italic</i> <code>code</code></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with html strong em",
+                "<table>\n<tr><td><strong>bold</strong> <em>italic</em></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an anchor",
+                "<table>\n<tr><td><a href=\"https://example.com\">site</a></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an anchor that has no href",
+                "<table>\n<tr><td><a name=\"x\">anchor</a></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an unclosed anchor",
+                "<table>\n<tr><td><a href=\"https://example.com\">site</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with a br",
+                "<table>\n<tr><td>first<br>second</td></tr>\n</table>\n",
+            ),
+            (
+                // These four are rewritten *before* any parse, by `process_inline_html_traced` —
+                // the document-wide pre-pass — so this case is what proves that pass and the table
+                // fold compose (the snapshot harness runs the real `pre_src_for`, pre-pass included).
+                "cell with the tags the inline-html pre-pass owns",
+                "<table>\n<tr><td><del>gone</del> <kbd>Ctrl</kbd> H<sub>2</sub>O x<sup>2</sup></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an html entity",
+                "<table>\n<tr><td>a &amp; b &lt;c&gt;</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an html comment",
+                "<table>\n<tr><td>before<!-- hidden -->after</td></tr>\n</table>\n",
+            ),
+            (
+                "cell with an unknown tag",
+                "<table>\n<tr><td><span class=\"x\">text</span></td></tr>\n</table>\n",
+            ),
+            (
+                "cell with a literal pipe",
+                "<table>\n<tr><td>a | b</td></tr>\n</table>\n",
+            ),
+            ("cjk cells", "<table>\n<tr><th>名前</th><th>数</th></tr>\n<tr><td>りんご</td><td>三</td></tr>\n</table>\n"),
+            (
+                "cell content spread over several physical lines",
+                "<table>\n<tr>\n<td>\nfirst line\nsecond line\n</td>\n</tr>\n</table>\n",
+            ),
+            // ---- shape edges: ragged, empty, wrappers, case, quoting ----
+            (
+                "ragged rows",
+                "<table>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n<tr><td>d</td></tr>\n</table>\n",
+            ),
+            ("empty cells", "<table>\n<tr><td></td><td>b</td></tr>\n</table>\n"),
+            (
+                "empty table with no cells stays plain html",
+                "<table>\n</table>\n",
+            ),
+            (
+                "table with only a caption stays plain html",
+                "<table>\n<caption>Just a caption</caption>\n</table>\n",
+            ),
+            (
+                "caption alongside real rows is dropped",
+                "<table>\n<caption>Fruit</caption>\n<tr><td>apple</td></tr>\n</table>\n",
+            ),
+            (
+                "thead tbody tfoot wrappers",
+                "<table>\n<thead><tr><th>H</th></tr></thead>\n<tbody><tr><td>B</td></tr></tbody>\n<tfoot><tr><td>F</td></tr></tfoot>\n</table>\n",
+            ),
+            (
+                "colgroup and col",
+                "<table>\n<colgroup><col><col></colgroup>\n<tr><td>a</td><td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "uppercase tags",
+                "<TABLE>\n<TR><TH>H</TH></TR>\n<TR><TD>b</TD></TR>\n</TABLE>\n",
+            ),
+            (
+                "single quoted attributes",
+                "<table>\n<tr><td align='center'>C</td></tr>\n<tr><td>wide cell here</td></tr>\n</table>\n",
+            ),
+            (
+                "unquoted attribute value",
+                "<table>\n<tr><td align=center>C</td></tr>\n<tr><td>wide cell here</td></tr>\n</table>\n",
+            ),
+            (
+                "omitted closing td and tr tags",
+                "<table>\n<tr><td>a<td>b\n<tr><td>c<td>d\n</table>\n",
+            ),
+            (
+                "td outside any tr",
+                "<table>\n<td>a</td><td>b</td>\n</table>\n",
+            ),
+            // ---- documented non-goals, pinned as they degrade ----
+            (
+                "colspan is drawn as one plain cell",
+                "<table>\n<tr><td colspan=\"2\">spanning</td></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "rowspan is drawn as one plain cell",
+                "<table>\n<tr><td rowspan=\"2\">spanning</td><td>a</td></tr>\n<tr><td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "nested table is flattened into its enclosing cell",
+                "<table>\n<tr><td><table><tr><td>inner</td></tr></table></td><td>outer</td></tr>\n</table>\n",
+            ),
+            (
+                "blank line inside the table is not a table",
+                "<table>\n<tr>\n\n<td>a</td>\n</tr>\n</table>\n",
+            ),
+            (
+                "unclosed table is not a table",
+                "<table>\n<tr><td>a</td></tr>\n",
+            ),
+            (
+                "table not the first tag in the block is not a table",
+                "<div>\n<table>\n<tr><td>a</td></tr>\n</table>\n</div>\n",
+            ),
+            // ---- surroundings: quote, details, list, neighbouring blocks ----
+            (
+                "table inside a block quote",
+                "> <table>\n> <tr><td>a</td><td>b</td></tr>\n> </table>\n",
+            ),
+            (
+                "table inside a block quote with a multi line cell",
+                "> <table>\n> <tr>\n> <td>\n> first line\n> second line\n> </td>\n> </tr>\n> </table>\n",
+            ),
+            (
+                "table inside details",
+                "<details>\n<summary>More</summary>\n\n<table>\n<tr><th>H</th></tr>\n<tr><td>b</td></tr>\n</table>\n\n</details>\n",
+            ),
+            (
+                "table inside an open details",
+                "<details open>\n<summary>More</summary>\n\n<table>\n<tr><th>H</th></tr>\n<tr><td>b</td></tr>\n</table>\n\n</details>\n",
+            ),
+            (
+                "table inside a list item",
+                "- item\n\n  <table>\n  <tr><td>a</td><td>b</td></tr>\n  </table>\n",
+            ),
+            (
+                // CommonMark ends an HTML block at a blank line, so this paragraph is glued onto the
+                // *same* block as the table. Nothing here can carry it, so the block declines to fold
+                // and renders exactly as it always has — pinning that it is never silently dropped.
+                "paragraph glued directly after the table keeps the block unfolded",
+                "<table>\n<tr><td>a</td></tr>\n</table>\nafter\n",
+            ),
+            (
+                "paragraph after the table across a blank line",
+                "<table>\n<tr><td>a</td></tr>\n</table>\n\nafter\n",
+            ),
+            (
+                "fence directly after the table",
+                "<table>\n<tr><td>a</td></tr>\n</table>\n\n```rust\nlet x = 1;\n```\n",
+            ),
+            (
+                "two tables in a row",
+                "<table>\n<tr><td>a</td></tr>\n</table>\n\n<table>\n<tr><td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "gfm table with only a header row",
+                "| a |\n|---|\n",
+            ),
+            (
+                "gfm table and html table in the same document",
+                "| a | b |\n|---|--:|\n| 1 | 2 |\n\n<table>\n<tr><td>c</td><td align=\"right\">d</td></tr>\n</table>\n",
             ),
         ]
     }

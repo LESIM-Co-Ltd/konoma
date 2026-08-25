@@ -1418,6 +1418,252 @@ List{ordered=true, start=Some(1)} src=30..38 text="1. note\n"
 -- BLOCKS (1) --
 Paragraph{inline=1..5:"<BR> and\ntail"} src=0..20 text="`<BR>` and   \n tail\n"
 
+=== html_table_corpus: a stray th in the middle of a body row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..48:"<tr><td>a</td><th>b</th><td>c</td></tr>\n", 48..57:"</table>\n"], rows=[[16..17:"a"(header=false, align=None), 26..27:"b"(header=true, align=None), 36..37:"c"(header=false, align=None)]]} src=0..57 text="<table>\n<tr><td>a</td><th>b</th><td>c</td></tr>\n</table>\n"
+
+=== html_table_corpus: a table of nothing but th rows ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><th>H</th></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"H"(header=true, align=None)]]} src=0..37 text="<table>\n<tr><th>H</th></tr>\n</table>\n"
+
+=== html_table_corpus: align left center right on one row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..90:"<tr><td align=\"left\">L</td><td align=\"center\">C</td><td align=\"right\">R</td></tr"…, 90..168:"<tr><td>wide cell one</td><td>wide cell two</td><td>wide cell three</td></tr>\n", 168..177:"</table>\n"], rows=[[29..30:"L"(header=false, align=Some(Left)), 54..55:"C"(header=false, align=Some(Center)), 78..79:"R"(header=false, align=Some(Right))], [98..111:"wide cell one"(header=false, align=None), 120..133:"wide cell two"(header=false, align=None), 142..157:"wide cell three"(header=false, align=None)]]} src=0..177 text="<table>\n<tr><td align=\"left\">L</td><td align=\"center\">C</td><td align=\"right\">R<"…
+
+=== html_table_corpus: align spelled in uppercase ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<tr><td ALIGN=\"CENTER\">C</td></tr>\n", 43..76:"<tr><td>wide cell here</td></tr>\n", 76..85:"</table>\n"], rows=[[31..32:"C"(header=false, align=Some(Center))], [51..65:"wide cell here"(header=false, align=None)]]} src=0..85 text="<table>\n<tr><td ALIGN=\"CENTER\">C</td></tr>\n<tr><td>wide cell here</td></tr>\n</ta"…
+
+=== html_table_corpus: align with an unrecognized value falls back to the column ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..44:"<tr><td align=\"justify\">J</td></tr>\n", 44..77:"<tr><td>wide cell here</td></tr>\n", 77..86:"</table>\n"], rows=[[32..33:"J"(header=false, align=None)], [52..66:"wide cell here"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><td align=\"justify\">J</td></tr>\n<tr><td>wide cell here</td></tr>\n</t"…
+
+=== html_table_corpus: blank line inside the table is not a table ===
+-- BLOCKS (2) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..13:"<tr>\n"], text="<table>\n<tr>\n"} src=0..13 text="<table>\n<tr>\n"
+Html{tag=Some("td"), body_spans=[14..25:"<td>a</td>\n", 25..31:"</tr>\n", 31..40:"</table>\n"], text="<td>a</td>\n</tr>\n</table>\n"} src=14..40 text="<td>a</td>\n</tr>\n</table>\n"
+
+=== html_table_corpus: caption alongside real rows is dropped ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..33:"<caption>Fruit</caption>\n", 33..57:"<tr><td>apple</td></tr>\n", 57..66:"</table>\n"], rows=[[41..46:"apple"(header=false, align=None)]]} src=0..66 text="<table>\n<caption>Fruit</caption>\n<tr><td>apple</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell content spread over several physical lines ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..13:"<tr>\n", 13..18:"<td>\n", 18..29:"first line\n", 29..41:"second line\n", 41..47:"</td>\n", 47..53:"</tr>\n", 53..62:"</table>\n"], rows=[[17..41:"\nfirst line\nsecond line\n"(header=false, align=None)]]} src=0..62 text="<table>\n<tr>\n<td>\nfirst line\nsecond line\n</td>\n</tr>\n</table>\n"
+
+=== html_table_corpus: cell with a br ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..24:"<tr><td>first  \n", 24..41:"second</td></tr>\n", 41..50:"</table>\n"], rows=[[16..30:"first  \nsecond"(header=false, align=None)]]} src=0..50 text="<table>\n<tr><td>first  \nsecond</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with a literal pipe ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..32:"<tr><td>a | b</td></tr>\n", 32..41:"</table>\n"], rows=[[16..21:"a | b"(header=false, align=None)]]} src=0..41 text="<table>\n<tr><td>a | b</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with a markdown link ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..55:"<tr><td>[label](https://example.com)</td></tr>\n", 55..64:"</table>\n"], rows=[[16..44:"[label](https://example.com)"(header=false, align=None)]]} src=0..64 text="<table>\n<tr><td>[label](https://example.com)</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with a self closing img ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..61:"<tr><td><img src='a.png' alt='picture a'/></td></tr>\n", 61..70:"</table>\n"], rows=[[16..50:"<img src='a.png' alt='picture a'/>"(header=false, align=None)]]} src=0..70 text="<table>\n<tr><td><img src='a.png' alt='picture a'/></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an anchor ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..65:"<tr><td><a href=\"https://example.com\">site</a></td></tr>\n", 65..74:"</table>\n"], rows=[[16..54:"<a href=\"https://example.com\">site</a>"(header=false, align=None)]]} src=0..74 text="<table>\n<tr><td><a href=\"https://example.com\">site</a></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an anchor that has no href ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..49:"<tr><td><a name=\"x\">anchor</a></td></tr>\n", 49..58:"</table>\n"], rows=[[16..38:"<a name=\"x\">anchor</a>"(header=false, align=None)]]} src=0..58 text="<table>\n<tr><td><a name=\"x\">anchor</a></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an html comment ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..53:"<tr><td>before<!-- hidden -->after</td></tr>\n", 53..62:"</table>\n"], rows=[[16..42:"before<!-- hidden -->after"(header=false, align=None)]]} src=0..62 text="<table>\n<tr><td>before<!-- hidden -->after</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an html entity ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..46:"<tr><td>a &amp; b &lt;c&gt;</td></tr>\n", 46..55:"</table>\n"], rows=[[16..35:"a &amp; b &lt;c&gt;"(header=false, align=None)]]} src=0..55 text="<table>\n<tr><td>a &amp; b &lt;c&gt;</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an img ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..73:"<tr><td><img src=\"a.png\" alt=\"picture a\"></td><td>text</td></tr>\n", 73..82:"</table>\n"], rows=[[16..49:"<img src=\"a.png\" alt=\"picture a\">"(header=false, align=None), 58..62:"text"(header=false, align=None)]]} src=0..82 text="<table>\n<tr><td><img src=\"a.png\" alt=\"picture a\"></td><td>text</td></tr>\n</table"…
+
+=== html_table_corpus: cell with an img wrapped in a link ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..90:"<tr><td><a href=\"https://example.com\"><img src=\"a.png\" alt=\"badge\"></a></td></tr"…, 90..99:"</table>\n"], rows=[[16..79:"<a href=\"https://example.com\"><img src=\"a.png\" alt=\"badge\"></a>"(header=false, align=None)]]} src=0..99 text="<table>\n<tr><td><a href=\"https://example.com\"><img src=\"a.png\" alt=\"badge\"></a><"…
+
+=== html_table_corpus: cell with an unclosed anchor ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..61:"<tr><td><a href=\"https://example.com\">site</td></tr>\n", 61..70:"</table>\n"], rows=[[16..50:"<a href=\"https://example.com\">site"(header=false, align=None)]]} src=0..70 text="<table>\n<tr><td><a href=\"https://example.com\">site</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with an unknown tag ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..54:"<tr><td><span class=\"x\">text</span></td></tr>\n", 54..63:"</table>\n"], rows=[[16..43:"<span class=\"x\">text</span>"(header=false, align=None)]]} src=0..63 text="<table>\n<tr><td><span class=\"x\">text</span></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with html b i code ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..70:"<tr><td><b>bold</b> <i>italic</i> <code>code</code></td></tr>\n", 70..79:"</table>\n"], rows=[[16..59:"<b>bold</b> <i>italic</i> <code>code</code>"(header=false, align=None)]]} src=0..79 text="<table>\n<tr><td><b>bold</b> <i>italic</i> <code>code</code></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with html strong em ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..64:"<tr><td><strong>bold</strong> <em>italic</em></td></tr>\n", 64..73:"</table>\n"], rows=[[16..53:"<strong>bold</strong> <em>italic</em>"(header=false, align=None)]]} src=0..73 text="<table>\n<tr><td><strong>bold</strong> <em>italic</em></td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with markdown emphasis ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..59:"<tr><td>**bold** and *italic* and `code`</td></tr>\n", 59..68:"</table>\n"], rows=[[16..48:"**bold** and *italic* and `code`"(header=false, align=None)]]} src=0..68 text="<table>\n<tr><td>**bold** and *italic* and `code`</td></tr>\n</table>\n"
+
+=== html_table_corpus: cell with the tags the inline-html pre-pass owns ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..52:"<tr><td>~~gone~~ `Ctrl` H₂O x²</td></tr>\n", 52..61:"</table>\n"], rows=[[16..41:"~~gone~~ `Ctrl` H₂O x²"(header=false, align=None)]]} src=0..61 text="<table>\n<tr><td>~~gone~~ `Ctrl` H₂O x²</td></tr>\n</table>\n"
+
+=== html_table_corpus: cjk cells ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..45:"<tr><th>名前</th><th>数</th></tr>\n", 45..85:"<tr><td>りんご</td><td>三</td></tr>\n", 85..94:"</table>\n"], rows=[[16..22:"名前"(header=true, align=None), 31..34:"数"(header=true, align=None)], [53..62:"りんご"(header=false, align=None), 71..74:"三"(header=false, align=None)]]} src=0..94 text="<table>\n<tr><th>名前</th><th>数</th></tr>\n<tr><td>りんご</td><td>三</td></tr>\n</table>\n"
+
+=== html_table_corpus: colgroup and col ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..40:"<colgroup><col><col></colgroup>\n", 40..70:"<tr><td>a</td><td>b</td></tr>\n", 70..79:"</table>\n"], rows=[[48..49:"a"(header=false, align=None), 58..59:"b"(header=false, align=None)]]} src=0..79 text="<table>\n<colgroup><col><col></colgroup>\n<tr><td>a</td><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: colspan is drawn as one plain cell ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..47:"<tr><td colspan=\"2\">spanning</td></tr>\n", 47..77:"<tr><td>a</td><td>b</td></tr>\n", 77..86:"</table>\n"], rows=[[28..36:"spanning"(header=false, align=None)], [55..56:"a"(header=false, align=None), 65..66:"b"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><td colspan=\"2\">spanning</td></tr>\n<tr><td>a</td><td>b</td></tr>\n</t"…
+
+=== html_table_corpus: empty cells ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..37:"<tr><td></td><td>b</td></tr>\n", 37..46:"</table>\n"], rows=[[16..16:""(header=false, align=None), 25..26:"b"(header=false, align=None)]]} src=0..46 text="<table>\n<tr><td></td><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: empty table with no cells stays plain html ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..17:"</table>\n"], text="<table>\n</table>\n"} src=0..17 text="<table>\n</table>\n"
+
+=== html_table_corpus: fence directly after the table ===
+-- BLOCKS (2) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><td>a</td></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"a"(header=false, align=None)]]} src=0..37 text="<table>\n<tr><td>a</td></tr>\n</table>\n"
+CodeBlock{lang=Some("rust"), fenced=true, body_spans=[46..57:"let x = 1;\n"], text="let x = 1;"} src=38..60 text="```rust\nlet x = 1;\n```"
+
+=== html_table_corpus: first row mixing th and td is not a header row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<tr><th>Name</th><td>Qty</td></tr>\n", 43..77:"<tr><td>apple</td><td>3</td></tr>\n", 77..86:"</table>\n"], rows=[[16..20:"Name"(header=true, align=None), 29..32:"Qty"(header=false, align=None)], [51..56:"apple"(header=false, align=None), 65..66:"3"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><th>Name</th><td>Qty</td></tr>\n<tr><td>apple</td><td>3</td></tr>\n</t"…
+
+=== html_table_corpus: gfm table and html table in the same document ===
+-- BLOCKS (2) --
+Table{aligns=[None, Right], rows=[[1..4:" a ", 5..8:" b "], [21..24:" 1 ", 25..28:" 2 "]]} src=0..30 text="| a | b |\n|---|--:|\n| 1 | 2 |\n"
+HtmlTable{body_spans=[31..39:"<table>\n", 39..83:"<tr><td>c</td><td align=\"right\">d</td></tr>\n", 83..92:"</table>\n"], rows=[[47..48:"c"(header=false, align=None), 71..72:"d"(header=false, align=Some(Right))]]} src=31..92 text="<table>\n<tr><td>c</td><td align=\"right\">d</td></tr>\n</table>\n"
+
+=== html_table_corpus: gfm table with only a header row ===
+-- BLOCKS (1) --
+Table{aligns=[None], rows=[[1..4:" a "]]} src=0..12 text="| a |\n|---|\n"
+
+=== html_table_corpus: nested table is flattened into its enclosing cell ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..79:"<tr><td><table><tr><td>inner</td></tr></table></td><td>outer</td></tr>\n", 79..88:"</table>\n"], rows=[[16..54:"<table><tr><td>inner</td></tr></table>"(header=false, align=None), 63..68:"outer"(header=false, align=None)]]} src=0..88 text="<table>\n<tr><td><table><tr><td>inner</td></tr></table></td><td>outer</td></tr>\n<"…
+
+=== html_table_corpus: no th at all ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..42:"<tr><td>apple</td><td>3</td></tr>\n", 42..75:"<tr><td>pear</td><td>4</td></tr>\n", 75..84:"</table>\n"], rows=[[16..21:"apple"(header=false, align=None), 30..31:"3"(header=false, align=None)], [50..54:"pear"(header=false, align=None), 63..64:"4"(header=false, align=None)]]} src=0..84 text="<table>\n<tr><td>apple</td><td>3</td></tr>\n<tr><td>pear</td><td>4</td></tr>\n</tab"…
+
+=== html_table_corpus: omitted closing td and tr tags ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..23:"<tr><td>a<td>b\n", 23..38:"<tr><td>c<td>d\n", 38..47:"</table>\n"], rows=[[16..17:"a"(header=false, align=None), 21..23:"b\n"(header=false, align=None)], [31..32:"c"(header=false, align=None), 36..38:"d\n"(header=false, align=None)]]} src=0..47 text="<table>\n<tr><td>a<td>b\n<tr><td>c<td>d\n</table>\n"
+
+=== html_table_corpus: paragraph after the table across a blank line ===
+-- BLOCKS (2) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><td>a</td></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"a"(header=false, align=None)]]} src=0..37 text="<table>\n<tr><td>a</td></tr>\n</table>\n"
+Paragraph{inline=6..7:"after"} src=38..44 text="after\n"
+
+=== html_table_corpus: paragraph glued directly after the table keeps the block unfolded ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..28:"<tr><td>a</td></tr>\n", 28..37:"</table>\n", 37..43:"after\n"], text="<table>\n<tr><td>a</td></tr>\n</table>\nafter\n"} src=0..43 text="<table>\n<tr><td>a</td></tr>\n</table>\nafter\n"
+
+=== html_table_corpus: ragged rows ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..48:"<tr><td>a</td><td>b</td><td>c</td></tr>\n", 48..68:"<tr><td>d</td></tr>\n", 68..77:"</table>\n"], rows=[[16..17:"a"(header=false, align=None), 26..27:"b"(header=false, align=None), 36..37:"c"(header=false, align=None)], [56..57:"d"(header=false, align=None)]]} src=0..77 text="<table>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n<tr><td>d</td></tr>\n</table>\n"
+
+=== html_table_corpus: readme screenshot grid two by two ===
+-- BLOCKS (3) --
+Heading{level=2, inline=1..2:"Screenshots", id=None, classes=[], attrs=[]} src=0..15 text="## Screenshots\n"
+HtmlTable{body_spans=[16..24:"<table>\n", 24..31:"  <tr>\n", 31..116:"    <td width=\"50%\"><img src=\"tree.png\" alt=\"Tree view with git status colors\"><"…, 116..202:"    <td width=\"50%\"><img src=\"graph.png\" alt=\"Custom git commit-graph renderer\">"…, 202..210:"  </tr>\n", 210..217:"  <tr>\n", 217..284:"    <td align=\"center\"><b>Tree view</b> — git status colors</td>\n", 284..362:"    <td align=\"center\"><b>Git graph</b> — custom commit-graph renderer</td>\n", 362..370:"  </tr>\n", 370..379:"</table>\n"], rows=[[51..110:"<img src=\"tree.png\" alt=\"Tree view with git status colors\">"(header=false, align=None), 136..196:"<img src=\"graph.png\" alt=\"Custom git commit-graph renderer\">"(header=false, align=None)], [240..278:"<b>Tree view</b> — git status colors"(header=false, align=Some(Center)), 307..356:"<b>Git graph</b> — custom commit-graph renderer"(header=false, align=Some(Center))]]} src=16..379 text="<table>\n  <tr>\n    <td width=\"50%\"><img src=\"tree.png\" alt=\"Tree view with git s"…
+Paragraph{inline=16..17:"after"} src=380..386 text="after\n"
+
+=== html_table_corpus: rowspan is drawn as one plain cell ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..57:"<tr><td rowspan=\"2\">spanning</td><td>a</td></tr>\n", 57..77:"<tr><td>b</td></tr>\n", 77..86:"</table>\n"], rows=[[28..36:"spanning"(header=false, align=None), 45..46:"a"(header=false, align=None)], [65..66:"b"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><td rowspan=\"2\">spanning</td><td>a</td></tr>\n<tr><td>b</td></tr>\n</t"…
+
+=== html_table_corpus: single quoted attributes ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<tr><td align='center'>C</td></tr>\n", 43..76:"<tr><td>wide cell here</td></tr>\n", 76..85:"</table>\n"], rows=[[31..32:"C"(header=false, align=Some(Center))], [51..65:"wide cell here"(header=false, align=None)]]} src=0..85 text="<table>\n<tr><td align='center'>C</td></tr>\n<tr><td>wide cell here</td></tr>\n</ta"…
+
+=== html_table_corpus: table inside a block quote ===
+-- BLOCKS (1) --
+Quote{alert=None, alert_title=""} src=0..53 text="> <table>\n> <tr><td>a</td><td>b</td></tr>\n> </table>\n"
+  HtmlTable{body_spans=[2..10:"<table>\n", 12..42:"<tr><td>a</td><td>b</td></tr>\n", 44..53:"</table>\n"], rows=[[20..21:"a"(header=false, align=None), 30..31:"b"(header=false, align=None)]]} src=2..53 text="<table>\n> <tr><td>a</td><td>b</td></tr>\n> </table>\n"
+
+=== html_table_corpus: table inside a block quote with a multi line cell ===
+-- BLOCKS (1) --
+Quote{alert=None, alert_title=""} src=0..78 text="> <table>\n> <tr>\n> <td>\n> first line\n> second line\n> </td>\n> </tr>\n> </table>\n"
+  HtmlTable{body_spans=[2..10:"<table>\n", 12..17:"<tr>\n", 19..24:"<td>\n", 26..37:"first line\n", 39..51:"second line\n", 53..59:"</td>\n", 61..67:"</tr>\n", 69..78:"</table>\n"], rows=[[23..53:"\nfirst line\nsecond line\n"(header=false, align=None)]]} src=2..78 text="<table>\n> <tr>\n> <td>\n> first line\n> second line\n> </td>\n> </tr>\n> </table>\n"
+
+=== html_table_corpus: table inside a list item ===
+-- BLOCKS (1) --
+List{ordered=false, start=None} src=0..61 text="- item\n\n  <table>\n  <tr><td>a</td><td>b</td></tr>\n  </table>\n"
+  ListItem{task=None} src=0..61 text="- item\n\n  <table>\n  <tr><td>a</td><td>b</td></tr>\n  </table>\n"
+    Paragraph{inline=3..4:"item"} src=2..7 text="item\n"
+    HtmlTable{body_spans=[10..18:"<table>\n", 20..50:"<tr><td>a</td><td>b</td></tr>\n", 52..61:"</table>\n"], rows=[[28..29:"a"(header=false, align=None), 38..39:"b"(header=false, align=None)]]} src=10..61 text="<table>\n  <tr><td>a</td><td>b</td></tr>\n  </table>\n"
+
+=== html_table_corpus: table inside an open details ===
+-- BLOCKS (1) --
+Details{open_attr=true, summary="More", glued_body=None} src=0..109 text="<details open>\n<summary>More</summary>\n\n<table>\n<tr><th>H</th></tr>\n<tr><td>b</t"…
+  HtmlTable{body_spans=[40..48:"<table>\n", 48..68:"<tr><th>H</th></tr>\n", 68..88:"<tr><td>b</td></tr>\n", 88..97:"</table>\n"], rows=[[56..57:"H"(header=true, align=None)], [76..77:"b"(header=false, align=None)]]} src=40..97 text="<table>\n<tr><th>H</th></tr>\n<tr><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: table inside details ===
+-- BLOCKS (1) --
+Details{open_attr=false, summary="More", glued_body=None} src=0..104 text="<details>\n<summary>More</summary>\n\n<table>\n<tr><th>H</th></tr>\n<tr><td>b</td></t"…
+  HtmlTable{body_spans=[35..43:"<table>\n", 43..63:"<tr><th>H</th></tr>\n", 63..83:"<tr><td>b</td></tr>\n", 83..92:"</table>\n"], rows=[[51..52:"H"(header=true, align=None)], [71..72:"b"(header=false, align=None)]]} src=35..92 text="<table>\n<tr><th>H</th></tr>\n<tr><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: table not the first tag in the block is not a table ===
+-- BLOCKS (1) --
+Html{tag=Some("div"), body_spans=[0..6:"<div>\n", 6..14:"<table>\n", 14..34:"<tr><td>a</td></tr>\n", 34..43:"</table>\n", 43..50:"</div>\n"], text="<div>\n<table>\n<tr><td>a</td></tr>\n</table>\n</div>\n"} src=0..50 text="<div>\n<table>\n<tr><td>a</td></tr>\n</table>\n</div>\n"
+
+=== html_table_corpus: table with only a caption stays plain html ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..42:"<caption>Just a caption</caption>\n", 42..51:"</table>\n"], text="<table>\n<caption>Just a caption</caption>\n</table>\n"} src=0..51 text="<table>\n<caption>Just a caption</caption>\n</table>\n"
+
+=== html_table_corpus: td outside any tr ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..29:"<td>a</td><td>b</td>\n", 29..38:"</table>\n"], rows=[[12..13:"a"(header=false, align=None), 22..23:"b"(header=false, align=None)]]} src=0..38 text="<table>\n<td>a</td><td>b</td>\n</table>\n"
+
+=== html_table_corpus: th as the leading column of every row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..45:"<tr><th>Name</th><td>apple</td></tr>\n", 45..77:"<tr><th>Qty</th><td>3</td></tr>\n", 77..86:"</table>\n"], rows=[[16..20:"Name"(header=true, align=None), 29..34:"apple"(header=false, align=None)], [53..56:"Qty"(header=true, align=None), 65..66:"3"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><th>Name</th><td>apple</td></tr>\n<tr><th>Qty</th><td>3</td></tr>\n</t"…
+
+=== html_table_corpus: th header row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<tr><th>Name</th><th>Qty</th></tr>\n", 43..77:"<tr><td>apple</td><td>3</td></tr>\n", 77..86:"</table>\n"], rows=[[16..20:"Name"(header=true, align=None), 29..32:"Qty"(header=true, align=None)], [51..56:"apple"(header=false, align=None), 65..66:"3"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><th>Name</th><th>Qty</th></tr>\n<tr><td>apple</td><td>3</td></tr>\n</t"…
+
+=== html_table_corpus: thead tbody tfoot wrappers ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<thead><tr><th>H</th></tr></thead>\n", 43..78:"<tbody><tr><td>B</td></tr></tbody>\n", 78..113:"<tfoot><tr><td>F</td></tr></tfoot>\n", 113..122:"</table>\n"], rows=[[23..24:"H"(header=true, align=None)], [58..59:"B"(header=false, align=None)], [93..94:"F"(header=false, align=None)]]} src=0..122 text="<table>\n<thead><tr><th>H</th></tr></thead>\n<tbody><tr><td>B</td></tr></tbody>\n<t"…
+
+=== html_table_corpus: two leading th rows are both header rows ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..46:"<tr><th>Group</th><th>Group</th></tr>\n", 46..81:"<tr><th>Name</th><th>Qty</th></tr>\n", 81..115:"<tr><td>apple</td><td>3</td></tr>\n", 115..124:"</table>\n"], rows=[[16..21:"Group"(header=true, align=None), 30..35:"Group"(header=true, align=None)], [54..58:"Name"(header=true, align=None), 67..70:"Qty"(header=true, align=None)], [89..94:"apple"(header=false, align=None), 103..104:"3"(header=false, align=None)]]} src=0..124 text="<table>\n<tr><th>Group</th><th>Group</th></tr>\n<tr><th>Name</th><th>Qty</th></tr>"…
+
+=== html_table_corpus: two tables in a row ===
+-- BLOCKS (2) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><td>a</td></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"a"(header=false, align=None)]]} src=0..37 text="<table>\n<tr><td>a</td></tr>\n</table>\n"
+HtmlTable{body_spans=[38..46:"<table>\n", 46..66:"<tr><td>b</td></tr>\n", 66..75:"</table>\n"], rows=[[54..55:"b"(header=false, align=None)]]} src=38..75 text="<table>\n<tr><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: unclosed table is not a table ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..28:"<tr><td>a</td></tr>\n"], text="<table>\n<tr><td>a</td></tr>\n"} src=0..28 text="<table>\n<tr><td>a</td></tr>\n"
+
+=== html_table_corpus: unquoted attribute value ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..41:"<tr><td align=center>C</td></tr>\n", 41..74:"<tr><td>wide cell here</td></tr>\n", 74..83:"</table>\n"], rows=[[29..30:"C"(header=false, align=None)], [49..63:"wide cell here"(header=false, align=None)]]} src=0..83 text="<table>\n<tr><td align=center>C</td></tr>\n<tr><td>wide cell here</td></tr>\n</tabl"…
+
+=== html_table_corpus: uppercase tags ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<TABLE>\n", 8..28:"<TR><TH>H</TH></TR>\n", 28..48:"<TR><TD>b</TD></TR>\n", 48..57:"</TABLE>\n"], rows=[[16..17:"H"(header=true, align=None)], [36..37:"b"(header=false, align=None)]]} src=0..57 text="<TABLE>\n<TR><TH>H</TH></TR>\n<TR><TD>b</TD></TR>\n</TABLE>\n"
+
 === inline_corpus: autolink ===
 -- BLOCKS (1) --
 Paragraph{inline=1..6:"Visit https://example.com/ today."} src=0..36 text="Visit <https://example.com/> today.\n"

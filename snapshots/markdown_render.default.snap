@@ -5841,6 +5841,1460 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== html_table_corpus: a stray th in the middle of a body row ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "b"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=-,bg=-,mod=- "c"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a table of nothing but th rows ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "H"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: align left center right on one row ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────────┬───────────────┬─────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "L"
+  s03 fg=-,bg=-,mod=- "             "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- "       "
+  s06 fg=-,bg=-,mod=- "C"
+  s07 fg=-,bg=-,mod=- "       "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s09 fg=-,bg=-,mod=- "               "
+  s10 fg=-,bg=-,mod=- "R"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "wide cell one"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "wide cell two"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=-,bg=-,mod=- "wide cell three"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────────┴───────────────┴─────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: align spelled in uppercase ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- "       "
+  s02 fg=-,bg=-,mod=- "C"
+  s03 fg=-,bg=-,mod=- "        "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "wide cell here"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: align with an unrecognized value falls back to the column ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "J"
+  s03 fg=-,bg=-,mod=- "              "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "wide cell here"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: blank line inside the table is not a table ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: caption alongside real rows is dropped ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "apple"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell content spread over several physical lines ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "first line second line"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with a br ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "first second"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with a literal pipe ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a | b"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with a markdown link ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=U "\u{f0c1} label"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Link{target="https://example.com"}
+
+=== html_table_corpus: cell with a self closing img ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=D "🖼 picture a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an anchor ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=U "\u{f0c1} site"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Link{target="https://example.com"}
+
+=== html_table_corpus: cell with an anchor that has no href ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "anchor"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an html comment ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "beforeafter"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an html entity ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a & b <c>"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an img ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┬──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=D "🖼 picture a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "text"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────┴──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an img wrapped in a link ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=blue,bg=-,mod=U "🖼 badge"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0001 kind=Link{target="https://example.com"}
+
+=== html_table_corpus: cell with an unclosed anchor ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "site"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with an unknown tag ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "text"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with html b i code ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=B "bold"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=I "italic"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=white,bg=-,mod=- "code"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with html strong em ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=B "bold"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=I "italic"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with markdown emphasis ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=B "bold"
+  s03 fg=-,bg=-,mod=- " and "
+  s04 fg=-,bg=-,mod=I "italic"
+  s05 fg=-,bg=-,mod=- " and "
+  s06 fg=white,bg=-,mod=- "code"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cell with the tags the inline-html pre-pass owns ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=X "gone"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=white,bg=-,mod=- "Ctrl"
+  s05 fg=-,bg=-,mod=- " H₂O x²"
+  s06 fg=-,bg=-,mod=- " "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: cjk cells ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "名前"
+  s03 fg=cyan,bg=-,mod=B "   "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "数"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼────┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "りんご"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "三"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: colgroup and col ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: colspan is drawn as one plain cell ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "spanning"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "  "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- "        "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: empty cells ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "  "
+  s03 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s04 fg=-,bg=-,mod=- " "
+  s05 fg=-,bg=-,mod=- "b"
+  s06 fg=-,bg=-,mod=- " "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: empty table with no cells stays plain html ===
+-- LINES (0) --
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: fence directly after the table ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+L0003 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+  s00 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
+  s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
+  s02 fg=white,bg=rgb(70,78,99),mod=B " rust "
+L0004 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+  s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s01 fg=rgb(198,120,221),bg=rgb(43,48,59),mod=- "let"
+  s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " x "
+  s03 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- "="
+  s04 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " "
+  s05 fg=rgb(209,154,102),bg=rgb(43,48,59),mod=- "1"
+  s06 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- ";"
+  s07 fg=-,bg=rgb(43,48,59),mod=- "                                                                                        "
+L0005 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+  s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
+  s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
+-- IMAGES (0) --
+-- CODE_BLOCKS (1) --
+  c00 "let x = 1;"
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0003 kind=CodeBlock
+
+=== html_table_corpus: first row mixing th and td is not a header row ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬─────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Name"
+  s03 fg=cyan,bg=-,mod=B "  "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "Qty"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "apple"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "3"
+  s07 fg=-,bg=-,mod=- "   "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴─────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: gfm table and html table in the same document ===
+-- LINES (8) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "a"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "b"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "1"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "2"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "c"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "d"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: gfm table with only a header row ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "a"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: nested table is flattened into its enclosing cell ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬───────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "inner"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "outer"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴───────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: no th at all ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "apple"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "3"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "pear"
+  s03 fg=-,bg=-,mod=- "  "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "4"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: omitted closing td and tr tags ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "c"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "d"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: paragraph after the table across a blank line ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "after"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: paragraph glued directly after the table keeps the block unfolded ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "after"
+L0002 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: ragged rows ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=-,bg=-,mod=- "c"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "d"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "  "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s08 fg=-,bg=-,mod=- " "
+  s09 fg=-,bg=-,mod=- "  "
+  s10 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: readme screenshot grid two by two ===
+-- LINES (7) --
+L0000 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Screenshots"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────────────────────────┬──────────────────────────────────────────┐"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=D "🖼 Tree view with git status colors"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=D "🖼 Custom git commit-graph renderer"
+  s07 fg=-,bg=-,mod=- "       "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- "   "
+  s02 fg=-,bg=-,mod=B "Tree view"
+  s03 fg=-,bg=-,mod=- " — git status colors"
+  s04 fg=-,bg=-,mod=- "    "
+  s05 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s06 fg=-,bg=-,mod=- " "
+  s07 fg=-,bg=-,mod=B "Git graph"
+  s08 fg=-,bg=-,mod=- " — custom commit-graph renderer"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────────────────────────┴──────────────────────────────────────────┘"
+L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "after"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (1) --
+  a00 line=0000 slug="screenshots"
+-- ITEMS (0) --
+
+=== html_table_corpus: rowspan is drawn as one plain cell ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "spanning"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "a"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "b"
+  s03 fg=-,bg=-,mod=- "        "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "  "
+  s07 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: single quoted attributes ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- "       "
+  s02 fg=-,bg=-,mod=- "C"
+  s03 fg=-,bg=-,mod=- "        "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "wide cell here"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: table inside a block quote ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "a"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "b"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: table inside a block quote with a multi line cell ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────────────┐"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "first line second line"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "└────────────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: table inside a list item ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "item"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: table inside an open details ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=BI "▾ "
+  s01 fg=-,bg=-,mod=B "More"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s02 fg=cyan,bg=-,mod=B " "
+  s03 fg=cyan,bg=-,mod=B "H"
+  s04 fg=cyan,bg=-,mod=B " "
+  s05 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=- "b"
+  s04 fg=-,bg=-,mod=- " "
+  s05 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
+  s01 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (1) --
+  d00 true
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Details{ordinal=0}
+
+=== html_table_corpus: table inside details ===
+-- LINES (1) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=BI "▸ "
+  s01 fg=-,bg=-,mod=B "More"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (1) --
+  d00 false
+-- ANCHORS (0) --
+-- ITEMS (1) --
+  m00 line=0000 kind=Details{ordinal=0}
+
+=== html_table_corpus: table not the first tag in the block is not a table ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: table with only a caption stays plain html ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Just a caption"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: td outside any tr ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: th as the leading column of every row ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┬───────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Name"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "apple"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Qty"
+  s03 fg=cyan,bg=-,mod=B "  "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "3"
+  s07 fg=-,bg=-,mod=- "     "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┴───────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: th header row ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬─────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Name"
+  s03 fg=cyan,bg=-,mod=B "  "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "Qty"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────┼─────┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "apple"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "3"
+  s07 fg=-,bg=-,mod=- "   "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴─────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: thead tbody tfoot wrappers ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "H"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "B"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "F"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: two leading th rows are both header rows ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┬───────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Group"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "Group"
+  s07 fg=cyan,bg=-,mod=B " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "Name"
+  s03 fg=cyan,bg=-,mod=B "  "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=cyan,bg=-,mod=B " "
+  s06 fg=cyan,bg=-,mod=B "Qty"
+  s07 fg=cyan,bg=-,mod=B "   "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────┼───────┤"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "apple"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "3"
+  s07 fg=-,bg=-,mod=- "     "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┴───────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: two tables in a row ===
+-- LINES (6) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "b"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: unclosed table is not a table ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: unquoted attribute value ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "C"
+  s03 fg=-,bg=-,mod=- "              "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "wide cell here"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: uppercase tags ===
+-- LINES (5) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=cyan,bg=-,mod=B " "
+  s02 fg=cyan,bg=-,mod=B "H"
+  s03 fg=cyan,bg=-,mod=B " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "b"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === inline_corpus: autolink ===
 -- LINES (1) --
 L0000 style=fg=-,bg=-,mod=- align=-
