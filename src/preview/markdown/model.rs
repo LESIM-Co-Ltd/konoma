@@ -337,12 +337,13 @@ pub(crate) enum BlockKind {
     /// * **A nested `<table>`** — only `<tr>`/`<td>`/`<th>` at the *outer* table's own depth are
     ///   structural; everything inside a nested table stays part of the enclosing cell's `inner`
     ///   range and is flattened to text by the cell renderer. The outer table's own grid survives.
-    /// * **`<caption>`** — its text sits outside every `<td>`/`<th>`, so nothing collects it and it
-    ///   is dropped. (A `<table>` that has a caption but no cell at all is not folded at all — see
-    ///   [`parse_html_table`] — so its text is still shown, by the ordinary `Html` path.)
+    /// * **`<caption>`** — its text sits outside every `<td>`/`<th>`, and nothing here collects it.
+    ///   Rather than fold and drop it, a `<table>` carrying *any* non-whitespace character outside
+    ///   its cells (a caption included) is not folded at all — see [`parse_html_table`]'s condition
+    ///   4 — so its text is still shown, in full, by the ordinary `Html` path.
     ///
     /// All three are recorded as open items in `docs/STATUS.md`; none of them makes this fold *lose*
-    /// a cell, and the first two are pinned by tests that fix the exact degraded output.
+    /// a character, and the first two are pinned by tests that fix the exact degraded output.
     HtmlTable {
         /// Exactly what `Html.body_spans` would have held for this same block — see above.
         body_spans: Vec<Range<usize>>,
@@ -1576,21 +1577,29 @@ pub(crate) fn html_body_text_in(
 ///
 /// ## What makes a block a table
 ///
-/// All three of:
+/// All four of:
 ///
 /// 1. the first tag is `<table …>` (the caller has already checked the *name*, via `html_tag_of`;
 ///    this rejects a block that merely *mentions* `<table>` after some other opening tag),
 /// 2. a matching `</table>` is found — nesting-aware, so an inner table's own close cannot end the
-///    outer one — i.e. the block holds a **complete** table, and
-/// 3. at least one `<td>`/`<th>` was collected.
+///    outer one — i.e. the block holds a **complete** table,
+/// 3. at least one `<td>`/`<th>` was collected, and
+/// 4. every non-whitespace character in the block sits inside some `<td>`/`<th>` — nothing outside
+///    the cells, and nothing after `</table>`.
 ///
 /// A block failing any of them stays an ordinary `Html` leaf, rendered exactly as it was before this
-/// function existed. Condition 3 is what keeps a caption-only or an entirely empty `<table>` out:
-/// folding one would silently drop its text (nothing outside a cell is collected), whereas leaving it
-/// alone keeps the current, lossless rendering. Condition 2 is what makes a `<table>` interrupted by
-/// a blank line safe: CommonMark ends an HTML block at a blank line, so such a `<table>`'s own
-/// opening half arrives here with no `</table>` in it at all and is left alone (its trailing half is
-/// a *separate* block whose own first tag is not `<table>`, so it never reaches here).
+/// function existed. Conditions 3 and 4 are the same rule at two strengths, and the rule is: **this
+/// variant can carry cell text and nothing else, so it must never be given a block holding text it
+/// cannot carry.** Condition 3 keeps out a caption-only or entirely empty `<table>` (no cell at all);
+/// condition 4 keeps out a table whose cells are real but which *also* holds a `<caption>`, a stray
+/// line inside the `<table>` or a `<tr>`, or prose between two cells — folding either would delete
+/// those characters from the screen, whereas leaving the block alone keeps the current, lossless
+/// rendering. `fold_details` takes the identical decision for the identical situation ("unrelated
+/// content following the found close within it — stays an ordinary, unfolded `Html` leaf"). Condition
+/// 2 is what makes a `<table>` interrupted by a blank line safe: CommonMark ends an HTML block at a
+/// blank line, so such a `<table>`'s own opening half arrives here with no `</table>` in it at all
+/// and is left alone (its trailing half is a *separate* block whose own first tag is not `<table>`,
+/// so it never reaches here).
 ///
 /// ## Structural tags, and everything else
 ///
@@ -1602,7 +1611,10 @@ pub(crate) fn html_body_text_in(
 /// all inline markup — is *not* structural: it is simply part of whatever cell is currently open (or,
 /// outside every cell, ignored), which is what makes `<thead>`/`<tbody>` wrappers and arbitrary inline
 /// HTML inside a cell both work with no case of their own. Tag names are matched case-insensitively,
-/// so `<TABLE>`/`<TD>` read the same as the lowercase spellings.
+/// so `<TABLE>`/`<TD>` read the same as the lowercase spellings. "Ignored" there means the *tag* —
+/// markup carries no characters of its own — but any **text** such a tag wraps outside a cell (a
+/// `<caption>`'s words, most of all) is not ignored: it trips condition 4 and the block declines to
+/// fold, so the words survive.
 ///
 /// An `<!-- … -->` comment is **not** scanned for tags at all: it is text the author removed, so a
 /// `<tr>`/`<td>`/`<table>`/`</table>` inside one is skipped whole rather than read as this table's
@@ -1654,6 +1666,19 @@ fn parse_html_table(body_spans: &[Range<usize>], src: &str) -> Option<Vec<Vec<Ht
     let mut i = 0usize;
     while let Some(rel) = text[i..].find('<') {
         let lt = i + rel;
+        // Characters sitting between the previous tag (or comment) and this one, with no `<td>`/
+        // `<th>` open around them, belong to no cell — a `<caption>`'s text, a stray line inside the
+        // `<table>` or a `<tr>`, prose between two cells. `HtmlTable` carries cell ranges and
+        // nothing else, so folding would delete them from the screen, which is exactly the silent
+        // loss the trailing-content check below already refuses (and `fold_details` before it).
+        // Same judgment, same answer: decline to fold, and let the ordinary `Html` path draw the
+        // block tag-stripped, with every character still in it. Whitespace does not count (it is
+        // the layout of every real table's markup), and neither does a comment — the branch right
+        // below moves `i` past a whole comment, so its removed text is never part of a run examined
+        // here, the same way it is never read as structure.
+        if open_cell.is_none() && !text[i..lt].trim().is_empty() {
+            return None;
+        }
         // A comment is text the author removed, not markup: skip all of it, so a `<tr>`, a `<td>`, a
         // `<table>` or a `</table>` written inside one is never read as this table's own structure.
         // Through `super::html_comment_end` — the pipeline's one comment rule, shared with
@@ -1734,7 +1759,9 @@ fn parse_html_table(body_spans: &[Range<usize>], src: &str) -> Option<Vec<Vec<Ht
     // same block. Nothing in this variant can carry that text, and folding anyway would silently
     // drop it, so the whole block declines to fold and renders exactly as it always has. This is
     // `fold_details`'s own choice for the identical situation ("unrelated content following the
-    // found close within it — stays an ordinary, unfolded `Html` leaf"), and the shape is vanishingly
+    // found close within it — stays an ordinary, unfolded `Html` leaf") and the second half of
+    // condition 4 — the loop above already refused, on identical grounds, every non-whitespace
+    // character outside a cell *before* the close. The shape is vanishingly
     // rare in practice: of 8,532 real `.md` files swept while this was written (`~/.cargo/registry`,
     // `~/work`, `~/.claude`), 18 contained a `<table>` and **none** had content on the line right
     // after its `</table>`.
@@ -2780,6 +2807,146 @@ mod tests {
         assert!(
             bad.is_empty(),
             "an HTML comment was read as table structure in {} case(s):\n  - {}",
+            bad.len(),
+            bad.join("\n  - ")
+        );
+    }
+
+    /// Text sitting **outside** every `<td>`/`<th>` — a `<caption>`, a stray line inside the
+    /// `<table>` or a `<tr>`, prose between two cells — has nowhere to live in a folded table:
+    /// `HtmlTable` carries cell ranges and nothing else, so folding one silently deletes that text
+    /// from the screen. That is the identical loss `parse_html_table` already refuses for content
+    /// glued on *after* `</table>` (and `fold_details` for content after `</details>`), so it takes
+    /// the identical decision: decline to fold, and let the ordinary `Html` path draw the block —
+    /// tag-stripped, but with every character still there.
+    ///
+    /// Why this needed its own test: before it, `<caption>Fruit</caption>` next to real rows was
+    /// pinned by a corpus case whose own name said the caption "is dropped" — a real disclosure-
+    /// shaped loss recorded as if it were the specification.
+    #[test]
+    fn text_outside_every_cell_keeps_the_table_unfolded() {
+        // `(why, src, every table's cell text)`. An empty `want` means the block declines to fold
+        // and stays an ordinary `Html` leaf, which still draws every character it holds.
+        let cases = vec![
+            (
+                "a line straight inside <table>",
+                "<table>\nLOOSE\n<tr><td>a</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "a line straight inside <tr>",
+                "<table>\n<tr>\nLOOSE\n<td>a</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "a line straight inside <thead>",
+                "<table>\n<thead>\nLOOSE\n<tr><th>H</th></tr></thead>\n<tr><td>a</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "a line straight inside <tfoot>",
+                "<table>\n<tr><td>a</td></tr>\n<tfoot>\nLOOSE\n<tr><td>f</td></tr></tfoot>\n</table>\n",
+                vec![],
+            ),
+            (
+                "a caption alongside real rows",
+                "<table>\n<caption>Fruit</caption>\n<tr><td>apple</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "prose between one cell's end tag and the next cell's start tag",
+                "<table>\n<tr><td>a</td>LOOSE<td>b</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "prose after the last cell of a row",
+                "<table>\n<tr><td>a</td>LOOSE</tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "prose between two rows",
+                "<table>\n<tr><td>a</td></tr>\nLOOSE\n<tr><td>b</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "prose between the last row and </table>",
+                "<table>\n<tr><td>a</td></tr>\nLOOSE\n</table>\n",
+                vec![],
+            ),
+            (
+                // The control: exactly the same shape with nothing but whitespace outside the
+                // cells still folds, which is what every real table looks like.
+                "whitespace and newlines only outside the cells",
+                "<table>\n  <tr>\n    <td>a</td>\n    <td>b</td>\n  </tr>\n</table>\n",
+                vec![vec![vec!["a", "b"]]],
+            ),
+            (
+                // Structural and non-structural tags alike are markup, not characters.
+                "nothing but tags outside the cells",
+                "<table>\n<colgroup><col><col></colgroup>\n<thead><tr><th>H</th></tr></thead>\n<tbody><tr><td>a</td></tr></tbody>\n</table>\n",
+                vec![vec![vec!["H"], vec!["a"]]],
+            ),
+            (
+                // A comment is text the author removed — it is never drawn, so folding cannot lose
+                // it. Skipped whole by `html_comment_end`, exactly as the tag scan skips it.
+                "a comment outside the cells is not text",
+                "<table>\n<!-- SECRET-outside -->\n<tr><td>a</td></tr>\n</table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                "a multi-line comment outside the cells is not text",
+                "<table>\n<!--\nSECRET-outside-multiline\n-->\n<tr><td>a</td></tr>\n</table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                // Text *before* the comment, on the other hand, is real.
+                "text next to a comment outside the cells",
+                "<table>\nLOOSE <!-- SECRET -->\n<tr><td>a</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                // Inside a quote the loose text's own bytes are `>`-marked in `src` but not in
+                // `body_spans`, so the check has to run over the marker-free text (a `>` marker
+                // read as content would make every quoted table look like it had loose text).
+                "loose text inside a quoted table",
+                "> <table>\n> LOOSE\n> <tr><td>a</td></tr>\n> </table>\n",
+                vec![],
+            ),
+            (
+                "a quoted table with nothing loose in it still folds",
+                "> <table>\n> <tr><td>a</td></tr>\n> </table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                // Everything inside a cell is the cell's, including a nested table's own text —
+                // that is content, not loose text (see `BlockKind::HtmlTable`'s doc comment).
+                "a nested table inside a cell is not loose text",
+                "<table>\n<tr><td><table><tr><td>inner</td></tr></table></td><td>outer</td></tr>\n</table>\n",
+                vec![vec![vec!["<table><tr><td>inner</td></tr></table>", "outer"]]],
+            ),
+        ];
+        // Collected, not asserted case by case: a regression here usually hits several shapes at
+        // once, and seeing all of them is what tells a reader which rule broke.
+        let mut bad: Vec<String> = Vec::new();
+        for (why, src, want) in cases {
+            let want: Vec<Vec<Vec<String>>> = want
+                .iter()
+                .map(|t| {
+                    t.iter()
+                        .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+                        .collect()
+                })
+                .collect();
+            let doc = Doc::parse(src);
+            let got = html_table_cell_text(&doc, src);
+            if got != want {
+                bad.push(format!("{why}\n     got: {got:?}\n    want: {want:?}"));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "text outside every cell was folded away (or a clean table stopped folding) in {} \
+             case(s):\n  - {}",
             bad.len(),
             bad.join("\n  - ")
         );

@@ -58,7 +58,8 @@ HTML で書かれた `<table>` も本物の表として描かれる。README が
   </tr>
 </table>
 
-未対応: `colspan`/`rowspan`・入れ子の `<table>`・`<caption>`。
+未対応: `colspan`/`rowspan`・入れ子の `<table>`。**セルの外に文字がある表**（`<caption>` や
+地の文）は表にせず素の HTML のまま描く＝その文字が失われないようにするため。
 
 ### 表のセルの中の画像
 

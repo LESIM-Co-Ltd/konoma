@@ -157,10 +157,18 @@ fn warm_then_highlight_is_fast() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `n` heading+body+link blocks of Markdown, plus a Rust fence sized proportionally to `n` (table/
-/// heading post-processing, the block-model markdown parse, and code-fence highlighting all get exercised, and —
-/// since every part scales with `n` — doubling `n` should double the total work, keeping the
-/// allocation-scaling check below sensitive instead of being diluted by a fixed-size fence).
+/// `n` heading+body+link blocks of Markdown, plus a Rust fence sized proportionally to `n` (heading
+/// post-processing, inline links, the block-model markdown parse, and code-fence highlighting all
+/// get exercised, and — since every part scales with `n` — doubling `n` should double the total
+/// work, keeping the allocation-scaling check below sensitive instead of being diluted by a
+/// fixed-size fence).
+///
+/// **No table**, deliberately: this fixture's axis is the *block count*, and a table's cost is a
+/// function of its own rows and columns, not of how many blocks sit around it — so N tables here
+/// would cost N times one table by construction and could never expose the per-table
+/// non-linearity. `render_markdown_large_table_is_bounded` below owns that axis instead. Until
+/// 2026-08 this doc comment and the guard's own said "table … post-processing" while the fixture
+/// held no `|` row and no `<table>` at all.
 fn md_doc(blocks: usize) -> String {
     let mut md = String::new();
     for i in 0..blocks {
@@ -174,10 +182,12 @@ fn md_doc(blocks: usize) -> String {
     md
 }
 
-// GUARDS: preview::markdown::render_markdown on a large document stays bounded (table/heading
+// GUARDS: preview::markdown::render_markdown on a large document stays bounded (heading
 // post-processing and the block-model markdown parse don't blow up). Converted from a wall-clock bound to a
 // **deterministic allocation-scaling** check (same reasoning as `highlight_lang_large_source_is_bounded`
 // above): doubling the block count should roughly double the allocation, not quadruple it.
+// Tables are **not** covered here — see `md_doc`'s own doc comment for why, and
+// `render_markdown_large_table_is_bounded` below for the guard that does cover them.
 #[test]
 fn render_markdown_large_doc_is_bounded() {
     let render = |src: &str| {
@@ -203,6 +213,127 @@ fn render_markdown_large_doc_is_bounded() {
     assert!(
         large_alloc < small_alloc.saturating_mul(3),
         "2倍のブロック数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
+    );
+}
+
+/// A GFM `|` table of `rows` body rows by `cols` columns, every cell holding `cell`.
+fn gfm_table(rows: usize, cols: usize, cell: &str) -> String {
+    let mut md = String::new();
+    md.push_str(&format!("|{}|\n", vec![" h "; cols].join("|")));
+    md.push_str(&format!("|{}|\n", vec!["---"; cols].join("|")));
+    for _ in 0..rows {
+        md.push_str(&format!(
+            "|{}|\n",
+            vec![format!(" {cell} "); cols].join("|")
+        ));
+    }
+    md
+}
+
+/// The same table written as HTML — the second, independent path into the shared layout phase
+/// (`model::parse_html_table` -> `render_html_table_from_model` -> `render_table_cells`), which is
+/// why both are measured below rather than only the `|` form.
+fn html_table(rows: usize, cols: usize, cell: &str) -> String {
+    let mut md = String::from("<table>\n");
+    for _ in 0..rows {
+        md.push_str("<tr>");
+        for _ in 0..cols {
+            md.push_str(&format!("<td>{cell}</td>"));
+        }
+        md.push_str("</tr>\n");
+    }
+    md.push_str("</table>\n");
+    md
+}
+
+// GUARDS: preview::markdown's two table paths — a GFM `|` table and an HTML `<table>` — stay bounded
+// on a large table. Nothing guarded tables before this: `render_markdown_large_doc_is_bounded`'s own
+// comment claimed "table … post-processing", but its `md_doc` fixture held no `|` row and no
+// `<table>` at all, so the whole surface was unmeasured (found by audit, 2026-08).
+//
+// Its own test rather than a table bolted onto `md_doc`: that fixture scales the *block count*, and a
+// table's cost is a function of its own rows and columns, so more tables in a document is linear by
+// construction and would prove nothing about either axis that matters.
+//
+// Both axes are checked with the module's preferred **deterministic allocation scaling** (doubling
+// the input should roughly double the allocation, not quadruple it), plus one wall-clock smoke check
+// for the one part of the layout that allocates nothing at all — see below.
+//
+// Measured while this was written (debug build, Apple M-series, 80-column pane):
+//
+// | shape                                | wall clock | allocated |
+// |--------------------------------------|-----------:|----------:|
+// | HTML 1,000 rows x 50 cols            |      348ms |    188 MB |
+// | GFM  1,000 rows x 50 cols            |      220ms |    229 MB |
+// | HTML 1 row x 100 cols x 20,000 chars |      5.9 s |    1.6 GB |
+// | HTML 1 row x 200 cols x 40 chars     |       35ms |    6.4 MB |
+//
+// Those are current values, not budgets: this guard exists to catch a regression, and making a wide
+// table faster is a separate piece of work (`docs/STATUS.md`). The one known non-linearity is
+// `render_table_cells`'s width-shaving loop, which sheds one column at a time from whichever column
+// is currently widest — `O((total natural width - budget) * ncol)`, which is why the 20,000-character
+// cells cost seconds while ten times as many *cells* cost a third of a second.
+#[test]
+fn render_markdown_large_table_is_bounded() {
+    let render = |src: &str| {
+        crate::preview::markdown::render_markdown(
+            src,
+            80,
+            crate::preview::markdown::CodeStyle::default(),
+            "TwoDark",
+            false,
+        )
+    };
+    // Warm whatever one-time state the first render of any document builds, outside the
+    // measurement (same reasoning as the two guards above).
+    let _ = render(&gfm_table(1, 1, "x"));
+    let alloc = |src: &str| {
+        crate::mem_tests::allocated_by(|| {
+            assert!(!render(src).is_empty());
+        })
+    };
+
+    // --- axis 1: rows. 2x the rows must not be ~4x the work (an O(rows^2) cell read, say — the
+    // shape `html_body_text_in`'s binary search exists to prevent). Measured ~2.00x on both paths.
+    for (why, small, large) in [
+        (
+            "gfm rows",
+            gfm_table(400, 8, "cell"),
+            gfm_table(800, 8, "cell"),
+        ),
+        (
+            "html rows",
+            html_table(400, 8, "cell"),
+            html_table(800, 8, "cell"),
+        ),
+        // --- axis 2: columns. Same rule on the other side of the grid (measured ~1.99x).
+        (
+            "html columns",
+            html_table(60, 25, "cell"),
+            html_table(60, 50, "cell"),
+        ),
+    ] {
+        let (small_alloc, large_alloc) = (alloc(&small), alloc(&large));
+        assert!(
+            large_alloc < small_alloc.saturating_mul(3),
+            "{why}: 2倍の表で確保バイト数が3倍を超えた(回帰: O(n^2)?): \
+             small={small_alloc} large={large_alloc}"
+        );
+    }
+
+    // --- the width-shaving loop, which an allocation ratio cannot see: it only decrements integers
+    // in an already-allocated `Vec`, so a regression there costs time and not one byte. 200 columns
+    // of 40-character cells into an 80-column pane is the shape that drives it hardest per byte of
+    // input (every column has to be shaved from 40 down to 1). Wall clock, therefore, with the
+    // module doc's own "loose smoke check" framing and a very wide margin — measured 35ms here, so
+    // 2s is ~60x and only a gross regression trips it.
+    let src = html_table(1, 200, &"x".repeat(40));
+    let t = Instant::now();
+    assert!(!render(&src).is_empty());
+    let dt = t.elapsed();
+    assert!(
+        dt < Duration::from_secs(2),
+        "幅調整ループが遅すぎる(回帰: 列数に対して非線形?): {dt:?}"
     );
 }
 

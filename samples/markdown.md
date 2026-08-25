@@ -59,7 +59,8 @@ are styled.
   </tr>
 </table>
 
-Not modeled: `colspan`/`rowspan`, a nested `<table>`, and `<caption>`.
+Not modeled: `colspan`/`rowspan` and a nested `<table>`. A table with text outside its cells --
+a `<caption>`, or a stray line -- is left as plain HTML instead, so that text is never lost.
 
 ### Images in table cells
 

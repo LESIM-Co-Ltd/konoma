@@ -722,6 +722,62 @@ fn no_corpus_case_ever_draws_commented_out_text() {
     );
 }
 
+/// Text an author wrote **outside** every `<td>`/`<th>` of an HTML table still reaches the screen —
+/// the mirror of the test right above, and the other half of the same rule: a fold must never cost
+/// the document a character, whether the character is one the author hid (checked there) or one the
+/// author meant to be read (checked here).
+///
+/// The convention this rests on: a corpus case with text outside its table cells names that text
+/// `LOOSE-…`. Cases without the marker are skipped, so a shape added to any corpus later is covered
+/// the moment it uses the marker, with no list to keep in sync.
+///
+/// Why a test and not just the goldens: the loss this guards was not merely un-pinned before, it was
+/// pinned *as the specification* — a corpus case named "caption alongside real rows is dropped" froze
+/// the dropped caption into both goldens, so the bug would have survived any number of reviewed
+/// snapshot diffs. A golden records what happens; this states what must happen.
+#[test]
+fn no_corpus_case_ever_drops_text_outside_a_table_cell() {
+    let mut code_bg_none = Config::default();
+    code_bg_none.ui.theme.code_bg = "none".to_string();
+    let mut checked = 0usize;
+    for cfg in [Config::default(), code_bg_none] {
+        for (name, src) in all_cases() {
+            // Every `LOOSE-…` token the source holds, each of which must be drawn somewhere.
+            let markers: Vec<String> = src
+                .split("LOOSE-")
+                .skip(1)
+                .map(|rest| {
+                    let tail: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        .collect();
+                    format!("LOOSE-{tail}")
+                })
+                .collect();
+            if markers.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let drawn: Vec<String> = render_case(&cfg, &src)
+                .lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+                .collect();
+            for m in &markers {
+                assert!(
+                    drawn.iter().any(|l| l.contains(m.as_str())),
+                    "{name}: text outside the table's cells never reached the screen ({m}) \
+                     — drawn: {drawn:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no corpus case carries a `LOOSE-…` marker any more — this guard is checking nothing"
+    );
+}
+
 // =================================================================================================
 // Sentinels: the dump has to keep measuring **production's own values**
 // =================================================================================================

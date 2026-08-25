@@ -5454,12 +5454,37 @@ fn split_tables(run: &SourceRun) -> Vec<MdPart> {
 }
 
 /// Normalize one table cell's raw text into displayable form: unescape `\|` into a literal `|`,
-/// then trim surrounding whitespace. Shared by both `parse_table_row`'s own line-based split
-/// below (a text-row cell, already boundary-trimmed by that function's own pipe scan) and the
-/// model-based path (`render_table_from_model` in `render.rs`), whose cell text instead comes
-/// straight from pulldown-cmark's own byte range on `Block::src` — `" a "`, escapes and padding
-/// both still literally present, never re-split from a line — so the two paths cannot drift apart
-/// on this one shared transformation the way they would if each re-implemented it separately.
+/// turn every C0 control character and DEL into a space, then trim surrounding whitespace. Shared
+/// by both `parse_table_row`'s own line-based split below (a text-row cell, already boundary-trimmed
+/// by that function's own pipe scan) and the model-based path (`render_table_from_model` in
+/// `render.rs`), whose cell text instead comes straight from pulldown-cmark's own byte range on
+/// `Block::src` — `" a "`, escapes and padding both still literally present, never re-split from a
+/// line — so the two paths cannot drift apart on this one shared transformation the way they would
+/// if each re-implemented it separately.
+///
+/// ## Why the control characters go
+///
+/// A table is drawn as a fixed grid, and the grid only holds together while **the width the
+/// renderer measures a cell at and the number of columns actually painted for it are the same
+/// number**. A control character breaks exactly that equality: `unicode-width` scores one as 1
+/// column (`UnicodeWidthStr::width`, which `seg_width` measures every cell with), while the drawing
+/// layer paints *no* column for it — ratatui drops every grapheme cluster containing a control
+/// character before it reaches the screen at all (`ratatui-core`'s `Span::styled_graphemes` and
+/// `Buffer::set_stringn` both `.filter(|g| !g.contains(char::is_control))`). So a row holding one
+/// came out a column short of its own borders and the box stopped being a rectangle
+/// (`tests::control_characters_in_a_cell_never_shift_the_grid`).
+///
+/// Replaced by a space rather than deleted, for three reasons: a `\t` is whitespace *by intent*, and
+/// deleting it would glue the words on either side of it together; a space keeps the author's own
+/// character count visible instead of silently swallowing something they wrote; and `.trim()` right
+/// below already erases whatever this puts at either edge, so the common "stray tab around the
+/// value" case costs nothing. `\n` is included and matters: an HTML `<td>` legitimately spans
+/// several physical lines, and this is what folds it onto the cell's one line (a space between the
+/// two halves — the same text the pipeline produced before this rule existed).
+///
+/// This is not an ANSI-injection defense: ratatui's own filter above already means an ESC written
+/// into a cell never reaches the terminal, with or without this rule. The defect being fixed is the
+/// arithmetic, not a hole.
 fn normalize_cell(raw: &str) -> String {
     let mut out = String::new();
     let mut chars = raw.chars().peekable();
@@ -5467,6 +5492,8 @@ fn normalize_cell(raw: &str) -> String {
         if c == '\\' && chars.peek() == Some(&'|') {
             out.push('|');
             chars.next();
+        } else if (c as u32) < 0x20 || c == '\u{7f}' {
+            out.push(' ');
         } else {
             out.push(c);
         }
@@ -6015,6 +6042,23 @@ struct CellAttrs {
 /// third value being what `render::emit_table` needs in order to honor `[ui] md_table_align` without
 /// re-measuring (or re-deriving) a layout this function alone decided.
 ///
+/// ## A pane too narrow for the table
+///
+/// The box this draws is **not** clamped to `width`: a table needs `1 + 4*ncol` columns before it
+/// has a single column of content in it (one border bar per column plus a closing one, and two
+/// padding spaces around each column's content), so in a pane narrower than that the box is wider
+/// than the pane and the terminal wraps it — the grid comes apart. Three columns in a 12-column
+/// pane draw a 13-column box, for instance.
+///
+/// That is a design consequence, not an oversight: `budget`'s own `.max(ncol)` is the floor, and it
+/// exists because a column cannot be narrower than one column of content. Shaving past it would
+/// have to erase whole columns, and drawing a table with a column missing is worse than drawing one
+/// that overflows. Pinned exactly as it stands by
+/// `render::tests::a_table_in_a_pane_narrower_than_its_own_frame_keeps_one_column_per_column`
+/// (every `ncol` 1..=4 against every width up to its own frame) and by
+/// `render::tests::three_columns_in_a_twelve_column_pane_draw_a_thirteen_column_box`, so a later
+/// change to the floor shows up as those numbers moving rather than as a silent reflow.
+///
 /// ## Images inside cells
 ///
 /// `slot_of` is the caller's own image lookup (`super::render_markdown_with_images`'s own parameter,
@@ -6428,6 +6472,113 @@ pub(crate) fn render_via_dispatcher(
 mod tests {
     use super::*;
     use crate::config::DEFAULT_CODE_BG;
+
+    /// A C0 control character (or DEL) inside a table cell must never move the grid: what the
+    /// renderer *measures* the cell at and what the terminal actually advances have to be the same
+    /// number.
+    ///
+    /// The defect this pins: `unicode-width`'s `UnicodeWidthStr::width` scores a control character
+    /// **1**, so `segs_width` sized the column as if a TAB or an ESC occupied a column — while
+    /// ratatui paints **0** columns for it, dropping every grapheme cluster that contains one
+    /// (`ratatui-core`'s `Span::styled_graphemes` / `Buffer::set_stringn`, both
+    /// `.filter(|g| !g.contains(char::is_control))`). Every row holding one came out a column
+    /// narrower than its own borders, so the box stopped being a rectangle. Both table paths had it:
+    /// HTML `<table>` cells are new, but the identical arithmetic has always sized a GFM `|` table,
+    /// which is why every case below is run through both.
+    ///
+    /// `terminal_width` here is the honest measure — a control character paints nothing — so it
+    /// disagrees with `UnicodeWidthStr::width` exactly where the bug lives. Measuring the drawn
+    /// lines with `UnicodeWidthStr::width` instead would have passed with the grid visibly broken,
+    /// since that is the very function that was wrong.
+    #[test]
+    fn control_characters_in_a_cell_never_shift_the_grid() {
+        /// Columns actually painted for `s`: ratatui drops every grapheme cluster containing a
+        /// control character, so a C0 control or DEL paints none of its own; everything else is
+        /// its Unicode width.
+        fn terminal_width(s: &str) -> usize {
+            s.chars()
+                .map(|c| {
+                    if (c as u32) < 0x20 || c == '\u{7f}' {
+                        0
+                    } else {
+                        UnicodeWidthChar::width(c).unwrap_or(0)
+                    }
+                })
+                .sum()
+        }
+        // Every control character that can reach a cell, plus the placements and the neighbours
+        // that could hide one: alone, doubled, at either edge, and next to a full-width glyph.
+        let payloads: Vec<(String, String)> = {
+            let mut v: Vec<(String, String)> = vec![
+                ("tab in the middle".into(), "x\ty".into()),
+                ("esc in the middle".into(), "x\u{1b}y".into()),
+                ("nul in the middle".into(), "x\u{0}y".into()),
+                ("del in the middle".into(), "x\u{7f}y".into()),
+                ("leading tab".into(), "\tvalue".into()),
+                ("trailing tab".into(), "value\t".into()),
+                ("leading esc".into(), "\u{1b}value".into()),
+                ("trailing esc".into(), "value\u{1b}".into()),
+                ("several in one cell".into(), "a\tb\u{1b}c\u{7f}d".into()),
+                ("a run of them".into(), "a\t\t\tb".into()),
+                ("nothing but controls".into(), "\u{1b}\u{1b}".into()),
+                ("cjk around a tab".into(), "日\t本".into()),
+                ("cjk around an esc".into(), "日\u{1b}本".into()),
+                ("cjk then a trailing control".into(), "日本語\u{7f}".into()),
+                (
+                    "an ansi color sequence spelled out".into(),
+                    "\u{1b}[31mred\u{1b}[0m".into(),
+                ),
+            ];
+            // The whole C0 block the two named cases above do not already cover, one case each —
+            // "this one is exotic, nobody writes it" is exactly the reasoning that left the axis
+            // untested to begin with.
+            for b in (0x01u8..=0x08).chain([0x0b, 0x0c]).chain(0x0e..=0x1f) {
+                v.push((format!("c0 control {b:#04x}"), format!("x{}y", b as char)));
+            }
+            v
+        };
+        let mut bad: Vec<String> = Vec::new();
+        for (why, payload) in &payloads {
+            for (kind, src) in [
+                (
+                    "gfm",
+                    format!("| head | second |\n|------|--------|\n| {payload} | plain |\n"),
+                ),
+                (
+                    "html",
+                    format!(
+                        "<table>\n<tr><th>head</th><th>second</th></tr>\n\
+                         <tr><td>{payload}</td><td>plain</td></tr>\n</table>\n"
+                    ),
+                ),
+            ] {
+                let lines = render_markdown(&src, 60, CodeStyle::default(), "TwoDark", false);
+                let drawn: Vec<String> = lines
+                    .iter()
+                    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                    .collect();
+                for line in &drawn {
+                    if line.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}') {
+                        bad.push(format!(
+                            "{kind}/{why}: a control character reached the screen: {line:?}"
+                        ));
+                    }
+                }
+                let widths: Vec<usize> = drawn.iter().map(|l| terminal_width(l)).collect();
+                if widths.iter().any(|w| Some(w) != widths.first()) {
+                    bad.push(format!(
+                        "{kind}/{why}: the box is not a rectangle — widths {widths:?} for {drawn:?}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "control characters in a table cell broke the grid in {} case(s):\n  - {}",
+            bad.len(),
+            bad.join("\n  - ")
+        );
+    }
 
     /// Regression pin for `KonomaStyles::blockquote()` actually being *reached*: tui-markdown
     /// (`tui-markdown-0.3.7/src/lib.rs:347`) really does call `self.styles.blockquote()` and push
@@ -14796,8 +14947,45 @@ pub(crate) mod html_table_corpus {
                 "<table>\n<caption>Just a caption</caption>\n</table>\n",
             ),
             (
-                "caption alongside real rows is dropped",
-                "<table>\n<caption>Fruit</caption>\n<tr><td>apple</td></tr>\n</table>\n",
+                "caption alongside real rows keeps the table unfolded",
+                "<table>\n<caption>LOOSE-caption</caption>\n<tr><td>apple</td></tr>\n</table>\n",
+            ),
+            // ---- text outside every cell: nothing in a folded table can carry it ----
+            //
+            // `HtmlTable` holds cell ranges and nothing else, so folding a table with characters
+            // outside its cells would delete them from the screen — the same silent loss the
+            // trailing-content rule already refuses. Every case here marks that text `LOOSE-…`,
+            // which `app::md_snapshot_tests::no_corpus_case_ever_drops_text_outside_a_table_cell`
+            // fails on if it does *not* reach a drawn span, so a shape added later is checked for
+            // free. The `model` side of the same axis is pinned by
+            // `model::tests::text_outside_every_cell_keeps_the_table_unfolded`.
+            (
+                "a stray line straight inside the table and the row",
+                "<table>\n  LOOSE-before-row\n  <tr>\n    LOOSE-in-row\n    <td>cell</td>\n  </tr>\n</table>\n",
+            ),
+            (
+                "prose between one cell and the next",
+                "<table>\n<tr><td>a</td>LOOSE-between<td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "a stray line inside a thead wrapper",
+                "<table>\n<thead>\nLOOSE-in-thead\n<tr><th>H</th></tr></thead>\n<tbody><tr><td>a</td></tr></tbody>\n</table>\n",
+            ),
+            (
+                "loose text inside a quoted table",
+                "> <table>\n> LOOSE-quoted\n> <tr><td>a</td></tr>\n> </table>\n",
+            ),
+            (
+                // The control for the four above: whitespace is the layout of every real table's
+                // markup, never content, so this one still folds into a drawn grid.
+                "whitespace and newlines outside the cells still fold",
+                "<table>\n  <tr>\n    <td>a</td>\n    <td>b</td>\n  </tr>\n</table>\n",
+            ),
+            (
+                // The second control: a comment is text the author removed, so it cannot be lost by
+                // folding — this table folds, and the marker is never drawn.
+                "a comment outside the cells still folds",
+                "<table>\n<!-- SECRET-outside -->\n<tr><td>keep</td></tr>\n</table>\n",
             ),
             (
                 "thead tbody tfoot wrappers",

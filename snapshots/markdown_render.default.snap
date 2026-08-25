@@ -5975,6 +5975,25 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== html_table_corpus: a comment outside the cells still folds ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === html_table_corpus: a comment that is never closed ===
 -- LINES (2) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -6100,6 +6119,38 @@ L0001 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a stray line inside a thead wrapper ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "LOOSE-in-thead"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "H"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "a"
+L0003 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a stray line straight inside the table and the row ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "LOOSE-before-row"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "LOOSE-in-row"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "cell"
+L0003 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -6364,18 +6415,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
-=== html_table_corpus: caption alongside real rows is dropped ===
+=== html_table_corpus: caption alongside real rows keeps the table unfolded ===
 -- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────┐"
+  s00 fg=-,bg=-,mod=- "LOOSE-caption"
 L0001 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
-  s01 fg=-,bg=-,mod=- " "
-  s02 fg=-,bg=-,mod=- "apple"
-  s03 fg=-,bg=-,mod=- " "
-  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s00 fg=-,bg=-,mod=- "apple"
 L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -6987,6 +7033,26 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== html_table_corpus: loose text inside a quoted table ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "LOOSE-quoted"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === html_table_corpus: nested table is flattened into its enclosing cell ===
 -- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -7104,6 +7170,18 @@ L0000 style=fg=-,bg=-,mod=- align=-
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "after"
 L0002 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: prose between one cell and the next ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "aLOOSE-betweenb"
+L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -7660,6 +7738,29 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: whitespace and newlines outside the cells still fold ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "a"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=- "b"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -12363,9 +12464,13 @@ L0053 style=fg=-,bg=-,mod=- align=-
   s03 fg=white,bg=rgb(43,48,59),mod=- "rowspan"
   s04 fg=-,bg=-,mod=- "・入れ子の "
   s05 fg=white,bg=rgb(43,48,59),mod=- "<table>"
-  s06 fg=-,bg=-,mod=- "・"
-  s07 fg=white,bg=rgb(43,48,59),mod=- "<caption>"
-  s08 fg=-,bg=-,mod=- "。"
+  s06 fg=-,bg=-,mod=- "。"
+  s07 fg=-,bg=-,mod=B "セルの外に文字がある表"
+  s08 fg=-,bg=-,mod=- "（"
+  s09 fg=white,bg=rgb(43,48,59),mod=- "<caption>"
+  s10 fg=-,bg=-,mod=- " や"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=-,bg=-,mod=- "地の文）は表にせず素の HTML のまま描く＝その文字が失われないようにするため。"
 L0054 style=fg=-,bg=-,mod=- align=-
 L0055 style=fg=cyan,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- "表のセルの中の画像"
@@ -12717,8 +12822,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 state=' ' state_at=2892
-  t01 state='x' state_at=3015
+  t00 state=' ' state_at=3045
+  t01 state='x' state_at=3168
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -12741,8 +12846,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(2892)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(3015)}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(3045)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(3168)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
@@ -13027,11 +13132,13 @@ L0053 style=fg=-,bg=-,mod=- align=-
   s01 fg=white,bg=rgb(43,48,59),mod=- "colspan"
   s02 fg=-,bg=-,mod=- "/"
   s03 fg=white,bg=rgb(43,48,59),mod=- "rowspan"
-  s04 fg=-,bg=-,mod=- ", a nested "
+  s04 fg=-,bg=-,mod=- " and a nested "
   s05 fg=white,bg=rgb(43,48,59),mod=- "<table>"
-  s06 fg=-,bg=-,mod=- ", and "
-  s07 fg=white,bg=rgb(43,48,59),mod=- "<caption>"
-  s08 fg=-,bg=-,mod=- "."
+  s06 fg=-,bg=-,mod=- ". A table with text outside its cells --"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "a "
+  s09 fg=white,bg=rgb(43,48,59),mod=- "<caption>"
+  s10 fg=-,bg=-,mod=- ", or a stray line -- is left as plain HTML instead, so that text is never lost."
 L0054 style=fg=-,bg=-,mod=- align=-
 L0055 style=fg=cyan,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- "Images in table cells"
@@ -13387,8 +13494,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 state=' ' state_at=2478
-  t01 state='x' state_at=2572
+  t00 state=' ' state_at=2596
+  t01 state='x' state_at=2690
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -13411,8 +13518,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(2478)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(2572)}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(2596)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(2690)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}

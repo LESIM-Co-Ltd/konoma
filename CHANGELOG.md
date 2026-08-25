@@ -7,6 +7,23 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Text an author wrote outside the cells of an HTML `<table>` vanished from the screen.** A
+  `<caption>`, a stray line sitting directly inside the `<table>` or a `<tr>`, prose between two
+  cells — all of it was silently deleted, because a folded table carries its cells and nothing else.
+  A `<table>` holding any non-whitespace character outside its `<td>`/`<th>` cells is now left as a
+  plain HTML block instead of being folded into a grid, so every character the author wrote is
+  still shown (tag-stripped, the way HTML that konoma does not model has always been drawn). This
+  is the same choice konoma already made for content glued on after a `</table>` and for a
+  `<details>` with content after its close: when the structured form cannot carry the text, the
+  unstructured form that can carry it wins. Whitespace, markup, and commented-out text are not
+  characters for this purpose, so an ordinary indented table — and one with a commented-out row —
+  still draws as a real table.
+- **A tab, an escape, or any other control character in a table cell knocked the grid a column out
+  of line.** Cell widths were measured with a function that scores a control character as one
+  column, while the terminal paints none of it at all, so every row holding one came out narrower
+  than its own borders and the box stopped being a rectangle. Control characters in a cell are now
+  turned into a space, on both the GFM `|` and the HTML `<table>` path — so a tab inside a cell
+  reads as the space it was meant to be, and the grid lines up.
 - **Text commented out with `<!-- … -->` inside an HTML `<table>` was drawn on screen.** Commenting
   a whole `<tr>` out is the ordinary way to disable a row, but the table parser added with HTML
   table support scanned tags without any comment rule at all, so a `<tr>`/`<td>` inside a comment
@@ -76,11 +93,12 @@ All notable changes to konoma are documented in this file. The format is based o
   `<tbody>`/`<tfoot>` wrappers, and `<b>`/`<i>`/`<code>`/`<a href>`/`<img>` inside a cell.
   Works inside a blockquote and inside `<details>` too. Not modeled in this pass: `colspan`/
   `rowspan` (drawn as one plain cell), a nested `<table>` (flattened into its enclosing cell),
-  `<caption>` (dropped), `<br>` in a cell (a space, not a line break), an attribute written without
-  quotes (`align=center`), and a `<table>` wrapped in a `<div>` (left as plain text, as before). Two shapes deliberately keep their old rendering rather than becoming a
+  `<br>` in a cell (a space, not a line break), an attribute written without
+  quotes (`align=center`), and a `<table>` wrapped in a `<div>` (left as plain text, as before). Three shapes deliberately keep their old rendering rather than becoming a
   table, so that no text can go missing: a `<table>` interrupted by a blank line (not a single HTML
-  block at all, per CommonMark), and a `<table>` with further content glued onto the same block
-  right after its `</table>`.
+  block at all, per CommonMark), a `<table>` with further content glued onto the same block
+  right after its `</table>`, and a `<table>` carrying text outside its cells — a `<caption>`, most
+  of all.
 
 ### Changed
 - Markdown preview rendering is now handled end to end by a single, built-in renderer, and the
