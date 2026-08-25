@@ -2512,6 +2512,103 @@ mod tests {
         );
     }
 
+    /// Every cell's `inner` range really is bounded by its **own tags in `src`** — the property
+    /// `HtmlTableCell.inner`'s doc comment states ("everything strictly between its `<td …>`/`<th
+    /// …>` tag's own closing `>` and its matching `</td>`/`</th>`'s own opening `<`") — checked on
+    /// the one family of inputs where `parse_html_table`'s `span_offset` map can get it wrong.
+    ///
+    /// **Why a quote.** Outside a block quote an HTML block's `body_spans` are contiguous
+    /// (`"<table>\n"` = `0..8`, `"<tr>\n"` = `8..13`, …), so an offset sitting exactly on a span
+    /// boundary maps to the same `src` byte whichever of the two adjacent spans it is attributed
+    /// to, and an off-by-one-span map is unobservable. Inside a quote each continuation line's own
+    /// `> ` marker sits in the **gap between** two spans, and the two attributions then differ by
+    /// exactly that marker. A cell whose content ends at a line boundary — its closing tag is the
+    /// first thing on the next line — is what separates them.
+    ///
+    /// **Why the range and not the text.** `html_body_text_in` clips every `body_spans` range to
+    /// the wanted range, and the marker bytes belong to no span at all, so *both* attributions
+    /// reconstruct byte-identical cell text. The test right above, and every other cell assertion
+    /// in this tree, reads that text — so a mis-mapped range is invisible to all of them, and only
+    /// the range itself (here, and `check_invariants`'s own corpus-wide version of this same
+    /// property) can see it. It matters because `inner` is a `src` range: anything that later
+    /// resolves it against the source rather than through `html_body_text_in` — an `<img src=…>`
+    /// offset, an editor jump — would land on the `> ` marker instead of on the tag.
+    #[test]
+    fn a_quote_nested_cells_inner_range_is_bounded_by_its_own_tags_in_src() {
+        // `(why, source)`. Every one of these closes a cell at the *start of a line*, which is the
+        // only position at which the two attributions differ — one per way a cell can be closed
+        // (explicit `</td>`, an implicit close by the next `<tr>`, by `</table>`), plus a `<th>`
+        // carrying attributes, an empty cell, and a doubly-nested quote (whose gap is 4 bytes, not
+        // 2, so a map that merely happened to be off by a fixed 2 would still fail here).
+        for (why, src) in [
+            (
+                "a multi-line cell whose `</td>` opens the next line",
+                "> <table>\n> <tr>\n> <td>\n> first line\n> second line\n> </td>\n> </tr>\n> </table>\n",
+            ),
+            (
+                "a cell closed implicitly by the `<tr>` that opens the next line",
+                "> <table>\n> <tr><td>a\n> <tr><td>b\n> </table>\n",
+            ),
+            (
+                "a cell closed by the table's own `</table>` on the next line",
+                "> <table>\n> <tr><td>only\n> </table>\n",
+            ),
+            (
+                "a `<th align=…>` closed at the start of the next line",
+                "> <table>\n> <tr><th align=\"right\">h\n> </th></tr>\n> </table>\n",
+            ),
+            (
+                "an empty cell whose `</td>` opens the next line",
+                "> <table>\n> <tr><td>\n> </td></tr>\n> </table>\n",
+            ),
+            (
+                "two quote levels deep, so the gap between two spans is 4 bytes",
+                "> > <table>\n> > <tr><td>x\n> > </table>\n",
+            ),
+        ] {
+            let doc = Doc::parse(src);
+            let mut seen = 0usize;
+            for table in html_table_cells(&doc.blocks) {
+                for row in table {
+                    for cell in row {
+                        seen += 1;
+                        let r = &cell.inner;
+                        assert!(
+                            src[..r.start].ends_with('>'),
+                            "{why}: セルの開始が自分の開きタグの `>` の直後でない \
+                             ({r:?} の直前: {:?})",
+                            src.get(r.start.saturating_sub(8)..r.start)
+                        );
+                        assert!(
+                            src[r.end..].starts_with('<'),
+                            "{why}: セルの終了が、それを閉じたタグの `<` の直前でない \
+                             ({r:?} の直後: {:?})",
+                            src.get(r.end..(r.end + 8).min(src.len()))
+                        );
+                    }
+                }
+            }
+            assert!(seen > 0, "{why}: セルが 1 つも折り畳まれていない — 前提が崩れている");
+        }
+    }
+
+    /// Every folded HTML table's rows, in source order, however deeply nested the table is —
+    /// the cells themselves rather than `html_table_cell_text`'s reconstructed strings, for the
+    /// assertions that are about the `inner` **ranges**.
+    fn html_table_cells(blocks: &[Block]) -> Vec<&Vec<Vec<HtmlTableCell>>> {
+        fn walk<'a>(blocks: &'a [Block], out: &mut Vec<&'a Vec<Vec<HtmlTableCell>>>) {
+            for b in blocks {
+                if let BlockKind::HtmlTable { rows, .. } = &b.kind {
+                    out.push(rows);
+                }
+                walk(&b.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(blocks, &mut out);
+        out
+    }
+
     /// Every shape that is *not* one complete table stays an ordinary `Html` leaf, rendered exactly
     /// as it was before this variant existed. Grouped into one test on purpose: each of these is the
     /// same assertion about a different reason to decline, and splitting them would only repeat the
@@ -3278,6 +3375,53 @@ mod tests {
                         }
                     }
                     prev_span_end = Some(span.end);
+                }
+            }
+            // Every folded HTML table cell's `inner` is a `src` range produced by
+            // `parse_html_table`'s own `span_offset` (a `body_spans` offset mapped back to a `src`
+            // offset). The contract `HtmlTableCell.inner` states is a *tag* boundary, not merely a
+            // byte one: the range begins right after its own `<td …>`/`<th …>`'s closing `>` and
+            // ends right before the `<` of whatever tag closed it. It is checked here, over the
+            // whole parity corpus, because the one input shape that can break that map — a
+            // quote-nested table, where each continuation line's own `> ` marker sits in the *gap*
+            // between two spans — reconstructs the identical cell *text* either way
+            // (`html_body_text_in` clips to the spans, and the marker belongs to none of them), so
+            // no text-level assertion anywhere in the tree can see an off-by-one-span range. See
+            // `a_quote_nested_cells_inner_range_is_bounded_by_its_own_tags_in_src` for the shapes
+            // spelled out one at a time.
+            if let BlockKind::HtmlTable { rows, .. } = &b.kind {
+                for (ri, row) in rows.iter().enumerate() {
+                    for (ci, cell) in row.iter().enumerate() {
+                        let here = format!("{here}.rows[{ri}][{ci}].inner");
+                        let r = &cell.inner;
+                        if r.start > r.end {
+                            out.push(format!("{here}: start > end ({r:?})"));
+                        } else if r.end > src.len() {
+                            out.push(format!("{here}: end past the input's length ({r:?})"));
+                        } else if !src.is_char_boundary(r.start) || !src.is_char_boundary(r.end) {
+                            out.push(format!("{here}: {r:?} is not on a char boundary"));
+                        } else if r.start < b.src.start || r.end > b.src.end {
+                            out.push(format!(
+                                "{here}: {r:?} escapes its own block's src {:?}",
+                                b.src
+                            ));
+                        } else {
+                            if !src[..r.start].ends_with('>') {
+                                out.push(format!(
+                                    "{here}: {r:?} does not begin right after its own tag's `>` \
+                                     (the bytes before it: {:?})",
+                                    src.get(r.start.saturating_sub(8)..r.start)
+                                ));
+                            }
+                            if !src[r.end..].starts_with('<') {
+                                out.push(format!(
+                                    "{here}: {r:?} does not end right before the `<` of the tag \
+                                     that closed it (the bytes after it: {:?})",
+                                    src.get(r.end..(r.end + 8).min(src.len()))
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             if let BlockKind::ListItem { task: Some(t) } = &b.kind {

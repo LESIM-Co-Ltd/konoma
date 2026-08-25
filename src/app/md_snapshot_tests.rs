@@ -17,6 +17,31 @@
 //! be reviewed and either accepted (`KONOMA_UPDATE_SNAPSHOTS=1`) or recognized as a real
 //! regression.
 //!
+//! ## The variants, and what one dump can and cannot see
+//!
+//! Three configs are dumped: [`Config::default`], `theme.code_bg = "none"`, and
+//! `md_table_align = "right"` + `md_image_align = "left"` — see each test's own doc comment for why
+//! that config earns a permanent file. Everything else about the render is fixed: one pane width
+//! ([`SNAPSHOT_WIDTH`]), and the image/mermaid/math slot answers a live `Picker` would give (see
+//! [`Slots`]).
+//!
+//! Which means a golden here **cannot** observe:
+//!
+//! * `[ui] math` / `math_color` / `mermaid` / `mermaid_theme` / `mermaid_rows` — every one of these
+//!   is read by `build_decorated`'s *slot closures*, which need a live `Picker`'s font metrics and
+//!   the on-disk render cache. This harness stands in for both with fixed answers, so a config
+//!   variant would exercise the stand-in, not production. What guards them instead: the app-side
+//!   tests that drive those closures directly (`app::tests`, `e2e_tests`).
+//! * `[ui] lang` and `[ui] md_details` beyond the one value each dump names. Both are genuinely
+//!   *wired* here (the caption goes through `i18n::tr`, the open states through
+//!   `md_render::details_default_open`), so a `cfg` naming another value really does change the
+//!   dump — there is simply no variant that names one, because a whole extra ~700 KB file to move a
+//!   caption string, or to hide bodies the corpus already dumps open and closed via the tags'
+//!   own `open` attribute, is not worth it.
+//! * Anything that only appears at another pane width — measured and deliberately not added; see
+//!   `the_write_back_record_is_the_same_at_every_pane_width` for the numbers and for the properties
+//!   that cover the axis instead.
+//!
 //! ## Regenerating
 //!
 //! ```text
@@ -25,8 +50,16 @@
 //! ```
 //!
 //! (Markdown rendering does not depend on the `git` feature, so either invocation regenerates the
-//! same two files; running both is only redundant, never wrong.) Review the resulting diff under
-//! `snapshots/` like any other code change before committing it.
+//! same three files; running both is only redundant, never wrong.) Review the resulting diff under
+//! `snapshots/` like any other code change before committing it — and note that regenerating is the
+//! one way every property these files pin can be lost in a single keystroke, which is why the
+//! behaviors that *only* a golden was holding have since been given named tests of their own
+//! (`render::tests::a_nested_list_never_opens_with_a_blank_row_however_loose_its_parent_is`,
+//! `…::an_html_table_is_separated_from_what_follows_exactly_like_a_gfm_table`,
+//! `…::every_column_is_at_least_one_cell_wide_however_empty_its_cells_are`,
+//! `…::a_ragged_table_draws_as_many_columns_as_its_widest_row_has`,
+//! `cell_image_tests::an_image_is_re_fit_only_when_it_is_wider_than_its_column`, and
+//! `model::tests::a_quote_nested_cells_inner_range_is_bounded_by_its_own_tags_in_src`).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -182,6 +215,14 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
     render_case_with(cfg, src, Slots::Extracted)
 }
 
+/// [`render_case`] at a pane width other than [`SNAPSHOT_WIDTH`]. Only
+/// `the_write_back_record_is_the_same_at_every_pane_width` uses it — the goldens themselves are
+/// always dumped at the one width (see the module doc comment for why a second width is a test, not
+/// a second snapshot).
+fn render_case_at(cfg: &Config, src: &str, w: u16) -> CaseRender {
+    render_case_with_width(cfg, src, Slots::Extracted, w)
+}
+
 /// Which answers the image / mermaid / math **slot** closures give — the one axis on which this
 /// harness cannot be `App::build_decorated`, because those closures there depend on a live `Picker`
 /// (font metrics) and on-disk file state, neither of which exists in a unit test.
@@ -202,6 +243,15 @@ enum Slots {
 }
 
 fn render_case_with(cfg: &Config, src: &str, slots: Slots) -> CaseRender {
+    render_case_with_width(cfg, src, slots, SNAPSHOT_WIDTH)
+}
+
+fn render_case_with_width(
+    cfg: &Config,
+    src: &str,
+    slots: Slots,
+    snapshot_width: u16,
+) -> CaseRender {
     let extract = slots == Slots::Extracted;
     let icons = cfg.ui.icons;
     let code = crate::preview::markdown::CodeStyle {
@@ -219,7 +269,7 @@ fn render_case_with(cfg: &Config, src: &str, slots: Slots) -> CaseRender {
     // the same stripped body for the rest of the pipeline, so the two can never disagree about it.
     let fm_lines = if cfg.ui.md_frontmatter {
         match crate::preview::markdown::strip_front_matter(src) {
-            (Some(fm), _) => crate::preview::markdown::render_front_matter(&fm, SNAPSHOT_WIDTH),
+            (Some(fm), _) => crate::preview::markdown::render_front_matter(&fm, snapshot_width),
             (None, _) => Vec::new(),
         }
     } else {
@@ -229,9 +279,15 @@ fn render_case_with(cfg: &Config, src: &str, slots: Slots) -> CaseRender {
     // Footnotes, then inline HTML — same order and gating as `build_decorated`.
     let pre_src = pre_src_for(cfg, src);
 
-    // `<details>` open/closed state: `md_details = "auto"` (both variants here) reduces this to
-    // exactly the tags' own `open` attribute — see `App::details_default_open`.
-    let details_states = crate::preview::markdown::collect_details_open(&pre_src);
+    // `<details>` open/closed state, through production's own rule
+    // (`app::md_render::details_default_open`, the same function `build_decorated` reaches for) so
+    // `[ui] md_details` really is an input here. The one part of `build_decorated`'s expression left
+    // out is its `self.details_open` overlay — the per-ordinal states the user's own `Space` toggles
+    // write — which is live UI state, empty on a freshly opened file, and which no `cfg` can carry.
+    let details_states: Vec<bool> = crate::preview::markdown::collect_details_open(&pre_src)
+        .into_iter()
+        .map(|attr| super::md_render::details_default_open(&cfg.ui.md_details, attr))
+        .collect();
     crate::preview::markdown::set_details_open(details_states.clone());
 
     let slot_of = |_: &str, _: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;
@@ -243,22 +299,41 @@ fn render_case_with(cfg: &Config, src: &str, slots: Slots) -> CaseRender {
         }
     };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
-    let (mut lines, mut images, extras) = crate::preview::markdown::render_markdown_with_images(
-        &pre_src,
-        SNAPSHOT_WIDTH,
-        code,
-        theme,
-        icons,
-        &tasks,
-        &slot_of,
-        &mermaid_slot,
-        "mermaid",
-        cfg.ui.md_alerts,
-        &math_slot,
-        // math_on: extraction "on" mirrors the default `math = "image"` + a live picker; a
-        // picker-less `App` computes `font.is_some() && math_image_mode()` = `false` instead.
-        extract,
-    );
+    let (mut lines, mut images, extras) =
+        crate::preview::markdown::render_markdown_with_images_aligned(
+            &pre_src,
+            snapshot_width,
+            code,
+            theme,
+            icons,
+            &tasks,
+            &slot_of,
+            &mermaid_slot,
+            // The mermaid caption, localized exactly the way `build_decorated` localizes it
+            // (`tr(self.lang, Msg::MermaidCaption)`). This used to be the literal `"mermaid"` — a
+            // string production never passes, and 11 columns narrower than the one it does, so the
+            // caption line's own layout was never dumped at a realistic width. Deterministic despite
+            // `lang`'s `"auto"` default: `Lang::from_os` is `Lang::En` under `#[cfg(test)]`, by that
+            // function's own design, precisely so a test cannot depend on the machine's locale.
+            crate::i18n::tr(
+                crate::i18n::Lang::resolve(&cfg.ui.lang),
+                crate::i18n::Msg::MermaidCaption,
+            ),
+            cfg.ui.md_alerts,
+            &math_slot,
+            // math_on: extraction "on" mirrors the default `math = "image"` + a live picker; a
+            // picker-less `App` computes `font.is_some() && math_image_mode()` = `false` instead.
+            extract,
+            // The block alignments, resolved off `cfg` the same way `build_decorated` resolves
+            // them. Until 2026-08-25 this harness called the default-alignment shorthand
+            // (`render_markdown_with_images`) instead, which pinned `BlockAligns::default()` for
+            // every case — so `[ui] md_table_align` / `[ui] md_image_align` were structurally
+            // unreachable from here, and a `cfg` naming a non-default alignment rendered exactly
+            // like one that did not. `Config::default()` resolves to `BlockAligns::default()`, so
+            // the two long-standing goldens are byte-identical across this change (verified by
+            // regenerating both and diffing).
+            cfg.ui.md_block_aligns(),
+        );
 
     // Prepend the front-matter metadata block, shifting image placements down past it — verbatim
     // from `build_decorated`.
@@ -457,10 +532,16 @@ fn dump_case(cfg: &Config, name: &str, src: &str, out: &mut String) {
     }
     writeln!(out, "-- IMAGES ({}) --", r.images.len()).unwrap();
     for (i, p) in r.images.iter().enumerate() {
+        // `col` is dumped alongside `line`: it is the *horizontal* half of where the rectangle
+        // was reserved, and it is the only observable `[ui] md_table_align` / `[ui] md_image_align`
+        // has (both options move a block sideways and change nothing else about it — no line count,
+        // no span, no style). Left out until 2026-08-25, which made those two options invisible to
+        // every golden here: the `md_aligned` variant below could have rendered with the alignment
+        // ignored entirely and not moved a byte.
         writeln!(
             out,
-            "  i{i:02} line={:04} cols={:03} rows={:03} fence_ord={:?} alt={:?} url={:?}",
-            p.line, p.cols, p.rows, p.fence_ord, p.alt, p.url
+            "  i{i:02} line={:04} col={:03} cols={:03} rows={:03} fence_ord={:?} alt={:?} url={:?}",
+            p.line, p.col, p.cols, p.rows, p.fence_ord, p.alt, p.url
         )
         .unwrap();
     }
@@ -490,6 +571,83 @@ fn dump_case(cfg: &Config, name: &str, src: &str, out: &mut String) {
         writeln!(out, "  m{i:02} {}", fmt_item(it)).unwrap();
     }
     writeln!(out).unwrap();
+}
+
+/// **Nothing the app writes to a file may depend on how wide the terminal is** — checked over the
+/// whole corpus at nine pane widths, from 1 column to 400.
+///
+/// The two records this asserts on are the ones that leave the screen and touch the user's disk:
+/// `MdRenderExtras::code_blocks` is the source text `y c` puts on the clipboard, and
+/// `MdRenderExtras::tasks` is `(state character, byte offset)` — the exact byte the checkbox toggle
+/// overwrites in the file. `details_states` rides along because it is the third piece of per-document
+/// state the render pass hands back. All three are derived from the source, not from the layout, so
+/// they must be identical at every width; if a resize could move them, `Space` would write to a
+/// different byte after the user widened the pane.
+///
+/// The image half is the layout counterpart: a placement must never start past the pane. The rule
+/// `BlockAlign::offset` promises is saturating — a block at least as wide as the pane gets offset 0
+/// rather than being pushed off the left edge — so the bound is `col + cols <= max(width, cols)`,
+/// which is what a 1-column pane holding a 20-column diagram has to satisfy.
+///
+/// ## Why this, and not a second golden at a second width
+///
+/// Measured over this corpus, against the goldens' own width of 100 (2026-08-25):
+///
+/// | width | cases whose dump differs | cases that actually **reflow** (line count changes) |
+/// |---:|---:|---:|
+/// | 20 | 268 / 557 | 46 |
+/// | 40 | 259 / 557 | 9 |
+/// | 60 | 254 / 557 | 4 |
+/// | 80 | 254 / 557 | 2 |
+/// | 120 | 254 / 557 | 0 |
+/// | 200 | 254 / 557 | 0 |
+///
+/// A *wider* golden would cost another ~700 KB and observe nothing structural at all: every one of
+/// its 254 differences is decoration stretching with the pane (a heading's `━` rule, a code block's
+/// header bar pushing its ` code ` label right), and not one case lays out differently. A *narrow*
+/// one would reach real reflow — but 46 cases of signal arrive buried in 268 cases of that same
+/// padding noise, which is the exact condition under which a regenerated snapshot gets waved
+/// through. So the width axis is covered by assertions that state a property instead, here and in
+/// the renderer's own width sweeps (`render::tests`'s `every_column_shaves…`,
+/// `three_columns_in_a_twelve_column_pane_draw_a_thirteen_column_box`, and
+/// `cell_image_tests::a_cell_image_never_pushes_the_table_past_the_pane_width`, which loops
+/// 20/30/45/70/120 asserting no line ever exceeds the pane).
+#[test]
+fn the_write_back_record_is_the_same_at_every_pane_width() {
+    let cfg = Config::default();
+    let (mut blocks, mut tasks) = (0usize, 0usize);
+    for (name, src) in all_cases() {
+        let base = render_case_at(&cfg, &src, SNAPSHOT_WIDTH);
+        blocks += base.extras.code_blocks.len();
+        tasks += base.extras.tasks.len();
+        for w in [1u16, 2, 5, 20, 40, 60, 200, 400] {
+            let at = render_case_at(&cfg, &src, w);
+            assert_eq!(
+                at.extras.code_blocks, base.extras.code_blocks,
+                "{name}: 幅 {w} で `y c` がコピーするソースが変わる"
+            );
+            assert_eq!(
+                at.extras.tasks, base.extras.tasks,
+                "{name}: 幅 {w} でチェックボックスの書き戻し位置が変わる"
+            );
+            assert_eq!(
+                at.details_states, base.details_states,
+                "{name}: 幅 {w} で `<details>` の開閉状態が変わる"
+            );
+            for p in &at.images {
+                assert!(
+                    p.col as usize + p.cols as usize <= (w as usize).max(p.cols as usize),
+                    "{name}: 幅 {w} で画像の予約矩形がペインの外から始まっている: {p:?}"
+                );
+            }
+        }
+    }
+    // Without this the loop above would pass on a corpus that had stopped producing either record.
+    assert!(
+        blocks > 50 && tasks > 50,
+        "コーパスのコードブロック({blocks})/チェックボックス({tasks})が激減している\
+         — この番人が検査するものが無くなっている"
+    );
 }
 
 /// The full dump for `cfg`, over every case `all_cases()` reports, in that (sorted) order.
@@ -635,6 +793,35 @@ fn markdown_render_snapshot_code_bg_none() {
     assert_matches_snapshot(
         snapshot_path("code_bg_none"),
         "code_bg_none",
+        &dump_variant(&cfg),
+    );
+}
+
+/// The non-default **block alignment** golden snapshot: `[ui] md_table_align = "right"` and
+/// `[ui] md_image_align = "left"`.
+///
+/// Why a third variant, when the rule everywhere else here is that one snapshot per config is
+/// already expensive: these two options are the only `[ui]` knobs the Markdown renderer reads whose
+/// *entire* effect is horizontal position. Under `Config::default()` — the alignment both other
+/// goldens dump — the renderer could ignore them completely and not move a byte, because
+/// `BlockAligns::default()` is the layout that predates them existing. So this is the one axis the
+/// existing corpus, at any width and under any theme, structurally cannot observe.
+///
+/// The values are chosen so that, across the three goldens, **every** `BlockAlign` value is dumped
+/// at least once for each of the two blocks it governs: tables `Left` (default) and `Right` (here),
+/// images `Center` (default) and `Left` (here).
+///
+/// This variant is what makes `IMAGES`'s own `col` column worth dumping (see `dump_case`) — and
+/// vice versa: without `col` the image half of this variant would be invisible even here, since
+/// moving a rectangle sideways changes no line, span or style.
+#[test]
+fn markdown_render_snapshot_md_aligned() {
+    let mut cfg = Config::default();
+    cfg.ui.md_table_align = "right".to_string();
+    cfg.ui.md_image_align = "left".to_string();
+    assert_matches_snapshot(
+        snapshot_path("md_aligned"),
+        "md_aligned",
         &dump_variant(&cfg),
     );
 }

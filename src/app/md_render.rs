@@ -128,14 +128,10 @@ impl App {
         });
     }
 
-    /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute:
-    /// `"open"`/`"closed"` force it; `"auto"` (or anything else) honors the attribute like GitHub.
+    /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute
+    /// — [`details_default_open`], read off this `App`'s own config.
     fn details_default_open(&self, open_attr: bool) -> bool {
-        match self.cfg.ui.md_details.as_str() {
-            "open" => true,
-            "closed" => false,
-            _ => open_attr,
-        }
+        details_default_open(&self.cfg.ui.md_details, open_attr)
     }
 
     /// `Space`/`Enter` on a focused `<details>` summary: flip its open state and rebuild the cache.
@@ -570,5 +566,22 @@ impl App {
                 extras: crate::preview::markdown::MdRenderExtras::default(),
             },
         }
+    }
+}
+
+/// The default open state of a `<details>` block from `[ui] md_details` and the tag's own `open`
+/// attribute: `"open"`/`"closed"` force it, `"auto"` (or anything else) honors the attribute the way
+/// GitHub does.
+///
+/// A free function taking the config string rather than only an `&App` method, so the
+/// golden-snapshot harness (`app::md_snapshot_tests::render_case_with_width`) applies **this** rule instead
+/// of a hand-copied mirror of it. Until 2026-08-25 that harness computed the states straight from
+/// `collect_details_open` — i.e. from the tags' own attributes, which is only what `"auto"` happens
+/// to mean — so `[ui] md_details` was structurally unobservable from every golden.
+pub(super) fn details_default_open(md_details: &str, open_attr: bool) -> bool {
+    match md_details {
+        "open" => true,
+        "closed" => false,
+        _ => open_attr,
     }
 }

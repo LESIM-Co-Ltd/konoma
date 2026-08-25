@@ -597,9 +597,13 @@ pub fn render_markdown_with_images(
 
 /// [`render_markdown_with_images`] plus the block alignments the render runs under — the form
 /// production actually calls (`app::md_render::build_decorated`, threading `[ui] md_table_align` /
-/// `[ui] md_image_align`). The shorter name above is this one with [`BlockAligns::default`], i.e.
-/// konoma's own historical layout, and stays the entry point for every test corpus and for the
-/// golden snapshots, so none of them can be perturbed by these options existing.
+/// `[ui] md_image_align`), and the form the golden-snapshot harness calls too
+/// (`app::md_snapshot_tests::render_case_with_width`, resolving them off its own `cfg` exactly the
+/// same way). The shorter name above is this one with [`BlockAligns::default`], i.e. konoma's own
+/// historical layout; it remains the entry point for the unit-test corpora, which have no `cfg` and
+/// are not meant to be perturbed by these options existing. It was the goldens' entry point too
+/// until 2026-08-25, which pinned the default alignment for every case and left both options
+/// structurally unobservable there.
 #[allow(clippy::too_many_arguments)] // as above, plus the alignments
 pub fn render_markdown_with_images_aligned(
     src: &str,
@@ -10810,16 +10814,34 @@ pub(crate) mod code_corpus {
                 "an indented line right after a table block, with no blank line between",
                 "| a | b |\n|---|---|\n    code here\n",
             ),
-            // konoma's HTML-block splitter runs a start line to the **next blank line**, which is
-            // wider than CommonMark's own end conditions (an HTML comment ends at `-->`; a `<span>`
-            // cannot interrupt a paragraph at all). Asking the parser about text konoma never gives
-            // it would find code blocks that are drawn as rescued HTML text instead.
+            // Both of these were named, in 2026-08, for what konoma's *own* HTML-block splitter did
+            // back when the renderer had one: it ran a start line to the **next blank line**, which
+            // is wider than CommonMark's end conditions, so the indented line following the tag was
+            // swallowed into the HTML block and drawn as rescued HTML text rather than as code. The
+            // block model reads pulldown-cmark's structure instead, and CommonMark makes both of
+            // these lines indented code — measured against the parser, not assumed:
+            //
+            //   * `<!-- note -->` opens an HTML block of **type 2** (a comment), which ends on the
+            //     line holding `-->`. So the block is that one line, and the 4-column-indented line
+            //     after it opens an indented code block. For `"<!-- note -->\n    code here\n"`
+            //     pulldown-cmark reports `Start(HtmlBlock) 0..14` / `End(HtmlBlock) 0..14`, then
+            //     `Start(CodeBlock(Indented)) 18..28`.
+            //   * `<span>` is HTML block **type 7**, the one type that cannot interrupt a paragraph
+            //     — so `para\n<span>x</span>` is a single paragraph carrying inline HTML, and after
+            //     the blank line the indented line is again indented code (`Start(Paragraph) 0..20`
+            //     … `Start(CodeBlock(Indented)) 25..35`).
+            //
+            // Both names claimed the opposite while both goldens had been dumping the code block all
+            // along (header sentinel, gutter, one `CodeBlock` item) — a case name contradicting its
+            // own recorded output, which is worse than no name at all: it is the shape that makes a
+            // reviewer accept a regenerated snapshot showing the "expected" loss. Renamed, not
+            // "fixed": the rendering is what CommonMark specifies.
             (
-                "an indented line swallowed by an HTML comment block is not code",
+                "an indented line after a one-line HTML comment block is indented code",
                 "<!-- note -->\n    code here\n",
             ),
             (
-                "an indented line swallowed by an inline-tag block that interrupts a paragraph",
+                "an indented line after a paragraph ending in an inline tag is indented code",
                 "para\n<span>x</span>\n\n    code here\n",
             ),
             (

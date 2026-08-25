@@ -6175,6 +6175,141 @@ mod tests {
             .collect()
     }
 
+    /// The inner width of every column of the drawn box, read off its top border rule
+    /// (`"┌───┬──┐"` -> `[3, 2]`). Each number counts the column's own content width **plus** the one
+    /// space of padding on either side, so a one-cell-wide column reads as `3`.
+    fn column_rule_widths(lines: &[String]) -> Vec<usize> {
+        let top = lines
+            .iter()
+            .find(|l| l.starts_with('┌'))
+            .unwrap_or_else(|| panic!("no table was drawn at all: {lines:?}"));
+        top.trim_start_matches('┌')
+            .trim_end_matches('┐')
+            .split('┬')
+            .map(|seg| seg.chars().count())
+            .collect()
+    }
+
+    /// A column whose cells are all empty is still **one cell wide** — `render_table_cells` seeds
+    /// every column at `1`, not at `0`, before widening it to fit its content.
+    ///
+    /// A zero-wide column draws as `│  │`: two spaces of padding with nothing between them, a box
+    /// whose column is visibly narrower than every other one and which no source ever asks for. The
+    /// floor is also what the shaving loop stops at (`if mw <= 1 { break }`), so seeding at `0` would
+    /// additionally let a squeezed table shave a column below the width that loop refuses to go under.
+    ///
+    /// Why this needed a test of its own: exactly one corpus case in the tree
+    /// (`html_table_corpus: "empty cells"`) has an all-empty column, so dropping the floor moved
+    /// three characters in the goldens and nothing anywhere else went red. The cases below are that
+    /// shape spread across its type — the empty column first, in the middle, alone, every cell in the
+    /// table empty, a `<th>` rather than a `<td>`, and the GFM path as well as the HTML one, since
+    /// the seeding is shared code both reach.
+    #[test]
+    fn every_column_is_at_least_one_cell_wide_however_empty_its_cells_are() {
+        for (why, src, want) in [
+            (
+                "an empty cell in the first column",
+                "<table>\n<tr><td></td><td>b</td></tr>\n</table>\n",
+                vec!["┌───┬───┐", "│   │ b │", "└───┴───┘"],
+            ),
+            (
+                "every cell in the table empty",
+                "<table>\n<tr><td></td><td></td></tr>\n</table>\n",
+                vec!["┌───┬───┐", "│   │   │", "└───┴───┘"],
+            ),
+            (
+                "an empty column between two that have content",
+                "<table>\n<tr><td>a</td><td></td><td>c</td></tr>\n</table>\n",
+                vec!["┌───┬───┬───┐", "│ a │   │ c │", "└───┴───┴───┘"],
+            ),
+            (
+                "a lone empty header cell",
+                "<table>\n<tr><th></th></tr>\n</table>\n",
+                // The lone `<th>` row is a header, so the divider rule follows it.
+                vec!["┌───┐", "│   │", "├───┤", "└───┘"],
+            ),
+            (
+                "the same, through the GFM table path",
+                "| a |  | c |\n|---|---|---|\n| 1 |  | 3 |\n",
+                vec![
+                    "┌───┬───┬───┐",
+                    "│ a │   │ c │",
+                    "├───┼───┼───┤",
+                    "│ 1 │   │ 3 │",
+                    "└───┴───┴───┘",
+                ],
+            ),
+            (
+                "a GFM table with nothing in it at all",
+                "|   |\n|---|\n|   |\n",
+                vec!["┌───┐", "│   │", "├───┤", "│   │", "└───┘"],
+            ),
+        ] {
+            let lines = html_table_lines(src, 40);
+            assert_eq!(lines, want, "{why}");
+            assert!(
+                column_rule_widths(&lines).iter().all(|&w| w >= 3),
+                "{why}: 内容 1 桁 + 左右のパディングに満たない列がある: {:?}",
+                column_rule_widths(&lines)
+            );
+        }
+    }
+
+    /// A ragged table draws as many columns as its **widest** row has — every row is padded out to
+    /// that count, and no cell anywhere is dropped.
+    ///
+    /// `render_table_cells` takes the column count as the `max` over the rows' own lengths precisely
+    /// so that the short rows are the ones adjusted. Taking the `min` instead silently deletes every
+    /// cell past the shortest row's length — an author's real content, gone from the screen with no
+    /// sign that anything was cut — and it does so *only* for a ragged table, which is exactly the
+    /// shape a hand-written HTML table (or a `colspan`, which this renderer draws as one plain cell)
+    /// keeps producing.
+    ///
+    /// Why this needed a test of its own: three corpus cases have the shape, and all three of them
+    /// are goldens-only — dropping cells shrank three snapshot blocks and nothing else in the tree
+    /// noticed. The cases below cover the type: the long row first, the long row last, a `colspan`
+    /// and a `rowspan` (the two ways real markup produces a ragged table without meaning to), and the
+    /// GFM path, where a body row shorter than the header row is the ordinary way to write one.
+    #[test]
+    fn a_ragged_table_draws_as_many_columns_as_its_widest_row_has() {
+        for (why, src, want) in [
+            (
+                "the widest row first",
+                "<table>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n<tr><td>d</td></tr>\n</table>\n",
+                vec!["┌───┬───┬───┐", "│ a │ b │ c │", "│ d │   │   │", "└───┴───┴───┘"],
+            ),
+            (
+                "the widest row last",
+                "<table>\n<tr><td>d</td></tr>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n</table>\n",
+                vec!["┌───┬───┬───┐", "│ d │   │   │", "│ a │ b │ c │", "└───┴───┴───┘"],
+            ),
+            (
+                "a colspan cell, drawn as one plain cell in a row of its own",
+                "<table>\n<tr><td colspan=\"2\">spanning</td></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n",
+                vec![
+                    "┌──────────┬───┐",
+                    "│ spanning │   │",
+                    "│ a        │ b │",
+                    "└──────────┴───┘",
+                ],
+            ),
+            (
+                "a body row shorter than the header row, through the GFM path",
+                "| a | b | c |\n|---|---|---|\n| d |\n",
+                vec![
+                    "┌───┬───┬───┐",
+                    "│ a │ b │ c │",
+                    "├───┼───┼───┤",
+                    "│ d │   │   │",
+                    "└───┴───┴───┘",
+                ],
+            ),
+        ] {
+            let lines = html_table_lines(src, 40);
+            assert_eq!(lines, want, "{why}");
+        }
+    }
+
     /// The shape this feature exists for: the README screenshot grid comes out as a real 2x2 box-drawn
     /// table, not two loose images followed by two loose caption lines.
     #[test]
@@ -8326,6 +8461,112 @@ mod tests {
         out.lines.iter().map(line_text).collect()
     }
 
+    /// A **nested** list never opens with a blank row of its own; a top-level one does.
+    ///
+    /// `render_list` asks `ctx.list_depth == 0 && w.pending_block_gap` before emitting that row, and
+    /// both halves are load-bearing. The `pending_block_gap` half is what puts one blank row between
+    /// a paragraph and the list that follows it. The `list_depth == 0` half is what keeps that same
+    /// row *out* of a nested list: a **loose** outer item ends its own paragraph with the gap flag
+    /// still set, so a nested list opening right after it would otherwise be pushed down by a blank
+    /// row that has no counterpart in the source — the outer item's bullet, its text, and then a
+    /// hole before the sub-item.
+    ///
+    /// Why this needed a test of its own: exactly one corpus case in the whole tree
+    /// (`task_corpus: "an indented paragraph inside a list item is not a task even if it starts
+    /// with a dash"`) happens to have this shape, so dropping the depth check moved a single line in
+    /// the goldens and nothing else anywhere went red. Every case below is a *loose* outer list —
+    /// the only kind that reaches `render_list` with the flag still set — across the ways a nested
+    /// list can be reached: straight after the item's own paragraph, after a second paragraph, three
+    /// levels deep, ordered, carrying a task marker, and inside a block quote. The last entry is the
+    /// counter-case that pins the other half: a top-level list *keeps* its blank row.
+    #[test]
+    fn a_nested_list_never_opens_with_a_blank_row_however_loose_its_parent_is() {
+        for (why, src, want) in [
+            (
+                "a nested list right after a loose item's own paragraph",
+                "- a\n\n  - b\n",
+                vec!["- ", "a", "    - b"],
+            ),
+            (
+                "a nested list after a second paragraph in the same item",
+                "- a\n\n  para\n\n  - b\n",
+                vec!["- ", "a", "", "para", "    - b"],
+            ),
+            (
+                "three levels, every one of them loose",
+                "- a\n\n  - b\n\n    - c\n",
+                vec!["- ", "a", "    - ", "b", "        - c"],
+            ),
+            (
+                "an ordered list nested in a loose ordered item",
+                "1. a\n\n   1. b\n",
+                vec!["1. ", "a", "    1. b"],
+            ),
+            (
+                "a nested list whose item carries a task marker",
+                "- item\n\n  - [ ] looks like a task\n",
+                vec!["- ", "item", "    - [ ] looks like a task"],
+            ),
+            (
+                "the same shape inside a block quote",
+                "> - a\n>\n>   - b\n",
+                vec!["> - ", "> a", ">     - b"],
+            ),
+            (
+                "counter-case: a top-level list still gets its blank row",
+                "before.\n\n- a\n- b\n",
+                vec!["before.", "", "- a", "- b"],
+            ),
+        ] {
+            assert_eq!(lines_text(&render(src, true, false)), want, "{why}");
+        }
+    }
+
+    /// Whatever follows a table, an **HTML** table is separated from it exactly the way a **GFM**
+    /// table is — because `render_html_table_from_model` clears `pending_block_gap` after drawing,
+    /// the same thing the GFM table path does.
+    ///
+    /// Leaving the flag set instead puts a blank row between the table and everything that follows
+    /// it, and only for HTML tables — which is both a difference between two things that draw the
+    /// same box and, on a source that has no blank line there at all, a row invented out of nothing.
+    ///
+    /// Written as an equivalence rather than as a list of expected lines: the point is not what the
+    /// gap *is* (that is the goldens' job) but that the two table paths cannot drift apart, so a
+    /// later change to the shared rule moves both sides together and this test keeps holding. Each
+    /// side's own leading table box is dropped — everything through the first `└` — and the tails
+    /// are compared.
+    #[test]
+    fn an_html_table_is_separated_from_what_follows_exactly_like_a_gfm_table() {
+        // Everything after the first table's own bottom border.
+        fn tail(src: &str) -> Vec<String> {
+            let lines = lines_text(&render(src, true, false));
+            let bottom = lines
+                .iter()
+                .position(|l| l.starts_with('└'))
+                .unwrap_or_else(|| panic!("no table was drawn at all for {src:?}: {lines:?}"));
+            lines[bottom + 1..].to_vec()
+        }
+        for follower in [
+            "para\n",
+            "# H\n",
+            "- item\n",
+            "1. item\n",
+            "```\nfence\n```\n",
+            "> quote\n",
+            "---\n",
+            "<table><tr><td>z</td></tr></table>\n",
+            "| q |\n|---|\n| r |\n",
+            "", // nothing at all follows
+        ] {
+            let html = tail(&format!("<table><tr><td>a</td></tr></table>\n\n{follower}"));
+            let gfm = tail(&format!("| a |\n|---|\n| x |\n\n{follower}"));
+            assert_eq!(
+                html, gfm,
+                "HTML 表と GFM 表で、後に続く {follower:?} との間の空け方が違う"
+            );
+        }
+    }
+
     // ---- `contains_unsupported`/`render_doc` top-level dispatch: every position a Table/Html
     // nested inside a Quote, somewhere in a List's/alert's/Details's own subtree, can be reached
     // from — all four render correctly now (`contains_unsupported` is a permanent no-op; see its own
@@ -10048,6 +10289,82 @@ mod cell_image_tests {
         );
         assert_reserved(&out);
         assert_rectangular(&out);
+    }
+
+    /// An image is re-fit **only** when it is wider than the column it landed in — an image exactly
+    /// as wide as its column already fits and is used as it stands.
+    ///
+    /// `plan_cell` asks that with `(nat_cols as usize) <= w`, and the `=` is the whole of this test.
+    /// Losing it sends every image whose natural width happens to equal its column's final width
+    /// back through `slot_of(url, Some(w))` for a second answer — and the contract there is explicit
+    /// that a second answer which is not `Inline` degrades the image back to its `🖼 {alt}` label.
+    /// So the boundary case is not an optimization: it decides whether that picture is drawn at all
+    /// when the app's own lookup can answer differently the second time (an evicted decode answers
+    /// `Unavailable`, an in-flight download answers `Loading`).
+    ///
+    /// The boundary is reached by the ordinary path, not a contrived one: a column with a single
+    /// image in it and enough room to hold it is sized *by that image*, so `w == nat_cols` is what
+    /// a one-image column normally produces. Both neighbours are checked too — a column widened past
+    /// the image by other content (no re-fit) and a column shaved below it (re-fit) — so the test
+    /// pins the comparison from both sides rather than only the point itself.
+    #[test]
+    fn an_image_is_re_fit_only_when_it_is_wider_than_its_column() {
+        // `(why, src, pane width, does the renderer have to ask a second time?)`
+        let cases = [
+            (
+                "the column is sized by the image itself, so it fits exactly",
+                "| i |\n|---|\n| ![A](w20.png) |\n",
+                70u16,
+                false,
+            ),
+            (
+                "a header wider than the image leaves the column with room to spare",
+                "| a header much wider than the picture |\n|---|\n| ![A](w20.png) |\n",
+                70,
+                false,
+            ),
+            (
+                "the pane squeezes the column below the image's natural width",
+                "| i |\n|---|\n| ![A](w40.png) |\n",
+                20,
+                true,
+            ),
+        ];
+        for (why, src, width, must_refit) in cases {
+            // Every `max_cols` the render asked for, in order. `sized_slot`'s own answers, so the
+            // layout is exactly the one every other test in this module renders under.
+            let asked = std::cell::RefCell::new(Vec::<Option<u16>>::new());
+            let recording = |url: &str, max_cols: Option<u16>| {
+                asked.borrow_mut().push(max_cols);
+                sized_slot(url, max_cols)
+            };
+            let out = render_with(src, width, &recording);
+            let refits: Vec<u16> = asked.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                !refits.is_empty(),
+                must_refit,
+                "{why}: 再フィットの問い合わせ {refits:?} が想定と違う"
+            );
+            assert_eq!(out.images.len(), 1, "{why}: {:?}", out.images);
+            assert_reserved(&out);
+            assert_rectangular(&out);
+
+            // The same render with a lookup that refuses to answer a *second* time. An image that
+            // is never re-asked is unaffected; one that is re-asked loses its rectangle and falls
+            // back to its `🖼 {alt}` label — which is what makes the boundary observable on screen
+            // rather than only in the call log.
+            let once = |url: &str, max_cols: Option<u16>| match max_cols {
+                None => sized_slot(url, None),
+                Some(_) => ImageSlot::Unavailable,
+            };
+            let out = render_with(src, width, &once);
+            assert_eq!(
+                out.images.len(),
+                usize::from(!must_refit),
+                "{why}: 2 回目に答えない lookup での配置数が想定と違う: {:?}",
+                out.images
+            );
+        }
     }
 
     /// A cell image never widens the table past the pane: the shaving still runs, unchanged.

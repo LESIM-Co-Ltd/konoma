@@ -194,19 +194,19 @@ List{ordered=false, start=None} src=0..50 text="- item\n\n  > [!NOTE]\n  > ```sh
       Paragraph{inline=7..10:"[!NOTE]"} src=12..20 text="[!NOTE]\n"
       CodeBlock{lang=Some("sh"), fenced=true, body_spans=[34..42:"echo hi\n"], text="echo hi"} src=24..49 text="```sh\n  > echo hi\n  > ```"
 
-=== code_corpus: an indented line right after a table block, with no blank line between ===
--- BLOCKS (1) --
-Table{aligns=[None, None], rows=[[1..4:" a ", 5..8:" b "], [24..33:"code here", 34..34:""]]} src=0..34 text="| a | b |\n|---|---|\n    code here\n"
-
-=== code_corpus: an indented line swallowed by an HTML comment block is not code ===
+=== code_corpus: an indented line after a one-line HTML comment block is indented code ===
 -- BLOCKS (2) --
 Html{tag=None, body_spans=[0..14:"<!-- note -->\n"], text="<!-- note -->\n"} src=0..14 text="<!-- note -->\n"
 CodeBlock{lang=None, fenced=false, body_spans=[18..28:"code here\n"], text="code here"} src=18..28 text="code here\n"
 
-=== code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph ===
+=== code_corpus: an indented line after a paragraph ending in an inline tag is indented code ===
 -- BLOCKS (2) --
 Paragraph{inline=1..6:"para x"} src=0..20 text="para\n<span>x</span>\n"
 CodeBlock{lang=None, fenced=false, body_spans=[25..35:"code here\n"], text="code here"} src=25..35 text="code here\n"
+
+=== code_corpus: an indented line right after a table block, with no blank line between ===
+-- BLOCKS (1) --
+Table{aligns=[None, None], rows=[[1..4:" a ", 5..8:" b "], [24..33:"code here", 34..34:""]]} src=0..34 text="| a | b |\n|---|---|\n    code here\n"
 
 === code_corpus: block quote nested inside a list item, wrapping a fence ===
 -- BLOCKS (1) --
