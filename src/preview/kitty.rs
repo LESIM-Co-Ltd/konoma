@@ -44,12 +44,14 @@ const UNIT_WIDTH: CellDiffOption =
 /// full-screen path transmits once per opened image, and per zoom/pan step — but it is *not* a
 /// licence to transmit on a timer.
 ///
-/// So anything that re-transmits **the same picture slot over and over** must allocate its id once
-/// and then reuse it, which turns each later transmit into a replacement rather than an addition
-/// (the destructive re-use quoted above is exactly the wanted behavior there). That is what the
-/// inline Markdown image path does: `MdImgEntry` pins one id per protocol slot, so an animated GIF
-/// cycling its frames forever occupies a constant amount of terminal storage. Before that, it went
-/// through ratatui-image's `Picker::new_protocol`, which picks its id with `rand::random()` — a
+/// So anything that re-transmits **the same picture** must allocate its id once and then reuse it,
+/// which turns each later transmit into a replacement rather than an addition (the destructive
+/// re-use quoted above is exactly the wanted behavior there). That is what the inline Markdown
+/// image path does: `App::md_kitty_ids` pins one id per picture per protocol slot, so an animated
+/// GIF cycling its frames forever — and a document opened, closed and opened again all day, which
+/// re-transmits from scratch every time because the decode cache does not survive a file switch —
+/// both occupy a constant amount of terminal storage. Before that, it went through
+/// ratatui-image's `Picker::new_protocol`, which picks its id with `rand::random()` — a
 /// fresh id **per frame**, measured at ~66 MB/min against Ghostty's 320 MB budget, which evicted a
 /// long-lived still image out from under a placeholder konoma would never re-transmit (the still
 /// simply vanished after ~5 minutes).

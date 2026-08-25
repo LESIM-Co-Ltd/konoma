@@ -38,6 +38,27 @@ fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option
     tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
 }
 
+/// The fixed kitty image id for the slot `key` fills of the picture filed under `path`, allocating
+/// it on first use. `None` when this terminal is not a kitty one — then the encode goes back
+/// through ratatui-image, which writes the picture as cell content and leaves the terminal holding
+/// nothing between frames, so there is no id to pin and none is burned.
+///
+/// Takes the map rather than `&mut App` so a caller can hold a `&mut` borrow of an `md_image_cache`
+/// entry at the same time (two disjoint fields of `App`, which the borrow checker splits happily).
+/// See `App::md_kitty_ids` for why the ids live there and not on the entry.
+fn kitty_id_for(
+    ids: &mut std::collections::HashMap<PathBuf, [Option<u32>; 3]>,
+    path: &Path,
+    key: &MdEncodeKey,
+    use_kitty: bool,
+) -> Option<u32> {
+    if !use_kitty {
+        return None;
+    }
+    let slots = ids.entry(path.to_path_buf()).or_insert([None; 3]);
+    Some(*slots[key.slot()].get_or_insert_with(crate::preview::kitty::next_id))
+}
+
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
@@ -81,10 +102,10 @@ impl App {
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
         // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
         // ensure_md_image). Missing = a stale result (already evicted from the cache on a file
-        // switch / already pruned), so drop it instead of reviving it (with or_default, the old
-        // diagram's raster would be re-inserted and linger until the next enter_preview, and on
-        // top of that the md_cache invalidation below would needlessly do a full rebuild once for
-        // **an unrelated current document**).
+        // switch / by `drop_changed_md_images` / already pruned), so drop it instead of reviving
+        // it (with or_default, the old diagram's raster would be re-inserted and linger until the
+        // next enter_preview, and on top of that the md_cache invalidation below would needlessly
+        // do a full rebuild once for **an unrelated current document**).
         if !self.md_image_cache.contains_key(&res.path) {
             return false;
         }
@@ -194,6 +215,7 @@ impl App {
         let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
         let (crop, center) = fence_crop((sw, sh), f, self.tab.fence_center);
         self.tab.fence_center = center;
+        let ids = &mut self.md_kitty_ids;
         let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
             return;
         };
@@ -203,9 +225,7 @@ impl App {
         }
         let Some(tx) = enc_tx else { return };
         let enc_key = MdEncodeKey::Zoom { cols, rows, crop };
-        let kitty = entry
-            .kitty_id_for(&enc_key, use_kitty)
-            .map(|id| (id, is_tmux));
+        let kitty = kitty_id_for(ids, &key_path, &enc_key, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = tx.send(MdEncodeRequest {
             path: key_path,
@@ -688,6 +708,7 @@ impl App {
         };
         // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
         let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
+        let ids = &mut self.md_kitty_ids;
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return;
         };
@@ -707,9 +728,7 @@ impl App {
                 cols,
                 rows: full_rows,
             };
-            let kitty = entry
-                .kitty_id_for(&enc_key, use_kitty)
-                .map(|id| (id, is_tmux));
+            let kitty = kitty_id_for(ids, &path, &enc_key, use_kitty).map(|id| (id, is_tmux));
             entry.enc_inflight = true;
             let _ = enc_tx.send(MdEncodeRequest {
                 path,
@@ -735,9 +754,7 @@ impl App {
             row_off,
             vis_rows,
         };
-        let kitty = entry
-            .kitty_id_for(&enc_key, use_kitty)
-            .map(|id| (id, is_tmux));
+        let kitty = kitty_id_for(ids, &path, &enc_key, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = enc_tx.send(MdEncodeRequest {
             path,
@@ -798,12 +815,14 @@ impl App {
     /// Advancing an off-screen entry therefore costs only an index bump, never a re-encode.
     /// Returns true if any entry advanced (the caller re-renders).
     ///
-    /// Gated on `Mode::Preview`: `md_image_cache` is a flat, path-keyed cache that is only cleared
-    /// by `enter_preview`'s `if !same_file` branch (switching to a genuinely different file) — it is
-    /// deliberately left alone by `back_to_tree` (re-entering the *same* file must resume playback
-    /// without a re-decode). Without this check, leaving Preview via `q` left every animating entry
-    /// ticking forever: this kept requesting a fresh encode (`proto_size = None` below) and
-    /// redrawing a *tree* screen where nothing is even visible, defeating the idle-CPU invariant.
+    /// Gated on `Mode::Preview`: `md_image_cache` is a flat, path-keyed cache that is only emptied
+    /// by `enter_preview`'s `if !same_file` branch (switching to a genuinely different file), plus
+    /// the per-entry eviction `drop_changed_md_images` does for a picture the filesystem reports as
+    /// changed — it is deliberately left alone by `back_to_tree` (re-entering the *same* file must
+    /// resume playback without a re-decode). Without this check, leaving Preview via `q` left every
+    /// animating entry ticking forever: this kept requesting a fresh encode (`proto_size = None`
+    /// below) and redrawing a *tree* screen where nothing is even visible, defeating the idle-CPU
+    /// invariant.
     pub fn advance_md_gifs_if_due(&mut self) -> bool {
         if !matches!(self.tab.mode, Mode::Preview) {
             return false;
@@ -835,6 +854,81 @@ impl App {
             advanced = true;
         }
         advanced
+    }
+
+    /// Every filesystem path the Markdown preview currently draws an inline image from.
+    ///
+    /// This is what makes an FS event about `diagram.png` count as an event about the *document*
+    /// showing it — konoma's headline Agent Watch case, where an agent regenerates a picture while
+    /// the `.md` embedding it stays open. Two sources, because neither is complete on its own:
+    ///
+    /// * the **keys of `md_image_cache`** — the pictures decoded right now. A path key does *not*
+    ///   go stale by itself (unlike the content-hash key a mermaid fence / math expression is filed
+    ///   under, which changes with every edit), so these are exactly the entries whose bytes can
+    ///   silently rot underneath them, and exactly the ones that have to be thrown away.
+    /// * the **image URLs of the current decoration** (`md_cache.images`), resolved against the
+    ///   document's own directory but *without* asking whether the file is still there. That covers
+    ///   the two cases the cache alone misses: a picture below the fold (never drawn, so
+    ///   `ensure_md_image` never made an entry for it — yet the layout already reserves a box sized
+    ///   from the file on disk), and a picture that has just been **deleted** (no longer resolvable,
+    ///   and its box has to collapse back to the `🖼 alt` label).
+    ///
+    /// Deliberately *not* in the set:
+    /// * **synthetic keys** (`mermaid-fence://` / `math://`) — content-hashed, so they invalidate
+    ///   themselves, and they are not filesystem paths at all;
+    /// * **remote images** — their bytes sit in konoma's download cache, keyed by a hash of the URL
+    ///   and outside the watched tree; `md_remote_failed` / `ensure_remote_md_fetch` own their
+    ///   freshness.
+    pub(super) fn md_image_source_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut out: std::collections::HashSet<PathBuf> = self
+            .md_image_cache
+            .keys()
+            .filter(|k| !crate::preview::markdown::is_synthetic_md_url(&k.to_string_lossy()))
+            .cloned()
+            .collect();
+        if let Some(cache) = self.md_cache.as_ref() {
+            let base = cache.path.parent();
+            for img in &cache.images {
+                if crate::preview::markdown::is_synthetic_md_url(&img.url) {
+                    continue;
+                }
+                if let Some(p) = md_image_local_path(&img.url, base) {
+                    out.insert(p);
+                }
+            }
+        }
+        out
+    }
+
+    /// Drop the inline-image cache entries the filesystem event named — **only** those, so a
+    /// document full of generated charts does not blink wholesale every time an agent rewrites one
+    /// of them. An entry is keyed by path, so the key survives a rewrite while the decoded raster
+    /// and the encoded protocol behind it do not; removing the entry is what makes the next render
+    /// re-read the file (and re-measure it, which is how a picture regenerated at different
+    /// proportions gets a correctly-sized box).
+    ///
+    /// An **empty** `changed` ("unknown, or `.git`-only" — see `preview_affected_by`) drops nothing
+    /// on purpose. Nearly every empty burst is a `git` command touching repository internals, and
+    /// blanking every picture on each of those would be a visible flicker bought for nothing.
+    ///
+    /// Known narrow window, unchanged in shape by this function: dropping an entry also drops the
+    /// "a decode is already in flight for this path" marker (the entry's mere presence is that
+    /// marker), so the next render kicks a second decode of the same path and `apply_md_image`
+    /// accepts whichever finishes last. Two decodes of the same small file completing out of order
+    /// would leave the older raster showing until the next event. The identical window has always
+    /// existed on the file-switch path (leave a document and come back while its image is still
+    /// decoding), and it self-heals on the next filesystem event or reopen, so it is recorded here
+    /// rather than paid for with a generation counter through every `MdImageResult` producer.
+    pub(super) fn drop_changed_md_images(&mut self, changed: &[PathBuf]) {
+        for p in changed {
+            // A synthetic key can never equal an absolute filesystem path, so this is a statement
+            // of intent rather than a live guard: fences and equations are reclaimed by
+            // `ensure_md_cache`'s own retain, never by a watcher event.
+            if crate::preview::markdown::is_synthetic_md_url(&p.to_string_lossy()) {
+                continue;
+            }
+            self.md_image_cache.remove(p);
+        }
     }
 
     /// Test-only: how many entries currently sit in `md_image_cache` (private to `app`, so an e2e

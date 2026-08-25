@@ -7,6 +7,30 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **An image a Markdown preview draws was never re-read after the file behind it changed.** With
+  `chart.png` on screen inside an open document, regenerating it — the everyday move when an agent
+  is rebuilding diagrams next to konoma — changed nothing at all: not the picture, not even its
+  size, and not until something unrelated happened to touch the `.md` itself. The filesystem
+  refresh compared the event's paths only against the previewed file, so an event naming an image
+  reached nothing, and the inline-image cache is keyed by **path** — a key that survives its own
+  file being rewritten. A filesystem event now also counts as reaching the preview when it names an
+  image the open document draws from, and drops exactly that picture's cache entry, so the new
+  image is re-read, re-measured (a regenerated chart with different proportions gets a
+  correctly-sized box) and redrawn. Pictures the event did not name keep their decoded rasters, so
+  a document full of generated charts no longer blinks wholesale when one of them is rewritten.
+  Covers a picture inside a table cell and one still below the fold, and a picture that was
+  **deleted** collapses back to its `🖼 alt` label instead of showing a ghost. Remote images and
+  mermaid/math diagrams are unaffected: those are already keyed by content, or live outside the
+  watched tree entirely.
+- **Reopening a document handed a kitty terminal a brand new copy of every picture in it.** The
+  fixed image ids that keep an animated GIF from filling the terminal's image storage were parked
+  on the decode cache, which is thrown away whenever the preview moves to a different file — so
+  each visit transmitted the same pictures under fresh ids and the terminal's resident set grew as
+  "pictures × times opened", never shrinking for the life of the session. Ids now belong to the
+  picture rather than to the cache entry, so opening a document again (from another tab, or after a
+  day of switching files) replaces the images the terminal already holds instead of adding to them.
+  Affects kitty-protocol terminals only (Ghostty, kitty, WezTerm, Konsole); sixel, iTerm2 and
+  halfblocks write pictures as cell content and never held anything to accumulate.
 - **Text an author wrote outside the cells of an HTML `<table>` vanished from the screen.** A
   `<caption>`, a stray line sitting directly inside the `<table>` or a `<tr>`, prose between two
   cells — all of it was silently deleted, because a folded table carries its cells and nothing else.

@@ -10232,6 +10232,286 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// =============================================================================
+// An inline Markdown image **rewritten on disk while the document stays open** — an agent
+// regenerating `diagram.png` next to a `konoma` that is showing the `.md` that embeds it, which is
+// konoma's headline Agent Watch scenario. `md_image_cache` is keyed by **path**, and a path key
+// does not go stale on its own: unless the FS-watch refresh both notices that a *referenced image*
+// changed and drops that one entry, the old pixels stay on screen forever.
+// =============================================================================
+
+/// Write a solid-color image of an exact pixel size (what regenerating a chart looks like on disk).
+fn write_solid_png(path: &std::path::Path, w: u32, h: u32, rgb: [u8; 3]) {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(rgb)))
+        .save(path)
+        .unwrap();
+}
+
+/// Whether a strongly green pixel reached the drawn buffer (the "first" picture in these tests).
+fn drawn_has_green(term: &Terminal<TestBackend>) -> bool {
+    drawn_rgb_fgs(term)
+        .into_iter()
+        .any(|(r, g, b)| g > 150 && r < 60 && b < 60)
+}
+
+/// Whether a strongly red pixel reached the drawn buffer (the "replacement" picture).
+fn drawn_has_red(term: &Terminal<TestBackend>) -> bool {
+    drawn_rgb_fgs(term)
+        .into_iter()
+        .any(|(r, g, b)| r > 150 && g < 60 && b < 60)
+}
+
+/// The reported cell size of the single inline image placement (panics if there isn't exactly one).
+#[track_caller]
+fn only_placement(app: &App) -> (String, u16, u16) {
+    let p = app.md_images();
+    assert_eq!(p.len(), 1, "inline image placement が1件のはず: {p:?}");
+    (p[0].url.clone(), p[0].cols, p[0].rows)
+}
+
+/// **The bug.** A regenerated picture with different proportions must be laid out at its *new*
+/// size and drawn from its *new* pixels. Before the fix `preview_affected_by` compared the event's
+/// paths only against the previewed file itself, so an event naming `p.png` reloaded nothing at
+/// all: the screen kept the old box and the old raster until something unrelated happened to touch
+/// the `.md`.
+#[test]
+fn e2e_ui_rewritten_inline_image_relays_out_at_its_new_size() {
+    let dir = sandbox("inline_image_rewrite_size");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "before\n\n![a](p.png)\n\nafter\n").unwrap();
+    let root = canon(&dir);
+    let png = root.join("p.png");
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    let (_, cols0, rows0) = only_placement(&s.app);
+    assert!(drawn_has_green(&s.term), "最初の画像(緑)が描かれているはず");
+
+    // The agent regenerates the picture: different aspect ratio, different color.
+    write_solid_png(&png, 20, 60, [210, 10, 10]);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    s.draw();
+
+    let (_, cols1, rows1) = only_placement(&s.app);
+    assert_ne!(
+        (cols1, rows1),
+        (cols0, rows0),
+        "差し替え後は新しい寸法でレイアウトし直されるはず"
+    );
+    s.drain_md_images();
+    s.drain_md_encodes();
+    assert!(
+        drawn_has_red(&s.term),
+        "差し替え後の実ピクセル(赤)が届くはず"
+    );
+    assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same rewrite at **identical dimensions** — nothing about the layout changes, only the bytes.
+/// This is the case a "did the size change?" shortcut would silently miss, and the one that proves
+/// the path key itself goes stale (the old doc claimed it could not).
+#[test]
+fn e2e_ui_rewritten_inline_image_of_the_same_size_is_still_redecoded() {
+    let dir = sandbox("inline_image_rewrite_same_size");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "![a](p.png)\n").unwrap();
+    let root = canon(&dir);
+    let png = root.join("p.png");
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    let (url, cols, rows) = only_placement(&s.app);
+    assert!(drawn_has_green(&s.term));
+
+    write_solid_png(&png, 40, 20, [210, 10, 10]); // same box, different picture
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    s.draw();
+
+    assert_eq!(
+        only_placement(&s.app),
+        (url.clone(), cols, rows),
+        "寸法が同じならレイアウトは動かない"
+    );
+    assert!(
+        s.app.md_image_proto(&url, cols, rows, 0, rows).is_none(),
+        "中身だけ変わった場合もキャッシュ項目は落ちる(パス鍵は陳腐化する)"
+    );
+    s.drain_md_images();
+    s.drain_md_encodes();
+    assert!(
+        drawn_has_red(&s.term),
+        "新しい実ピクセル(赤)に入れ替わるはず"
+    );
+    assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Only the entry that actually changed is dropped. Clearing the whole cache would "work" for the
+/// bug above while restarting every *other* picture in the document from scratch — a document of
+/// generated charts would blink wholesale every time an agent rewrote any one of them.
+#[test]
+fn e2e_ui_rewriting_one_inline_image_leaves_the_other_ones_cache_alone() {
+    let dir = sandbox("inline_image_rewrite_one_of_two");
+    write_solid_png(&dir.join("a.png"), 16, 8, [10, 210, 10]);
+    write_solid_png(&dir.join("b.png"), 16, 8, [10, 10, 210]);
+    std::fs::write(dir.join("d.md"), "![a](a.png)\n\n![b](b.png)\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    s.drain_md_encodes();
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 2, "画像2件: {placements:?}");
+    let sized: Vec<(String, u16, u16)> = placements
+        .iter()
+        .map(|p| (p.url.clone(), p.cols, p.rows))
+        .collect();
+    let proto =
+        |app: &App, (u, c, r): &(String, u16, u16)| app.md_image_proto(u, *c, *r, 0, *r).is_some();
+    assert!(
+        proto(&s.app, &sized[0]) && proto(&s.app, &sized[1]),
+        "両方エンコード済み"
+    );
+
+    write_solid_png(&root.join("a.png"), 16, 8, [210, 10, 10]);
+    s.app.refresh_fs_watched(false, &[root.join("a.png")]);
+    s.draw();
+
+    assert!(
+        !proto(&s.app, &sized[0]),
+        "書き換えられた方はキャッシュから落ちて再デコード待ちになるはず"
+    );
+    assert!(
+        proto(&s.app, &sized[1]),
+        "触っていない方のキャッシュは残るはず(全消ししない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A picture inside a **table cell** is reached through a different sizing path (the cell's column
+/// width, not the page's) — but it is the same cache, so it has to follow a rewrite the same way.
+/// "A table of generated charts" is exactly what became possible once cells could hold real pixels.
+#[test]
+fn e2e_ui_rewritten_image_inside_a_table_cell_follows_the_change() {
+    let dir = sandbox("inline_image_rewrite_table_cell");
+    write_solid_png(&dir.join("p.png"), 16, 16, [10, 210, 10]);
+    std::fs::write(
+        dir.join("t.md"),
+        "| ![a](p.png) | bbbb |\n| --- | --- |\n| 1 | 2 |\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+    let png = root.join("p.png");
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("t.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    let (url, cols, rows) = only_placement(&s.app);
+    assert!(drawn_has_green(&s.term), "セル内の実ピクセル(緑)");
+
+    write_solid_png(&png, 16, 16, [210, 10, 10]);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    s.draw();
+    assert!(
+        s.app.md_image_proto(&url, cols, rows, 0, rows).is_none(),
+        "セルの中の画像もキャッシュから落ちるはず"
+    );
+    s.drain_md_images();
+    s.drain_md_encodes();
+    assert!(
+        drawn_has_red(&s.term),
+        "セル内も新しい実ピクセル(赤)になるはず"
+    );
+    assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The picture is **deleted** rather than rewritten. The reserved box has to collapse back to the
+/// `🖼 alt` label (principle #3), which needs the very same "a referenced image changed" notice —
+/// and a deleted file no longer resolves on disk, so recognizing it cannot depend on resolution.
+#[test]
+fn e2e_ui_deleted_inline_image_degrades_to_its_alt_label() {
+    let dir = sandbox("inline_image_deleted");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "![chart](p.png)\n").unwrap();
+    let root = canon(&dir);
+    let png = root.join("p.png");
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    assert_eq!(s.app.md_images().len(), 1);
+    assert!(drawn_has_green(&s.term));
+
+    std::fs::remove_file(&png).unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    s.draw();
+
+    assert!(
+        s.app.md_images().is_empty(),
+        "消えた画像は placement を持たない: {:?}",
+        s.app.md_images()
+    );
+    s.see("🖼 chart");
+    assert!(
+        !drawn_has_green(&s.term),
+        "消えた画像のピクセルは残らないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An image the document references but has **not drawn yet** — it sits below the fold, so
+/// `overlay_inline_images` skips it and `ensure_md_image` has never been called for it (there is no
+/// cache entry to invalidate at all). The layout still reserves a box for it, sized from the file
+/// on disk, so a rewrite has to re-lay-out that box too; otherwise scrolling down later shows the
+/// new picture squeezed into the old rectangle. This is the case a cache-entry-only rule misses.
+#[test]
+fn e2e_ui_rewritten_offscreen_inline_image_still_relays_out() {
+    let dir = sandbox("inline_image_rewrite_offscreen");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    let filler = "filler line\n\n".repeat(40);
+    std::fs::write(dir.join("d.md"), format!("{filler}![a](p.png)\n")).unwrap();
+    let root = canon(&dir);
+    let png = root.join("p.png");
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    let (_, cols0, rows0) = only_placement(&s.app);
+    assert_eq!(
+        s.app.md_image_cache_len(),
+        0,
+        "前提: 画面外の画像はデコードすらされていない(キャッシュ項目が無い)"
+    );
+
+    write_solid_png(&png, 20, 60, [210, 10, 10]);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&png));
+    s.draw();
+
+    let (_, cols1, rows1) = only_placement(&s.app);
+    assert_ne!(
+        (cols1, rows1),
+        (cols0, rows0),
+        "画面外の画像でもレイアウトは新しい寸法に追随するはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Every kitty image id **transmitted** into the drawn terminal buffer (`i=<id>,a=T` heads a
 /// transmit escape). That is the quantity a kitty terminal charges its image-storage budget
 /// against, so it is the honest way to ask "is konoma filling the terminal up?".
@@ -10342,6 +10622,127 @@ fn e2e_ui_animated_inline_gif_reuses_one_kitty_image_id_across_laps() {
         1,
         "何周させても端末に載る画像 ID は1つのまま(= 画像ストレージが埋まらない): {ids:?}"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Sibling of the GIF test above, for the *other* way konoma used to hand a kitty terminal an
+/// ever-growing pile of images: **reopening the same document**. `md_image_cache` is thrown away
+/// whenever the preview moves to a different file, and the ids used to live on the cache entry — so
+/// every reopen allocated fresh ones and transmitted the very same picture under a brand new id,
+/// growing the terminal's resident image set by "pictures × times opened".
+///
+/// Each lap here is the whole cycle a user actually performs: open the document, come back to the
+/// tree, re-enter the *same* file (which must not even re-transmit — the cache is kept warm), then
+/// visit a genuinely different file, which is what discards the image cache.
+#[test]
+fn e2e_ui_reopening_a_document_reuses_its_inline_kitty_image_ids() {
+    let dir = sandbox("inline_image_kitty_id_reopen");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "![a](p.png)\n").unwrap();
+    std::fs::write(dir.join("other.txt"), "just text\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    let mut ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut transmits = 0usize;
+    for lap in 0..4 {
+        s.select("d.md");
+        s.enter();
+        s.drain_md_images();
+        s.drain_md_encodes();
+        let seen = transmitted_kitty_ids(&s.term);
+        assert!(!seen.is_empty(), "lap {lap}: 画像が実際に転送されている");
+        transmits += seen.len();
+        ids.extend(seen);
+        s.key('q'); // back to the tree
+        s.enter(); // re-enter the *same* file: the cache stays warm, nothing is re-transmitted
+        s.key('q');
+        s.select("other.txt"); // a genuinely different file = the image cache is discarded
+        s.enter();
+        s.key('q');
+    }
+    // Vacuity guard: if nothing were ever transmitted the assertion below would hold trivially.
+    assert!(
+        transmits >= 4,
+        "毎回の開き直しで転送が起きている: {transmits}"
+    );
+    assert_eq!(
+        ids.len(),
+        1,
+        "同じ絵を何度開き直しても端末に載る画像 ID は1つのまま: {ids:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same invariant **across tabs**: `md_image_cache` is an `App`-level cache that tab switching
+/// deliberately leaves alone, but opening the file in a fresh tab still goes through
+/// `enter_preview`'s "a different file" branch and clears it. The picture is identical, so the
+/// terminal must not be handed a second image for it.
+#[test]
+fn e2e_ui_the_same_image_opened_in_a_second_tab_keeps_one_kitty_image_id() {
+    let dir = sandbox("inline_image_kitty_id_tabs");
+    write_solid_png(&dir.join("p.png"), 40, 20, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "![a](p.png)\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    let mut ids: std::collections::BTreeSet<u32> =
+        transmitted_kitty_ids(&s.term).into_iter().collect();
+    assert_eq!(ids.len(), 1, "1枚目のタブで1つ転送される");
+
+    s.key('q'); // back to this tab's tree
+    s.key('t'); // a second tab, at the same root
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    ids.extend(transmitted_kitty_ids(&s.term));
+    assert_eq!(
+        ids.len(),
+        1,
+        "別タブで同じ絵を開いても ID は増えない: {ids:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A document with **several** pictures: the count of resident images must track the number of
+/// distinct pictures, not the number of visits. Two images stay two ids after a reopen — which also
+/// pins that the ids are per-picture and were not accidentally collapsed into one shared id (a
+/// transmit on a shared id would delete whatever the other placement is still showing).
+#[test]
+fn e2e_ui_reopening_a_two_image_document_stays_at_two_kitty_image_ids() {
+    let dir = sandbox("inline_image_kitty_id_two_pics");
+    write_solid_png(&dir.join("a.png"), 16, 8, [10, 210, 10]);
+    write_solid_png(&dir.join("b.png"), 16, 8, [10, 10, 210]);
+    std::fs::write(dir.join("d.md"), "![a](a.png)\n\n![b](b.png)\n").unwrap();
+    std::fs::write(dir.join("other.txt"), "just text\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    let mut ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for lap in 0..3 {
+        s.select("d.md");
+        s.enter();
+        s.drain_md_images();
+        s.drain_md_images();
+        s.drain_md_encodes();
+        ids.extend(transmitted_kitty_ids(&s.term));
+        s.drain_md_encodes();
+        ids.extend(transmitted_kitty_ids(&s.term));
+        assert_eq!(
+            ids.len(),
+            2,
+            "lap {lap}: 2枚ぶんの ID だけが端末に載る: {ids:?}"
+        );
+        s.key('q');
+        s.select("other.txt");
+        s.enter();
+        s.key('q');
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 

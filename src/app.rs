@@ -1302,6 +1302,32 @@ pub struct App {
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
     /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
     md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
+    /// One **fixed** kitty image id per picture per protocol slot (full / clip / zoom — indexed by
+    /// `MdEncodeKey::slot`), allocated on that slot's first encode and reused for every later one.
+    ///
+    /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
+    /// terminal, so re-encoding a slot — an animated GIF advancing a frame, a scroll re-cropping a
+    /// band, the very same document being opened again tomorrow — costs the terminal one image
+    /// forever instead of one per re-encode. The three slots need ids of their *own*, though: the
+    /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
+    /// slots of the same picture can be on screen across consecutive frames, and sharing an id
+    /// there would let the band's transmit silently take over the cells the full image is still
+    /// drawn from.
+    ///
+    /// This lives on `App` rather than on the `MdImgEntry` it describes because `md_image_cache` is
+    /// **discarded whenever the preview moves to a different file** — so ids parked on the entry
+    /// died with it, and reopening a document handed the terminal a brand new image for a picture
+    /// it already held. The terminal's resident set then grew as "pictures × times opened", which
+    /// on a long agent-watch session is exactly the runaway the per-slot pinning existed to stop.
+    /// Keyed by the same path/synthetic key as the cache, so a picture keeps its ids for the whole
+    /// session no matter how often it is opened, closed, or reached from another tab.
+    ///
+    /// Nothing is ever removed: an id may be *needed* again at any moment (the same file reopened,
+    /// the same diagram re-rendered from an undo), and dropping one would silently reintroduce the
+    /// growth. The map only ever holds one small entry per distinct picture the session has shown
+    /// — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it is by
+    /// construction the cheaper of the two.
+    md_kitty_ids: std::collections::HashMap<PathBuf, [Option<u32>; 3]>,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
     /// Filled lazily for visible rows (render pre-pass) and dropped on every tree rebuild, so the
     /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
@@ -1788,20 +1814,6 @@ struct MdImgEntry {
     zoom_protocol: Option<InlineImage>,
     /// The (cols, rows, crop px rect) `zoom_protocol` was encoded for.
     zoom_key: Option<(u16, u16, PxRect)>,
-    /// One **fixed** kitty image id per protocol slot (full / clip / zoom — indexed by
-    /// `MdEncodeKey::slot`), allocated on the slot's first encode and reused for every later one.
-    ///
-    /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
-    /// terminal, so an animated GIF re-encoding its slot once per frame costs the terminal one
-    /// image forever instead of one per frame. The slots need ids of their *own*, though — the
-    /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
-    /// slots of the same entry can be on screen across consecutive frames; sharing an id there would
-    /// let the band's transmit silently take over the cells the full image is still drawn from.
-    ///
-    /// Ids are never recycled when an entry is dropped (`next_id` only counts up). That keeps the
-    /// resident image count proportional to the *pictures a session has opened*, which is what the
-    /// full-screen path has always cost — not to how long one of them has been animating.
-    kitty_ids: [Option<u32>; 3],
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
@@ -1821,17 +1833,6 @@ struct MdImgEntry {
     /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
-}
-
-impl MdImgEntry {
-    /// The fixed kitty id for the slot `key` fills, allocating it on first use. `None` when this
-    /// terminal is not a kitty one — then the encode goes back through ratatui-image.
-    fn kitty_id_for(&mut self, key: &MdEncodeKey, use_kitty: bool) -> Option<u32> {
-        if !use_kitty {
-            return None;
-        }
-        Some(*self.kitty_ids[key.slot()].get_or_insert_with(crate::preview::kitty::next_id))
-    }
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -2375,6 +2376,7 @@ impl App {
             gif_proto_key: None,
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
+            md_kitty_ids: std::collections::HashMap::new(),
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
             md_img_tx: None,
@@ -3210,10 +3212,16 @@ impl App {
 
     fn enter_preview(&mut self, path: &Path) {
         // Is this re-entering the same file (returning via `q` from a full-screen fence)? If so,
-        // keep the inline-image cache warm: the key is content-hash for a fence / path for an
-        // image, so it never goes stale, and discarding it would restart every fence from Loading
+        // keep the inline-image cache warm: discarding it would restart every fence from Loading
         // = the one render pass with the collapsed layout would clamp the restored scroll/focus,
         // breaking the "return to where you were" promise.
+        //
+        // Keeping it is safe because the two key kinds are kept honest in two different ways, not
+        // because either is immune to going stale: a fence/equation is filed under a hash of its
+        // own content, so an edit simply produces a different key, while a real image is filed
+        // under its **path** — which does *not* change when the bytes behind it do. That one is
+        // kept fresh by the filesystem watcher instead (`drop_changed_md_images`, driven from
+        // `preview_affected_by`), which drops exactly the entries whose file the event named.
         let same_file = self.tab.preview_path.as_deref() == Some(path);
         // Moving to a new preview target on this tab: any delegated-command output left over from
         // the *previous* target (which might not even be a Command kind — deleting it here, rather
@@ -4783,6 +4791,32 @@ fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
 /// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
 const MD_IMAGE_MAX_ROWS: u16 = 24;
 
+/// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
+/// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
+/// remote (`http(s)://`) URLs — those name konoma's own download cache rather than a path in the
+/// tree, which is the caller's business (`resolve_md_image_path`), not this function's. Relative
+/// paths are resolved against the Markdown file's directory.
+///
+/// Split out of `resolve_md_image_path` for the one caller that must recognize a picture which has
+/// just been **deleted**: `App::md_image_source_paths` has to match a filesystem event against the
+/// images the open document draws from, and a deleted file no longer resolves — yet its reserved
+/// box is still on screen, waiting to collapse back to the `🖼 alt` label.
+fn md_image_local_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
+    let u = url.trim();
+    if u.is_empty() || crate::preview::markdown::is_remote_image_url(u) {
+        return None;
+    }
+    if u.to_ascii_lowercase().starts_with("data:") {
+        return None;
+    }
+    let u = u.strip_prefix("file://").unwrap_or(u);
+    let p = PathBuf::from(u);
+    Some(match base {
+        Some(b) if !p.is_absolute() => b.join(p),
+        _ => p,
+    })
+}
+
 /// Resolve a Markdown image URL to a local file path. A remote (`http(s)://`) URL resolves to its
 /// download-cache path, but only once it has been fetched (so callers treat a cached remote image
 /// exactly like a local one). `data:` URLs return None. Relative paths are resolved against the
@@ -4796,19 +4830,7 @@ fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
         let p = md_remote_cache_path(u)?;
         return p.is_file().then_some(p);
     }
-    let lower = u.to_ascii_lowercase();
-    if lower.starts_with("data:") {
-        return None;
-    }
-    let u = u.strip_prefix("file://").unwrap_or(u);
-    let p = PathBuf::from(u);
-    let p = if p.is_absolute() {
-        p
-    } else if let Some(b) = base {
-        b.join(p)
-    } else {
-        p
-    };
+    let p = md_image_local_path(u, base)?;
     p.is_file().then_some(p)
 }
 

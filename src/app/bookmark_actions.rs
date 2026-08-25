@@ -1616,6 +1616,10 @@ impl App {
             && matches!(self.tab.mode, Mode::Preview)
             && self.preview_affected_by(changed)
         {
+            // An inline Markdown image is a *second* file the preview is drawn from, and its cache
+            // entry is keyed by path — so the entry outlives a rewrite of the bytes behind it and
+            // has to be dropped by hand before the reload re-reads the document.
+            self.drop_changed_md_images(changed);
             self.reload_preview();
         }
         tree
@@ -1628,9 +1632,15 @@ impl App {
     /// checkout, or an event we could not attribute — and always reloads, so git diff previews and
     /// change gutters never go stale.
     ///
-    /// Otherwise only the previewed file itself matters. Inline Markdown images are deliberately not
-    /// considered: `md_image_cache` is keyed by path and only cleared when switching files, so those
-    /// are not re-decoded by a reload either — gating here does not make them any staler.
+    /// Otherwise what matters is the previewed file itself **and the inline images a Markdown
+    /// preview draws from** (`md_image_source_paths`). The latter used to be left out, on the
+    /// reasoning that `md_image_cache` is keyed by path and so could not go stale — which is
+    /// backwards: a path key is precisely the kind that *does* go stale, because the bytes behind
+    /// the key can be replaced without the key changing. (A mermaid fence or a math expression is
+    /// filed under a hash of its own content, so those really do invalidate themselves; images were
+    /// the ones left behind.) The visible symptom was that an agent regenerating `diagram.png`
+    /// next to an open document changed nothing on screen, forever, until something unrelated
+    /// happened to touch the `.md` itself.
     fn preview_affected_by(&self, changed: &[std::path::PathBuf]) -> bool {
         if changed.is_empty() {
             return true;
@@ -1643,7 +1653,14 @@ impl App {
         let Some(cur) = self.tab.preview_path.as_deref() else {
             return true;
         };
-        changed.iter().any(|p| p == cur)
+        if changed.iter().any(|p| p == cur) {
+            return true;
+        }
+        // Built from the same definition `drop_changed_md_images` evicts against, so the "does this
+        // event reach the preview?" answer and the "which entries does it invalidate?" answer can
+        // never drift apart. Empty (every non-Markdown preview) makes this a cheap `false`.
+        let sources = self.md_image_source_paths();
+        !sources.is_empty() && changed.iter().any(|p| sources.contains(p))
     }
 
     /// Cheap git update: refetch only `statuses` + `branch`, **leaving the heavy `ignored` (ignore set) untouched**

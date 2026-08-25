@@ -7719,18 +7719,18 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
     // Fully visible → the Full slot.
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
-    let full_req_id = app.md_image_cache[&key].kitty_ids[0].expect("full スロットに ID");
+    let full_req_id = app.md_kitty_ids[&key][0].expect("full スロットに ID");
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // Scrolled so only the lower band shows → the Clip slot, which needs an id of its own.
     app.ensure_md_image(&url, cols, full_rows, 3, 5);
-    let clip_id = app.md_image_cache[&key].kitty_ids[1].expect("clip スロットに ID");
+    let clip_id = app.md_kitty_ids[&key][1].expect("clip スロットに ID");
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // The in-place zoom of a focused diagram → the Zoom slot.
     app.tab.fence_zoom = 2.0;
     app.ensure_md_fence_zoom(&url, cols, full_rows);
-    let zoom_id = app.md_image_cache[&key].kitty_ids[2].expect("zoom スロットに ID");
+    let zoom_id = app.md_kitty_ids[&key][2].expect("zoom スロットに ID");
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     let ids = [full_req_id, clip_id, zoom_id];
@@ -7746,9 +7746,20 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
     entry.clip_key = None;
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
     assert_eq!(
-        app.md_image_cache[&key].kitty_ids,
+        app.md_kitty_ids[&key],
         [Some(full_req_id), Some(clip_id), Some(zoom_id)],
         "再エンコードでは ID を取り直さない"
+    );
+
+    // ...and neither does throwing the cache entry away, which is what moving to another file
+    // does: the ids belong to the *picture*, not to whatever decode happens to be cached for it.
+    app.md_image_cache.remove(&key);
+    app.md_image_cache
+        .insert(key.clone(), MdImgEntry::default());
+    assert_eq!(
+        app.md_kitty_ids[&key],
+        [Some(full_req_id), Some(clip_id), Some(zoom_id)],
+        "キャッシュ項目を捨てても ID は生き残る(開き直しで端末の常駐画像が増えない)"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -7785,8 +7796,8 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
     app.ensure_md_image(&file.to_string_lossy(), 20, 5, 0, 5);
     let req = req_rx.try_recv().expect("エンコードを要求する");
     assert!(req.kitty.is_none(), "非 kitty 端末では固定 ID を渡さない");
-    // ...and no id was burned for a slot that will never use one.
-    assert_eq!(app.md_image_cache[&file].kitty_ids, [None, None, None]);
+    // ...and no id was burned for a picture whose slots will never use one.
+    assert!(!app.md_kitty_ids.contains_key(&file));
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -11468,6 +11479,79 @@ fn refresh_fs_watched_does_not_retry_a_previously_failed_remote_image() {
     assert!(
         app.md_remote_failed.contains(&url),
         "refresh_fs_watched（FS イベント経路）は失敗記録をクリアしてはいけない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The FS-driven eviction of inline-image cache entries is scoped to **local files named by the
+/// event**, and nothing else:
+///
+/// * a **remote** image is out of scope — its bytes live in konoma's own download cache (keyed by a
+///   hash of the URL), outside the watched tree entirely, and their freshness is owned by
+///   `md_remote_failed`/`ensure_remote_md_fetch` rather than by the watcher;
+/// * a **mermaid fence / math expression** is out of scope — those are keyed by a hash of their own
+///   *content*, so they already invalidate themselves on every edit and are not filesystem paths at
+///   all (`md_render`'s `retain` reclaims them);
+/// * the local file the event actually named is the only entry that goes.
+#[test]
+fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
+    let dir = unique_tmp("konoma_md_image_fs_evict_scope_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = "https://konoma.example/remote-badge.png";
+    let Some(remote_key) = md_remote_cache_path(url) else {
+        return; // no cache root (no HOME/XDG_CACHE_HOME): nothing to assert about
+    };
+    let changed = dir.join("chart.png");
+    let untouched = dir.join("logo.png");
+    for p in [&changed, &untouched] {
+        std::fs::write(p, b"not really a png").unwrap();
+    }
+    let doc = dir.join("d.md");
+    std::fs::write(&doc, "![c](chart.png)\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.mode = Mode::Preview;
+    app.tab.preview_path = Some(doc.clone());
+    let fence = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
+        "flowchart TD\nA-->B\n",
+    ));
+    for key in [&changed, &untouched, &remote_key, &fence] {
+        app.md_image_cache
+            .insert(key.clone(), MdImgEntry::default());
+    }
+
+    // Exactly the call `main`'s run loop makes for a burst that named one file.
+    app.refresh_fs_watched(false, std::slice::from_ref(&changed));
+
+    assert!(
+        !app.md_image_cache.contains_key(&changed),
+        "書き換えられたローカル画像の項目は落ちる"
+    );
+    assert!(
+        app.md_image_cache.contains_key(&untouched),
+        "同じ文書の他のローカル画像は残る(全消ししない)"
+    );
+    assert!(
+        app.md_image_cache.contains_key(&remote_key),
+        "リモート画像は対象外(監視ツリーの外に住んでいる)"
+    );
+    assert!(
+        app.md_image_cache.contains_key(&fence),
+        "mermaid/math の内容ハッシュ鍵は対象外(自分で陳腐化する)"
+    );
+
+    // A burst whose paths are unknown (empty = `.git`-only or over the cap) reloads the preview but
+    // must not sweep the image cache: every `git` command produces one, and blanking every picture
+    // on each of them would be a visible flicker for no gain.
+    app.md_image_cache
+        .insert(changed.clone(), MdImgEntry::default());
+    app.refresh_fs_watched(false, &[]);
+    assert_eq!(
+        app.md_image_cache.len(),
+        4,
+        "パス不明のバーストでは1件も落とさない"
     );
 
     std::fs::remove_dir_all(&dir).ok();
