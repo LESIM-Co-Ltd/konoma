@@ -1475,6 +1475,10 @@ HtmlTable{body_spans=[0..8:"<table>\n", 8..13:"<!--\n", 13..58:"<thead><tr><th>S
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..48:"<tr><td>a</td><th>b</th><td>c</td></tr>\n", 48..57:"</table>\n"], rows=[[16..17:"a"(header=false, align=None), 26..27:"b"(header=true, align=None), 36..37:"c"(header=false, align=None)]]} src=0..57 text="<table>\n<tr><td>a</td><th>b</th><td>c</td></tr>\n</table>\n"
 
+=== html_table_corpus: a table of nothing but empty rows stays plain html ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..27:"<tr></tr><tr></tr>\n", 27..36:"</table>\n"], text="<table>\n<tr></tr><tr></tr>\n</table>\n"} src=0..36 text="<table>\n<tr></tr><tr></tr>\n</table>\n"
+
 === html_table_corpus: a table of nothing but th rows ===
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><th>H</th></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"H"(header=true, align=None)]]} src=0..37 text="<table>\n<tr><th>H</th></tr>\n</table>\n"
@@ -1502,6 +1506,14 @@ HtmlTable{body_spans=[0..8:"<table>\n", 8..44:"<tr><td title=\"<!--\">keep</td><
 === html_table_corpus: an attribute value that looks like a whole comment ===
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..50:"<tr><td title=\"<!-- x -->\">keep</td></tr>\n", 50..59:"</table>\n"], rows=[[33..39:"\">keep"(header=false, align=None)]]} src=0..59 text="<table>\n<tr><td title=\"<!-- x -->\">keep</td></tr>\n</table>\n"
+
+=== html_table_corpus: an empty row before a real one ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..18:"<tr></tr>\n", 18..48:"<tr><td>a</td><td>b</td></tr>\n", 48..57:"</table>\n"], rows=[[26..27:"a"(header=false, align=None), 36..37:"b"(header=false, align=None)]]} src=0..57 text="<table>\n<tr></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n"
+
+=== html_table_corpus: an empty row between the header row and the body ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><th>H</th></tr>\n", 28..38:"<tr></tr>\n", 38..58:"<tr><td>a</td></tr>\n", 58..67:"</table>\n"], rows=[[16..17:"H"(header=true, align=None)], [46..47:"a"(header=false, align=None)]]} src=0..67 text="<table>\n<tr><th>H</th></tr>\n<tr></tr>\n<tr><td>a</td></tr>\n</table>\n"
 
 === html_table_corpus: blank line inside the table is not a table ===
 -- BLOCKS (2) --

@@ -2550,6 +2550,87 @@ mod tests {
         out
     }
 
+    /// An empty `<tr></tr>` is markup with nothing in it, so it must never reach the renderer as a
+    /// row: a table folded with one would draw a blank, full-width band between its real rows (and,
+    /// right after a header, push the divider rule down past a row that holds nothing).
+    ///
+    /// Why this needed its own test: **no** corpus case, and no `samples/*.md` file, contained a
+    /// `<tr>` with no cell in it, so `parse_html_table`'s `rows.retain(|r| !r.is_empty())` could be
+    /// deleted outright and every table test in the tree still passed. The shape is ordinary in real
+    /// documents — a row whose cells were commented out or cut leaves the `<tr></tr>` behind.
+    ///
+    /// A note on the guard's other half, recorded here rather than left for the next reader to
+    /// rediscover: `in_row = !close` (the `tr` arm) and this `retain` are **not** independent. The
+    /// only thing `in_row` ever decides is whether an *empty* row gets pushed, and `retain` then
+    /// drops every empty row unconditionally — so replacing `in_row = !close` with a constant `true`
+    /// is output-equivalent for every input while the `retain` stands, and no test can distinguish
+    /// them. Only the `retain` is observable; it is the half this test pins.
+    #[test]
+    fn an_empty_tr_never_becomes_a_row() {
+        // `(why, src, every table's cell text)`. An empty `want` means the block declines to fold.
+        let cases = vec![
+            (
+                "an empty row before a real one",
+                "<table><tr></tr><tr><td>a</td></tr></table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                "an empty row before a real one, one tag per line",
+                "<table>\n<tr></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n",
+                vec![vec![vec!["a", "b"]]],
+            ),
+            (
+                "an empty row after the last real one",
+                "<table>\n<tr><td>a</td></tr>\n<tr></tr>\n</table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                "two empty rows in a row",
+                "<table>\n<tr></tr>\n<tr></tr>\n<tr><td>a</td></tr>\n</table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                // The shape that also moves the header divider if the empty row survives.
+                "an empty row between the header row and the body",
+                "<table>\n<tr><th>H</th></tr>\n<tr></tr>\n<tr><td>a</td></tr>\n</table>\n",
+                vec![vec![vec!["H"], vec!["a"]]],
+            ),
+            (
+                "a row holding nothing but whitespace",
+                "<table>\n<tr>  </tr>\n<tr><td>a</td></tr>\n</table>\n",
+                vec![vec![vec!["a"]]],
+            ),
+            (
+                // Nothing but empty rows: `rows.iter().all(|r| r.is_empty())` refuses the fold before
+                // `retain` is ever reached, so this stays an ordinary `Html` leaf.
+                "a table of nothing but empty rows",
+                "<table>\n<tr></tr><tr></tr>\n</table>\n",
+                vec![],
+            ),
+        ];
+        let mut bad: Vec<String> = Vec::new();
+        for (why, src, want) in cases {
+            let want: Vec<Vec<Vec<String>>> = want
+                .iter()
+                .map(|t| {
+                    t.iter()
+                        .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+                        .collect()
+                })
+                .collect();
+            let doc = Doc::parse(src);
+            let got = html_table_cell_text(&doc, src);
+            if got != want {
+                bad.push(format!("{why}\n     got: {got:?}\n    want: {want:?}"));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "空の <tr> が行として残っている:\n  - {}",
+            bad.join("\n  - ")
+        );
+    }
+
     /// An HTML comment is text the author **removed**, so nothing inside one may become structure.
     ///
     /// This is an information-disclosure guard, not a cosmetic one. Commenting a whole `<tr>` out is

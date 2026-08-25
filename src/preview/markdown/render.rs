@@ -8137,6 +8137,126 @@ mod tests {
     // `render_doc` entirely, the same way `write_task_marker_on_a_fresh_empty_line_does_not_panic`
     // above already does) — each such test says so, and why real parsing cannot reach it.
 
+    /// A blockquote isolates into its own sub-`Writer`, so a list found inside one starts counting
+    /// its nesting **from scratch** — a `> - a` written inside a list item indents exactly like a
+    /// `> - a` at the top of the document. Carrying the enclosing list's depth into the quote
+    /// instead pushes the inner marker right by four columns per level already open outside, which
+    /// looks like a deeply nested list that nothing in the source asked for.
+    ///
+    /// The three-level shape this needs (list → quote → list) existed nowhere: the corpus has
+    /// list → quote → *table* and quote → list, but never a list inside a quote inside a list.
+    #[test]
+    fn a_quoted_list_inside_a_list_item_starts_its_nesting_over() {
+        for (why, src, want) in [
+            (
+                "the quote sits in a one-level list",
+                "- item\n  > - a\n  > - b\n",
+                vec!["- item", "> - a", "> - b"],
+            ),
+            (
+                "the quote sits in an ordered list",
+                "1. item\n   > - a\n",
+                vec!["1. item", "> - a"],
+            ),
+            (
+                "the quote sits two list levels deep",
+                "- one\n  - two\n    > - a\n",
+                vec!["- one", "    - two", "> - a"],
+            ),
+            (
+                "an ordered list inside the quote",
+                "- item\n  > 1. a\n  > 2. b\n",
+                vec!["- item", "> 1. a", "> 2. b"],
+            ),
+            (
+                "a doubly nested quote inside a list item",
+                "- item\n  > > - a\n",
+                vec!["- item", "> > - a"],
+            ),
+            (
+                // The other half of the same rule: nesting that happens *inside* the quote is still
+                // counted, so this is not "quoted lists never indent".
+                "a list nested inside the quoted list",
+                "- item\n  > - a\n  >   - deep\n",
+                vec!["- item", "> - a", ">     - deep"],
+            ),
+            (
+                // The control: with no list open outside, both the correct rule and the broken one
+                // produce this, so a test built only on this shape proves nothing.
+                "the same quote with no list around it at all",
+                "> - a\n",
+                vec!["> - a"],
+            ),
+        ] {
+            let out = render(src, true, false);
+            assert_eq!(lines_text(&out), want, "{why}");
+        }
+    }
+
+    /// A table asked to draw into a pane narrower than its own frame (the border bars plus each
+    /// column's two padding spaces) falls back to **one column per column** — the narrowest grid
+    /// that still has a cell in it. The box is then `1 + 4*ncol` wide whatever the pane says, which
+    /// is deliberately wider than a very narrow pane: `budget`'s `.max(ncol)` floor is what stops
+    /// the shaving loop from grinding columns away to nothing, and one column of content is the
+    /// least a table can be drawn as. Pinned as the current, chosen behavior — not endorsed as
+    /// pretty — because the alternative (a floor of two columns per column) is silently *wider*
+    /// still, and nothing anywhere drew a table into a pane this narrow before.
+    #[test]
+    fn a_table_in_a_pane_narrower_than_its_own_frame_keeps_one_column_per_column() {
+        for ncol in 1..=4usize {
+            let head: Vec<String> = (0..ncol).map(|c| format!("aaaa{c}")).collect();
+            let src = format!(
+                "| {} |\n|{}|\n| {} |\n",
+                head.join(" | "),
+                vec!["---"; ncol].join("|"),
+                head.join(" | ")
+            );
+            let want = 1 + 4 * ncol;
+            for width in 1..=(want as u16) {
+                let lines = html_table_lines(&src, width);
+                let box_lines: Vec<&String> = lines
+                    .iter()
+                    .filter(|l| {
+                        l.starts_with('┌')
+                            || l.starts_with('│')
+                            || l.starts_with('├')
+                            || l.starts_with('└')
+                    })
+                    .collect();
+                assert!(
+                    !box_lines.is_empty(),
+                    "ncol={ncol} width={width}: 表が描かれていない: {lines:?}"
+                );
+                for l in box_lines {
+                    assert_eq!(
+                        unicode_width::UnicodeWidthStr::width(l.as_str()),
+                        want,
+                        "ncol={ncol} width={width}: 列が1桁に潰れていない: |{l}|"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The concrete shape of the same rule, spelled out: three columns in a 12-column pane draw a
+    /// 13-column box — one column wider than the pane. That overflow is the documented consequence
+    /// of the `.max(ncol)` floor above, and it is pinned here so a later change to the floor shows
+    /// up as this number moving rather than as a silent reflow.
+    #[test]
+    fn three_columns_in_a_twelve_column_pane_draw_a_thirteen_column_box() {
+        let lines = html_table_lines("| aaaa | bbbb | cccc |\n|---|---|---|\n| 1 | 2 | 3 |\n", 12);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
+                .collect::<Vec<_>>(),
+            // Eight lines: the two rules, the header's four wrapped rows (`aaaa` one column at a
+            // time), the divider, and the body row.
+            vec![13; 8],
+            "{lines:?}"
+        );
+    }
+
     /// A convenience `render_doc` caller for this whole section: same defaults `fresh_writer`/
     /// `fresh_ctx` establish (80 columns, default `CodeStyle`, icons off, GFM task states,
     /// `no_images`/`no_mermaid`, `MathSlot::Raw`), `alerts`/`math_on` as explicit arguments since
@@ -9672,6 +9792,18 @@ mod cell_image_tests {
     }
 
     fn render(src: &str, width: u16) -> RenderOut {
+        render_with(src, width, &slot)
+    }
+
+    /// `render`, with the image lookup left to the caller — the one thing `slot` cannot express is a
+    /// document whose images are **different sizes from one another** (it answers `NAT_COLS` for
+    /// every URL alike), which is exactly what a cell holding several pictures needs. `sized_slot`
+    /// is that caller; nothing else about the render changes.
+    fn render_with(
+        src: &str,
+        width: u16,
+        slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    ) -> RenderOut {
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
         let doc = Doc::parse(src);
         let out = render_doc(
@@ -9682,7 +9814,7 @@ mod cell_image_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &slot,
+            slot_of,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -9695,6 +9827,27 @@ mod cell_image_tests {
             out.unsupported
         );
         out
+    }
+
+    /// Like `slot`, but the natural width is read off the URL itself — `w20.png` is 20 columns wide
+    /// standing on its own, `w10.png` is 10 — so one cell can hold pictures of **different** sizes.
+    /// Same 5:1 aspect and the same downscale-never-upscale re-fit `slot` performs, and `missing…`
+    /// still answers `Unavailable`, so a cell can mix drawable and undrawable images.
+    fn sized_slot(url: &str, max_cols: Option<u16>) -> ImageSlot {
+        if url.contains("missing") {
+            return ImageSlot::Unavailable;
+        }
+        let nat: u16 = url
+            .strip_prefix('w')
+            .and_then(|s| s.split('.').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(NAT_COLS)
+            .max(1);
+        let cols = max_cols.unwrap_or(nat).clamp(1, nat);
+        ImageSlot::Inline {
+            cols,
+            rows: (cols as u32).div_ceil(5) as u16,
+        }
     }
 
     /// Every rendered line's own visible text.
@@ -10152,5 +10305,334 @@ mod cell_image_tests {
         let out = render(src, 70);
         assert_eq!(out.images.len(), 1, "{:?}", out.images);
         assert_reserved(&out);
+    }
+
+    // ---- The label belongs to the rectangle, not to the alt text ----
+
+    /// The dim `🖼 {alt}` label on a reserved rectangle's top row is cut to **the rectangle's own
+    /// width**, not written out at whatever length the alt text happens to be. The two only differ
+    /// when a long alt lands in a column the width budget has shaved — every other cell-image case
+    /// pairs a short alt with a column wide enough to hold it whole, which is why the truncation
+    /// could be deleted and the rest of this module would still pass. Without it the label runs past
+    /// its own cell, the row grows wider than every other row of the box (`assert_rectangular`), and
+    /// the table spills out of the pane.
+    ///
+    /// Note this is a **different** code path from the one an undrawable image's label takes: that
+    /// one is an ordinary `CellSeg::Image` and is wrapped by `wrap_segments` like any other text,
+    /// so no label test that goes through the fallback can stand in for this one.
+    #[test]
+    fn a_reserved_rectangles_label_is_cut_to_the_rectangle_not_to_the_alt_text() {
+        for (why, src, width) in [
+            (
+                "long alt, and a neighbour long enough to shave the column",
+                "| ![a very long alternative text indeed](a.png) | some fairly long prose that eats the width |\n|---|---|\n| x | y |\n",
+                60u16,
+            ),
+            (
+                "the same, in a much narrower pane",
+                "| ![a very long alternative text indeed](a.png) | some fairly long prose that eats the width |\n|---|---|\n| x | y |\n",
+                40,
+            ),
+            (
+                "a CJK alt, whose characters are two columns each",
+                "| ![とても長い日本語の代替テキストです](a.png) | some fairly long prose that eats the width |\n|---|---|\n| x | y |\n",
+                50,
+            ),
+            (
+                "an HTML cell, which reaches the identical rectangle through the other parser",
+                "<table>\n<tr><td><img src=\"a.png\" alt=\"a very long alternative text indeed\"></td><td>some fairly long prose that eats the width</td></tr>\n</table>\n",
+                60,
+            ),
+            (
+                "two long-alt image cells at once, so both labels have to be cut",
+                "| ![a very long alternative text indeed](a.png) | ![another equally long alternative text](b.png) |\n|---|---|\n| x | y |\n",
+                50,
+            ),
+        ] {
+            let out = render(src, width);
+            assert!(!out.images.is_empty(), "{why}: 画像が配置されていない");
+            for p in &out.images {
+                // Vacuity guard: unless the untruncated label really is wider than the rectangle it
+                // sits on, this case would pass with the truncation deleted.
+                let label_w =
+                    UnicodeWidthStr::width(super::super::cell_image_label(&p.alt).as_str());
+                assert!(
+                    label_w > p.cols as usize,
+                    "{why}: ラベル({label_w}桁)が矩形({}桁)より広くない=この形では切り詰めを検査できない",
+                    p.cols
+                );
+            }
+            for line in texts(&out) {
+                assert!(
+                    UnicodeWidthStr::width(line.as_str()) <= width as usize,
+                    "{why}: 幅 {width} を超えた行がある: |{line}|"
+                );
+            }
+            assert_reserved(&out);
+            assert_rectangular(&out);
+        }
+    }
+
+    // ---- Text and pictures in one cell keep their source order ----
+
+    /// A cell is a vertical stack of bands in **source order**: text written before a picture stays
+    /// above it, text written between two pictures stays between them. `render_table_cells`'s own
+    /// doc comment states exactly this, but every case that existed put the image first
+    /// (`<img> caption`), so the flush that closes the pending text run *before* an image band is
+    /// pushed was never exercised — delete it and every "text first" cell silently re-orders itself
+    /// to "picture first, text last".
+    #[test]
+    fn text_and_images_in_one_cell_keep_their_source_order() {
+        // `(why, src, the text to locate, how many bands must sit above it, how many below)`.
+        for (why, src, needle, above, below) in [
+            (
+                "text then image",
+                "| Shot: ![x](a.png) |\n|---|\n| y |\n",
+                "Shot:",
+                0usize,
+                1usize,
+            ),
+            (
+                "image then text",
+                "| ![x](a.png) caption |\n|---|\n| y |\n",
+                "caption",
+                1,
+                0,
+            ),
+            (
+                "text, image, text",
+                "| lead ![x](a.png) tail |\n|---|\n| y |\n",
+                "lead",
+                0,
+                1,
+            ),
+            (
+                "image, text, image",
+                "| ![a](a.png) middle ![b](b.png) |\n|---|\n| y |\n",
+                "middle",
+                1,
+                1,
+            ),
+            (
+                "the HTML spelling of text-then-image",
+                "<table>\n<tr><td>Shot: <img src=\"a.png\" alt=\"x\"></td></tr>\n</table>\n",
+                "Shot:",
+                0,
+                1,
+            ),
+        ] {
+            let out = render(src, 70);
+            let lines = texts(&out);
+            let row = lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{why}: 「{needle}」が描かれていない: {lines:?}"));
+            let n_above = out
+                .images
+                .iter()
+                .filter(|p| p.line + p.rows as usize <= row)
+                .count();
+            let n_below = out.images.iter().filter(|p| p.line > row).count();
+            assert_eq!(
+                (n_above, n_below),
+                (above, below),
+                "{why}: 「{needle}」(行 {row}) の上下にある矩形の数が違う: {:?}\n{lines:?}",
+                out.images
+            );
+        }
+    }
+
+    /// The same ordering rule with the text long enough to wrap: **every** one of its physical rows
+    /// stays on its own side of the picture, not just the first.
+    #[test]
+    fn a_wrapped_text_run_before_an_image_keeps_all_of_its_rows_above_it() {
+        let src =
+            "| one two three four five six seven eight nine ten ![x](a.png) |\n|---|\n| y |\n";
+        let out = render(src, 40);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        let lines = texts(&out);
+        let rows: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("one") || l.contains("ten"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(rows.len() >= 2, "折り返していない: {lines:?}");
+        for r in rows {
+            assert!(
+                r < p.line,
+                "折り返した本文の一部が矩形の下に落ちた (行 {r}, 矩形 {p:?}): {lines:?}"
+            );
+        }
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    // ---- A cell's own width: bands are stacked, so they are `max`ed, never summed ----
+
+    /// The width of the drawn box, read off its own top rule.
+    fn box_width(out: &RenderOut) -> usize {
+        let top = texts(out)
+            .into_iter()
+            .find(|l| l.trim_start().starts_with('┌'))
+            .expect("表が描かれていない");
+        UnicodeWidthStr::width(top.trim_start())
+    }
+
+    /// A cell holding a picture *and* text is exactly as wide as the wider of the two bands — they
+    /// sit above/below each other, so summing them would reserve a column ~one whole picture wider
+    /// than anything ever drawn in it (dead space on every row). Measured against a reference render
+    /// of the same table with the narrower band removed: same box, to the column.
+    #[test]
+    fn a_cells_width_is_the_wider_band_not_the_sum_of_its_bands() {
+        // `(why, with both bands, the reference holding only the wider one, width)`
+        for (why, both, wider_alone, width) in [
+            (
+                "the caption is narrower than the picture",
+                "| ![x](a.png) a caption | b |\n|---|---|\n| 1 | 2 |\n",
+                "| ![x](a.png) | b |\n|---|---|\n| 1 | 2 |\n",
+                90u16,
+            ),
+            (
+                "a CJK caption, still narrower than the picture",
+                "| ![x](a.png) 図の説明 | b |\n|---|---|\n| 1 | 2 |\n",
+                "| ![x](a.png) | b |\n|---|---|\n| 1 | 2 |\n",
+                90,
+            ),
+            (
+                // Written with no space between the caption and the picture, so the reference's own
+                // text band is the identical string (a separating space would make the reference one
+                // column narrower for a reason that has nothing to do with the rule under test).
+                "the caption is the wider band",
+                "| a caption that is a good deal wider than the picture it explains![x](a.png) | b |\n|---|---|\n| 1 | 2 |\n",
+                "| a caption that is a good deal wider than the picture it explains | b |\n|---|---|\n| 1 | 2 |\n",
+                90,
+            ),
+            (
+                "the HTML spelling",
+                "<table>\n<tr><td><img src=\"a.png\" alt=\"x\"> a caption</td><td>b</td></tr>\n</table>\n",
+                "<table>\n<tr><td><img src=\"a.png\" alt=\"x\"></td><td>b</td></tr>\n</table>\n",
+                90,
+            ),
+        ] {
+            let out = render(both, width);
+            let reference = render(wider_alone, width);
+            assert_eq!(
+                box_width(&out),
+                box_width(&reference),
+                "{why}: 帯の和で測って列が膨らんでいる\n{:?}\n{:?}",
+                texts(&out),
+                texts(&reference)
+            );
+            assert_rectangular(&out);
+        }
+    }
+
+    /// The same rule, seen from inside the cell: when the picture *is* the widest band, its
+    /// rectangle fills its column edge to edge — one padding space, the rectangle, one padding
+    /// space, the border bar. A column measured as "text + picture" leaves the difference as blank
+    /// dead space on that row, which this catches without knowing any of the numbers involved.
+    #[test]
+    fn the_widest_band_leaves_no_dead_space_in_its_column() {
+        let src = "| ![x](a.png) a caption | b |\n|---|---|\n| 1 | 2 |\n";
+        let out = render(src, 90);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        let lines = texts(&out);
+        let top = &lines[p.line];
+        assert_eq!(
+            slice_cols(top, p.col as usize + p.cols as usize, 2),
+            " │",
+            "矩形の右に死んだ余白がある {p:?}: |{top}|"
+        );
+        assert_eq!(
+            slice_cols(top, p.col as usize - 2, 2),
+            "│ ",
+            "矩形の左に死んだ余白がある {p:?}: |{top}|"
+        );
+    }
+
+    /// Several pictures in one cell: the column is measured by the **widest** of them, not by
+    /// whichever one happened to be scanned last. Measuring by the last one silently re-fits a wide
+    /// picture down to a narrow neighbour's size — the picture still draws, just smaller, with
+    /// nothing on screen to say it was cut. No case anywhere put two images in one cell before this.
+    #[test]
+    fn a_cell_with_several_images_is_measured_by_the_widest_of_them() {
+        // `(why, src, the natural width of each image in source order)`
+        for (why, src, want) in [
+            (
+                "widest first",
+                "| ![a](w20.png) ![b](w10.png) | z |\n|---|---|\n| 1 | 2 |\n",
+                vec![20u16, 10],
+            ),
+            (
+                "widest last",
+                "| ![a](w10.png) ![b](w20.png) | z |\n|---|---|\n| 1 | 2 |\n",
+                vec![10, 20],
+            ),
+            (
+                "widest in the middle of three",
+                "| ![a](w10.png) ![b](w30.png) ![c](w20.png) | z |\n|---|---|\n| 1 | 2 |\n",
+                vec![10, 30, 20],
+            ),
+            (
+                "three, widest first",
+                "| ![a](w30.png) ![b](w10.png) ![c](w20.png) | z |\n|---|---|\n| 1 | 2 |\n",
+                vec![30, 10, 20],
+            ),
+            (
+                "an undrawable one between two drawable ones",
+                "| ![a](w20.png) ![g](missing.png) ![b](w10.png) | z |\n|---|---|\n| 1 | 2 |\n",
+                vec![20, 10],
+            ),
+            (
+                "the HTML spelling, widest first",
+                "<table>\n<tr><td><img src=\"w20.png\" alt=\"a\"> <img src=\"w10.png\" alt=\"b\"></td><td>z</td></tr>\n</table>\n",
+                vec![20, 10],
+            ),
+        ] {
+            let out = render_with(src, 90, &sized_slot);
+            let got: Vec<u16> = out.images.iter().map(|p| p.cols).collect();
+            assert_eq!(
+                got, want,
+                "{why}: どれかの絵が黙って縮んでいる: {:?}\n{:?}",
+                out.images,
+                texts(&out)
+            );
+            // Each band still stacks on its own rows, and the box stays rectangular around them.
+            for w in out.images.windows(2) {
+                assert!(
+                    w[0].line + w[0].rows as usize <= w[1].line,
+                    "{why}: 同じセルの矩形どうしが重なっている: {:?}",
+                    out.images
+                );
+            }
+            assert_reserved(&out);
+            assert_rectangular(&out);
+        }
+    }
+
+    /// The widest picture in a cell of several is what the column is sized to, so it is the one that
+    /// keeps its natural size — read as a box width against a reference holding that picture alone.
+    #[test]
+    fn several_images_in_a_cell_size_the_column_like_the_widest_one_alone() {
+        let several = render_with(
+            "| ![a](w30.png) ![b](w10.png) ![c](w20.png) | z |\n|---|---|\n| 1 | 2 |\n",
+            90,
+            &sized_slot,
+        );
+        let widest_alone = render_with(
+            "| ![a](w30.png) | z |\n|---|---|\n| 1 | 2 |\n",
+            90,
+            &sized_slot,
+        );
+        assert_eq!(
+            box_width(&several),
+            box_width(&widest_alone),
+            "複数枚のセルの列幅が、いちばん広い1枚だけの場合と違う\n{:?}\n{:?}",
+            texts(&several),
+            texts(&widest_alone)
+        );
     }
 }

@@ -14769,6 +14769,24 @@ pub(crate) mod html_table_corpus {
                 "<table>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n<tr><td>d</td></tr>\n</table>\n",
             ),
             ("empty cells", "<table>\n<tr><td></td><td>b</td></tr>\n</table>\n"),
+            // ---- rows with no cell in them: markup left behind when the cells were cut ----
+            //
+            // Nothing here existed before: no corpus case and no `samples/*.md` file held a `<tr>`
+            // with nothing in it, so `parse_html_table`'s own "drop empty rows" step was pinned by
+            // no golden at all. `model::tests::an_empty_tr_never_becomes_a_row` states the same rule
+            // on the parse side; these keep the *drawn* result honest.
+            (
+                "an empty row before a real one",
+                "<table>\n<tr></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n",
+            ),
+            (
+                "an empty row between the header row and the body",
+                "<table>\n<tr><th>H</th></tr>\n<tr></tr>\n<tr><td>a</td></tr>\n</table>\n",
+            ),
+            (
+                "a table of nothing but empty rows stays plain html",
+                "<table>\n<tr></tr><tr></tr>\n</table>\n",
+            ),
             (
                 "empty table with no cells stays plain html",
                 "<table>\n</table>\n",

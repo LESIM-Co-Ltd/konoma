@@ -11708,3 +11708,299 @@ fn e2e_md_all_toggles_off_renders_without_crashing() {
     s.dont_see("can not preview"); // no crash-fallback banner anywhere
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// `ui::preview`'s own geometry — the layer between the renderer's `ImagePlacement`
+// and the pixels the terminal is handed. Every number the renderer produces is
+// tested one layer down (`preview::markdown`'s own suites); what nothing tested
+// until now is the *wiring* here: which alignment the focus frame is placed by,
+// and whether the rect handed to the image backend is the rect the placement
+// reserved (clipped to the pane).
+// ---------------------------------------------------------------------------
+
+/// The preview pane's own inner rect (`x`, `y`, `width`), read back off the drawn screen the same
+/// way a user would see it: the full-screen preview's own border box starts at column 0, so its top
+/// rule is the first row whose column 0 holds `┌`, and its right edge is that row's own `┐`.
+fn preview_inner(s: &Sim) -> (u16, u16, u16) {
+    let buf = s.term.backend().buffer();
+    for y in 0..buf.area.height {
+        if buf.cell((0, y)).map(|c| c.symbol()) != Some("┌") {
+            continue;
+        }
+        let right = (0..buf.area.width)
+            .rev()
+            .find(|&x| buf.cell((x, y)).map(|c| c.symbol()) == Some("┐"))
+            .expect("プレビュー枠の右上角");
+        return (1, y + 1, right - 1);
+    }
+    panic!("プレビュー枠が描かれていない:\n{}", s.screen());
+}
+
+/// The cyan focus frame `ui::preview` draws around a focused mermaid diagram, as (`x`, `width`) —
+/// the only `┌` on screen that is *not* at column 0 (the preview pane's own box is), plus the `┐`
+/// that closes the same row.
+fn focus_border(s: &Sim) -> (u16, u16) {
+    let buf = s.term.backend().buffer();
+    for y in 0..buf.area.height {
+        for x in 1..buf.area.width {
+            if buf.cell((x, y)).map(|c| c.symbol()) != Some("┌") {
+                continue;
+            }
+            let right = ((x + 1)..buf.area.width)
+                .find(|&rx| buf.cell((rx, y)).map(|c| c.symbol()) == Some("┐"))
+                .unwrap_or_else(|| panic!("フォーカス枠の右上角が無い:\n{}", s.screen()));
+            return (x, right - x + 1);
+        }
+    }
+    panic!("フォーカス枠が描かれていない:\n{}", s.screen());
+}
+
+/// `[ui] md_table_align`/`md_image_align`'s own three values, spelled as this test writes them into
+/// the config, resolved without going through `Ui::md_block_aligns` — the very function whose two
+/// fields the code under test picks between.
+fn align_of(name: &str) -> crate::preview::markdown::BlockAlign {
+    use crate::preview::markdown::BlockAlign;
+    match name {
+        "left" => BlockAlign::Left,
+        "center" => BlockAlign::Center,
+        "right" => BlockAlign::Right,
+        other => panic!("unknown alignment: {other}"),
+    }
+}
+
+/// The cyan frame around a focused ```mermaid diagram is placed by **`md_image_align`** — the same
+/// rule the diagram itself was placed by — never by `md_table_align`. Reading the other field puts
+/// the frame somewhere the picture is not, which on a real terminal shows up as a selection box
+/// floating beside the thing it is supposed to be selecting.
+///
+/// `mermaid_focus_border_x` itself has an exhaustive unit suite one layer down; what had no test at
+/// all was this call site, i.e. *which* of the two configured alignments is handed to it. All nine
+/// pairs are swept, so the six where the two differ each catch a swap on their own (the three where
+/// they agree are the control: they cannot).
+#[test]
+fn e2e_ui_mermaid_focus_frame_follows_md_image_align_not_md_table_align() {
+    let dir = sandbox("mermaid_focus_frame_align");
+    std::fs::write(
+        dir.join("d.md"),
+        "# Doc\n\n```mermaid\nflowchart TD\nA-->B\n```\n\ntail\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    for table in ["left", "center", "right"] {
+        for image in ["left", "center", "right"] {
+            let mut cfg = Config::default();
+            cfg.ui.md_table_align = table.into();
+            cfg.ui.md_image_align = image.into();
+            let mut s = Sim::with_config(&root, cfg).with_media();
+            s.select("d.md");
+            s.enter();
+            s.drain_md_images(); // the fence finishes rendering and takes a placement
+            s.tab(); // ...which makes its caption line focusable, and focuses it
+            assert_eq!(
+                s.app.focused_mermaid_ordinal(),
+                Some(0),
+                "table={table} image={image}: 図がフォーカスされていない"
+            );
+
+            let (inner_x, _, inner_w) = preview_inner(&s);
+            let (bx, bw) = focus_border(&s);
+            assert_eq!(
+                bx,
+                inner_x
+                    + crate::preview::markdown::mermaid_focus_border_x(
+                        align_of(image),
+                        inner_w,
+                        bw
+                    ),
+                "table={table} image={image}: 枠が md_image_align 以外の規則で置かれている\n{}",
+                s.screen()
+            );
+
+            // ...and the frame really is *around* the diagram: a frame placed by the other rule
+            // lands beside the picture, which this catches without knowing either formula.
+            let placements = s.app.md_images();
+            assert_eq!(placements.len(), 1, "{placements:?}");
+            let p = &placements[0];
+            let img_x = inner_x + p.col;
+            assert!(
+                bx < img_x && img_x + p.cols <= bx + bw,
+                "table={table} image={image}: 枠 {bx}..{} が図 {img_x}..{} を囲っていない\n{}",
+                bx + bw,
+                img_x + p.cols,
+                s.screen()
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Write a solid-color PNG of the given pixel size.
+fn write_png(path: &std::path::Path, w: u32, h: u32) {
+    use image::{Rgba, RgbaImage};
+    RgbaImage::from_pixel(w, h, Rgba([200, 30, 30, 255]))
+        .save(path)
+        .unwrap();
+}
+
+/// Every screen cell konoma handed a kitty **unicode placeholder** to, as `(x, y, columns)` — the
+/// grid the terminal will paint the picture into. konoma writes one row of placeholders per image
+/// row, each into that row's own leftmost cell, so this reads back the exact rectangle
+/// `overlay_inline_images` drew: its left column, its rows, and how many columns wide each row is.
+fn kitty_placeholder_rows(term: &Terminal<TestBackend>) -> Vec<(u16, u16, usize)> {
+    let buf = term.backend().buffer();
+    let mut out = Vec::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
+            let cols = cell.symbol().chars().filter(|c| *c == '\u{10eeee}').count();
+            if cols > 0 {
+                out.push((x, y, cols));
+            }
+        }
+    }
+    out
+}
+
+/// The picture is transmitted into **exactly the rectangle the placement reserved**, converted onto
+/// the pane: `inner.x + placement.col`, the placement's own visual row, `placement.cols` wide and
+/// `placement.rows` tall — and the whole rectangle sits inside the pane.
+///
+/// The existing kitty e2e (`e2e_ui_animated_inline_gif_reuses_one_kitty_image_id_across_laps`) reads
+/// only the image **ids** off the drawn buffer, so every geometry number in this function — the
+/// column, the row, the clamp against the pane width, the clipping of a partly scrolled image —
+/// could be wrong in any direction and it would still pass.
+#[test]
+fn e2e_ui_inline_image_is_drawn_at_exactly_the_rect_its_placement_reserved() {
+    let dir = sandbox("inline_image_geometry");
+    write_png(&dir.join("a.png"), 200, 100);
+    std::fs::write(dir.join("d.md"), "before\n\n![a](a.png)\n\nafter\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1, "{placements:?}");
+    let p = placements[0].clone();
+    let (inner_x, inner_y, inner_w) = preview_inner(&s);
+    let want_x = inner_x + p.col;
+    let want_y =
+        inner_y + s.app.md_visual_span_for_test(p.line).0 as u16 - s.app.tab.preview_scroll;
+
+    let rows = kitty_placeholder_rows(&s.term);
+    assert_eq!(
+        rows.len(),
+        p.rows as usize,
+        "予約した行数ぶんの placeholder 行が出ていない: {rows:?}"
+    );
+    for (i, (x, y, cols)) in rows.iter().enumerate() {
+        assert_eq!(
+            (*x, *y),
+            (want_x, want_y + i as u16),
+            "{i} 行目の位置: {rows:?}"
+        );
+        assert_eq!(*cols, p.cols as usize, "{i} 行目の桁数: {rows:?}");
+        assert!(
+            *x + p.cols <= inner_x + inner_w,
+            "矩形がペインの右端を越えている: {rows:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Scrolled so the picture's top rows are above the viewport, only the **visible band** is drawn:
+/// it starts on the pane's own first row, not above it, and is exactly as tall as the part still on
+/// screen. (The rows above are not merely invisible — they must not be handed to the terminal at
+/// all, or the picture is painted over the pane's border and whatever sits above it.)
+#[test]
+fn e2e_ui_a_partly_scrolled_inline_image_is_clipped_to_the_viewport() {
+    let dir = sandbox("inline_image_clip");
+    write_png(&dir.join("a.png"), 200, 100);
+    // The picture is the document's very first block (so one row of scroll already hides one row of
+    // it) with a long tail after it, so the document really scrolls — a document that fits the
+    // viewport clamps `preview_scroll` to 0 and nothing would ever leave the top of the pane.
+    let filler = (0..60).map(|i| format!("line {i}\n\n")).collect::<String>();
+    std::fs::write(dir.join("d.md"), format!("![a](a.png)\n\n{filler}")).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media_kitty();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    s.drain_md_encodes();
+    let p = s.app.md_images()[0].clone();
+    let (inner_x, inner_y, _) = preview_inner(&s);
+    assert_eq!(
+        s.app.md_visual_span_for_test(p.line).0,
+        0,
+        "画像が文書の先頭ブロックではない: {p:?}"
+    );
+    assert!(p.rows >= 3, "この画像では切り取りを観察できない: {p:?}");
+
+    // One row of scroll takes the picture's own first row past the top of the pane. One key, so
+    // exactly one new crop is asked for and one encode comes back (a burst of keys would queue a
+    // crop per frame and the first result back would already be stale).
+    let hidden = 1u16;
+    s.key('j');
+    assert_eq!(s.app.tab.preview_scroll, hidden, "1行スクロールしていない");
+    // The visible band is a different crop of the source, so it is encoded again before it can be
+    // drawn — the same encode(thread) -> apply -> redraw step the run loop performs.
+    s.drain_md_encodes();
+
+    let rows = kitty_placeholder_rows(&s.term);
+    assert!(!rows.is_empty(), "切り取られた帯が描かれていない");
+    assert_eq!(
+        rows[0].1, inner_y,
+        "帯がペインの1行目より上から始まっている: {rows:?}"
+    );
+    assert_eq!(
+        rows.len(),
+        (p.rows - hidden) as usize,
+        "見えている行数と描いた行数が違う: {rows:?}"
+    );
+    for (x, _, cols) in &rows {
+        assert_eq!((*x, *cols), (inner_x + p.col, p.cols as usize), "{rows:?}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A pane with no room for even one column of picture draws **nothing** — and asks the decoder for
+/// nothing either. The clamp against the pane width is what makes that true: the reserved rectangle
+/// is always at least one column wide (a picture cannot be zero columns), so without the clamp a
+/// two-column terminal would transmit a one-column image straight onto the pane's own border.
+///
+/// `md_image_cache_len` is the observable because it is decided synchronously, on the drawing frame
+/// itself: reaching the transmit at all is what inserts the entry (`App::ensure_md_image`).
+#[test]
+fn e2e_ui_a_pane_with_no_room_for_a_column_draws_no_inline_image() {
+    let dir = sandbox("inline_image_no_room");
+    write_png(&dir.join("a.png"), 200, 100);
+    std::fs::write(dir.join("d.md"), "before\n\n![a](a.png)\n\nafter\n").unwrap();
+    let root = canon(&dir);
+
+    // Two columns wide: the bordered preview pane's own inner width is 0.
+    let mut s = Sim::with_config_sized(&root, Config::default(), 2, 12).with_media_kitty();
+    s.select("d.md");
+    s.enter();
+    // Vacuity guard: the renderer really did reserve a rectangle for this image, so "nothing was
+    // drawn" is the clamp's doing and not simply "there was no image".
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1, "{placements:?}");
+    assert!(placements[0].cols >= 1, "{placements:?}");
+    assert_eq!(
+        s.app.md_image_cache_len(),
+        0,
+        "1桁も入らないペインで画像の転送を始めている"
+    );
+    assert!(
+        kitty_placeholder_rows(&s.term).is_empty(),
+        "1桁も入らないペインに placeholder を描いている"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
