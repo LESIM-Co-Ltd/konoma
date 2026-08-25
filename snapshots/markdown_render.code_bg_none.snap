@@ -37,7 +37,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: KNOWN FAILURE: same glue in a bullet list item ===
 -- LINES (6) --
@@ -64,7 +64,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: KNOWN FAILURE: same glue, with an unrelated real fence following later in the document ===
 -- LINES (10) --
@@ -102,8 +102,8 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0007 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
+  m01 line=0007 kind=CodeBlock{body=Some("bbb")}
 
 === code_corpus: a centered banner whose links wrap images (registry: criterion README.md) ===
 -- LINES (5) --
@@ -119,8 +119,7 @@ L0003 style=fg=-,bg=-,mod=D align=-
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "para"
 -- IMAGES (0) --
--- CODE_BLOCKS (1) --
-  c00 "|"
+-- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
@@ -171,14 +170,14 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "let x = 1;\n``` (note)\n"
 -- TASKS (2) --
-  t00 line=0008 state_off=0003 state=' '
-  t01 line=0009 state_off=0003 state='x'
+  t00 state=' ' state_at=0055
+  t01 state='x' state_at=0063
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0010 kind=Task{state=' '}
-  m02 line=0011 kind=Task{state='x'}
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n")}
+  m01 line=0010 kind=Task{state=' ',state_at=Some(55)}
+  m02 line=0011 kind=Task{state='x',state_at=Some(63)}
 
 === code_corpus: a checkbox after a fence whose closing line has trailing text (tight list) ===
 -- LINES (8) --
@@ -218,14 +217,14 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "let x = 1;\n``` (note)"
 -- TASKS (2) --
-  t00 line=0004 state_off=0003 state=' '
-  t01 line=0005 state_off=0003 state='x'
+  t00 state=' ' state_at=0046
+  t01 state='x' state_at=0054
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
-  m02 line=0007 kind=Task{state='x'}
+  m00 line=0002 kind=CodeBlock{body=Some("let x = 1;\n``` (note)")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(46)}
+  m02 line=0007 kind=Task{state='x',state_at=Some(54)}
 
 === code_corpus: a details block after a fence whose closing line has trailing text ===
 -- LINES (11) --
@@ -272,7 +271,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n")}
   m01 line=0009 kind=Details{ordinal=0}
 
 === code_corpus: a fence in a list item, then a real top-level fence after the list ends ===
@@ -319,8 +318,8 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0009 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
+  m01 line=0009 kind=CodeBlock{body=Some("fn a(){}")}
 
 === code_corpus: a fence-lookalike indented 4 columns is the literal content of an indented code block ===
 -- LINES (7) --
@@ -349,7 +348,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("```rust\nfn a(){}\n```")}
 
 === code_corpus: a heading and a real fence after a fence whose closing line has trailing text ===
 -- LINES (16) --
@@ -407,8 +406,8 @@ L0015 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0010 slug="h"
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0013 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n")}
+  m01 line=0013 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: a longer closing line closes ===
 -- LINES (8) --
@@ -442,7 +441,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;")}
 
 === code_corpus: a mermaid fence at an ordered item's content column is diverted to a diagram ===
 -- LINES (9) --
@@ -485,8 +484,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 L0008 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (1) --
   i00 line=0003 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://91455937ad5dce94"
--- CODE_BLOCKS (1) --
-  c00 "flowchart TD\nA-->B"
+-- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
@@ -518,12 +516,13 @@ L0004 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "code"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("code")}
 
 === code_corpus: a real HTML block and a tag-shaped indented block in one document ===
 -- LINES (7) --
@@ -549,7 +548,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("<div>")}
 
 === code_corpus: a shorter closing line does not close a longer fence ===
 -- LINES (9) --
@@ -586,7 +585,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n```\n")}
 
 === code_corpus: a shorter nested backtick fence lookalike inside a longer backtick fence doesn't close it (same char) ===
 -- LINES (5) --
@@ -612,7 +611,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("```\ninner\n```")}
 
 === code_corpus: a shorter nested tilde fence lookalike inside a longer tilde fence doesn't close it ===
 -- LINES (5) --
@@ -638,7 +637,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("~~~\ninner\n~~~")}
 
 === code_corpus: a tilde closing line does not close a backtick fence ===
 -- LINES (9) --
@@ -677,7 +676,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n~~~\n")}
 
 === code_corpus: a tilde-fence lookalike nested inside a backtick fence doesn't close it (different fence char) ===
 -- LINES (5) --
@@ -707,7 +706,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("~~~\nnot closing\n~~~")}
 
 === code_corpus: a top-level mermaid fence with no surrounding complication (image placement parity) ===
 -- LINES (7) --
@@ -753,7 +752,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: an HTML block nested inside a blockquote is drawn instead of dropped entirely ===
 -- LINES (2) --
@@ -816,7 +815,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n")}
 
 === code_corpus: an alert inside a list item ===
 -- LINES (6) --
@@ -848,7 +847,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: an indented line right after a table block, with no blank line between ===
 -- LINES (5) --
@@ -878,8 +877,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────┴───┘"
 -- IMAGES (0) --
--- CODE_BLOCKS (1) --
-  c00 "code here"
+-- CODE_BLOCKS (0) --
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
@@ -897,12 +895,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "code here"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("code here")}
 
 === code_corpus: an indented line swallowed by an inline-tag block that interrupts a paragraph ===
 -- LINES (5) --
@@ -927,7 +926,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("code here")}
 
 === code_corpus: block quote nested inside a list item, wrapping a fence ===
 -- LINES (6) --
@@ -953,12 +952,13 @@ L0005 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "echo hi"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: block quote nested inside a list item, wrapping an indented block ===
 -- LINES (8) --
@@ -990,12 +990,13 @@ L0007 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "code"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0005 kind=CodeBlock
+  m00 line=0005 kind=CodeBlock{body=Some("code")}
 
 === code_corpus: centered banner preceded by a markdown block image (registry: static_assertions README.md) ===
 -- LINES (5) --
@@ -1078,13 +1079,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0001 state_off=0009 state=' '
-  t01 line=0002 state_off=0009 state='x'
+  t00 state=' ' state_at=0028
+  t01 state='x' state_at=0083
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0001 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state='x'}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(28)}
+  m01 line=0002 kind=Task{state='x',state_at=Some(83)}
 
 === code_corpus: checkbox in an ordered list item ===
 -- LINES (2) --
@@ -1115,11 +1116,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0013
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(13)}
 
 === code_corpus: checkbox inside a plain block quote ===
 -- LINES (1) --
@@ -1131,11 +1132,12 @@ L0000 style=fg=green,bg=-,mod=I align=-
   s04 fg=-,bg=-,mod=- "quoted task"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
--- TASKS (0) --
+-- TASKS (1) --
+  t00 state=' ' state_at=0005
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(5)}
 
 === code_corpus: checkbox with four spaces after the bullet ===
 -- LINES (1) --
@@ -1146,11 +1148,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0006 state=' '
+  t00 state=' ' state_at=0006
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(6)}
 
 === code_corpus: checkbox with nothing after the closing bracket (registry: line-clipping README.md) ===
 -- LINES (2) --
@@ -1164,13 +1166,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state='x'
-  t01 line=0001 state_off=0003 state=' '
+  t00 state='x' state_at=0003
+  t01 state=' ' state_at=0009
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state='x'}
-  m01 line=0001 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state='x',state_at=Some(3)}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(9)}
 
 === code_corpus: checkbox-lookalike five spaces after the bullet (the item's content starts with code) ===
 -- LINES (5) --
@@ -1193,7 +1195,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("[ ] five spaces is not a task marker")}
 
 === code_corpus: checkboxes around a fence indented inside an ordered item ===
 -- LINES (10) --
@@ -1226,14 +1228,14 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "git clone x"
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0008 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0065
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0005 kind=CodeBlock
-  m02 line=0009 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0005 kind=CodeBlock{body=Some("git clone x")}
+  m02 line=0009 kind=Task{state='x',state_at=Some(65)}
 
 === code_corpus: closing fence line with a language suffix does not close (has to be exactly the fence chars) ===
 -- LINES (5) --
@@ -1259,7 +1261,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("body\n```js\nmore")}
 
 === code_corpus: closing line with trailing text at top level really does run to EOF ===
 -- LINES (8) --
@@ -1321,7 +1323,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |")}
 
 === code_corpus: closing line with trailing text does not close, but the list item ends the block ===
 -- LINES (14) --
@@ -1394,7 +1396,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` ([#1](https://example.com/1))\n")}
 
 === code_corpus: closing line with trailing text inside a block quote ===
 -- LINES (9) --
@@ -1453,12 +1455,13 @@ L0007 style=fg=-,bg=-,mod=- align=-
 L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "let x = 1;\n``` (note)"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("let x = 1;\n``` (note)")}
 
 === code_corpus: closing line with trailing text inside a list item inside a block quote ===
 -- LINES (12) --
@@ -1528,12 +1531,13 @@ L0010 style=fg=-,bg=-,mod=- align=-
 L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "let x = 1;\n``` (note)"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)")}
 
 === code_corpus: closing line with trailing text inside a nested list item ===
 -- LINES (14) --
@@ -1601,7 +1605,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n")}
 
 === code_corpus: continuation paragraph at a nested item's content column is not code ===
 -- LINES (5) --
@@ -1646,7 +1650,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: control: list item fence + a blank line before the inline-code paragraph does not glue ===
 -- LINES (8) --
@@ -1675,7 +1679,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: control: list item fence + a plain-text lazy continuation (no blank line) does not glue ===
 -- LINES (6) --
@@ -1701,7 +1705,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: crlf centered banner with no <br> (registry: tinytemplate README.md) ===
 -- LINES (8) --
@@ -1752,7 +1756,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("indented\nsecond")}
 
 === code_corpus: everything ===
 -- LINES (23) --
@@ -1842,11 +1846,11 @@ L0022 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="doc"
 -- ITEMS (5) --
-  m00 line=0005 kind=CodeBlock
-  m01 line=0011 kind=CodeBlock
+  m00 line=0005 kind=CodeBlock{body=Some("top level indented")}
+  m01 line=0011 kind=CodeBlock{body=Some("indented in note")}
   m02 line=0014 kind=Details{ordinal=0}
-  m03 line=0017 kind=CodeBlock
-  m04 line=0020 kind=CodeBlock
+  m03 line=0017 kind=CodeBlock{body=Some("indented in details")}
+  m04 line=0020 kind=CodeBlock{body=Some("fn real_fence() {}")}
 
 === code_corpus: fence at a bullet item's own content column ===
 -- LINES (6) --
@@ -1872,7 +1876,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence at an ordered item's own content column ===
 -- LINES (6) --
@@ -1898,7 +1902,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence indented 3 columns is still a fence, not an indented code block ===
 -- LINES (5) --
@@ -1927,7 +1931,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("fn a(){}")}
 
 === code_corpus: fence indented 4 columns inside a bullet item is still a fence ===
 -- LINES (6) --
@@ -1953,7 +1957,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence inside a nested bullet item ===
 -- LINES (7) --
@@ -1982,7 +1986,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence inside a nested plain block quote (two levels) ===
 -- LINES (3) --
@@ -2009,12 +2013,13 @@ L0002 style=fg=green,bg=-,mod=I align=-
   s03 fg=-,bg=-,mod=- " "
   s04 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "echo hi"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line) ===
 -- LINES (5) --
@@ -2042,12 +2047,13 @@ L0004 style=fg=green,bg=-,mod=I align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "echo hi"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence inside an alert nested inside a plain block quote ===
 -- LINES (4) --
@@ -2077,12 +2083,13 @@ L0003 style=fg=green,bg=-,mod=I align=-
   s02 fg=blue,bg=-,mod=- "▌ "
   s03 fg=cyan,bg=-,mod=- "▎ "
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "echo hi"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=CodeBlock
+  m00 line=0001 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: fence-lookalike 4 columns past a bullet item's content column is indented code ===
 -- LINES (8) --
@@ -2113,7 +2120,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("```sh\necho hi\n```")}
 
 === code_corpus: front matter then an indented block ===
 -- LINES (8) --
@@ -2142,7 +2149,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0005 kind=CodeBlock
+  m00 line=0005 kind=CodeBlock{body=Some("indented after front matter")}
 
 === code_corpus: heading then an indented block then an unrelated real fence — the fence must not be collaterally refused ===
 -- LINES (10) --
@@ -2180,8 +2187,8 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="usage"
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0007 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("npm install foo")}
+  m01 line=0007 kind=CodeBlock{body=Some("npm test")}
 
 === code_corpus: indented block at doc start ===
 -- LINES (4) --
@@ -2204,7 +2211,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("line one\nline two")}
 
 === code_corpus: indented block containing a task-lookalike stays literal code ===
 -- LINES (5) --
@@ -2227,7 +2234,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("- [ ] not a real task")}
 
 === code_corpus: indented block followed by a real list ===
 -- LINES (7) --
@@ -2254,7 +2261,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("indented")}
 
 === code_corpus: indented block immediately after a setext level-1 heading underline (no blank line) ===
 -- LINES (6) --
@@ -2280,7 +2287,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="title"
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("code here")}
 
 === code_corpus: indented block immediately after a short setext dash underline, too short to also be a thematic break (no blank line) ===
 -- LINES (6) --
@@ -2306,7 +2313,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="title"
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("code here")}
 
 === code_corpus: indented block immediately after a thematic break (no blank line) ===
 -- LINES (5) --
@@ -2329,7 +2336,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("code here")}
 
 === code_corpus: indented block immediately after an ATX heading (no blank line) ===
 -- LINES (6) --
@@ -2355,7 +2362,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="usage"
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("npm install foo")}
 
 === code_corpus: indented block nested inside a closed details is not counted ===
 -- LINES (4) --
@@ -2380,7 +2387,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=CodeBlock
+  m01 line=0001 kind=CodeBlock{body=Some("real")}
 
 === code_corpus: indented block nested inside an open alert ===
 -- LINES (6) --
@@ -2412,7 +2419,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("indented in alert")}
 
 === code_corpus: indented block nested inside an open details ===
 -- LINES (6) --
@@ -2445,7 +2452,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0003 kind=CodeBlock
+  m01 line=0003 kind=CodeBlock{body=Some("indented in details")}
 
 === code_corpus: indented block whose content is a <details> tag ===
 -- LINES (5) --
@@ -2468,7 +2475,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<details>")}
 
 === code_corpus: indented block whose content is a <kbd> pair ===
 -- LINES (5) --
@@ -2491,7 +2498,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<kbd>Ctrl</kbd>")}
 
 === code_corpus: indented block whose content is a <summary> tag ===
 -- LINES (5) --
@@ -2514,7 +2521,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<summary>S</summary>")}
 
 === code_corpus: indented block whose content is a GFM table stays literal code ===
 -- LINES (7) --
@@ -2543,7 +2550,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("| a | b |\n|---|---|\n| 1 | 2 |")}
 
 === code_corpus: indented block whose content is a bare tag ===
 -- LINES (5) --
@@ -2566,7 +2573,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<code>")}
 
 === code_corpus: indented block whose content is a closing tag ===
 -- LINES (5) --
@@ -2589,7 +2596,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("</a>")}
 
 === code_corpus: indented block whose content is a tag with attributes ===
 -- LINES (5) --
@@ -2612,7 +2619,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<a href=\"x\">")}
 
 === code_corpus: indented block whose content is a void tag ===
 -- LINES (5) --
@@ -2635,7 +2642,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<br>")}
 
 === code_corpus: indented block whose content is an HTML comment ===
 -- LINES (5) --
@@ -2658,7 +2665,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<!-- a comment -->")}
 
 === code_corpus: indented block whose content is an alert header stays literal code ===
 -- LINES (6) --
@@ -2684,7 +2691,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("> [!NOTE]\n> body")}
 
 === code_corpus: indented block whose content is an autolink ===
 -- LINES (5) --
@@ -2707,7 +2714,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<https://example.com>")}
 
 === code_corpus: indented block whose content is cjk in angle brackets ===
 -- LINES (5) --
@@ -2730,7 +2737,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<仕様書>")}
 
 === code_corpus: indented block whose content is tag-shaped, followed by a real fence ===
 -- LINES (9) --
@@ -2770,8 +2777,8 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<kbd>K</kbd>")}
+  m01 line=0006 kind=CodeBlock{body=Some("fn a(){}")}
 
 === code_corpus: indented block whose first line is plain and a later line is tag-shaped ===
 -- LINES (6) --
@@ -2797,7 +2804,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("plain first\n<div>")}
 
 === code_corpus: indented code inside a bullet item (content column + 4) ===
 -- LINES (7) --
@@ -2825,7 +2832,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("code line\nsecond line")}
 
 === code_corpus: indented code inside a nested item (nested content column + 4) ===
 -- LINES (7) --
@@ -2853,7 +2860,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("code line")}
 
 === code_corpus: indented code inside an ordered item (content column + 4) ===
 -- LINES (6) --
@@ -2878,7 +2885,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("code line")}
 
 === code_corpus: lazy continuation inside a list item is not code ===
 -- LINES (1) --
@@ -2925,12 +2932,13 @@ L0005 style=fg=green,bg=-,mod=I align=-
   s02 fg=white,bg=-,mod=- "inline"
   s03 fg=-,bg=-,mod=- " after"
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "aaa"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("aaa")}
 
 === code_corpus: list item fence with a two-line body (count parity only — content is checked elsewhere) ===
 -- LINES (7) --
@@ -2958,7 +2966,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("aaa\nbbb")}
 
 === code_corpus: mixed: fence then an indented block right after (no blank needed) ===
 -- LINES (7) --
@@ -2989,8 +2997,8 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0004 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("fenced")}
+  m01 line=0004 kind=CodeBlock{body=Some("indented after fence")}
 
 === code_corpus: mixed: indented block then (after a blank) a real fence ===
 -- LINES (9) --
@@ -3024,8 +3032,8 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("indented")}
+  m01 line=0006 kind=CodeBlock{body=Some("fenced")}
 
 === code_corpus: no trailing newline ===
 -- LINES (5) --
@@ -3048,7 +3056,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("indented")}
 
 === code_corpus: not code: 3-space indent is not enough ===
 -- LINES (3) --
@@ -3133,7 +3141,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: plain 4-backtick fence, no nesting ===
 -- LINES (3) --
@@ -3153,7 +3161,7 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("body")}
 
 === code_corpus: standalone indented block ===
 -- LINES (8) --
@@ -3182,7 +3190,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("indented code line\nsecond line")}
 
 === code_corpus: tab-indented block ===
 -- LINES (5) --
@@ -3205,7 +3213,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("tabbed line")}
 
 === code_corpus: tight list: fence on the line right after the marker, no blank line ===
 -- LINES (5) --
@@ -3230,7 +3238,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: tight ordered list: fence indented 4 columns right after the marker line ===
 -- LINES (5) --
@@ -3255,7 +3263,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: tilde fence inside a bullet item ===
 -- LINES (6) --
@@ -3281,7 +3289,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("echo hi")}
 
 === code_corpus: two chunks glued by a blank separator into one code block ===
 -- LINES (7) --
@@ -3309,7 +3317,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("chunk one\n\nchunk two")}
 
 === code_corpus: unclosed fence in a list item ends with the item, not the document ===
 -- LINES (13) --
@@ -3369,7 +3377,7 @@ L0012 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n")}
 
 === code_corpus: ① fence indented 4 columns inside an ordered item is a real fence (registry: pastey CONTRIBUTING.md) ===
 -- LINES (8) --
@@ -3399,7 +3407,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("git clone x")}
 
 === code_corpus: ② 6-column continuation paragraph under `   4. ` is not code (registry: LICENSE-APACHE.md) ===
 -- LINES (4) --
@@ -3581,7 +3589,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: bare br line inside a centered banner is removed, the rest byte-identical ===
 -- LINES (0) --
@@ -3613,7 +3621,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<br>")}
 
 === code_span_corpus: br inside and outside ===
 -- LINES (2) --
@@ -3663,7 +3671,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("\\[x\\]")}
 
 === code_span_corpus: bracket math inside and outside ===
 -- LINES (2) --
@@ -3806,7 +3814,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<del>d</del>")}
 
 === code_span_corpus: del inside and outside ===
 -- LINES (1) --
@@ -3866,7 +3874,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("$$x$$")}
 
 === code_span_corpus: display math inside and outside ===
 -- LINES (2) --
@@ -4192,7 +4200,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$ ` alone")}
 
 === code_span_corpus: fence with a language ===
 -- LINES (9) --
@@ -4239,7 +4247,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block ===
 -- LINES (9) --
@@ -4271,7 +4279,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block after a paragraph ===
 -- LINES (11) --
@@ -4306,7 +4314,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block inside a blockquote ===
 -- LINES (9) --
@@ -4338,12 +4346,13 @@ L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "note"
 -- IMAGES (0) --
--- CODE_BLOCKS (0) --
+-- CODE_BLOCKS (1) --
+  c00 "[^1] <kbd>K</kbd> $x$"
 -- TASKS (0) --
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block inside a list item, six columns, blank line before it ===
 -- LINES (12) --
@@ -4380,7 +4389,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with a closing tag ===
 -- LINES (10) --
@@ -4415,7 +4424,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("</a>\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with a rewritable tag ===
 -- LINES (10) --
@@ -4450,7 +4459,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<kbd>K</kbd>\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with a tag with attributes ===
 -- LINES (10) --
@@ -4485,7 +4494,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<a href=\"x\">\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with an HTML comment ===
 -- LINES (10) --
@@ -4520,7 +4529,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<!-- c -->\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with an autolink ===
 -- LINES (10) --
@@ -4555,7 +4564,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<https://example.com>\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block opening with cjk in angle brackets ===
 -- LINES (10) --
@@ -4590,7 +4599,7 @@ L0009 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<仕様書>\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented code block right after a heading, no blank line ===
 -- LINES (12) --
@@ -4628,7 +4637,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (1) --
   a00 line=0000 slug="h"
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented eight columns is still one literal code block ===
 -- LINES (9) --
@@ -4660,7 +4669,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("    [^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: indented four columns inside a list item is not a code block (paragraph continuation) ===
 -- LINES (7) --
@@ -4730,7 +4739,7 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("")}
 
 === code_span_corpus: mid-line br inside a centered banner is still a hard break ===
 -- LINES (3) --
@@ -4872,7 +4881,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("\\(x\\)")}
 
 === code_span_corpus: paren math inside and outside ===
 -- LINES (2) --
@@ -4930,7 +4939,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<s>d</s>")}
 
 === code_span_corpus: s inside and outside ===
 -- LINES (1) --
@@ -5071,7 +5080,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("code")}
 
 === code_span_corpus: span spanning the line with text either side ===
 -- LINES (7) --
@@ -5119,7 +5128,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<strike>d</strike>")}
 
 === code_span_corpus: strike inside and outside ===
 -- LINES (1) --
@@ -5155,7 +5164,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<sub>2</sub>")}
 
 === code_span_corpus: sub inside and outside ===
 -- LINES (1) --
@@ -5190,7 +5199,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<sup>2</sup>")}
 
 === code_span_corpus: sup inside and outside ===
 -- LINES (1) --
@@ -5234,7 +5243,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: the only reference is inside a span ===
 -- LINES (1) --
@@ -5331,7 +5340,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: trailing backslash at end of line ===
 -- LINES (5) --
@@ -5441,7 +5450,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^1] <kbd>K</kbd> $x$\n\n[^1] <kbd>K</kbd> $x$")}
 
 === code_span_corpus: two spans on one line ===
 -- LINES (7) --
@@ -6508,7 +6517,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;")}
 
 === html_table_corpus: first row mixing th and td is not a header row ===
 -- LINES (4) --
@@ -8196,11 +8205,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === list_corpus: cjk tight unordered list items ===
 -- LINES (2) --
@@ -8622,11 +8631,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0002 state_off=0003 state=' '
+  t00 state=' ' state_at=0008
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+  m00 line=0002 kind=Task{state=' ',state_at=Some(8)}
 
 === list_corpus: task item nested under a tight item ===
 -- LINES (2) --
@@ -8641,13 +8650,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0005 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0013
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(13)}
 
 === list_corpus: tight list item that is only a standalone image ===
 -- LINES (2) --
@@ -8703,11 +8712,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === list_corpus: tight star-bullet task ===
 -- LINES (1) --
@@ -8718,11 +8727,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === list_corpus: tight unordered list two items ===
 -- LINES (2) --
@@ -8748,11 +8757,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state='x'
+  t00 state='x' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state='x',state_at=Some(3)}
 
 === list_corpus: tight unordered task checked uppercase collapses to lowercase x ===
 -- LINES (1) --
@@ -8763,11 +8772,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state='X'
+  t00 state='X' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state='x',state_at=Some(3)}
 
 === list_corpus: tight unordered task unchecked ===
 -- LINES (1) --
@@ -8778,11 +8787,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === list_corpus: two tight list items each only a standalone image ===
 -- LINES (4) --
@@ -8900,7 +8909,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=CodeBlock
+  m00 line=0001 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: angle brackets holding cjk next to a fence ===
 -- LINES (5) --
@@ -8927,7 +8936,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("/groundwork <仕様書> <NotionURL> <資料dir>")}
 
 === preprocess_corpus: angle brackets holding cjk with a continued def ===
 -- LINES (5) --
@@ -8977,7 +8986,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<https://example.com>")}
   m01 line=0006 kind=Link{target="https://example.com"}
 
 === preprocess_corpus: bare br line inside an html block ===
@@ -9020,7 +9029,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: br before a fence ===
 -- LINES (6) --
@@ -9045,7 +9054,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: br ending an alert early above a fence ===
 -- LINES (7) --
@@ -9080,7 +9089,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("code line one")}
 
 === preprocess_corpus: br injected checkbox above a del-fence swallowed one ===
 -- LINES (8) --
@@ -9107,12 +9116,12 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "\n- [ ] SWALLOWED"
 -- TASKS (1) --
-  t00 line=0001 state_off=0003 state=' '
+  t00 state=' ' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=Task{state=' '}
-  m01 line=0004 kind=CodeBlock
+  m00 line=0002 kind=Task{state=' ',state_at=Some(11)}
+  m01 line=0004 kind=CodeBlock{body=Some("\n- [ ] SWALLOWED")}
 
 === preprocess_corpus: br inside a code span is literal ===
 -- LINES (1) --
@@ -9145,7 +9154,7 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("a<br>b")}
 
 === preprocess_corpus: br inside a list item ===
 -- LINES (2) --
@@ -9290,7 +9299,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("a<br>b")}
 
 === preprocess_corpus: br making a list interrupt a paragraph ===
 -- LINES (3) --
@@ -9304,11 +9313,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0003 state=' '
+  t00 state=' ' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+  m00 line=0002 kind=Task{state=' ',state_at=Some(11)}
 
 === preprocess_corpus: br on a checkbox line ===
 -- LINES (2) --
@@ -9321,11 +9330,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === preprocess_corpus: br plain ===
 -- LINES (2) --
@@ -9414,11 +9423,11 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === preprocess_corpus: checkbox carrying a ref and a continued def ===
 -- LINES (5) --
@@ -9438,11 +9447,11 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === preprocess_corpus: checkbox in an alert plus a continued def ===
 -- LINES (7) --
@@ -9469,11 +9478,11 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0015
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(15)}
 
 === preprocess_corpus: cjk angle brackets inside indented code and outside it ===
 -- LINES (7) --
@@ -9501,7 +9510,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<仕様書>")}
 
 === preprocess_corpus: cjk br ===
 -- LINES (2) --
@@ -9532,11 +9541,11 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === preprocess_corpus: cjk continued def ===
 -- LINES (5) --
@@ -9593,7 +9602,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock
+  m00 line=0003 kind=CodeBlock{body=Some("/groundwork <仕様書> <NotionURL> <資料dir>")}
 
 === preprocess_corpus: closed details with a fence and a continued def ===
 -- LINES (6) --
@@ -9644,7 +9653,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("</a>")}
 
 === preprocess_corpus: comment-shaped indented code beside a real comment block ===
 -- LINES (5) --
@@ -9667,7 +9676,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<!-- a comment -->")}
 
 === preprocess_corpus: continued def after a fence ===
 -- LINES (9) --
@@ -9699,7 +9708,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: continued def before a fence ===
 -- LINES (9) --
@@ -9731,7 +9740,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: continued def before indented code ===
 -- LINES (11) --
@@ -9766,7 +9775,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0004 kind=CodeBlock
+  m00 line=0004 kind=CodeBlock{body=Some("indented")}
 
 === preprocess_corpus: continued def between two fences ===
 -- LINES (13) --
@@ -9809,8 +9818,8 @@ L0012 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0006 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("one")}
+  m01 line=0006 kind=CodeBlock{body=Some("two")}
 
 === preprocess_corpus: continued def inside a list item ===
 -- LINES (8) --
@@ -9963,7 +9972,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Link{target="see"}
-  m01 line=0002 kind=CodeBlock
+  m01 line=0002 kind=CodeBlock{body=Some("- [ ] inside the note")}
 
 === preprocess_corpus: def carrying a fence ===
 -- LINES (7) --
@@ -9996,7 +10005,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Link{target="see"}
-  m01 line=0002 kind=CodeBlock
+  m01 line=0002 kind=CodeBlock{body=Some("```rust\nfn a() {}\n```")}
 
 === preprocess_corpus: def carrying a list ===
 -- LINES (6) --
@@ -10026,7 +10035,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Link{target="see"}
-  m01 line=0002 kind=CodeBlock
+  m01 line=0002 kind=CodeBlock{body=Some("- one\n- two")}
 
 === preprocess_corpus: def continued 2 cols ===
 -- LINES (5) --
@@ -10113,7 +10122,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("[^a]: not a def")}
 
 === preprocess_corpus: def inside indented code stays literal ===
 -- LINES (7) --
@@ -10144,7 +10153,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("[^a]: not a def")}
 
 === preprocess_corpus: def lazy continuation ===
 -- LINES (5) --
@@ -10220,7 +10229,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Link{target="first"}
-  m01 line=0002 kind=CodeBlock
+  m01 line=0002 kind=CodeBlock{body=Some("second para")}
 
 === preprocess_corpus: del ===
 -- LINES (1) --
@@ -10258,7 +10267,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("\nafter")}
 
 === preprocess_corpus: empty del makes tildes ===
 -- LINES (1) --
@@ -10302,15 +10311,15 @@ L0011 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (3) --
-  t00 line=0001 state_off=0003 state=' '
-  t01 line=0004 state_off=0003 state=' '
-  t02 line=0011 state_off=0006 state=' '
+  t00 state=' ' state_at=0004
+  t01 state=' ' state_at=0024
+  t02 state=' ' state_at=0068
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0004 kind=Task{state=' '}
-  m02 line=0011 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(4)}
+  m01 line=0004 kind=Task{state=' ',state_at=Some(24)}
+  m02 line=0011 kind=Task{state=' ',state_at=Some(68)}
 
 === preprocess_corpus: front matter then a continued def ===
 -- LINES (8) --
@@ -10391,7 +10400,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: kbd inside a code span is literal ===
 -- LINES (1) --
@@ -10416,11 +10425,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === preprocess_corpus: markdown block image above a centered banner (registry: static_assertions README.md) ===
 -- LINES (5) --
@@ -10522,7 +10531,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=CodeBlock
+  m01 line=0001 kind=CodeBlock{body=Some("indented line")}
 
 === preprocess_corpus: open details with a fence and a continued def ===
 -- LINES (9) --
@@ -10561,7 +10570,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=CodeBlock
+  m01 line=0001 kind=CodeBlock{body=Some("code")}
 
 === preprocess_corpus: open details with prose before indented code ===
 -- LINES (6) --
@@ -10594,7 +10603,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0003 kind=CodeBlock
+  m01 line=0003 kind=CodeBlock{body=Some("indented line")}
 
 === preprocess_corpus: paired tag inside a fence is literal ===
 -- LINES (3) --
@@ -10614,7 +10623,7 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=CodeBlock
+  m00 line=0000 kind=CodeBlock{body=Some("<kbd>x</kbd>")}
 
 === preprocess_corpus: rand_chacha readme shape ===
 -- LINES (15) --
@@ -10748,7 +10757,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("echo hi")}
 
 === preprocess_corpus: strike tag ===
 -- LINES (1) --
@@ -10811,7 +10820,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<kbd>Ctrl</kbd>")}
 
 === preprocess_corpus: two defs both continued ===
 -- LINES (6) --
@@ -10864,7 +10873,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=CodeBlock
+  m00 line=0002 kind=CodeBlock{body=Some("<br>")}
 
 === samples: README.md ===
 -- LINES (17) --
@@ -12267,8 +12276,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 line=0094 state_off=0003 state=' '
-  t01 line=0095 state_off=0003 state='x'
+  t00 state=' ' state_at=2892
+  t01 state='x' state_at=3015
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -12290,9 +12299,9 @@ L0146 style=fg=-,bg=-,mod=- align=-
   a14 line=0131 slug="数式latex--画像"
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
-  m01 line=0020 kind=CodeBlock
-  m02 line=0078 kind=Task{state=' '}
-  m03 line=0079 kind=Task{state='x'}
+  m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}")}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(2892)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(3015)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
@@ -12932,8 +12941,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 line=0096 state_off=0003 state=' '
-  t01 line=0097 state_off=0003 state='x'
+  t00 state=' ' state_at=2478
+  t01 state='x' state_at=2572
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -12955,9 +12964,9 @@ L0146 style=fg=-,bg=-,mod=- align=-
   a14 line=0131 slug="math-latex--image"
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
-  m01 line=0020 kind=CodeBlock
-  m02 line=0078 kind=Task{state=' '}
-  m03 line=0079 kind=Task{state='x'}
+  m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}")}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(2478)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(2572)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
@@ -13408,11 +13417,11 @@ L0092 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 line=0034 state_off=0003 state=' '
-  t01 line=0035 state_off=0003 state=' '
-  t02 line=0036 state_off=0003 state=' '
-  t03 line=0102 state_off=0003 state=' '
-  t04 line=0112 state_off=0003 state=' '
+  t00 state=' ' state_at=2015
+  t01 state=' ' state_at=2054
+  t02 state=' ' state_at=2124
+  t03 state=' ' state_at=6155
+  t04 state=' ' state_at=6569
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-チュートリアル--触りながら覚える"
@@ -13431,12 +13440,12 @@ L0092 style=fg=-,bg=-,mod=- align=-
   m02 line=0018 kind=Link{target="./sample.csv"}
   m03 line=0019 kind=Link{target="./sample.png"}
   m04 line=0020 kind=Link{target="./sample.pdf"}
-  m05 line=0029 kind=Task{state=' '}
-  m06 line=0030 kind=Task{state=' '}
-  m07 line=0031 kind=Task{state=' '}
-  m08 line=0069 kind=CodeBlock
-  m09 line=0082 kind=Task{state=' '}
-  m10 line=0092 kind=Task{state=' '}
+  m05 line=0029 kind=Task{state=' ',state_at=Some(2015)}
+  m06 line=0030 kind=Task{state=' ',state_at=Some(2054)}
+  m07 line=0031 kind=Task{state=' ',state_at=Some(2124)}
+  m08 line=0069 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
+  m09 line=0082 kind=Task{state=' ',state_at=Some(6155)}
+  m10 line=0092 kind=Task{state=' ',state_at=Some(6569)}
 
 === samples: tutorial.md ===
 -- LINES (93) --
@@ -13892,11 +13901,11 @@ L0092 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 line=0034 state_off=0003 state=' '
-  t01 line=0035 state_off=0003 state=' '
-  t02 line=0036 state_off=0003 state=' '
-  t03 line=0109 state_off=0003 state=' '
-  t04 line=0119 state_off=0003 state=' '
+  t00 state=' ' state_at=1559
+  t01 state=' ' state_at=1589
+  t02 state=' ' state_at=1655
+  t03 state=' ' state_at=4965
+  t04 state=' ' state_at=5284
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-tutorial--learn-by-doing"
@@ -13915,12 +13924,12 @@ L0092 style=fg=-,bg=-,mod=- align=-
   m02 line=0018 kind=Link{target="./sample.csv"}
   m03 line=0019 kind=Link{target="./sample.png"}
   m04 line=0020 kind=Link{target="./sample.pdf"}
-  m05 line=0029 kind=Task{state=' '}
-  m06 line=0030 kind=Task{state=' '}
-  m07 line=0031 kind=Task{state=' '}
-  m08 line=0069 kind=CodeBlock
-  m09 line=0082 kind=Task{state=' '}
-  m10 line=0092 kind=Task{state=' '}
+  m05 line=0029 kind=Task{state=' ',state_at=Some(1559)}
+  m06 line=0030 kind=Task{state=' ',state_at=Some(1589)}
+  m07 line=0031 kind=Task{state=' ',state_at=Some(1655)}
+  m08 line=0069 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
+  m09 line=0082 kind=Task{state=' ',state_at=Some(4965)}
+  m10 line=0092 kind=Task{state=' ',state_at=Some(5284)}
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
 -- LINES (2) --
@@ -13934,13 +13943,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0013 state_off=0003 state=' '
+  t00 state=' ' state_at=0145
 -- DETAILS_OPEN (1) --
   d00 false
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(145)}
 
 === task_corpus: a details nested inside an alert nested inside an open details shows everything ===
 -- LINES (5) --
@@ -13971,15 +13980,15 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0007 state_off=0005 state=' '
-  t01 line=0013 state_off=0003 state=' '
+  t00 state=' ' state_at=0102
+  t01 state=' ' state_at=0149
 -- DETAILS_OPEN (1) --
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (3) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0003 kind=Task{state=' '}
-  m02 line=0004 kind=Task{state=' '}
+  m01 line=0003 kind=Task{state=' ',state_at=Some(102)}
+  m02 line=0004 kind=Task{state=' ',state_at=Some(149)}
 
 === task_corpus: a real task at a list item's own indentation is still a real task ===
 -- LINES (2) --
@@ -13994,13 +14003,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0002 state_off=0005 state=' '
+  t00 state=' ' state_at=0003
+  t01 state=' ' state_at=0018
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(18)}
 
 === task_corpus: alert CAUTION ===
 -- LINES (2) --
@@ -14016,11 +14025,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0018
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(18)}
 
 === task_corpus: alert IMPORTANT ===
 -- LINES (2) --
@@ -14036,11 +14045,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0020
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(20)}
 
 === task_corpus: alert NOTE ===
 -- LINES (2) --
@@ -14056,11 +14065,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0015
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(15)}
 
 === task_corpus: alert TIP ===
 -- LINES (3) --
@@ -14081,13 +14090,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0001 state_off=0005 state=' '
-  t01 line=0002 state_off=0005 state='x'
+  t00 state=' ' state_at=0014
+  t01 state='x' state_at=0024
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0001 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state='x'}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(14)}
+  m01 line=0002 kind=Task{state='x',state_at=Some(24)}
 
 === task_corpus: alert WARNING ===
 -- LINES (2) --
@@ -14103,11 +14112,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state='x'
+  t00 state='x' state_at=0018
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state='x'}
+  m00 line=0001 kind=Task{state='x',state_at=Some(18)}
 
 === task_corpus: alert nested inside a closed details hides its task ===
 -- LINES (1) --
@@ -14140,11 +14149,12 @@ L0001 style=fg=green,bg=-,mod=I align=-
   s05 fg=-,bg=-,mod=- "alert in quote"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
--- TASKS (0) --
+-- TASKS (1) --
+  t00 state=' ' state_at=0019
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(19)}
 
 === task_corpus: alert nested inside an open details shows its task ===
 -- LINES (3) --
@@ -14165,13 +14175,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0004 state_off=0005 state=' '
+  t00 state=' ' state_at=0052
 -- DETAILS_OPEN (1) --
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0002 kind=Task{state=' '}
+  m01 line=0002 kind=Task{state=' ',state_at=Some(52)}
 
 === task_corpus: alert nested list ===
 -- LINES (3) --
@@ -14192,13 +14202,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0001 state_off=0005 state=' '
-  t01 line=0002 state_off=0007 state=' '
+  t00 state=' ' state_at=0015
+  t01 state=' ' state_at=0027
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0001 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(15)}
+  m01 line=0002 kind=Task{state=' ',state_at=Some(27)}
 
 === task_corpus: alert then plain ===
 -- LINES (3) --
@@ -14218,13 +14228,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0001 state_off=0005 state=' '
-  t01 line=0003 state_off=0003 state=' '
+  t00 state=' ' state_at=0015
+  t01 state=' ' state_at=0025
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0001 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(15)}
+  m01 line=0002 kind=Task{state=' ',state_at=Some(25)}
 
 === task_corpus: alert titled ===
 -- LINES (2) --
@@ -14240,11 +14250,11 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0005 state=' '
+  t00 state=' ' state_at=0024
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(24)}
 
 === task_corpus: an alert nested inside a details nested inside an alert, all open, shows the task ===
 -- LINES (4) --
@@ -14272,11 +14282,11 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0005 state_off=0007 state=' '
+  t00 state=' ' state_at=0074
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=Task{state=' '}
+  m00 line=0003 kind=Task{state=' ',state_at=Some(74)}
 
 === task_corpus: an indented paragraph inside a list item is not a task even if it starts with a dash ===
 -- LINES (3) --
@@ -14291,11 +14301,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0002 state_off=0005 state=' '
+  t00 state=' ' state_at=0013
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+  m00 line=0002 kind=Task{state=' ',state_at=Some(13)}
 
 === task_corpus: bullet plus ===
 -- LINES (2) --
@@ -14310,13 +14320,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(11)}
 
 === task_corpus: bullet star ===
 -- LINES (2) --
@@ -14331,13 +14341,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(11)}
 
 === task_corpus: cjk ===
 -- LINES (2) --
@@ -14352,13 +14362,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0031
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(31)}
 
 === task_corpus: crlf ===
 -- LINES (2) --
@@ -14373,13 +14383,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(11)}
 
 === task_corpus: details closed ===
 -- LINES (1) --
@@ -14407,13 +14417,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0007 state_off=0003 state=' '
+  t00 state=' ' state_at=0061
 -- DETAILS_OPEN (1) --
   d00 false
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(61)}
 
 === task_corpus: details nested inside an alert, closed, hides its task ===
 -- LINES (2) --
@@ -14451,11 +14461,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0004 state_off=0005 state=' '
+  t00 state=' ' state_at=0057
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+  m00 line=0002 kind=Task{state=' ',state_at=Some(57)}
 
 === task_corpus: details open ===
 -- LINES (2) --
@@ -14470,13 +14480,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0003 state_off=0003 state=' '
+  t00 state=' ' state_at=0040
 -- DETAILS_OPEN (1) --
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (2) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(40)}
 
 === task_corpus: details open then plain ===
 -- LINES (3) --
@@ -14495,15 +14505,15 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0003 state_off=0003 state=' '
-  t01 line=0007 state_off=0003 state=' '
+  t00 state=' ' state_at=0040
+  t01 state=' ' state_at=0065
 -- DETAILS_OPEN (1) --
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (3) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0001 kind=Task{state=' '}
-  m02 line=0002 kind=Task{state=' '}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(40)}
+  m02 line=0002 kind=Task{state=' ',state_at=Some(65)}
 
 === task_corpus: emphasis in task ===
 -- LINES (1) --
@@ -14516,11 +14526,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === task_corpus: empty doc ===
 -- LINES (0) --
@@ -14602,21 +14612,21 @@ L0016 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fenced"
 -- TASKS (4) --
-  t00 line=0002 state_off=0003 state=' '
-  t01 line=0005 state_off=0005 state=' '
-  t02 line=0006 state_off=0005 state='x'
-  t03 line=0023 state_off=0003 state='x'
+  t00 state=' ' state_at=0010
+  t01 state=' ' state_at=0042
+  t02 state='x' state_at=0059
+  t03 state='x' state_at=0188
 -- DETAILS_OPEN (1) --
   d00 false
 -- ANCHORS (1) --
   a00 line=0000 slug="doc"
 -- ITEMS (6) --
-  m00 line=0003 kind=Task{state=' '}
-  m01 line=0005 kind=Task{state=' '}
-  m02 line=0006 kind=Task{state='x'}
-  m03 line=0012 kind=CodeBlock
+  m00 line=0003 kind=Task{state=' ',state_at=Some(10)}
+  m01 line=0005 kind=Task{state=' ',state_at=Some(42)}
+  m02 line=0006 kind=Task{state='x',state_at=Some(59)}
+  m03 line=0012 kind=CodeBlock{body=Some("- [ ] fenced")}
   m04 line=0015 kind=Details{ordinal=0}
-  m05 line=0016 kind=Task{state='x'}
+  m05 line=0016 kind=Task{state='x',state_at=Some(188)}
 
 === task_corpus: fence backtick ===
 -- LINES (5) --
@@ -14638,12 +14648,12 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] not a task"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0029
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0004 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("- [ ] not a task")}
+  m01 line=0004 kind=Task{state=' ',state_at=Some(29)}
 
 === task_corpus: fence containing a table lookalike ===
 -- LINES (7) --
@@ -14671,12 +14681,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "| a | b |\n|---|---|\n| 1 | 2 |"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0046
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("| a | b |\n|---|---|\n| 1 | 2 |")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(46)}
 
 === task_corpus: fence containing an alert lookalike ===
 -- LINES (6) --
@@ -14701,12 +14711,12 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "> [!NOTE]\nlooks like an alert"
 -- TASKS (1) --
-  t00 line=0005 state_off=0003 state=' '
+  t00 state=' ' state_at=0046
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0005 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("> [!NOTE]\nlooks like an alert")}
+  m01 line=0005 kind=Task{state=' ',state_at=Some(46)}
 
 === task_corpus: fence containing an html block lookalike ===
 -- LINES (7) --
@@ -14744,12 +14754,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "<div class=\"x\">\nhello\n</div>"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0045
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("<div class=\"x\">\nhello\n</div>")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(45)}
 
 === task_corpus: fence tilde ===
 -- LINES (5) --
@@ -14771,12 +14781,12 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] not a task"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0029
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0004 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("- [ ] not a task")}
+  m01 line=0004 kind=Task{state=' ',state_at=Some(29)}
 
 === task_corpus: fence with language ===
 -- LINES (5) --
@@ -14799,12 +14809,12 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "// - [ ] no"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0028
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0004 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("// - [ ] no")}
+  m01 line=0004 kind=Task{state=' ',state_at=Some(28)}
 
 === task_corpus: footnote ===
 -- LINES (5) --
@@ -14822,11 +14832,11 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === task_corpus: front matter ===
 -- LINES (4) --
@@ -14843,11 +14853,11 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0001 state_off=0003 state=' '
+  t00 state=' ' state_at=0004
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=Task{state=' '}
+  m00 line=0003 kind=Task{state=' ',state_at=Some(4)}
 
 === task_corpus: heading between ===
 -- LINES (6) --
@@ -14868,14 +14878,14 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
+  t01 state=' ' state_at=0018
 -- DETAILS_OPEN (0) --
 -- ANCHORS (1) --
   a00 line=0002 slug="h"
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0005 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0005 kind=Task{state=' ',state_at=Some(18)}
 
 === task_corpus: html block then task ===
 -- LINES (3) --
@@ -14889,11 +14899,11 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0002 state_off=0003 state=' '
+  t00 state=' ' state_at=0018
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0002 kind=Task{state=' '}
+  m00 line=0002 kind=Task{state=' ',state_at=Some(18)}
 
 === task_corpus: inline code lookalike ===
 -- LINES (1) --
@@ -14905,11 +14915,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
 
 === task_corpus: link in task ===
 -- LINES (1) --
@@ -14921,11 +14931,11 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state=' '
+  t00 state=' ' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
   m01 line=0000 kind=Link{target="./d.md"}
 
 === task_corpus: mixed bullets ===
@@ -14947,15 +14957,15 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (3) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state=' '
-  t02 line=0002 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state=' ' state_at=0011
+  t02 state='x' state_at=0019
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state=' '}
-  m02 line=0004 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0002 kind=Task{state=' ',state_at=Some(11)}
+  m02 line=0004 kind=Task{state='x',state_at=Some(19)}
 
 === task_corpus: nested plain blockquote (two levels) ===
 -- LINES (1) --
@@ -14969,11 +14979,12 @@ L0000 style=fg=green,bg=-,mod=I align=-
   s06 fg=-,bg=-,mod=- "quoted twice"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
--- TASKS (0) --
+-- TASKS (1) --
+  t00 state=' ' state_at=0007
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(7)}
 
 === task_corpus: nested two levels ===
 -- LINES (3) --
@@ -14992,15 +15003,15 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (3) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0005 state=' '
-  t02 line=0002 state_off=0007 state='x'
+  t00 state=' ' state_at=0003
+  t01 state=' ' state_at=0013
+  t02 state='x' state_at=0025
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (3) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state=' '}
-  m02 line=0002 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state=' ',state_at=Some(13)}
+  m02 line=0002 kind=Task{state='x',state_at=Some(25)}
 
 === task_corpus: no tasks ===
 -- LINES (4) --
@@ -15032,13 +15043,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(11)}
 
 === task_corpus: ordered list sibling ===
 -- LINES (4) --
@@ -15056,11 +15067,11 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0003 state_off=0003 state=' '
+  t00 state=' ' state_at=0021
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=Task{state=' '}
+  m00 line=0003 kind=Task{state=' ',state_at=Some(21)}
 
 === task_corpus: plain blockquote ===
 -- LINES (1) --
@@ -15072,11 +15083,12 @@ L0000 style=fg=green,bg=-,mod=I align=-
   s04 fg=-,bg=-,mod=- "quoted"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
--- TASKS (0) --
+-- TASKS (1) --
+  t00 state=' ' state_at=0005
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(5)}
 
 === task_corpus: plain blockquote nested inside an alert ===
 -- LINES (2) --
@@ -15093,11 +15105,12 @@ L0001 style=fg=green,bg=-,mod=I align=-
   s05 fg=-,bg=-,mod=- "quoted in alert"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
--- TASKS (0) --
+-- TASKS (1) --
+  t00 state=' ' state_at=0017
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0001 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(17)}
 
 === task_corpus: plain dash ===
 -- LINES (2) --
@@ -15112,13 +15125,13 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0001 state_off=0003 state='x'
+  t00 state=' ' state_at=0003
+  t01 state='x' state_at=0011
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0001 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0001 kind=Task{state='x',state_at=Some(11)}
 
 === task_corpus: plain then alert ===
 -- LINES (3) --
@@ -15138,13 +15151,13 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0000 state_off=0003 state=' '
-  t01 line=0003 state_off=0005 state=' '
+  t00 state=' ' state_at=0003
+  t01 state=' ' state_at=0026
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=Task{state=' '}
-  m01 line=0002 kind=Task{state=' '}
+  m00 line=0000 kind=Task{state=' ',state_at=Some(3)}
+  m01 line=0002 kind=Task{state=' ',state_at=Some(26)}
 
 === task_corpus: table cell containing a link-wrapped image ===
 -- LINES (5) --
@@ -15252,11 +15265,11 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0034
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0005 kind=Task{state=' '}
+  m00 line=0005 kind=Task{state=' ',state_at=Some(34)}
 
 === task_corpus: task-lookalike in an indented block right after a setext heading underline (no blank) stays literal ===
 -- LINES (8) --
@@ -15283,13 +15296,13 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0031
 -- DETAILS_OPEN (0) --
 -- ANCHORS (1) --
   a00 line=0000 slug="title"
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0007 kind=Task{state=' '}
+  m00 line=0003 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0007 kind=Task{state=' ',state_at=Some(31)}
 
 === task_corpus: task-lookalike in an indented block right after a short setext dash underline (no blank) stays literal ===
 -- LINES (8) --
@@ -15316,13 +15329,13 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0028
 -- DETAILS_OPEN (0) --
 -- ANCHORS (1) --
   a00 line=0000 slug="title"
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0007 kind=Task{state=' '}
+  m00 line=0003 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0007 kind=Task{state=' ',state_at=Some(28)}
 
 === task_corpus: task-lookalike in an indented block right after a thematic break (no blank) stays literal ===
 -- LINES (7) --
@@ -15347,12 +15360,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0003 state_off=0003 state=' '
+  t00 state=' ' state_at=0023
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0002 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(23)}
 
 === task_corpus: task-lookalike in an indented block right after an ATX heading (no blank) stays literal ===
 -- LINES (8) --
@@ -15379,13 +15392,13 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0003 state_off=0003 state=' '
+  t00 state=' ' state_at=0028
 -- DETAILS_OPEN (0) --
 -- ANCHORS (1) --
   a00 line=0000 slug="usage"
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0007 kind=Task{state=' '}
+  m00 line=0003 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0007 kind=Task{state=' ',state_at=Some(28)}
 
 === task_corpus: task-lookalike inside a backtick fence with a shorter nested backtick lookalike (same char) ===
 -- LINES (7) --
@@ -15413,12 +15426,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "```\n- [ ] fake\n```"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0035
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("```\n- [ ] fake\n```")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(35)}
 
 === task_corpus: task-lookalike inside a fence indented 3 columns (still a real fence) ===
 -- LINES (7) --
@@ -15448,12 +15461,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0042
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0002 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(42)}
 
 === task_corpus: task-lookalike inside a fence-lookalike top-level indented code block ===
 -- LINES (9) --
@@ -15484,12 +15497,12 @@ L0008 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "```rust\n- [ ] fake\n```"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0045
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0008 kind=Task{state=' '}
+  m00 line=0002 kind=CodeBlock{body=Some("```rust\n- [ ] fake\n```")}
+  m01 line=0008 kind=Task{state=' ',state_at=Some(45)}
 
 === task_corpus: task-lookalike inside a tilde fence with a shorter nested tilde lookalike ===
 -- LINES (7) --
@@ -15517,12 +15530,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "~~~\n- [ ] fake\n~~~"
 -- TASKS (1) --
-  t00 line=0006 state_off=0003 state=' '
+  t00 state=' ' state_at=0035
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0000 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0000 kind=CodeBlock{body=Some("~~~\n- [ ] fake\n~~~")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(35)}
 
 === task_corpus: task-lookalike inside a top-level indented code block stays literal ===
 -- LINES (7) --
@@ -15547,12 +15560,12 @@ L0006 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0004 state_off=0003 state=' '
+  t00 state=' ' state_at=0025
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0002 kind=CodeBlock
-  m01 line=0006 kind=Task{state=' '}
+  m00 line=0002 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0006 kind=Task{state=' ',state_at=Some(25)}
 
 === task_corpus: task-lookalike inside an indented block nested in an alert stays literal ===
 -- LINES (8) --
@@ -15588,12 +15601,12 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0005 state_off=0005 state=' '
+  t00 state=' ' state_at=0043
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0003 kind=CodeBlock
-  m01 line=0007 kind=Task{state=' '}
+  m00 line=0003 kind=CodeBlock{body=Some("- [ ] fake")}
+  m01 line=0007 kind=Task{state=' ',state_at=Some(43)}
 
 === task_corpus: task-lookalike inside an indented block nested in an open details stays literal ===
 -- LINES (8) --
@@ -15628,14 +15641,14 @@ L0007 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "- [ ] fake"
 -- TASKS (1) --
-  t00 line=0007 state_off=0003 state=' '
+  t00 state=' ' state_at=0062
 -- DETAILS_OPEN (1) --
   d00 true
 -- ANCHORS (0) --
 -- ITEMS (3) --
   m00 line=0000 kind=Details{ordinal=0}
-  m01 line=0003 kind=CodeBlock
-  m02 line=0007 kind=Task{state=' '}
+  m01 line=0003 kind=CodeBlock{body=Some("- [ ] fake")}
+  m02 line=0007 kind=Task{state=' ',state_at=Some(62)}
 
 === task_corpus: two alerts ===
 -- LINES (4) --
@@ -15660,13 +15673,13 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (2) --
-  t00 line=0001 state_off=0005 state=' '
-  t01 line=0004 state_off=0005 state=' '
+  t00 state=' ' state_at=0015
+  t01 state=' ' state_at=0035
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (2) --
-  m00 line=0001 kind=Task{state=' '}
-  m01 line=0003 kind=Task{state=' '}
+  m00 line=0001 kind=Task{state=' ',state_at=Some(15)}
+  m01 line=0003 kind=Task{state=' ',state_at=Some(35)}
 
 === task_corpus: upper X ===
 -- LINES (1) --
@@ -15677,9 +15690,9 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (1) --
-  t00 line=0000 state_off=0003 state='X'
+  t00 state='X' state_at=0003
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0000 kind=Task{state='x'}
+  m00 line=0000 kind=Task{state='x',state_at=Some(3)}
 

@@ -16608,50 +16608,34 @@ fn changed_filter_survives_returning_from_another_repo() {
     std::fs::remove_dir_all(&base).ok();
 }
 
-/// Drive the real preview pipeline over the whole task corpus and toggle **every** checkbox in every
-/// document, asserting the write is byte-exact: one state character flips and nothing else in the file
-/// moves. Counting parity (in `markdown::task_scan_parity_tests`) only proves the renderer and the
-/// scanner agree on *how many* boxes there are; this proves the Nth box on screen edits the Nth box in
-/// the source — the property that actually matters when a document mixes alerts, details and tables.
+/// Drive the real preview pipeline over **every** golden-snapshot corpus and toggle **every**
+/// checkbox in every document, asserting the write is byte-exact: one state character flips, nothing
+/// else in the file moves, and the checkbox that changed on screen is the one that was toggled.
+/// Counting parity (in `markdown::task_scan_parity_tests`) only proves the renderer and the scanner
+/// agree on *how many* boxes there are; this proves the Nth box on screen edits the Nth box in the
+/// source — the property that actually matters when a document mixes alerts, details and tables.
 ///
-/// The independent "expected position" oracle is `task_source_locs(src, ..)`, deliberately **not**
-/// the model renderer's own record (`MdRenderExtras::tasks`) — even though the latter is what
-/// `MdItemKind::Task::state_at` is actually read from in production (`app::md_render::build_decorated`).
-/// Two reasons, both confirmed while fixing this test's crash on the `"plain blockquote"` corpus case:
+/// ## The oracle: re-render the file after the write (2026-08)
 ///
-/// 1. `task_source_locs`'s own contract is calibrated to the **legacy** renderer, not the model one —
-///    it is only ever consulted in production when the model renderer falls back to the legacy path,
-///    and a plain (non-alert) block quote is a **model-only** decoration `render_quote` draws that the
-///    legacy renderer still does not. This is pinned directly, in `preview/markdown.rs`, by
-///    `task_scan_parity_tests::heading_gap_is_fixed_and_plain_blockquote_gap_has_no_mismatch` (which
-///    asserts `code_block_source_locs("> para\n>\n>     code\n", &[]).is_empty()` as *correct*, not a
-///    gap to close) and `task_scan_parity_tests::scanner_counts_exactly_what_the_renderer_draws` (which
-///    checks the whole `task_corpus` against the **legacy**-only `render_markdown_tasks`). Teaching
-///    `task_source_locs`/`code_block_source_locs` to also decorate a plain quote (tried first) broke
-///    both of those and, worse, would make the scanner **over-count** relative to what the legacy
-///    renderer actually draws whenever a document both reaches that legacy fallback (a `Table`/`Html`
-///    nested in a *different* quote) and separately contains an unrelated plain-quote checkbox/code
-///    block — silently shifting every later checkbox's/code block's write-back ordinal by one in
-///    production (`build_md_items`'s `task_marks.get(seen)`/`code_blocks.get(seen)` lookup), the exact
-///    "silent wrong-byte write" class principle #3 exists to rule out.
-/// 2. `MdRenderExtras::tasks` is not (yet) a safe stand-in either: probed directly, it currently
-///    reports 2 entries for `"1. [ ] ordered task\n2. [x] done\n"` (an entry already in `code_corpus`)
-///    even though the model renderer draws **no** interactive checkbox span for either line (GFM task
-///    markers only decorate an unordered-list item — `task_prefix_state`'s own doc comment — and this
-///    project's own `task_items`/`is_task_span` scan agrees: 0 on screen). `RenderOut::tasks`'s own doc
-///    comment promises it only records a marker "this pass actually drew", so that is model-renderer
-///    behavior still in flux (under active, concurrent development elsewhere in this same migration),
-///    not a stable oracle to build a byte-position test on.
+/// This test used to check the written byte position against `task_source_locs(src, ..)`, a source
+/// scanner **no production code has called** since the `md-block-walk` migration, and to *skip* the
+/// check entirely for any document where that scanner's count disagreed with the screen's (by then
+/// five corpus cases, all of them a checkbox inside a plain block quote — a construct the model
+/// renderer draws as a real, toggleable checkbox and the scanner does not see at all). Two problems
+/// with it, both fatal once this test was widened past its original two corpora: the skip silently
+/// removed exactly the documents most worth checking, and the scanner's byte offsets are computed
+/// over the raw file while production writes through `pre_src` (front matter stripped, footnotes
+/// renumbered, inline HTML rewritten) — a mapping that does not exist for the `samples/*.md` files
+/// this now covers.
 ///
-/// So: this test keeps `task_source_locs` as the oracle (its established, tested role), but no longer
-/// assumes its count always matches what's on screen. For the (rare, currently exactly-one-entry)
-/// documents where a construct the model renders but the legacy scanner does not skip decorates a real,
-/// on-screen, toggleable checkbox — `task_source_locs`'s count undershoots `task_items`'s — the
-/// byte-position cross-check is skipped for that document (the toggle itself is still driven and still
-/// checked for the invariants that do not depend on the scanner: it must not be refused, must change
-/// exactly one character, and must preserve CRLF/trailing-newline shape). Never the other direction:
-/// `task_source_locs` overshooting `task_items` would mean it invented a checkbox that is not really on
-/// screen, which is asserted against directly (that shape is *not* a known, accepted gap).
+/// So the oracle is the screen itself, before and after: reopen the *written* file, render it again,
+/// and require that the checkbox states on screen changed at position `nth` and **nowhere else**.
+/// That needs no scanner, no byte arithmetic on the test side, and no per-document exception list —
+/// and it is the user-visible property, stated directly. A write to the wrong byte fails it either
+/// by flipping a different checkbox or (writing outside any checkbox) by flipping none, which the
+/// `assert_ne!` at `nth` catches. The invariants that do not need an oracle at all — exactly one
+/// character changed, the character count is unchanged, CRLF and the trailing newline survive — are
+/// still checked on the raw text, as before.
 #[test]
 fn md_task_toggle_is_byte_exact_across_the_corpus() {
     use ratatui::backend::TestBackend;
@@ -16663,17 +16647,13 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
     let root = dir.canonicalize().unwrap();
     let f = root.join("doc.md");
 
-    // Both corpora: `code_corpus` carries the container-context axis (a checkbox in a nested item
-    // written `*   [ ]`, one with nothing after the `]`, one with four spaces), where the state
-    // character no longer sits at a fixed offset from the bullet — exactly the case where a wrong
-    // `state_off` would silently corrupt a byte of the user's file rather than just refuse.
-    let corpus = crate::preview::markdown::task_corpus::cases()
-        .into_iter()
-        .chain(crate::preview::markdown::code_corpus::cases());
-    for (name, src) in corpus {
-        // Count how many checkboxes appear on screen by opening the document once.
-        std::fs::write(&f, src).unwrap();
-        let mut app = App::new(root.clone(), Config::default()).unwrap();
+    /// Open `doc.md` in the preview the way a keypress would and return, for every task checkbox on
+    /// screen, `(its index in `md_items`, the state character drawn in it)`. The state comes off the
+    /// **rendered sentinel span** (`build_md_items` reads `task_span_state(span.content)`), not off
+    /// the render pass's `state_at` record — so this observes what the reader sees, independent of
+    /// the byte the toggle writes with.
+    fn on_screen_tasks(root: &std::path::Path) -> Vec<(usize, char)> {
+        let mut app = App::new(root.to_path_buf(), Config::default()).unwrap();
         app.tab.selected = app
             .tab
             .entries
@@ -16683,25 +16663,32 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
         app.tree_activate().unwrap();
         let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
         term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
-        let task_items: Vec<usize> = app
-            .md_items
+        app.md_items
             .iter()
             .enumerate()
-            .filter(|(_, it)| matches!(it.kind, MdItemKind::Task { .. }))
-            .map(|(i, _)| i)
-            .collect();
+            .filter_map(|(i, it)| match it.kind {
+                MdItemKind::Task { state, .. } => Some((i, state)),
+                _ => None,
+            })
+            .collect()
+    }
 
-        let locs = crate::preview::markdown::task_source_locs(src, &[' ', 'x'], &[]);
-        assert!(
-            locs.len() <= task_items.len(),
-            "{name}: 書き戻しスキャナが画面より多くのチェックボックスを見つけた\
-             (安全な方向=見落としのみのはずが逆転している)\n--- src ---\n{src}"
-        );
-        // Whether `task_source_locs` describes exactly what is on screen for this document — see
-        // this test's own doc comment above for the (currently one) documented exception.
-        let scanner_matches_screen = locs.len() == task_items.len();
+    // Every corpus the golden snapshots cover. `code_corpus` carries the container-context axis (a
+    // checkbox in a nested item written `*   [ ]`, one with nothing after the `]`, one with four
+    // spaces), where the state character no longer sits at a fixed offset from the bullet — exactly
+    // the case where a wrong `state_off` would silently corrupt a byte of the user's file rather than
+    // just refuse. `preprocess_corpus` / `list_corpus` and the repo's own `samples/*.md` add the
+    // ~34 checkboxes nothing drove this over until 2026-08, the samples among them being the only
+    // documents whose `pre_src` differs from the bytes on disk.
+    let mut checked = 0usize;
+    let mut refused: Vec<String> = Vec::new();
+    for (name, src) in super::md_snapshot_tests::all_cases() {
+        let src = src.as_str();
+        // Count how many checkboxes appear on screen by opening the document once.
+        std::fs::write(&f, src).unwrap();
+        let before = on_screen_tasks(&root);
 
-        for (nth, &item_idx) in task_items.iter().enumerate() {
+        for (nth, &(item_idx, _)) in before.iter().enumerate() {
             // Reopen from the original content each time (don't carry over the effect of a
             // previous toggle).
             std::fs::write(&f, src).unwrap();
@@ -16718,14 +16705,33 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             app.tab.focused_item = Some(item_idx);
             app.flash = None;
             app.md_toggle_focused_task();
+            checked += 1;
 
             let after = std::fs::read_to_string(&f).unwrap();
-            assert!(
-                app.flash.is_none(),
-                "{name} #{nth}: トグルが拒否された(flash={:?})\n--- src ---\n{src}",
-                app.flash
-            );
-            // Only one character changed, and its position is "the state character of the nth task".
+            if app.flash.is_some() {
+                // A **refusal** is specified behavior, not a failure: `md_toggle_focused_task`
+                // writes only when the byte it is about to overwrite can be matched back to a real
+                // line of the file on disk, and a line one of the pre-passes *invented* (the tail of
+                // a `<br>` split, the generated footnotes section) has no such line — principle #3
+                // says refuse rather than write to the wrong byte. What must hold is that the
+                // refusal cost nothing: the file is untouched, and the document really is one a
+                // pre-pass rewrote (in a document the renderer saw verbatim, every checkbox on
+                // screen must be toggleable — no exception list needed to state that).
+                assert_eq!(
+                    after, src,
+                    "{name} #{nth}: 拒否したのにファイルが書き換わった\n--- after ---\n{after}"
+                );
+                assert_ne!(
+                    super::md_snapshot_tests::pre_src_for(&Config::default(), src),
+                    src,
+                    "{name} #{nth}: 前処理が何も書き換えていない文書でトグルが拒否された\
+                     (flash={:?})\n--- src ---\n{src}",
+                    app.flash
+                );
+                refused.push(format!("{name} #{nth}"));
+                continue;
+            }
+            // Only one character changed.
             let diff: Vec<usize> = src
                 .char_indices()
                 .zip(after.char_indices())
@@ -16742,38 +16748,28 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
                 1,
                 "{name} #{nth}: 変更が1文字でない(位置={diff:?})\n--- after ---\n{after}"
             );
-            if scanner_matches_screen {
-                let loc = &locs[nth];
-                // Derive the expected position using **the same line-splitting as the product**
-                // (`split('\n')`). `str::lines()` drops the CRLF `\r`, so counting with it is off
-                // by one byte on CRLF documents (a pitfall on the test side).
-                let line_start: usize = src.split('\n').take(loc.line).map(|l| l.len() + 1).sum();
-                assert_eq!(
-                    diff[0],
-                    line_start + loc.state_off,
-                    "{name} #{nth}: 別の位置を書き換えた\n--- after ---\n{after}"
-                );
-                // A check that doesn't depend on the offset calculation: after writing back and
-                // re-reading, **only that one** checkbox's state has changed and the rest are unchanged.
-                let after_locs =
-                    crate::preview::markdown::task_source_locs(&after, &[' ', 'x'], &[]);
-                assert_eq!(
-                    after_locs.len(),
-                    locs.len(),
-                    "{name} #{nth}: 書き戻しでチェックボックスの個数が変わった"
-                );
-                for (i, (b, a)) in locs.iter().zip(after_locs.iter()).enumerate() {
-                    if i == nth {
-                        assert_ne!(
-                            b.state, a.state,
-                            "{name} #{nth}: 対象の状態が変わっていない"
-                        );
-                    } else {
-                        assert_eq!(
-                            b.state, a.state,
-                            "{name} #{nth}: 別のタスク #{i} を書き換えた"
-                        );
-                    }
+            // ...and it was **this** checkbox: re-render the written file and compare the states on
+            // screen (see this test's own doc comment for why this replaced the retired scanner).
+            let after_screen = on_screen_tasks(&root);
+            assert_eq!(
+                after_screen.len(),
+                before.len(),
+                "{name} #{nth}: 書き戻しで画面のチェックボックスの個数が変わった\
+                 \n--- after ---\n{after}"
+            );
+            for (i, (&(_, b), &(_, a))) in before.iter().zip(after_screen.iter()).enumerate() {
+                if i == nth {
+                    assert_ne!(
+                        b, a,
+                        "{name} #{nth}: 対象のチェックボックスの状態が変わっていない\
+                         (別のバイトを書いた可能性)\n--- after ---\n{after}"
+                    );
+                } else {
+                    assert_eq!(
+                        b, a,
+                        "{name} #{nth}: 別のチェックボックス #{i} を書き換えた\
+                         \n--- after ---\n{after}"
+                    );
                 }
             }
             // Line structure (newline kind, line count) is unchanged.
@@ -16789,6 +16785,19 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
             );
         }
     }
+    // A corpus that stopped containing checkboxes would make every assertion above vacuous.
+    assert!(
+        checked > 100,
+        "コーパスのチェックボックスが {checked} 件しかない — この網羅テストが空回りしている"
+    );
+    // Refusals are legitimate (above) but must stay the rare, structural exception they are: a
+    // change that started refusing broadly — a `pre_origin` mapping quietly lost, say — would leave
+    // every assertion above vacuous while the test still "passed" on the toggles it never made.
+    assert!(
+        refused.len() * 8 < checked,
+        "トグルの拒否が多すぎる({}/{checked}) — 書き戻し位置の解決が壊れていないか: {refused:?}",
+        refused.len()
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -16816,10 +16825,16 @@ fn md_code_block_copy_is_byte_exact_across_the_corpus() {
     let root = dir.canonicalize().unwrap();
     let f = root.join("doc.md");
 
-    let corpus = crate::preview::markdown::task_corpus::cases()
-        .into_iter()
-        .chain(crate::preview::markdown::code_corpus::cases());
-    for (name, src) in corpus {
+    // **Every** corpus the golden snapshots cover, not just the two this started with: the
+    // `preprocess_corpus` / `code_span_corpus` / `list_corpus` / `inline_corpus` /
+    // `html_table_corpus` cases and the repo's own `samples/*.md` between them hold ~65 more code
+    // blocks that nothing drove `y c` over (2026-08). The samples matter most of the three: they are
+    // the only documents here whose `pre_src` differs from the file on disk (front matter stripped,
+    // footnotes renumbered, inline HTML rewritten), i.e. the only ones that exercise a *record*
+    // whose byte positions are not the file's own.
+    let mut copied_blocks = 0usize;
+    for (name, src) in super::md_snapshot_tests::all_cases() {
+        let src = src.as_str();
         std::fs::write(&f, src).unwrap();
         let mut app = App::new(root.clone(), Config::default()).unwrap();
         app.tab.selected = app
@@ -16879,8 +16894,14 @@ fn md_code_block_copy_is_byte_exact_across_the_corpus() {
                 Some(extras.code_blocks[nth].as_str()),
                 "{name} #{nth}: `y c` がモデルの記録と違う内容をコピーする\n--- src ---\n{src}"
             );
+            copied_blocks += 1;
         }
     }
+    // A corpus that stopped containing Tab-reachable code blocks would make the loop above vacuous.
+    assert!(
+        copied_blocks > 100,
+        "コーパスのコードブロックが {copied_blocks} 件しかない — この網羅テストが空回りしている"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

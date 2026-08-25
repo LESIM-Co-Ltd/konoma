@@ -1648,11 +1648,12 @@ enum MdItemKind {
     /// A task checkbox. `state_at`=the byte offset of this exact checkbox's state char, into
     /// `MdCache::pre_src`: for the (near-universal) model render path, read straight off
     /// `render::RenderOut::tasks` — the same parse the renderer drew this checkbox from, so the
-    /// toggle needs no independent re-scan to find it (see `app::md_tasks::md_toggle_focused_task`);
-    /// for the rare legacy fallback, resolved once (by ordinal, no document-wide count) when
-    /// `app::md_render::build_decorated` built the cache. `None` only for the vanishingly rare item
-    /// even that per-item legacy resolution could not place — the toggle is a quiet no-op for it
-    /// (never a document-wide refusal; see `md_toggle_focused_task`'s own doc comment).
+    /// toggle needs no independent re-scan to find it (see `app::md_tasks::md_toggle_focused_task`).
+    /// That record is now the only source: nothing resolves a checkbox position a second way, so
+    /// `None` means only that the record held fewer entries than the screen drew sentinels — which
+    /// `md_snapshot_tests::golden_items_match_the_live_app_across_the_corpus` asserts never happens
+    /// for any corpus document. The toggle is a quiet no-op for it (never a document-wide refusal;
+    /// see `md_toggle_focused_task`'s own doc comment).
     ///
     /// `state`=its current state char (` `/`x`/custom) as drawn — read only by tests (asserting what
     /// actually rendered); the toggle itself re-reads the char at `state_at` fresh, rather than
@@ -1666,9 +1667,11 @@ enum MdItemKind {
     /// `body`=this exact block's already-resolved source text: for the model render path, read
     /// straight off `render::RenderOut::code_blocks` (pushed by `render_code_block` the moment it
     /// drew this block's own header — no independent re-scan; see
-    /// `app::md_items::focused_code_source`); for the rare legacy fallback, resolved once, by
-    /// ordinal, the identical way `Task::state_at` is. `None` only for the vanishingly rare item even
-    /// that per-item legacy resolution could not place — `y c` is a quiet no-op for it.
+    /// `app::md_items::focused_code_source`). As with `Task::state_at`, that record is the only
+    /// source and `None` would mean the record ran short of the sentinels on screen — asserted
+    /// against over the whole corpus by
+    /// `md_snapshot_tests::golden_items_match_the_live_app_across_the_corpus`. `y c` is a quiet
+    /// no-op for it.
     CodeBlock { body: Option<String> },
     /// An inline mermaid diagram (image mode); `ordinal`=fence index in document order.
     /// `Enter` opens it full screen with zoom/pan.
@@ -2023,19 +2026,17 @@ struct DecoratedMarkdown {
     pre_src: String,
     /// Per line of `pre_src`, the body line it came from — see `MdCache::pre_origin`.
     pre_origin: crate::preview::markdown::LineOrigin,
-    /// Every code block's already-resolved source text, in document order — from the model
-    /// renderer's own record (`render::RenderOut::code_blocks`) when it drew this document; when the
-    /// legacy renderer did instead (`RenderOut::unsupported`), `build_decorated`'s Markdown branch
-    /// fills this the same way `y c` always resolved a block pre-migration (`code_block_source_locs`,
-    /// run once here rather than once per copy — see that call site's own doc comment). Empty for a
-    /// non-Markdown preview kind, which builds no `MdItem`s of this kind to read it at all. See
-    /// `MdCache::items`/`MdItemKind::CodeBlock`'s own doc comments.
-    code_blocks: Vec<String>,
-    /// Every task checkbox's `(state, byte offset into pre_src)`, in document order — the identical
-    /// model-renderer-record/legacy-fallback split `code_blocks` has, for the checkbox toggle instead
-    /// of `y c` (`task_source_locs` in the fallback branch). See `MdCache::items`/`MdItemKind::Task`'s
-    /// own doc comments.
-    tasks: Vec<(char, usize)>,
+    /// The render pass's own record of what it drew, straight from the same parse it rendered from:
+    /// every code block's already-resolved source text (`y c`) and every task checkbox's `(state,
+    /// byte offset into pre_src)` (the checkbox toggle), both in document order. Kept as the struct
+    /// [`render_markdown_with_images`](crate::preview::markdown::render_markdown_with_images)
+    /// returned — not unpacked into two loose fields — because that struct is what
+    /// `build_md_items_from_render` takes, so the record cannot be quietly replaced by a
+    /// differently-derived list on the way to `MdItemKind::CodeBlock::body`/`Task::state_at`
+    /// (see that function's own doc comment for the golden-snapshot hole this closes).
+    /// `MdRenderExtras::default()` (both lists empty) for a non-Markdown preview kind, which builds
+    /// no `MdItem`s of either kind to read it at all. See `MdCache::items`'s own doc comment.
+    extras: crate::preview::markdown::MdRenderExtras,
 }
 
 /// Per-tab state bundle. Migrated concern-by-concern out of the flat App fields so tab save/load

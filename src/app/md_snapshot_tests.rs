@@ -5,10 +5,11 @@
 //! `App::ensure_md_cache`'s post-process use** (see `src/app/md_render.rs`, `src/app/md_text.rs`,
 //! and the precedent this mirrors, `app_faithful_parity_tests` in `markdown.rs`), and dumps the
 //! *entire* observable result — every rendered line's style, every span's (content, style), every
-//! inline-image placement, and everything the source scanners (`code_block_source_locs`,
-//! `task_source_locs`, `collect_details_open`) and the app-side Tab/anchor builders
-//! (`build_md_items`, `compute_md_anchors`) report — to a deterministic text file checked into
-//! `snapshots/`.
+//! inline-image placement, the render pass's own record of what `y c` would copy and what byte the
+//! checkbox toggle would write (`MdRenderExtras`, read here exactly as production reads it), the
+//! `<details>` open states (`collect_details_open`), and everything the app-side Tab/anchor builders
+//! (`build_md_items_from_render`, `compute_md_anchors`) report — to a deterministic text file
+//! checked into `snapshots/`.
 //!
 //! This is **not** a judgment that the current output is correct. Known-broken shapes (e.g. the
 //! list-item-fence glue documented next to `code_corpus`) are captured exactly as broken; the
@@ -152,27 +153,56 @@ struct CaseRender {
     images: Vec<crate::preview::markdown::ImagePlacement>,
     items: Vec<MdItem>,
     anchors: Vec<(String, usize)>,
-    code_blocks: Vec<String>,
-    task_locs: Vec<crate::preview::markdown::TaskLoc>,
+    /// The render pass's own record of every code block and task checkbox it drew — **the same
+    /// struct production reads** (`app::DecoratedMarkdown::extras`), kept whole rather than unpacked
+    /// so `build_md_items_from_render` below can take it directly. This used to be two hand-computed
+    /// fields filled by the source scanners (`code_block_source_locs`/`task_source_locs`) — a pair of
+    /// derivations nothing in production has called since the `md-block-walk` migration, dumped but
+    /// never compared against anything, while the items were built from *empty* slices; see
+    /// `build_md_items_from_render`'s own doc comment.
+    extras: crate::preview::markdown::MdRenderExtras,
     details_states: Vec<bool>,
 }
 
 /// Renders `src` exactly the way `App::build_decorated`'s Markdown branch
 /// (`src/app/md_render.rs`) does, followed by `App::ensure_md_cache`'s post-process
 /// (`src/app/md_text.rs`'s `collapse_links` / `autolink_bare_urls` / `substitute_emoji`) and item
-/// builders (`build_md_items` / `compute_md_anchors`) — the same order, the same arguments, driven
-/// off the same `cfg` fields `build_decorated` reads — through the production Markdown dispatcher
-/// (`render_markdown_with_images`, which resolves to `render::render_doc` for every document — see
-/// that function's own doc comment).
+/// builders (`build_md_items_from_render` / `compute_md_anchors`) — the same order, the same
+/// arguments, driven off the same `cfg` fields `build_decorated` reads — through the production
+/// Markdown dispatcher (`render_markdown_with_images`, which resolves to `render::render_doc` for
+/// every document — see that function's own doc comment). That "same arguments" is not a promise
+/// this comment makes: `golden_items_match_the_live_app_across_the_corpus` renders the whole corpus
+/// through a **real `App`** and requires the two to agree item for item.
 ///
 /// The one deliberate departure from `build_decorated`: the image/mermaid/math *slot* closures there
 /// depend on a live `Picker` (font metrics) and on-disk file state, neither of which exists in a unit
-/// test and neither of which is deterministic across machines. Per the task brief, they are fixed
-/// here to the same values `app_faithful_parity_tests` already uses for the same reason: images
-/// "unavailable" (as with no image backend), mermaid fences and math expressions always "extracted"
-/// (`Image{cols:20,rows:5}` / `Raw`) so the extraction and placement logic itself is still exercised
-/// end to end, just not the picker-dependent raster step.
+/// test and neither of which is deterministic across machines — see [`Slots`], which names the two
+/// sets of answers this harness runs under (the goldens dump [`Slots::Extracted`]).
 fn render_case(cfg: &Config, src: &str) -> CaseRender {
+    render_case_with(cfg, src, Slots::Extracted)
+}
+
+/// Which answers the image / mermaid / math **slot** closures give — the one axis on which this
+/// harness cannot be `App::build_decorated`, because those closures there depend on a live `Picker`
+/// (font metrics) and on-disk file state, neither of which exists in a unit test.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Slots {
+    /// What the goldens dump under: images "unavailable" (as with no image backend), every mermaid
+    /// fence and math expression always "extracted" (`Image{cols:20,rows:5}` / `Raw` with extraction
+    /// on), so the extraction and placement logic itself is still exercised end to end — the same
+    /// values `app_faithful_parity_tests` fixes for the same reason.
+    Extracted,
+    /// Exactly what a **picker-less `App`** resolves to, so a dump made under this mode is
+    /// comparable, item for item, with what the real app produces for the same file:
+    /// `build_decorated`'s `font.is_none()` forces every image `Unavailable`, and both
+    /// `mermaid_image_mode()` and `math_image_mode()` are `false` without a picker — so every fence
+    /// degrades to text (the probe included) and math extraction is off.
+    /// `golden_items_match_the_live_app_across_the_corpus` is the only caller.
+    PickerLess,
+}
+
+fn render_case_with(cfg: &Config, src: &str, slots: Slots) -> CaseRender {
+    let extract = slots == Slots::Extracted;
     let icons = cfg.ui.icons;
     let code = crate::preview::markdown::CodeStyle {
         bg: cfg.ui.theme.code_bg(),
@@ -205,9 +235,15 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
     crate::preview::markdown::set_details_open(details_states.clone());
 
     let slot_of = |_: &str, _: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;
-    let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 };
+    let mermaid_slot = |_: &str| {
+        if extract {
+            crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 }
+        } else {
+            crate::preview::markdown::MermaidSlot::Text
+        }
+    };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
-    let (mut lines, mut images, _extras) = crate::preview::markdown::render_markdown_with_images(
+    let (mut lines, mut images, extras) = crate::preview::markdown::render_markdown_with_images(
         &pre_src,
         SNAPSHOT_WIDTH,
         code,
@@ -219,7 +255,9 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
         "mermaid",
         cfg.ui.md_alerts,
         &math_slot,
-        true, // math_on: extraction "on" (mirrors the default `math = "image"` + a live picker)
+        // math_on: extraction "on" mirrors the default `math = "image"` + a live picker; a
+        // picker-less `App` computes `font.is_some() && math_image_mode()` = `false` instead.
+        extract,
     );
 
     // Prepend the front-matter metadata block, shifting image placements down past it — verbatim
@@ -247,15 +285,13 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
         lines
     };
 
-    let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
-    // The source scanners behind `y c` and the checkbox toggle, pre-`md-block-walk`: same input text
-    // (`pre_src`) and same `<details>` states the renderer above used. Computed here (not read off
-    // `MdItemKind::CodeBlock::body`/`Task::state_at`) so this harness's own parity tests — which
-    // exist specifically to check the renderer's own sentinel count against *this independent* scan
-    // — still compare two genuinely separate derivations, not one echoing the other back to itself.
-    let code_blocks = crate::preview::markdown::code_block_source_locs(&pre_src, &details_states);
-    let task_locs = crate::preview::markdown::task_source_locs(&pre_src, &tasks, &details_states);
-    let items = build_md_items(&lines, &targets, &fence_ords, &[], &[]);
+    // Items exactly the way `App::ensure_md_cache` builds them: the same function, taking the same
+    // render pass's own record (`extras`) and the same placements the mermaid ordinals come from.
+    // Nothing here re-derives "where are the code blocks / checkboxes" a second time — that is the
+    // whole point (see `build_md_items_from_render`'s own doc comment): the dump below shows the
+    // *production* source text `y c` would copy and the *production* byte the checkbox toggle would
+    // write, so a change to either fails this golden.
+    let items = build_md_items_from_render(&lines, &targets, &images, &extras);
     let anchors = compute_md_anchors(&lines);
 
     CaseRender {
@@ -263,8 +299,7 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
         images,
         items,
         anchors,
-        code_blocks,
-        task_locs,
+        extras,
         details_states,
     }
 }
@@ -373,16 +408,25 @@ fn fmt_align(a: Option<Alignment>) -> &'static str {
 fn fmt_item_kind(k: &MdItemKind) -> String {
     match k {
         MdItemKind::Link { target } => format!("Link{{target={target:?}}}"),
-        // `state_at`/`body` (the model-derived source position/text, threaded through since the
-        // `md-block-walk` copy/toggle migration) are deliberately left out of this dump: they are
-        // verification data for `y c`/the checkbox toggle, not part of the *rendered* structure this
-        // golden snapshot is pinning, and including them would force a snapshot regeneration with no
-        // rendering behavior actually changing.
-        MdItemKind::Task { state, .. } => format!("Task{{state={state:?}}}"),
-        MdItemKind::CodeBlock { .. } => "CodeBlock".to_string(),
+        // `state_at` (the byte `Space` writes) and `body` (the text `y c` copies) are dumped in
+        // full. They were left out until 2026-08 as "verification data, not rendered structure" —
+        // which made the golden blind to the two bugs that actually matter here: `y c` copying a
+        // *different* block and `Space` flipping a *different* line both left every line, span and
+        // style in this dump untouched.
+        MdItemKind::Task { state, state_at } => {
+            format!("Task{{state={state:?},state_at={state_at:?}}}")
+        }
+        MdItemKind::CodeBlock { body } => format!("CodeBlock{{body={body:?}}}"),
         MdItemKind::MermaidFence { ordinal } => format!("MermaidFence{{ordinal={ordinal}}}"),
         MdItemKind::Details { ordinal } => format!("Details{{ordinal={ordinal}}}"),
     }
+}
+
+/// One `MdItem` exactly as the `ITEMS` section prints it. Factored out of `dump_case` so
+/// `golden_items_match_the_live_app_across_the_corpus` compares **the dumped text**, character for
+/// character, against the live app's own items — not a second, more forgiving rendering of them.
+fn fmt_item(it: &MdItem) -> String {
+    format!("line={:04} kind={}", it.line, fmt_item_kind(&it.kind))
 }
 
 /// Writes one case's full dump (header + every section) to `out`. Every string value goes through
@@ -420,18 +464,18 @@ fn dump_case(cfg: &Config, name: &str, src: &str, out: &mut String) {
         )
         .unwrap();
     }
-    writeln!(out, "-- CODE_BLOCKS ({}) --", r.code_blocks.len()).unwrap();
-    for (i, b) in r.code_blocks.iter().enumerate() {
+    // Both sections are the render pass's own record — `MdRenderExtras`, exactly as production
+    // reads it (`app::DecoratedMarkdown::extras`). `CODE_BLOCKS` is the source text `y c` copies,
+    // by ordinal; `TASKS` is `(state character, byte offset **into `pre_src`**)`, the byte the
+    // checkbox toggle overwrites. The byte offset is dumped raw, not resolved to a line/column,
+    // because the raw byte is what production actually writes with.
+    writeln!(out, "-- CODE_BLOCKS ({}) --", r.extras.code_blocks.len()).unwrap();
+    for (i, b) in r.extras.code_blocks.iter().enumerate() {
         writeln!(out, "  c{i:02} {b:?}").unwrap();
     }
-    writeln!(out, "-- TASKS ({}) --", r.task_locs.len()).unwrap();
-    for (i, t) in r.task_locs.iter().enumerate() {
-        writeln!(
-            out,
-            "  t{i:02} line={:04} state_off={:04} state={:?}",
-            t.line, t.state_off, t.state
-        )
-        .unwrap();
+    writeln!(out, "-- TASKS ({}) --", r.extras.tasks.len()).unwrap();
+    for (i, (state, off)) in r.extras.tasks.iter().enumerate() {
+        writeln!(out, "  t{i:02} state={state:?} state_at={off:04}").unwrap();
     }
     writeln!(out, "-- DETAILS_OPEN ({}) --", r.details_states.len()).unwrap();
     for (i, o) in r.details_states.iter().enumerate() {
@@ -443,13 +487,7 @@ fn dump_case(cfg: &Config, name: &str, src: &str, out: &mut String) {
     }
     writeln!(out, "-- ITEMS ({}) --", r.items.len()).unwrap();
     for (i, it) in r.items.iter().enumerate() {
-        writeln!(
-            out,
-            "  m{i:02} line={:04} kind={}",
-            it.line,
-            fmt_item_kind(&it.kind)
-        )
-        .unwrap();
+        writeln!(out, "  m{i:02} {}", fmt_item(it)).unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -681,5 +719,237 @@ fn no_corpus_case_ever_draws_commented_out_text() {
     assert!(
         checked > 0,
         "no corpus case carries a `SECRET-…` marker any more — this guard is checking nothing"
+    );
+}
+
+// =================================================================================================
+// Sentinels: the dump has to keep measuring **production's own values**
+// =================================================================================================
+//
+// Until 2026-08 this harness computed its own `CODE_BLOCKS`/`TASKS` sections with the two retired
+// source scanners (`code_block_source_locs`/`task_source_locs`) — functions **no production code
+// has called** since the `md-block-walk` migration — and built its `ITEMS` with *empty* slices where
+// production passes the render pass's own record. So `y c` could start copying a different code
+// block, and `Space` could start flipping a different line of the file, without a single byte of
+// either golden moving: the dump was measuring a function the app does not run, and printing `None`
+// for the two fields that carry the answer. That is the same failure the `md-block-walk` diff
+// harness hit one migration earlier (a live A/B comparison that quietly became self-comparison), so
+// it gets the same treatment: not a comment promising the wiring is right, but tests that go red
+// when it is not.
+
+/// The dump must reproduce, item for item, what the **real `App`** builds for the same file.
+///
+/// This is the tie that makes the `ITEMS` section (and, through it, `MdItemKind::CodeBlock::body` =
+/// what `y c` copies and `MdItemKind::Task::state_at` = the byte `Space` writes) worth anything: the
+/// two sides are genuinely separate code — `App::build_decorated` + `App::ensure_md_cache` against
+/// this harness's `render_case_with` mirror of them — so a mirror that stops matching production
+/// fails here rather than silently freezing a fiction into `snapshots/`. Restoring the old
+/// `build_md_items(&lines, &targets, &fence_ords, &[], &[])` call, for instance, fails on the first
+/// corpus case that has a code block or a checkbox.
+///
+/// Rendered under [`Slots::PickerLess`] — the only mode a picker-less `App` can be compared against
+/// (see that variant's own doc comment). The goldens themselves dump [`Slots::Extracted`]; the two
+/// differ only in what the mermaid/math slots answer, and
+/// `golden_sections_are_the_render_record_not_the_retired_scanners` covers the dumped text itself.
+#[test]
+fn golden_items_match_the_live_app_across_the_corpus() {
+    let dir = crate::test_support::unique_tmp("konoma_golden_items_vs_app");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let f = root.join("doc.md");
+    let cfg = Config::default();
+    let (mut bodies, mut states) = (0usize, 0usize);
+    for (name, src) in all_cases() {
+        std::fs::write(&f, &src).unwrap();
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.enter_preview(&f);
+        app.ensure_md_cache(SNAPSHOT_WIDTH);
+        let live: Vec<String> = app.md_items.iter().map(fmt_item).collect();
+        let dumped: Vec<String> = render_case_with(&cfg, &src, Slots::PickerLess)
+            .items
+            .iter()
+            .map(fmt_item)
+            .collect();
+        assert_eq!(
+            dumped, live,
+            "{name}: ゴールデンの ITEMS が実アプリの md_items と食い違う\
+             (ハーネスが本番から外れている)\n--- src ---\n{src}"
+        );
+        // Every code block and checkbox on screen must carry its source data. `build_md_items`
+        // resolves both with `.get(ordinal)`, so an empty (or short) record degrades to `None`
+        // silently — exactly what the empty-slice call used to produce for the whole corpus.
+        for it in &app.md_items {
+            match &it.kind {
+                MdItemKind::CodeBlock { body } => {
+                    assert!(
+                        body.is_some(),
+                        "{name}: 画面のコードブロックに `y c` が読むソースが無い\
+                         (レンダラの記録が届いていない)\n--- src ---\n{src}"
+                    );
+                    bodies += 1;
+                }
+                MdItemKind::Task { state_at, .. } => {
+                    assert!(
+                        state_at.is_some(),
+                        "{name}: 画面のチェックボックスに書き戻し位置が無い\
+                         (レンダラの記録が届いていない)\n--- src ---\n{src}"
+                    );
+                    states += 1;
+                }
+                _ => {}
+            }
+        }
+        // The goldens themselves dump [`Slots::Extracted`], which the live app cannot be driven into
+        // without a picker — so the one thing that mode is checked for here is the property the whole
+        // exercise is about: whatever the mermaid/math slots answer, every sentinel the dump prints
+        // still carries the render pass's record.
+        for it in &render_case(&cfg, &src).items {
+            match &it.kind {
+                MdItemKind::CodeBlock { body } => assert!(
+                    body.is_some(),
+                    "{name}: ゴールデンが dump するモードでコードブロックのソースが欠落\n--- src ---\n{src}"
+                ),
+                MdItemKind::Task { state_at, .. } => assert!(
+                    state_at.is_some(),
+                    "{name}: ゴールデンが dump するモードでチェックボックスの書き戻し位置が欠落\n--- src ---\n{src}"
+                ),
+                _ => {}
+            }
+        }
+    }
+    // If the corpus ever stopped containing code blocks or checkboxes, everything above would pass
+    // while checking nothing at all.
+    assert!(
+        bodies > 50 && states > 50,
+        "コーパスのコードブロック({bodies})/チェックボックス({states})が激減している\
+         — この番人が検査するものが無くなっている"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The count on a `-- SECTION (n) --` header line of one case's dump.
+fn section_count(case_dump: &str, section: &str) -> usize {
+    let needle = format!("-- {section} (");
+    let at = case_dump
+        .find(&needle)
+        .unwrap_or_else(|| panic!("dump has no `{section}` section:\n{case_dump}"));
+    let rest = &case_dump[at + needle.len()..];
+    let end = rest.find(')').expect("section header closes its paren");
+    rest[..end]
+        .parse()
+        .expect("section header count is a number")
+}
+
+/// Cases where the retired source scanners and the render pass's own record **provably** disagree,
+/// as `(case label, what the retired scanner reports, what the render pass records)`.
+///
+/// These are the foils that make the sentinel below discriminate: on such a case, a dump built from
+/// the scanner and a dump built from the record cannot print the same number, so the assertion
+/// cannot be satisfied by both. Both directions are represented on purpose — the scanner *missing*
+/// something that is really on screen (a plain, non-alert block quote: `render::render_doc` reads
+/// its real block structure and draws real, toggleable checkboxes and real code-block headers inside
+/// one, while the scanner only ever strips a `>` for a GitHub *alert* header) and the scanner
+/// *inventing* something that is not (an indented line after a table, which the renderer does not
+/// draw as a code block at all).
+const RETIRED_SCANNER_FOILS: &[(&str, &str, usize, usize)] = &[
+    ("task_corpus: plain blockquote", "TASKS", 0, 1),
+    (
+        "code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line)",
+        "CODE_BLOCKS",
+        0,
+        1,
+    ),
+    (
+        "code_corpus: an indented line right after a table block, with no blank line between",
+        "CODE_BLOCKS",
+        1,
+        0,
+    ),
+];
+
+/// Sentinel (番人): the dumped `CODE_BLOCKS`/`TASKS` sections carry the **render pass's own record**,
+/// not the retired source scanners.
+///
+/// `golden_items_match_the_live_app_across_the_corpus` above pins the `ITEMS` section to production,
+/// but it compares two `Vec<MdItem>` — it would not notice `dump_case` printing its two source
+/// sections from somewhere else entirely, which is exactly what this harness did for a year. So this
+/// one asserts on **the dump text itself**, for cases where the two derivations cannot agree.
+///
+/// Two-stage on purpose, the same shape the `md-block-walk` sentinel needed: stage 1 checks that the
+/// foil still *is* a foil (the retired scanner really does still report the other number — if some
+/// future change makes the two agree on one of these cases, this fails loudly and asks for a new
+/// foil rather than degrading into a test that cannot tell them apart), stage 2 checks the dump
+/// matches the record and not the scanner. Plus the `ITEMS` line format itself, which is what
+/// carries the two fields into the golden at all.
+#[test]
+fn golden_sections_are_the_render_record_not_the_retired_scanners() {
+    let cfg = Config::default();
+    let cases = all_cases();
+    for &(label, section, scanned, recorded) in RETIRED_SCANNER_FOILS {
+        assert_ne!(
+            scanned, recorded,
+            "{label}: 食い違わない組を番人の対照に使っている(検査になっていない)"
+        );
+        let (_, src) = cases
+            .iter()
+            .find(|(n, _)| n == label)
+            .unwrap_or_else(|| panic!("corpus case {label:?} is gone — pick a new sentinel foil"));
+
+        // Stage 1: the retired scanner still reports what it always did for this document.
+        let pre_src = pre_src_for(&cfg, src);
+        let details = crate::preview::markdown::collect_details_open(&pre_src);
+        let n_scanned = match section {
+            "CODE_BLOCKS" => {
+                crate::preview::markdown::code_block_source_locs(&pre_src, &details).len()
+            }
+            "TASKS" => crate::preview::markdown::task_source_locs(
+                &pre_src,
+                &cfg.ui.md_task_state_chars(),
+                &details,
+            )
+            .len(),
+            other => panic!("unknown section {other:?}"),
+        };
+        assert_eq!(
+            n_scanned, scanned,
+            "{label}: 退役スキャナの結果が変わった — 対照(foil)として機能しなくなったので選び直すこと"
+        );
+
+        // Stage 2: the dump prints the render pass's record.
+        let mut dump = String::new();
+        dump_case(&cfg, label, src, &mut dump);
+        assert_eq!(
+            section_count(&dump, section),
+            recorded,
+            "{label}: ゴールデンの {section} 節がレンダラの記録と違う\
+             (退役スキャナ {n_scanned} 件に戻っていないか)\n{dump}"
+        );
+    }
+
+    // The `ITEMS` line format: `body`/`state_at` must actually reach the dump. Both were omitted
+    // from `fmt_item_kind` until 2026-08, so every item printed the same text whatever `y c` would
+    // have copied and whatever byte `Space` would have written.
+    let mut dump = String::new();
+    let (label, src) = cases
+        .iter()
+        .find(|(n, _)| n == "task_corpus: plain blockquote")
+        .expect("foil case checked above");
+    dump_case(&cfg, label, src, &mut dump);
+    assert!(
+        dump.contains("state_at=Some("),
+        "ITEMS 節にチェックボックスの書き戻し位置が出ていない\n{dump}"
+    );
+    let mut dump = String::new();
+    let (label, src) = cases
+        .iter()
+        .find(|(n, _)| {
+            n == "code_corpus: fence inside a plain block quote draws no header (tui-markdown prefixes every line)"
+        })
+        .expect("foil case checked above");
+    dump_case(&cfg, label, src, &mut dump);
+    assert!(
+        dump.contains("CodeBlock{body=Some("),
+        "ITEMS 節にコードブロックのソースが出ていない\n{dump}"
     );
 }

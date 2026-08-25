@@ -12,10 +12,9 @@ impl App {
     ///
     /// The final step of the `md-block-walk` migration: `MdItemKind::Task::state_at` is the model
     /// render pass's own byte offset for *this exact checkbox*, into `MdCache::pre_src` — pushed by
-    /// `render_item` at the moment it drew this checkbox's own marker (`render::RenderOut::tasks`),
-    /// or, for the rare legacy fallback, resolved once (by ordinal, no document-wide count) when
-    /// `app::md_render::build_decorated` built the cache — see that function's own doc comment. Either
-    /// way, there is no second, independent re-scan of `pre_src` left to reconcile by count against
+    /// `render_item` at the moment it drew this checkbox's own marker (`render::RenderOut::tasks`)
+    /// and carried to the cache as `DecoratedMarkdown::extras` — see that field's own doc comment.
+    /// There is no second, independent re-scan of `pre_src` left to reconcile by count against
     /// what is on screen (what the old `task_source_locs`-based "drawn" scan here used to be): the
     /// **position** this function starts from is not a re-derivation, it is the render pass's own
     /// record — the count-based correspondence bug this closed (v0.23.5 — a document could hide one
@@ -41,9 +40,9 @@ impl App {
         let Some(f) = self.tab.focused_item else {
             return;
         };
-        // `state_at: None` only for the vanishingly rare legacy-fallback item this position could not
-        // be resolved for at cache-build time (see `MdItemKind::Task`'s own doc comment) — a quiet
-        // no-op, the same as focusing nothing: never write against a position that isn't known.
+        // `state_at: None` means the render pass's record held fewer checkboxes than the screen drew
+        // (see `MdItemKind::Task`'s own doc comment — asserted against over the whole corpus) — a
+        // quiet no-op, the same as focusing nothing: never write against a position that isn't known.
         let Some(MdItem {
             kind:
                 MdItemKind::Task {

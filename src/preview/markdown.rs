@@ -549,6 +549,10 @@ pub fn mermaid_focus_border_x(align: BlockAlign, pane: u16, bw: u16) -> u16 {
 /// every code block and task checkbox the render pass itself drew, in document order — straight
 /// from the same parse it rendered from (see `render::RenderOut`'s own `code_blocks`/`tasks` doc
 /// comments for why this is a record rather than a second derivation).
+///
+/// `Default` (both lists empty) is the "this preview built no Markdown items at all" value every
+/// non-Markdown `DecoratedMarkdown` branch uses — see `app::DecoratedMarkdown::extras`.
+#[derive(Default)]
 pub struct MdRenderExtras {
     pub code_blocks: Vec<String>,
     pub tasks: Vec<(char, usize)>,
@@ -1833,9 +1837,32 @@ fn scan_text_part(text: &SourceRun, out: &mut Vec<String>) {
 
 /// Raw inner text of each code block — fenced (```` ``` ```` / `~~~`) or indented — in document
 /// order, skipping `mermaid` fences (they are diverted to diagram rendering and produce no
-/// code-block header). Used by the "copy focused code block" action: the Nth entry maps to the Nth
-/// focusable block. The caller cross-checks the count against the on-screen headers before copying
-/// (safe fallback).
+/// code-block header).
+///
+/// # Retired from production (2026-08) — `#[cfg(test)]`
+///
+/// This was the scanner behind "copy focused code block" (`y c`): the Nth entry mapped to the Nth
+/// focusable block, cross-checked by count against the on-screen headers before copying. **Nothing
+/// shipped calls it any more.** `y c` reads the render pass's own record instead
+/// (`MdRenderExtras::code_blocks` → `MdItemKind::CodeBlock::body`), pushed by `render_code_block` at
+/// the moment it drew each header — one derivation, no count reconciliation. The `#[cfg(test)]` is
+/// the enforcement, not this comment: a production caller no longer compiles.
+///
+/// ## Why it is kept rather than deleted
+///
+/// It is now a **foil**, not a scanner — the one thing a retired implementation is still good for.
+/// `app::md_snapshot_tests::golden_sections_are_the_render_record_not_the_retired_scanners` needs a
+/// derivation that provably *disagrees* with the render pass on specific documents (a fence inside a
+/// plain block quote it cannot see; an indented line after a table it wrongly claims) so it can
+/// assert that the golden snapshots carry the render pass's numbers and not these. That test also
+/// pins this function's own answers for those documents, so it cannot quietly stop being a foil.
+/// Its sibling tests here (`task_scan_parity_tests`, and this module's own scanner tests) document
+/// the same shapes, in the same spirit.
+///
+/// **Do not wire it back into production.** Its contract is calibrated to a renderer that no longer
+/// exists: it disagreed with the current one on 19 of the 548 golden-snapshot corpus cases when it
+/// was retired (16 constructs it misses, 3 it invents), every one of which would be a wrong-block
+/// copy or a wrong-byte write.
 #[cfg(test)]
 pub(crate) fn code_block_source_locs(src: &str, details_open: &[bool]) -> Vec<String> {
     code_block_source_locs_inner(src, details_open, false)
@@ -2084,9 +2111,17 @@ fn scan_task_lines(logical: &[(usize, &str, usize)], tasks: &[char], out: &mut V
 
 /// Scan Markdown source for task markers, in document order, skipping exactly what the render
 /// pipeline diverts away from `decorate_extras`: code/mermaid fences, HTML blocks (start line up
-/// to the next blank line) and GFM table blocks. This keeps the Nth checkbox on screen aligned
-/// with the Nth `TaskLoc`, so a toggle edits the right line. Pathological documents could still
-/// disagree — the caller cross-checks count and current state before writing.
+/// to the next blank line) and GFM table blocks.
+///
+/// # Retired from production (2026-08) — `#[cfg(test)]`
+///
+/// This was the scanner behind the checkbox toggle: it kept the Nth checkbox on screen aligned with
+/// the Nth `TaskLoc` so a toggle edited the right line, with the caller cross-checking count and
+/// current state before writing. **Nothing shipped calls it any more** — `md_toggle_focused_task`
+/// starts from the render pass's own byte offset (`MdRenderExtras::tasks` →
+/// `MdItemKind::Task::state_at`) and verifies it against the file through `LineOrigin`. See
+/// [`code_block_source_locs`]'s own "Retired from production" section for why both are kept as test
+/// **foils** rather than deleted, and why wiring either back into production would be a regression.
 ///
 /// This scanner knows nothing about the source pre-passes the caller may have run first
 /// (`process_footnotes`, `process_inline_html`), so **which text it is given decides what it means**.

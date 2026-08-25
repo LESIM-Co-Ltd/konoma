@@ -77,19 +77,11 @@ impl App {
             decorated
         };
         let (lines, targets) = self.postprocess_md(decorated.lines);
-        // Pass the drawn mermaid placements' source ordinal (document order) for sentinel matching.
-        let fence_ords: Vec<usize> = decorated
-            .images
-            .iter()
-            .filter_map(|p| p.fence_ord)
-            .collect();
-        let items = build_md_items(
-            &lines,
-            &targets,
-            &fence_ords,
-            &decorated.code_blocks,
-            &decorated.tasks,
-        );
+        // The render pass's own record (`DecoratedMarkdown::extras`) plus the drawn mermaid
+        // placements — see `build_md_items_from_render`, the one function both this and the
+        // golden-snapshot harness build their items through.
+        let items =
+            build_md_items_from_render(&lines, &targets, &decorated.images, &decorated.extras);
         let anchors = compute_md_anchors(&lines);
         let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let row_prefix = if self.cfg.ui.wrap && width > 0 {
@@ -306,8 +298,7 @@ impl App {
                     src_lines: 0,
                     pre_src: String::new(),
                     pre_origin: Vec::new(),
-                    code_blocks: Vec::new(),
-                    tasks: Vec::new(),
+                    extras: crate::preview::markdown::MdRenderExtras::default(),
                 }
             }
         };
@@ -504,11 +495,6 @@ impl App {
                         // unconfigured konoma draws exactly what it always did.
                         self.cfg.ui.md_block_aligns(),
                     );
-                // `render_markdown_with_images`'s own record, straight from the same parse it
-                // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox toggle
-                // read a focused item's source straight off this list, by ordinal, with no re-scan
-                // and no count-guard reconciliation of any kind.
-                let (code_blocks, tasks_at) = (extras.code_blocks, extras.tasks);
                 let remote = if font.is_some() {
                     crate::preview::markdown::collect_remote_image_urls(&src)
                 } else {
@@ -542,8 +528,11 @@ impl App {
                     src_lines,
                     pre_src,
                     pre_origin: origin,
-                    code_blocks,
-                    tasks: tasks_at,
+                    // `render_markdown_with_images`'s own record, straight from the same parse it
+                    // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox
+                    // toggle read a focused item's source straight off this list, by ordinal, with
+                    // no re-scan and no count-guard reconciliation of any kind.
+                    extras,
                 }
             }
             Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
@@ -555,8 +544,7 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
-                code_blocks: Vec::new(),
-                tasks: Vec::new(),
+                extras: crate::preview::markdown::MdRenderExtras::default(),
             },
             // A standalone code file is syntax-highlighted via syntect.
             Some(PreviewKind::Code(_)) => DecoratedMarkdown {
@@ -568,8 +556,7 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
-                code_blocks: Vec::new(),
-                tasks: Vec::new(),
+                extras: crate::preview::markdown::MdRenderExtras::default(),
             },
             _ => DecoratedMarkdown {
                 lines: Vec::new(),
@@ -580,8 +567,7 @@ impl App {
                 src_lines,
                 pre_src: String::new(),
                 pre_origin: Vec::new(),
-                code_blocks: Vec::new(),
-                tasks: Vec::new(),
+                extras: crate::preview::markdown::MdRenderExtras::default(),
             },
         }
     }

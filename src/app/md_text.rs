@@ -82,9 +82,10 @@ pub(super) fn build_md_items(
                     // comment): `task_marks` is the model render pass's own record, in document
                     // order, of the identical checkboxes this scan is finding by sentinel span, so
                     // the Nth sentinel and `task_marks[N]` are the same checkbox by construction (one
-                    // render pass, not two independent derivations) — never absent for a document the
-                    // model renderer drew (empty only for the legacy fallback, where `state_at` is
-                    // `None` and the toggle re-derives the position the pre-migration way).
+                    // render pass, not two independent derivations) — and never absent for a document
+                    // the model renderer drew, which is every document
+                    // (`golden_items_match_the_live_app_across_the_corpus` pins that over the whole
+                    // corpus; a short record would leave `state_at` `None` and the toggle a no-op).
                     let seen = items
                         .iter()
                         .filter(|it| matches!(it.kind, MdItemKind::Task { .. }))
@@ -135,6 +136,38 @@ pub(super) fn build_md_items(
         }
     }
     items
+}
+
+/// Derive the Tab-cycle item list from **one render pass's own outputs** — the shape both
+/// production (`App::ensure_md_cache`) and the golden-snapshot harness
+/// (`md_snapshot_tests::render_case`) build their items through.
+///
+/// Why this wrapper exists rather than each caller assembling [`build_md_items`]'s five arguments
+/// itself: the two that carry *source* data — `code_blocks` (the text `y c` copies) and `task_marks`
+/// (the byte the checkbox toggle writes) — were exactly the two the golden snapshot used to pass as
+/// **empty slices** while production passed the render pass's real record, so every dumped
+/// `CodeBlock::body`/`Task::state_at` read `None` and no golden could ever have failed on a `y c`
+/// that copied the wrong block or a `Space` that flipped the wrong line. Taking
+/// [`MdRenderExtras`](crate::preview::markdown::MdRenderExtras) **by reference, as the struct the
+/// renderer itself returned**, means neither caller can substitute a differently-derived list
+/// without hand-building a fake record; `md_snapshot_tests::golden_sections_are_the_production_records`
+/// pins that nobody did.
+pub(super) fn build_md_items_from_render(
+    lines: &[Line<'static>],
+    targets: &[String],
+    images: &[crate::preview::markdown::ImagePlacement],
+    extras: &crate::preview::markdown::MdRenderExtras,
+) -> Vec<MdItem> {
+    // The drawn mermaid placements' **source** ordinal (document order), for sentinel matching —
+    // see `build_md_items`'s own mermaid arm for why the source ordinal and not a drawn count.
+    let fence_ords: Vec<usize> = images.iter().filter_map(|p| p.fence_ord).collect();
+    build_md_items(
+        lines,
+        targets,
+        &fence_ords,
+        &extras.code_blocks,
+        &extras.tasks,
+    )
 }
 
 /// Apply the focus inversion to one decorated line. `ordinal` = index of the focused marker span

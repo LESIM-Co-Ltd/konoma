@@ -306,10 +306,9 @@ impl App {
     /// The final step of the `md-block-walk` migration: this is a plain field read, not a scan. Every
     /// `MdItemKind::CodeBlock` in `self.md_items` already carries its own resolved `body` — for the
     /// (now near-universal) model render path, pushed by `render_code_block` at the exact moment it
-    /// drew this block's own header (`render::RenderOut::code_blocks`); for the rare legacy fallback,
-    /// resolved once, by ordinal, when `app::md_render::build_decorated` built the cache (see that
-    /// function's own doc comment) — either way, there is no second, independent derivation of "where
-    /// are the code blocks" left for this function to reconcile by count at copy time, which is what
+    /// drew this block's own header (`render::RenderOut::code_blocks`) — so there is no second,
+    /// independent derivation of "where are the code blocks" left for this function to reconcile by
+    /// count at copy time, which is what
     /// the *old* `code_block_source_locs`-based scan here used to do (root cause of the class of bug
     /// this closes: seven separate renderer-vs-scanner drifts, the last found 2026-08 on the released
     /// build — see `code_block_source_locs`'s own doc comment for the full history).
