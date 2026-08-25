@@ -37,6 +37,57 @@ fn main() {
 | **bold** | *italic* | `code` |
 | ~~strike~~ | a \| b | 123 |
 
+### HTML tables
+
+A `<table>` written as HTML is drawn as a real table too. READMEs reach for this form because a
+GFM `|` table cannot put a caption row underneath a row of images. Alignment is read per cell
+(`align="center"`), a `<th>` row becomes a header, and `<b>`/`<i>`/`<code>`/`<a>` inside a cell
+are styled.
+
+<table>
+  <tr>
+    <th>Stage</th>
+    <th align="center">Output</th>
+  </tr>
+  <tr>
+    <td><b>block model</b></td>
+    <td align="center">styled spans</td>
+  </tr>
+  <tr>
+    <td><code>mermaid-rs-renderer</code></td>
+    <td align="center">SVG to pixels</td>
+  </tr>
+</table>
+
+Not modeled: `colspan`/`rowspan`, a nested `<table>`, and `<caption>`.
+
+### Images in table cells
+
+A cell can hold an image, drawn in real pixels rather than an `🖼 alt` label. In a GFM table:
+
+| Format | Sample |
+|--------|--------|
+| JPEG   | ![a raster sample](sample.jpg) |
+| SVG    | ![a vector sample](sample.svg) |
+
+And in an HTML table — the screenshot grid the README itself is built from, pictures on top and
+a caption row underneath:
+
+<table>
+  <tr>
+    <td><img src="sample.jpg" alt="a raster sample"></td>
+    <td><img src="sample.svg" alt="a vector sample"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>JPEG</b> — decoded to pixels</td>
+    <td align="center"><b>SVG</b> — rasterized by resvg</td>
+  </tr>
+</table>
+
+The row grows to fit the tallest image in it, and a cell holding both an image and text stacks
+them, image first. Anything that cannot be drawn — a missing file, a fetch still in flight, a
+terminal with no image protocol — keeps the `🖼 alt` label.
+
 ## Horizontal rule and task list
 
 A horizontal rule (`---`) becomes a full-width line:

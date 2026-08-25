@@ -37,6 +37,55 @@ fn main() {
 | **太字** | *斜体* | `code` |
 | ~~打消し~~ | a \| b | 123 |
 
+### HTML の表
+
+HTML で書かれた `<table>` も本物の表として描かれる。README がこの形を使うのは、GFM の `|` 表では
+画像の行の下にキャプションの行を置けないため。整列はセル単位（`align="center"`）で読み、`<th>` の行は
+ヘッダになり、セル内の `<b>`/`<i>`/`<code>`/`<a>` も装飾される。
+
+<table>
+  <tr>
+    <th>工程</th>
+    <th align="center">出力</th>
+  </tr>
+  <tr>
+    <td><b>ブロックモデル</b></td>
+    <td align="center">装飾つきスパン</td>
+  </tr>
+  <tr>
+    <td><code>mermaid-rs-renderer</code></td>
+    <td align="center">SVG を実ピクセルに</td>
+  </tr>
+</table>
+
+未対応: `colspan`/`rowspan`・入れ子の `<table>`・`<caption>`。
+
+### 表のセルの中の画像
+
+セルは画像を持てる。`🖼 alt` のラベルではなく**実ピクセル**で描かれる。GFM の表では:
+
+| 形式 | サンプル |
+|------|----------|
+| JPEG | ![ラスタのサンプル](sample.jpg) |
+| SVG  | ![ベクタのサンプル](sample.svg) |
+
+HTML の表では、README 自身が使っているスクリーンショットのグリッド — 上に画像、下にキャプションの行:
+
+<table>
+  <tr>
+    <td><img src="sample.jpg" alt="ラスタのサンプル"></td>
+    <td><img src="sample.svg" alt="ベクタのサンプル"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>JPEG</b> — デコードして実ピクセルに</td>
+    <td align="center"><b>SVG</b> — resvg でラスタライズ</td>
+  </tr>
+</table>
+
+行の高さはその行で一番背の高い画像に合わせて伸びる。画像とテキストが同居するセルは、画像が上・
+テキストが下に積まれる。描けないもの（ファイルが無い・取得中・画像プロトコルの無い端末）は
+`🖼 alt` のラベルのまま。
+
 ## 水平線とタスクリスト
 
 水平線（`---`）は全幅の罫線になる:

@@ -32,6 +32,36 @@ Both are downloaded in the background and rendered inline (SVG is rasterized):
 
 ![build badge](https://img.shields.io/badge/konoma-preview-brightgreen.svg)
 
+## Images in a table cell
+
+A table cell holds a real image too, in both kinds of table. The cell reserves a rectangle sized
+to its own column, so the picture lands inside the box drawing rather than beside it:
+
+| Format | Sample |
+|--------|--------|
+| JPEG   | ![a raster sample](sample.jpg) |
+| SVG    | ![a vector sample](sample.svg) |
+
+The same thing written as an HTML `<table>` — the screenshot-grid form, pictures on top and a
+caption row underneath, which is how this repository's own README lays out its screenshots:
+
+<table>
+  <tr>
+    <td><img src="sample.jpg" alt="a raster sample"></td>
+    <td><img src="sample.svg" alt="a vector sample"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>JPEG</b> — decoded to pixels</td>
+    <td align="center"><b>SVG</b> — rasterized by resvg</td>
+  </tr>
+</table>
+
+A remote image works in a cell as well, downloaded off-thread like any other:
+
+| Source | Badge |
+|--------|-------|
+| shields.io | ![build badge](https://img.shields.io/badge/konoma-preview-brightgreen.svg) |
+
 ## Safe fallbacks (design principle #3)
 
 An unreachable remote URL and a missing local file degrade to a text
