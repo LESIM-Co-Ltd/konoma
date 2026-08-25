@@ -7,6 +7,23 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **One picture shown at two sizes in the same document pinned a CPU and left one of the two
+  blank.** A Markdown table sizes an image to its own column, so a file drawn both as a block image
+  and inside a table cell — or inside two tables with different column widths — is on screen at two
+  cell sizes at once. konoma kept a single encoded picture per file, so the two placements fought
+  over that one slot forever: each frame, each of them saw the other's size stored, asked for its
+  own, and the answer overwrote the first. The result was a redraw loop that never stopped with
+  nobody touching the keyboard (measured at 40 columns: 0.31s of CPU across 30 idle seconds), while
+  the placement that kept losing never showed a picture at all. Encoded pictures are now kept per
+  cell size, so every placement is drawn at the size it was laid out for and the encoding stops as
+  soon as they all have one. Retention is capped, and a size the frame being drawn is using is never
+  dropped — so a document that genuinely shows a picture at four sizes keeps four rather than
+  thrashing, and resizing a pane reuses the slot the previous width had instead of accumulating one
+  per width. On kitty-protocol terminals each size gets its own image id for the same reason
+  (a transmit under a shared id deletes whatever that id was showing), while reopening a document
+  still adds none. Partially scrolled pictures, which are encoded as a cropped band, had the same
+  flaw and get the same fix — two placements of one picture cut by the top and bottom viewport edges
+  no longer overwrite each other's band.
 - **An image a Markdown preview draws was never re-read after the file behind it changed.** With
   `chart.png` on screen inside an open document, regenerating it — the everyday move when an agent
   is rebuilding diagrams next to konoma — changed nothing at all: not the picture, not even its

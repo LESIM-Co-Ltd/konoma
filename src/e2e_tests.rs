@@ -205,6 +205,36 @@ impl Sim {
         self.draw();
     }
 
+    /// Non-blocking sibling of `drain_md_encodes`: apply **one** encode result if the worker has
+    /// produced one within a short grace period, redraw, and say whether anything was applied.
+    /// `false` therefore means "the pipeline has gone quiet" — the renderer asked for nothing more.
+    /// This is what lets a test assert **convergence** (no key pressed, so the only thing that can
+    /// keep the loop alive is the renderer re-requesting an encode it should already have).
+    #[track_caller]
+    fn drain_md_encode_if_any(&mut self) -> bool {
+        let rx = self
+            .md_enc_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない");
+        // Quiescence is read off the App, not off the clock: while a request is in flight the
+        // worker owes a result and this waits however long a loaded test runner needs, and only
+        // when nothing is in flight does a miss actually mean "the renderer has stopped asking".
+        // A pure timeout here was flaky under `cargo test`'s full parallel load — it reported
+        // convergence while an encode was still on its way, and the *next* assertion (the placement
+        // that never got its picture) is what failed.
+        let wait = if self.app.md_encode_in_flight() {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_millis(50)
+        };
+        let Ok(res) = rx.recv_timeout(wait) else {
+            return false;
+        };
+        self.app.apply_md_encode(res);
+        self.draw();
+        true
+    }
+
     /// Wait for the next full-screen media-load result (SVG/GIF/PDF/video/standalone-mermaid/
     /// fullscreen-fence) and apply it (the run loop's `rx.media.try_recv()` step), then redraw.
     #[track_caller]
@@ -10740,6 +10770,301 @@ fn e2e_ui_reopening_a_two_image_document_stays_at_two_kitty_image_ids() {
         );
         s.key('q');
         s.select("other.txt");
+        s.enter();
+        s.key('q');
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// One picture, two table cells of **different column widths** — so the same file is on screen at
+/// two different cell sizes in the very same frame. The narrow single-column table shaves the
+/// picture to the pane width; the two-column table shaves it to its own (much narrower) column.
+const TWO_WIDTHS_DOC: &str = "\
+| A |
+|---|
+| ![a](p.png) |
+
+| A | B |
+|---|---|
+| ![a](p.png) | a rather long caption that forces the shaving |
+";
+
+/// The same picture at **four** sizes at once — more than `MD_PROTO_SLOTS` — reached the way a real
+/// document does: three tables whose columns shave it differently, plus a plain block image at the
+/// page width. At 40 columns these lay out at 34, 16, 10 and 36 cells wide.
+const FOUR_WIDTHS_DOC: &str = "\
+| A |
+|---|
+| ![a](p.png) |
+
+| A | B |
+|---|---|
+| ![a](p.png) | a rather long caption that forces the shaving |
+
+| A | B | C |
+|---|---|---|
+| ![a](p.png) | xxxxxxxx | yyyyyyyyyyyy |
+
+![a](p.png)
+";
+
+/// Every distinct cell box the placements of `url` are laid out at, in document order.
+fn placement_boxes(app: &App, url: &str) -> Vec<(u16, u16)> {
+    app.md_images()
+        .iter()
+        .filter(|p| p.url == url)
+        .map(|p| (p.cols, p.rows))
+        .collect()
+}
+
+/// Apply encode results until the pipeline falls silent, returning how many arrived. Fails rather
+/// than hanging if it never does — "no key pressed, so nothing more should be asked for" is the
+/// property every test below is really about.
+#[track_caller]
+fn settle_md_encodes(s: &mut Sim, limit: usize) -> usize {
+    let mut n = 0usize;
+    while s.drain_md_encode_if_any() {
+        n += 1;
+        assert!(
+            n <= limit,
+            "キー入力が無いのにエンコード要求が止まらない({n} 回目 > 上限 {limit})"
+        );
+    }
+    n
+}
+
+/// **The regression this fix exists for.** `MdImgEntry` used to hold exactly one encoded picture
+/// (`protocol` + the single `proto_size` it was encoded for), so two placements of the same file at
+/// two different sizes fought over that one slot forever: the renderer calls `ensure_md_image` for
+/// every visible placement on every frame, each one sees `proto_size != its own size`, requests an
+/// encode, and the arriving result overwrites the other's — draw → request → apply → draw →
+/// request → ... with nobody ever pressing a key. Measured live at 40 columns: 0.31s of CPU in 30
+/// idle seconds, and the losing placement never showed a picture at all.
+///
+/// The observable is **convergence**: with no key pressed, the encode pipeline must fall silent
+/// after a bounded number of results.
+#[test]
+fn e2e_ui_one_picture_at_two_cell_widths_stops_re_encoding() {
+    let dir = sandbox("inline_image_two_widths");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), TWO_WIDTHS_DOC).unwrap();
+    let root = canon(&dir);
+
+    // 40 columns is the width the bug was reported at: wide enough for both tables to lay out,
+    // narrow enough that the two-column table's cell is much narrower than the one-column one.
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 30).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images(); // the one decode both placements share
+
+    let boxes = placement_boxes(&s.app, "p.png");
+    let widths: std::collections::BTreeSet<u16> = boxes.iter().map(|b| b.0).collect();
+    assert_eq!(
+        widths.len(),
+        2,
+        "同じ絵が2つの異なる幅で配置されている(前提): {boxes:?}"
+    );
+
+    let n = settle_md_encodes(&mut s, 10);
+    assert!(n >= 2, "2つの幅ぶんのエンコードは実際に起きる: {n}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The control for the test above: the very same picture in a **single** table converges after one
+/// encode. Without this, "converges" could be satisfied by a fix that simply stopped encoding.
+#[test]
+fn e2e_ui_one_picture_at_one_cell_width_converges_after_a_single_encode() {
+    let dir = sandbox("inline_image_one_width");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), "| A |\n|---|\n| ![a](p.png) |\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 30).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+
+    assert_eq!(
+        settle_md_encodes(&mut s, 10),
+        1,
+        "対照: 1回のエンコードで収束する"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Converging is only half the fix: **both** placements have to end up with a picture of their own
+/// size. The losing one used to keep the `🖼 alt` text row forever, because the single stored
+/// encode never matched the box it was drawn in.
+#[test]
+fn e2e_ui_one_picture_at_two_cell_widths_draws_each_at_its_own_size() {
+    let dir = sandbox("inline_image_two_widths_drawn");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), TWO_WIDTHS_DOC).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 30).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    settle_md_encodes(&mut s, 10);
+
+    let boxes = placement_boxes(&s.app, "p.png");
+    assert_eq!(boxes.len(), 2, "2箇所に配置される: {boxes:?}");
+    for (cols, rows) in boxes {
+        let img = s
+            .app
+            .md_image_proto("p.png", cols, rows, 0, rows)
+            .unwrap_or_else(|| panic!("{cols}x{rows} の配置に絵が無い(🖼 alt のまま)"));
+        assert_eq!(
+            img.cell_size(),
+            (cols, rows),
+            "その配置に合わせた寸法で描かれる(他方の寸法を借りていない)"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// **More simultaneous sizes than `MD_PROTO_SLOTS`.** The cap is a soft floor, not a ceiling: a slot
+/// the frame being drawn right now is using is never recycled, so a document that genuinely needs a
+/// fourth size keeps four rather than thrashing between three. Convergence must not depend on the
+/// document being kind — this is the case a plain fixed-size LRU gets wrong (a cyclic access pattern
+/// one entry wider than the cache evicts, on every frame, exactly the entry the next frame asks for).
+#[test]
+fn e2e_ui_one_picture_beyond_the_slot_cap_still_converges_and_draws_every_size() {
+    let dir = sandbox("inline_image_four_widths");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), FOUR_WIDTHS_DOC).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 60).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    settle_md_encodes(&mut s, 16);
+
+    let boxes = placement_boxes(&s.app, "p.png");
+    let widths: std::collections::BTreeSet<u16> = boxes.iter().map(|b| b.0).collect();
+    assert!(
+        widths.len() > 3,
+        "前提: スロット上限(3)を超える数の幅が同時に出ている: {boxes:?}"
+    );
+    for (cols, rows) in boxes {
+        let img = s
+            .app
+            .md_image_proto("p.png", cols, rows, 0, rows)
+            .unwrap_or_else(|| panic!("{cols}x{rows} の配置に絵が無い"));
+        assert_eq!(img.cell_size(), (cols, rows));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same document at a whole range of terminal widths. Each width shaves the table columns
+/// differently — some collapse two placements onto one size, some spread them over four — so this
+/// sweeps the "how many sizes are live at once" axis instead of trusting one lucky number.
+#[test]
+fn e2e_ui_one_picture_converges_at_every_terminal_width() {
+    let dir = sandbox("inline_image_width_sweep");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), FOUR_WIDTHS_DOC).unwrap();
+    let root = canon(&dir);
+
+    for w in [30u16, 36, 40, 44, 50, 60, 72, 90] {
+        let mut s = Sim::with_config_sized(&root, Config::default(), w, 60).with_media();
+        s.select("d.md");
+        s.enter();
+        s.drain_md_images();
+        let distinct: std::collections::BTreeSet<(u16, u16)> =
+            placement_boxes(&s.app, "p.png").into_iter().collect();
+        // Converges — that is the assertion `settle_md_encodes` itself makes — and does so having
+        // encoded at least one picture per distinct box (a placement whose bottom is cut by the
+        // viewport edge adds a band encode on top, so this is a floor, not an equality).
+        let n = settle_md_encodes(&mut s, 16);
+        assert!(
+            n >= distinct.len(),
+            "幅 {w}: 出ている寸法の数ぶんはエンコードされる: {n} < {distinct:?}"
+        );
+        // ...and every fully-visible placement really got a picture cut to its own box.
+        for (cols, rows) in distinct {
+            if let Some(img) = s.app.md_image_proto("p.png", cols, rows, 0, rows) {
+                assert_eq!(img.cell_size(), (cols, rows), "幅 {w}: {cols}x{rows}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The **clip** family has the identical shape of bug and gets the identical fix: scroll so the
+/// viewport cuts through both tables and each placement wants its own cropped band, keyed by its own
+/// width. One band slot per picture would put those two into the same fight.
+#[test]
+fn e2e_ui_a_partially_scrolled_picture_at_two_widths_stops_re_encoding() {
+    let dir = sandbox("inline_image_two_widths_clipped");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), TWO_WIDTHS_DOC).unwrap();
+    let root = canon(&dir);
+
+    // A short viewport, so a scroll position exists where both images are cut by an edge.
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 16).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    settle_md_encodes(&mut s, 16);
+
+    // Walk down the document a row at a time. Every position must settle, and at least one of them
+    // must genuinely have produced clipped bands (otherwise this test proves nothing).
+    let mut clipped_frames = 0;
+    for _ in 0..12 {
+        s.key('j');
+        let n = settle_md_encodes(&mut s, 16);
+        let entry_clips = s.app.md_clip_slot_count("p.png");
+        if entry_clips >= 2 {
+            clipped_frames += 1;
+        }
+        assert!(n <= 4, "1行スクロールごとのエンコードは有界: {n}");
+    }
+    assert!(
+        clipped_frames > 0,
+        "前提: 2つの配置が同時にクリップされる位置を実際に通っている"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The terminal-side half of the same fix, and the guard on its cost. Two widths of one picture are
+/// two pictures to a kitty terminal, so they need two image ids — a shared id would have each
+/// transmit delete the other, which is the display-corruption twin of the CPU loop. But **reopening**
+/// the document must still add none, which is what `App::md_kitty_ids` outliving the decode cache is
+/// for: the resident image count tracks distinct (picture, size) pairs, never how many times they
+/// were looked at.
+#[test]
+fn e2e_ui_one_picture_at_two_widths_keeps_two_kitty_ids_across_reopens() {
+    let dir = sandbox("inline_image_two_widths_kitty");
+    write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
+    std::fs::write(dir.join("d.md"), TWO_WIDTHS_DOC).unwrap();
+    std::fs::write(dir.join("other.txt"), "just text\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 30).with_media_kitty();
+    let mut ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for lap in 0..3 {
+        s.select("d.md");
+        s.enter();
+        s.drain_md_images();
+        // Collect the transmits as they happen: a slot is transmitted on the frame its encode
+        // lands, not necessarily on the last one.
+        loop {
+            ids.extend(transmitted_kitty_ids(&s.term));
+            if !s.drain_md_encode_if_any() {
+                break;
+            }
+        }
+        ids.extend(transmitted_kitty_ids(&s.term));
+        assert_eq!(
+            ids.len(),
+            2,
+            "lap {lap}: 幅2つ = ID 2つのまま(開き直しで増えない): {ids:?}"
+        );
+        s.key('q');
+        s.select("other.txt"); // a genuinely different file = the image cache is discarded
         s.enter();
         s.key('q');
     }

@@ -12,6 +12,15 @@ impl App {
                 .any(|e| (e.decoded.is_none() && !e.failed) || e.enc_inflight)
     }
 
+    /// Test-only: whether an inline-image encode request has been sent and its result not yet
+    /// applied. Unlike `md_images_loading` this is *only* about the encode channel, which is what a
+    /// test needs to tell "the worker owes me a result, keep waiting however slow this machine is"
+    /// from "the renderer has stopped asking" — the property the convergence tests assert.
+    #[cfg(test)]
+    pub fn md_encode_in_flight(&self) -> bool {
+        self.md_image_cache.values().any(|e| e.enc_inflight)
+    }
+
     /// Drop tx and the image state on exit (to terminate the worker thread).
     pub fn detach_image_backend(&mut self) {
         self.clear_image();

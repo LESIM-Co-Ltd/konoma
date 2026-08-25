@@ -38,25 +38,33 @@ fn is_tmux_from_env(tmux_var_set: bool, term: Option<&str>, term_program: Option
     tmux_var_set || term.is_some_and(|t| t.starts_with("tmux")) || term_program == Some("tmux")
 }
 
-/// The fixed kitty image id for the slot `key` fills of the picture filed under `path`, allocating
-/// it on first use. `None` when this terminal is not a kitty one — then the encode goes back
-/// through ratatui-image, which writes the picture as cell content and leaves the terminal holding
-/// nothing between frames, so there is no id to pin and none is burned.
+/// The fixed kitty image id of slot `slot` in the family `key` belongs to, for the picture filed
+/// under `path`, allocating it on first use. `None` when this terminal is not a kitty one — then
+/// the encode goes back through ratatui-image, which writes the picture as cell content and leaves
+/// the terminal holding nothing between frames, so there is no id to pin and none is burned.
+///
+/// `slot` is the index `reserve_proto_slot` just handed out, so an id is pinned to a slot and not
+/// to the size that slot currently holds: recycling the slot re-points its id at the new size, and
+/// the terminal replaces that one picture instead of gaining another. Ids are only ever appended,
+/// never dropped — see `App::md_kitty_ids`.
 ///
 /// Takes the map rather than `&mut App` so a caller can hold a `&mut` borrow of an `md_image_cache`
 /// entry at the same time (two disjoint fields of `App`, which the borrow checker splits happily).
-/// See `App::md_kitty_ids` for why the ids live there and not on the entry.
 fn kitty_id_for(
-    ids: &mut std::collections::HashMap<PathBuf, [Option<u32>; 3]>,
+    ids: &mut std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
     path: &Path,
     key: &MdEncodeKey,
+    slot: usize,
     use_kitty: bool,
 ) -> Option<u32> {
     if !use_kitty {
         return None;
     }
-    let slots = ids.entry(path.to_path_buf()).or_insert([None; 3]);
-    Some(*slots[key.slot()].get_or_insert_with(crate::preview::kitty::next_id))
+    let family = &mut ids.entry(path.to_path_buf()).or_default()[key.slot()];
+    while family.len() <= slot {
+        family.push(crate::preview::kitty::next_id());
+    }
+    family.get(slot).copied()
 }
 
 impl App {
@@ -96,6 +104,13 @@ impl App {
     /// Attach the sender that offloads inline-image encoding (resize + protocol) to the encode worker.
     pub fn attach_md_encoder(&mut self, tx: std::sync::mpsc::Sender<MdEncodeRequest>) {
         self.md_enc_tx = Some(tx);
+    }
+
+    /// Begin one inline-image overlay pass — see `App::md_frame`. Called by the renderer before it
+    /// walks the placements, so that every encode request the pass makes is stamped with the same
+    /// number and the slots it is drawing from are protected from being recycled underneath it.
+    pub fn begin_md_image_frame(&mut self) {
+        self.md_frame = self.md_frame.saturating_add(1);
     }
 
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
@@ -163,12 +178,10 @@ impl App {
                     entry.svg = Some(svg);
                 }
                 if res.reraster {
-                    // Trigger a re-encode with the high-density raster: invalidate only the key,
-                    // and keep the old protocol displayed until the new encode arrives (clearing
-                    // it would leave a momentary blank).
-                    entry.proto_size = None;
-                    entry.clip_key = None;
-                    entry.zoom_key = None;
+                    // Trigger a re-encode with the high-density raster, keeping the old protocol
+                    // displayed until the new encode arrives (clearing it would leave a momentary
+                    // blank).
+                    entry.mark_stale();
                 }
             }
             // A re-raster failure leaves the current raster in place (the display stays alive).
@@ -215,17 +228,19 @@ impl App {
         let f = (1.0 / zoom.max(1.0)).clamp(0.0, 1.0);
         let (crop, center) = fence_crop((sw, sh), f, self.tab.fence_center);
         self.tab.fence_center = center;
+        let frame = self.md_frame;
         let ids = &mut self.md_kitty_ids;
         let Some(entry) = self.md_image_cache.get_mut(&key_path) else {
             return;
         };
-        let zkey = (cols, rows, crop);
-        if entry.zoom_key == Some(zkey) || entry.enc_inflight {
+        let enc_key = MdEncodeKey::Zoom { cols, rows, crop };
+        let settled = entry.touch(&enc_key, frame);
+        if settled || entry.enc_inflight {
             return;
         }
         let Some(tx) = enc_tx else { return };
-        let enc_key = MdEncodeKey::Zoom { cols, rows, crop };
-        let kitty = kitty_id_for(ids, &key_path, &enc_key, use_kitty).map(|id| (id, is_tmux));
+        let slot = reserve_proto_slot(&mut entry.zoom, enc_key, frame, MD_ZOOM_SLOTS);
+        let kitty = kitty_id_for(ids, &key_path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = tx.send(MdEncodeRequest {
             path: key_path,
@@ -243,12 +258,19 @@ impl App {
     /// stays visible instead of blinking out.
     pub fn md_fence_zoom_proto(&self, url: &str, cols: u16, rows: u16) -> Option<&InlineImage> {
         let entry = self.md_image_cache.get(&PathBuf::from(url))?;
-        match entry.zoom_key {
-            Some((c, r, _)) if (c, r) == (cols, rows) => {
-                entry.zoom_protocol.as_ref().or(entry.protocol.as_ref())
-            }
-            _ => entry.protocol.as_ref(),
-        }
+        entry
+            .zoom
+            .iter()
+            // Only a crop encoded into *this* cell area may stand in: one made for another area
+            // would be drawn at the wrong scale. A slot claimed by an in-flight encode holds no
+            // picture yet, so it is skipped rather than blanking the diagram mid-zoom.
+            .filter(|s| {
+                s.image.is_some()
+                    && matches!(s.key, MdEncodeKey::Zoom { cols: c, rows: r, .. } if (c, r) == (cols, rows))
+            })
+            .max_by_key(|s| s.used)
+            .and_then(|s| s.image.as_ref())
+            .or_else(|| entry.newest_full())
     }
 
     /// Kick a sharpening re-raster of a fence diagram when `needed_px` exceeds the current raster
@@ -509,51 +531,36 @@ impl App {
         }
     }
 
-    /// Apply a completed background encode: store the image in its full or clip slot. Returns redraw.
-    /// A failed encode (`image: None`) records the attempted key **without** touching the stored
-    /// images — the last good state stays visible and the same request is not retried every frame.
-    /// Only when nothing was ever encodable (no full image at all) does the entry degrade to the
-    /// text fallback (principle #3).
+    /// Apply a completed background encode into the slot that was reserved for it. Returns redraw.
+    /// A failed encode (`image: None`) leaves that slot's stored image alone — the last good state
+    /// stays visible — while the slot keeps holding the key, which is what stops the same doomed
+    /// request being re-sent every frame. Only when the whole picture was never encodable at any
+    /// size does the entry degrade to the text fallback (principle #3).
+    ///
+    /// A result whose slot has since been recycled (its key no longer matches) is simply dropped:
+    /// the position it answered is not on screen any more, and writing it back would evict a slot
+    /// the current frame *is* drawing from.
     pub fn apply_md_encode(&mut self, res: MdEncodeResult) -> bool {
         let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
             return false;
         };
         entry.enc_inflight = false;
-        let mut degrade = false;
-        match (res.key, res.image) {
-            (MdEncodeKey::Full { cols, rows }, Some(p)) => {
-                entry.protocol = Some(p);
-                entry.proto_size = Some((cols, rows));
-            }
-            (MdEncodeKey::Full { cols, rows }, None) => {
-                entry.proto_size = Some((cols, rows));
-                if entry.protocol.is_none() {
-                    entry.failed = true;
-                    degrade = true;
-                }
-            }
-            (
-                MdEncodeKey::Clip {
-                    cols,
-                    full_rows,
-                    row_off,
-                    vis_rows,
-                },
-                p,
-            ) => {
-                if let Some(p) = p {
-                    entry.clip_protocol = Some(p);
-                }
-                entry.clip_key = Some((cols, full_rows, row_off, vis_rows));
-            }
-            (MdEncodeKey::Zoom { cols, rows, crop }, p) => {
-                if let Some(p) = p {
-                    entry.zoom_protocol = Some(p);
-                }
-                entry.zoom_key = Some((cols, rows, crop));
+        let key = res.key;
+        let mut stored = false;
+        if let Some(slot) = entry.slots_mut(&key).iter_mut().find(|s| s.key == key) {
+            slot.stale = false;
+            if let Some(p) = res.image {
+                slot.image = Some(p);
+                stored = true;
             }
         }
+        // Nothing drawable has ever come back for this picture at any size → text fallback.
+        let degrade = !stored
+            && matches!(key, MdEncodeKey::Full { .. })
+            && !entry.failed
+            && entry.full.iter().all(|s| s.image.is_none());
         if degrade {
+            entry.failed = true;
             // An image that has newly degraded to failed gets re-laid-out as a text row (never
             // left as an invisible blank).
             self.md_cache = None;
@@ -630,6 +637,12 @@ impl App {
     /// the worker thread. Called from the renderer for each visible inline image. Both decoding and
     /// encoding are off-thread (principle #4) so this never blocks the UI; the protocol appears a frame
     /// or two later. At most one encode is in flight per image, so scrolling never queues a backlog.
+    ///
+    /// The (cols, rows) box is part of what is being asked for, not just how to draw the answer: the
+    /// same picture can be on screen at several sizes at once (a block image and a copy shaved to a
+    /// table column), and each of those keeps an encode of its own — see `MD_PROTO_SLOTS`. Every call
+    /// also stamps its position as wanted by the frame currently being drawn, which is what stops
+    /// those placements from evicting one another.
     pub fn ensure_md_image(
         &mut self,
         url: &str,
@@ -708,70 +721,67 @@ impl App {
         };
         // Read before borrowing an entry out of the cache (the borrow checker will not let both live).
         let (use_kitty, is_tmux) = (self.use_kitty, self.kitty_is_tmux);
+        let frame = self.md_frame;
         let ids = &mut self.md_kitty_ids;
         let Some(entry) = self.md_image_cache.get_mut(&path) else {
             return;
         };
+        // Fully visible → the whole image at (cols, full_rows). Partially scrolled → just the
+        // visible pixel band at (cols, vis_rows), so the image renders clipped to the viewport
+        // rather than being hidden.
+        let full_vis = row_off == 0 && vis_rows >= full_rows;
+        let enc_key = if full_vis {
+            MdEncodeKey::Full {
+                cols,
+                rows: full_rows,
+            }
+        } else {
+            MdEncodeKey::Clip {
+                cols,
+                full_rows,
+                row_off,
+                vis_rows,
+            }
+        };
+        // Claim this position for the frame being drawn **before** any early return: a placement
+        // that has to wait for the single in-flight ticket still needs its slot kept out of the
+        // recycling pool, otherwise two placements of one picture at two sizes take turns evicting
+        // each other and the draw→request→apply→draw loop never stops.
+        let settled = entry.touch(&enc_key, frame);
         // Wait if it failed, is still decoding, or already has an encode in flight (one at a time).
-        if entry.failed || entry.enc_inflight {
+        if settled || entry.failed || entry.enc_inflight {
             return;
         }
         let Some(img) = entry.decoded.clone() else {
             return;
         };
-        // Fully visible: request an encode of the whole image at (cols, full_rows) unless already cached.
-        if row_off == 0 && vis_rows >= full_rows {
-            if entry.proto_size == Some((cols, full_rows)) {
-                return;
-            }
-            let enc_key = MdEncodeKey::Full {
-                cols,
-                rows: full_rows,
-            };
-            let kitty = kitty_id_for(ids, &path, &enc_key, use_kitty).map(|id| (id, is_tmux));
-            entry.enc_inflight = true;
-            let _ = enc_tx.send(MdEncodeRequest {
-                path,
-                key: enc_key,
-                image: img,
-                crop: None,
-                cols,
-                rows: full_rows,
-                kitty,
-            });
-            return;
-        }
-        // Partially scrolled: request an encode of just the visible pixel band at (cols, vis_rows), so the
-        // image renders clipped to the viewport rather than being hidden.
-        if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
-            return;
-        }
-        let (dw, dh) = (img.width(), img.height());
-        let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
-        let enc_key = MdEncodeKey::Clip {
-            cols,
-            full_rows,
-            row_off,
-            vis_rows,
+        let (crop, rows) = if full_vis {
+            (None, full_rows)
+        } else {
+            let (dw, dh) = (img.width(), img.height());
+            let (y0, h) = md_band_pixels(full_rows, row_off, vis_rows, dh);
+            (Some((0, y0, dw, h)), vis_rows)
         };
-        let kitty = kitty_id_for(ids, &path, &enc_key, use_kitty).map(|id| (id, is_tmux));
+        let slot = reserve_proto_slot(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS);
+        let kitty = kitty_id_for(ids, &path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
         let _ = enc_tx.send(MdEncodeRequest {
             path,
             key: enc_key,
             image: img,
-            crop: Some((0, y0, dw, h)),
+            crop,
             cols,
-            rows: vis_rows,
+            rows,
             kitty,
         });
     }
 
-    /// The image to draw for the visible portion of inline image `url`. Prefers the encode that
-    /// exactly matches the current position (full image when fully visible, or the band matching
-    /// `(cols, full_rows, row_off, vis_rows)`); while a newly-scrolled band is still encoding it returns
-    /// the last encode so the image stays on screen (and snaps to the exact band on arrival)
-    /// rather than blinking out. None only until the very first encode for this image is ready.
+    /// The image to draw for the visible portion of inline image `url`, **at this placement's own
+    /// cell size**. Prefers the encode made for exactly this position and size (the whole image when
+    /// fully visible, or the band matching `(cols, full_rows, row_off, vis_rows)`); while that one is
+    /// still encoding it returns the freshest other encode, so the image stays on screen — at another
+    /// size or another band for a frame or two — and snaps to the exact one on arrival, rather than
+    /// blinking out. None only until the very first encode for this image is ready.
     pub fn md_image_proto(
         &self,
         url: &str,
@@ -792,25 +802,54 @@ impl App {
             resolve_md_image_path(url, base.as_deref())?
         };
         let entry = self.md_image_cache.get(&path)?;
-        // Exact match for the current position.
-        if row_off == 0 && vis_rows >= full_rows {
-            if entry.proto_size == Some((cols, full_rows)) {
-                return entry.protocol.as_ref();
+        // Exact match for the current position, at this placement's own cell size.
+        let key = if row_off == 0 && vis_rows >= full_rows {
+            MdEncodeKey::Full {
+                cols,
+                rows: full_rows,
             }
-        } else if entry.clip_key == Some((cols, full_rows, row_off, vis_rows)) {
-            // If the clip's encode had failed (only the key recorded, with no clip_protocol),
-            // degrade to the full protocol (never leave it blank).
-            return entry.clip_protocol.as_ref().or(entry.protocol.as_ref());
-        }
-        // Not yet encoded for this exact position: keep the last band (or the full image) visible.
-        entry.clip_protocol.as_ref().or(entry.protocol.as_ref())
+        } else {
+            MdEncodeKey::Clip {
+                cols,
+                full_rows,
+                row_off,
+                vis_rows,
+            }
+        };
+        // Not yet encoded for this exact position (or that encode failed): keep the freshest band —
+        // or full image — visible rather than leaving the reserved rows blank.
+        entry.proto(&key).or_else(|| entry.newest_proto())
+    }
+
+    /// Test-only: how many **band** (clip) encodes are currently retained for `url`, i.e. how many
+    /// partially-scrolled placements of that one picture are being kept apart from each other.
+    #[cfg(test)]
+    pub fn md_clip_slot_count(&self, url: &str) -> usize {
+        let base = self
+            .tab
+            .preview_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        let path = if crate::preview::markdown::is_synthetic_md_url(url) {
+            PathBuf::from(url)
+        } else {
+            match resolve_md_image_path(url, base.as_deref()) {
+                Some(p) => p,
+                None => return 0,
+            }
+        };
+        self.md_image_cache
+            .get(&path)
+            .map(|e| e.clip.len())
+            .unwrap_or(0)
     }
 
     /// Drive every animated inline Markdown GIF (the per-entry analog of `App::advance_gif_if_due`
     /// for the full-screen GIF path). Each cache entry with ≥2 frames advances independently once
     /// its current frame's display time has elapsed. Advancing swaps `decoded` to the new frame and
-    /// invalidates the encode keys (`proto_size`/`clip_key`/`zoom_key`) — but **not** the encoded
-    /// protocols themselves, which stay visible until `ensure_md_image` (called from the renderer,
+    /// marks every encoded slot **stale** — but does **not** drop the encoded protocols themselves,
+    /// which stay visible until `ensure_md_image` (called from the renderer,
     /// only for placements actually drawn) requests and receives a fresh encode of the new frame.
     /// Advancing an off-screen entry therefore costs only an index bump, never a re-encode.
     /// Returns true if any entry advanced (the caller re-renders).
@@ -820,7 +859,7 @@ impl App {
     /// the per-entry eviction `drop_changed_md_images` does for a picture the filesystem reports as
     /// changed — it is deliberately left alone by `back_to_tree` (re-entering the *same* file must
     /// resume playback without a re-decode). Without this check, leaving Preview via `q` left every
-    /// animating entry ticking forever: this kept requesting a fresh encode (`proto_size = None`
+    /// animating entry ticking forever: this kept requesting a fresh encode (the staleness marked
     /// below) and redrawing a *tree* screen where nothing is even visible, defeating the idle-CPU
     /// invariant.
     pub fn advance_md_gifs_if_due(&mut self) -> bool {
@@ -845,12 +884,12 @@ impl App {
             entry.idx = (entry.idx + 1) % entry.frames.len();
             entry.shown_at = Some(now);
             entry.decoded = Some(entry.frames[entry.idx].0.clone());
-            // The next frame needs a re-encode: invalidate only the key. Keep the old protocol
-            // displayed until the next encode arrives (clearing it would leave a momentary blank —
-            // the same convention as the fence re-raster).
-            entry.proto_size = None;
-            entry.clip_key = None;
-            entry.zoom_key = None;
+            // The next frame needs a re-encode: mark every slot stale rather than dropping it. The
+            // old protocol stays displayed until the new encode arrives (clearing it would leave a
+            // momentary blank — the same convention as the fence re-raster), and, because the slot
+            // survives, the re-encode lands on the **same** kitty id and replaces the terminal's
+            // picture instead of adding one per animation frame.
+            entry.mark_stale();
             advanced = true;
         }
         advanced

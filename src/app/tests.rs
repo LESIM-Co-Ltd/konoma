@@ -7351,8 +7351,8 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
 }
 
 /// A multi-frame entry: doesn't advance before the deadline (the first tick only starts the
-/// timer). Past the deadline it advances to the next frame, decoded is swapped in, and
-/// proto_size/clip_key/zoom_key are invalidated, but **the protocol itself is not cleared**
+/// timer). Past the deadline it advances to the next frame, decoded is swapped in, and every
+/// encoded slot is marked stale, but **the protocol itself is not cleared**
 /// (kept for display until the next encode arrives — clearing it would flash a moment of blank
 /// space). Once it cycles all the way around, idx returns to 0.
 #[test]
@@ -7389,10 +7389,21 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
                 (f0.clone(), std::time::Duration::from_millis(50)),
                 (f1.clone(), std::time::Duration::from_millis(50)),
             ],
-            protocol: Some(crate::app::InlineImage::Proto(proto)),
-            proto_size: Some((4, 2)),
-            clip_key: Some((4, 2, 0, 2)),
-            zoom_key: Some((4, 2, (0, 0, 4, 4))),
+            full: vec![MdProtoSlot::encoded(
+                MdEncodeKey::Full { cols: 4, rows: 2 },
+                crate::app::InlineImage::Proto(proto),
+            )],
+            clip: vec![MdProtoSlot::attempted(MdEncodeKey::Clip {
+                cols: 4,
+                full_rows: 2,
+                row_off: 0,
+                vis_rows: 2,
+            })],
+            zoom: vec![MdProtoSlot::attempted(MdEncodeKey::Zoom {
+                cols: 4,
+                rows: 2,
+                crop: (0, 0, 4, 4),
+            })],
             ..Default::default()
         },
     );
@@ -7404,8 +7415,8 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         assert_eq!(e.idx, 0);
         assert!(e.shown_at.is_some(), "計時は始まる");
         assert!(
-            e.proto_size.is_some(),
-            "計時開始だけではエンコードキーを崩さない"
+            !e.full[0].stale,
+            "計時開始だけではエンコード済みスロットを無効化しない"
         );
     }
 
@@ -7422,12 +7433,17 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
             Arc::ptr_eq(e.decoded.as_ref().unwrap(), &f1),
             "decoded が新フレームへ差し替わる"
         );
-        assert!(e.proto_size.is_none(), "proto_size は無効化される");
-        assert!(e.clip_key.is_none(), "clip_key も無効化される");
-        assert!(e.zoom_key.is_none(), "zoom_key も無効化される");
+        assert!(e.full[0].stale, "full スロットは要再エンコードになる");
+        assert!(e.clip[0].stale, "clip スロットも要再エンコードになる");
+        assert!(e.zoom[0].stale, "zoom スロットも要再エンコードになる");
         assert!(
-            e.protocol.is_some(),
+            e.full[0].image.is_some(),
             "旧 protocol 本体は消さない(次のエンコードが届くまでの表示用)"
+        );
+        assert_eq!(
+            e.full.len(),
+            1,
+            "スロットは作り直さず据え置き(= 同じ kitty ID を使い続ける)"
         );
     }
 
@@ -7631,12 +7647,17 @@ fn inline_gif_animation_never_transmits_a_second_kitty_image_id() {
     // Nothing accumulates in konoma either: one entry holds exactly one encoded full-image slot,
     // whose payload stays one frame's worth however long it has been playing.
     let entry = &app.md_image_cache[&PathBuf::from(&url)];
-    let held = entry
-        .protocol
+    assert_eq!(
+        entry.full.len(),
+        1,
+        "1つのサイズしか描いていないのでスロットも1つ(= ID も1つ)"
+    );
+    let held = entry.full[0]
+        .image
         .as_ref()
         .expect("full スロットの画像")
         .transmit_len();
-    assert!(entry.clip_protocol.is_none() && entry.zoom_protocol.is_none());
+    assert!(entry.clip.is_empty() && entry.zoom.is_empty());
     assert!(
         held < 64 * 1024,
         "常駐はコマ1枚ぶんだけ(コマ数に比例しない): {held} bytes"
@@ -7719,18 +7740,18 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
     // Fully visible → the Full slot.
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
-    let full_req_id = app.md_kitty_ids[&key][0].expect("full スロットに ID");
+    let full_req_id = app.md_kitty_ids[&key][0][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // Scrolled so only the lower band shows → the Clip slot, which needs an id of its own.
     app.ensure_md_image(&url, cols, full_rows, 3, 5);
-    let clip_id = app.md_kitty_ids[&key][1].expect("clip スロットに ID");
+    let clip_id = app.md_kitty_ids[&key][1][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     // The in-place zoom of a focused diagram → the Zoom slot.
     app.tab.fence_zoom = 2.0;
     app.ensure_md_fence_zoom(&url, cols, full_rows);
-    let zoom_id = app.md_kitty_ids[&key][2].expect("zoom スロットに ID");
+    let zoom_id = app.md_kitty_ids[&key][2][0];
     assert!(app.apply_md_encode(res_rx.recv().unwrap()));
 
     let ids = [full_req_id, clip_id, zoom_id];
@@ -7742,12 +7763,11 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
 
     // Re-encoding any slot reuses that slot's id rather than taking a new one.
     let entry = app.md_image_cache.get_mut(&key).unwrap();
-    entry.proto_size = None; // what a GIF frame advance does
-    entry.clip_key = None;
+    entry.mark_stale(); // what a GIF frame advance does
     app.ensure_md_image(&url, cols, full_rows, 0, full_rows);
     assert_eq!(
         app.md_kitty_ids[&key],
-        [Some(full_req_id), Some(clip_id), Some(zoom_id)],
+        [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "再エンコードでは ID を取り直さない"
     );
 
@@ -7758,8 +7778,275 @@ fn each_inline_image_slot_keeps_its_own_fixed_kitty_id() {
         .insert(key.clone(), MdImgEntry::default());
     assert_eq!(
         app.md_kitty_ids[&key],
-        [Some(full_req_id), Some(clip_id), Some(zoom_id)],
+        [vec![full_req_id], vec![clip_id], vec![zoom_id]],
         "キャッシュ項目を捨てても ID は生き残る(開き直しで端末の常駐画像が増えない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The cell size a full-image slot currently holds.
+fn full_slot_widths(app: &App, key: &PathBuf) -> std::collections::BTreeSet<u16> {
+    app.md_image_cache[key]
+        .full
+        .iter()
+        .map(|s| match s.key {
+            MdEncodeKey::Full { cols, .. } => cols,
+            _ => unreachable!("full family holds only Full keys"),
+        })
+        .collect()
+}
+
+/// Wait for one encode result and apply it; `false` if the pipeline has gone quiet. Quiescence is
+/// read off the App rather than off the clock: while a request is in flight the worker owes a result
+/// and this waits however long a loaded machine needs, so a slow test run can never be mistaken for
+/// "the renderer stopped asking" (which is the very property these tests assert).
+fn apply_one_encode(app: &mut App, rx: &std::sync::mpsc::Receiver<MdEncodeResult>) -> bool {
+    let wait = if app.md_encode_in_flight() {
+        std::time::Duration::from_secs(10)
+    } else {
+        std::time::Duration::from_millis(50)
+    };
+    match rx.recv_timeout(wait) {
+        Ok(res) => {
+            app.apply_md_encode(res);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The same picture at two cell sizes **one column apart** is still two pictures. Nothing about the
+/// sizes being nearly equal makes them interchangeable: each placement is drawn into its own box, so
+/// each needs its own encode — and, on a kitty terminal, its own image id, because a transmit under
+/// a shared id deletes whatever that id was showing.
+#[test]
+fn inline_image_at_two_nearly_equal_sizes_gets_two_slots_and_two_kitty_ids() {
+    let (mut app, url, res_rx, dir) =
+        inline_gif_app("konoma_md_two_near_sizes_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+    for cols in [20u16, 21] {
+        app.begin_md_image_frame();
+        app.ensure_md_image(&url, cols, 8, 0, 8);
+        assert!(apply_one_encode(&mut app, &res_rx), "{cols} 桁のエンコード");
+    }
+
+    assert_eq!(
+        full_slot_widths(&app, &key),
+        std::collections::BTreeSet::from([20, 21]),
+        "1桁違いでも別々のスロットに載る"
+    );
+    let ids = &app.md_kitty_ids[&key][0];
+    assert_eq!(ids.len(), 2, "サイズごとに ID が要る: {ids:?}");
+    assert_ne!(ids[0], ids[1], "同じ ID を共有すると端末側で消し合う");
+    assert!(
+        app.md_image_cache[&key]
+            .full
+            .iter()
+            .all(|s| s.image.is_some()),
+        "どちらのスロットにも絵が入っている(片方が奪い合いに負けていない)"
+    );
+    // Neither placement re-requests once both are stored — the loop the fix is about.
+    app.begin_md_image_frame();
+    for cols in [20u16, 21] {
+        app.ensure_md_image(&url, cols, 8, 0, 8);
+    }
+    assert!(
+        !apply_one_encode(&mut app, &res_rx),
+        "両方揃った後は再要求が出ない"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Dragging a pane edge walks the picture through one width after another. Retention is capped, so
+/// the oldest width falls out — and the slot it vacates is **recycled**, id and all. That is what
+/// keeps "one id per size" from turning into "one id per resize": the terminal's resident pictures
+/// for a file track how many sizes are live at once, never how many times the pane was resized.
+#[test]
+fn resizing_recycles_a_protocol_slot_instead_of_burning_a_kitty_id() {
+    let (mut app, url, res_rx, dir) =
+        inline_gif_app("konoma_md_resize_slots_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+    // One width per frame, the way a resize produces them: each is the only thing on screen, so the
+    // previous ones are fair game for recycling once the cap is reached.
+    for cols in [20u16, 24, 28, 32, 36, 40] {
+        app.begin_md_image_frame();
+        app.ensure_md_image(&url, cols, 8, 0, 8);
+        assert!(apply_one_encode(&mut app, &res_rx), "{cols} 桁のエンコード");
+    }
+
+    assert_eq!(
+        app.md_image_cache[&key].full.len(),
+        MD_PROTO_SLOTS,
+        "保持サイズ数は上限で頭打ちになる"
+    );
+    assert_eq!(
+        full_slot_widths(&app, &key),
+        std::collections::BTreeSet::from([32, 36, 40]),
+        "落ちるのは一番古いサイズ"
+    );
+    assert_eq!(
+        app.md_kitty_ids[&key][0].len(),
+        MD_PROTO_SLOTS,
+        "6回リサイズしても端末に載る画像は上限ぶんだけ(リサイズ回数に比例しない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The cap is a **soft floor**. A document that genuinely shows one picture at more simultaneous
+/// sizes than `MD_PROTO_SLOTS` keeps all of them: a slot the frame being drawn right now is using is
+/// never recycled, so the family grows by one instead. Without that rule this is precisely the shape
+/// a fixed-size LRU gets wrong — a cyclic access pattern one wider than the cache evicts, on every
+/// single frame, exactly the entry the next frame is about to ask for, and the renderer never stops
+/// asking. The assertion is therefore not "it holds four" but "**it goes quiet**".
+#[test]
+fn more_simultaneous_sizes_than_the_cap_still_go_quiet() {
+    let (mut app, url, res_rx, dir) = inline_gif_app("konoma_md_over_cap_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+    let widths = [20u16, 24, 28, 32];
+    assert!(widths.len() > MD_PROTO_SLOTS, "前提: 上限より多い");
+
+    // Replay the renderer: every frame asks for every visible placement, and at most one encode is
+    // in flight at a time, so the sizes get their slots one frame at a time.
+    let mut encodes = 0usize;
+    for _ in 0..20 {
+        app.begin_md_image_frame();
+        for cols in widths {
+            app.ensure_md_image(&url, cols, 8, 0, 8);
+        }
+        if apply_one_encode(&mut app, &res_rx) {
+            encodes += 1;
+        }
+    }
+    assert_eq!(
+        encodes,
+        widths.len(),
+        "各サイズ1回ずつで打ち止め: {encodes}"
+    );
+
+    // The decisive frame: ask again for everything and confirm nothing new is requested.
+    app.begin_md_image_frame();
+    for cols in widths {
+        app.ensure_md_image(&url, cols, 8, 0, 8);
+    }
+    assert!(
+        !apply_one_encode(&mut app, &res_rx),
+        "全サイズが揃った後は、描画しても新しい要求が出ない(= 無操作で CPU を食わない)"
+    );
+
+    assert_eq!(
+        full_slot_widths(&app, &key),
+        std::collections::BTreeSet::from(widths),
+        "同時に必要な分は上限を超えて保持する"
+    );
+    for cols in widths {
+        assert!(
+            app.md_image_proto(&url, cols, 8, 0, 8).is_some(),
+            "{cols} 桁の配置にも絵がある"
+        );
+    }
+
+    // What that retention costs, measured rather than assumed: the sizes on screen at one moment
+    // occupy disjoint parts of the viewport, so their protocols add up to about one screenful.
+    let held: usize = app.md_image_cache[&key]
+        .full
+        .iter()
+        .filter_map(|s| s.image.as_ref())
+        .map(|i| i.transmit_len())
+        .sum();
+    assert!(
+        held < 512 * 1024,
+        "4サイズぶんの常駐は数百KB規模に収まる: {held} bytes"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A slot is claimed when its encode is **requested**, not when the picture comes back — so the
+/// question "what is drawn during the frames in between" has to be answered on purpose. It is the
+/// previous encode, never a blank: switching to a new width keeps the old width's picture on screen
+/// until the new one lands (a moment of the wrong scale, which is what konoma has always done, and
+/// far better than the image vanishing and coming back).
+#[test]
+fn a_size_still_encoding_keeps_the_previous_size_on_screen() {
+    let (mut app, url, res_rx, dir) =
+        inline_gif_app("konoma_md_resize_no_blank_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+
+    app.begin_md_image_frame();
+    app.ensure_md_image(&url, 20, 8, 0, 8);
+    assert!(apply_one_encode(&mut app, &res_rx), "20桁ぶんのエンコード");
+    let first: *const InlineImage = app.md_image_proto(&url, 20, 8, 0, 8).expect("20桁の絵");
+
+    // The very next frame is at a new width, and its encode has been requested but not applied.
+    app.begin_md_image_frame();
+    app.ensure_md_image(&url, 30, 8, 0, 8);
+    let shown: *const InlineImage = app
+        .md_image_proto(&url, 30, 8, 0, 8)
+        .expect("エンコード待ちでも何かは描かれる(空白にならない)");
+    assert!(
+        std::ptr::eq(shown, first),
+        "新しい幅が届くまでは直前の幅の絵が出たまま"
+    );
+    assert_eq!(
+        app.md_image_cache[&key].full.len(),
+        2,
+        "新しい幅は空きスロットを取る(古い方を潰さない)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same property for the **zoom** family, which needs its own slot count because every `+`/`-`
+/// step asks for a different crop of the same cell area. With a single zoom slot the step would
+/// claim it, blank the crop on screen, and fall back to the unzoomed diagram until the new crop
+/// arrived — a flicker on every keypress of a key users hold down.
+#[test]
+fn zooming_a_focused_diagram_keeps_the_previous_crop_on_screen() {
+    let (mut app, url, res_rx, dir) =
+        inline_gif_app("konoma_md_zoom_no_blank_test", &[[10, 20, 30]]);
+    let key = PathBuf::from(&url);
+    let (cols, rows) = (20u16, 8u16);
+
+    // An unzoomed encode first, so the "fell back to the plain diagram" failure is distinguishable
+    // from "kept the previous crop" rather than both showing up as None.
+    app.begin_md_image_frame();
+    app.ensure_md_image(&url, cols, rows, 0, rows);
+    assert!(apply_one_encode(&mut app, &res_rx), "素の図のエンコード");
+    let unzoomed: *const InlineImage = app
+        .md_image_proto(&url, cols, rows, 0, rows)
+        .expect("素の図");
+
+    app.tab.fence_zoom = 2.0;
+    app.begin_md_image_frame();
+    app.ensure_md_fence_zoom(&url, cols, rows);
+    assert!(
+        apply_one_encode(&mut app, &res_rx),
+        "1段目のズームのエンコード"
+    );
+    let step1: *const InlineImage = app.md_fence_zoom_proto(&url, cols, rows).expect("ズーム像");
+    assert!(
+        !std::ptr::eq(step1, unzoomed),
+        "前提: ズーム像は素の図とは別物"
+    );
+
+    // A further step: requested, not yet applied — the frame the renderer actually draws.
+    app.tab.fence_zoom = 3.0;
+    app.begin_md_image_frame();
+    app.ensure_md_fence_zoom(&url, cols, rows);
+    let shown: *const InlineImage = app
+        .md_fence_zoom_proto(&url, cols, rows)
+        .expect("ズーム途中でも何かは描かれる");
+    assert!(
+        std::ptr::eq(shown, step1),
+        "直前のクロップが出たまま(素の図へ戻ってちらつかない)"
+    );
+    assert_eq!(
+        app.md_image_cache[&key].zoom.len(),
+        MD_ZOOM_SLOTS,
+        "ズームは2枠を交互に使う"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -14418,6 +14705,12 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
         key.clone(),
         MdImgEntry {
             enc_inflight: true,
+            // The slot `ensure_md_image` reserves when it sends the request (which is what makes
+            // the key survive a failure, so the same doomed encode is not re-sent every frame).
+            full: vec![MdProtoSlot::attempted(MdEncodeKey::Full {
+                cols: 10,
+                rows: 5,
+            })],
             ..Default::default()
         },
     );
@@ -14432,21 +14725,31 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
         let e = app.md_image_cache.get(&key).unwrap();
         assert!(!e.enc_inflight, "inflight が解除される");
         assert!(e.failed, "表示できる protocol が無ければテキスト降格");
-        assert_eq!(e.proto_size, Some((10, 5)), "キー記録=リトライループ防止");
+        assert_eq!(
+            e.full[0].key,
+            MdEncodeKey::Full { cols: 10, rows: 5 },
+            "キー記録=リトライループ防止"
+        );
+        assert!(e.full[0].image.is_none(), "失敗なので絵は入らない");
     }
     assert!(!app.md_images_loading(), "busy が恒久化しない");
 
     // A Zoom failure keeps the old display (does not mark failed) -- only the key is recorded.
     let key2 = std::path::PathBuf::from("mermaid-fence://cafecafecafecafe");
+    let crop = (0u32, 0u32, 4u32, 4u32);
     app.md_image_cache.insert(
         key2.clone(),
         MdImgEntry {
             enc_inflight: true,
             decoded: Some(std::sync::Arc::new(image::DynamicImage::new_rgba8(8, 8))),
+            zoom: vec![MdProtoSlot::attempted(MdEncodeKey::Zoom {
+                cols: 4,
+                rows: 2,
+                crop,
+            })],
             ..Default::default()
         },
     );
-    let crop = (0u32, 0u32, 4u32, 4u32);
     app.apply_md_encode(MdEncodeResult {
         path: key2.clone(),
         key: MdEncodeKey::Zoom {
@@ -14459,7 +14762,14 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     let e2 = app.md_image_cache.get(&key2).unwrap();
     assert!(!e2.enc_inflight);
     assert!(!e2.failed, "ズーム失敗で図全体を殺さない");
-    assert_eq!(e2.zoom_key, Some((4, 2, crop)));
+    assert_eq!(
+        e2.zoom[0].key,
+        MdEncodeKey::Zoom {
+            cols: 4,
+            rows: 2,
+            crop
+        }
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

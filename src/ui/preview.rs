@@ -615,6 +615,10 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     if placements.is_empty() {
         return;
     }
+    // One pass = one "frame" for inline-image slot bookkeeping. Every `ensure_md_image` below
+    // stamps this number onto the slot it wants, which is how `reserve_proto_slot` tells a slot the
+    // picture on screen right now needs (never recycle it) from one left over at an old size.
+    app.begin_md_image_frame();
     // A signature of the draw position + focus state (for change detection). Hash only the
     // on-screen rects of images **actually drawn in this frame**: while every image is off-screen,
     // record no signature = don't trigger a full redraw (placeholder debris cleanup) on every

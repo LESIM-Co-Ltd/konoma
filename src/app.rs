@@ -1302,17 +1302,27 @@ pub struct App {
     media_tx: Option<std::sync::mpsc::Sender<MediaResult>>,
     /// Decoded/encoded cache for inline Markdown images, keyed by resolved absolute path.
     md_image_cache: std::collections::HashMap<PathBuf, MdImgEntry>,
-    /// One **fixed** kitty image id per picture per protocol slot (full / clip / zoom — indexed by
-    /// `MdEncodeKey::slot`), allocated on that slot's first encode and reused for every later one.
+    /// The **fixed** kitty image ids of one picture: `[full, clip, zoom]` (the families of
+    /// `MdEncodeKey::slot`), and within each family one id per slot of `MdImgEntry`, at the matching
+    /// index. Allocated on a slot's first encode and reused for every later one.
     ///
     /// Reuse is the whole point: a re-transmit on the same id *replaces* the picture in the
     /// terminal, so re-encoding a slot — an animated GIF advancing a frame, a scroll re-cropping a
     /// band, the very same document being opened again tomorrow — costs the terminal one image
-    /// forever instead of one per re-encode. The three slots need ids of their *own*, though: the
+    /// forever instead of one per re-encode. The three families need ids of their *own*, though: the
     /// renderer keeps showing the full-image encode while a scrolled band is still encoding, so two
-    /// slots of the same picture can be on screen across consecutive frames, and sharing an id
+    /// families of the same picture can be on screen across consecutive frames, and sharing an id
     /// there would let the band's transmit silently take over the cells the full image is still
     /// drawn from.
+    ///
+    /// The *within*-family split exists for the same reason one step down. The same file drawn at
+    /// two cell sizes at once (a block image and a copy inside a narrower table column) is two
+    /// pictures as far as the terminal is concerned, so the two sizes cannot share one id either —
+    /// each transmit would delete the other, which is the terminal-side half of the very fight
+    /// `MD_PROTO_SLOTS` settles on konoma's side. Index-alignment with `MdImgEntry`'s slots is what
+    /// keeps the two halves honest: recycling a slot re-keys exactly one id, so konoma's retained
+    /// encodes and the terminal's resident pictures for a file are the same set, and **resizing
+    /// reuses slots** instead of burning an id per width.
     ///
     /// This lives on `App` rather than on the `MdImgEntry` it describes because `md_image_cache` is
     /// **discarded whenever the preview moves to a different file** — so ids parked on the entry
@@ -1324,10 +1334,16 @@ pub struct App {
     ///
     /// Nothing is ever removed: an id may be *needed* again at any moment (the same file reopened,
     /// the same diagram re-rendered from an undo), and dropping one would silently reintroduce the
-    /// growth. The map only ever holds one small entry per distinct picture the session has shown
-    /// — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it is by
-    /// construction the cheaper of the two.
-    md_kitty_ids: std::collections::HashMap<PathBuf, [Option<u32>; 3]>,
+    /// growth. The map only ever holds a handful of `u32`s per distinct picture the session has
+    /// shown — the same quantity the terminal's own (megabyte-per-image) storage grows with, so it
+    /// is by construction the cheaper of the two.
+    md_kitty_ids: std::collections::HashMap<PathBuf, [Vec<u32>; 3]>,
+    /// Monotonic counter of inline-image overlay passes — one "frame" for the purpose of recycling
+    /// protocol slots. `ui::preview::overlay_inline_images` bumps it before walking the placements,
+    /// so every `ensure_md_image` inside that walk stamps the same value onto the slot it wants, and
+    /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
+    /// from "left over from an earlier position" (fair game).
+    md_frame: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
     /// Filled lazily for visible rows (render pre-pass) and dropped on every tree rebuild, so the
     /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
@@ -1789,31 +1805,89 @@ impl InlineImage {
     }
 }
 
+/// How many distinct encode keys of **one picture** konoma keeps encoded protocols (and kitty image
+/// ids) for, within one protocol family.
+///
+/// The same file can be on screen at several sizes at once: a block image is laid out at the page
+/// width while a copy inside a table cell is shaved to that column's width, and one document can
+/// hold several tables whose columns are all different widths. Holding a single encode per picture
+/// is what made those placements fight — each one saw the other's size recorded, asked for its own,
+/// and the answer overwrote the first — so `draw → request → apply → draw → request → …` never
+/// stopped, with nobody touching the keyboard (measured at 40 columns: 0.31s of CPU across 30 idle
+/// seconds, and the losing placement never drew a picture at all).
+///
+/// The number is a **soft floor, not a hard ceiling**: `reserve_proto_slot` never recycles a slot
+/// the frame being drawn right now is using, and grows the family instead when every slot is live.
+/// That is what makes convergence unconditional — a document showing one picture at more
+/// simultaneous sizes than this keeps all of them rather than thrashing between them — and it is
+/// also what bounds the memory, because sizes that are on screen *at the same moment* occupy
+/// disjoint parts of the viewport: their cell areas sum to at most one screenful however many they
+/// are, and a protocol's bytes track its cell area.
+///
+/// So the constant only decides how many **off-screen** encodes stay warm, i.e. how much scrolling
+/// back (or dragging a pane edge back to a previous width) redraws instantly instead of re-encoding.
+/// Three covers the shapes that recur in practice — the page width plus two table column widths, or
+/// one width plus the previous one still lingering right after a resize — without paying for more.
+const MD_PROTO_SLOTS: usize = 3;
+
+/// Slots for the zoom family. Only one inline diagram can be focused at a time (`Tab` moves the
+/// focus, and `md_fence_zoom_proto` is only consulted for the focused fence), so one crop is all
+/// that is ever *wanted* — but two are kept, because a slot is claimed when its encode is requested
+/// and every `+`/`-` step asks for a different crop. With one slot the step would blank the crop on
+/// screen and fall back to the unzoomed diagram until the new one landed; with two, the previous
+/// crop stays visible right up to the moment it is replaced, and the pair simply alternates.
+const MD_ZOOM_SLOTS: usize = 2;
+
+/// One encoded protocol of an inline image, together with the exact request it answers.
+///
+/// A slot's **position** in its family is its identity: on a kitty terminal the image id at the same
+/// index of `App::md_kitty_ids` is pinned to it, so re-encoding into a slot hands the terminal a
+/// *replacement* rather than an additional picture — the property that keeps an animated GIF, and a
+/// document reopened all day long, at a constant cost in terminal image storage.
+struct MdProtoSlot {
+    /// The request this slot answers. Re-keying a slot is how it gets recycled, and is exactly when
+    /// its pinned kitty id starts holding a different picture.
+    key: MdEncodeKey,
+    /// None = the encode has been requested but has not landed yet, **or** it failed. Either way the
+    /// key stays recorded, which is what stops the renderer from asking again on every frame.
+    image: Option<InlineImage>,
+    /// `App::md_frame` at the last render pass that asked for this key. Slots the current pass is
+    /// drawing from are never recycled — see `MD_PROTO_SLOTS`.
+    used: u64,
+    /// The stored image belongs to a superseded animation frame: keep drawing it (clearing it would
+    /// flash a blank), but re-encode into this same slot so the id — and the terminal's picture
+    /// under it — is replaced rather than duplicated.
+    stale: bool,
+}
+
 /// A decoded inline Markdown image plus its background-encoded render protocol(s).
 #[derive(Default)]
 struct MdImgEntry {
     /// The decoded source image (None while the background decode is in flight). Shared with the encode
-    /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread.
+    /// worker via `Arc` (cheap clone) so cropping/encoding happens off the UI thread. Deliberately
+    /// **one per picture, not one per size**: the protocols below are what a size costs, while the
+    /// RGBA source is the big allocation and every size crops/resizes from the same one.
     decoded: Option<Arc<image::DynamicImage>>,
-    /// The graphics protocol for the fully-visible image, encoded for `proto_size`.
-    protocol: Option<InlineImage>,
-    /// The (cols, rows) `protocol` was encoded for.
-    proto_size: Option<(u16, u16)>,
-    /// The graphics protocol for a partially-scrolled image: only the visible vertical band, cropped and
-    /// encoded so the image renders clipped instead of being hidden. Re-encoded when the band changes.
-    clip_protocol: Option<InlineImage>,
-    /// The (cols, full_rows, row_off, vis_rows) band `clip_protocol` was encoded for.
-    clip_key: Option<(u16, u16, u16, u16)>,
+    /// Graphics protocols for the fully-visible image, one slot per (cols, rows) cell box it is
+    /// drawn at. See `MD_PROTO_SLOTS` for why this is a list and not a single encode.
+    full: Vec<MdProtoSlot>,
+    /// Graphics protocols for a partially-scrolled image: only the visible vertical band, cropped
+    /// and encoded so the image renders clipped instead of being hidden. One slot per
+    /// (cols, full_rows, row_off, vis_rows) band — a list for the same reason `full` is one, since
+    /// two placements of the same picture can be cut by the top and the bottom viewport edge at the
+    /// same time. A family of its own because the renderer keeps drawing the full-image encode until
+    /// a freshly scrolled band lands: the two are on screen across consecutive frames, so a band's
+    /// transmit must not land on the id the full image is still drawn from.
+    clip: Vec<MdProtoSlot>,
     /// An encode request is in flight on the worker thread (at most one per image, so scrolling does not
     /// queue a backlog — when it returns, the next render requests the then-current band).
     enc_inflight: bool,
     /// Decode or encode failed — do not retry; the placeholder/text fallback stays visible.
     failed: bool,
-    /// In-place zoom protocol for a **focused inline mermaid diagram** (`+`/`-` while focused):
+    /// In-place zoom protocols for a **focused inline mermaid diagram** (`+`/`-` while focused):
     /// a crop of the source encoded into the same (cols, rows) cell area (the layout never moves).
-    zoom_protocol: Option<InlineImage>,
-    /// The (cols, rows, crop px rect) `zoom_protocol` was encoded for.
-    zoom_key: Option<(u16, u16, PxRect)>,
+    /// Capped at `MD_ZOOM_SLOTS`.
+    zoom: Vec<MdProtoSlot>,
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
@@ -1833,6 +1907,162 @@ struct MdImgEntry {
     /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
+}
+
+impl MdImgEntry {
+    /// The slot family a request belongs to (full / clip / zoom — `MdEncodeKey::slot`).
+    fn slots(&self, key: &MdEncodeKey) -> &[MdProtoSlot] {
+        match key.slot() {
+            0 => &self.full,
+            1 => &self.clip,
+            _ => &self.zoom,
+        }
+    }
+
+    fn slots_mut(&mut self, key: &MdEncodeKey) -> &mut Vec<MdProtoSlot> {
+        match key.slot() {
+            0 => &mut self.full,
+            1 => &mut self.clip,
+            _ => &mut self.zoom,
+        }
+    }
+
+    /// Record that the pass numbered `frame` wants this exact request, and say whether it is
+    /// already **settled** — encoded, or attempted and failed, so it must not be requested again.
+    /// A `stale` slot is deliberately not settled: its picture belongs to an animation frame that
+    /// has been superseded, so it needs re-encoding (into that same slot, keeping its id).
+    ///
+    /// Stamping happens even for a request that is not settled and cannot be sent yet (another
+    /// encode holds the single in-flight ticket). That is the whole point: a placement the renderer
+    /// is drawing right now must keep its slot out of the recycling pool while it waits its turn,
+    /// or two placements of one picture take turns evicting each other and never converge.
+    fn touch(&mut self, key: &MdEncodeKey, frame: u64) -> bool {
+        match self.slots_mut(key).iter_mut().find(|s| s.key == *key) {
+            Some(s) => {
+                s.used = frame;
+                !s.stale
+            }
+            None => false,
+        }
+    }
+
+    /// The image already encoded for exactly this request, if there is one. `None` also covers "the
+    /// slot exists but holds no image" (requested and still in flight, or failed) — the caller then
+    /// falls back to something drawable rather than blanking the picture.
+    fn proto(&self, key: &MdEncodeKey) -> Option<&InlineImage> {
+        self.slots(key)
+            .iter()
+            .find(|s| s.key == *key)?
+            .image
+            .as_ref()
+    }
+
+    /// The most recently wanted slot carrying an actual image, among `order`'s families. This is
+    /// what the renderer draws while the encode for the current position is still in flight, so
+    /// scrolling — or a resize, or a second placement at another width claiming the encoder — never
+    /// blinks an image out. Ties (both wanted by the same pass) go to the earlier family in `order`.
+    fn newest_in<'a>(&'a self, order: &[&'a [MdProtoSlot]]) -> Option<&'a InlineImage> {
+        let mut best: Option<&MdProtoSlot> = None;
+        for fam in order {
+            for s in fam.iter().filter(|s| s.image.is_some()) {
+                if best.is_none_or(|b| s.used > b.used) {
+                    best = Some(s);
+                }
+            }
+        }
+        best.and_then(|s| s.image.as_ref())
+    }
+
+    /// Fallback for a plain inline placement: the freshest band, else the freshest full image.
+    fn newest_proto(&self) -> Option<&InlineImage> {
+        self.newest_in(&[&self.clip, &self.full])
+    }
+
+    /// Fallback for the focused-diagram zoom: the freshest **unzoomed** full image (a zoom crop of
+    /// some other cell area would be drawn at the wrong scale).
+    fn newest_full(&self) -> Option<&InlineImage> {
+        self.newest_in(&[&self.full])
+    }
+
+    /// The source pixels changed underneath every encode — a GIF advanced a frame, or a diagram was
+    /// re-rasterized at a higher density. Mark each slot for re-encoding **without** dropping the
+    /// picture it holds: the old one keeps drawing until the new one lands (clearing it would flash
+    /// a blank), and re-encoding into the surviving slot reuses its kitty id, so the terminal
+    /// replaces that picture instead of collecting one per frame.
+    fn mark_stale(&mut self) {
+        for slot in self
+            .full
+            .iter_mut()
+            .chain(self.clip.iter_mut())
+            .chain(self.zoom.iter_mut())
+        {
+            slot.stale = true;
+        }
+    }
+}
+
+#[cfg(test)]
+impl MdProtoSlot {
+    /// A slot holding a finished encode of `key` — the state `apply_md_encode` leaves behind.
+    fn encoded(key: MdEncodeKey, image: InlineImage) -> Self {
+        Self {
+            key,
+            image: Some(image),
+            used: 0,
+            stale: false,
+        }
+    }
+
+    /// A slot reserved for `key` that holds no picture: the encode is either still in flight or it
+    /// failed. Both look the same from here, and both mean "do not ask for this again".
+    fn attempted(key: MdEncodeKey) -> Self {
+        Self {
+            key,
+            image: None,
+            used: 0,
+            stale: false,
+        }
+    }
+}
+
+/// Choose the slot a fresh encode of `key` will be answered into, and return its index — which is
+/// also the index of the kitty image id pinned to it (`App::md_kitty_ids`).
+///
+/// Preference order: the slot already holding this key (a re-encode — same id, so the terminal
+/// *replaces* its picture instead of accumulating one), then a brand-new slot while the family is
+/// still under `cap`, then the least-recently-wanted slot. A slot the pass numbered `frame` is
+/// drawing from is never recycled: when every slot is live the family grows by one instead, which
+/// is what makes convergence unconditional (see `MD_PROTO_SLOTS`).
+fn reserve_proto_slot(
+    slots: &mut Vec<MdProtoSlot>,
+    key: MdEncodeKey,
+    frame: u64,
+    cap: usize,
+) -> usize {
+    if let Some(i) = slots.iter().position(|s| s.key == key) {
+        slots[i].used = frame;
+        return i;
+    }
+    let fresh = MdProtoSlot {
+        key,
+        image: None,
+        used: frame,
+        stale: false,
+    };
+    if slots.len() >= cap {
+        let lru = slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.used < frame)
+            .min_by_key(|(i, s)| (s.used, *i))
+            .map(|(i, _)| i);
+        if let Some(i) = lru {
+            slots[i] = fresh;
+            return i;
+        }
+    }
+    slots.push(fresh);
+    slots.len() - 1
 }
 
 /// Outcome of a fence-sharpen check (the sync variant lets tests re-run with the new raster).
@@ -2377,6 +2607,7 @@ impl App {
             media_tx: None,
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
+            md_frame: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
             md_img_tx: None,
