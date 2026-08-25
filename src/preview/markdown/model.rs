@@ -1603,6 +1603,14 @@ pub(crate) fn html_body_text_in(
 /// outside every cell, ignored), which is what makes `<thead>`/`<tbody>` wrappers and arbitrary inline
 /// HTML inside a cell both work with no case of their own. Tag names are matched case-insensitively,
 /// so `<TABLE>`/`<TD>` read the same as the lowercase spellings.
+///
+/// An `<!-- … -->` comment is **not** scanned for tags at all: it is text the author removed, so a
+/// `<tr>`/`<td>`/`<table>`/`</table>` inside one is skipped whole rather than read as this table's
+/// structure (`super::html_comment_end`, the same rule `render_html_block` applies when it drops a
+/// comment from an un-folded HTML block). Without it a commented-out `<tr>` folded into a real row
+/// whose own byte range no longer held the `<!--` that hid it, and the row was drawn — the author's
+/// deleted text, disclosed. A comment lying *inside* a cell simply stays part of that cell's content,
+/// where the cell renderer drops it, exactly as it does for an ordinary HTML block.
 fn parse_html_table(body_spans: &[Range<usize>], src: &str) -> Option<Vec<Vec<HtmlTableCell>>> {
     let text = html_body_text(body_spans, src);
     // Offset in `text` -> offset in `src`. `text` is the spans concatenated in order, so
@@ -1646,6 +1654,16 @@ fn parse_html_table(body_spans: &[Range<usize>], src: &str) -> Option<Vec<Vec<Ht
     let mut i = 0usize;
     while let Some(rel) = text[i..].find('<') {
         let lt = i + rel;
+        // A comment is text the author removed, not markup: skip all of it, so a `<tr>`, a `<td>`, a
+        // `<table>` or a `</table>` written inside one is never read as this table's own structure.
+        // Through `super::html_comment_end` — the pipeline's one comment rule, shared with
+        // `render_html_block`, which is what actually decides whether a run of bytes is visible (see
+        // that function's own doc comment for why agreeing with it, rather than with the CommonMark
+        // letter, is the safe direction here). Always moves `i` past `lt`, so this cannot loop.
+        if let Some(end) = super::html_comment_end(&text, lt) {
+            i = end;
+            continue;
+        }
         let Some(rel_gt) = text[lt..].find('>') else {
             break;
         };
@@ -2504,6 +2522,186 @@ mod tests {
                 doc.blocks.iter().map(|b| &b.kind).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// Every `HtmlTable` in `doc`, as the text each of its cells actually holds — read back through
+    /// `html_body_text_in`, which is exactly how `render.rs`'s `render_html_table_from_model` reads
+    /// a cell (so a quoted table's `>` markers are gone here too, and a table nested inside another
+    /// block is still found). One entry per table, in source order.
+    fn html_table_cell_text(doc: &Doc, src: &str) -> Vec<Vec<Vec<String>>> {
+        fn walk(blocks: &[Block], src: &str, out: &mut Vec<Vec<Vec<String>>>) {
+            for b in blocks {
+                if let BlockKind::HtmlTable { body_spans, rows } = &b.kind {
+                    out.push(
+                        rows.iter()
+                            .map(|r| {
+                                r.iter()
+                                    .map(|c| html_body_text_in(body_spans, src, &c.inner))
+                                    .collect()
+                            })
+                            .collect(),
+                    );
+                }
+                walk(&b.children, src, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&doc.blocks, src, &mut out);
+        out
+    }
+
+    /// An HTML comment is text the author **removed**, so nothing inside one may become structure.
+    ///
+    /// This is an information-disclosure guard, not a cosmetic one. Commenting a whole `<tr>` out is
+    /// the ordinary way to disable a row, and a `<tr>`/`<td>` *inside* `<!-- … -->` used to open a
+    /// real row here: the folded cell then names a byte range that no longer contains the `<!--`
+    /// that would have hidden it, so `render_html_table_from_model` drew the author's commented-out
+    /// text as an ordinary cell. (The un-folded `Html` path never had this bug — `render_html_block`
+    /// has skipped comments since long before tables folded — which is why the same source is hidden
+    /// when anything is glued after `</table>` and disclosed when it is not.)
+    ///
+    /// Both halves are pinned per case: the commented-out text never reaches a cell **and** the live
+    /// rows still do — a fix that simply stopped folding these tables would hide the marker too, and
+    /// silently lose the real content instead.
+    ///
+    /// A cell whose *own* content contains a comment keeps holding it verbatim (the `-->` crossing
+    /// case below): the comment is inside that cell's range, and the one pass that decides visible
+    /// text — `render_html_block`, reached through `html_cell_to_markdown` — strips it there, as the
+    /// `html_table_corpus` goldens show. Stripping it here as well would be a second, competing
+    /// implementation of the same rule.
+    #[test]
+    fn a_comment_is_content_never_table_structure() {
+        // `(why, src, every table's cell text)`. An empty `want` means the block declines to fold at
+        // all and stays an ordinary `Html` leaf, whose own renderer drops the comment.
+        let cases = vec![
+            (
+                "a whole row commented out on one line",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-row</td></tr> -->\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                "a whole row commented out across several lines",
+                "<table>\n<tr><td>keep</td></tr>\n<!--\n<tr><td>SECRET-multiline</td></tr>\n-->\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                "a whole thead commented out",
+                "<table>\n<!--\n<thead><tr><th>SECRET-head</th></tr></thead>\n-->\n<tbody><tr><td>keep</td></tr></tbody>\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                "one td commented out inside a live row",
+                "<table>\n<tr><td>keep</td><!-- <td>SECRET-cell</td> --></tr>\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                // Already correct before the fix (the comment's own `>` ended a nameless pseudo-tag
+                // that happened to swallow the `<td>` inside it) — pinned so it stays correct.
+                "a comment inline before a cell on the same line",
+                "<table>\n<tr><!-- <td>SECRET-inline</td> --><td>keep</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                // The comment opens inside the cell and closes past the cell's own `</td>`, so the
+                // whole run belongs to that one cell — including the `-->` — and the renderer, not
+                // this parser, is what hides it. Before the fix the `</td></tr><tr><td>` inside the
+                // comment really did open a second row holding the marker.
+                "a comment that opens in a cell and closes past its end tag",
+                "<table>\n<tr><td>keep <!-- </td></tr><tr><td>SECRET-crossing --> tail</td></tr>\n</table>\n",
+                vec![vec![vec![
+                    "keep <!-- </td></tr><tr><td>SECRET-crossing --> tail",
+                ]]],
+            ),
+            (
+                "a comment containing the table's own closing tag",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- </table> -->\n<tr><td>second</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"], vec!["second"]]],
+            ),
+            (
+                // Comments do not nest: the first `-->` closes the one opened by the first `<!--`.
+                "a comment containing a second comment opener",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-outer</td></tr> <!-- <tr><td>SECRET-inner</td></tr> -->\n<tr><td>after the comment</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"], vec!["after the comment"]]],
+            ),
+            (
+                // No `-->` at all: the comment swallows the `</table>` too, so the table is never
+                // closed and the block declines to fold — and the `Html` renderer drops everything
+                // from `<!--` on, which is what an unterminated comment means everywhere else.
+                "a comment that is never closed",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-unclosed</td></tr>\n</table>\n",
+                vec![],
+            ),
+            (
+                "a table whose only row is commented out",
+                "<table>\n<!-- <tr><td>SECRET-only</td></tr> -->\n</table>\n",
+                vec![],
+            ),
+            (
+                "an attribute value that looks like a comment opener",
+                "<table>\n<tr><td title=\"<!--\">keep</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                // A degradation that predates this fix and is unchanged by it: the tag scan ends a
+                // tag at the first `>`, which here is the one inside the attribute's own `-->`, so
+                // the rest of the attribute leaks into the cell. Pinned, not fixed: the `<` this
+                // starts at is `<td`, never `<!--`, so no comment rule of any kind applies to it.
+                "an attribute value that looks like a whole comment",
+                "<table>\n<tr><td title=\"<!-- x -->\">keep</td></tr>\n</table>\n",
+                vec![vec![vec!["\">keep"]]],
+            ),
+            (
+                "a comment indented, with blank space around it",
+                "<table>\n  <!--\n    <tr><td>SECRET-spaced</td></tr>\n  -->  \n  <tr><td>keep</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                // Inside a quote the comment's own bytes are `>`-marked in `src` but not in
+                // `body_spans`, so the skip has to run over the marker-free text like every other
+                // tag here does.
+                "a commented-out row inside a quoted table",
+                "> <table>\n> <tr><td>keep</td></tr>\n> <!-- <tr><td>SECRET-quoted</td></tr> -->\n> </table>\n",
+                vec![vec![vec!["keep"]]],
+            ),
+            (
+                // Declines to fold, like any other content glued on after `</table>` — see the
+                // trailing-content check in `parse_html_table`.
+                "a comment glued onto the block after the close",
+                "<table>\n<tr><td>keep</td></tr>\n</table>\n<!-- trailing -->\n",
+                vec![],
+            ),
+            (
+                // The `<table>` inside the comment used to raise the nesting depth, so the real
+                // `</table>` only brought it back to 1 and the table never closed.
+                "a comment containing a nested table",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <table><tr><td>SECRET-nested</td></tr></table> -->\n<tr><td>second</td></tr>\n</table>\n",
+                vec![vec![vec!["keep"], vec!["second"]]],
+            ),
+        ];
+        // Collected, not asserted case by case: a regression here usually hits several shapes at
+        // once, and seeing all of them is what tells a reader which rule broke.
+        let mut bad: Vec<String> = Vec::new();
+        for (why, src, want) in cases {
+            let want: Vec<Vec<Vec<String>>> = want
+                .iter()
+                .map(|t| {
+                    t.iter()
+                        .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+                        .collect()
+                })
+                .collect();
+            let doc = Doc::parse(src);
+            let got = html_table_cell_text(&doc, src);
+            if got != want {
+                bad.push(format!("{why}\n     got: {got:?}\n    want: {want:?}"));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "an HTML comment was read as table structure in {} case(s):\n  - {}",
+            bad.len(),
+            bad.join("\n  - ")
+        );
     }
 
     #[test]

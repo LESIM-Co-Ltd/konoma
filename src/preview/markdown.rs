@@ -3939,13 +3939,11 @@ fn html_cell_to_markdown(raw: &str) -> String {
     let mut open_links: Vec<(usize, String)> = Vec::new();
     let mut rest = raw;
     while let Some(lt) = rest.find('<') {
-        // A comment can contain a `>` of its own, so let `render_html_block` own that case entirely:
-        // copy it through untouched and resume after it.
-        if rest[lt..].starts_with("<!--") {
-            let end = rest[lt..]
-                .find("-->")
-                .map(|e| lt + e + 3)
-                .unwrap_or(rest.len());
+        // A comment can contain a `>` and whole tags of its own, so let `render_html_block` own that
+        // case entirely: copy it through untouched — no inline translation of anything inside it —
+        // and resume after it, at the offset `html_comment_end` (the rule `render_html_block` itself
+        // will apply to these same bytes in a moment) says the comment ends.
+        if let Some(end) = html_comment_end(rest, lt) {
             out.push_str(&rest[..end]);
             rest = &rest[end..];
             continue;
@@ -4016,6 +4014,34 @@ fn html_cell_to_markdown(raw: &str) -> String {
         .join(" ")
 }
 
+/// Where an HTML comment ends: the byte offset in `s` just past the `-->` closing the comment that
+/// starts at `at`, or `None` when `s[at..]` does not start a comment at all.
+///
+/// **The one place this pipeline decides that.** Three scanners walk raw HTML tag by tag and each
+/// has to know where a comment ends, for three different reasons — [`render_html_block`] to drop it,
+/// [`html_cell_to_markdown`] to hand it through untranslated, and `model::parse_html_table` to
+/// refuse to read table structure out of it — and a comment may contain any of `<`, `>` and a whole
+/// tag, so a scanner without this rule reads the author's *removed* text as markup. That is exactly
+/// how a commented-out `<tr>` came to be drawn as a real row (see `html_table_corpus`'s comment
+/// cases). Sharing one function, rather than repeating the two-line skip a third time, is what makes
+/// "commented out" mean the same thing in all three.
+///
+/// The rule: from `<!--` to the first following `-->`; comments do not nest, so an inner `<!--` is
+/// ordinary comment text. An unterminated comment runs to the end of `s` — and `s` is always one
+/// HTML *block* (CommonMark ends one at a blank line), never the rest of the document. Deliberately
+/// **not** CommonMark 0.31's two special cases, where `<!-->` and `<!--->` are complete empty
+/// comments: this must agree with `render_html_block`, the pass that decides what text is visible,
+/// because a scanner that ended a comment *earlier* than that pass does would fold rows out of bytes
+/// the renderer would have hidden — the disclosure this rule exists to prevent, arrived at from the
+/// other side. Ending one *later* only ever hides more.
+fn html_comment_end(s: &str, at: usize) -> Option<usize> {
+    let body = s.get(at..)?.strip_prefix("<!--")?;
+    Some(match body.find("-->") {
+        Some(e) => at + "<!--".len() + e + "-->".len(),
+        None => s.len(),
+    })
+}
+
 /// Render an HTML block as its tag-stripped text (entities decoded, comments dropped entirely).
 ///
 /// `pub(crate)`, not private: `app::md_real_file_sweep_tests` (a cousin module, not a descendant of
@@ -4030,17 +4056,14 @@ pub(crate) fn render_html_block(raw: &str) -> Vec<Line<'static>> {
     while let Some(pos) = rest.find('<') {
         text.push_str(&rest[..pos]);
         let after = &rest[pos..];
-        if let Some(r) = after.strip_prefix("<!--") {
-            match r.find("-->") {
-                Some(e) => rest = &r[e + 3..],
-                None => rest = "",
-            }
-        } else {
-            match after.find('>') {
-                Some(e) => rest = &after[e + 1..],
-                None => rest = "",
-            }
-        }
+        rest = match html_comment_end(after, 0) {
+            // Dropped whole, content and all: this is where "commented out" becomes "not shown".
+            Some(end) => &after[end..],
+            None => match after.find('>') {
+                Some(e) => &after[e + 1..],
+                None => "",
+            },
+        };
     }
     text.push_str(rest);
     let text = text
@@ -8907,6 +8930,77 @@ plain body
         );
         assert_eq!(html_cell_to_markdown(""), "");
         assert_eq!(html_cell_to_markdown("   "), "");
+    }
+
+    // ---- `html_comment_end` (the pipeline's one comment rule) ----
+
+    /// Where a comment ends, pinned directly rather than only through its three callers: this one
+    /// answer is what makes "commented out" mean the same thing to the text renderer, the cell
+    /// converter and the `<table>` parser, and a disclosure follows the moment one of them ends a
+    /// comment earlier than another (see the function's own doc comment).
+    #[test]
+    fn html_comment_end_covers_the_whole_comment_and_nothing_else() {
+        // The plain case, and one whose content carries the `<`, `>` and tags that make a comment
+        // unsafe to scan as markup in the first place.
+        assert_eq!(html_comment_end("<!-- x -->tail", 0), Some(10));
+        let src = "<!-- <tr><td>x</td></tr> -->tail";
+        assert_eq!(html_comment_end(src, 0).map(|e| &src[e..]), Some("tail"));
+        // Not a comment at all: an ordinary tag, a declaration, a lone `<`, and an offset that is
+        // simply somewhere else in the string.
+        assert_eq!(html_comment_end("<td>x</td>", 0), None);
+        assert_eq!(html_comment_end("<!DOCTYPE html>", 0), None);
+        assert_eq!(html_comment_end("<!-", 0), None);
+        assert_eq!(html_comment_end("a <!-- x -->", 0), None);
+        assert_eq!(html_comment_end("a <!-- x -->", 2), Some(12));
+        // Comments do not nest: the first `-->` closes the one the first `<!--` opened, so the
+        // second opener is ordinary comment text and everything after that `-->` is live content.
+        let src = "<!-- a <!-- b -->live";
+        assert_eq!(html_comment_end(src, 0).map(|e| &src[e..]), Some("live"));
+        // Never closed: runs to the end of what it was given (one HTML block), so nothing after it
+        // can be mistaken for markup — and the caller stops rather than looping.
+        assert_eq!(html_comment_end("<!-- x", 0), Some(6));
+        assert_eq!(html_comment_end("<!-- <tr><td>x", 0), Some(14));
+        // The abrupt-close spellings CommonMark 0.31 treats as complete empty comments are
+        // deliberately *not* special-cased here — see the doc comment. Pinned so a later change to
+        // that decision has to be made on purpose, in this one place, for all three scanners.
+        assert_eq!(html_comment_end("<!-->x", 0), Some(6));
+        assert_eq!(html_comment_end("<!--->x", 0), Some(7));
+        // Multibyte: `at` on a non-boundary answers `None` instead of panicking, and a comment
+        // holding CJK text still ends exactly past its own `-->`.
+        let src = "日本<!-- 秘密 -->後";
+        let at = src.find("<!--").unwrap();
+        assert_eq!(html_comment_end(src, at).map(|e| &src[e..]), Some("後"));
+        assert_eq!(html_comment_end(src, 1), None);
+    }
+
+    /// The two text scanners keep dropping a comment whole — including one holding tags they would
+    /// otherwise have translated, and one that is never closed (everything from `<!--` on goes,
+    /// which is what keeps an unterminated comment from leaking its contents).
+    #[test]
+    fn the_text_scanners_drop_a_comment_and_everything_in_it() {
+        let drawn = |raw: &str| {
+            render_html_block(raw)
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        assert_eq!(drawn("a<!-- gone -->b"), "ab|");
+        assert_eq!(drawn("a<!-- <b>gone</b> -->b"), "ab|");
+        assert_eq!(drawn("a<!-- <table><tr><td>gone"), "a|");
+        assert_eq!(drawn("a<!-- x --><!-- y -->b"), "ab|");
+        assert_eq!(html_cell_to_markdown("a<!-- <b>gone</b> -->b"), "ab");
+        assert_eq!(html_cell_to_markdown("a<!-- gone"), "a");
+        assert_eq!(
+            html_cell_to_markdown("a<!-- <a href=\"u\">gone</a> -->b"),
+            "ab",
+            "no `[` may survive from a link the comment swallowed"
+        );
     }
 
     #[test]
@@ -14752,6 +14846,88 @@ pub(crate) mod html_table_corpus {
             (
                 "gfm table and html table in the same document",
                 "| a | b |\n|---|--:|\n| 1 | 2 |\n\n<table>\n<tr><td>c</td><td align=\"right\">d</td></tr>\n</table>\n",
+            ),
+            // ---- HTML comments: text the author removed, never structure ----
+            //
+            // Every case here that hides something inside `<!-- … -->` marks it `SECRET-…`, which
+            // `app::md_snapshot_tests::no_corpus_case_ever_draws_commented_out_text` fails on if it
+            // reaches a drawn span — so a shape added later is checked for free, not only by
+            // whoever remembers to read the golden. The disclosure this axis was written for:
+            // `parse_html_table` had no comment rule at all, so a commented-out `<tr>` folded into
+            // a real row whose byte range no longer held the `<!--` that hid it, and the row was
+            // drawn. The `model` side of the same axis is pinned by
+            // `model::tests::a_comment_is_content_never_table_structure`.
+            (
+                "a commented-out row",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-row</td></tr> -->\n</table>\n",
+            ),
+            (
+                "a commented-out row across several lines",
+                "<table>\n<tr><td>keep</td></tr>\n<!--\n<tr><td>SECRET-multiline</td></tr>\n-->\n</table>\n",
+            ),
+            (
+                "a commented-out thead",
+                "<table>\n<!--\n<thead><tr><th>SECRET-head</th></tr></thead>\n-->\n<tbody><tr><td>keep</td></tr></tbody>\n</table>\n",
+            ),
+            (
+                "a commented-out td inside a live row",
+                "<table>\n<tr><td>keep</td><!-- <td>SECRET-cell</td> --></tr>\n</table>\n",
+            ),
+            (
+                "a comment inline before a cell on the same line",
+                "<table>\n<tr><!-- <td>SECRET-inline</td> --><td>keep</td></tr>\n</table>\n",
+            ),
+            (
+                // The comment opens inside the cell and closes past its own `</td>`: one cell, whose
+                // renderer — not the table parser — is what drops the commented middle.
+                "a comment that opens in a cell and closes past its end tag",
+                "<table>\n<tr><td>keep <!-- </td></tr><tr><td>SECRET-crossing --> tail</td></tr>\n</table>\n",
+            ),
+            (
+                "a comment containing the table's own closing tag",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- </table> -->\n<tr><td>second</td></tr>\n</table>\n",
+            ),
+            (
+                // Comments do not nest: the first `-->` closes the comment the first `<!--` opened.
+                "a comment containing a second comment opener",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-outer</td></tr> <!-- <tr><td>SECRET-inner</td></tr> -->\n<tr><td>after the comment</td></tr>\n</table>\n",
+            ),
+            (
+                // Never closed: it swallows the `</table>` too, so this is not one complete table
+                // and the ordinary `Html` path draws it — dropping everything from `<!--` on.
+                "a comment that is never closed",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-unclosed</td></tr>\n</table>\n",
+            ),
+            (
+                "a table whose only row is commented out",
+                "<table>\n<!-- <tr><td>SECRET-only</td></tr> -->\n</table>\n",
+            ),
+            (
+                "an attribute value that looks like a comment opener",
+                "<table>\n<tr><td title=\"<!--\">keep</td></tr>\n</table>\n",
+            ),
+            (
+                // A degradation older than the comment rule and untouched by it: the tag scan ends
+                // a tag at its first `>`, which here is the one inside the attribute's own `-->`.
+                "an attribute value that looks like a whole comment",
+                "<table>\n<tr><td title=\"<!-- x -->\">keep</td></tr>\n</table>\n",
+            ),
+            (
+                "a comment indented, with blank space around it",
+                "<table>\n  <!--\n    <tr><td>SECRET-spaced</td></tr>\n  -->  \n  <tr><td>keep</td></tr>\n</table>\n",
+            ),
+            (
+                "a commented-out row inside a quoted table",
+                "> <table>\n> <tr><td>keep</td></tr>\n> <!-- <tr><td>SECRET-quoted</td></tr> -->\n> </table>\n",
+            ),
+            (
+                // Content glued on after `</table>` keeps the block unfolded, a comment included.
+                "a comment glued onto the block after the close",
+                "<table>\n<tr><td>keep</td></tr>\n</table>\n<!-- trailing -->\n",
+            ),
+            (
+                "a comment containing a nested table",
+                "<table>\n<tr><td>keep</td></tr>\n<!-- <table><tr><td>SECRET-nested</td></tr></table> -->\n<tr><td>second</td></tr>\n</table>\n",
             ),
         ]
     }

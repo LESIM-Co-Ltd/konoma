@@ -631,3 +631,55 @@ fn markdown_render_snapshot_corpus_is_not_empty() {
         cases.len()
     );
 }
+
+/// Text an author commented out is never *drawn* — checked over the whole golden corpus, in both
+/// snapshot configs, on the same rendered `Line`s the goldens dump.
+///
+/// The convention this rests on: a corpus case that hides something inside `<!-- … -->` names it
+/// `SECRET-…`. Cases without that marker are skipped, so this costs nothing for the rest of the
+/// corpus and needs no list of its own to be kept in sync — a shape added to any corpus later is
+/// covered the moment it uses the marker.
+///
+/// Why a test and not just the goldens: a golden diff only fails for someone who reads it. This
+/// fails by name, and states the property (`html_table_corpus`'s own doc comment explains the
+/// disclosure that made it necessary — a commented-out `<tr>` folded into a real, drawn row).
+///
+/// The mirror assertion matters as much: a case that hides its marker by drawing *nothing at all*
+/// would satisfy the first half while silently losing the author's real content, so every case
+/// whose source keeps a live `keep` cell must still draw it.
+#[test]
+fn no_corpus_case_ever_draws_commented_out_text() {
+    let mut code_bg_none = Config::default();
+    code_bg_none.ui.theme.code_bg = "none".to_string();
+    let mut checked = 0usize;
+    for cfg in [Config::default(), code_bg_none] {
+        for (name, src) in all_cases() {
+            if !src.contains("SECRET") {
+                continue;
+            }
+            checked += 1;
+            let drawn: Vec<String> = render_case(&cfg, &src)
+                .lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+                .collect();
+            for (i, line) in drawn.iter().enumerate() {
+                assert!(
+                    !line.contains("SECRET"),
+                    "{name}: commented-out text reached the screen at line {i}: {line:?}"
+                );
+            }
+            if src.contains(">keep<") {
+                assert!(
+                    drawn.iter().any(|l| l.contains("keep")),
+                    "{name}: the live content went missing along with the commented-out text \
+                     — drawn: {drawn:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no corpus case carries a `SECRET-…` marker any more — this guard is checking nothing"
+    );
+}

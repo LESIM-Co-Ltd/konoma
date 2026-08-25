@@ -5841,6 +5841,263 @@ L0001 style=fg=-,bg=-,mod=- align=-
 -- ANCHORS (0) --
 -- ITEMS (0) --
 
+=== html_table_corpus: a comment containing a nested table ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- "   "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "second"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment containing a second comment opener ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- "              "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "after the comment"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment containing the table's own closing tag ===
+-- LINES (4) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- "   "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "second"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment glued onto the block after the close ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "keep"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment indented, with blank space around it ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment inline before a cell on the same line ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment that is never closed ===
+-- LINES (2) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "keep"
+L0001 style=fg=-,bg=-,mod=- align=-
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a comment that opens in a cell and closes past its end tag ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep  tail"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a commented-out row ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a commented-out row across several lines ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a commented-out row inside a quoted table ===
+-- LINES (3) --
+L0000 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "keep"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=green,bg=-,mod=I align=-
+  s00 fg=-,bg=-,mod=- ">"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a commented-out td inside a live row ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a commented-out thead ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
 === html_table_corpus: a stray th in the middle of a body row ===
 -- LINES (3) --
 L0000 style=fg=-,bg=-,mod=- align=-
@@ -5882,6 +6139,15 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├───┤"
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: a table whose only row is commented out ===
+-- LINES (0) --
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --
@@ -5973,6 +6239,44 @@ L0002 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0003 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: an attribute value that looks like a comment opener ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┘"
+-- IMAGES (0) --
+-- CODE_BLOCKS (0) --
+-- TASKS (0) --
+-- DETAILS_OPEN (0) --
+-- ANCHORS (0) --
+-- ITEMS (0) --
+
+=== html_table_corpus: an attribute value that looks like a whole comment ===
+-- LINES (3) --
+L0000 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┐"
+L0001 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "│"
+  s01 fg=-,bg=-,mod=- " "
+  s02 fg=-,bg=-,mod=- "\">keep"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=rgb(90,98,120),bg=-,mod=- "│"
+L0002 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
 -- TASKS (0) --

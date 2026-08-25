@@ -7,6 +7,19 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Text commented out with `<!-- … -->` inside an HTML `<table>` was drawn on screen.** Commenting
+  a whole `<tr>` out is the ordinary way to disable a row, but the table parser added with HTML
+  table support scanned tags without any comment rule at all, so a `<tr>`/`<td>` inside a comment
+  opened a real row — and the folded cell then named a byte range that no longer contained the
+  `<!--` that would have hidden it, so the author's removed text was rendered as an ordinary cell.
+  The same source was correctly hidden whenever the table happened *not* to fold (anything glued
+  after `</table>` keeps the block on the plain-HTML path, which has always dropped comments),
+  which is what made the disclosure easy to miss. The table parser now skips comments through the
+  one shared rule the two HTML text scanners already used, so `<tr>`, `<td>`, `<table>` and
+  `</table>` written inside a comment are content, never structure — including comments spanning
+  several lines, comments containing the table's own `</table>`, and comments that are never
+  closed. A comment written inside a cell's own text is unchanged: it stays that cell's content and
+  is dropped when the cell is rendered, exactly as before.
 - **Markdown nested inside a plain `>` blockquote is now decorated the same way it is anywhere
   else.** A quote used to be a dead zone: a table in one collapsed to a single wrapped line of raw
   `|` and `-` characters, an HTML block inside one **disappeared from the screen entirely**, and a

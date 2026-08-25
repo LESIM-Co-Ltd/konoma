@@ -1418,6 +1418,59 @@ List{ordered=true, start=Some(1)} src=30..38 text="1. note\n"
 -- BLOCKS (1) --
 Paragraph{inline=1..5:"<BR> and\ntail"} src=0..20 text="`<BR>` and   \n tail\n"
 
+=== html_table_corpus: a comment containing a nested table ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..87:"<!-- <table><tr><td>SECRET-nested</td></tr></table> -->\n", 87..112:"<tr><td>second</td></tr>\n", 112..121:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)], [95..101:"second"(header=false, align=None)]]} src=0..121 text="<table>\n<tr><td>keep</td></tr>\n<!-- <table><tr><td>SECRET-nested</td></tr></tabl"…
+
+=== html_table_corpus: a comment containing a second comment opener ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..107:"<!-- <tr><td>SECRET-outer</td></tr> <!-- <tr><td>SECRET-inner</td></tr> -->\n", 107..143:"<tr><td>after the comment</td></tr>\n", 143..152:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)], [115..132:"after the comment"(header=false, align=None)]]} src=0..152 text="<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-outer</td></tr> <!-- <tr><td>"…
+
+=== html_table_corpus: a comment containing the table's own closing tag ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..49:"<!-- </table> -->\n", 49..74:"<tr><td>second</td></tr>\n", 74..83:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)], [57..63:"second"(header=false, align=None)]]} src=0..83 text="<table>\n<tr><td>keep</td></tr>\n<!-- </table> -->\n<tr><td>second</td></tr>\n</tabl"…
+
+=== html_table_corpus: a comment glued onto the block after the close ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..40:"</table>\n", 40..58:"<!-- trailing -->\n"], text="<table>\n<tr><td>keep</td></tr>\n</table>\n<!-- trailing -->\n"} src=0..58 text="<table>\n<tr><td>keep</td></tr>\n</table>\n<!-- trailing -->\n"
+
+=== html_table_corpus: a comment indented, with blank space around it ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..15:"  <!--\n", 15..51:"    <tr><td>SECRET-spaced</td></tr>\n", 51..59:"  -->  \n", 59..84:"  <tr><td>keep</td></tr>\n", 84..93:"</table>\n"], rows=[[69..73:"keep"(header=false, align=None)]]} src=0..93 text="<table>\n  <!--\n    <tr><td>SECRET-spaced</td></tr>\n  -->  \n  <tr><td>keep</td></"…
+
+=== html_table_corpus: a comment inline before a cell on the same line ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..62:"<tr><!-- <td>SECRET-inline</td> --><td>keep</td></tr>\n", 62..71:"</table>\n"], rows=[[47..51:"keep"(header=false, align=None)]]} src=0..71 text="<table>\n<tr><!-- <td>SECRET-inline</td> --><td>keep</td></tr>\n</table>\n"
+
+=== html_table_corpus: a comment that is never closed ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..70:"<!-- <tr><td>SECRET-unclosed</td></tr>\n", 70..79:"</table>\n"], text="<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-unclosed</td></tr>\n</table>\n"} src=0..79 text="<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-unclosed</td></tr>\n</table>\n"
+
+=== html_table_corpus: a comment that opens in a cell and closes past its end tag ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..79:"<tr><td>keep <!-- </td></tr><tr><td>SECRET-crossing --> tail</td></tr>\n", 79..88:"</table>\n"], rows=[[16..68:"keep <!-- </td></tr><tr><td>SECRET-crossing --> tail"(header=false, align=None)]]} src=0..88 text="<table>\n<tr><td>keep <!-- </td></tr><tr><td>SECRET-crossing --> tail</td></tr>\n<"…
+
+=== html_table_corpus: a commented-out row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..69:"<!-- <tr><td>SECRET-row</td></tr> -->\n", 69..78:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)]]} src=0..78 text="<table>\n<tr><td>keep</td></tr>\n<!-- <tr><td>SECRET-row</td></tr> -->\n</table>\n"
+
+=== html_table_corpus: a commented-out row across several lines ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..31:"<tr><td>keep</td></tr>\n", 31..36:"<!--\n", 36..71:"<tr><td>SECRET-multiline</td></tr>\n", 71..75:"-->\n", 75..84:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)]]} src=0..84 text="<table>\n<tr><td>keep</td></tr>\n<!--\n<tr><td>SECRET-multiline</td></tr>\n-->\n</tab"…
+
+=== html_table_corpus: a commented-out row inside a quoted table ===
+-- BLOCKS (1) --
+Quote{alert=None, alert_title=""} src=0..89 text="> <table>\n> <tr><td>keep</td></tr>\n> <!-- <tr><td>SECRET-quoted</td></tr> -->\n> "…
+  HtmlTable{body_spans=[2..10:"<table>\n", 12..35:"<tr><td>keep</td></tr>\n", 37..78:"<!-- <tr><td>SECRET-quoted</td></tr> -->\n", 80..89:"</table>\n"], rows=[[20..24:"keep"(header=false, align=None)]]} src=2..89 text="<table>\n> <tr><td>keep</td></tr>\n> <!-- <tr><td>SECRET-quoted</td></tr> -->\n> </"…
+
+=== html_table_corpus: a commented-out td inside a live row ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..60:"<tr><td>keep</td><!-- <td>SECRET-cell</td> --></tr>\n", 60..69:"</table>\n"], rows=[[16..20:"keep"(header=false, align=None)]]} src=0..69 text="<table>\n<tr><td>keep</td><!-- <td>SECRET-cell</td> --></tr>\n</table>\n"
+
+=== html_table_corpus: a commented-out thead ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..13:"<!--\n", 13..58:"<thead><tr><th>SECRET-head</th></tr></thead>\n", 58..62:"-->\n", 62..100:"<tbody><tr><td>keep</td></tr></tbody>\n", 100..109:"</table>\n"], rows=[[77..81:"keep"(header=false, align=None)]]} src=0..109 text="<table>\n<!--\n<thead><tr><th>SECRET-head</th></tr></thead>\n-->\n<tbody><tr><td>kee"…
+
 === html_table_corpus: a stray th in the middle of a body row ===
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..48:"<tr><td>a</td><th>b</th><td>c</td></tr>\n", 48..57:"</table>\n"], rows=[[16..17:"a"(header=false, align=None), 26..27:"b"(header=true, align=None), 36..37:"c"(header=false, align=None)]]} src=0..57 text="<table>\n<tr><td>a</td><th>b</th><td>c</td></tr>\n</table>\n"
@@ -1425,6 +1478,10 @@ HtmlTable{body_spans=[0..8:"<table>\n", 8..48:"<tr><td>a</td><th>b</th><td>c</td
 === html_table_corpus: a table of nothing but th rows ===
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..28:"<tr><th>H</th></tr>\n", 28..37:"</table>\n"], rows=[[16..17:"H"(header=true, align=None)]]} src=0..37 text="<table>\n<tr><th>H</th></tr>\n</table>\n"
+
+=== html_table_corpus: a table whose only row is commented out ===
+-- BLOCKS (1) --
+Html{tag=Some("table"), body_spans=[0..8:"<table>\n", 8..47:"<!-- <tr><td>SECRET-only</td></tr> -->\n", 47..56:"</table>\n"], text="<table>\n<!-- <tr><td>SECRET-only</td></tr> -->\n</table>\n"} src=0..56 text="<table>\n<!-- <tr><td>SECRET-only</td></tr> -->\n</table>\n"
 
 === html_table_corpus: align left center right on one row ===
 -- BLOCKS (1) --
@@ -1437,6 +1494,14 @@ HtmlTable{body_spans=[0..8:"<table>\n", 8..43:"<tr><td ALIGN=\"CENTER\">C</td></
 === html_table_corpus: align with an unrecognized value falls back to the column ===
 -- BLOCKS (1) --
 HtmlTable{body_spans=[0..8:"<table>\n", 8..44:"<tr><td align=\"justify\">J</td></tr>\n", 44..77:"<tr><td>wide cell here</td></tr>\n", 77..86:"</table>\n"], rows=[[32..33:"J"(header=false, align=None)], [52..66:"wide cell here"(header=false, align=None)]]} src=0..86 text="<table>\n<tr><td align=\"justify\">J</td></tr>\n<tr><td>wide cell here</td></tr>\n</t"…
+
+=== html_table_corpus: an attribute value that looks like a comment opener ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..44:"<tr><td title=\"<!--\">keep</td></tr>\n", 44..53:"</table>\n"], rows=[[29..33:"keep"(header=false, align=None)]]} src=0..53 text="<table>\n<tr><td title=\"<!--\">keep</td></tr>\n</table>\n"
+
+=== html_table_corpus: an attribute value that looks like a whole comment ===
+-- BLOCKS (1) --
+HtmlTable{body_spans=[0..8:"<table>\n", 8..50:"<tr><td title=\"<!-- x -->\">keep</td></tr>\n", 50..59:"</table>\n"], rows=[[33..39:"\">keep"(header=false, align=None)]]} src=0..59 text="<table>\n<tr><td title=\"<!-- x -->\">keep</td></tr>\n</table>\n"
 
 === html_table_corpus: blank line inside the table is not a table ===
 -- BLOCKS (2) --
