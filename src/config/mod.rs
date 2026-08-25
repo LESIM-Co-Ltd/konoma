@@ -470,6 +470,22 @@ pub struct UiConfig {
     /// (`<details>` collapsed, `<details open>` expanded); `"open"` always starts expanded; `"closed"`
     /// always collapsed. Either way `Tab` focuses the `<summary>` and `Space`/`Enter` toggle it.
     pub md_details: String,
+    /// Where a **table** sits inside a Markdown preview: `"left"` (default — the historical layout,
+    /// the grid starts at the left edge), `"center"`, or `"right"`. Applies to the box as a whole,
+    /// GFM pipe tables and HTML `<table>` alike (and inside a blockquote / alert / `<details>` body,
+    /// within that body's own width). It does **not** touch alignment *within* a cell — a column's
+    /// `:---:` and an HTML cell's `align=` keep deciding that, as they always did. A table at least
+    /// as wide as the pane stays flush left whatever this says. An unrecognized value falls back to
+    /// the default.
+    pub md_table_align: String,
+    /// Where a **block image** sits inside a Markdown preview: `"left"`, `"center"` (default — the
+    /// historical layout), or `"right"`. Covers a standalone `![alt](url)`, a packed row of badge
+    /// images, and a ```mermaid diagram (whose caption line and focus frame follow it). It does
+    /// **not** cover an image inside a table cell (its cell's own alignment places that) nor
+    /// display math, whose centering is a typesetting convention rather than an image-layout choice.
+    /// An image at least as wide as the pane stays flush left whatever this says. An unrecognized
+    /// value falls back to the default.
+    pub md_image_align: String,
     /// How LaTeX math renders: `"image"` (default) rasterizes `$…$` / `$$…$$` in-process via RaTeX
     /// (pure Rust, KaTeX-quality) and shows each as an inline image — inline math is lifted onto its
     /// own line since a terminal cannot place an image mid-text. `"text"` leaves the raw LaTeX as
@@ -548,6 +564,20 @@ impl UiConfig {
             chars
         } else {
             crate::preview::markdown::DEFAULT_TASK_STATES.to_vec()
+        }
+    }
+
+    /// `md_table_align`/`md_image_align` resolved into the one type the Markdown renderer aligns
+    /// blocks with. Permissive: an unrecognized value falls back to that option's own default
+    /// (`left` for tables, `center` for images), so a typo can never blank or mis-place a block —
+    /// the same "unknown value = default" contract `md_details` / `follow_view` / `commit_meta_align`
+    /// already have.
+    pub fn md_block_aligns(&self) -> crate::preview::markdown::BlockAligns {
+        use crate::preview::markdown::{BlockAlign, BlockAligns};
+        let d = BlockAligns::default();
+        BlockAligns {
+            table: BlockAlign::from_config(&self.md_table_align, d.table),
+            image: BlockAlign::from_config(&self.md_image_align, d.image),
         }
     }
 
@@ -755,6 +785,8 @@ impl Default for UiConfig {
             md_footnotes: true,
             md_inline_html: true,
             md_details: "auto".into(),
+            md_table_align: "left".into(),
+            md_image_align: "center".into(),
             busy_indicator: true,
             mermaid: "image".into(),
             math: "image".into(),

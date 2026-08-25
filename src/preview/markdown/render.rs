@@ -168,11 +168,12 @@ use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
     details_marker_line, gutter_span, highlight_body, html_cell_to_markdown, image_loading_line,
     image_placeholder_lines, image_text_fallback, is_mermaid_info, math_placeholder_lines,
-    math_raw_lines, math_url, mermaid_fence_url, mermaid_placeholder_lines, next_details_open,
-    normalize_cell, pad_to_width, parse_cell_segments, prefix_link_icons, render_html_block,
-    render_mermaid_block, render_table_cells, scan_inline_math, task_prefix_state, CellAttrs,
-    CellImage, CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart,
-    MathSlot, MermaidSlot, SourceRun, TableCells,
+    math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url, mermaid_placeholder_lines,
+    next_details_open, normalize_cell, pad_to_width, parse_cell_segments, prefix_link_icons,
+    render_html_block, render_mermaid_block, render_table_cells, scan_inline_math,
+    task_prefix_state, BlockAligns, CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign,
+    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -370,6 +371,51 @@ pub(crate) fn render_doc(
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> RenderOut {
+    render_doc_aligned(
+        doc,
+        src,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        BlockAligns::default(),
+    )
+}
+
+/// [`render_doc`] plus the block alignments this render runs under (`[ui] md_table_align` /
+/// `[ui] md_image_align`, resolved by `config::UiConfig::md_block_aligns`). `render_doc` is this
+/// function with [`BlockAligns::default`] — konoma's own historical layout (tables left, images and
+/// mermaid diagrams centered) — which is what every test in this file and every golden snapshot
+/// still goes through unchanged.
+///
+/// The alignments live on `Writer` (`Writer::aligns`) rather than being threaded through each
+/// block-rendering function's own parameters, the same way `width`/`icons`/`alerts` already are:
+/// they are fixed for a whole render and are read at exactly three places
+/// (`flush_row_group`, `render_mermaid_slot`, `emit_table`).
+#[allow(clippy::too_many_arguments)] // as `render_doc` above, plus the alignments
+pub(crate) fn render_doc_aligned(
+    doc: &Doc<'_>,
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> RenderOut {
     let styles = KonomaStyles { code_bg: code.bg };
     let math = math_on.then_some(MathCtx {
         slot: math_slot,
@@ -425,6 +471,7 @@ pub(crate) fn render_doc(
         icons,
         tasks,
         alerts,
+        aligns,
     };
     // ## A raw, un-stripped YAML front-matter block draws directly from `doc.events`
     //
@@ -892,6 +939,18 @@ struct Writer<'m> {
     /// `icons`/`code`/`theme`: a nested alert discovered *inside* another alert's or a `<details>`
     /// block's own body must honor the same document-wide toggle.
     alerts: bool,
+    /// `render_doc_aligned`'s own incoming block alignments (`[ui] md_table_align` /
+    /// `[ui] md_image_align`) — one document-wide pair of settings, held here for exactly the reason
+    /// `alerts` above is (it never varies with nesting depth), and copied verbatim into every
+    /// isolated sub-`Writer` alongside `alerts`/`icons`/`code`/`theme` so a table or an image inside
+    /// a quote, an alert or a `<details>` body aligns by the same rule as one at the top level —
+    /// within *that* body's own narrowed width, which is exactly what `w.width` already means there.
+    ///
+    /// Read at three places, and nowhere else: `flush_row_group` (a block image row group's start
+    /// column), `render_mermaid_slot` (via `mermaid_diagram_col`, which also feeds the caption indent
+    /// and — through `ui::preview` — the focus frame), and `emit_table` (a table's own box shift, and
+    /// with it the `col` of every image reserved inside one of its cells).
+    aligns: BlockAligns,
     /// How many extra lines `decorate_headings_and_extras`'s own `decorate_headings` pass — run
     /// exactly **once**, over the *whole* document, right at the very end of `render_doc` — will
     /// insert **before** whatever line index `self.lines.len()` currently reports, once that single
@@ -2246,7 +2305,9 @@ fn flush_row_group(w: &mut Writer<'_>, group: &mut Vec<(String, String, u16, u16
         .unwrap_or(1)
         .max(1);
     let total = row_group_width(group) as u16;
-    let start_col = width.saturating_sub(total) / 2;
+    // `[ui] md_image_align` (default `center`, i.e. `(width - total) / 2` — the exact expression
+    // this line used before the option existed; see `BlockAlign::offset`).
+    let start_col = w.aligns.image.offset(width, total);
     let placement_line = w.lines.len() + w.heading_rule_shift;
     let mut items: Vec<(u16, u16, &str)> = Vec::with_capacity(group.len());
     let mut col = start_col;
@@ -3761,14 +3822,19 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
             // the slot closure above, so this URL and whatever cache key that closure itself
             // looked up under can never independently drift apart.
             let url = mermaid_fence_url(&hashed);
-            let mut ls = mermaid_placeholder_lines(cols, rows, width, w.mermaid.caption);
+            // The one derivation of this diagram's horizontal position: `[ui] md_image_align`
+            // resolved against the pane by `mermaid_diagram_col` (default `center` = the exact
+            // `(width - cols) / 2` this line used before the option existed). The same value is
+            // handed to `mermaid_placeholder_lines` as the caption's indent — that function no
+            // longer computes a centering formula of its own — and is what `ui::preview` positions
+            // the cyan focus frame from (`mermaid_focus_border_x`), so the diagram, its caption and
+            // its frame cannot drift apart by a column.
+            let col = mermaid_diagram_col(w.aligns.image, width, cols);
+            let mut ls = mermaid_placeholder_lines(col, rows, width, w.mermaid.caption);
             // The first entry is the caption line (a Tab-focus sentinel) — the reserved rows the
             // placement overlays start right after it, matching production's own identical split.
             w.lines.push(ls.remove(0));
             let placement_line = w.lines.len() + w.heading_rule_shift;
-            // Mirrors `mermaid_placeholder_lines`'s own `pad` exactly — the identical single-item
-            // centering formula `flush_row_group` uses for a block image's own `col`.
-            let col = width.saturating_sub(cols) / 2;
             w.images.push(ImagePlacement {
                 url,
                 alt: "mermaid".into(),
@@ -3891,11 +3957,31 @@ fn render_table_from_model(
 /// `CellImage.col` is already measured from column 0 of the table's own lines, and a table line is
 /// emitted with `emit_row` (no prefix of any kind — see `Writer::emit_row_prefixed`'s own doc comment
 /// on why no block-rendering function ever runs while a prefix is open), so it is also the offset
-/// from `w`'s own left edge, which is exactly what `ImagePlacement.col` means.
+/// from `w`'s own left edge, which is exactly what `ImagePlacement.col` means — **plus** whatever
+/// indent `[ui] md_table_align` put in front of that line, which is why the shift is added to both
+/// in the same breath, from the same local, below.
 fn emit_table(w: &mut Writer<'_>, table: &TableCells, width: u16) {
     let base = w.lines.len() + w.heading_rule_shift;
-    let (lines, cell_images) = render_table_cells(table, width, w.slot_of);
+    let (lines, cell_images, drawn_width) = render_table_cells(table, width, w.slot_of);
+    // `[ui] md_table_align`. `drawn_width` is `render_table_cells`'s own answer for how wide the box
+    // it just drew actually is (derived from the very `col_w` its border rules and its
+    // `CellImage.col`s were built from — never re-measured here), so the indent below and the
+    // `+ shift` on each cell image are two uses of *one* number. Getting those two out of step is
+    // exactly how a cell's picture would end up drawn outside the box's own right border.
+    // Default `left` = `0`, i.e. no indent span at all and `col` untouched — byte for byte what this
+    // function did before the option existed.
+    let shift = w.aligns.table.offset(width, drawn_width);
     for line in lines {
+        // Inserted the same way `Writer::emit_row_prefixed` inserts a quote's own `>` marker: a
+        // leading raw span, which every downstream pass (`collapse_links`, the code/task sentinel
+        // scans, `md_content_anchor_line`, which skips blank spans) already tolerates.
+        let line = if shift == 0 {
+            line
+        } else {
+            let mut line = line;
+            line.spans.insert(0, Span::raw(" ".repeat(shift as usize)));
+            line
+        };
         w.emit_row(line);
     }
     for CellImage {
@@ -3911,7 +3997,7 @@ fn emit_table(w: &mut Writer<'_>, table: &TableCells, width: u16) {
             url,
             alt,
             line: base + row,
-            col,
+            col: col + shift,
             cols,
             rows,
             // Not a ```mermaid fence — the ordinal is that extraction's own ID (see the field's own
@@ -4921,6 +5007,10 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         icons: w.icons,
         tasks: w.tasks,
         alerts: w.alerts,
+        // One document-wide pair, copied verbatim for the same reason `alerts`/`icons` are: a
+        // table or an image nested in this body aligns by the same rule as one at the top level,
+        // inside this body's own already-narrowed `width`.
+        aligns: w.aligns,
     };
     // Unchanged from before this fix: math lifting/image/mermaid extraction never fire inside a
     // blockquote at any depth (`structure_mask`'s own exclusion — see `BlockCtx.math_here`'s own doc
@@ -5479,6 +5569,10 @@ fn render_bar_prefixed_body(
         // another alert) has to honor the same document-wide `ui.md_alerts` toggle the outer render
         // is using; see `Writer.alerts`'s own doc comment.
         alerts: w.alerts,
+        // One document-wide pair, copied verbatim for the same reason `alerts`/`icons` are: a
+        // table or an image nested in this body aligns by the same rule as one at the top level,
+        // inside this body's own already-narrowed `width`.
+        aligns: w.aligns,
     };
     let body_ctx = BlockCtx {
         math_here: false,
@@ -5571,6 +5665,10 @@ mod tests {
             // a `Quote { alert: Some(_), .. }` through this helper expects the colored-callout path
             // unless its own doc comment says otherwise.
             alerts: true,
+            // Matches production's own default (`BlockAligns::default`) — tables left, images and
+            // mermaid diagrams centered — so every existing test below renders exactly as it did
+            // before these options existed.
+            aligns: BlockAligns::default(),
         }
     }
 

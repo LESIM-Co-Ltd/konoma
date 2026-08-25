@@ -86,6 +86,8 @@ copy_prefix = "y"
 | `md_footnotes` | `true` | GFM 脚注を描く: `text[^1]` の参照は上付き番号になり、`[^1]: …` の定義は末尾の番号付き脚注節にまとまる。`false` ならリテラル表示。 |
 | `md_inline_html` | `true` | Markdown エンジンが剥がす一般的なインライン HTML を描く: `<del>`/`<s>`/`<strike>`=打消し線・`<kbd>`=インラインコードのキーキャップ・`<sup>`/`<sub>`=Unicode(対応する文字のみ)・`<br>`=ハード改行。(`<mark>`/`<ins>` はどちらでもテキストのみ。)`false` なら全タグを剥がす。 |
 | `md_details` | `"auto"` | `<details>` の初期表示。`"auto"` は GitHub と同じく open 属性を尊重(`<details>` 折りたたみ / `<details open>` 展開)・`"open"` 常に展開・`"closed"` 常に折りたたみ。いずれも `Tab` で `<summary>` にフォーカス→`Space`/`Enter` でトグル。 |
+| `md_table_align` | `"left"` | Markdown プレビューで**表の箱**をどこに置くか: `"left"`(左端から罫線が始まる)・`"center"`・`"right"`。GFM のパイプ表も HTML の `<table>` も箱ごと動き、セル内の画像も一緒に動く。**セルの中の整列は変えない**(列の `:---:` や HTML の `align=` がそのまま支配する)。プレビュー幅以上の表は左寄せのまま。 |
+| `md_image_align` | `"center"` | Markdown プレビューで**ブロック画像**をどこに置くか: `"left"`・`"center"`・`"right"`。単独の `![alt](url)`・バッジの並び・mermaid フェンスの図(キャプションとフォーカス枠も追従)が対象。**表のセル内の画像**(セル自身の整列が支配)と**数式**(display の中央寄せは組版の約束事)は対象外。プレビュー幅以上の画像は左寄せのまま。 |
 
 ## `[ui.sort]` — ツリーの既定並び順
 

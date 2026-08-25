@@ -413,6 +413,118 @@ pub enum ImageSlot {
     Unavailable,
 }
 
+/// Where a block-level element sits inside the width it is drawn into — the one rule
+/// `[ui] md_table_align` / `[ui] md_image_align` select between, and the **only** place a horizontal
+/// offset for such a block is computed anywhere in the renderer.
+///
+/// Every consumer calls [`BlockAlign::offset`] rather than writing its own `(width - content) / 2`:
+/// a table's own box shift and the `col` of any image reserved inside one of its cells
+/// (`render::emit_table`), a block image row group's own start column (`render::flush_row_group`),
+/// and all three of the mermaid numbers that have to agree with each other — the diagram's
+/// `ImagePlacement.col`, its caption line's indent (`mermaid_placeholder_lines`), and the focus
+/// border `ui::preview` draws around it ([`mermaid_focus_border_x`]). Three independent copies of the
+/// centering formula is exactly how the diagram, its caption and its frame would drift apart by a
+/// column the moment the rule stopped being "always centered".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BlockAlign {
+    /// Flush against the left edge of the available width (offset 0).
+    #[default]
+    Left,
+    /// Centered, with any odd leftover column going to the right (`slack / 2`) — the formula every
+    /// centered block in this renderer has always used, preserved exactly.
+    Center,
+    /// Flush against the right edge (offset `slack`).
+    Right,
+}
+
+impl BlockAlign {
+    /// Parse a config string, permissively: anything that is not `left`/`center`/`right` (case- and
+    /// whitespace-insensitive) falls back to `default` rather than erroring, matching how every other
+    /// string-valued `[ui]` option in this codebase treats a value it does not know (`md_details`,
+    /// `follow_view`, `commit_meta_align`, ...).
+    pub fn from_config(s: &str, default: BlockAlign) -> BlockAlign {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "left" => BlockAlign::Left,
+            "center" => BlockAlign::Center,
+            "right" => BlockAlign::Right,
+            _ => default,
+        }
+    }
+
+    /// The column a `content`-wide box starts at inside a `width`-wide area. Saturating throughout:
+    /// a box at least as wide as the area gets offset 0 for every alignment, so an oversized table or
+    /// image is never pushed off the left edge by a right/center alignment (it simply starts at
+    /// column 0 and is clipped on the right exactly as it always was).
+    pub fn offset(self, width: u16, content: u16) -> u16 {
+        let slack = width.saturating_sub(content);
+        match self {
+            BlockAlign::Left => 0,
+            BlockAlign::Center => slack / 2,
+            BlockAlign::Right => slack,
+        }
+    }
+}
+
+/// The block alignments one Markdown render runs under. [`Default`] is konoma's own historical
+/// layout — tables flush left, images (and mermaid diagrams) centered — so every caller that does
+/// not care (the whole test corpus, the golden snapshots, `render_markdown`) keeps rendering byte
+/// for byte as it did before these options existed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockAligns {
+    /// Where a table's own box sits (`[ui] md_table_align`). Applies to the whole drawn grid — GFM
+    /// and HTML tables alike — and never to the text *inside* a cell, which keeps following its
+    /// column's `:---:` / the cell's own `align=` attribute.
+    pub table: BlockAlign,
+    /// Where a block image sits (`[ui] md_image_align`): a standalone `![alt](url)`, a packed row of
+    /// badge images, and a ```mermaid diagram. Never a table-cell image, whose column position is
+    /// decided by its cell's own alignment.
+    pub image: BlockAlign,
+}
+
+impl Default for BlockAligns {
+    fn default() -> Self {
+        Self {
+            table: BlockAlign::Left,
+            image: BlockAlign::Center,
+        }
+    }
+}
+
+/// The column a mermaid diagram `cols` cells wide starts at inside `width` — the single derivation
+/// behind all three numbers that have to agree for a diagram: its own `ImagePlacement.col`
+/// (`render::render_mermaid_slot`), the indent of the caption line above it
+/// (`mermaid_placeholder_lines`, handed this value rather than recomputing one), and, together with
+/// [`mermaid_focus_border_x`], the cyan focus frame `ui::preview` draws around it.
+///
+/// One column is reserved on the aligned side for that frame's own border bar whenever the pane can
+/// spare it (`width >= cols + 2`), because a frame is drawn *outside* the picture and kitty graphics
+/// paints the picture over whatever text shares its cells — a diagram flush against an edge would
+/// simply swallow the bar hugging that same edge. For [`BlockAlign::Center`] this is provably the
+/// identical value the pre-existing `(width - cols) / 2` produced for every input
+/// (`floor((w - c - 2) / 2) + 1 == floor((w - c) / 2)` for `w - c >= 2`, and the reservation is
+/// skipped below that), which is what keeps the default rendering unchanged to the column.
+pub fn mermaid_diagram_col(align: BlockAlign, width: u16, cols: u16) -> u16 {
+    if width >= cols + 2 {
+        align.offset(width, cols + 2) + 1
+    } else {
+        // The picture already fills the pane — there is no border column to reserve, and reserving
+        // one anyway would push the diagram off the edge.
+        align.offset(width, cols)
+    }
+}
+
+/// Where the cyan focus frame around a Tab-focused mermaid diagram starts, as an offset from the
+/// preview pane's own left edge. `bw` is the frame's own width (the diagram plus its two border
+/// columns, widened when the title needs more room, clamped to the pane).
+///
+/// Aligned by the same rule the diagram itself is, which for [`BlockAlign::Center`] reduces to
+/// `(pane - bw) / 2` — the exact expression `ui::preview` used while centering was the only option.
+/// Paired with [`mermaid_diagram_col`]'s reserved column, the frame never lands on top of the
+/// picture for any of the three alignments.
+pub fn mermaid_focus_border_x(align: BlockAlign, pane: u16, bw: u16) -> u16 {
+    align.offset(pane, bw)
+}
+
 /// Render Markdown, additionally reserving space for block-level images and returning their placements.
 /// `slot_of(url, max_cols)` tells how to render each image: `Inline` reserves rows and records a
 /// placement for the real image; `Loading` shows a dim "loading" line while a remote fetch is in
@@ -442,6 +554,11 @@ pub struct MdRenderExtras {
     pub tasks: Vec<(char, usize)>,
 }
 
+/// (Production goes through `render_markdown_with_images_aligned` with the configured block
+/// alignments; this default-alignment shorthand — konoma's own historical layout — remains for the
+/// test suites and the golden snapshots, exactly the way `render_markdown` above is the
+/// default-task-states shorthand for the same reason.)
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)] // 7 args + mermaid/math slots (only one call site in app + tests)
 pub fn render_markdown_with_images(
     src: &str,
@@ -457,8 +574,46 @@ pub fn render_markdown_with_images(
     math_slot: &dyn Fn(&str, bool) -> MathSlot,
     math_on: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>, MdRenderExtras) {
+    render_markdown_with_images_aligned(
+        src,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        BlockAligns::default(),
+    )
+}
+
+/// [`render_markdown_with_images`] plus the block alignments the render runs under — the form
+/// production actually calls (`app::md_render::build_decorated`, threading `[ui] md_table_align` /
+/// `[ui] md_image_align`). The shorter name above is this one with [`BlockAligns::default`], i.e.
+/// konoma's own historical layout, and stays the entry point for every test corpus and for the
+/// golden snapshots, so none of them can be perturbed by these options existing.
+#[allow(clippy::too_many_arguments)] // as above, plus the alignments
+pub fn render_markdown_with_images_aligned(
+    src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>, MdRenderExtras) {
     let doc = model::Doc::parse(src);
-    let out = render::render_doc(
+    let out = render::render_doc_aligned(
         &doc,
         src,
         width,
@@ -472,6 +627,7 @@ pub fn render_markdown_with_images(
         alerts,
         math_slot,
         math_on,
+        aligns,
     );
     (
         out.lines,
@@ -531,19 +687,27 @@ pub fn is_mermaid_header_span(span: &Span<'_>) -> bool {
 /// item collector reads it from the k-th mermaid placement, matching sentinels in order).
 /// `caption` is the pre-translated affordance ("Enter: full screen"); the `◇ mermaid` prefix is
 /// kept literal so `is_mermaid_header_span` still recognizes the sentinel across languages.
-fn mermaid_placeholder_lines(
-    cols: u16,
-    rows: u16,
-    width: u16,
-    caption: &str,
-) -> Vec<Line<'static>> {
+///
+/// `col` is the diagram's own start column, **handed in** rather than computed here: it is
+/// [`mermaid_diagram_col`]'s single answer, the same one the diagram's `ImagePlacement.col` and the
+/// focus frame are derived from. This function deliberately owns no alignment formula of its own —
+/// a second copy of one here is precisely how a caption would end up indented to a column the
+/// picture below it does not start at. `width` is read for one thing only: bounding that indent so
+/// the label cannot be pushed off the row and wrapped (see the body).
+fn mermaid_placeholder_lines(col: u16, rows: u16, width: u16, caption: &str) -> Vec<Line<'static>> {
     let rows = rows.max(1);
-    let pad = (width.saturating_sub(cols) / 2) as usize;
-    let indent = " ".repeat(pad);
+    let head = format!("◇ mermaid — {caption}");
+    // Start at the diagram's own column — the single value `mermaid_diagram_col` decided — but never
+    // so far right that the label itself no longer fits on the row: the caption is typically wider
+    // than a tall, narrow diagram, and a right-aligned one would otherwise push its own label off
+    // the edge and wrap it onto a second line. A pure upper bound, so it is a no-op in every case
+    // where the label already fits (which is every centered render at a usable pane width, the
+    // default) — it can only pull the label back toward the diagram, never away from it.
+    let indent = " ".repeat(col.min(width.saturating_sub(head.width() as u16)) as usize);
     let mut lines = Vec::with_capacity(rows as usize + 2);
     lines.push(Line::from(vec![
         Span::raw(indent),
-        Span::styled(format!("◇ mermaid — {caption}"), mermaid_header_style()),
+        Span::styled(head, mermaid_header_style()),
     ]));
     for _ in 0..rows {
         lines.push(Line::from(String::new()));
@@ -5789,6 +5953,10 @@ struct CellAttrs {
 /// only, hidden target span) instead of raw Markdown here too; column widths are measured on that
 /// already-displayed form.
 ///
+/// Returns the drawn lines, the cell-image rectangles, and the **box's own display width** — that
+/// third value being what `render::emit_table` needs in order to honor `[ui] md_table_align` without
+/// re-measuring (or re-deriving) a layout this function alone decided.
+///
 /// ## Images inside cells
 ///
 /// `slot_of` is the caller's own image lookup (`super::render_markdown_with_images`'s own parameter,
@@ -5819,13 +5987,13 @@ fn render_table_cells(
     t: &TableCells,
     width: u16,
     slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
-) -> (Vec<Line<'static>>, Vec<CellImage>) {
+) -> (Vec<Line<'static>>, Vec<CellImage>, u16) {
     let mut rows = t.rows.clone();
     let header_rows = t.header_rows;
     let aligns = &t.aligns;
     let ncol = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if rows.is_empty() || ncol == 0 {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), 0);
     }
     for r in &mut rows {
         r.resize(ncol, Vec::new());
@@ -6029,7 +6197,12 @@ fn render_table_cells(
         }
     }
     out.push(rule('└', '┴', '┘'));
-    (out, images)
+    // The box's own drawn width, from the very `col_w` every `rule` above and `content_col` below
+    // were built from: the left border bar, then each column's `│` + space + width + space block.
+    // `render::emit_table` aligns the box with it (`[ui] md_table_align`) and shifts every
+    // `CellImage.col` by the same amount, so the two can never disagree about where the grid starts.
+    let drawn_width = (1 + col_w.iter().map(|w| w + 3).sum::<usize>()) as u16;
+    (out, images, drawn_width)
 }
 
 /// One physical line of a laid-out table cell — [`plan_cell`]'s own unit of output.
@@ -14856,5 +15029,481 @@ mod app_faithful_parity_tests {
                 );
             }
         }
+    }
+}
+
+/// `[ui] md_table_align` / `[ui] md_image_align` — the block-alignment options and, above all, the
+/// invariants that keep the *default* pair (`left` tables, `center` images) drawing exactly what
+/// konoma drew before they existed. Deliberately over-covered per this project's own testing policy:
+/// three alignment values against every block kind that reacts to one (GFM table, HTML table,
+/// standalone image, packed badge row, mermaid diagram), plus the shapes that must **not** react
+/// (a table-cell image, inline and display math), plus the degenerate "wider than the pane" cases.
+#[cfg(test)]
+mod block_align_tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    const W: u16 = 60;
+
+    /// Every alignment, so a test can simply loop rather than repeat itself three times.
+    const ALL: [BlockAlign; 3] = [BlockAlign::Left, BlockAlign::Center, BlockAlign::Right];
+
+    /// One render at `aligns`. Images resolve to real `Inline` slots — 10 cells wide standing on
+    /// their own, and at most 6 (or whatever the column allows) inside a table cell — so placements
+    /// exist to assert on; mermaid fences resolve to a 20x5 diagram; math to a 10x2 image, which is
+    /// what makes "math ignores `md_image_align`" checkable at all.
+    fn render(
+        src: &str,
+        width: u16,
+        aligns: BlockAligns,
+    ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
+        let slot_of = |_: &str, max: Option<u16>| ImageSlot::Inline {
+            cols: match max {
+                Some(m) => m.min(6),
+                None => 10,
+            },
+            rows: 2,
+        };
+        let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 10, rows: 2 };
+        let (lines, images, _) = render_markdown_with_images_aligned(
+            src,
+            width,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            DEFAULT_TASK_STATES,
+            &slot_of,
+            &mermaid_slot,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            true,
+            aligns,
+        );
+        (lines, images)
+    }
+
+    fn aligns(table: BlockAlign, image: BlockAlign) -> BlockAligns {
+        BlockAligns { table, image }
+    }
+
+    fn text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn indent_of(line: &Line<'static>) -> usize {
+        let t = text(line);
+        t.len() - t.trim_start_matches(' ').len()
+    }
+
+    /// The first drawn table row (its top rule) and, from it, the indent the box was given and the
+    /// box's own display width.
+    fn table_box(lines: &[Line<'static>]) -> (usize, usize) {
+        let l = lines
+            .iter()
+            .find(|l| text(l).trim_start().starts_with('┌'))
+            .expect("no table drawn");
+        (indent_of(l), text(l).trim_start().width())
+    }
+
+    const GFM: &str = "| a | bbbb |\n| --- | --- |\n| 1 | 2 |\n";
+    const HTML: &str =
+        "<table>\n<tr><th>a</th><th>bbbb</th></tr>\n<tr><td>1</td><td>2</td></tr>\n</table>\n";
+
+    // ---------------------------------------------------------------- tables
+
+    #[test]
+    fn default_table_alignment_is_flush_left_with_no_indent_span_at_all() {
+        for src in [GFM, HTML] {
+            let (lines, _) = render(src, W, BlockAligns::default());
+            let (indent, _) = table_box(&lines);
+            assert_eq!(indent, 0, "既定は左寄せ: {src:?}");
+            let top = lines
+                .iter()
+                .find(|l| text(l).starts_with('┌'))
+                .expect("top rule");
+            assert!(
+                top.spans.iter().all(|s| !s.content.trim().is_empty()),
+                "左寄せでは空白だけの先頭スパンを足さない(スナップショット不変の条件): {:?}",
+                top.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn table_align_offsets_the_whole_box_and_gfm_and_html_agree() {
+        for src in [GFM, HTML] {
+            let (base, _) = render(src, W, BlockAligns::default());
+            let (_, boxw) = table_box(&base);
+            for a in ALL {
+                let (lines, _) = render(src, W, aligns(a, BlockAlign::Center));
+                let (indent, w2) = table_box(&lines);
+                assert_eq!(w2, boxw, "寄せで箱の幅は変わらない");
+                assert_eq!(
+                    indent as u16,
+                    a.offset(W, boxw as u16),
+                    "{a:?} の桁位置 (src={src:?})"
+                );
+                // Every row of the box moves together — not just the top rule.
+                for l in lines.iter().filter(|l| {
+                    let t = text(l);
+                    let t = t.trim_start();
+                    t.starts_with('┌')
+                        || t.starts_with('│')
+                        || t.starts_with('├')
+                        || t.starts_with('└')
+                }) {
+                    assert_eq!(
+                        indent_of(l),
+                        indent,
+                        "行ごとに桁がずれている: {:?}",
+                        text(l)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_wider_than_the_pane_stays_flush_left_for_every_alignment() {
+        let wide = "| aaaaaaaaaa | bbbbbbbbbb | cccccccccc |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n";
+        for a in ALL {
+            let (lines, _) = render(wide, 20, aligns(a, BlockAlign::Center));
+            let (indent, boxw) = table_box(&lines);
+            assert!(boxw >= 20, "この幅では箱がペインを埋める: {boxw}");
+            assert_eq!(indent, 0, "{a:?} でもはみ出さない(桁は負にならない)");
+        }
+    }
+
+    // ------------------------------------------------- images inside a table
+
+    #[test]
+    fn a_right_aligned_table_keeps_its_cell_image_inside_the_border() {
+        let src = "| ![a](p.png) | bbbb |\n| --- | --- |\n| 1 | 2 |\n";
+        for a in ALL {
+            let (lines, images) = render(src, W, aligns(a, BlockAlign::Center));
+            let (indent, boxw) = table_box(&lines);
+            let left_border = indent as u16;
+            let right_border = left_border + boxw as u16 - 1;
+            assert_eq!(images.len(), 1, "セル画像が1枚配置される: {a:?}");
+            let p = &images[0];
+            assert!(
+                p.col > left_border,
+                "{a:?}: 画像が左罫線の内側にない col={} 左罫線={left_border}",
+                p.col
+            );
+            assert!(
+                p.col + p.cols <= right_border,
+                "{a:?}: 画像が右罫線をはみ出す col={} cols={} 右罫線={right_border}",
+                p.col,
+                p.cols
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_image_moves_by_exactly_the_same_amount_as_its_box() {
+        let src = "| ![a](p.png) | bbbb |\n| --- | --- |\n| 1 | 2 |\n";
+        let (base_lines, base_images) = render(src, W, BlockAligns::default());
+        let (_, boxw) = table_box(&base_lines);
+        for a in ALL {
+            let (lines, images) = render(src, W, aligns(a, BlockAlign::Center));
+            let (indent, _) = table_box(&lines);
+            assert_eq!(indent as u16, a.offset(W, boxw as u16));
+            assert_eq!(
+                images[0].col,
+                base_images[0].col + indent as u16,
+                "{a:?}: セル画像の col が箱のインデントと 1 桁でもずれてはいけない"
+            );
+            assert_eq!(images[0].line, base_images[0].line, "行は動かない");
+        }
+    }
+
+    #[test]
+    fn a_cell_image_ignores_md_image_align_entirely() {
+        let src = "| ![a](p.png) | bbbb |\n| --- | --- |\n| 1 | 2 |\n";
+        let reference = render(src, W, aligns(BlockAlign::Left, BlockAlign::Center)).1;
+        for a in ALL {
+            let images = render(src, W, aligns(BlockAlign::Left, a)).1;
+            assert_eq!(
+                images[0].col, reference[0].col,
+                "md_image_align={a:?} はセル内画像を動かさない(セル自身の整列が支配する)"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------- block images
+
+    #[test]
+    fn a_standalone_block_image_follows_md_image_align() {
+        for a in ALL {
+            let (lines, images) = render("![a](p.png)\n", W, aligns(BlockAlign::Left, a));
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].col, a.offset(W, 10), "{a:?} の桁位置");
+            let label = lines
+                .iter()
+                .find(|l| text(l).contains('🖼'))
+                .expect("プレースホルダのラベル行");
+            assert_eq!(
+                indent_of(label) as u16,
+                images[0].col,
+                "{a:?}: ラベル行の字下げが画像の桁と一致しない"
+            );
+        }
+    }
+
+    #[test]
+    fn default_image_alignment_is_the_historical_centering() {
+        let (_, images) = render("![a](p.png)\n", W, BlockAligns::default());
+        assert_eq!(images[0].col, (W - 10) / 2, "既定は従来どおり中央");
+    }
+
+    #[test]
+    fn a_packed_badge_row_moves_as_one_unit() {
+        // Two 10-cell images with the 1-cell gap `row_group_width` inserts = 21 cells.
+        let src = "![a](1.png) ![b](2.png)\n";
+        for a in ALL {
+            let (_, images) = render(src, W, aligns(BlockAlign::Left, a));
+            assert_eq!(images.len(), 2, "{a:?}: バッジ2枚");
+            let start = a.offset(W, 21);
+            assert_eq!(images[0].col, start, "{a:?}: 1枚目");
+            assert_eq!(images[1].col, start + 11, "{a:?}: 2枚目(1桁の隙間つき)");
+        }
+    }
+
+    #[test]
+    fn an_image_wider_than_the_pane_stays_flush_left_for_every_alignment() {
+        for a in ALL {
+            let (_, images) = render("![a](p.png)\n", 8, aligns(BlockAlign::Left, a));
+            assert_eq!(images[0].col, 0, "{a:?}: 10桁の画像が幅8のペインに入らない");
+        }
+    }
+
+    // --------------------------------------------------------------- mermaid
+
+    #[test]
+    fn a_mermaid_diagram_its_caption_and_its_focus_frame_all_agree() {
+        let src = "```mermaid\nflowchart TD\nA-->B\n```\n";
+        for a in ALL {
+            let (lines, images) = render(src, W, aligns(BlockAlign::Left, a));
+            assert_eq!(images.len(), 1, "{a:?}: 図の placement");
+            let p = &images[0];
+            let expect = mermaid_diagram_col(a, W, 20);
+            assert_eq!(p.col, expect, "{a:?}: 図の桁");
+            let caption = lines
+                .iter()
+                .find(|l| text(l).contains("◇ mermaid"))
+                .expect("キャプション行");
+            let head_w = text(caption).trim_start().width() as u16;
+            assert_eq!(
+                indent_of(caption) as u16,
+                p.col.min(W.saturating_sub(head_w)),
+                "{a:?}: キャプションの字下げが図の桁(折返し回避の上限つき)と一致しない"
+            );
+            assert!(
+                indent_of(caption) as u16 + head_w <= W,
+                "{a:?}: キャプションが幅を越えて折り返す"
+            );
+            // The frame `ui::preview` draws: at its narrowest it is the diagram + its two border
+            // columns, and it must sit strictly outside the picture on both sides.
+            let bw = p.cols + 2;
+            let bx = mermaid_focus_border_x(a, W, bw);
+            assert!(
+                bx < p.col && bx + bw > p.col + p.cols,
+                "{a:?}: 枠が図に重なる bx={bx} bw={bw} col={} cols={}",
+                p.col,
+                p.cols
+            );
+            assert!(bx + bw <= W, "{a:?}: 枠がペインをはみ出す bx={bx} bw={bw}");
+        }
+    }
+
+    #[test]
+    fn a_wide_titled_mermaid_frame_still_clears_the_picture() {
+        // The title can be wider than the diagram (`bw = (cols + 2).max(title width)`), which is the
+        // case the old always-centered formula handled by symmetry alone.
+        for a in ALL {
+            let col = mermaid_diagram_col(a, W, 20);
+            for bw in [22u16, 30, 44, W] {
+                let bx = mermaid_focus_border_x(a, W, bw);
+                assert!(bx + bw <= W, "{a:?}/bw={bw}: 枠がペイン外へ");
+                assert!(
+                    bx < col && bx + bw > col + 20,
+                    "{a:?}/bw={bw}: 枠が図に重なる bx={bx} col={col}"
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------- nested inside another block
+
+    #[test]
+    fn a_table_nested_in_a_quote_aligns_inside_the_quote_not_the_page() {
+        // The quote's own `>` bar stays at column 0 and the box moves within the narrowed body.
+        let src = "> | a | bbbb |\n> | --- | --- |\n> | 1 | 2 |\n";
+        let (base, _) = render(src, W, BlockAligns::default());
+        let base_row = base
+            .iter()
+            .find(|l| text(l).contains('┌'))
+            .expect("引用内の表");
+        let base_text = text(base_row);
+        let boxw = base_text[base_text.find('┌').unwrap()..].width() as u16;
+        for a in ALL {
+            let (lines, _) = render(src, W, aligns(a, BlockAlign::Center));
+            let row = lines
+                .iter()
+                .find(|l| text(l).contains('┌'))
+                .expect("引用内の表");
+            let t = text(row);
+            assert!(t.starts_with('>'), "引用のバーが先頭に残っていない: {t:?}");
+            // The `>` marker plus its single separating space sit ahead of the body; the body's own
+            // width is `W - 2`, which is what the alignment is computed against.
+            let indent = t.chars().skip(2).take_while(|c| *c == ' ').count() as u16;
+            assert_eq!(
+                indent,
+                a.offset(W - 2, boxw),
+                "{a:?}: 引用の内側の幅で寄せていない ({t:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_table_nested_in_an_open_details_body_aligns_inside_that_body() {
+        let src = "<details open>\n<summary>s</summary>\n\n| a | bbbb |\n| --- | --- |\n| 1 | 2 |\n\n</details>\n";
+        let (base, _) = render(src, W, BlockAligns::default());
+        let base_row = base
+            .iter()
+            .find(|l| text(l).contains('┌'))
+            .expect("details 内の表");
+        let base_text = text(base_row);
+        let boxw = base_text[base_text.find('┌').unwrap()..].width() as u16;
+        let left_prefix = base_text.chars().take_while(|c| *c != '┌').count();
+        for a in ALL {
+            let (lines, _) = render(src, W, aligns(a, BlockAlign::Center));
+            let row = lines
+                .iter()
+                .find(|l| text(l).contains('┌'))
+                .expect("details 内の表");
+            let t = text(row);
+            let at = t.chars().take_while(|c| *c != '┌').count();
+            assert_eq!(
+                (at - left_prefix) as u16,
+                a.offset(W - 2, boxw),
+                "{a:?}: details の内側の幅で寄せていない ({t:?})"
+            );
+        }
+    }
+
+    // ------------------------------------------------------- what must not move
+
+    #[test]
+    fn math_is_untouched_by_md_image_align() {
+        // Display math stays centered (a typesetting convention), inline math stays at column 0.
+        for a in ALL {
+            let (_, display) = render("$$x^2$$\n", W, aligns(BlockAlign::Left, a));
+            assert_eq!(display.len(), 1);
+            assert_eq!(
+                display[0].col,
+                (W - 10) / 2,
+                "{a:?}: display 数式は中央のまま"
+            );
+            let (_, inline) = render("text $x$ more\n", W, aligns(BlockAlign::Left, a));
+            assert_eq!(inline.len(), 1);
+            assert_eq!(inline[0].col, 0, "{a:?}: inline 数式は左のまま");
+        }
+    }
+
+    #[test]
+    fn cell_alignment_inside_a_table_is_untouched_by_md_table_align() {
+        // `:---:` still centers the cell text within its column, whatever the box's own alignment is.
+        let src = "| a |\n| :-: |\n| x |\n";
+        let cell_row = |a: BlockAlign| -> String {
+            let (lines, _) = render(src, W, aligns(a, BlockAlign::Center));
+            let l = lines
+                .iter()
+                .find(|l| text(l).contains('x'))
+                .expect("本文行")
+                .clone();
+            text(&l).trim_start().to_string()
+        };
+        let left = cell_row(BlockAlign::Left);
+        for a in ALL {
+            assert_eq!(
+                cell_row(a),
+                left,
+                "{a:?}: セル内の整列は箱の寄せに影響されない"
+            );
+        }
+    }
+
+    // -------------------------------------------------- the formulas themselves
+
+    #[test]
+    fn center_reproduces_the_historical_formula_for_every_width() {
+        for width in 0u16..=140 {
+            for content in 0u16..=140 {
+                assert_eq!(
+                    BlockAlign::Center.offset(width, content),
+                    width.saturating_sub(content) / 2,
+                    "offset({width},{content})"
+                );
+                // The mermaid diagram column reserves a border column, which for `center` is
+                // provably the same value `(width - cols) / 2` always produced.
+                assert_eq!(
+                    mermaid_diagram_col(BlockAlign::Center, width, content),
+                    width.saturating_sub(content) / 2,
+                    "mermaid_diagram_col({width},{content})"
+                );
+                // And the frame's own x is the exact expression `ui::preview` used to inline.
+                assert_eq!(
+                    mermaid_focus_border_x(BlockAlign::Center, width, content),
+                    width.saturating_sub(content) / 2,
+                    "mermaid_focus_border_x({width},{content})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn offsets_saturate_instead_of_wrapping() {
+        for a in ALL {
+            assert_eq!(a.offset(10, 40), 0, "{a:?}: 中身の方が広い");
+            assert_eq!(a.offset(0, 0), 0);
+        }
+        assert_eq!(BlockAlign::Right.offset(40, 10), 30);
+        assert_eq!(BlockAlign::Left.offset(40, 10), 0);
+    }
+
+    #[test]
+    fn from_config_is_permissive_and_defaults_are_the_historical_layout() {
+        for (s, want) in [
+            ("left", BlockAlign::Left),
+            ("center", BlockAlign::Center),
+            ("right", BlockAlign::Right),
+            ("  RIGHT  ", BlockAlign::Right),
+            ("Center", BlockAlign::Center),
+        ] {
+            assert_eq!(BlockAlign::from_config(s, BlockAlign::Left), want, "{s:?}");
+        }
+        for s in ["", "centre", "middle", "justify", "０", "left "] {
+            let s = if s == "left " { "lleft" } else { s };
+            assert_eq!(
+                BlockAlign::from_config(s, BlockAlign::Right),
+                BlockAlign::Right,
+                "未知の値 {s:?} は既定へ倒れる"
+            );
+        }
+        assert_eq!(
+            BlockAligns::default(),
+            BlockAligns {
+                table: BlockAlign::Left,
+                image: BlockAlign::Center
+            },
+            "既定 = 従来の見え方"
+        );
     }
 }

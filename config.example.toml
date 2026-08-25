@@ -194,6 +194,24 @@ md_inline_html = true
 #   "closed"           … always start collapsed
 md_details = "auto"
 
+# Where a table sits inside a Markdown preview. Moves the whole box (GFM pipe tables and HTML <table>
+# alike); an image inside a cell travels with it. This does NOT change alignment *within* a cell —
+# a column's :---: and an HTML cell's align= still decide that. A table as wide as the preview stays
+# flush left whatever this says.
+#   "left"   (default) … the grid starts at the left edge
+#   "center"           … centered in the preview width
+#   "right"            … flush against the right edge
+md_table_align = "left"
+
+# Where a block image sits inside a Markdown preview: a standalone ![alt](url), a packed row of badge
+# images, and a mermaid fence's diagram (whose caption line and focus frame follow it). This does NOT
+# cover an image inside a table cell (its cell's own alignment places that) or display math (whose
+# centering is a typesetting convention). An image as wide as the preview stays flush left.
+#   "left"             … flush against the left edge
+#   "center" (default) … centered in the preview width
+#   "right"            … flush against the right edge
+md_image_align = "center"
+
 # Background-activity indicator. While something runs in the background (git ignore-file scan, media load,
 # highlight warm-up, inline-image fetch, …), a spinner and job name (+n when several) is shown at the top-right.
 # Nothing is shown when idle (= zero idle load).

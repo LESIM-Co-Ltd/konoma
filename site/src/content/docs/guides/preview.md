@@ -38,6 +38,12 @@ as real pixels).
   lifted onto a line of its own and a display formula is centered. `$5` and
   anything inside code stays literal. Set `ui.math = "text"` to keep the raw
   LaTeX instead, and `ui.math_color` to match your terminal's foreground.
+- **Block alignment**: `ui.md_table_align` (default `"left"`) and
+  `ui.md_image_align` (default `"center"`) place a table's box and a block image
+  — a standalone `![alt](url)`, a row of badges, a Mermaid diagram — at the
+  left, the center, or the right of the preview. The table setting moves the
+  whole grid, including any picture inside a cell; it does not touch alignment
+  *within* a cell, which a column's `:---:` still decides.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
 

@@ -85,6 +85,8 @@ copy_prefix = "y"
 | `md_footnotes` | `true` | Render GFM footnotes: `text[^1]` references become superscript numbers and the `[^1]: …` definitions are collected into a numbered footnotes section at the end. `false` leaves them literal. |
 | `md_inline_html` | `true` | Render common inline HTML the Markdown engine strips: `<del>`/`<s>`/`<strike>` as strikethrough, `<kbd>` as an inline-code keycap, `<sup>`/`<sub>` as Unicode (when the text maps), `<br>` as a hard line break. (`<mark>`/`<ins>` keep only their text either way.) `false` strips all of them. |
 | `md_details` | `"auto"` | How `<details>` blocks start out. `"auto"` honors the `open` attribute like GitHub (`<details>` collapsed, `<details open>` expanded); `"open"` always expanded; `"closed"` always collapsed. Either way `Tab` focuses the `<summary>` and `Space`/`Enter` toggle it. |
+| `md_table_align` | `"left"` | Where a table sits in a Markdown preview: `"left"` (the grid starts at the left edge), `"center"`, `"right"`. Moves the whole box — GFM pipe tables and HTML `<table>` alike, and any image inside a cell travels with it. It does not change alignment *within* a cell (a column's `:---:` and an HTML cell's `align=` still decide that). A table as wide as the pane stays flush left. |
+| `md_image_align` | `"center"` | Where a block image sits in a Markdown preview: `"left"`, `"center"`, `"right"`. Covers a standalone `![alt](url)`, a packed row of badges, and a mermaid fence's diagram (its caption and focus frame follow it). It does not cover an image inside a table cell (its cell's alignment places that) or display math (centered by typesetting convention). An image as wide as the pane stays flush left. |
 
 ## `[ui.sort]` — default tree order
 

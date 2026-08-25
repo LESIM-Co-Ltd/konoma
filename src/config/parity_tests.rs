@@ -317,6 +317,90 @@ fn cfg_ui_md_details_default_and_parse() {
     );
 }
 
+/// The two shipped example configs must actually parse as a `Config` — they are what users copy to
+/// `~/.config/konoma/config.toml`, so a typo in one is a typo in every new install. Read from disk
+/// rather than `include_str!`: `config.example.ja.toml` is excluded from the published crate
+/// (`Cargo.toml`), so a build from crates.io skips it instead of failing to compile, exactly the way
+/// the `samples/` fixtures do.
+#[test]
+fn shipped_example_configs_parse() {
+    for name in ["config.example.toml", "config.example.ja.toml"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name} — not present (published-crate build?)");
+            continue;
+        };
+        let cfg: Config = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{name} が Config としてパースできない: {e}"));
+        // Spot-check that the file's own uncommented values really landed (i.e. the parse was not
+        // vacuous because every key happened to be commented out).
+        assert_eq!(cfg.ui.md_table_align, "left", "{name}: [ui] md_table_align");
+        assert_eq!(
+            cfg.ui.md_image_align, "center",
+            "{name}: [ui] md_image_align"
+        );
+        assert_eq!(
+            cfg.ui.md_block_aligns(),
+            crate::preview::markdown::BlockAligns::default(),
+            "{name}: 例の既定値が konoma の既定と一致しない"
+        );
+    }
+}
+
+#[test]
+fn cfg_ui_md_table_align_and_md_image_align_default_parse_and_resolve() {
+    use crate::preview::markdown::{BlockAlign, BlockAligns};
+    // Defaults are konoma's own historical layout, and the resolver agrees with them.
+    let ui = toml::from_str::<Config>("[ui]\n").unwrap().ui;
+    assert_eq!(ui.md_table_align, "left");
+    assert_eq!(ui.md_image_align, "center");
+    assert_eq!(ui.md_block_aligns(), BlockAligns::default());
+    assert_eq!(
+        ui.md_block_aligns(),
+        BlockAligns {
+            table: BlockAlign::Left,
+            image: BlockAlign::Center
+        }
+    );
+    // Every accepted value, on both keys.
+    for (v, want) in [
+        ("left", BlockAlign::Left),
+        ("center", BlockAlign::Center),
+        ("right", BlockAlign::Right),
+    ] {
+        let ui = toml::from_str::<Config>(&format!(
+            "[ui]\nmd_table_align = \"{v}\"\nmd_image_align = \"{v}\"\n"
+        ))
+        .unwrap()
+        .ui;
+        assert_eq!(ui.md_table_align, v);
+        assert_eq!(ui.md_image_align, v);
+        assert_eq!(ui.md_block_aligns().table, want, "table={v}");
+        assert_eq!(ui.md_block_aligns().image, want, "image={v}");
+    }
+    // Unrecognized values are stored verbatim (same convention as every other mode string here) and
+    // resolve back to **their own key's** default — not to a single shared one.
+    let ui = toml::from_str::<Config>(
+        "[ui]\nmd_table_align = \"sideways\"\nmd_image_align = \"diagonal\"\n",
+    )
+    .unwrap()
+    .ui;
+    assert_eq!(ui.md_table_align, "sideways");
+    assert_eq!(ui.md_image_align, "diagonal");
+    assert_eq!(ui.md_block_aligns(), BlockAligns::default());
+    // The two keys are independent: one being set must not move the other.
+    let ui = toml::from_str::<Config>("[ui]\nmd_table_align = \"right\"\n")
+        .unwrap()
+        .ui;
+    assert_eq!(ui.md_block_aligns().table, BlockAlign::Right);
+    assert_eq!(ui.md_block_aligns().image, BlockAlign::Center);
+    let ui = toml::from_str::<Config>("[ui]\nmd_image_align = \"left\"\n")
+        .unwrap()
+        .ui;
+    assert_eq!(ui.md_block_aligns().table, BlockAlign::Left);
+    assert_eq!(ui.md_block_aligns().image, BlockAlign::Left);
+}
+
 #[test]
 fn cfg_ui_tabbar_default_and_parse() {
     assert_eq!(

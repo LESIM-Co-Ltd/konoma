@@ -23,6 +23,21 @@ All notable changes to konoma are documented in this file. The format is based o
   any other position.
 
 ### Added
+- **Tables and block images can now be placed left, centered, or right in a Markdown preview.**
+  Two new `[ui]` options: `md_table_align` (default `"left"`) and `md_image_align` (default
+  `"center"`), each accepting `"left"` / `"center"` / `"right"`. Until now a table was nailed to
+  the left edge and every block image was nailed to the center, with no way to say otherwise — a
+  narrow two-column table in a wide pane looked stranded, and a document whose pictures should read
+  as a left-hand column had no way to ask. `md_table_align` moves the whole grid, GFM pipe tables
+  and HTML `<table>` alike, and any picture inside a cell travels with the box (so a right-aligned
+  table still draws its images between its own borders); it deliberately does **not** change
+  alignment *within* a cell, which a column's `:---:` and an HTML cell's `align=` keep deciding.
+  `md_image_align` covers a standalone `![alt](url)`, a packed row of badges, and a Mermaid
+  diagram — whose caption line and focus frame move with it, all three derived from one
+  computation so they cannot drift apart by a column. An image inside a table cell (placed by its
+  cell) and display math (centered by typesetting convention, not by image layout) are unaffected,
+  as is anything at least as wide as the pane, which stays flush left whatever the setting says.
+  **The defaults are exactly what konoma has always drawn**, so an existing config sees no change.
 - **A table cell can now hold a real image, drawn in pixels, instead of a `🖼 alt` label.** Both
   kinds of table: the GFM pipe table (`| png | ![alt](a.png) |`) and the HTML `<table>` whose cell
   holds an `<img>` — the side-by-side screenshot grid a great many READMEs are built from, konoma's

@@ -8877,6 +8877,16 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
         Coverage::Covered("e2e_ui_math_color_changes_rendered_pixel_hue"),
     ),
     (
+        "md_table_align",
+        Coverage::Covered("e2e_ui_md_table_align_moves_the_box_and_keeps_cell_images_inside_it"),
+    ),
+    (
+        "md_image_align",
+        Coverage::Covered(
+            "e2e_ui_md_image_align_moves_block_images_and_mermaid_together_with_their_caption",
+        ),
+    ),
+    (
         "busy_indicator",
         Coverage::Covered(
             "e2e_busy_indicator_absent_when_idle (idle invariant) / e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled",
@@ -8961,7 +8971,7 @@ fn extract_ui_config_field_names() -> Vec<String> {
 /// Safety valve for the extractor above: if the brace/regex-ish scan above breaks (e.g. someone
 /// reformats the struct in a way the simple line scan can't follow), it must fail LOUD by finding
 /// too few fields — not silently return an empty/tiny list that would make
-/// `ui_config_coverage_table_is_complete` vacuously pass. `UiConfig` currently has 42 fields; 35 is
+/// `ui_config_coverage_table_is_complete` vacuously pass. `UiConfig` currently has 44 fields; 35 is
 /// a conservative floor that still catches "extraction basically broke."
 #[test]
 fn ui_config_field_extraction_finds_at_least_35_fields() {
@@ -9947,6 +9957,141 @@ fn e2e_ui_mermaid_rows_changes_reserved_diagram_height() {
     assert!(
         rows_small < rows_default,
         "mermaid_rows=4 は既定24より小さい高さになるはず: small={rows_small} default={rows_default}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The table box drawn on screen: `(column of its own `┌`, its display width)`. Located by `┬`,
+/// which only konoma's table renderer draws — the preview frame itself uses `┌┐└┘─│` only (see
+/// `e2e_md_table_renders_box_and_aligns_cjk`), so this can never pick up the frame's own corner.
+fn drawn_table_box(screen: &str) -> (usize, usize) {
+    let row = screen
+        .lines()
+        .find(|l| l.contains('┬'))
+        .expect("表の上罫線が描かれていない");
+    // Character positions, never byte offsets: every glyph here is multi-byte.
+    let at = |c: char| {
+        row.chars()
+            .position(|x| x == c)
+            .unwrap_or_else(|| panic!("{c} が無い: {row:?}"))
+    };
+    let (left, right) = (at('┌'), at('┐'));
+    (left, right - left + 1)
+}
+
+/// `md_table_align`: the whole grid moves inside the preview, and an image reserved inside a cell
+/// moves by exactly the same amount — so a right-aligned table's picture still sits between its own
+/// borders instead of spilling past them.
+#[test]
+fn e2e_ui_md_table_align_moves_the_box_and_keeps_cell_images_inside_it() {
+    let dir = sandbox("ui_md_table_align_cfg");
+    // Deliberately tiny (a few cells wide once fitted), so the drawn box is far narrower than the
+    // pane and there is real slack for `center`/`right` to move it into — a page-wide image would
+    // make every alignment collapse onto the same column and the test would assert nothing.
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(16, 16, image::Rgb([9, 9, 9])))
+        .save(dir.join("p.png"))
+        .unwrap();
+    std::fs::write(
+        dir.join("t.md"),
+        "| ![a](p.png) | bbbb |\n| --- | --- |\n| 1 | 2 |\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut seen: Vec<(usize, usize, u16, u16)> = Vec::new();
+    for v in ["left", "center", "right"] {
+        let mut cfg = Config::default();
+        cfg.ui.md_table_align = v.to_string();
+        let mut s = Sim::with_config(&root, cfg).with_picker();
+        s.select("t.md");
+        s.enter();
+        let (left, boxw) = drawn_table_box(&s.screen());
+        let img = s.app.md_images();
+        assert_eq!(img.len(), 1, "{v}: セル画像の placement が1件");
+        let (col, cols) = (img[0].col, img[0].cols);
+        // `col` is measured from the preview's *inner* left edge; the screen column adds the frame.
+        let inner_left = left - 1;
+        assert!(
+            (col as usize) > inner_left,
+            "{v}: 画像が左罫線より外 col={col} 左罫線={inner_left}"
+        );
+        assert!(
+            ((col + cols) as usize) < inner_left + boxw,
+            "{v}: 画像が右罫線を越える col={col} cols={cols} 箱={inner_left}+{boxw}"
+        );
+        seen.push((left, boxw, col, cols));
+    }
+    let [l, c, r] = [seen[0], seen[1], seen[2]];
+    assert_eq!(l.0, 1, "left は枠のすぐ内側から始まる: {}", l.0);
+    assert!(
+        l.0 < c.0 && c.0 < r.0,
+        "left < center < right の順に右へ寄るはず: {} {} {}",
+        l.0,
+        c.0,
+        r.0
+    );
+    assert!(l.1 == c.1 && c.1 == r.1, "箱の幅は寄せで変わらない");
+    // The image keeps the *same* position relative to the box in all three — one shift, applied to
+    // the box and to the picture together.
+    let rel = |b: (usize, usize, u16, u16)| b.2 as usize - (b.0 - 1);
+    assert_eq!(rel(l), rel(c), "center で箱と画像がずれた");
+    assert_eq!(rel(l), rel(r), "right で箱と画像がずれた");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `md_image_align`: a block image and a mermaid diagram both follow it, and the diagram's caption
+/// line stays directly above the picture (the two are derived from one number).
+#[test]
+fn e2e_ui_md_image_align_moves_block_images_and_mermaid_together_with_their_caption() {
+    let dir = sandbox("ui_md_image_align_cfg");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([9, 9, 9])))
+        .save(dir.join("p.png"))
+        .unwrap();
+    std::fs::write(dir.join("i.md"), "![a](p.png)\n").unwrap();
+    std::fs::write(dir.join("d.md"), "```mermaid\nflowchart TD\nA-->B\n```\n").unwrap();
+    let root = canon(&dir);
+
+    let mut img_cols: Vec<u16> = Vec::new();
+    let mut fence_cols: Vec<u16> = Vec::new();
+    for v in ["left", "center", "right"] {
+        let mut cfg = Config::default();
+        cfg.ui.md_image_align = v.to_string();
+
+        let mut s = Sim::with_config(&root, cfg.clone()).with_picker();
+        s.select("i.md");
+        s.enter();
+        let p = s.app.md_images();
+        assert_eq!(p.len(), 1, "{v}: 単独画像の placement");
+        img_cols.push(p[0].col);
+
+        let mut s = Sim::with_config(&root, cfg).with_picker();
+        s.select("d.md");
+        s.enter();
+        let p = s.app.md_images();
+        assert_eq!(p.len(), 1, "{v}: mermaid の placement");
+        fence_cols.push(p[0].col);
+        // The caption sentinel sits at the diagram's own column, not at a separately computed one.
+        let caption = s
+            .screen()
+            .lines()
+            .find(|l| l.contains("◇ mermaid"))
+            .map(|l| l.to_string())
+            .expect("キャプション行");
+        let at = caption.chars().position(|c| c == '◇').expect("◇");
+        assert_eq!(
+            at,
+            p[0].col as usize + 1, // +1: the preview frame's own left border column
+            "{v}: キャプションが図の桁からずれた ({caption:?})"
+        );
+    }
+    assert_eq!(img_cols[0], 0, "left の単独画像は左端");
+    assert!(
+        img_cols[0] < img_cols[1] && img_cols[1] < img_cols[2],
+        "単独画像が left < center < right にならない: {img_cols:?}"
+    );
+    assert!(
+        fence_cols[0] < fence_cols[1] && fence_cols[1] < fence_cols[2],
+        "mermaid が left < center < right にならない: {fence_cols:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -630,6 +630,9 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
     focused_mermaid.hash(&mut sig);
     ((app.fence_zoom_level() * 1000.0) as u64).hash(&mut sig);
     let mut drawn = 0usize;
+    // Resolved once per frame, not per image: the focus frame below reads it, and re-parsing two
+    // config strings inside the draw loop would be needless work on every redraw.
+    let image_align = app.cfg.ui.md_block_aligns().image;
     let scroll = app.tab.preview_scroll as i32;
     let top_bound = inner.y as i32;
     let bottom_bound = (inner.y + inner.height) as i32;
@@ -734,7 +737,14 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
             };
             let tw = Span::from(title.as_str()).width() as u16 + 2;
             let bw = (cols + 2).max(tw).min(inner.width);
-            let bx = inner.x + (inner.width.saturating_sub(bw)) / 2;
+            // The frame is placed by the **same** rule the diagram itself was
+            // (`[ui] md_image_align`, via `markdown::mermaid_diagram_col` in the renderer), never by
+            // a second centering formula of its own — see `mermaid_focus_border_x`. For the default
+            // `center` this is the identical `(inner.width - bw) / 2` this line always computed;
+            // `mermaid_diagram_col` keeps one column free on the aligned side for a left/right
+            // diagram, so the frame never lands under the picture.
+            let bx = inner.x
+                + crate::preview::markdown::mermaid_focus_border_x(image_align, inner.width, bw);
             if btop >= top_bound && bbot <= bottom_bound {
                 use ratatui::style::{Color as C, Modifier as M, Style as S};
                 // A four-sided selection border (the caption line = top edge/title, the margin row

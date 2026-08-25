@@ -486,7 +486,7 @@ impl App {
                         }
                     };
                 let (mut lines, mut images, extras) =
-                    crate::preview::markdown::render_markdown_with_images(
+                    crate::preview::markdown::render_markdown_with_images_aligned(
                         &src,
                         width,
                         code,
@@ -499,6 +499,10 @@ impl App {
                         self.cfg.ui.md_alerts,
                         &math_slot,
                         math_on,
+                        // `[ui] md_table_align` / `[ui] md_image_align`. The default pair is the
+                        // historical layout (tables left, images and diagrams centered), so an
+                        // unconfigured konoma draws exactly what it always did.
+                        self.cfg.ui.md_block_aligns(),
                     );
                 // `render_markdown_with_images`'s own record, straight from the same parse it
                 // rendered from — see `MdRenderExtras`'s own doc comment. `y c`/the checkbox toggle
