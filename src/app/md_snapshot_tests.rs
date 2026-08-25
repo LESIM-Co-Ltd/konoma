@@ -204,7 +204,7 @@ fn render_case(cfg: &Config, src: &str) -> CaseRender {
     let details_states = crate::preview::markdown::collect_details_open(&pre_src);
     crate::preview::markdown::set_details_open(details_states.clone());
 
-    let slot_of = |_: &str| crate::preview::markdown::ImageSlot::Unavailable;
+    let slot_of = |_: &str, _: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;
     let mermaid_slot = |_: &str| crate::preview::markdown::MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| crate::preview::markdown::MathSlot::Raw;
     let (mut lines, mut images, _extras) = crate::preview::markdown::render_markdown_with_images(

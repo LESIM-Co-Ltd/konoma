@@ -20,6 +20,8 @@
 // Safe fallback on failure (design principle 3): if mermaid rendering fails or is unsupported
 // (e.g. a state diagram), show the raw source full-screen in a dim color (never crash).
 
+use std::collections::HashMap;
+
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 // The parser's own option type keeps the name (`ParseOptions`) it was given while konoma's
@@ -143,7 +145,7 @@ pub fn render_markdown_tasks(
     // Reset the per-render `<details>` state so tests are deterministic (production seeds it via
     // `set_details_open` before every draw). Empty = every block honors its own `open` attribute.
     set_details_open(Vec::new());
-    let slot_of = |_: &str| ImageSlot::Unavailable;
+    let slot_of = |_: &str, _: Option<u16>| ImageSlot::Unavailable;
     let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| MathSlot::Raw;
     // Default entry (tests / the `render_markdown` wrapper): GitHub alerts on, math extraction on
@@ -412,9 +414,15 @@ pub enum ImageSlot {
 }
 
 /// Render Markdown, additionally reserving space for block-level images and returning their placements.
-/// `slot_of(url)` tells how to render each image: `Inline` reserves rows and records a placement for the
-/// real image; `Loading` shows a dim "loading" line while a remote fetch is in flight; `Unavailable`
-/// degrades to a one-line text placeholder (design principle #3).
+/// `slot_of(url, max_cols)` tells how to render each image: `Inline` reserves rows and records a
+/// placement for the real image; `Loading` shows a dim "loading" line while a remote fetch is in
+/// flight; `Unavailable` degrades to a one-line text placeholder (design principle #3).
+///
+/// `max_cols` is the caller's own width budget for that one image: `None` — every standalone block
+/// image — means "whatever the page allows", the answer the app has always given on its own. `Some(w)`
+/// is asked only from inside a table cell (`render_table_cells`), whose column is far narrower than the
+/// page, so the app can run its one existing sizing rule (`md_image_cells`) against the cell's width
+/// instead of the page's rather than the renderer inventing a second, cell-only fit of its own.
 ///
 /// ## The production entry point: the block-model renderer (`md-block-walk`)
 ///
@@ -442,7 +450,7 @@ pub fn render_markdown_with_images(
     theme: &str,
     icons: bool,
     tasks: &[char],
-    slot_of: &dyn Fn(&str) -> ImageSlot,
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
     mermaid_caption: &str,
     alerts: bool,
@@ -653,7 +661,7 @@ fn extraction_targets(src: &str) -> ExtractionTargets {
     // Every extracted image URL is recorded (not merely the remote ones) — `collect_remote_image_urls`
     // itself filters down to `is_remote_image_url` below, matching its own pre-refactor contract
     // (`collect_remote_image_urls_legacy`'s identical filter over `BlockPart::Image`).
-    let slot_of = |url: &str| {
+    let slot_of = |url: &str, _: Option<u16>| {
         remote_urls.borrow_mut().push(url.to_string());
         ImageSlot::Inline { cols: 1, rows: 1 }
     };
@@ -5291,18 +5299,48 @@ enum CellSeg {
         label: String,
         url: String,
     },
-    /// An image reference, shown as alt text only (`🖼 {alt}`), never as real pixels — unlike a
-    /// paragraph image (`image_text_fallback`/inline decode), a table cell cannot go through that
-    /// path today: `slot_of` (the inline-image placement lookup) takes only a URL and has no way to
-    /// carry a cell's width, and `md_image_cache`'s `MdImgEntry` holds a single decoded protocol
-    /// per path — so the same image used once at full pane width and once inside a narrow cell
-    /// would collide on one cache entry sized for whichever renders last. Fixing that needs the
-    /// cache keyed on (path, size) or multiple protocols per entry, which is out of scope here.
-    /// The URL isn't kept: nothing in the cell-rendering path (width measurement, wrapping, the
-    /// hidden-target span machinery `CellSeg::Link` uses) needs it while only alt text is shown.
+    /// An image reference. Drawn as **real pixels** when the caller's own `slot_of` answers
+    /// `ImageSlot::Inline` for its URL at the width of the column it lands in — `render_table_cells`
+    /// then reserves a `cols`x`rows` rectangle of blank cells inside the cell and reports a
+    /// [`CellImage`] so the caller can record a real `ImagePlacement` over it, exactly the way a
+    /// standalone block image reserves rows and gets overlaid (`render_image_group`).
+    ///
+    /// Every other answer (`Loading`, `Unavailable` — no image backend, missing file, a remote fetch
+    /// still in flight or already failed, a `data:` URL) degrades to the alt-text label `🖼 {alt}`
+    /// this segment has always shown (`cell_image_label`), unchanged, so a cell never goes blank
+    /// (design principle #3).
+    ///
+    /// The URL is kept for exactly that lookup. It is deliberately *not* rendered: only the label
+    /// occupies width when there are no pixels to draw, and when there are, the reserved rectangle
+    /// does.
     Image {
         alt: String,
+        url: String,
     },
+}
+
+/// One table-cell image that `render_table_cells` reserved a real rectangle for — everything the
+/// caller needs to turn it into an [`ImagePlacement`] without knowing anything about how a table is
+/// laid out. Returned alongside the drawn lines rather than pushed into some shared accumulator,
+/// because `render_table_cells` is reached from two callers (`render::render_table_from_model` and
+/// `render::render_html_table_from_model`) that each already know where in the document their own
+/// table's first line will land, and neither one hands this function a `Writer` to push into.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CellImage {
+    /// The image URL/path exactly as written in the cell's source (relative paths are resolved by
+    /// the app, the same way a block image's own URL is).
+    pub url: String,
+    pub alt: String,
+    /// Row of the image's top edge, **relative to the first line `render_table_cells` returned**
+    /// (index 0 = the table's own top border). The caller adds wherever that first line lands.
+    pub row: usize,
+    /// Column of the image's left edge, measured from column 0 of the lines this function returns
+    /// (i.e. from the table's own left border bar) — border bars, per-column padding and the cell's
+    /// own alignment padding all already counted, against the **final**, post-shaving column widths.
+    pub col: u16,
+    /// The reserved rectangle's size in cells. `cols` never exceeds its column's own final width.
+    pub cols: u16,
+    pub rows: u16,
 }
 
 impl CellSeg {
@@ -5319,7 +5357,7 @@ fn seg_width(seg: &CellSeg) -> usize {
     match seg {
         CellSeg::Text { text, .. } => UnicodeWidthStr::width(text.as_str()),
         CellSeg::Link { label, .. } => UnicodeWidthStr::width(label.as_str()),
-        CellSeg::Image { alt } => UnicodeWidthStr::width(cell_image_label(alt).as_str()),
+        CellSeg::Image { alt, .. } => UnicodeWidthStr::width(cell_image_label(alt).as_str()),
     }
 }
 
@@ -5427,10 +5465,12 @@ fn parse_link_or_image_body(s: &str) -> Option<(usize, String, String)> {
 /// `render.rs`, which resolves this identical shape for a *paragraph* image by unwrapping the outer
 /// link and keeping the image's own `dest_url`, discarding `href`: there, the image is drawn as real
 /// pixels, so the link that merely wraps it has nothing left to point *at* once the image itself is
-/// on screen. A table cell never draws real pixels — `CellSeg::Image`'s own doc comment covers why —
-/// so the only thing a reader can actually open from this cell is a link, and the one destination
-/// that means anything to open is the *badge's own* link, `href`, not the small badge image file
-/// itself). `None` if `s` doesn't have this full nested shape (the image body doesn't parse, or
+/// on screen. A cell holding this shape draws a **link**, not a picture — the shape exists because a
+/// badge is something you click, and folding it into one `Link` segment is what keeps a whole
+/// badge-row table a row of openable badges instead of a row of tiny reserved rectangles — so the one
+/// destination that means anything to open is the *badge's own* link, `href`, not the small badge
+/// image file itself. A plain `![alt](url)` cell, which has no such destination, is the one that gets
+/// real pixels; see `CellSeg::Image`). `None` if `s` doesn't have this full nested shape (the image body doesn't parse, or
 /// nothing legible follows it as `(href)`); the caller then falls back to its own plain link/image
 /// handling for `s`, unchanged.
 fn parse_link_wrapped_image_body(s: &str) -> Option<(usize, String, String)> {
@@ -5489,11 +5529,11 @@ fn parse_cell_segments(cell: &str) -> Vec<CellSeg> {
         }
         if let Some(bang_rest) = rest.strip_prefix('!') {
             if bang_rest.starts_with('[') {
-                if let Some((consumed, alt, _url)) = parse_link_or_image_body(bang_rest) {
+                if let Some((consumed, alt, url)) = parse_link_or_image_body(bang_rest) {
                     if !text.is_empty() {
                         out.push(CellSeg::plain(std::mem::take(&mut text)));
                     }
-                    out.push(CellSeg::Image { alt });
+                    out.push(CellSeg::Image { alt, url });
                     // Consume the "!" too.
                     i += 1 + consumed;
                     continue;
@@ -5634,7 +5674,7 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
             // preserve here, so on the rare "doesn't fit even alone" branch we can just downgrade
             // straight to a dim `Text` segment holding the already-truncated label — from here on
             // only the rendered spans matter, not which `CellSeg` variant produced them.
-            CellSeg::Image { alt } => {
+            CellSeg::Image { alt, url } => {
                 let label = cell_image_label(alt);
                 let lw = UnicodeWidthStr::width(label.as_str());
                 if cur_w + lw > w && cur_w > 0 {
@@ -5650,7 +5690,10 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
                     });
                 } else {
                     cur_w += lw;
-                    cur.push(CellSeg::Image { alt: alt.clone() });
+                    cur.push(CellSeg::Image {
+                        alt: alt.clone(),
+                        url: url.clone(),
+                    });
                 }
             }
         }
@@ -5745,22 +5788,76 @@ struct CellAttrs {
 /// scan, or the model-based path's direct build), so `[label](url)` links render as links (label
 /// only, hidden target span) instead of raw Markdown here too; column widths are measured on that
 /// already-displayed form.
-fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
+///
+/// ## Images inside cells
+///
+/// `slot_of` is the caller's own image lookup (`super::render_markdown_with_images`'s own parameter,
+/// threaded through `render::Writer::slot_of`). Every `CellSeg::Image` it answers `ImageSlot::Inline`
+/// for is drawn as **real pixels**: this function reserves a rectangle of blank cells for it inside
+/// its cell and reports a [`CellImage`] describing exactly where that rectangle landed, which the
+/// caller turns into an `ImagePlacement` — the same two-step ("reserve rows, record a placement, let
+/// `ui::preview` overlay the decoded image on top") that a standalone block image has always used
+/// (`render::render_image_group`). Any other answer keeps the dim `🖼 {alt}` label this function has
+/// always drawn, so a cell is never left blank (design principle #3).
+///
+/// The lookup runs **twice** for an image that has to shrink, and that is deliberate rather than
+/// wasteful: a column's width is measured from its cells' natural widths, but an image's own natural
+/// width is only knowable by asking `slot_of` — so the first call (`None` = "however wide the page
+/// allows", the identical question a block image asks) supplies the natural width the column
+/// measurement needs, and the second (`Some(final column width)`) re-fits the image to whatever the
+/// width-budget shaving actually left that column. Asking only once and scaling the first answer down
+/// here would be a second, cell-only sizing rule competing with the app's one real one
+/// (`app::md_image_cells`); asking only at the end would mean measuring the column from a width the
+/// image does not have. An image that already fits its final column (`natural cols <= column width`)
+/// is never asked twice.
+///
+/// An image and text in the same cell (`<td><img …> caption</td>`) stack **vertically**, image first:
+/// the reserved rectangle is its own band of rows and the surrounding text wraps above/below it in
+/// source order, since a cell has no way to flow text beside a picture. Several images in one cell
+/// stack the same way, each in its own band.
+fn render_table_cells(
+    t: &TableCells,
+    width: u16,
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+) -> (Vec<Line<'static>>, Vec<CellImage>) {
     let mut rows = t.rows.clone();
     let header_rows = t.header_rows;
     let aligns = &t.aligns;
     let ncol = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if rows.is_empty() || ncol == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     for r in &mut rows {
         r.resize(ncol, Vec::new());
     }
-    // Natural column widths (full-width chars counted, a link uses its label width). Minimum 1.
-    let mut col_w = vec![1usize; ncol];
-    for r in &rows {
+    // Which `CellSeg::Image`s the caller can actually draw, and how big each one is when nothing but
+    // the page constrains it — `(row, col, segment index) -> (cols, rows)`. Asked once, here, before
+    // any width is decided, because a column cannot be measured without it (see this function's own
+    // doc comment). An image the caller answers `Loading`/`Unavailable` for is simply absent from
+    // this map and keeps its `🖼 {alt}` label all the way through, exactly as before cells could
+    // hold pixels at all.
+    let mut natural: HashMap<(usize, usize, usize), (u16, u16)> = HashMap::new();
+    for (ri, r) in rows.iter().enumerate() {
         for (c, cell) in r.iter().enumerate() {
-            col_w[c] = col_w[c].max(segs_width(cell));
+            for (si, seg) in cell.iter().enumerate() {
+                if let CellSeg::Image { url, .. } = seg {
+                    if let ImageSlot::Inline { cols, rows } = slot_of(url, None) {
+                        natural.insert((ri, c, si), (cols.max(1), rows.max(1)));
+                    }
+                }
+            }
+        }
+    }
+    // Natural column widths (full-width chars counted, a link uses its label width). Minimum 1.
+    // A cell holding a drawable image is measured as the widest of its own stacked bands — the
+    // image rectangles and the text that wraps around them — rather than the sum of everything on
+    // one line, since those bands sit *above and below* each other, never side by side. A cell with
+    // no drawable image reduces to `segs_width(cell)` exactly, so a table of plain text (or of
+    // labels, on a terminal with no image backend) measures byte for byte as it always did.
+    let mut col_w = vec![1usize; ncol];
+    for (ri, r) in rows.iter().enumerate() {
+        for (c, cell) in r.iter().enumerate() {
+            col_w[c] = col_w[c].max(cell_natural_width(cell, ri, c, &natural));
         }
     }
     // The table's total display width = Σcol_w + border bars │ (ncol+1) + each column's left/right padding (2*ncol).
@@ -5800,17 +5897,31 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
             .unwrap_or_default()
     };
 
+    // Where column `c`'s own content starts, as an offset from column 0 of every line built below
+    // (the table's own left border bar): that bar, then each earlier column's own
+    // `│` + space + width + space block. The one place a `CellImage.col` is derived from, so a
+    // reserved rectangle can never disagree with the padding actually emitted around it.
+    let content_col =
+        |c: usize| -> usize { 1 + col_w[..c].iter().map(|w| w + 3).sum::<usize>() + 1 };
+
     let mut out = Vec::new();
+    let mut images: Vec<CellImage> = Vec::new();
     out.push(rule('┌', '┬', '┐'));
     for (ri, r) in rows.iter().enumerate() {
         let is_head = ri < header_rows;
-        // Wrap each cell to the column width, then expand vertically to the row's max physical line count.
-        let wrapped: Vec<Vec<Vec<CellSeg>>> = r
+        // Lay each cell out into physical lines at the column's final width: wrapped text, plus a
+        // band of reserved rows for every image the caller can really draw. Then expand vertically
+        // to the row's max physical line count.
+        let planned: Vec<(Vec<CellPlan>, Vec<CellBand>)> = r
             .iter()
             .enumerate()
-            .map(|(c, cell)| wrap_segments(cell, col_w[c]))
+            .map(|(c, cell)| plan_cell(cell, ri, c, col_w[c], &natural, slot_of))
             .collect();
-        let phys = wrapped.iter().map(|w| w.len().max(1)).max().unwrap_or(1);
+        let phys = planned
+            .iter()
+            .map(|(l, _)| l.len().max(1))
+            .max()
+            .unwrap_or(1);
         for p in 0..phys {
             let mut spans: Vec<Span<'static>> = vec![Span::styled("│", border)];
             for c in 0..ncol {
@@ -5823,8 +5934,23 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
                 } else {
                     Style::new()
                 };
-                let segs: &[CellSeg] = wrapped[c].get(p).map(|v| v.as_slice()).unwrap_or(&[]);
-                let pad = col_w[c].saturating_sub(segs_width(segs));
+                let (lines_c, bands_c) = &planned[c];
+                let plan = lines_c.get(p);
+                // An image band occupies its own rectangle's width; anything else occupies whatever
+                // its segments measure (an absent line — a short cell padded out to the row's
+                // height — measures 0, exactly as the pre-image `unwrap_or(&[])` did).
+                let empty: &[CellSeg] = &[];
+                let segs: &[CellSeg] = match plan {
+                    Some(CellPlan::Segs(v)) => v.as_slice(),
+                    _ => empty,
+                };
+                let used = match plan {
+                    Some(CellPlan::ImageRow { band, .. }) => {
+                        (bands_c[*band].cols as usize).min(col_w[c])
+                    }
+                    _ => segs_width(segs),
+                };
+                let pad = col_w[c].saturating_sub(used);
                 // Distribute the padding left/right according to the cell's own alignment when it
                 // declared one (HTML `align=`), else the column's (a GFM delimiter row's `:---:`);
                 // default is left-aligned.
@@ -5838,6 +5964,36 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
                     ColAlign::Center => (pad / 2, pad - pad / 2),
                 };
                 spans.push(Span::styled(format!(" {}", " ".repeat(lp)), cell_style));
+                if let Some(CellPlan::ImageRow { band, first }) = plan {
+                    let b = &bands_c[*band];
+                    let cw = (b.cols as usize).min(col_w[c]);
+                    // The reserved rectangle itself is blank — the decoded image is drawn on top of
+                    // it by `ui::preview::overlay_inline_images`. Its top row carries the same dim
+                    // `🖼 {alt}` label `image_placeholder_lines` gives a standalone block image, so
+                    // the cell reads identically to before while the picture is still decoding (and
+                    // stays readable forever on a terminal that never draws one).
+                    let text = if *first {
+                        let label = truncate_width(&cell_image_label(&b.alt), cw);
+                        format!("{label}{}", " ".repeat(cw.saturating_sub(label.width())))
+                    } else {
+                        " ".repeat(cw)
+                    };
+                    spans.push(Span::styled(
+                        text,
+                        cell_style.patch(Style::new().add_modifier(Modifier::DIM)),
+                    ));
+                    if *first {
+                        images.push(CellImage {
+                            url: b.url.clone(),
+                            alt: b.alt.clone(),
+                            // `out.len()` is the index this very line is about to take.
+                            row: out.len(),
+                            col: (content_col(c) + lp) as u16,
+                            cols: cw as u16,
+                            rows: b.rows,
+                        });
+                    }
+                }
                 for seg in segs {
                     match seg {
                         // Styled text (**bold**/*italic*/`code`/~~strike~~ inside the cell).
@@ -5851,9 +6007,10 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
                             spans.push(Span::styled(label.clone(), link_label_style()));
                             spans.push(Span::styled(url.clone(), hidden_link_target_style()));
                         }
-                        // Alt text only (`🖼 {alt}`, dim) — see `CellSeg::Image`'s own doc comment
-                        // for why real pixels aren't attempted here.
-                        CellSeg::Image { alt } => {
+                        // Alt text only (`🖼 {alt}`, dim) — the fallback for an image with no
+                        // pixels to draw. One the caller *can* draw never reaches this arm: it was
+                        // lifted out into its own reserved band by `plan_cell`.
+                        CellSeg::Image { alt, .. } => {
                             spans.push(Span::styled(
                                 cell_image_label(alt),
                                 cell_style.patch(Style::new().add_modifier(Modifier::DIM)),
@@ -5872,7 +6029,129 @@ fn render_table_cells(t: &TableCells, width: u16) -> Vec<Line<'static>> {
         }
     }
     out.push(rule('└', '┴', '┘'));
-    out
+    (out, images)
+}
+
+/// One physical line of a laid-out table cell — [`plan_cell`]'s own unit of output.
+enum CellPlan {
+    /// Ordinary wrapped cell content, exactly what `wrap_segments` has always produced.
+    Segs(Vec<CellSeg>),
+    /// One row of a reserved image rectangle. `band` indexes the cell's own [`CellBand`] list;
+    /// `first` marks the rectangle's top row — the one that carries the dim label and the one the
+    /// `CellImage` is recorded at.
+    ImageRow { band: usize, first: bool },
+}
+
+/// One image rectangle reserved inside a single cell, at that cell's own final column width.
+struct CellBand {
+    url: String,
+    alt: String,
+    cols: u16,
+    rows: u16,
+}
+
+/// The widest band a cell will occupy once laid out — the measurement `render_table_cells` decides
+/// column widths from. Text segments concatenate onto one line and so are summed; a drawable image
+/// is its own rectangle stacked above/below that text, so it is `max`ed in rather than added.
+///
+/// With no drawable image this is exactly `segs_width(cell)` — the pre-image measurement, byte for
+/// byte, which is what keeps every table without pixels laid out identically to before.
+fn cell_natural_width(
+    cell: &[CellSeg],
+    ri: usize,
+    c: usize,
+    natural: &HashMap<(usize, usize, usize), (u16, u16)>,
+) -> usize {
+    let mut text = 0usize;
+    let mut widest_image = 0usize;
+    for (si, seg) in cell.iter().enumerate() {
+        match natural.get(&(ri, c, si)) {
+            Some(&(cols, _)) => widest_image = widest_image.max(cols as usize),
+            None => text += seg_width(seg),
+        }
+    }
+    text.max(widest_image)
+}
+
+/// Lay one cell out into physical lines at its column's **final** width `w` (post-shaving — which is
+/// why this runs per row inside the drawing loop rather than during measurement): text wraps as it
+/// always has, and every image the caller can draw becomes a band of `rows` reserved lines.
+///
+/// `natural` is `render_table_cells`'s own map of which segments are drawable and how big they are
+/// when only the page constrains them. An entry whose natural width already fits `w` is used as is;
+/// one that does not is re-fit by asking `slot_of` again with `Some(w)`, so the rectangle is sized by
+/// the app's one sizing rule against the width the cell actually has (see `render_table_cells`'s own
+/// doc comment). A `slot_of` that answers something other than `Inline` the second time — nothing in
+/// production does, but the closure is the caller's — degrades that image back to its `🖼 {alt}`
+/// label rather than reserving a rectangle nothing will ever be drawn into (principle #3).
+fn plan_cell(
+    cell: &[CellSeg],
+    ri: usize,
+    c: usize,
+    w: usize,
+    natural: &HashMap<(usize, usize, usize), (u16, u16)>,
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+) -> (Vec<CellPlan>, Vec<CellBand>) {
+    // Nothing drawable in this cell: the pre-image path, untouched.
+    if !(0..cell.len()).any(|si| natural.contains_key(&(ri, c, si))) {
+        return (
+            wrap_segments(cell, w)
+                .into_iter()
+                .map(CellPlan::Segs)
+                .collect(),
+            Vec::new(),
+        );
+    }
+    let mut lines: Vec<CellPlan> = Vec::new();
+    let mut bands: Vec<CellBand> = Vec::new();
+    let mut run: Vec<CellSeg> = Vec::new();
+    for (si, seg) in cell.iter().enumerate() {
+        let (alt, url, nat_cols, nat_rows) = match (seg, natural.get(&(ri, c, si))) {
+            (CellSeg::Image { alt, url }, Some(&(nc, nr))) => (alt, url, nc, nr),
+            _ => {
+                run.push(seg.clone());
+                continue;
+            }
+        };
+        let fitted = if (nat_cols as usize) <= w {
+            Some((nat_cols, nat_rows))
+        } else {
+            match slot_of(url, Some(w as u16)) {
+                ImageSlot::Inline { cols, rows } => {
+                    Some((cols.max(1).min(w.max(1) as u16), rows.max(1)))
+                }
+                _ => None,
+            }
+        };
+        let Some((cols, rows)) = fitted else {
+            run.push(seg.clone());
+            continue;
+        };
+        if !run.is_empty() {
+            lines.extend(wrap_segments(&run, w).into_iter().map(CellPlan::Segs));
+            run.clear();
+        }
+        let band = bands.len();
+        bands.push(CellBand {
+            url: url.clone(),
+            alt: alt.clone(),
+            cols,
+            rows,
+        });
+        for i in 0..rows as usize {
+            lines.push(CellPlan::ImageRow {
+                band,
+                first: i == 0,
+            });
+        }
+    }
+    if !run.is_empty() {
+        lines.extend(wrap_segments(&run, w).into_iter().map(CellPlan::Segs));
+    }
+    if lines.is_empty() {
+        lines.push(CellPlan::Segs(Vec::new()));
+    }
+    (lines, bands)
 }
 
 /// Test-only shorthand matching the retired `render_markdown_tasks_opts`'s own signature (a
@@ -5894,7 +6173,7 @@ pub(crate) fn render_via_dispatcher(
     tasks: &[char],
     alerts: bool,
 ) -> Vec<Line<'static>> {
-    let slot_of = |_: &str| ImageSlot::Unavailable;
+    let slot_of = |_: &str, _: Option<u16>| ImageSlot::Unavailable;
     let mermaid_slot = |_: &str| MermaidSlot::Image { cols: 20, rows: 5 };
     let math_slot = |_: &str, _: bool| MathSlot::Raw;
     render_markdown_with_images(
@@ -6326,11 +6605,15 @@ mod tests {
         let segs = parse_cell_segments("see [a](b.md) end");
         assert_eq!(segs.len(), 3);
         assert!(matches!(&segs[1], CellSeg::Link { label, url } if label == "a" && url == "b.md"));
-        // An image `![alt](url)` becomes an Image segment (alt text only — see `CellSeg::Image`'s
-        // own doc comment for why not real pixels). This used to fall through as literal text
-        // one character at a time — the exact bug this test now pins the fix for.
+        // An image `![alt](url)` becomes an Image segment carrying both halves — the alt text it
+        // falls back to as a label, and the URL `render_table_cells` looks up to decide whether it
+        // can reserve a real rectangle for it. This used to fall through as literal text one
+        // character at a time — the exact bug this test now pins the fix for.
         let img = parse_cell_segments("![alt](x.png)");
-        assert!(matches!(&img[..], [CellSeg::Image { alt }] if alt == "alt"));
+        assert!(
+            matches!(&img[..], [CellSeg::Image { alt, url }] if alt == "alt" && url == "x.png"),
+            "画像セグメントは alt と URL の両方を保持する: {img:?}"
+        );
         let broken = parse_cell_segments("[no url] and [y](");
         assert!(broken.iter().all(|s| matches!(s, CellSeg::Text { .. })));
         // A link destination with a title, or wrapped in <>, is reduced to just the URL/path (making it an openable target).
@@ -6347,10 +6630,24 @@ mod tests {
         // The image case shares the same bracket/paren scan (`parse_link_or_image_body`), so it
         // gets the identical <>/title robustness for free — checked here rather than assumed.
         let img_angled = parse_cell_segments("![a](<./with space.png> \"Title\")");
-        assert!(matches!(&img_angled[..], [CellSeg::Image { alt }] if alt == "a"));
+        // KNOWN DEFECT, pinned rather than asserted-as-correct: `strip_link_destination` unwraps
+        // `<...>` only when the destination is *nothing but* the angle-bracketed run, so a title
+        // after it leaves the brackets and the title in the URL. This is not an image bug — the
+        // identical destination on a **link** (`[t](<./with space.md> "Title")`) comes out equally
+        // unstripped — and it predates cell images entirely; recorded in `docs/STATUS.md` instead of
+        // fixed here, where it would silently change link targets. What this line is really pinning
+        // is the in-scope half: whatever destination the shared scan produces, the image segment
+        // carries it instead of dropping it.
+        assert!(
+            matches!(&img_angled[..], [CellSeg::Image { alt, url }] if alt == "a" && url == "<./with space.png> \"Title\""),
+            "山括弧つき画像も URL を保持する（<> 剥がしの既知欠陥はそのまま）: {img_angled:?}"
+        );
         // An empty alt still resolves to an Image segment (rendered later as the generic "image" word).
         let img_no_alt = parse_cell_segments("![](x.png)");
-        assert!(matches!(&img_no_alt[..], [CellSeg::Image { alt }] if alt.is_empty()));
+        assert!(
+            matches!(&img_no_alt[..], [CellSeg::Image { alt, url }] if alt.is_empty() && url == "x.png"),
+            "alt が空でも URL は保持する: {img_no_alt:?}"
+        );
         // A bare `!` not immediately followed by `[` is just literal text, same as before.
         let bang_only = parse_cell_segments("wow! [a](b.md)");
         assert!(matches!(&bang_only[0], CellSeg::Text { text, .. } if text == "wow! "));
@@ -6646,7 +6943,7 @@ mod tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -6663,7 +6960,7 @@ mod tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -6684,7 +6981,7 @@ mod tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -7867,7 +8164,7 @@ plain body
     #[test]
     fn images_in_code_fences_are_not_extracted() {
         let src = "before\n\n```\n![a](x.png)\n```\n\nafter\n";
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 10, rows: 4 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 10, rows: 4 };
         let (_lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
@@ -7888,7 +8185,7 @@ plain body
     #[test]
     fn block_image_reserves_rows_and_records_placement() {
         let src = "# Title\n\n![hero](hero.png)\n\nbody\n";
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 20, rows: 5 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 20, rows: 5 };
         let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
@@ -7921,7 +8218,7 @@ plain body
     #[test]
     fn image_without_backend_degrades_to_text() {
         let src = "![alt](missing.png)\n";
-        let slot_of = |_: &str| ImageSlot::Unavailable; // no backend / unresolvable → text (principle #3)
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Unavailable; // no backend / unresolvable → text (principle #3)
         let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             40,
@@ -7945,7 +8242,7 @@ plain body
     #[test]
     fn remote_image_shows_loading_line() {
         let src = "![shot](https://example.com/a.png)\n";
-        let slot_of = |_: &str| ImageSlot::Loading;
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Loading;
         let (lines, imgs, _extras) = render_markdown_with_images(
             src,
             60,
@@ -7963,6 +8260,32 @@ plain body
         assert!(imgs.is_empty(), "loading 中は placement を出さない");
         let joined: String = lines.iter().map(|l| l.to_string()).collect();
         assert!(joined.contains("loading"), "loading 表示が無い: {joined}");
+    }
+
+    /// A remote image inside a **table cell** is collected for download like any other, so it can
+    /// actually arrive and be drawn. Before cells could hold real pixels this was silently missing:
+    /// `render_table_cells` never consulted `slot_of` at all, so the extraction probe never saw a
+    /// cell's URL, no fetch was ever kicked off, and konoma's own README — whose screenshot grid is
+    /// an HTML table of `raw.githubusercontent.com` images — could not have shown them even once the
+    /// rest of this feature existed.
+    #[test]
+    fn collect_remote_image_urls_includes_table_cell_images() {
+        let gfm = "| a |\n|---|\n| ![x](https://example.com/cell.png) |\n";
+        assert_eq!(
+            collect_remote_image_urls(gfm),
+            vec!["https://example.com/cell.png".to_string()],
+            "GFM 表のセル画像がダウンロード対象に入っていない"
+        );
+        let html =
+            "<table><tr><td><img src=\"https://example.com/h.png\" alt=\"H\"></td></tr></table>\n";
+        assert_eq!(
+            collect_remote_image_urls(html),
+            vec!["https://example.com/h.png".to_string()],
+            "HTML 表のセル画像がダウンロード対象に入っていない"
+        );
+        // A local cell image is still not a download target.
+        let local = "| a |\n|---|\n| ![x](./local.png) |\n";
+        assert!(collect_remote_image_urls(local).is_empty());
     }
 
     #[test]
@@ -8144,7 +8467,7 @@ plain body
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_| ImageSlot::Unavailable,
+            &|_, _| ImageSlot::Unavailable,
             &slot_img,
             "Enter: full screen",
             true,
@@ -8167,7 +8490,7 @@ plain body
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_| ImageSlot::Unavailable,
+            &|_, _| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Loading,
             "Enter: full screen",
             true,
@@ -8185,7 +8508,7 @@ plain body
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_| ImageSlot::Unavailable,
+            &|_, _| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -8215,7 +8538,7 @@ plain body
                 "TwoDark",
                 false,
                 DEFAULT_TASK_STATES,
-                &|_| ImageSlot::Unavailable,
+                &|_, _| ImageSlot::Unavailable,
                 &slot_img,
                 caption,
                 true,
@@ -8451,7 +8774,7 @@ plain body
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "mermaid",
             true,
@@ -8495,7 +8818,7 @@ plain body
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Inline { cols: 4, rows: 2 },
+            &|_: &str, _: Option<u16>| ImageSlot::Inline { cols: 4, rows: 2 },
             &|_: &str| MermaidSlot::Text,
             "mermaid",
             true,
@@ -11540,7 +11863,7 @@ mod task_scan_parity_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
             "mermaid",
             true,
@@ -11707,7 +12030,7 @@ mod task_scan_parity_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Inline { cols: 10, rows: 2 },
+            &|_: &str, _: Option<u16>| ImageSlot::Inline { cols: 10, rows: 2 },
             &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
             "mermaid",
             true,
@@ -11902,7 +12225,7 @@ mod task_scan_parity_tests {
                 "TwoDark",
                 false,
                 &[' ', 'x'],
-                &|_: &str| ImageSlot::Inline { cols: 10, rows: 2 },
+                &|_: &str, _: Option<u16>| ImageSlot::Inline { cols: 10, rows: 2 },
                 &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
                 "mermaid",
                 true,
@@ -11940,7 +12263,7 @@ mod task_scan_parity_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
             "mermaid",
             true,
@@ -12342,7 +12665,7 @@ mod task_scan_parity_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
             "mermaid",
             true,
@@ -12811,7 +13134,7 @@ mod fence_and_math_extraction_tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -12875,7 +13198,7 @@ mod fence_and_math_extraction_tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -12913,7 +13236,7 @@ mod fence_and_math_extraction_tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -12966,7 +13289,7 @@ mod fence_and_math_extraction_tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -13007,7 +13330,7 @@ mod fence_and_math_extraction_tests {
             "TwoDark",
             false,
             DEFAULT_TASK_STATES,
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Text,
             "Enter: full screen",
             true,
@@ -14339,7 +14662,7 @@ mod app_faithful_parity_tests {
             "TwoDark",
             false,
             &[' ', 'x'],
-            &|_: &str| ImageSlot::Unavailable,
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
             &|_: &str| MermaidSlot::Image { cols: 20, rows: 5 },
             "mermaid",
             true,

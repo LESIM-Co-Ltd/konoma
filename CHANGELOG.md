@@ -23,6 +23,22 @@ All notable changes to konoma are documented in this file. The format is based o
   any other position.
 
 ### Added
+- **A table cell can now hold a real image, drawn in pixels, instead of a `🖼 alt` label.** Both
+  kinds of table: the GFM pipe table (`| png | ![alt](a.png) |`) and the HTML `<table>` whose cell
+  holds an `<img>` — the side-by-side screenshot grid a great many READMEs are built from, konoma's
+  own included. The cell reserves a rectangle sized to its own column (the same fit a full-width
+  image gets, measured against the column instead of the page), the row grows to whatever the
+  tallest image in it needs, and the picture is drawn over that rectangle exactly the way a
+  standalone image already was. Works inside a blockquote and inside `<details>`, with
+  `align="center"` and friends (the rectangle is centered, not just the text), and remote images in
+  a cell are now downloaded like any other — they never were before, so a README pointing at
+  `raw.githubusercontent.com` could not have shown them at all. A cell holding an image *and* text
+  stacks them, image first. Anything that cannot be drawn — a missing file, a fetch still in
+  flight, a terminal with no image support — keeps the `🖼 alt` label exactly as before, and a
+  badge written as a link wrapping an image (`[![alt](img)](href)`) stays an openable link rather
+  than becoming a picture. Known limitation: the same image file shown at two *different* sizes on
+  one screen (e.g. the same logo in two columns the width budget shaved differently) draws only one
+  of them — the inline-image cache holds a single encoded size per file. See `docs/STATUS.md`.
 - **An HTML `<table>` in a Markdown document is now drawn as a real table.** The side-by-side
   screenshot grid a great many READMEs write as `<table><tr><td>…` (konoma's own included) used to
   lose its structure completely -- the images rendered one after another and the captions followed

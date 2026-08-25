@@ -379,34 +379,42 @@ impl App {
                 let font = self.picker.as_ref().map(|p| p.font_size());
                 let base_dir = path.parent().map(|p| p.to_path_buf());
                 let avail = width.saturating_sub(2);
-                let slot_of = |url: &str| -> crate::preview::markdown::ImageSlot {
-                    use crate::preview::markdown::ImageSlot;
-                    let Some(font) = font else {
-                        return ImageSlot::Unavailable;
-                    };
-                    if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
-                        match md_image_dims(&p) {
-                            Some((pw, ph)) => {
-                                let (cols, rows) = md_image_cells(
-                                    pw,
-                                    ph,
-                                    font.width,
-                                    font.height,
-                                    avail,
-                                    MD_IMAGE_MAX_ROWS,
-                                );
-                                ImageSlot::Inline { cols, rows }
+                // `max_cols`: the caller's own width budget for *this one* image, when it has a
+                // narrower one than the page's. `None` — every standalone block image, i.e. every
+                // caller that existed before table cells could hold real pixels — means "the whole
+                // page", `avail`, exactly as before. `Some(w)` comes from a table cell
+                // (`render_table_cells`), whose column is far narrower than the page: the very same
+                // `md_image_cells` fit runs, just against `w` instead of `avail`, so a cell image is
+                // sized by the one sizing rule in this file rather than by a second, cell-only one.
+                let slot_of =
+                    |url: &str, max_cols: Option<u16>| -> crate::preview::markdown::ImageSlot {
+                        use crate::preview::markdown::ImageSlot;
+                        let Some(font) = font else {
+                            return ImageSlot::Unavailable;
+                        };
+                        if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
+                            match md_image_dims(&p) {
+                                Some((pw, ph)) => {
+                                    let (cols, rows) = md_image_cells(
+                                        pw,
+                                        ph,
+                                        font.width,
+                                        font.height,
+                                        max_cols.unwrap_or(avail),
+                                        MD_IMAGE_MAX_ROWS,
+                                    );
+                                    ImageSlot::Inline { cols, rows }
+                                }
+                                None => ImageSlot::Unavailable,
                             }
-                            None => ImageSlot::Unavailable,
+                        } else if crate::preview::markdown::is_remote_image_url(url)
+                            && !self.md_remote_failed.contains(url)
+                        {
+                            ImageSlot::Loading
+                        } else {
+                            ImageSlot::Unavailable
                         }
-                    } else if crate::preview::markdown::is_remote_image_url(url)
-                        && !self.md_remote_failed.contains(url)
-                    {
-                        ImageSlot::Loading
-                    } else {
-                        ImageSlot::Unavailable
-                    }
-                };
+                    };
                 // ```mermaid fence: in image mode, look up the rendered cache (content-hash key).
                 // Not-yet-arrived becomes a loading line; failed/mode-off becomes the text diagram
                 // (principle #3). The probe (empty string) is the representative "should this be

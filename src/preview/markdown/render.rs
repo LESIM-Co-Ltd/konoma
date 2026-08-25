@@ -171,8 +171,8 @@ use super::{
     math_raw_lines, math_url, mermaid_fence_url, mermaid_placeholder_lines, next_details_open,
     normalize_cell, pad_to_width, parse_cell_segments, prefix_link_icons, render_html_block,
     render_mermaid_block, render_table_cells, scan_inline_math, task_prefix_state, CellAttrs,
-    CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot,
-    MermaidSlot, SourceRun, TableCells,
+    CellImage, CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart,
+    MathSlot, MermaidSlot, SourceRun, TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -363,7 +363,7 @@ pub(crate) fn render_doc(
     theme: &str,
     icons: bool,
     tasks: &[char],
-    slot_of: &dyn Fn(&str) -> ImageSlot,
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
     mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
     mermaid_caption: &str,
     alerts: bool,
@@ -744,12 +744,17 @@ struct Writer<'m> {
     /// `mermaid.fences_on`, computed once via the same probe production runs — see `render_doc`'s own
     /// construction site).
     mermaid: MermaidCtx<'m>,
-    /// `render_doc`'s own incoming `slot_of` — how the app wants a standalone block image
-    /// (`![alt](url)` as a paragraph's *entire* content) rendered; read by `render_image_group`. Like
-    /// `mermaid`, unconditional: production's own block-image extraction (`split_block_parts`) is
-    /// never gated by anything analogous to `math_on`/mermaid's own `fences_on` probe — a qualifying
-    /// paragraph is *always* handed to `slot_of`, whatever it answers.
-    slot_of: &'m dyn Fn(&str) -> ImageSlot,
+    /// `render_doc`'s own incoming `slot_of` — how the app wants an image rendered; read by
+    /// `render_image_group` for a standalone block image (`![alt](url)` as a paragraph's *entire*
+    /// content) and by `render_table_from_model`/`render_html_table_from_model` for an image inside a
+    /// table cell. Like `mermaid`, unconditional: production's own block-image extraction
+    /// (`split_block_parts`) is never gated by anything analogous to `math_on`/mermaid's own
+    /// `fences_on` probe — a qualifying paragraph is *always* handed to `slot_of`, whatever it answers.
+    ///
+    /// The second argument is the caller's own width budget for that one image (see
+    /// `super::render_markdown_with_images`'s own doc comment): `None` from the block-image path (the
+    /// whole page), `Some(column width)` from a table cell.
+    slot_of: &'m dyn Fn(&str, Option<u16>) -> ImageSlot,
     /// Every image/diagram/equation placement this render has produced so far — the one, shared
     /// accumulator `RenderOut::images` reads from at the very end (see that field's own doc comment
     /// on why math/mermaid/block-images all push into the *same* `Vec`, matching production's own
@@ -2131,7 +2136,7 @@ fn try_render_paragraph_as_image(
 /// to draw (the real bug this exists to fix: GitHub/crates.io lay out a `[![a](x)](u1)
 /// [![b](y)](u2) [![c](z)](u3)` badge row horizontally; konoma used to draw it as three stacked rows).
 /// The block-image analogue of `render_math_slot`/`render_mermaid_slot`, generalized from what used to
-/// be a strictly one-image-at-a-time `render_image_slot`: `w.slot_of(url)` decides, per image, between
+/// be a strictly one-image-at-a-time `render_image_slot`: `w.slot_of(url, None)` decides, per image, between
 /// a real `Inline` placement (reserved cells, packed into the current row group), a `Loading` line, or
 /// the `Unavailable` text fallback (`image_loading_line`/`image_text_fallback`, unchanged — the
 /// identical two functions `render_markdown_with_images`'s own `BlockPart::Image` arm calls for those
@@ -2173,7 +2178,7 @@ fn render_image_group(w: &mut Writer<'_>, images: &[(String, String)]) {
     // (alt, url, cols, rows) for the `Inline`-slot images currently pending a row.
     let mut group: Vec<(String, String, u16, u16)> = Vec::new();
     for (alt, url) in images {
-        match (w.slot_of)(url) {
+        match (w.slot_of)(url, None) {
             ImageSlot::Inline { cols, rows } => {
                 let would_be =
                     row_group_width(&group) + if group.is_empty() { 0 } else { 1 } + cols as usize;
@@ -3866,12 +3871,54 @@ fn render_table_from_model(
         cell_attrs: Vec::new(),
     };
     let content_w = w.width as usize;
-    for line in render_table_cells(&table, content_w as u16) {
-        w.emit_row(line);
-    }
+    emit_table(w, &table, content_w as u16);
     w.pending_block_gap = false;
     w.after_math = true;
     w.fresh_boundary = true;
+}
+
+/// Draws one already-built `TableCells` into `w` and records an `ImagePlacement` for every real-pixel
+/// image `render_table_cells` reserved a rectangle for — the single tail both table paths
+/// (`render_table_from_model` above, `render_html_table_from_model` below) share, so a cell image
+/// lands at the same document row/column whichever kind of table it came from.
+///
+/// The row conversion is `render_image_group`'s own, verbatim: `w.lines.len()` is where this table's
+/// first line is about to land, `+ w.heading_rule_shift` converts that pre-decoration index into the
+/// fully-decorated one an `ImagePlacement.line` has to name (see that field's own doc comment), and
+/// `CellImage.row` is the offset within the table. It is read **before** the emit loop, since every
+/// row pushed moves `w.lines.len()` on.
+///
+/// `CellImage.col` is already measured from column 0 of the table's own lines, and a table line is
+/// emitted with `emit_row` (no prefix of any kind — see `Writer::emit_row_prefixed`'s own doc comment
+/// on why no block-rendering function ever runs while a prefix is open), so it is also the offset
+/// from `w`'s own left edge, which is exactly what `ImagePlacement.col` means.
+fn emit_table(w: &mut Writer<'_>, table: &TableCells, width: u16) {
+    let base = w.lines.len() + w.heading_rule_shift;
+    let (lines, cell_images) = render_table_cells(table, width, w.slot_of);
+    for line in lines {
+        w.emit_row(line);
+    }
+    for CellImage {
+        url,
+        alt,
+        row,
+        col,
+        cols,
+        rows,
+    } in cell_images
+    {
+        w.images.push(ImagePlacement {
+            url,
+            alt,
+            line: base + row,
+            col,
+            cols,
+            rows,
+            // Not a ```mermaid fence — the ordinal is that extraction's own ID (see the field's own
+            // doc comment), and a cell image is an ordinary `![alt](url)`/`<img>`.
+            fence_ord: None,
+        });
+    }
 }
 
 /// Draws a `BlockKind::HtmlTable` — an HTML `<table>` the model was able to read as a real grid (see
@@ -3890,9 +3937,10 @@ fn render_table_from_model(
 /// that have a Markdown spelling and hands the rest to the pipeline's one tag stripper,
 /// `render_html_block`) and then the identical `normalize_cell` -> `parse_cell_segments` ->
 /// `prefix_link_icons` chain the GFM path uses — so a cell's `[label](url)`, `**bold**`, `` `code` ``
-/// and `![alt](url)` all mean exactly what they mean in a GFM cell, including a `CellSeg::Image`'s own
-/// `🖼 alt` label (real pixels inside a cell are out of scope for both paths alike — see
-/// `CellSeg::Image`'s own doc comment).
+/// and `![alt](url)` all mean exactly what they mean in a GFM cell — including an `<img>`, which
+/// `html_cell_to_markdown` rewrites to `![alt](url)` and which therefore gets a real reserved
+/// rectangle and a real `ImagePlacement` (`emit_table`) on both paths alike, falling back to the
+/// `🖼 alt` label on either whenever the caller has no pixels to give (`CellSeg::Image`).
 ///
 /// ## Alignment and header rows
 ///
@@ -3961,9 +4009,7 @@ fn render_html_table_from_model(
         aligns: Vec::new(),
         cell_attrs,
     };
-    for line in render_table_cells(&table, w.width) {
-        w.emit_row(line);
-    }
+    emit_table(w, &table, w.width);
     w.pending_block_gap = false;
     w.after_math = true;
     w.fresh_boundary = true;
@@ -4899,21 +4945,66 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         decorate_headings_and_extras(inner.lines, inner.width, inner.icons, inner.tasks);
     let prefix = Span::raw(">");
     let style = w.styles.blockquote();
+    // Where `inner`'s own first line is about to land in `w`, and how far every one of its own
+    // columns is about to move right — read before the emit loop, which moves `w.lines.len()` on.
+    // See `rebase_nested_images` for what these two numbers are for.
+    let base = w.lines.len() + w.heading_rule_shift;
     for line in decorated {
         w.emit_row_prefixed(line, Some(&prefix), Some(style));
     }
     // Merged back the identical way `render_bar_prefixed_body` merges its own `inner`'s
-    // accumulators — see that function's own doc comment on why `images` is always empty here today
-    // (`extract_here: false`, defensive all the same) while `code_blocks`/`task_marks` are not
-    // (a code block or a task-list checkbox *is* a real, on-screen `y c`/Tab/`Space` target inside a
-    // quote, and now — for a checkbox — an interactive one for the first time).
-    w.images.extend(inner.images);
+    // accumulators. `images` used to be unconditionally empty here (`extract_here: false`) and was
+    // merged purely defensively; a table inside this quote whose cells hold real-pixel images now
+    // fills it for real (`emit_table` — cell images are not gated by `extract_here`, since nothing
+    // about a cell image mirrors the legacy renderer's own block-image extraction), which is what
+    // `rebase_nested_images` is for: an `inner` placement's row and column are `inner`-relative, and
+    // extending them onto `w` unchanged would draw the image at the top of the document.
+    w.images
+        .extend(rebase_nested_images(inner.images, base, QUOTE_PREFIX_COLS));
     w.code_blocks.extend(inner.code_blocks);
     w.task_marks.extend(inner.task_marks);
     // Because of the isolation above, `w.after_math` can never legitimately be `true` here either —
     // nothing inside a quote's own subtree can have set it (`math_here: false`, throughout) — so this
     // stays the plain, unconditional `pending_block_gap = true`, exactly as before this fix.
     w.pending_block_gap = true;
+}
+
+/// Display width of the `">"` + shared space `render_quote` prefixes every one of its own body lines
+/// with (`Writer::emit_row_prefixed` inserts both), and so the distance every column inside that body
+/// moves right when it is merged into the enclosing `Writer`.
+const QUOTE_PREFIX_COLS: u16 = 2;
+
+/// The same, for the `"▌ "` bar `render_bar_prefixed_body` puts in front of an alert's or a
+/// `<details>`'s own body lines (`super::alert_bar`/`details_bar` — both two cells wide).
+const BAR_PREFIX_COLS: u16 = 2;
+
+/// Move an isolated sub-`Writer`'s own image placements onto the enclosing `Writer`'s coordinates:
+/// `base` rows down (where the sub-writer's first line lands, already converted past any heading
+/// rules the outer decoration will insert ahead of it) and `prefix_cols` columns right (the `>` or
+/// `▌ ` every one of those lines gains on the way out).
+///
+/// Both nesting containers isolate: they render their children into a fresh `Writer` whose `lines`
+/// start at index 0 and whose column 0 is *inside* the prefix that has not been attached yet, so
+/// every placement recorded in there is relative to that private origin. Until table cells could hold
+/// real pixels this never mattered, because nothing inside either container ever recorded a placement
+/// at all — the two `w.images.extend(inner.images)` calls were documented as defensive no-ops. They
+/// are no longer no-ops, so the coordinates have to be translated rather than merely concatenated,
+/// which is what this does.
+///
+/// The column translation is exact for a body one level deep, which is the only depth it can be exact
+/// for: a doubly-quoted body's own sub-`Writer` is rebased onto its parent quote's coordinates here,
+/// and that parent is then rebased onto *its* parent by this same function, so each level adds its own
+/// prefix in turn.
+fn rebase_nested_images(
+    images: Vec<ImagePlacement>,
+    base: usize,
+    prefix_cols: u16,
+) -> impl Iterator<Item = ImagePlacement> {
+    images.into_iter().map(move |mut p| {
+        p.line += base;
+        p.col += prefix_cols;
+        p
+    })
 }
 
 /// Renders a GitHub alert (`Quote { alert: Some(kind), alert_title }`) into `w`, in place — the
@@ -5400,17 +5491,21 @@ fn render_bar_prefixed_body(
     }
     let decorated =
         decorate_headings_and_extras(inner.lines, inner.width, inner.icons, inner.tasks);
+    // Read before the emit loop below moves `w.lines.len()` on — see `rebase_nested_images`.
+    let base = w.lines.len() + w.heading_rule_shift;
     for line in decorated {
         let style = line.style;
         let mut spans = vec![bar.clone()];
         spans.extend(line.spans);
         w.emit_row(Line::from(spans).style(style));
     }
-    // Always empty today (see the `mermaid`/`slot_of` field comments above: `body_ctx.extract_here:
-    // false` keeps either extraction from ever firing here) — merged back defensively all the same,
-    // rather than silently dropped, so a future change to that exclusion can never lose a real
-    // placement by omission (principle #3, `CLAUDE.md`).
-    w.images.extend(inner.images);
+    // No longer always empty: `body_ctx.extract_here: false` still keeps standalone-image and
+    // mermaid extraction from firing anywhere in this body, but a table inside an alert or a
+    // `<details>` whose cells hold real-pixel images records placements of its own (`emit_table`,
+    // which cell images reach regardless of `extract_here`). Rebased onto `w`'s own coordinates for
+    // the same reason `render_quote` rebases its own — see `rebase_nested_images`.
+    w.images
+        .extend(rebase_nested_images(inner.images, base, BAR_PREFIX_COLS));
     // Unlike `images`, these are **not** always empty: a code block or a task-list checkbox inside an
     // alert's/`<details>`'s own body is drawn (`render_code_block`/`render_item`, reached the normal
     // way via `render_block`'s dispatch above) and is a real Tab/`y c` target on screen — merged back
@@ -5432,7 +5527,7 @@ mod tests {
     /// The no-op image slot every test below that has no images of its own to exercise reaches for —
     /// `ImageSlot::Unavailable` (matching the diff harness's own `md_snapshot_tests::render_case`
     /// choice for the identical reason: no live `Picker` exists in a unit test).
-    fn no_images(_: &str) -> ImageSlot {
+    fn no_images(_: &str, _: Option<u16>) -> ImageSlot {
         ImageSlot::Unavailable
     }
 
@@ -6481,7 +6576,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -6572,7 +6667,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 7, rows: 3 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 7, rows: 3 };
         let out = render_doc(
             &doc,
             src,
@@ -6628,7 +6723,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 4, rows: 2 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 4, rows: 2 };
         let out = render_doc(
             &doc,
             src,
@@ -6709,7 +6804,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -6797,7 +6892,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -6859,7 +6954,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -6936,7 +7031,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -6988,7 +7083,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 5, rows: 1 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 5, rows: 1 };
         let out = render_doc(
             &doc,
             src,
@@ -7050,7 +7145,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 7, rows: 3 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 7, rows: 3 };
         let out = render_doc(
             &doc,
             src,
@@ -7985,7 +8080,7 @@ mod tests {
         let doc = Doc::parse(src);
         let code = CodeStyle::default();
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols, rows };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols, rows };
         render_doc(
             &doc,
             src,
@@ -9303,7 +9398,7 @@ mod tests {
             ..CodeStyle::default()
         };
         let math_slot = |_: &str, _: bool| MathSlot::Raw;
-        let slot_of = |_: &str| ImageSlot::Inline { cols: 4, rows: 2 };
+        let slot_of = |_: &str, _: Option<u16>| ImageSlot::Inline { cols: 4, rows: 2 };
         for src in &cases {
             let doc = Doc::parse(src);
             for width in [1u16, 2, 3, 10, 80, 4000] {
@@ -9441,5 +9536,523 @@ mod tests {
             "front matter content missing from render_doc's own output: {:?}",
             out.lines
         );
+    }
+}
+
+/// Real pixels inside a table cell — the reserved rectangle, the `ImagePlacement` recorded over it,
+/// and every way that reservation can be forced to fall back to the `🖼 alt` label instead.
+///
+/// A sibling of `mod tests` rather than a section inside it: these all drive one purpose-built
+/// `slot_of` (`slot`, below) that answers all three `ImageSlot` variants and re-fits to the width it
+/// is asked for, whereas `mod tests`'s own helpers are deliberately built around a `slot_of` that
+/// never draws anything (`no_images`), and every table test in there depends on that.
+#[cfg(test)]
+mod cell_image_tests {
+    use super::*;
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+    /// The natural width, in cells, `slot` reports for a drawable image when nothing constrains it.
+    const NAT_COLS: u16 = 40;
+
+    /// Stands in for the app's own image lookup (`app::md_render`'s closure over
+    /// `app::md_image_cells`) with all three answers reachable from the URL alone: `https://…` is
+    /// still downloading (`Loading`), anything named `missing` cannot be read (`Unavailable`), and
+    /// everything else is a drawable 5:1 picture fitted to whatever width the caller asks for —
+    /// downscaled, never upscaled, exactly like `md_image_cells`.
+    fn slot(url: &str, max_cols: Option<u16>) -> ImageSlot {
+        if url.starts_with("https://") {
+            return ImageSlot::Loading;
+        }
+        if url.contains("missing") {
+            return ImageSlot::Unavailable;
+        }
+        let cols = max_cols.unwrap_or(NAT_COLS).clamp(1, NAT_COLS);
+        ImageSlot::Inline {
+            cols,
+            rows: (cols as u32).div_ceil(5) as u16,
+        }
+    }
+
+    fn render(src: &str, width: u16) -> RenderOut {
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let doc = Doc::parse(src);
+        let out = render_doc(
+            &doc,
+            src,
+            width,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &slot,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert!(
+            out.unsupported.is_empty(),
+            "unsupported: {:?}",
+            out.unsupported
+        );
+        out
+    }
+
+    /// Every rendered line's own visible text.
+    fn texts(out: &RenderOut) -> Vec<String> {
+        out.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// The `len` display columns of `s` starting at column `from` (CJK/emoji counted as 2, the same
+    /// way every width in the table layout is) — how these tests read the cells a placement claims.
+    fn slice_cols(s: &str, from: usize, len: usize) -> String {
+        let mut out = String::new();
+        let mut col = 0usize;
+        for ch in s.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col >= from && col + w <= from + len {
+                out.push(ch);
+            }
+            col += w;
+        }
+        out
+    }
+
+    /// The invariant every cell image has to satisfy, whatever produced it: the rectangle the
+    /// renderer *reported* is the rectangle it actually *drew*. For each placement — the reserved
+    /// rows all exist, the top one carries the `🖼` label at exactly the reported column, every row
+    /// below it is blank across the reported width, each of those rows still starts and ends on the
+    /// table's own border bar, and the rectangle fits inside the line.
+    ///
+    /// This is what catches a column-shaving or padding miscount: a rectangle reported one cell off
+    /// lands on a border bar or on a neighbouring cell's text, and both show up here.
+    fn assert_reserved(out: &RenderOut) {
+        let lines = texts(out);
+        assert!(!out.images.is_empty(), "配置が 1 件も無い: {lines:?}");
+        for p in &out.images {
+            let (col, cols, rows) = (p.col as usize, p.cols as usize, p.rows as usize);
+            assert!(
+                p.line + rows <= lines.len(),
+                "予約行が行数を超えている {p:?}: {lines:?}"
+            );
+            let top = &lines[p.line];
+            assert!(
+                slice_cols(top, col, cols).starts_with('🖼'),
+                "予約矩形の左上に 🖼 ラベルが無い {p:?}: |{top}|"
+            );
+            for r in 0..rows {
+                let line = &lines[p.line + r];
+                assert!(
+                    UnicodeWidthStr::width(line.as_str()) >= col + cols,
+                    "行が予約矩形より狭い {p:?}: |{line}|"
+                );
+                assert!(
+                    line.starts_with('│') && line.ends_with('│'),
+                    "予約行の罫線が壊れている {p:?}: |{line}|"
+                );
+                if r > 0 {
+                    assert_eq!(
+                        slice_cols(line, col, cols),
+                        " ".repeat(cols),
+                        "予約矩形の 2 行目以降は空白でなければならない {p:?}: |{line}|"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every line of the drawn table is the same display width — the check that a reserved rectangle
+    /// has not silently pushed a row wider (or narrower) than its neighbours.
+    fn assert_rectangular(out: &RenderOut) {
+        let lines: Vec<String> = texts(out)
+            .into_iter()
+            .filter(|l| l.starts_with('│') || l.starts_with('┌') || l.starts_with('└'))
+            .collect();
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| UnicodeWidthStr::width(l.as_str()))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "表の行幅が揃っていない {widths:?}: {lines:?}"
+        );
+    }
+
+    // ---- The two table paths ----
+
+    #[test]
+    fn a_gfm_cell_image_reserves_a_rectangle_and_records_a_placement() {
+        let src = "| name | image |\n|---|---|\n| png | ![alt text](a.png) |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        assert_eq!(p.url, "a.png", "セル画像の URL がそのまま渡る");
+        assert_eq!(p.alt, "alt text");
+        assert_eq!(p.fence_ord, None, "セル画像は mermaid フェンスではない");
+        assert_eq!((p.cols, p.rows), (NAT_COLS, 8), "自然サイズのまま入る");
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    #[test]
+    fn an_html_cell_image_reserves_a_rectangle_and_records_a_placement() {
+        let src = "<table>\n  <tr><td><img src=\"a.png\" alt=\"A\"></td></tr>\n</table>\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert_eq!(out.images[0].url, "a.png");
+        assert_eq!(out.images[0].alt, "A");
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    /// The shape this whole feature exists for (konoma's own README): two screenshots side by side,
+    /// captions underneath. Both cells get their own rectangle, on the same rows, at different
+    /// columns — and the caption row below is ordinary text, not swallowed by the reservation.
+    #[test]
+    fn two_image_cells_in_one_row_sit_side_by_side_on_the_same_rows() {
+        let src = "<table>\n  <tr>\n    <td><img src=\"tree.png\" alt=\"Tree\"></td>\n    <td><img src=\"graph.png\" alt=\"Graph\"></td>\n  </tr>\n  <tr><td align=\"center\">Tree view</td><td align=\"center\">Git graph</td></tr>\n</table>\n";
+        let out = render(src, 90);
+        assert_eq!(out.images.len(), 2, "{:?}", out.images);
+        let (a, b) = (&out.images[0], &out.images[1]);
+        assert_eq!(a.line, b.line, "同じ行に並ぶ: {:?}", out.images);
+        assert!(
+            a.col + a.cols <= b.col,
+            "2 枚の矩形が重なっている: {:?}",
+            out.images
+        );
+        assert_reserved(&out);
+        assert_rectangular(&out);
+        let lines = texts(&out);
+        let caption = lines
+            .iter()
+            .find(|l| l.contains("Tree view"))
+            .unwrap_or_else(|| panic!("キャプション行が無い: {lines:?}"));
+        assert!(
+            caption.contains("Git graph"),
+            "キャプション行が 1 行に揃っていない: |{caption}|"
+        );
+    }
+
+    #[test]
+    fn an_image_cell_and_a_text_cell_share_the_rows_the_taller_one_needs() {
+        let src = "| a | b |\n|---|---|\n| ![x](a.png) | just text |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        let lines = texts(&out);
+        // The text cell's own content sits on the image's *first* row (both start at the top of the
+        // shared row band), and the rows the image still needs below it are drawn as ordinary,
+        // fully-bordered cell rows.
+        assert!(
+            lines[p.line].contains("just text"),
+            "テキストセルが行の先頭に無い: |{}|",
+            lines[p.line]
+        );
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    /// `<td><img …> caption</td>` — a cell holding both. They stack, image first (a cell has no way
+    /// to flow text beside a picture), and the text is still drawn.
+    #[test]
+    fn an_image_and_text_in_one_cell_stack_vertically_image_first() {
+        let src =
+            "<table>\n  <tr><td><img src=\"a.png\" alt=\"A\"> caption here</td></tr>\n</table>\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        let lines = texts(&out);
+        let caption_row = lines
+            .iter()
+            .position(|l| l.contains("caption here"))
+            .unwrap_or_else(|| panic!("キャプションが描かれていない: {lines:?}"));
+        assert!(
+            caption_row >= p.line + p.rows as usize,
+            "キャプションが予約矩形の中に入り込んでいる (行 {caption_row}, 矩形 {p:?})"
+        );
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    // ---- Widths ----
+
+    /// The trap the width-budget shaving sets: when the columns are squeezed, the rectangle has to be
+    /// recomputed at the width the column actually ended up with. A placement still reporting the
+    /// natural width would overhang the border.
+    #[test]
+    fn a_shaved_column_places_the_image_at_the_final_width_not_the_natural_one() {
+        let src = "| a | b |\n|---|---|\n| ![x](a.png) | a fairly long stretch of text |\n";
+        let out = render(src, 40);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        assert!(p.cols < NAT_COLS, "狭い幅なのに自然幅のまま: {p:?}");
+        assert_eq!(
+            p.rows,
+            (p.cols as u32).div_ceil(5) as u16,
+            "再フィットで縦横比が保たれていない: {p:?}"
+        );
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    /// A cell image never widens the table past the pane: the shaving still runs, unchanged.
+    #[test]
+    fn a_cell_image_never_pushes_the_table_past_the_pane_width() {
+        for width in [20u16, 30, 45, 70, 120] {
+            let src = "| a | b |\n|---|---|\n| ![x](a.png) | ![y](b.png) |\n";
+            let out = render(src, width);
+            for line in texts(&out) {
+                assert!(
+                    UnicodeWidthStr::width(line.as_str()) <= width as usize,
+                    "幅 {width} を超えた行がある: |{line}|"
+                );
+            }
+            assert_reserved(&out);
+            assert_rectangular(&out);
+        }
+    }
+
+    /// A cell that declares `align="center"` centers the **rectangle**, not merely text — so the
+    /// alignment padding has to be counted into the reported column. Reporting the column without it
+    /// would draw every centered README screenshot flush against its left border while the layout
+    /// underneath said otherwise.
+    #[test]
+    fn a_centered_cell_image_is_reported_at_the_column_it_was_centered_to() {
+        let src = "<table>\n  <tr><td align=\"center\"><img src=\"a.png\" alt=\"A\"></td></tr>\n  <tr><td align=\"center\">a caption that runs quite a lot wider than the image</td></tr>\n</table>\n";
+        let out = render(src, 80);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        assert!(
+            p.col > 2,
+            "中央寄せの余白が桁に反映されていない (左端は 2): {p:?}"
+        );
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    /// The GFM spelling of the same thing (`:---:` on the delimiter row), which reaches the identical
+    /// padding through a *column* alignment rather than a cell one.
+    #[test]
+    fn a_center_aligned_gfm_column_centers_its_cell_image_too() {
+        let src = "| shot |\n|:---:|\n| ![x](a.png) |\n| a caption that runs quite a lot wider than the image |\n";
+        let out = render(src, 80);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert!(out.images[0].col > 2, "{:?}", out.images);
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    // ---- Falling back to the label (principle #3) ----
+
+    #[test]
+    fn a_missing_image_keeps_its_label_and_records_no_placement() {
+        let src = "| a |\n|---|\n| ![gone](missing.png) |\n";
+        let out = render(src, 70);
+        assert!(
+            out.images.is_empty(),
+            "描けない画像に矩形を予約している: {:?}",
+            out.images
+        );
+        let lines = texts(&out);
+        assert!(
+            lines.iter().any(|l| l.contains("🖼 gone")),
+            "ラベルへの退行が消えている: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_image_still_fetching_keeps_its_label_and_records_no_placement() {
+        let src = "| a |\n|---|\n| ![badge](https://example.com/b.svg) |\n";
+        let out = render(src, 70);
+        assert!(out.images.is_empty(), "{:?}", out.images);
+        let lines = texts(&out);
+        assert!(
+            lines.iter().any(|l| l.contains("🖼 badge")),
+            "取得前のラベルが出ていない: {lines:?}"
+        );
+    }
+
+    /// The whole table with nothing drawable is byte-for-byte the pre-feature rendering — the
+    /// property the golden snapshots (which render every case with an `Unavailable` slot) rest on.
+    #[test]
+    fn a_table_with_nothing_drawable_renders_exactly_as_it_did_before() {
+        let src = "| a | b |\n|---|---|\n| ![gone](missing.png) | text |\n";
+        let with_slot = texts(&render(src, 70));
+        let math_slot = |_: &str, _: bool| MathSlot::Raw;
+        let doc = Doc::parse(src);
+        let plain = render_doc(
+            &doc,
+            src,
+            70,
+            CodeStyle::default(),
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &|_: &str, _: Option<u16>| ImageSlot::Unavailable,
+            &|_: &str| MermaidSlot::Text,
+            "Enter: full screen",
+            true,
+            &math_slot,
+            false,
+        );
+        assert_eq!(
+            with_slot,
+            texts(&plain),
+            "描けない画像しか無い表の描画が変わっている"
+        );
+    }
+
+    /// A badge written as a link wrapping an image (`[![alt](img)](href)`, the README badge-row
+    /// idiom) is a *link*, not a picture — `parse_cell_segments` folds it into one `Link` segment
+    /// before this feature ever sees it, and it must stay that way: turning badge tables into rows
+    /// of reserved rectangles would be a regression, not a fix.
+    #[test]
+    fn a_link_wrapped_badge_stays_a_link_and_reserves_nothing() {
+        let src = "| ci |\n|---|\n| [![build](b.svg)](https://ci.example.com) |\n";
+        let out = render(src, 70);
+        assert!(
+            out.images.is_empty(),
+            "バッジのリンクを画像として予約している: {:?}",
+            out.images
+        );
+        let lines = texts(&out);
+        assert!(
+            lines.iter().any(|l| l.contains("🖼 build")),
+            "バッジのラベルが消えている: {lines:?}"
+        );
+    }
+
+    // ---- Shapes the corpus would otherwise not cover ----
+
+    #[test]
+    fn an_svg_cell_image_is_drawn_like_any_other() {
+        let src = "| logo |\n|---|\n| ![logo](logo.svg) |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert_eq!(out.images[0].url, "logo.svg");
+        assert_reserved(&out);
+    }
+
+    /// Two cells naming the *same* file each get their own placement (they are two rectangles on
+    /// screen, in two different places). Both are the same size here because both columns end up the
+    /// same width — which is what keeps `App::md_image_cache`, whose entry holds a single encoded
+    /// protocol per path, from being asked for two different encodes of one file at once. See
+    /// `CellSeg::Image`'s own doc comment.
+    #[test]
+    fn the_same_image_in_two_cells_gets_one_placement_each() {
+        let src = "| a | b |\n|---|---|\n| ![x](same.png) | ![x](same.png) |\n";
+        let out = render(src, 90);
+        assert_eq!(out.images.len(), 2, "{:?}", out.images);
+        assert_eq!(out.images[0].url, out.images[1].url);
+        assert_ne!(
+            out.images[0].col, out.images[1].col,
+            "同じ画像の 2 枚が同じ桁に重なっている: {:?}",
+            out.images
+        );
+        assert_eq!(
+            (out.images[0].cols, out.images[0].rows),
+            (out.images[1].cols, out.images[1].rows),
+            "等幅の列に入った同じ画像のサイズが食い違っている: {:?}",
+            out.images
+        );
+        assert_reserved(&out);
+    }
+
+    #[test]
+    fn a_header_cell_image_is_drawn_too() {
+        let src = "| ![h](head.png) | b |\n|---|---|\n| x | y |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert_reserved(&out);
+        assert_rectangular(&out);
+        let lines = texts(&out);
+        assert!(
+            lines.iter().any(|l| l.starts_with('├')),
+            "ヘッダ罫線が消えている: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_one_by_one_image_only_table_is_all_rectangle() {
+        let src = "<table><tr><td><img src=\"only.png\" alt=\"Only\"></td></tr></table>\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert_eq!(out.images[0].rows, 8, "{:?}", out.images);
+        assert_reserved(&out);
+        assert_rectangular(&out);
+    }
+
+    // ---- Nesting: the placement has to be rebased onto the outer writer ----
+
+    /// A table inside a `<details>` renders into an isolated sub-`Writer` whose rows start at 0 and
+    /// whose columns start inside the `▏ ` bar. `rebase_nested_images` moves the placement onto the
+    /// outer writer's own coordinates; without it the image would be drawn at the top of the document
+    /// and two columns to the left. `assert_reserved` proves the rebase landed on the real rectangle.
+    #[test]
+    fn a_table_inside_details_places_its_cell_image_where_it_was_drawn() {
+        crate::preview::markdown::set_details_open(vec![true]);
+        let src = "intro\n\n<details open>\n<summary>S</summary>\n\n| a |\n|---|\n| ![x](a.png) |\n\n</details>\n";
+        let out = render(src, 70);
+        crate::preview::markdown::set_details_open(Vec::new());
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        assert!(p.line > 1, "文書先頭に貼り付いている: {p:?}");
+        let lines = texts(&out);
+        let top = &lines[p.line];
+        assert!(
+            slice_cols(top, p.col as usize, p.cols as usize).starts_with('🖼'),
+            "入れ子の桁補正が効いていない {p:?}: |{top}|"
+        );
+        for r in 1..p.rows as usize {
+            let line = &lines[p.line + r];
+            assert_eq!(
+                slice_cols(line, p.col as usize, p.cols as usize),
+                " ".repeat(p.cols as usize),
+                "入れ子の予約矩形が空白でない {p:?}: |{line}|"
+            );
+        }
+    }
+
+    /// The same, for a plain blockquote (`>` prefix). Its own bar is two cells wide too, so the same
+    /// rebase applies — checked separately because the two containers merge their sub-writer through
+    /// entirely different code (`render_quote` vs `render_bar_prefixed_body`).
+    #[test]
+    fn a_table_inside_a_quote_places_its_cell_image_where_it_was_drawn() {
+        let src = "intro\n\n> | a |\n> |---|\n> | ![x](a.png) |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let p = &out.images[0];
+        assert!(p.line > 1, "文書先頭に貼り付いている: {p:?}");
+        let lines = texts(&out);
+        let top = &lines[p.line];
+        assert!(top.starts_with('>'), "引用の中の表になっていない: |{top}|");
+        assert!(
+            slice_cols(top, p.col as usize, p.cols as usize).starts_with('🖼'),
+            "引用の桁補正が効いていない {p:?}: |{top}|"
+        );
+        for r in 1..p.rows as usize {
+            let line = &lines[p.line + r];
+            assert_eq!(
+                slice_cols(line, p.col as usize, p.cols as usize),
+                " ".repeat(p.cols as usize),
+                "引用の予約矩形が空白でない {p:?}: |{line}|"
+            );
+        }
+    }
+
+    /// A cell image is not a heading rule, but it lands *after* headings whose rules the final
+    /// decoration pass inserts — the same `heading_rule_shift` conversion every other placement
+    /// needs. Without it the rectangle would be reported one row short per preceding level-1/2
+    /// heading.
+    #[test]
+    fn a_cell_image_after_headings_accounts_for_the_rules_decoration_inserts() {
+        let src = "# One\n\n## Two\n\n| a |\n|---|\n| ![x](a.png) |\n";
+        let out = render(src, 70);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        assert_reserved(&out);
     }
 }
