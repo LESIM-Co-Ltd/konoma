@@ -24,6 +24,7 @@
 use crate::preview::mermaid::flowchart::{Arrow, Shape};
 use crate::preview::mermaid::layout::Point;
 
+use super::clusters;
 use super::shapes::{self, Size};
 use super::svg::num;
 
@@ -46,6 +47,78 @@ pub const CROSS_HALF: f64 = 4.5;
 /// waypoints (its `dedupe_adjacent_edge_points` says so); a zero-length segment would make the
 /// arrow head's direction undefined.
 const EPS: f64 = 1e-6;
+
+/// What a line has to meet at one of its ends.
+///
+/// Two different questions with the same answer shape. A node end asks "where does this line
+/// leave the outline?", which is [`shapes::intersect`]. A cluster end asks "where does this line
+/// leave the frame?", which is a rectangle crossing — and, unlike the node case, it also throws
+/// away everything the line was doing *inside* the frame, because that part of the route only
+/// exists so dagre had a leaf to aim at.
+#[derive(Debug, Clone, PartialEq)]
+pub enum End {
+    /// An ordinary node: its shape, its centre, its bounding box.
+    Node(Shape, Point, Size),
+    /// A subgraph frame the author named as this end of the edge.
+    Cluster(clusters::Rect),
+}
+
+/// Turns dagre's waypoints into the polyline that gets drawn, whatever the two ends are.
+///
+/// For two node ends this is exactly [`clip`], unchanged — a chart with no subgraphs comes out of
+/// stage 1d byte for byte as it came out of stage 1c, which is what makes the golden able to say
+/// that frames were the only thing that moved.
+///
+/// With a cluster end the order matters and is not obvious:
+///
+/// 1. **cut at the frames first**, on the route exactly as dagre returned it. The cut is "keep
+///    the part that is outside", so it has to be able to see that the route does eventually get
+///    outside — and the point that proves it is the far end's waypoint. Dropping that first (the
+///    tempting order, since it is about to be replaced anyway) leaves a route that looks entirely
+///    contained and cuts in the wrong place. That was a real bug, caught by the invariant that
+///    says an edge naming a block is not drawn inside it;
+/// 2. drop dagre's terminal waypoint at the node ends, which sit on that node's bounding box;
+/// 3. put the node ends back, aiming at whatever is now next to them — which may be the cut point
+///    itself, so this cannot happen before step 1 either.
+pub fn route(points: &[Point], tail: &End, head: &End) -> Vec<Point> {
+    if let (End::Node(ts, tc, tz), End::Node(hs, hc, hz)) = (tail, head) {
+        return clip(points, (*ts, tc.clone(), *tz), (*hs, hc.clone(), *hz));
+    }
+
+    let mut pts: Vec<Point> = points.to_vec();
+    dedupe(&mut pts);
+    if pts.is_empty() {
+        return Vec::new();
+    }
+
+    if let End::Cluster(rect) = tail {
+        pts = clusters::cut_start(&pts, rect);
+    }
+    if let End::Cluster(rect) = head {
+        pts = clusters::cut_end(&pts, rect);
+    }
+
+    // Only ever strips a *node's* own waypoint: after a cut the first (or last) point is the
+    // crossing of the frame, which is the answer, not a placeholder for one.
+    if matches!(head, End::Node(..)) && pts.len() >= 2 {
+        pts.pop();
+    }
+    if matches!(tail, End::Node(..)) && pts.len() >= 2 {
+        pts.remove(0);
+    }
+
+    if let End::Node(shape, center, size) = tail {
+        let target = pts.first().cloned().unwrap_or_else(|| center.clone());
+        pts.insert(0, shapes::intersect(*shape, center.clone(), *size, &target));
+    }
+    if let End::Node(shape, center, size) = head {
+        let target = pts.last().cloned().unwrap_or_else(|| center.clone());
+        pts.push(shapes::intersect(*shape, center.clone(), *size, &target));
+    }
+
+    dedupe(&mut pts);
+    pts
+}
 
 /// Replaces dagre's bounding-box endpoints with the real crossings of the two shapes.
 ///

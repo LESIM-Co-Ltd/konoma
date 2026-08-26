@@ -15,19 +15,24 @@
 //!   `system-ui` or `-apple-system` is searched as *named* families and, when they all miss, usvg
 //!   quietly falls back to Serif — a face nothing measured.
 //!
-//! Drawing order is edges, then nodes, then edge labels. Nodes cover the lines that run under
-//! them and labels cover the line they belong to, which is what makes a label readable without an
-//! opaque patch big enough to hide the diagram.
+//! Drawing order is frames, then edges, then nodes, then edge labels, then frame titles. Nodes
+//! cover the lines that run under them and labels cover the line they belong to, which is what
+//! makes a label readable without an opaque patch big enough to hide the diagram.
+//!
+//! The frames are split across that order on purpose. Their rectangles go **first**, behind
+//! everything, so a frame reads as ground rather than as another box; mermaid does the same. Their
+//! titles go **last**, which mermaid does not — see [`emit_cluster_title`].
 
 use crate::preview::mermaid::flowchart::{Arrow, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics::{FONT_FAMILY, FONT_SIZE};
 
+use super::clusters;
 use super::edges;
 use super::labels::Label;
 use super::shapes::Outline;
 use super::theme::Theme;
-use super::{shapes, Diagram, PlacedEdge, PlacedNode};
+use super::{shapes, Diagram, PlacedCluster, PlacedEdge, PlacedNode};
 
 /// Stroke width of a node's outline.
 pub const NODE_STROKE_WIDTH: f64 = 1.5;
@@ -88,6 +93,16 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
         theme.background_paint
     ));
 
+    // The frame groups are left out entirely when a chart has no blocks, rather than emitted
+    // empty. That is what lets the corpus golden say something worth saying: a diagram without a
+    // `subgraph` comes out of stage 1d byte for byte as it came out of stage 1c.
+    if !diagram.clusters.is_empty() {
+        out.push_str("<g class=\"clusters\">\n");
+        for c in &diagram.clusters {
+            emit_cluster(&mut out, c, theme);
+        }
+        out.push_str("</g>\n");
+    }
     out.push_str("<g class=\"edges\">\n");
     for e in &diagram.edges {
         emit_edge(&mut out, e, theme);
@@ -116,8 +131,53 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
             );
         }
     }
-    out.push_str("</g>\n</svg>\n");
+    out.push_str("</g>\n");
+    if diagram.clusters.iter().any(|c| !c.title.is_blank()) {
+        out.push_str("<g class=\"cluster-labels\">\n");
+        for c in &diagram.clusters {
+            emit_cluster_title(&mut out, c, theme);
+        }
+        out.push_str("</g>\n");
+    }
+    out.push_str("</svg>\n");
     out
+}
+
+/// One subgraph frame's rectangle. Its title is emitted separately, at the end — see the module
+/// docs for why.
+fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
+    let (l, t, _, _) = cluster.bounds();
+    out.push_str(&format!(
+        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
+         fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+        num(l),
+        num(t),
+        num(cluster.size.w),
+        num(cluster.size.h),
+        theme.cluster_fill,
+        theme.cluster_stroke,
+        num(clusters::STROKE_WIDTH),
+        r = num(clusters::CORNER_RADIUS)
+    ));
+}
+
+/// One subgraph title, drawn over everything else and with **nothing behind it**.
+///
+/// Both halves of that were decided by looking at the result rather than reasoned about, because
+/// a line entering a block from above crosses the frame's top edge exactly where the title sits:
+///
+/// * drawn *under* the edges (mermaid's order) the line runs over the words;
+/// * drawn over the edges on a patch of the frame's fill — the treatment an edge label gets — the
+///   words are clean but the line is **cut in two**, and the arrow head below the title reads as
+///   belonging to nothing;
+/// * drawn over the edges with no patch, the line stays whole and the title is still legible,
+///   because a stroke crossing a word costs far less than a word costs a stroke.
+fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
+    if cluster.title.is_blank() {
+        return;
+    }
+    let c = cluster.title_center();
+    emit_text(out, &cluster.title, c.x, c.y, theme.cluster_text);
 }
 
 /// One node: its outline, then its label.

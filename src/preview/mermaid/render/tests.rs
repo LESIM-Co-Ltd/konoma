@@ -40,12 +40,13 @@ use std::path::{Path as FsPath, PathBuf};
 
 use resvg::usvg;
 
+use super::clusters;
 use super::edges;
 use super::labels::Label;
 use super::shapes::{self, Size};
 use super::svg::num;
 use super::theme::{self, Theme};
-use super::{lay_out, render, Diagram, PlacedEdge, PlacedNode, RenderError, MARGIN};
+use super::{lay_out, render, Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, MARGIN};
 use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics;
@@ -111,6 +112,47 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "subgraph",
         "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  B --> C\n  C --> A",
+    ),
+    (
+        "subgraph-nested",
+        "flowchart TD\n  subgraph outer [Outer]\n    subgraph inner [Inner]\n      A --> B\n             end\n    B --> C\n  end\n  C --> D",
+    ),
+    (
+        "subgraph-siblings",
+        "flowchart LR\n  subgraph left [Read]\n    A --> B\n  end\n  subgraph right [Write]\n           C --> D\n  end\n  B --> C",
+    ),
+    (
+        // A block sitting between two nodes that have nothing to do with it: `X --> Y` spans the
+        // same ranks the frame does, and it is dagre's compound layout (`parentDummyChains`) that
+        // keeps its waypoints out of the box rather than anything this renderer does afterwards.
+        "subgraph-bypass",
+        "flowchart LR\n  subgraph one [Middle]\n    A --> B\n  end\n  X --> Y\n  X --> A\n           B --> Y",
+    ),
+    (
+        "subgraph-endpoint",
+        "flowchart LR\n  subgraph one [First]\n    A --> B\n  end\n  subgraph two [Second]\n           C --> D\n  end\n  one --> two\n  E --> one",
+    ),
+    (
+        "subgraph-direction",
+        "flowchart LR\n  subgraph one [Steps]\n    direction TB\n    A --> B --> C\n  end\n           one --> D",
+    ),
+    (
+        "subgraph-cjk",
+        "flowchart TD\n  subgraph proc [プレビュー解決]\n    A[種別] --> B[レンダラ]\n  end\n           B --> C[全画面表示]",
+    ),
+    (
+        "subgraph-long-title",
+        "flowchart TD\n  subgraph one [resolve the preview kind and delegate it]\n    A --> B\n           end\n  subgraph two [b]\n    C --> D\n  end\n  B --> C",
+    ),
+    (
+        // A two-line title is the case that makes a frame grow upward: the band dagre leaves
+        // above the topmost rank is one `ranksep`/2, which fits one line of text and not two.
+        "subgraph-tall-title",
+        "flowchart TD\n  subgraph one [Resolve the kind<br>and delegate]\n    A --> B\n  end\n           B --> C",
+    ),
+    (
+        "subgraph-untitled",
+        "flowchart TD\n  subgraph\n    A --> B\n  end\n  B --> C",
     ),
     (
         "amp-chain",
@@ -268,6 +310,57 @@ fn depth(p: &Point, poly: &[Point]) -> f64 {
     } else {
         0.0
     }
+}
+
+/// The subgraph tree of a source, rebuilt from the parser's own output.
+///
+/// The cluster invariants need to know who is inside what, and the [`Diagram`] deliberately does
+/// not carry membership — a frame is geometry. Re-deriving it from [`parse`] keeps the question
+/// ("is this node a member of that block?") answered by the parser, which stage 1b tested, rather
+/// than by the layout code under test here.
+fn tree_of_src(src: &str) -> clusters::Tree {
+    let chart = parse(src).expect("parses");
+    let ids: HashSet<String> = chart.nodes.iter().map(|n| n.id.clone()).collect();
+    clusters::Tree::build(&chart, |id| ids.contains(id))
+}
+
+/// Axis-aligned overlap of two rectangles given as `(l, t, r, b)`.
+fn rect_overlap(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> (f64, f64) {
+    (a.2.min(b.2) - a.0.max(b.0), a.3.min(b.3) - a.1.max(b.1))
+}
+
+/// How far `inner` pokes out of `outer`, as the worst of the four sides. Negative means contained.
+fn escapes(inner: (f64, f64, f64, f64), outer: (f64, f64, f64, f64)) -> f64 {
+    (outer.0 - inner.0)
+        .max(outer.1 - inner.1)
+        .max(inner.2 - outer.2)
+        .max(inner.3 - outer.3)
+}
+
+/// The deepest a polyline reaches inside a rectangle, sampling every half pixel. 0 when it never
+/// enters. Sampling rather than testing the vertices is what catches a segment that cuts a corner.
+fn polyline_depth_in_rect(line: &[Point], rect: (f64, f64, f64, f64)) -> f64 {
+    let depth_at = |p: &Point| {
+        let d = (p.x - rect.0)
+            .min(rect.2 - p.x)
+            .min(p.y - rect.1)
+            .min(rect.3 - p.y);
+        d.max(0.0)
+    };
+    let mut worst: f64 = 0.0;
+    for w in line.windows(2) {
+        let len = (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
+        let steps = (len / 0.5).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let p = Point::new(
+                w[0].x + t * (w[1].x - w[0].x),
+                w[0].y + t * (w[1].y - w[0].y),
+            );
+            worst = worst.max(depth_at(&p));
+        }
+    }
+    worst
 }
 
 /// Axis-aligned overlap of two node boxes, as `(dx, dy)` — both positive means they intersect.
@@ -603,20 +696,29 @@ fn invariant_labels_ride_their_edge_and_clear_every_node() {
 /// This is the property that makes a branch come out of a diamond's slanted side. Comparing
 /// against a densely sampled outline rather than against `shapes::intersect` keeps the check
 /// honest: replacing the shape intersection with a bounding-box one has to fail here.
+///
+/// An end that names a *block* has no outline; it lands on a frame, which
+/// [`invariant_an_edge_that_names_a_block_stops_on_its_frame`] checks instead.
 #[test]
 fn invariant_endpoints_land_on_the_outline() {
     for (name, src) in CORPUS {
         let d = laid_out(src);
         for e in &d.edges {
-            let (Some(tail), Some(head)) = (d.node(&e.from), d.node(&e.to)) else {
-                panic!(
+            let placed = |id: &str| match d.node(id) {
+                Some(n) => Some(n),
+                None if d.cluster(id).is_some() => None,
+                None => panic!(
                     "{name}: edge {}->{} names a node that is not placed",
                     e.from, e.to
-                )
+                ),
             };
+            let (tail, head) = (placed(&e.from), placed(&e.to));
             let first = e.points.first().expect("edge has points");
             let last = e.points.last().expect("edge has points");
-            for (label, p, node) in [("start", first, tail), ("end", last, head)] {
+            for (label, p, node) in [("start", first, tail), ("end", last, head)]
+                .into_iter()
+                .filter_map(|(l, p, n)| n.map(|n| (l, p, n)))
+            {
                 let off = dist_to_boundary(p, &boundary(node));
                 assert!(
                     off <= 0.05,
@@ -681,18 +783,286 @@ fn invariant_view_box_contains_everything() {
     }
 }
 
-/// Everything the author wrote is on the page: one shape per node, one line per edge whose ends
-/// are both nodes. A dropped node is how a renderer quietly lies about a diagram.
+// ---------------------------------------------------------------------------------------------
+// 4b. Cluster invariants (§6, stage 1d)
+// ---------------------------------------------------------------------------------------------
+
+/// (6) A frame holds every one of its members.
+///
+/// This is the whole promise of a subgraph: the reader is being told that these nodes belong
+/// together. A frame that clips a member says something false about the diagram.
+#[test]
+fn invariant_clusters_hold_their_members() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        let tree = tree_of_src(src);
+        for c in &d.clusters {
+            let frame = c.bounds();
+            for n in &d.nodes {
+                if !tree.touches(&n.id, &c.id) {
+                    continue;
+                }
+                let out = escapes(n.bounds(), frame);
+                assert!(
+                    out <= 0.01,
+                    "{name}: node {} pokes {out:.2}px out of frame {}",
+                    n.id,
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+/// (7) A nested frame is inside the frame that contains it.
+#[test]
+fn invariant_nested_clusters_sit_inside_their_parent() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        for c in &d.clusters {
+            let Some(parent) = c.parent.as_deref().and_then(|p| d.cluster(p)) else {
+                continue;
+            };
+            let out = escapes(c.bounds(), parent.bounds());
+            assert!(
+                out <= 0.01,
+                "{name}: frame {} pokes {out:.2}px out of its parent {}",
+                c.id,
+                parent.id
+            );
+        }
+    }
+}
+
+/// (8) Two frames that are not one inside the other do not overlap.
+///
+/// Stated over every pair rather than over siblings only: `left` and `right` in `subgraph-
+/// siblings` share a parent, but `inner` and an unrelated top-level block do not, and the two
+/// boxes overlapping would be just as wrong.
+#[test]
+fn invariant_unrelated_clusters_do_not_overlap() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let nested = |d: &Diagram, a: &PlacedCluster, b: &PlacedCluster| {
+        let mut cur = a.parent.clone();
+        while let Some(p) = cur {
+            if p == b.id {
+                return true;
+            }
+            cur = d.cluster(&p).and_then(|c| c.parent.clone());
+        }
+        false
+    };
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        for (i, a) in d.clusters.iter().enumerate() {
+            for b in d.clusters.iter().skip(i + 1) {
+                if nested(&d, a, b) || nested(&d, b, a) {
+                    continue;
+                }
+                let (dx, dy) = rect_overlap(a.bounds(), b.bounds());
+                assert!(
+                    dx <= 0.01 || dy <= 0.01,
+                    "{name}: frames {} and {} overlap by {dx:.2}x{dy:.2}px",
+                    a.id,
+                    b.id
+                );
+            }
+        }
+    }
+}
+
+/// (9) A line does not run through a frame it has no business being in.
+///
+/// The distinction the test turns on is [`clusters::Tree::touches`]: an edge with one end inside
+/// a block *must* cross that block's border, and clipping it there would cut the line off from
+/// its own node. An edge with neither end under the block has no reason to be inside it at all —
+/// dagre's compound layout keeps it out (that is what `parentDummyChains` is for), and this is
+/// what proves the clusters really were handed to dagre rather than drawn on afterwards.
+#[test]
+fn invariant_edges_keep_out_of_frames_they_do_not_belong_to() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        let tree = tree_of_src(src);
+        for e in &d.edges {
+            for c in &d.clusters {
+                if tree.touches(&e.from, &c.id) || tree.touches(&e.to, &c.id) {
+                    continue;
+                }
+                let depth = polyline_depth_in_rect(&e.drawn_points(), c.bounds());
+                assert!(
+                    depth <= 0.5,
+                    "{name}: edge {} -> {} runs {depth:.2}px into frame {}",
+                    e.from,
+                    e.to,
+                    c.id
+                );
+            }
+        }
+    }
+}
+
+/// (10) An edge that names a block starts or ends **on that block's frame**, and never inside it.
+///
+/// `one --> two` is legal mermaid (§2-2) and dagre cannot route it — a compound parent has no
+/// rank. The line is laid out against a member and then cut back to the boundary, which is the
+/// only thing that makes the arrow point at the box rather than at some node the author never
+/// mentioned.
+#[test]
+fn invariant_an_edge_that_names_a_block_stops_on_its_frame() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        let tree = tree_of_src(src);
+        for e in &d.edges {
+            for (end, id) in [("tail", &e.from), ("head", &e.to)] {
+                if !tree.contains(id) {
+                    continue;
+                }
+                let c = d.cluster(id).unwrap_or_else(|| {
+                    panic!("{name}: edge names block {id} but no frame was placed")
+                });
+                let frame = c.bounds();
+                let point = if end == "tail" {
+                    e.points.first()
+                } else {
+                    e.points.last()
+                }
+                .expect("an edge has points");
+                let on_edge = (point.x - frame.0)
+                    .abs()
+                    .min((point.x - frame.2).abs())
+                    .min((point.y - frame.1).abs())
+                    .min((point.y - frame.3).abs());
+                assert!(
+                    on_edge <= 0.01,
+                    "{name}: the {end} of {} -> {} is {on_edge:.2}px off frame {id}",
+                    e.from,
+                    e.to
+                );
+                let depth = polyline_depth_in_rect(&e.drawn_points(), frame);
+                assert!(
+                    depth <= 0.5,
+                    "{name}: {} -> {} is drawn {depth:.2}px inside frame {id}",
+                    e.from,
+                    e.to
+                );
+            }
+        }
+    }
+}
+
+/// (11) A title is inside its own frame and on top of nothing.
+///
+/// Both halves matter and they pull in opposite directions: pushing the title further in to clear
+/// the members eventually pushes it onto them from the other side, and the only reason there is
+/// room at all is that dagre leaves a band above the topmost rank. A frame that had to grow to
+/// make that band big enough is exactly the case this catches.
+#[test]
+fn invariant_cluster_titles_stay_in_the_frame_and_off_the_members() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        let tree = tree_of_src(src);
+        for c in &d.clusters {
+            if c.title.is_blank() {
+                continue;
+            }
+            let t = c.title_center();
+            let title = (
+                t.x - c.title.width / 2.0,
+                t.y - c.title.height / 2.0,
+                t.x + c.title.width / 2.0,
+                t.y + c.title.height / 2.0,
+            );
+            let out = escapes(title, c.bounds());
+            assert!(
+                out <= 0.01,
+                "{name}: the title of {} pokes {out:.2}px out of its own frame",
+                c.id
+            );
+            for n in &d.nodes {
+                if !tree.touches(&n.id, &c.id) {
+                    continue;
+                }
+                let (dx, dy) = rect_overlap(title, n.bounds());
+                assert!(
+                    dx <= 0.01 || dy <= 0.01,
+                    "{name}: the title of {} sits on node {} ({dx:.2}x{dy:.2}px)",
+                    c.id,
+                    n.id
+                );
+            }
+            for other in &d.clusters {
+                if other.parent.as_deref() != Some(c.id.as_str()) {
+                    continue;
+                }
+                let (dx, dy) = rect_overlap(title, other.bounds());
+                assert!(
+                    dx <= 0.01 || dy <= 0.01,
+                    "{name}: the title of {} sits on the nested frame {} ({dx:.2}x{dy:.2}px)",
+                    c.id,
+                    other.id
+                );
+            }
+        }
+    }
+}
+
+/// Every block the author wrote gets a frame, and every frame is a block the author wrote.
+///
+/// The second half is the one that matters: a frame around a group nobody declared is a lie about
+/// the diagram, and it is what a bug in the tree-building would produce.
+#[test]
+fn every_block_that_holds_a_node_gets_exactly_one_frame() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CORPUS {
+        let d = laid_out(src);
+        let tree = tree_of_src(src);
+        let drawn: HashSet<&str> = d.clusters.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            drawn.len(),
+            d.clusters.len(),
+            "{name}: a frame is drawn twice"
+        );
+        let declared: HashSet<&str> = tree.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(drawn, declared, "{name}: frames and blocks disagree");
+    }
+}
+
+/// Everything the author wrote is on the page: one shape per node, and one line per edge — an
+/// edge that names a block included, now that a block is something a line can end on. A dropped
+/// node is how a renderer quietly lies about a diagram.
 #[test]
 fn every_node_and_drawable_edge_survives() {
     for (name, src) in CORPUS {
         let chart = parse(src).expect("parses");
+        let tree = tree_of_src(src);
         let d = laid_out(src);
         assert_eq!(d.nodes.len(), chart.nodes.len(), "{name}: node count");
         let drawable = chart
             .edges
             .iter()
-            .filter(|e| chart.node(&e.from).is_some() && chart.node(&e.to).is_some())
+            .filter(|e| {
+                let end = |id: &str| chart.node(id).is_some() || tree.contains(id);
+                end(&e.from) && end(&e.to)
+            })
             .count();
         assert_eq!(d.edges.len(), drawable, "{name}: edge count");
     }
@@ -1222,30 +1592,70 @@ fn a_flowchart_with_no_nodes_is_refused() {
     ));
 }
 
-/// A `subgraph` is invisible in stage 1c, but nothing inside it may be lost: its members are
-/// ordinary nodes and their edges are drawn. Only an edge that *ends on the block itself* has no
-/// shape to attach to, and is dropped rather than pointed at a phantom box.
+/// A block is a frame, not a box: it is drawn, but it is not a node and it holds no label of its
+/// own beyond the title. Its members stay ordinary nodes with ordinary edges.
 #[test]
-fn a_subgraph_costs_the_frame_and_nothing_else() {
+fn a_block_is_a_frame_and_not_a_node() {
     let d =
         laid_out("flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  B --> C\n  C --> A");
     assert_eq!(d.nodes.len(), 3, "every member is still drawn");
     assert_eq!(d.edges.len(), 3);
+    assert!(d.node("one").is_none(), "the block is not a node");
+    let frame = d.cluster("one").expect("the block is a frame");
+    assert_eq!(frame.title.lines, vec!["Group".to_string()]);
+    assert_eq!(frame.parent, None);
+    assert_eq!(frame.depth, 0);
+}
 
-    let with_block_endpoint = laid_out(
-        "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  one --> C\n  A --> C",
+/// An edge that names a block is drawn, and it points at the frame.
+///
+/// Stage 1c dropped it: the parser removes a subgraph id from the node list, so there was no
+/// shape to attach the line to. Stage 1d re-anchors it onto a member for the layout and cuts it
+/// back to the frame for the drawing.
+#[test]
+fn an_edge_can_name_a_block() {
+    let d = laid_out(
+        "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  one --> C\n  D --> one",
     );
-    assert!(
-        with_block_endpoint.node("one").is_none(),
-        "the block is not a node"
+    assert!(d.node("one").is_none(), "the block is still not a node");
+    let named: Vec<&PlacedEdge> = d
+        .edges
+        .iter()
+        .filter(|e| e.from == "one" || e.to == "one")
+        .collect();
+    assert_eq!(named.len(), 2, "both edges onto the block survive");
+    for e in named {
+        assert!(e.points.len() >= 2, "{} -> {} has a line", e.from, e.to);
+    }
+}
+
+/// A block that holds no node at all is not drawn, and an edge that names it is dropped.
+///
+/// dagre gives a parent its rectangle through the border nodes it hangs off its children; a
+/// parent with no children never gets any, and reading a box back from it would produce a frame
+/// at the origin with no size. Dropping it is the honest answer.
+#[test]
+fn an_empty_block_is_not_drawn() {
+    let d = laid_out("flowchart TD\n  subgraph hollow [Nothing]\n  end\n  A --> B\n  hollow --> A");
+    assert!(d.clusters.is_empty(), "no frame for an empty block");
+    assert_eq!(d.edges.len(), 1, "the edge that named it is dropped");
+    assert_eq!(d.nodes.len(), 2);
+}
+
+/// A `direction` inside a block is read by the parser and **deliberately not applied**.
+///
+/// See [`super::lay_out`]'s note: dagre has one `rankdir` per layout, honouring a per-block one
+/// means laying that block out in a graph of its own, and that is the change mermaid shipped in
+/// 11.16.0 and took back in 11.17.0 because the arrows *between* blocks broke. Pinning it as a
+/// test rather than as a comment means a future stage that changes its mind has to say so here.
+#[test]
+fn a_block_direction_does_not_move_anything() {
+    let with = laid_out(
+        "flowchart LR\n  subgraph one [Steps]\n    direction TB\n    A --> B\n  end\n  B --> C",
     );
-    assert!(
-        with_block_endpoint
-            .edges
-            .iter()
-            .all(|e| e.from != "one" && e.to != "one"),
-        "an edge onto the block is dropped, not aimed at a phantom"
-    );
+    let without = laid_out("flowchart LR\n  subgraph one [Steps]\n    A --> B\n  end\n  B --> C");
+    assert_eq!(with.nodes, without.nodes);
+    assert_eq!(with.clusters, without.clusters);
 }
 
 /// Errors carry the parser's reason. §8 notes the current crate throws these away, losing
@@ -1382,11 +1792,34 @@ fn synthetic_diagram() -> Diagram {
         });
     }
 
+    // Two frames, one inside the other, at coordinates chosen by hand: the outer one titled on
+    // two lines (the case that makes a frame grow) and the inner one untitled (the case that
+    // emits a rect and no text at all).
+    let clusters = vec![
+        PlacedCluster {
+            id: "outer".to_string(),
+            title: label("Outer frame\nwith two lines", 130.0),
+            center: Point::new(300.0, 620.0),
+            size: Size::new(360.0, 160.0),
+            parent: None,
+            depth: 0,
+        },
+        PlacedCluster {
+            id: "inner".to_string(),
+            title: label("", 0.0),
+            center: Point::new(320.0, 645.0),
+            size: Size::new(200.0, 90.0),
+            parent: Some("outer".to_string()),
+            depth: 1,
+        },
+    ];
+
     Diagram {
         width: 1040.0,
         height: 720.0,
         nodes,
         edges,
+        clusters,
     }
 }
 
@@ -1439,6 +1872,19 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
     }
     wide.push_str("  n0 --> n120\n  n120 --> n0\n");
 
+    // Twelve blocks, each inside the last. mermaid's own `adjustClustersAndEdges` gives up past a
+    // depth of ten; konoma's tree walk is bounded by the number of blocks instead, so this asks
+    // whether that bound is really there.
+    let mut deep = String::from("flowchart TD\n");
+    for i in 0..12 {
+        deep.push_str(&format!("  subgraph s{i} [Level {i}]\n"));
+    }
+    deep.push_str("  A --> B\n");
+    for _ in 0..12 {
+        deep.push_str("  end\n");
+    }
+    deep.push_str("  s0 --> C\n  C --> s11\n");
+
     let cases: &[&str] = &[
         "",
         "   \n\n  ",
@@ -1452,6 +1898,15 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
         "flowchart TD\n  %% only a comment\n  A --> B",
         "flowchart TD\n  classDef hot fill:#f9f\n  A:::hot --> B",
         "flowchart TD\n  A@{ shape: cyl, label: \"store\" } --> B",
+        // Blocks, in the shapes a person would not write on purpose.
+        "flowchart TD\n  subgraph one\n  end\n  A --> B",
+        "flowchart TD\n  subgraph one\n  end\n  one --> one",
+        "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  one --> A",
+        "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  one --> one",
+        "flowchart LR\n  subgraph one\n    subgraph two\n      subgraph three\n        A\n               end\n    end\n  end\n  one --> three",
+        "flowchart TD\n  subgraph one [\"\"]\n    A\n  end\n  A --> B",
+        "flowchart TD\n  A --> one\n  subgraph one [Declared after the edge]\n    B --> C\n  end",
+        &deep,
         &wide,
     ];
     for src in cases {
