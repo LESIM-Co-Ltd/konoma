@@ -8,10 +8,14 @@
 //!   carried in `src/` rather than taken as a dependency so konoma can fix it in a published
 //!   build. It arrives with the 30-graph cross-validation baseline recorded from the real
 //!   dagre.js, which is this renderer's only external source of truth.
+//! * **Stage 1b** added [`flowchart`], which reads mermaid's flowchart language — three quarters
+//!   of the mermaid people actually write — into a structural model. It parses and stops: no
+//!   measuring, no layout, no SVG.
 //!
-//! Parsing, shape geometry and SVG emission are still to come. Until they land,
+//! Shape geometry and SVG emission are still to come. Until they land,
 //! `preview::markdown::mermaid_to_svg` is untouched and every diagram still goes through
 //! `mermaid-rs-renderer`; nothing in this module is on the drawing path yet.
 
+pub mod flowchart;
 pub mod layout;
 pub mod text_metrics;
