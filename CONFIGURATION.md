@@ -154,9 +154,9 @@ command = "mpv {path}"      # {path} = the file, {out} = a temp output path
 detached = true             # don't block the TUI (opens in a separate process)
 
 [[preview.rules]]
-glob = "*.{puml,plantuml}"  # No builtin for PlantUML -- delegate it. (Mermaid needs no rule: konoma
+glob = "*.{dot,gv}"         # No builtin for Graphviz -- delegate it. (Mermaid needs no rule: konoma
 render_as = "image"         # renders it natively.) render_as = treat the command's output as an image.
-command = "plantuml -tpng -pipe < {path} > {out}.png"
+command = "dot -Tpng -o {out}.png {path}"   # No shell: write the command as argv, not as a pipeline.
 ```
 
 Omitting `render_as` (or setting it to anything other than `"image"`) captures the
@@ -165,6 +165,46 @@ missing/failing command (binary not found, non-zero exit, `{out}` never produced
 degrades safely to `[can not preview: <ext>]` with the reason attached, instead of
 crashing. `command = ""` (or a whitespace-only value) is treated the same way — no
 command to delegate to — never as "run the previewed file itself".
+
+**Mermaid needs no rule of its own.** konoma renders `.mmd`/`.mermaid` files and
+```` ```mermaid ```` fences itself — pure Rust, no Node, no browser — and the `[ui] mermaid`
+options above control it. If what you specifically want is the output of *mermaid.js itself*
+(the same engine behind mermaid.live and GitHub), you can delegate standalone files to
+[`mmdc`](https://github.com/mermaid-js/mermaid-cli), the official mermaid CLI:
+
+```toml
+[[preview.rules]]
+glob = "*.{mmd,mermaid}"    # replaces the default builtin = "mermaid" rule
+render_as = "image"
+command = "mmdc -q -i {path} -o {out}.png -t dark -b transparent -s 3"
+```
+
+`-i`/`-o` are the input and output files (mmdc picks svg/png/pdf from the output
+extension), `-t` is the theme (`default` / `forest` / `dark` / `neutral`), `-b` the
+background color, `-s` the Puppeteer scale factor (`3` renders at 3×, so the PNG still has
+pixels to spare when you zoom in), and `-q` keeps mmdc's progress log out of the error
+line. `{out}` deliberately has no extension, so the `.png` you append in `{out}.png` is
+what tells mmdc which format to write — konoma accepts the suffixed file it produces.
+
+**Unlike everything else konoma leans on, `mmdc` is a heavyweight dependency.** You install
+it with `npm install -g @mermaid-js/mermaid-cli`; it wants Node 18.19+ / 20+, and it drives
+a real browser through Puppeteer, so the install brings a bundled Chromium with it and every
+preview starts one — expect a second or two per diagram rather than an instant one (konoma
+gives any delegated command 30 seconds before it gives up). konoma's own mermaid path needs
+none of that. Take the trade deliberately.
+
+Two limits of this rule:
+
+- It covers **standalone files only**. ```` ```mermaid ```` fences inside a Markdown
+  document are composited by the `markdown` renderer and always take konoma's built-in
+  path — a `[[preview.rules]]` entry matches whole files, so it cannot reach inside one.
+- Don't aim it at `*.md`. Given a Markdown input, `mmdc` rewrites the whole document
+  (replacing each fence with a generated image file) instead of producing one diagram —
+  not what a preview wants.
+
+If `mmdc` isn't installed, the rule degrades exactly like any other missing command, and
+`[external] preview_commands = false` switches it off (along with every other delegation)
+without touching your rule list.
 
 Anything that matches no rule and doesn't look like text shows a safe
 `[can not preview: <ext>]` screen — konoma never crashes on unknown input, and missing

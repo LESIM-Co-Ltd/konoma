@@ -146,14 +146,53 @@ command = "mpv {path}"      # {path} = 対象ファイル, {out} = 一時出力�
 detached = true             # TUI をブロックしない(別プロセスで開く)
 
 [[preview.rules]]
-glob = "*.{puml,plantuml}"  # PlantUML は内蔵が無いので委譲する。
+glob = "*.{dot,gv}"         # Graphviz は内蔵が無いので委譲する。
 render_as = "image"         # (mermaid はルール不要＝konoma が内蔵で描く。) render_as=出力を画像として表示
-command = "plantuml -tpng -pipe < {path} > {out}.png"
+command = "dot -Tpng -o {out}.png {path}"   # シェルを経由しないので < > によるリダイレクトは書けない
 ```
 
 `render_as` を省略する(または `"image"` 以外を指定する)と、コマンドの出力をキャプチャして
 通常の windowed リーダーでテキスト表示します。コマンドが不在/失敗(非ゼロ終了・`{out}` 未生成)
 した場合はクラッシュせず、安全に `[can not preview: <ext>]` へ降格し理由が添えられます。
+
+**mermaid にはルールは要りません。** konoma は `.mmd`/`.mermaid` ファイルも
+```` ```mermaid ```` フェンスも自前で描きます(純 Rust・Node もブラウザも不要)。挙動は上の
+`[ui] mermaid` 系で調整できます。そのうえで「*mermaid.js そのもの*の出力が欲しい」
+(mermaid.live や GitHub と同じエンジンで描かせたい)場合は、単体ファイルを公式 CLI の
+[`mmdc`](https://github.com/mermaid-js/mermaid-cli) へ委譲できます:
+
+```toml
+[[preview.rules]]
+glob = "*.{mmd,mermaid}"    # 既定の builtin = "mermaid" ルールを置き換える
+render_as = "image"
+command = "mmdc -q -i {path} -o {out}.png -t dark -b transparent -s 3"
+```
+
+`-i`/`-o` は入力/出力ファイル(出力の拡張子から svg/png/pdf を判別)、`-t` はテーマ
+(`default` / `forest` / `dark` / `neutral`)、`-b` は背景色、`-s` は Puppeteer のスケール係数
+(`3` = 3倍で描画。ズームしても解像度に余裕が残る)、`-q` は mmdc の進捗ログを抑制します
+(これが無いとエラー行に混ざります)。`{out}` は意図的に拡張子を持たないので、
+`{out}.png` と自分で付けた `.png` が mmdc への形式指定になります — konoma はその接尾辞つき
+成果物を受け取ります。
+
+**konoma が頼る他のツールと違い、`mmdc` は重い依存です。** 導入は
+`npm install -g @mermaid-js/mermaid-cli`、Node 18.19+ / 20+ が必要で、Puppeteer 経由で実際の
+ブラウザを動かします。つまりインストール時に Chromium が同梱で降ってきて、プレビューのたびに
+それが起動します — 図の表示は即座ではなく 1〜2 秒かかると考えてください(委譲したコマンドは
+30 秒で打ち切られます)。konoma 内蔵の mermaid 経路にはこれらは一切要りません。承知のうえで
+選んでください。
+
+このルールの限界が 2 つあります:
+
+- 対象は**単体ファイルだけ**です。Markdown 内の ```` ```mermaid ```` フェンスは `markdown`
+  レンダラが合成するので、常に konoma 内蔵の経路を通ります(`[[preview.rules]]` はファイル
+  単位のマッチなので、ファイルの中までは届きません)。
+- `*.md` に向けないこと。`mmdc` は Markdown を入力すると、図を1枚出すのではなく文書全体を
+  書き換えます(各フェンスを生成した画像ファイルへ差し替える)。プレビューの用途には合いません。
+
+`mmdc` が入っていない場合は、他の不在コマンドと同じように安全に降格します。
+`[external] preview_commands = false` にすれば(他の委譲もろとも)無効化でき、ルール一覧を
+書き換える必要はありません。
 
 どのルールにも合わずテキストにも見えないファイルは、安全な
 `[can not preview: <ext>]` 画面になります — konoma は未知の入力でクラッシュせず、
