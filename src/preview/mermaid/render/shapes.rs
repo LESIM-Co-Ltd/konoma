@@ -88,6 +88,25 @@ pub const BAR_THICKNESS: f64 = 10.0;
 /// (§0-1 is what allows the difference).
 pub const NOTE_FOLD: f64 = 10.0;
 
+/// Space between a sequence participant's name and the sides of its box.
+pub const PARTICIPANT_PAD_X: f64 = 14.0;
+
+/// Space above and below a sequence participant's name.
+pub const PARTICIPANT_PAD_Y: f64 = 10.0;
+
+/// The narrowest a sequence participant's box may be.
+///
+/// Same reasoning as [`super::panel::ER_MIN_WIDTH`]: a row of boxes of wildly different widths
+/// reads as noise, and a one-letter participant beside a sentence-long one is the common case.
+/// mermaid pins its own at a flat `sequence.width` of 150, which is far too wide for a terminal.
+pub const PARTICIPANT_MIN_WIDTH: f64 = 62.0;
+
+/// Height of the band a sequence `actor`'s stick figure is drawn in, above its name.
+pub const ACTOR_FIGURE_HEIGHT: f64 = 32.0;
+
+/// Radius of that figure's head.
+pub const ACTOR_HEAD_RADIUS: f64 = 6.0;
+
 /// What a node is drawn as.
 ///
 /// See the module docs: one enum over both diagram families, so that everything downstream is
@@ -118,6 +137,16 @@ pub enum Glyph {
     ClassBox,
     /// An ER diagram's `erBox`: a name band over a grid of attributes. Sized by its panel too.
     ErBox,
+    /// A sequence diagram's `participant`: a rounded box with a minimum width, sitting at the head
+    /// of a lifeline.
+    Participant,
+    /// A sequence diagram's `actor`: a stick figure with the name underneath it, and **no box**.
+    ///
+    /// mermaid draws the figure too; the crate konoma is replacing draws a second plain box, so
+    /// `actor Alice` and `participant Alice` come out identical there. The name lives in the
+    /// node's [`Panel`](super::panel::Panel), which is also what sized the node — the figure needs
+    /// a band of its own above the text, and a centred label cannot express that.
+    Actor,
 }
 
 impl From<Shape> for Glyph {
@@ -304,6 +333,15 @@ pub enum Outline {
         h: f64,
         /// How far the fold reaches in from the corner, along both axes.
         fold: f64,
+    },
+    /// A stick figure standing in the top `figure_h` of the box, with the name below it.
+    Actor {
+        /// Width of the bounding box.
+        w: f64,
+        /// Height of the bounding box.
+        h: f64,
+        /// Height of the band the figure occupies, measured down from the top.
+        figure_h: f64,
     },
     /// Nothing is drawn.
     None,
@@ -506,6 +544,15 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         // rows there are, and the caller passes that size straight through here — a second
         // opinion about it would be a second thing to keep in step (see `panel`'s module docs).
         Glyph::ClassBox | Glyph::ErBox => label,
+        // A participant's box is its name plus padding, floored at a width that keeps a row of
+        // them even.
+        Glyph::Participant => Size::new(
+            (label.w + PARTICIPANT_PAD_X * 2.0).max(PARTICIPANT_MIN_WIDTH),
+            label.h + PARTICIPANT_PAD_Y * 2.0,
+        ),
+        // Sized by its panel, like the two compartmented boxes, and for the same reason: the
+        // figure's band and the name's band are two rows, not one centred label.
+        Glyph::Actor => label,
     }
 }
 
@@ -541,6 +588,16 @@ pub fn outline(glyph: Glyph, size: Size) -> Outline {
             h: size.h,
             r: 0.0,
         },
+        Glyph::Participant => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: CORNER_RADIUS,
+        },
+        Glyph::Actor => Outline::Actor {
+            w: size.w,
+            h: size.h,
+            figure_h: ACTOR_FIGURE_HEIGHT.min(size.h),
+        },
     }
 }
 
@@ -565,8 +622,12 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         // A bar, a note and a titled box all clip against their box. The note's folded corner is
         // a detail of the drawing: cutting the line there would leave a visible gap where the
         // fold is, and the fold is at most ten pixels of a corner an edge rarely meets.
-        Glyph::Bar { .. } | Glyph::Note | Glyph::TitledBox | Glyph::ClassBox | Glyph::ErBox => {
-            intersect_rect(center.x, center.y, size.w, size.h, target)
-        }
+        Glyph::Bar { .. }
+        | Glyph::Note
+        | Glyph::TitledBox
+        | Glyph::ClassBox
+        | Glyph::ErBox
+        | Glyph::Participant
+        | Glyph::Actor => intersect_rect(center.x, center.y, size.w, size.h, target),
     }
 }

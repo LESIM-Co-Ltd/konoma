@@ -871,6 +871,7 @@ fn synthetic_state_diagram() -> Diagram {
             }),
             start_label: None,
             end_label: None,
+            badge: None,
         },
         super::PlacedEdge {
             from: "n7".to_string(),
@@ -882,6 +883,7 @@ fn synthetic_state_diagram() -> Diagram {
             label: None,
             start_label: None,
             end_label: None,
+            badge: None,
         },
     ];
 
@@ -894,6 +896,8 @@ fn synthetic_state_diagram() -> Diagram {
             parent: None,
             depth: 0,
             dashed: false,
+            filled: true,
+            sections: Vec::new(),
         },
         super::PlacedCluster {
             id: "region".to_string(),
@@ -903,6 +907,8 @@ fn synthetic_state_diagram() -> Diagram {
             parent: Some("block".to_string()),
             depth: 1,
             dashed: true,
+            filled: true,
+            sections: Vec::new(),
         },
     ];
 
@@ -912,6 +918,7 @@ fn synthetic_state_diagram() -> Diagram {
         nodes,
         edges,
         clusters,
+        lifelines: Vec::new(),
     }
 }
 

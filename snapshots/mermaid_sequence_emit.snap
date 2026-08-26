@@ -1,0 +1,320 @@
+=== dark ===
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="500" viewBox="0 0 420 500">
+<rect width="420" height="500" fill="none"/>
+<g class="clusters">
+<rect x="40" y="20" width="240" height="460" rx="5" ry="5" fill="#2b2b38" stroke="#8a8a8a" stroke-width="1"/>
+<rect x="50" y="120" width="220" height="160" rx="5" ry="5" fill="none" stroke="#8a8a8a" stroke-width="1" stroke-dasharray="6 4"/>
+<line x1="50" y1="210" x2="270" y2="210" stroke="#8a8a8a" stroke-width="1" stroke-dasharray="6 4"/>
+<rect x="70" y="160" width="180" height="100" rx="5" ry="5" fill="none" stroke="#8a8a8a" stroke-width="1" stroke-dasharray="6 4"/>
+</g>
+<g class="lifelines">
+<line x1="80" y1="58" x2="80" y2="442" stroke="#8a8a8a" stroke-width="1" stroke-dasharray="3 4"/>
+<rect x="75" y="100" width="10" height="120" fill="#5a5a66" stroke="#cccccc" stroke-width="1"/>
+<rect x="85" y="130" width="10" height="60" fill="#5a5a66" stroke="#cccccc" stroke-width="1"/>
+<line x1="240" y1="58" x2="240" y2="400" stroke="#8a8a8a" stroke-width="1" stroke-dasharray="3 4"/>
+<path d="M233,393 L247,407 M247,393 L233,407" stroke="#d3d3d3" stroke-width="2" fill="none"/>
+</g>
+<g class="edges">
+<path d="M80,100L240,100" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M80,130L231,130" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="240,130 231,134 231,126" fill="#d3d3d3"/>
+<path d="M89,160L231,160" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<polygon points="240,160 231,164 231,156" fill="#d3d3d3"/>
+<polygon points="80,160 89,156 89,164" fill="#d3d3d3"/>
+<path d="M80,190L231,190" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M231,185.5 L240,194.5 M240,185.5 L231,194.5" stroke="#d3d3d3" stroke-width="2" fill="none"/>
+<path d="M80,220L235.5,220" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<polygon points="240,220 230,225 235.5,220 230,215" fill="#d3d3d3"/>
+<path d="M240,260L246.167,260C252.333,260 264.667,260 271.305,260.362C277.943,260.724 278.886,261.448 279.719,262.281C280.552,263.114 281.276,264.057 281.638,267.195C282,270.333 282,275.667 281.638,278.805C281.276,281.943 280.552,282.886 279.719,283.719C278.886,284.552 277.943,285.276 272.805,285.638C267.667,286 258.333,286 253.667,286L249,286" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<polygon points="240,286 249,282 249,290" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="40" y="22" width="80" height="36" rx="5" ry="5" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="80" y="44.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="80" dy="0">A</tspan></text>
+<circle cx="240" cy="9" r="6" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<path d="M240,15 L240,23.76 M230.4,18.066 L249.6,18.066 M240,23.76 L232.32,33 M240,23.76 L247.68,33" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="240" y="50.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc">B</text>
+<rect x="40" y="442" width="80" height="36" rx="5" ry="5" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="80" y="464.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="80" dy="0">A#foot</tspan></text>
+<circle cx="240" cy="429" r="6" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<path d="M240,435 L240,443.76 M230.4,438.066 L249.6,438.066 M240,443.76 L232.32,453 M240,443.76 L247.68,453" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="240" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc">B#foot</text>
+<path d="M70,278 L240,278 L250,288 L250,322 L70,322 Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="1.5"/>
+<path d="M240,278 L240,288 L250,288" fill="none" stroke="#b8a94e" stroke-width="1.5"/>
+<text x="160" y="297.2" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#f0e6bf"><tspan x="160" dy="0">a note</tspan><tspan x="160" dy="15.4">over both</tspan></text>
+<text x="160" y="16.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">A title</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="160" y="90.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">msg</tspan></text>
+<circle cx="92" cy="100" r="11" fill="#1f2020" stroke="#cccccc" stroke-width="1"/>
+<text x="92" y="104.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="92" dy="0">1</tspan></text>
+<text x="160" y="120.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="150.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="180.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="210.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">msg</tspan></text>
+<text x="330" y="277.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="330" dy="0">retry</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="160" y="34.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">a box</tspan></text>
+<text x="160" y="224.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">else is well</tspan></text>
+<text x="160" y="134.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">alt is sick</tspan></text>
+<text x="160" y="174.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="160" dy="0">loop twice</tspan></text>
+</g>
+</svg>
+
+=== light ===
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="500" viewBox="0 0 420 500">
+<rect width="420" height="500" fill="none"/>
+<g class="clusters">
+<rect x="40" y="20" width="240" height="460" rx="5" ry="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+<rect x="50" y="120" width="220" height="160" rx="5" ry="5" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="6 4"/>
+<line x1="50" y1="210" x2="270" y2="210" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="6 4"/>
+<rect x="70" y="160" width="180" height="100" rx="5" ry="5" fill="none" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="6 4"/>
+</g>
+<g class="lifelines">
+<line x1="80" y1="58" x2="80" y2="442" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3 4"/>
+<rect x="75" y="100" width="10" height="120" fill="#dbe3ec" stroke="#64748b" stroke-width="1"/>
+<rect x="85" y="130" width="10" height="60" fill="#dbe3ec" stroke="#64748b" stroke-width="1"/>
+<line x1="240" y1="58" x2="240" y2="400" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3 4"/>
+<path d="M233,393 L247,407 M247,393 L233,407" stroke="#64748b" stroke-width="2" fill="none"/>
+</g>
+<g class="edges">
+<path d="M80,100L240,100" fill="none" stroke="#64748b" stroke-width="2"/>
+<path d="M80,130L231,130" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="240,130 231,134 231,126" fill="#64748b"/>
+<path d="M89,160L231,160" fill="none" stroke="#64748b" stroke-width="2"/>
+<polygon points="240,160 231,164 231,156" fill="#64748b"/>
+<polygon points="80,160 89,156 89,164" fill="#64748b"/>
+<path d="M80,190L231,190" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M231,185.5 L240,194.5 M240,185.5 L231,194.5" stroke="#64748b" stroke-width="2" fill="none"/>
+<path d="M80,220L235.5,220" fill="none" stroke="#64748b" stroke-width="2"/>
+<polygon points="240,220 230,225 235.5,220 230,215" fill="#64748b"/>
+<path d="M240,260L246.167,260C252.333,260 264.667,260 271.305,260.362C277.943,260.724 278.886,261.448 279.719,262.281C280.552,263.114 281.276,264.057 281.638,267.195C282,270.333 282,275.667 281.638,278.805C281.276,281.943 280.552,282.886 279.719,283.719C278.886,284.552 277.943,285.276 272.805,285.638C267.667,286 258.333,286 253.667,286L249,286" fill="none" stroke="#64748b" stroke-width="2"/>
+<polygon points="240,286 249,282 249,290" fill="#64748b"/>
+</g>
+<g class="nodes">
+<rect x="40" y="22" width="80" height="36" rx="5" ry="5" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="80" y="44.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="80" dy="0">A</tspan></text>
+<circle cx="240" cy="9" r="6" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+<path d="M240,15 L240,23.76 M230.4,18.066 L249.6,18.066 M240,23.76 L232.32,33 M240,23.76 L247.68,33" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="240" y="50.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a">B</text>
+<rect x="40" y="442" width="80" height="36" rx="5" ry="5" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="80" y="464.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="80" dy="0">A#foot</tspan></text>
+<circle cx="240" cy="429" r="6" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+<path d="M240,435 L240,443.76 M230.4,438.066 L249.6,438.066 M240,443.76 L232.32,453 M240,443.76 L247.68,453" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="240" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a">B#foot</text>
+<path d="M70,278 L240,278 L250,288 L250,322 L70,322 Z" fill="#fff8d5" stroke="#b8a94e" stroke-width="1.5"/>
+<path d="M240,278 L240,288 L250,288" fill="none" stroke="#b8a94e" stroke-width="1.5"/>
+<text x="160" y="297.2" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#3a3524"><tspan x="160" dy="0">a note</tspan><tspan x="160" dy="15.4">over both</tspan></text>
+<text x="160" y="16.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">A title</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="160" y="90.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">msg</tspan></text>
+<circle cx="92" cy="100" r="11" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+<text x="92" y="104.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="92" dy="0">1</tspan></text>
+<text x="160" y="120.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="150.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="180.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="210.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">msg</tspan></text>
+<text x="330" y="277.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="330" dy="0">retry</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="160" y="34.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">a box</tspan></text>
+<text x="160" y="224.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">else is well</tspan></text>
+<text x="160" y="134.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">alt is sick</tspan></text>
+<text x="160" y="174.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="160" dy="0">loop twice</tspan></text>
+</g>
+</svg>
+
+=== classic ===
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="500" viewBox="0 0 420 500">
+<rect width="420" height="500" fill="none"/>
+<g class="clusters">
+<rect x="40" y="20" width="240" height="460" rx="5" ry="5" fill="#ffffde" stroke="#aaaa33" stroke-width="1"/>
+<rect x="50" y="120" width="220" height="160" rx="5" ry="5" fill="none" stroke="#aaaa33" stroke-width="1" stroke-dasharray="6 4"/>
+<line x1="50" y1="210" x2="270" y2="210" stroke="#aaaa33" stroke-width="1" stroke-dasharray="6 4"/>
+<rect x="70" y="160" width="180" height="100" rx="5" ry="5" fill="none" stroke="#aaaa33" stroke-width="1" stroke-dasharray="6 4"/>
+</g>
+<g class="lifelines">
+<line x1="80" y1="58" x2="80" y2="442" stroke="#9aa4bd" stroke-width="1" stroke-dasharray="3 4"/>
+<rect x="75" y="100" width="10" height="120" fill="#dcdcf5" stroke="#7b88a8" stroke-width="1"/>
+<rect x="85" y="130" width="10" height="60" fill="#dcdcf5" stroke="#7b88a8" stroke-width="1"/>
+<line x1="240" y1="58" x2="240" y2="400" stroke="#9aa4bd" stroke-width="1" stroke-dasharray="3 4"/>
+<path d="M233,393 L247,407 M247,393 L233,407" stroke="#5c6b8a" stroke-width="2" fill="none"/>
+</g>
+<g class="edges">
+<path d="M80,100L240,100" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M80,130L231,130" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="240,130 231,134 231,126" fill="#5c6b8a"/>
+<path d="M89,160L231,160" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<polygon points="240,160 231,164 231,156" fill="#5c6b8a"/>
+<polygon points="80,160 89,156 89,164" fill="#5c6b8a"/>
+<path d="M80,190L231,190" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M231,185.5 L240,194.5 M240,185.5 L231,194.5" stroke="#5c6b8a" stroke-width="2" fill="none"/>
+<path d="M80,220L235.5,220" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<polygon points="240,220 230,225 235.5,220 230,215" fill="#5c6b8a"/>
+<path d="M240,260L246.167,260C252.333,260 264.667,260 271.305,260.362C277.943,260.724 278.886,261.448 279.719,262.281C280.552,263.114 281.276,264.057 281.638,267.195C282,270.333 282,275.667 281.638,278.805C281.276,281.943 280.552,282.886 279.719,283.719C278.886,284.552 277.943,285.276 272.805,285.638C267.667,286 258.333,286 253.667,286L249,286" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<polygon points="240,286 249,282 249,290" fill="#5c6b8a"/>
+</g>
+<g class="nodes">
+<rect x="40" y="22" width="80" height="36" rx="5" ry="5" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="80" y="44.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A</tspan></text>
+<circle cx="240" cy="9" r="6" fill="none" stroke="#7b88a8" stroke-width="1.5"/>
+<path d="M240,15 L240,23.76 M230.4,18.066 L249.6,18.066 M240,23.76 L232.32,33 M240,23.76 L247.68,33" fill="none" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="240" y="50.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B</text>
+<rect x="40" y="442" width="80" height="36" rx="5" ry="5" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="80" y="464.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A#foot</tspan></text>
+<circle cx="240" cy="429" r="6" fill="none" stroke="#7b88a8" stroke-width="1.5"/>
+<path d="M240,435 L240,443.76 M230.4,438.066 L249.6,438.066 M240,443.76 L232.32,453 M240,443.76 L247.68,453" fill="none" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="240" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B#foot</text>
+<path d="M70,278 L240,278 L250,288 L250,322 L70,322 Z" fill="#fff5ad" stroke="#aaaa33" stroke-width="1.5"/>
+<path d="M240,278 L240,288 L250,288" fill="none" stroke="#aaaa33" stroke-width="1.5"/>
+<text x="160" y="297.2" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a note</tspan><tspan x="160" dy="15.4">over both</tspan></text>
+<text x="160" y="16.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">A title</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="160" y="90.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<circle cx="92" cy="100" r="11" fill="#ececff" stroke="#7b88a8" stroke-width="1"/>
+<text x="92" y="104.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="92" dy="0">1</tspan></text>
+<text x="160" y="120.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="150.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="180.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="210.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="330" y="277.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="330" dy="0">retry</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="160" y="34.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a box</tspan></text>
+<text x="160" y="224.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">else is well</tspan></text>
+<text x="160" y="134.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">alt is sick</tspan></text>
+<text x="160" y="174.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">loop twice</tspan></text>
+</g>
+</svg>
+
+=== forest ===
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="500" viewBox="0 0 420 500">
+<rect width="420" height="500" fill="none"/>
+<g class="clusters">
+<rect x="40" y="20" width="240" height="460" rx="5" ry="5" fill="#cdffb2" stroke="#6eaa49" stroke-width="1"/>
+<rect x="50" y="120" width="220" height="160" rx="5" ry="5" fill="none" stroke="#6eaa49" stroke-width="1" stroke-dasharray="6 4"/>
+<line x1="50" y1="210" x2="270" y2="210" stroke="#6eaa49" stroke-width="1" stroke-dasharray="6 4"/>
+<rect x="70" y="160" width="180" height="100" rx="5" ry="5" fill="none" stroke="#6eaa49" stroke-width="1" stroke-dasharray="6 4"/>
+</g>
+<g class="lifelines">
+<line x1="80" y1="58" x2="80" y2="442" stroke="#6eaa49" stroke-width="1" stroke-dasharray="3 4"/>
+<rect x="75" y="100" width="10" height="120" fill="#e2f3cf" stroke="#13540c" stroke-width="1"/>
+<rect x="85" y="130" width="10" height="60" fill="#e2f3cf" stroke="#13540c" stroke-width="1"/>
+<line x1="240" y1="58" x2="240" y2="400" stroke="#6eaa49" stroke-width="1" stroke-dasharray="3 4"/>
+<path d="M233,393 L247,407 M247,393 L233,407" stroke="#008000" stroke-width="2" fill="none"/>
+</g>
+<g class="edges">
+<path d="M80,100L240,100" fill="none" stroke="#008000" stroke-width="2"/>
+<path d="M80,130L231,130" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="240,130 231,134 231,126" fill="#008000"/>
+<path d="M89,160L231,160" fill="none" stroke="#008000" stroke-width="2"/>
+<polygon points="240,160 231,164 231,156" fill="#008000"/>
+<polygon points="80,160 89,156 89,164" fill="#008000"/>
+<path d="M80,190L231,190" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M231,185.5 L240,194.5 M240,185.5 L231,194.5" stroke="#008000" stroke-width="2" fill="none"/>
+<path d="M80,220L235.5,220" fill="none" stroke="#008000" stroke-width="2"/>
+<polygon points="240,220 230,225 235.5,220 230,215" fill="#008000"/>
+<path d="M240,260L246.167,260C252.333,260 264.667,260 271.305,260.362C277.943,260.724 278.886,261.448 279.719,262.281C280.552,263.114 281.276,264.057 281.638,267.195C282,270.333 282,275.667 281.638,278.805C281.276,281.943 280.552,282.886 279.719,283.719C278.886,284.552 277.943,285.276 272.805,285.638C267.667,286 258.333,286 253.667,286L249,286" fill="none" stroke="#008000" stroke-width="2"/>
+<polygon points="240,286 249,282 249,290" fill="#008000"/>
+</g>
+<g class="nodes">
+<rect x="40" y="22" width="80" height="36" rx="5" ry="5" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="80" y="44.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A</tspan></text>
+<circle cx="240" cy="9" r="6" fill="none" stroke="#13540c" stroke-width="1.5"/>
+<path d="M240,15 L240,23.76 M230.4,18.066 L249.6,18.066 M240,23.76 L232.32,33 M240,23.76 L247.68,33" fill="none" stroke="#13540c" stroke-width="1.5"/>
+<text x="240" y="50.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B</text>
+<rect x="40" y="442" width="80" height="36" rx="5" ry="5" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="80" y="464.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A#foot</tspan></text>
+<circle cx="240" cy="429" r="6" fill="none" stroke="#13540c" stroke-width="1.5"/>
+<path d="M240,435 L240,443.76 M230.4,438.066 L249.6,438.066 M240,443.76 L232.32,453 M240,443.76 L247.68,453" fill="none" stroke="#13540c" stroke-width="1.5"/>
+<text x="240" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B#foot</text>
+<path d="M70,278 L240,278 L250,288 L250,322 L70,322 Z" fill="#fff5ad" stroke="#aaaa33" stroke-width="1.5"/>
+<path d="M240,278 L240,288 L250,288" fill="none" stroke="#aaaa33" stroke-width="1.5"/>
+<text x="160" y="297.2" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a note</tspan><tspan x="160" dy="15.4">over both</tspan></text>
+<text x="160" y="16.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">A title</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="160" y="90.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<circle cx="92" cy="100" r="11" fill="#cde498" stroke="#13540c" stroke-width="1"/>
+<text x="92" y="104.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="92" dy="0">1</tspan></text>
+<text x="160" y="120.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="150.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="180.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="210.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="330" y="277.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="330" dy="0">retry</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="160" y="34.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a box</tspan></text>
+<text x="160" y="224.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">else is well</tspan></text>
+<text x="160" y="134.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">alt is sick</tspan></text>
+<text x="160" y="174.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">loop twice</tspan></text>
+</g>
+</svg>
+
+=== neutral ===
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="500" viewBox="0 0 420 500">
+<rect width="420" height="500" fill="none"/>
+<g class="clusters">
+<rect x="40" y="20" width="240" height="460" rx="5" ry="5" fill="#eaeaea" stroke="#999999" stroke-width="1"/>
+<rect x="50" y="120" width="220" height="160" rx="5" ry="5" fill="none" stroke="#999999" stroke-width="1" stroke-dasharray="6 4"/>
+<line x1="50" y1="210" x2="270" y2="210" stroke="#999999" stroke-width="1" stroke-dasharray="6 4"/>
+<rect x="70" y="160" width="180" height="100" rx="5" ry="5" fill="none" stroke="#999999" stroke-width="1" stroke-dasharray="6 4"/>
+</g>
+<g class="lifelines">
+<line x1="80" y1="58" x2="80" y2="442" stroke="#999999" stroke-width="1" stroke-dasharray="3 4"/>
+<rect x="75" y="100" width="10" height="120" fill="#e0e0e0" stroke="#666666" stroke-width="1"/>
+<rect x="85" y="130" width="10" height="60" fill="#e0e0e0" stroke="#666666" stroke-width="1"/>
+<line x1="240" y1="58" x2="240" y2="400" stroke="#999999" stroke-width="1" stroke-dasharray="3 4"/>
+<path d="M233,393 L247,407 M247,393 L233,407" stroke="#666666" stroke-width="2" fill="none"/>
+</g>
+<g class="edges">
+<path d="M80,100L240,100" fill="none" stroke="#666666" stroke-width="2"/>
+<path d="M80,130L231,130" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="240,130 231,134 231,126" fill="#666666"/>
+<path d="M89,160L231,160" fill="none" stroke="#666666" stroke-width="2"/>
+<polygon points="240,160 231,164 231,156" fill="#666666"/>
+<polygon points="80,160 89,156 89,164" fill="#666666"/>
+<path d="M80,190L231,190" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M231,185.5 L240,194.5 M240,185.5 L231,194.5" stroke="#666666" stroke-width="2" fill="none"/>
+<path d="M80,220L235.5,220" fill="none" stroke="#666666" stroke-width="2"/>
+<polygon points="240,220 230,225 235.5,220 230,215" fill="#666666"/>
+<path d="M240,260L246.167,260C252.333,260 264.667,260 271.305,260.362C277.943,260.724 278.886,261.448 279.719,262.281C280.552,263.114 281.276,264.057 281.638,267.195C282,270.333 282,275.667 281.638,278.805C281.276,281.943 280.552,282.886 279.719,283.719C278.886,284.552 277.943,285.276 272.805,285.638C267.667,286 258.333,286 253.667,286L249,286" fill="none" stroke="#666666" stroke-width="2"/>
+<polygon points="240,286 249,282 249,290" fill="#666666"/>
+</g>
+<g class="nodes">
+<rect x="40" y="22" width="80" height="36" rx="5" ry="5" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="80" y="44.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A</tspan></text>
+<circle cx="240" cy="9" r="6" fill="none" stroke="#999999" stroke-width="1.5"/>
+<path d="M240,15 L240,23.76 M230.4,18.066 L249.6,18.066 M240,23.76 L232.32,33 M240,23.76 L247.68,33" fill="none" stroke="#999999" stroke-width="1.5"/>
+<text x="240" y="50.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B</text>
+<rect x="40" y="442" width="80" height="36" rx="5" ry="5" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="80" y="464.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">A#foot</tspan></text>
+<circle cx="240" cy="429" r="6" fill="none" stroke="#999999" stroke-width="1.5"/>
+<path d="M240,435 L240,443.76 M230.4,438.066 L249.6,438.066 M240,443.76 L232.32,453 M240,443.76 L247.68,453" fill="none" stroke="#999999" stroke-width="1.5"/>
+<text x="240" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">B#foot</text>
+<path d="M70,278 L240,278 L250,288 L250,322 L70,322 Z" fill="#f0f0e0" stroke="#999999" stroke-width="1.5"/>
+<path d="M240,278 L240,288 L250,288" fill="none" stroke="#999999" stroke-width="1.5"/>
+<text x="160" y="297.2" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a note</tspan><tspan x="160" dy="15.4">over both</tspan></text>
+<text x="160" y="16.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">A title</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="160" y="90.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<circle cx="92" cy="100" r="11" fill="#eeeeee" stroke="#999999" stroke-width="1"/>
+<text x="92" y="104.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="92" dy="0">1</tspan></text>
+<text x="160" y="120.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="150.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="180.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="160" y="210.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">msg</tspan></text>
+<text x="330" y="277.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="330" dy="0">retry</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="160" y="34.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">a box</tspan></text>
+<text x="160" y="224.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">else is well</tspan></text>
+<text x="160" y="134.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">alt is sick</tspan></text>
+<text x="160" y="174.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="160" dy="0">loop twice</tspan></text>
+</g>
+</svg>
+

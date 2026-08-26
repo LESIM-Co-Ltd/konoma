@@ -48,8 +48,19 @@ pub const THICK_STROKE_WIDTH: f64 = 3.5;
 /// Dash pattern of a `-.-` edge.
 pub const DOTTED_DASH: &str = "4 4";
 
-/// Dash pattern of the frame around one concurrent region of a state diagram.
+/// Dash pattern of the frame around one concurrent region of a state diagram, and of every
+/// sequence-diagram group frame.
 pub const CLUSTER_DASH: &str = "6 4";
+
+/// Stroke width of a sequence diagram's lifeline. Thinner than an edge on purpose — see
+/// [`Theme::lifeline`].
+pub const LIFELINE_STROKE_WIDTH: f64 = 1.0;
+
+/// Dash pattern of a lifeline.
+pub const LIFELINE_DASH: &str = "3 4";
+
+/// Half the diagonal of the cross drawn where a `destroy`ed participant's lifeline ends.
+pub const DESTROY_HALF: f64 = 7.0;
 
 /// A number as SVG writes it: at most three decimals, no trailing zeros, no negative zero.
 ///
@@ -108,6 +119,15 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
         }
         out.push_str("</g>\n");
     }
+    // Lifelines go between the frames and the messages: they run *inside* a group frame, and every
+    // arrow that ends on one has to be drawn over the bar it lands on.
+    if !diagram.lifelines.is_empty() {
+        out.push_str("<g class=\"lifelines\">\n");
+        for l in &diagram.lifelines {
+            emit_lifeline(&mut out, l, theme);
+        }
+        out.push_str("</g>\n");
+    }
     out.push_str("<g class=\"edges\">\n");
     for e in &diagram.edges {
         emit_edge(&mut out, e, theme);
@@ -119,14 +139,21 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
     out.push_str("</g>\n<g class=\"edge-labels\">\n");
     for e in &diagram.edges {
         if let Some(l) = &e.label {
-            out.push_str(&format!(
-                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
-                num(l.center.x - l.size.w / 2.0),
-                num(l.center.y - l.size.h / 2.0),
-                num(l.size.w),
-                num(l.size.h),
-                theme.background_ref
-            ));
+            // The patch exists to keep the words readable where the line runs under them, so it
+            // is drawn only when the line really does. A flowchart's label sits *on* the arc
+            // midpoint and always needs one; a sequence diagram's sits in a band of its own above
+            // the arrow and never does, and painting one there is a grey slab on a ground the
+            // terminal is supposed to show through (§1).
+            if label_meets_its_line(e, l) {
+                out.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+                    num(l.center.x - l.size.w / 2.0),
+                    num(l.center.y - l.size.h / 2.0),
+                    num(l.size.w),
+                    num(l.size.h),
+                    theme.background_ref
+                ));
+            }
             emit_text(
                 &mut out,
                 &l.label,
@@ -146,9 +173,28 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
                 theme.edge_label_text,
             );
         }
+        // A sequence number sits *on* the shaft, so it gets a disc — a patch the shape of the
+        // thing it hides.
+        if let Some(b) = &e.badge {
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{}\" \
+                 stroke-width=\"{}\"/>\n",
+                num(b.center.x),
+                num(b.center.y),
+                num(b.size.w.max(b.size.h) / 2.0),
+                theme.node_fill,
+                theme.node_stroke,
+                num(clusters::STROKE_WIDTH)
+            ));
+            emit_text(&mut out, &b.label, b.center.x, b.center.y, theme.node_text);
+        }
     }
     out.push_str("</g>\n");
-    if diagram.clusters.iter().any(|c| !c.title.is_blank()) {
+    if diagram
+        .clusters
+        .iter()
+        .any(|c| !c.title.is_blank() || !c.sections.is_empty())
+    {
         out.push_str("<g class=\"cluster-labels\">\n");
         for c in &diagram.clusters {
             emit_cluster_title(&mut out, c, theme);
@@ -157,6 +203,35 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
     }
     out.push_str("</svg>\n");
     out
+}
+
+/// Whether an edge's own drawn line passes through its label's box.
+///
+/// Sampling the polyline rather than testing the waypoints: a label sitting on a long straight
+/// segment is exactly the common case, and its two waypoints are nowhere near it.
+fn label_meets_its_line(edge: &PlacedEdge, label: &super::PlacedEdgeLabel) -> bool {
+    let (l, t, r, b) = (
+        label.center.x - label.size.w / 2.0,
+        label.center.y - label.size.h / 2.0,
+        label.center.x + label.size.w / 2.0,
+        label.center.y + label.size.h / 2.0,
+    );
+    let inside = |p: &Point| p.x >= l && p.x <= r && p.y >= t && p.y <= b;
+    let points = edge.drawn_points();
+    for w in points.windows(2) {
+        let len = (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
+        let steps = ((len / 2.0).ceil() as usize).clamp(1, 2000);
+        for i in 0..=steps {
+            let f = i as f64 / steps as f64;
+            if inside(&Point::new(
+                w[0].x + f * (w[1].x - w[0].x),
+                w[0].y + f * (w[1].y - w[0].y),
+            )) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// One subgraph frame's rectangle. Its title is emitted separately, at the end — see the module
@@ -177,11 +252,29 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
         num(t),
         num(cluster.size.w),
         num(cluster.size.h),
-        theme.cluster_fill,
+        if cluster.filled {
+            theme.cluster_fill
+        } else {
+            "none"
+        },
         theme.cluster_stroke,
         num(clusters::STROKE_WIDTH),
         r = num(clusters::CORNER_RADIUS)
     ));
+    // A section rule spans the frame and is drawn with it, so a message inside the section below
+    // is drawn over it rather than under it.
+    let (_, _, right, _) = cluster.bounds();
+    for section in &cluster.sections {
+        out.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{}\" \
+             stroke-width=\"{}\" stroke-dasharray=\"{CLUSTER_DASH}\"/>\n",
+            num(l),
+            num(right),
+            theme.cluster_stroke,
+            num(clusters::STROKE_WIDTH),
+            y = num(section.y)
+        ));
+    }
 }
 
 /// One subgraph title, drawn over everything else and with **nothing behind it**.
@@ -196,6 +289,20 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
 /// * drawn over the edges with no patch, the line stays whole and the title is still legible,
 ///   because a stroke crossing a word costs far less than a word costs a stroke.
 fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
+    // A section's own title sits just under its rule, centred like the frame's, and is drawn in
+    // the same pass and for the same reason.
+    for section in &cluster.sections {
+        if section.title.is_blank() {
+            continue;
+        }
+        emit_text(
+            out,
+            &section.title,
+            cluster.center.x,
+            section.y + clusters::TITLE_PAD_Y + section.title.height / 2.0,
+            theme.cluster_text,
+        );
+    }
     if cluster.title.is_blank() {
         return;
     }
@@ -371,6 +478,38 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
                 fy = num(t + fold)
             ));
         }
+        // A stick figure: head, spine, arms, legs. No box — that is the whole point of `actor`,
+        // and the crate konoma replaces draws a second box here instead.
+        Outline::Actor { w, h, figure_h } => {
+            let top = cy - h / 2.0;
+            let r = shapes::ACTOR_HEAD_RADIUS.min(figure_h / 4.0);
+            let head_y = top + r + 1.0;
+            let shoulder = head_y + r;
+            let hip = top + figure_h * 0.68;
+            let foot = top + figure_h - 1.0;
+            let reach = (w / 2.0 - 2.0).min(figure_h * 0.30);
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"none\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                num(cx),
+                num(head_y),
+                num(r)
+            ));
+            out.push_str(&format!(
+                "<path d=\"M{cx},{shoulder} L{cx},{hip} M{al},{arms} L{ar},{arms} \
+                 M{cx},{hip} L{ll},{foot} M{cx},{hip} L{lr},{foot}\" fill=\"none\" \
+                 stroke=\"{stroke}\" stroke-width=\"{sw}\"/>\n",
+                cx = num(cx),
+                shoulder = num(shoulder),
+                hip = num(hip),
+                arms = num(shoulder + (hip - shoulder) * 0.35),
+                al = num(cx - reach),
+                ar = num(cx + reach),
+                ll = num(cx - reach * 0.8),
+                lr = num(cx + reach * 0.8),
+                foot = num(foot)
+            ));
+        }
         Outline::None => {}
     }
     // A box that holds a table draws its table instead of a centred label.
@@ -393,6 +532,61 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
         ));
     }
     emit_text(out, &node.label, cx, cy, text);
+}
+
+/// One participant's lifeline, and the activation bars on it.
+///
+/// The line is dashed, which mermaid's is not. On a terminal the lifelines are the longest strokes
+/// on the page and a solid one competes with the messages for a reader's eye; dashing it says
+/// "this is an axis" without needing a colour the terminal might be showing through.
+///
+/// The bars are drawn **after** the line and are opaque, so a bar covers the stretch of axis it
+/// occupies — which is what an activation means.
+fn emit_lifeline(out: &mut String, lifeline: &super::PlacedLifeline, theme: &Theme) {
+    out.push_str(&format!(
+        "<line x1=\"{x}\" y1=\"{}\" x2=\"{x}\" y2=\"{}\" stroke=\"{}\" \
+         stroke-width=\"{}\" stroke-dasharray=\"{LIFELINE_DASH}\"/>\n",
+        num(lifeline.top),
+        num(lifeline.bottom),
+        theme.lifeline,
+        num(LIFELINE_STROKE_WIDTH),
+        x = num(lifeline.x)
+    ));
+    for i in 0..lifeline.activations.len() {
+        let Some((l, t, r, b)) = lifeline.activation_bounds(i) else {
+            continue;
+        };
+        out.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" \
+             stroke=\"{}\" stroke-width=\"{}\"/>\n",
+            num(l),
+            num(t),
+            num(r - l),
+            num(b - t),
+            theme.activation_fill,
+            theme.activation_stroke,
+            num(clusters::STROKE_WIDTH)
+        ));
+    }
+    // A `destroy`ed participant's line ends in a cross, which is the only thing that says the
+    // participant stopped existing rather than simply stopped being talked to.
+    if lifeline.destroyed {
+        let d = DESTROY_HALF;
+        out.push_str(&format!(
+            "<path d=\"M{},{} L{},{} M{},{} L{},{}\" stroke=\"{}\" stroke-width=\"{}\" \
+             fill=\"none\"/>\n",
+            num(lifeline.x - d),
+            num(lifeline.bottom - d),
+            num(lifeline.x + d),
+            num(lifeline.bottom + d),
+            num(lifeline.x + d),
+            num(lifeline.bottom - d),
+            num(lifeline.x - d),
+            num(lifeline.bottom + d),
+            theme.line,
+            num(EDGE_STROKE_WIDTH)
+        ));
+    }
 }
 
 /// One edge: the curve, then whatever sits at its ends.
@@ -440,6 +634,17 @@ fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Them
         Tip::Arrow => emit_arrow_head(out, from, tip, theme),
         Tip::Cross => emit_cross(out, from, tip, theme),
         Tip::Circle => emit_circle_end(out, from, tip, theme),
+        Tip::Async => {
+            let pts = edges::async_head(from, tip);
+            out.push_str(&format!(
+                "<polygon points=\"{}\" fill=\"{}\"/>\n",
+                pts.iter()
+                    .map(|p| format!("{},{}", num(p.x), num(p.y)))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                theme.arrowhead
+            ));
+        }
         Tip::HollowTriangle => emit_polygon_tip(out, &edges::triangle(from, tip), theme, false),
         Tip::FilledDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, true),
         Tip::HollowDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, false),

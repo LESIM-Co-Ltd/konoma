@@ -74,6 +74,16 @@ pub struct Theme {
     pub note_stroke: &'static str,
     /// Text inside a note.
     pub note_text: &'static str,
+    /// A sequence diagram's lifeline: the vertical line under a participant.
+    ///
+    /// Deliberately a different colour from [`Theme::line`], and drawn thinner and dashed. A
+    /// lifeline is structure, not content — it runs the whole height of the diagram behind every
+    /// message, and at the same weight as the arrows it turns a sequence diagram into a grid.
+    pub lifeline: &'static str,
+    /// Interior of an activation bar.
+    pub activation_fill: &'static str,
+    /// Outline of an activation bar.
+    pub activation_stroke: &'static str,
 }
 
 /// mermaid's `dark`, which is konoma's default and the only theme tuned for a dark terminal
@@ -96,6 +106,9 @@ pub const DARK: Theme = Theme {
     note_fill: "#3d3a2a",
     note_stroke: "#b8a94e",
     note_text: "#f0e6bf",
+    lifeline: "#8a8a8a",
+    activation_fill: "#5a5a66",
+    activation_stroke: "#cccccc",
 };
 
 /// konoma's `light` (the crate calls it `modern`): a slate palette for a light terminal.
@@ -116,6 +129,9 @@ pub const LIGHT: Theme = Theme {
     note_fill: "#fff8d5",
     note_stroke: "#b8a94e",
     note_text: "#3a3524",
+    lifeline: "#94a3b8",
+    activation_fill: "#dbe3ec",
+    activation_stroke: "#64748b",
 };
 
 /// mermaid's `default`, which konoma spells `classic`. The lavender boxes are the look most
@@ -138,6 +154,9 @@ pub const CLASSIC: Theme = Theme {
     note_fill: "#fff5ad",
     note_stroke: "#aaaa33",
     note_text: "#333333",
+    lifeline: "#9aa4bd",
+    activation_fill: "#dcdcf5",
+    activation_stroke: "#7b88a8",
 };
 
 /// mermaid's `forest`. The deliberate deviation §4-1 asks to keep: the line stays green instead
@@ -159,6 +178,9 @@ pub const FOREST: Theme = Theme {
     note_fill: "#fff5ad",
     note_stroke: "#aaaa33",
     note_text: "#333333",
+    lifeline: "#6eaa49",
+    activation_fill: "#e2f3cf",
+    activation_stroke: "#13540c",
 };
 
 /// mermaid's `neutral`: greyscale, and the one light theme whose own line colour already sits in
@@ -180,6 +202,9 @@ pub const NEUTRAL: Theme = Theme {
     note_fill: "#f0f0e0",
     note_stroke: "#999999",
     note_text: "#333333",
+    lifeline: "#999999",
+    activation_fill: "#e0e0e0",
+    activation_stroke: "#666666",
 };
 
 /// Every palette, for the tests that have to hold each one to the same rule.

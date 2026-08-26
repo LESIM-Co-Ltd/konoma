@@ -946,6 +946,7 @@ fn synthetic_panel_diagram() -> Diagram {
                 size: Size::new(30.0 + super::LABEL_PAD_X * 2.0, 20.0),
                 label: label("0..*", 30.0),
             }),
+            badge: None,
         });
     }
 
@@ -957,6 +958,8 @@ fn synthetic_panel_diagram() -> Diagram {
         parent: None,
         depth: 0,
         dashed: false,
+        filled: true,
+        sections: Vec::new(),
     }];
 
     Diagram {
@@ -965,6 +968,7 @@ fn synthetic_panel_diagram() -> Diagram {
         nodes,
         edges,
         clusters,
+        lifelines: Vec::new(),
     }
 }
 

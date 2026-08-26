@@ -58,6 +58,7 @@ pub mod edges;
 pub mod er;
 pub mod labels;
 pub mod panel;
+pub mod sequence;
 pub mod shapes;
 pub mod state;
 pub mod svg;
@@ -67,6 +68,8 @@ pub mod theme;
 mod class_tests;
 #[cfg(test)]
 mod er_tests;
+#[cfg(test)]
+mod sequence_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
@@ -117,6 +120,8 @@ pub enum RenderError {
     ClassParse(crate::preview::mermaid::class::ParseError),
     /// The source is not an ER diagram konoma can read.
     ErParse(crate::preview::mermaid::er::ParseError),
+    /// The source is not a sequence diagram konoma can read.
+    SequenceParse(crate::preview::mermaid::sequence::ParseError),
     /// No sans-serif font could be resolved, so usvg would draw the boxes and silently drop every
     /// glyph inside them. Checked *before* an SVG is built, because there is no error later.
     NoFonts,
@@ -131,6 +136,7 @@ impl fmt::Display for RenderError {
             RenderError::StateParse(e) => write!(f, "{e}"),
             RenderError::ClassParse(e) => write!(f, "{e}"),
             RenderError::ErParse(e) => write!(f, "{e}"),
+            RenderError::SequenceParse(e) => write!(f, "{e}"),
             RenderError::NoFonts => write!(f, "no sans-serif font available for diagram labels"),
             RenderError::NothingToDraw => write!(f, "flowchart has nothing to draw"),
         }
@@ -160,6 +166,12 @@ impl From<crate::preview::mermaid::class::ParseError> for RenderError {
 impl From<crate::preview::mermaid::er::ParseError> for RenderError {
     fn from(e: crate::preview::mermaid::er::ParseError) -> RenderError {
         RenderError::ErParse(e)
+    }
+}
+
+impl From<crate::preview::mermaid::sequence::ParseError> for RenderError {
+    fn from(e: crate::preview::mermaid::sequence::ParseError) -> RenderError {
+        RenderError::SequenceParse(e)
     }
 }
 
@@ -228,6 +240,13 @@ pub struct PlacedEdge {
     pub start_label: Option<PlacedEdgeLabel>,
     /// Text drawn beside the line at the `to` end.
     pub end_label: Option<PlacedEdgeLabel>,
+    /// A number drawn **on** the line at the sending end, on a disc of its own — a sequence
+    /// diagram's `autonumber`.
+    ///
+    /// Not a `start_label`: that one is set *beside* the line and left bare, which is right for a
+    /// cardinality and wrong for a sequence number. mermaid puts the number on the shaft, and the
+    /// disc is what stops the shaft running through the digits.
+    pub badge: Option<PlacedEdgeLabel>,
 }
 
 impl PlacedEdge {
@@ -257,8 +276,28 @@ pub struct PlacedCluster {
     pub parent: Option<String>,
     /// 0 for a top-level block, 1 for a block inside it, and so on.
     pub depth: usize,
-    /// Whether the frame is drawn dashed — one concurrent region of a state diagram's `--`.
+    /// Whether the frame is drawn dashed — one concurrent region of a state diagram's `--`, and
+    /// every `loop` / `alt` / `opt` / `par` / `critical` / `break` of a sequence diagram.
     pub dashed: bool,
+    /// Whether the frame's interior is painted.
+    ///
+    /// A `subgraph` is painted: it is ground, and the nodes sit on it. A sequence diagram's group
+    /// frame is not, for two reasons — it is crossed by every lifeline in it, and frames nest, so
+    /// two paints stack into a darker slab that means nothing.
+    pub filled: bool,
+    /// Horizontal rules that divide the frame into sections, with the text that names each one.
+    ///
+    /// Only a sequence diagram's `else` / `and` / `option` fills this. Empty everywhere else.
+    pub sections: Vec<ClusterSection>,
+}
+
+/// One `else` / `and` / `option` inside a frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterSection {
+    /// Absolute y of the rule that divides the section above from the section below.
+    pub y: f64,
+    /// The text drawn just under the rule.
+    pub title: Label,
 }
 
 impl PlacedCluster {
@@ -295,7 +334,72 @@ pub struct Diagram {
     pub edges: Vec<PlacedEdge>,
     /// Subgraph frames, outermost first, so drawing them in order nests them correctly.
     pub clusters: Vec<PlacedCluster>,
+    /// A sequence diagram's lifelines, in participant order. Empty for every other kind.
+    ///
+    /// This is the one piece of geometry stage 4 had to add rather than reuse. A lifeline is not
+    /// a node (it has no label and nothing ends on its outline) and not an edge (it joins nothing
+    /// to anything); it is the *axis* a participant occupies, and the activation bars belong to it
+    /// rather than sitting beside it — which is what makes "a bar is on its own lifeline"
+    /// true by construction and "a bar spans from its activating message to its deactivating one"
+    /// the thing left for a test to state.
+    pub lifelines: Vec<PlacedLifeline>,
 }
+
+/// One participant's vertical axis, and the activation bars on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedLifeline {
+    /// The participant's id.
+    pub id: String,
+    /// The x every message to or from this participant is anchored on.
+    pub x: f64,
+    /// Where the line starts — the bottom of the participant's box.
+    pub top: f64,
+    /// Where it ends: the top of the mirrored box at the foot of the diagram, or the message that
+    /// destroyed the participant.
+    pub bottom: f64,
+    /// Whether the line ends in a cross because the participant was `destroy`ed.
+    pub destroyed: bool,
+    /// The bars, in the order they were opened.
+    pub activations: Vec<PlacedActivation>,
+}
+
+impl PlacedLifeline {
+    /// The rectangle of the `i`th activation bar, as `(l, t, r, b)`.
+    pub fn activation_bounds(&self, i: usize) -> Option<(f64, f64, f64, f64)> {
+        let a = self.activations.get(i)?;
+        let left = self.x - ACTIVATION_WIDTH / 2.0 + a.depth as f64 * ACTIVATION_WIDTH;
+        Some((left, a.top, left + ACTIVATION_WIDTH, a.bottom))
+    }
+
+    /// How far the bars reach to each side of the axis, as `(left, right)` absolute x.
+    pub fn extent(&self) -> (f64, f64) {
+        let mut left = self.x;
+        let mut right = self.x;
+        for i in 0..self.activations.len() {
+            if let Some((l, _, r, _)) = self.activation_bounds(i) {
+                left = left.min(l);
+                right = right.max(r);
+            }
+        }
+        (left, right)
+    }
+}
+
+/// One activation bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedActivation {
+    /// How many bars were already open on this lifeline when this one opened. 0 sits centred on
+    /// the axis and each one after it steps a full width to the right, so the bars form a
+    /// staircase and never overlap.
+    pub depth: usize,
+    /// Y of the message that opened it.
+    pub top: f64,
+    /// Y of the message that closed it, or the foot of the lifeline if nothing did.
+    pub bottom: f64,
+}
+
+/// Width of an activation bar. mermaid's `sequence.activationWidth`, schema default 10.
+pub const ACTIVATION_WIDTH: f64 = 10.0;
 
 impl Diagram {
     /// Looks a placed node up by id.
@@ -735,6 +839,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             label: placed_label,
             start_label,
             end_label,
+            badge: None,
         });
     }
 
@@ -744,6 +849,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
         nodes,
         edges: placed_edges,
         clusters: placed_clusters,
+        lifelines: Vec::new(),
     };
     normalise(&mut diagram);
     Ok(diagram)
@@ -797,6 +903,8 @@ fn read_clusters(
             parent: c.parent.clone(),
             depth: c.depth,
             dashed: c.dashed,
+            filled: true,
+            sections: Vec::new(),
         });
     }
     let placed: HashSet<String> = out.iter().map(|c| c.id.clone()).collect();
@@ -901,11 +1009,17 @@ fn normalise(diagram: &mut Diagram) {
         let (l, t, r, b) = c.bounds();
         grow(l, t, r, b);
     }
+    // A lifeline is the only geometry that is neither a node nor an edge, so it has to be
+    // measured explicitly or a diagram whose bars stick out to the right gets cropped.
+    for l in &diagram.lifelines {
+        let (left, right) = l.extent();
+        grow(left, l.top, right, l.bottom);
+    }
     for e in &diagram.edges {
         for p in e.drawn_points() {
             grow(p.x, p.y, p.x, p.y);
         }
-        for l in [&e.label, &e.start_label, &e.end_label]
+        for l in [&e.label, &e.start_label, &e.end_label, &e.badge]
             .into_iter()
             .flatten()
         {
@@ -927,14 +1041,31 @@ fn normalise(diagram: &mut Diagram) {
     }
     for c in &mut diagram.clusters {
         c.center = Point::new(c.center.x + dx, c.center.y + dy);
+        for section in &mut c.sections {
+            section.y += dy;
+        }
+    }
+    for l in &mut diagram.lifelines {
+        l.x += dx;
+        l.top += dy;
+        l.bottom += dy;
+        for a in &mut l.activations {
+            a.top += dy;
+            a.bottom += dy;
+        }
     }
     for e in &mut diagram.edges {
         for p in &mut e.points {
             *p = Point::new(p.x + dx, p.y + dy);
         }
-        for l in [&mut e.label, &mut e.start_label, &mut e.end_label]
-            .into_iter()
-            .flatten()
+        for l in [
+            &mut e.label,
+            &mut e.start_label,
+            &mut e.end_label,
+            &mut e.badge,
+        ]
+        .into_iter()
+        .flatten()
         {
             l.center = Point::new(l.center.x + dx, l.center.y + dy);
         }

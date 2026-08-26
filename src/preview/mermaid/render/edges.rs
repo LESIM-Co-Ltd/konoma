@@ -385,6 +385,16 @@ pub const ER_FOOT_HALF: f64 = 9.0;
 /// Radius of the ring that means "zero" on an ER relationship.
 pub const ER_RING_RADIUS: f64 = 4.0;
 
+/// Length of the concave chevron a sequence diagram's `-)` ends in.
+pub const ASYNC_LENGTH: f64 = 10.0;
+
+/// Half the width of that chevron, across the line.
+pub const ASYNC_HALF_WIDTH: f64 = 5.0;
+
+/// How far back from the tip the chevron's notch sits — what makes it concave, and so tells it
+/// apart from the filled triangle of `->>` at the size a terminal shows a diagram.
+pub const ASYNC_NOTCH: f64 = 4.5;
+
 /// What is drawn at one end of an edge.
 ///
 /// One enum over every diagram family, for the same reason [`Glyph`] is one enum over every
@@ -419,6 +429,9 @@ pub enum Tip {
     ErOneOrMore,
     /// `}o`: zero or more.
     ErZeroOrMore,
+    /// `-)`: the concave chevron mermaid draws for an asynchronous message. Its own marker is
+    /// `M 18,7 L9,13 L14,7 L9,1 Z` — four points, not three, and the notch is the whole point.
+    Async,
 }
 
 impl Tip {
@@ -455,6 +468,9 @@ impl Tip {
             // boundary. The crow's foot has its apex on the shaft, so the shaft stops there.
             Tip::ErOnlyOne | Tip::ErZeroOrOne => 0.0,
             Tip::ErOneOrMore | Tip::ErZeroOrMore => ER_FOOT_LENGTH,
+            // Only as far as the notch: the shaft is *meant* to reach into the chevron's hollow,
+            // which is what makes it read as fletching rather than as a small solid arrow.
+            Tip::Async => ASYNC_NOTCH,
         }
     }
 }
@@ -479,6 +495,20 @@ pub fn diamond(from: &Point, tip: &Point) -> [Point; 4] {
         Point::new(mid.x + nx, mid.y + ny),
         back,
         Point::new(mid.x - nx, mid.y - ny),
+    ]
+}
+
+/// The four points of the concave chevron a `-)` ends in: tip, one shoulder, the notch, the other
+/// shoulder. Built from the line's own last segment, so it turns with the edge.
+pub fn async_head(from: &Point, tip: &Point) -> [Point; 4] {
+    let (ux, uy) = unit(from, tip);
+    let back = Point::new(tip.x - ux * ASYNC_LENGTH, tip.y - uy * ASYNC_LENGTH);
+    let (nx, ny) = (-uy * ASYNC_HALF_WIDTH, ux * ASYNC_HALF_WIDTH);
+    [
+        tip.clone(),
+        Point::new(back.x + nx, back.y + ny),
+        Point::new(tip.x - ux * ASYNC_NOTCH, tip.y - uy * ASYNC_NOTCH),
+        Point::new(back.x - nx, back.y - ny),
     ]
 }
 

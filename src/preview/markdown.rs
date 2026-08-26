@@ -2707,6 +2707,12 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
         render_konoma(code, theme, crate::preview::mermaid::render::class::render)
     } else if er_is_ours(code) {
         render_konoma(code, theme, crate::preview::mermaid::render::er::render)
+    } else if sequence_is_ours(code) {
+        render_konoma(
+            code,
+            theme,
+            crate::preview::mermaid::render::sequence::render,
+        )
     } else {
         render_via_mermaid_rs(code, theme)
     }
@@ -2759,6 +2765,16 @@ fn er_is_ours(code: &str) -> bool {
     caught.unwrap_or(false)
 }
 
+/// Whether this is a sequence diagram, made panic-safe the same way (stage 4).
+fn sequence_is_ours(code: &str) -> bool {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::sequence::is_sequence_diagram(code)
+        }))
+    });
+    caught.unwrap_or(false)
+}
+
 /// konoma's own renderer. A failure is a failure: no second opinion from the crate.
 ///
 /// `draw` is the entry point of whichever of konoma's renderers owns this diagram kind. Routing
@@ -2777,6 +2793,16 @@ fn render_konoma(
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("konoma's mermaid renderer panicked".to_string()),
     }
+}
+
+/// The crate's rendering of a source konoma now owns, for the side-by-side gallery only.
+///
+/// §6 forbids comparing the two automatically — pixel equality is structurally impossible — but
+/// the acceptance criterion for stage 4 is "at least as readable as the crate's", and that is a
+/// question a person answers by looking. `render::sequence_tests::gallery` writes both.
+#[cfg(test)]
+pub fn mermaid_rs_for_comparison(code: &str, theme: &str) -> Result<String, String> {
+    render_via_mermaid_rs(code.trim_end_matches('\n'), theme)
 }
 
 /// Every diagram kind konoma has not written a renderer for yet.
@@ -2821,13 +2847,14 @@ fn render_via_mermaid_rs(code: &str, theme: &str) -> Result<String, String> {
 
 /// Pre-warm both renderers' lazy font work (their first call scans system fonts, tens of ms).
 /// Called from a startup thread so the first diagram render never pays it. **One diagram of each
-/// routing arm**: a flowchart warms konoma's own metrics, and a sequence diagram warms the crate
-/// that still owns every other kind — warming only one arm would just move the freeze onto
-/// whichever kind the user opens first.
+/// routing arm**: a flowchart warms konoma's own metrics, and a `pie` warms the crate that still
+/// owns every remaining kind — warming only one arm would just move the freeze onto whichever kind
+/// the user opens first.
 pub fn warm_mermaid() {
     let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
     let _ = mermaid_to_svg("stateDiagram-v2\n  [*] --> A", "dark");
     let _ = mermaid_to_svg("sequenceDiagram\n  A->>B: hi", "dark");
+    let _ = mermaid_to_svg("pie\n  \"a\" : 1", "dark");
 }
 
 /// Synthetic inline-image key for a ```mermaid fence, derived from its content (FNV-1a 64).
@@ -8987,6 +9014,16 @@ plain body
         }
         for code in [
             "sequenceDiagram\n  A->>B: hi",
+            "SEQUENCEDIAGRAM\n  A->>B: hi",
+            "  \n%% a comment first\nsequenceDiagram\n  A->>B: hi",
+            "---\ntitle: t\n---\nsequenceDiagram\n  A->>B: hi",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段4・シーケンス図): {code:?}"
+            );
+        }
+        for code in [
             "pie title P\n  \"a\" : 10\n  \"b\" : 20",
             "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
         ] {
@@ -9033,6 +9070,32 @@ plain body
             "erDiagram\n  p[Person] {\n    string firstName\n  }\n  a[\"Customer Account\"] {\n    string email\n  }\n  p ||--o| a : has",
             "erDiagram\n  subgraph title1\n    CUSTOMER\n  end",
             "erDiagram\n  direction LR\n  A ||--|| B : x",
+            // Stage 4. Every construct mermaid's sequence-diagram page documents, in the shape it
+            // documents it — the point being that the *set of diagrams that draw* only ever grows.
+            "sequenceDiagram\n  Alice->>John: Hello John, how are you?\n  John-->>Alice: Great!\n  Alice-)John: See you later!",
+            "sequenceDiagram\n  participant Alice\n  participant Bob\n  Bob->>Alice: Hi Alice",
+            "sequenceDiagram\n  actor Alice\n  actor Bob\n  Alice->>Bob: Hi Bob",
+            "sequenceDiagram\n  participant A as Alice\n  A->>J: Hello",
+            "sequenceDiagram\n  participant Alice@{ \"type\" : \"boundary\" }\n  Alice->>Bob: Request",
+            "sequenceDiagram\n  Alice->>+John: Hello\n  John-->>-Alice: Great!",
+            "sequenceDiagram\n  Alice->>John: Hello\n  activate John\n  John-->>Alice: Great!\n  deactivate John",
+            "sequenceDiagram\n  participant John\n  Note right of John: Text in note",
+            "sequenceDiagram\n  Alice->John: Hi\n  Note over Alice,John: A typical interaction",
+            "sequenceDiagram\n  Alice->John: Hi\n  loop Every minute\n    John-->Alice: Great!\n  end",
+            "sequenceDiagram\n  alt is sick\n    Bob->>Alice: Not so good\n  else is well\n    Bob->>Alice: Fresh\n  end",
+            "sequenceDiagram\n  opt Extra response\n    Bob->>Alice: Thanks\n  end",
+            "sequenceDiagram\n  par a\n    A->>B: x\n  and b\n    A->>C: y\n  end",
+            "sequenceDiagram\n  critical connect\n    S-->DB: connect\n  option timeout\n    S-->S: log\n  end",
+            "sequenceDiagram\n  break it failed\n    API-->Consumer: show failure\n  end",
+            "sequenceDiagram\n  rect rgb(191, 223, 255)\n    A->>B: x\n  end",
+            "sequenceDiagram\n  autonumber\n  A->>B: x",
+            "sequenceDiagram\n  autonumber 10 5\n  A->>B: x",
+            "sequenceDiagram\n  box Purple Alice & John\n  participant A\n  participant J\n  end\n  A->>J: x",
+            "sequenceDiagram\n  A->>B: one\n  create participant C\n  A->>C: two\n  destroy C\n  A-xC: three",
+            "sequenceDiagram\n  title Checkout\n  A->>B: x",
+            "sequenceDiagram\n  participant A\n  link A: Dash @ https://x.test/a\n  A->>B: x",
+            "sequenceDiagram\n  A->>A: retry",
+            "sequenceDiagram\n  A<<->>B: both ways\n  A-xB: cross\n  A-)B: async",
         ] {
             assert!(
                 mermaid_to_svg(code, "dark").is_some(),
@@ -9188,6 +9251,78 @@ plain body
             );
             assert_eq!(
                 is_er_diagram(code),
+                !parser_says_not_ours,
+                "振り分けとパーサの見解が食い違った: {code:?}"
+            );
+        }
+    }
+
+    /// The same guarantee for stage 4. `sequenceDiagram` with no body is the cheapest witness:
+    /// konoma refuses it (§6 — an empty diagram becomes a transparent rectangle the pane then
+    /// stretches), and the crate answers it with an SVG, so a fallthrough would be invisible.
+    #[test]
+    fn a_refused_sequence_diagram_is_not_quietly_redrawn_by_the_crate() {
+        assert!(
+            render_via_mermaid_rs("sequenceDiagram\n", "dark").is_ok(),
+            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("sequenceDiagram\n", "dark"),
+            Err("sequence diagram declares no participants".to_string())
+        );
+        assert!(mermaid_to_svg("sequenceDiagram\n", "dark").is_none());
+
+        // …and a source konoma's own grammar refuses part-way through is refused whole, rather
+        // than quietly handed over. Both of these draw in the crate, which is what makes them
+        // witnesses rather than merely examples: a fallthrough would hide the refusal.
+        for (src, reason) in [
+            (
+                "sequenceDiagram\n  A->>B: x\n  deactivate B",
+                "`B` is not active at line 3",
+            ),
+            (
+                "sequenceDiagram\n  A->>B: x\n  create participant B",
+                "`B` already exists and cannot be created at line 3",
+            ),
+        ] {
+            assert!(
+                render_via_mermaid_rs(src, "dark").is_ok(),
+                "前提: クレートはこれを描く: {src:?}"
+            );
+            assert_eq!(
+                mermaid_to_svg_reason(src, "dark"),
+                Err(reason.to_string()),
+                "{src:?}"
+            );
+        }
+    }
+
+    /// The routing predicate and the sequence parser agree about what a sequence diagram is.
+    #[test]
+    fn the_sequence_routing_predicate_agrees_with_the_parser() {
+        use crate::preview::mermaid::sequence::{is_sequence_diagram, parse, ParseError};
+        for code in [
+            "sequenceDiagram\n  A->>B: hi",
+            "SEQUENCEDIAGRAM\n  A->>B: hi",
+            "sequencediagram\n  A->>B: hi",
+            "sequenceDiagram",
+            "sequenceDiagram\n  loop x\n    A->>B: y",
+            "sequenceDiagram\n  A->>B: x\n  deactivate B",
+            "flowchart TD\n  A --> B",
+            "classDiagram\n  A --> B",
+            "erDiagram\n  A ||--|| B : x",
+            "stateDiagram-v2\n  [*] --> A",
+            "sequenceDiagrams --> B",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ] {
+            let parser_says_not_ours = matches!(
+                parse(code),
+                Err(ParseError::NotASequenceDiagram { .. }) | Err(ParseError::Empty)
+            );
+            assert_eq!(
+                is_sequence_diagram(code),
                 !parser_says_not_ours,
                 "振り分けとパーサの見解が食い違った: {code:?}"
             );

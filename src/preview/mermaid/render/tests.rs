@@ -46,7 +46,9 @@ use super::labels::Label;
 use super::shapes::{self, Glyph, Size};
 use super::svg::num;
 use super::theme::{self, Theme};
-use super::{lay_out, render, Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, MARGIN};
+use super::{
+    lay_out, render, Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Tip, MARGIN,
+};
 use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics;
@@ -1564,6 +1566,110 @@ fn arrow_head_points_along_the_last_segment() {
     assert!((head[1].x - head[2].x).abs() - edges::ARROW_HALF_WIDTH * 2.0 < 1e-9);
 }
 
+/// Every flowchart arrow spelling puts a mark on **exactly the ends it names**, and nothing on
+/// the end it does not.
+///
+/// Until this test existed the whole arrow family was guarded by the two goldens alone, and a
+/// mutation proved what that is worth: turning `Tip::of_arrow(Arrow::Point)` from
+/// `(Tip::None, Tip::Arrow)` into `(Tip::Arrow, Tip::Arrow)` — a one-way arrow quietly growing a
+/// second head — reddened `emit_golden` and `corpus_golden` and **not one named test**. That is
+/// the shape `docs/STATUS.md` records as having cost konoma twice: behaviour a golden alone holds
+/// is lost silently the next time the golden is regenerated. The class and ER families already
+/// had their own version of this check
+/// ([`super::er_tests::a_crows_foot_is_drawn_at_the_end_that_asked_for_it`]); the flowchart family
+/// did not.
+///
+/// Stated twice on purpose. Once about the **model**, which end asked for which mark, and once
+/// about the **drawing**, how many of each mark actually reach the page — `svg::emit_edge` decides
+/// for itself what a `Tip` looks like, so the two can disagree.
+#[test]
+fn a_flowchart_arrow_marks_only_the_ends_that_spelled_a_mark() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // (what the author wrote, what it parses to, the mark at the tail, the mark at the head).
+    let cases: &[(&str, Arrow, Tip, Tip)] = &[
+        ("---", Arrow::None, Tip::None, Tip::None),
+        ("-->", Arrow::Point, Tip::None, Tip::Arrow),
+        ("--x", Arrow::Cross, Tip::None, Tip::Cross),
+        ("--o", Arrow::Circle, Tip::None, Tip::Circle),
+        ("<-->", Arrow::DoublePoint, Tip::Arrow, Tip::Arrow),
+        ("x--x", Arrow::DoubleCross, Tip::Cross, Tip::Cross),
+        ("o--o", Arrow::DoubleCircle, Tip::Circle, Tip::Circle),
+        // The two halves of an infix link disagreeing (§2-6 rule 6). mermaid calls it `INVALID`
+        // and konoma draws the shaft with nothing on either end, rather than guessing.
+        ("x-- t -->", Arrow::Invalid, Tip::None, Tip::None),
+    ];
+
+    // The table covers the whole enum: a new `Arrow` variant makes `covered` fail to compile, and
+    // a variant left out of the table fails here.
+    fn covered(a: Arrow) -> bool {
+        match a {
+            Arrow::None
+            | Arrow::Point
+            | Arrow::Cross
+            | Arrow::Circle
+            | Arrow::DoublePoint
+            | Arrow::DoubleCross
+            | Arrow::DoubleCircle
+            | Arrow::Invalid => true,
+        }
+    }
+    let spelled: HashSet<Arrow> = cases.iter().map(|(_, a, _, _)| *a).collect();
+    assert_eq!(spelled.len(), cases.len(), "an arrow is spelled twice");
+    for a in &spelled {
+        assert!(covered(*a));
+    }
+
+    // How many marks of each kind the emitted document actually carries. Both nodes are `[]`
+    // rectangles, so a `<polygon>` can only be an arrow head and a `<circle>` can only be a `--o`
+    // disc; a `--x` is the one `<path>` whose `d` carries a second `M` (a curve never does).
+    let drawn = |svg: &str| -> (usize, usize, usize) {
+        let heads = svg.matches("<polygon").count();
+        let crosses = svg
+            .lines()
+            .filter(|l| l.starts_with("<path") && l.matches('M').count() > 1)
+            .count();
+        let discs = svg.matches("<circle").count();
+        (heads, crosses, discs)
+    };
+    let wanted = |tip: Tip| -> (usize, usize, usize) {
+        match tip {
+            Tip::Arrow => (1, 0, 0),
+            Tip::Cross => (0, 1, 0),
+            Tip::Circle => (0, 0, 1),
+            _ => (0, 0, 0),
+        }
+    };
+
+    for (spelling, arrow, tip_start, tip_end) in cases {
+        let src = format!("flowchart LR\n  A[a] {spelling} B[b]\n");
+        let chart = parse(&src).unwrap_or_else(|e| panic!("{spelling}: {e}"));
+        assert_eq!(chart.edges.len(), 1, "{spelling}: one edge");
+        assert_eq!(chart.edges[0].arrow, *arrow, "{spelling}: parsed arrow");
+
+        let d = laid_out(&src);
+        assert_eq!(d.edges.len(), 1, "{spelling}: one edge survives layout");
+        let e = &d.edges[0];
+        assert_eq!(
+            (e.tip_start, e.tip_end),
+            (*tip_start, *tip_end),
+            "{spelling}: the marks are on the wrong ends"
+        );
+
+        let svg = render(&src, "dark").expect("renders");
+        let (heads, crosses, discs) = drawn(&svg);
+        let (ws, wc, wd) = wanted(*tip_start);
+        let (we, wcc, wdd) = wanted(*tip_end);
+        assert_eq!(
+            (heads, crosses, discs),
+            (ws + we, wc + wcc, wd + wdd),
+            "{spelling}: {heads} arrow heads, {crosses} crosses and {discs} discs were drawn for \
+             ({tip_start:?}, {tip_end:?})"
+        );
+    }
+}
+
 /// The line is pulled back so the arrow head has room, but never past the point of having no
 /// direction left.
 #[test]
@@ -2047,6 +2153,7 @@ fn synthetic_diagram() -> Diagram {
             stroke,
             start_label: None,
             end_label: None,
+            badge: None,
         });
     }
 
@@ -2062,6 +2169,8 @@ fn synthetic_diagram() -> Diagram {
             parent: None,
             depth: 0,
             dashed: false,
+            filled: true,
+            sections: Vec::new(),
         },
         PlacedCluster {
             id: "inner".to_string(),
@@ -2071,6 +2180,8 @@ fn synthetic_diagram() -> Diagram {
             parent: Some("outer".to_string()),
             depth: 1,
             dashed: false,
+            filled: true,
+            sections: Vec::new(),
         },
     ];
 
@@ -2080,6 +2191,7 @@ fn synthetic_diagram() -> Diagram {
         nodes,
         edges,
         clusters,
+        lifelines: Vec::new(),
     }
 }
 

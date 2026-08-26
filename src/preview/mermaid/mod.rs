@@ -37,5 +37,6 @@ pub mod er;
 pub mod flowchart;
 pub mod layout;
 pub mod render;
+pub mod sequence;
 pub mod state;
 pub mod text_metrics;

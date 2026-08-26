@@ -7,7 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
-- **Mermaid flowcharts, state diagrams, class diagrams and entity-relationship diagrams are now drawn by konoma itself.** They used to go through
+- **Mermaid flowcharts, state, class, entity-relationship and sequence diagrams are now drawn by konoma itself.** They used to go through
   `mermaid-rs-renderer`, which measured text with a font database of its own — a different one from
   the database that later drew the picture, so boxes were sized for glyphs that were never used and
   came out visibly too wide. konoma now parses the diagram, lays it out, and writes the SVG, using
@@ -15,6 +15,11 @@ All notable changes to konoma are documented in this file. The format is based o
   kinds still go through the crate and are unaffected; which renderer runs is decided from the
   diagram's header before either one starts, and a diagram konoma refuses degrades to the text
   diagram rather than being quietly redrawn by the crate.
+  Sequence diagrams gained the most: the previous renderer silently dropped every `-)` and `-x`
+  message, ignored `create` and `destroy`, lost the titles of `box` groups, and refused `rect`
+  blocks and multi-line labels outright, so a diagram could lose a step without saying so. All of
+  those now draw, `actor` is drawn as a figure rather than a second box, and `->` and `-->` correctly
+  draw no arrowhead.
 
 ### Fixed
 - **Five `[external]` switches in the two shipped example configs were silently doing nothing.**
