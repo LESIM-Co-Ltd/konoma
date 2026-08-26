@@ -549,9 +549,6 @@ vcs              = "auto" # どのバージョン管理システムが答える�
                           # ハブの `R`(確認あり・[ui] confirm_jj_sync)。
                           # jj バイナリが無い環境では git に落ちる。
 
-[jj]
-tool = "lazyjj"   # ハブで `!` を押したときに起動する外部 jj ツール([git] tool の jj 版)。
-                  # 未導入なら lazygit が無いときと同じく、起動できなかった旨を flash する。
 pdf              = true   # 外部フォールバック(macOS 同梱の qlmanage/sips)。第一候補のレンダラ
                            # (hayro・純Rust・このフラグに関係なく常に動く)がその PDF の1ページ目で失敗した時
                            # (暗号化/破損/非対応)だけ使う。false でもこれらの外部ツールを起動しないだけで、
@@ -566,3 +563,7 @@ remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
 preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり
                            # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。
+
+[jj]
+tool = "lazyjj"   # ハブで `!` を押したときに起動する外部 jj ツール([git] tool の jj 版)。
+                  # 未導入なら lazygit が無いときと同じく、起動できなかった旨を flash する。

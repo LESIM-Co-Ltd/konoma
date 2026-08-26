@@ -577,9 +577,6 @@ vcs              = "auto" # Which version-control system answers: "auto" | "git"
                           # which asks for a snapshot after a confirmation ([ui] confirm_jj_sync).
                           # With no jj binary on the machine, konoma falls back to git.
 
-[jj]
-tool = "lazyjj"   # The external jj tool launched with `!` in the hub, the way [git] tool is for git.
-                  # A missing binary flashes what could not be launched, exactly as a missing lazygit does.
 pdf              = true   # The external fallback rasterizer: macOS's bundled qlmanage/sips, tried only when the primary
                            # renderer (hayro, pure Rust, always active regardless of this flag) fails on page 1 of a
                            # given PDF (encrypted/corrupt/unsupported). false never launches those tools; PDF preview
@@ -595,3 +592,7 @@ remote_images    = true   # Fetching http(s) images referenced from Markdown —
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
 preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
                            # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.
+
+[jj]
+tool = "lazyjj"   # The external jj tool launched with `!` in the hub, the way [git] tool is for git.
+                  # A missing binary flashes what could not be launched, exactly as a missing lazygit does.

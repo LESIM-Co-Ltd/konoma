@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Five `[external]` switches in the two shipped example configs were silently doing nothing.**
+  The `[jj]` section header had been placed in the middle of `[external]`'s keys, so `pdf`, `video`,
+  `remote_images`, `open_links` and `preview_commands` were parsed as part of `[jj]` — a table with
+  no such fields, where they were dropped without a word. Anyone who copied
+  `config.example.toml` to `~/.config/konoma/config.toml` and set one of them to `false` got no
+  effect and no error. The file still parsed, so the test that checks the examples parse stayed
+  green. `[jj]` now sits after the section it interrupted, in both the English and Japanese
+  examples; the settings reference pages were already correct and are unchanged.
+
 ## [0.27.0] - 2026-08-26
 
 ### Fixed
