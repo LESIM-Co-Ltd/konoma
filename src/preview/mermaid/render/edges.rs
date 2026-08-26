@@ -347,16 +347,239 @@ pub fn trim_start(points: &[Point], by: f64) -> Vec<Point> {
     reversed
 }
 
-/// How much room the terminator of `arrow` needs at each end, as `(start, end)` px.
-pub fn terminator_lengths(arrow: Arrow) -> (f64, f64) {
-    match arrow {
-        Arrow::None | Arrow::Invalid => (0.0, 0.0),
-        Arrow::Point => (0.0, ARROW_LENGTH),
-        Arrow::Cross => (0.0, CROSS_HALF * 2.0),
-        Arrow::Circle => (0.0, CIRCLE_RADIUS * 2.0),
-        Arrow::DoublePoint => (ARROW_LENGTH, ARROW_LENGTH),
-        Arrow::DoubleCross => (CROSS_HALF * 2.0, CROSS_HALF * 2.0),
-        Arrow::DoubleCircle => (CIRCLE_RADIUS * 2.0, CIRCLE_RADIUS * 2.0),
+/// Length of the hollow triangle a class diagram's `<|--` ends in.
+pub const TRIANGLE_LENGTH: f64 = 12.0;
+
+/// Half the width of that triangle, across the line.
+pub const TRIANGLE_HALF_WIDTH: f64 = 7.0;
+
+/// Length of the diamond `*--` and `o--` end in.
+pub const DIAMOND_LENGTH: f64 = 16.0;
+
+/// Half the width of that diamond, across the line.
+pub const DIAMOND_HALF_WIDTH: f64 = 5.5;
+
+/// Radius of the ring a class diagram's `()--` ends in.
+pub const LOLLIPOP_RADIUS: f64 = 5.0;
+
+/// How far from the boundary the mark nearest an entity sits, on an ER relationship.
+pub const ER_NEAR: f64 = 8.0;
+
+/// How far back from the boundary a crow's foot's apex sits.
+pub const ER_FOOT_LENGTH: f64 = 10.0;
+
+/// How far from the boundary the second mark sits, on an ER relationship.
+pub const ER_FAR: f64 = 18.0;
+
+/// Half the height of the bar that means "one" on an ER relationship.
+pub const ER_BAR_HALF: f64 = 6.0;
+
+/// Half the spread of the crow's foot that means "many".
+///
+/// Deliberately wider than [`ER_BAR_HALF`], and it has to be: `}o` and `|o` differ only in
+/// whether the mark at the entity is a foot or a bar, so a foot the width of a bar makes the two
+/// cardinalities look alike at the size a terminal shows a diagram. Chosen by rasterising the
+/// corpus and looking at it.
+pub const ER_FOOT_HALF: f64 = 9.0;
+
+/// Radius of the ring that means "zero" on an ER relationship.
+pub const ER_RING_RADIUS: f64 = 4.0;
+
+/// What is drawn at one end of an edge.
+///
+/// One enum over every diagram family, for the same reason [`Glyph`] is one enum over every
+/// shape: clipping, trimming and emission are written once and know nothing about which language
+/// asked for a mark. A flowchart's [`Arrow`] is a *pair* of ends rather than one, so it is
+/// mapped onto two of these by [`Tip::of_arrow`] instead of being wrapped the way [`Glyph::Flow`]
+/// wraps a shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Tip {
+    /// Nothing is drawn: `A --- B`, or a note's connector.
+    #[default]
+    None,
+    /// A filled triangle. `-->` in every language that has it.
+    Arrow,
+    /// `--x`: two strokes crossing.
+    Cross,
+    /// `--o`: a filled disc.
+    Circle,
+    /// `<|--` / `..|>`: a hollow triangle — inheritance, and (dotted) realization.
+    HollowTriangle,
+    /// `*--`: a filled diamond — composition.
+    FilledDiamond,
+    /// `o--`: a hollow diamond — aggregation.
+    HollowDiamond,
+    /// `()--`: a ring on the boundary — a required/provided interface.
+    Lollipop,
+    /// `||`: exactly one.
+    ErOnlyOne,
+    /// `|o`: zero or one.
+    ErZeroOrOne,
+    /// `}|`: one or more.
+    ErOneOrMore,
+    /// `}o`: zero or more.
+    ErZeroOrMore,
+}
+
+impl Tip {
+    /// The two ends a flowchart's [`Arrow`] means.
+    ///
+    /// `Arrow::Invalid` — the two halves of a `x-- text -->` disagreeing — draws nothing, which is
+    /// what it did before this enum existed.
+    pub fn of_arrow(arrow: Arrow) -> (Tip, Tip) {
+        match arrow {
+            Arrow::None | Arrow::Invalid => (Tip::None, Tip::None),
+            Arrow::Point => (Tip::None, Tip::Arrow),
+            Arrow::Cross => (Tip::None, Tip::Cross),
+            Arrow::Circle => (Tip::None, Tip::Circle),
+            Arrow::DoublePoint => (Tip::Arrow, Tip::Arrow),
+            Arrow::DoubleCross => (Tip::Cross, Tip::Cross),
+            Arrow::DoubleCircle => (Tip::Circle, Tip::Circle),
+        }
+    }
+
+    /// How much room this mark needs at its end of the line, in px.
+    ///
+    /// The line is shortened by this much so the shaft does not run out through the front of the
+    /// mark. A mark the shaft is *meant* to pass through — a bar, a ring — asks for nothing.
+    pub fn room(self) -> f64 {
+        match self {
+            Tip::None => 0.0,
+            Tip::Arrow => ARROW_LENGTH,
+            Tip::Cross => CROSS_HALF * 2.0,
+            Tip::Circle => CIRCLE_RADIUS * 2.0,
+            Tip::HollowTriangle => TRIANGLE_LENGTH,
+            Tip::FilledDiamond | Tip::HollowDiamond => DIAMOND_LENGTH,
+            Tip::Lollipop => LOLLIPOP_RADIUS * 2.0,
+            // The two bars and the ring are drawn across the shaft, so it runs all the way to the
+            // boundary. The crow's foot has its apex on the shaft, so the shaft stops there.
+            Tip::ErOnlyOne | Tip::ErZeroOrOne => 0.0,
+            Tip::ErOneOrMore | Tip::ErZeroOrMore => ER_FOOT_LENGTH,
+        }
+    }
+}
+
+/// How much room the terminators need at each end, as `(start, end)` px.
+pub fn terminator_lengths(start: Tip, end: Tip) -> (f64, f64) {
+    (start.room(), end.room())
+}
+
+/// The four points of the diamond `*--` and `o--` end in: tip, the two shoulders, and the far
+/// corner. Built from the line's own last segment, so it turns with the edge.
+pub fn diamond(from: &Point, tip: &Point) -> [Point; 4] {
+    let (ux, uy) = unit(from, tip);
+    let (nx, ny) = (-uy * DIAMOND_HALF_WIDTH, ux * DIAMOND_HALF_WIDTH);
+    let mid = Point::new(
+        tip.x - ux * DIAMOND_LENGTH / 2.0,
+        tip.y - uy * DIAMOND_LENGTH / 2.0,
+    );
+    let back = Point::new(tip.x - ux * DIAMOND_LENGTH, tip.y - uy * DIAMOND_LENGTH);
+    [
+        tip.clone(),
+        Point::new(mid.x + nx, mid.y + ny),
+        back,
+        Point::new(mid.x - nx, mid.y - ny),
+    ]
+}
+
+/// The three points of the hollow triangle `<|--` ends in.
+pub fn triangle(from: &Point, tip: &Point) -> [Point; 3] {
+    let (ux, uy) = unit(from, tip);
+    let base = Point::new(tip.x - ux * TRIANGLE_LENGTH, tip.y - uy * TRIANGLE_LENGTH);
+    let (nx, ny) = (-uy * TRIANGLE_HALF_WIDTH, ux * TRIANGLE_HALF_WIDTH);
+    [
+        tip.clone(),
+        Point::new(base.x + nx, base.y + ny),
+        Point::new(base.x - nx, base.y - ny),
+    ]
+}
+
+/// The two ends of a bar drawn across the line, `distance` back from `tip`.
+pub fn cross_bar(from: &Point, tip: &Point, distance: f64, half: f64) -> (Point, Point) {
+    let (ux, uy) = unit(from, tip);
+    let c = Point::new(tip.x - ux * distance, tip.y - uy * distance);
+    let (nx, ny) = (-uy * half, ux * half);
+    (
+        Point::new(c.x + nx, c.y + ny),
+        Point::new(c.x - nx, c.y - ny),
+    )
+}
+
+/// A point `distance` back along the line from `tip`.
+pub fn back_along(from: &Point, tip: &Point, distance: f64) -> Point {
+    let (ux, uy) = unit(from, tip);
+    Point::new(tip.x - ux * distance, tip.y - uy * distance)
+}
+
+/// The crow's foot that means "many": three prongs from an apex [`ER_FOOT_LENGTH`] back along the
+/// line out to the boundary, spreading [`ER_FOOT_HALF`] either side of it.
+pub fn crows_foot(from: &Point, tip: &Point) -> [(Point, Point); 3] {
+    let (ux, uy) = unit(from, tip);
+    let apex = Point::new(tip.x - ux * ER_FOOT_LENGTH, tip.y - uy * ER_FOOT_LENGTH);
+    let (nx, ny) = (-uy * ER_FOOT_HALF, ux * ER_FOOT_HALF);
+    [
+        (apex.clone(), tip.clone()),
+        (apex.clone(), Point::new(tip.x + nx, tip.y + ny)),
+        (apex, Point::new(tip.x - nx, tip.y - ny)),
+    ]
+}
+
+/// How far back from a line's end a cardinality label is anchored, before its own size is
+/// allowed for. Past the longest terminator ([`DIAMOND_LENGTH`]) so the two never sit on top of
+/// each other.
+pub const CARDINALITY_SET_BACK: f64 = 18.0;
+
+/// Blank space between a cardinality label and the line it belongs to.
+pub const CARDINALITY_GAP: f64 = 3.0;
+
+/// Where a cardinality label goes: beside the line, near the end it describes.
+///
+/// A class diagram's `Customer "1" --> "*" Ticket` puts one string at each end of the line rather
+/// than one in the middle, and neither belongs on the line — `"1"` sitting on the shaft reads as
+/// a label for the whole relationship. So it is set back from the end past the terminator and
+/// pushed clear of the line along the normal, by exactly as much as its own box needs on that
+/// axis (the support function of an axis-aligned rectangle), so a vertical line pushes it
+/// sideways by half its width and a horizontal one by half its height.
+///
+/// Both ends are pushed to the **same** side of the line, which takes one sign flip: the vector
+/// "from the tip, back along the line" runs *with* the edge at the tail and *against* it at the
+/// head, so the two normals derived from it point opposite ways. mermaid puts the two on opposite
+/// sides deliberately (`startLabelRight`, `endLabelLeft`); on the short lines a terminal diagram
+/// is made of, that reads as two unrelated annotations rather than as the two ends of one
+/// relationship.
+///
+/// The set-back is **capped at a third of the line**, so a cardinality on a short edge stays near
+/// its own end instead of drifting into the middle, where the relationship's own label already is.
+pub fn end_label_anchor(points: &[Point], at_start: bool, w: f64, h: f64) -> Option<Point> {
+    if points.len() < 2 {
+        return None;
+    }
+    let n = points.len();
+    let (tip, inward) = if at_start {
+        (&points[0], &points[1])
+    } else {
+        (&points[n - 1], &points[n - 2])
+    };
+    // `unit` points *at* the tip, so this is the direction from the tip back along the line.
+    let (ux, uy) = unit(tip, inward);
+    let side = if at_start { 1.0 } else { -1.0 };
+    let (nx, ny) = (side * -uy, side * ux);
+    let along = CARDINALITY_SET_BACK.min(length(points) / 3.0);
+    let across = nx.abs() * w / 2.0 + ny.abs() * h / 2.0 + CARDINALITY_GAP;
+    Some(Point::new(
+        tip.x + ux * along + nx * across,
+        tip.y + uy * along + ny * across,
+    ))
+}
+
+/// The unit vector along `from -> tip`, or `(1, 0)` when the two coincide.
+fn unit(from: &Point, tip: &Point) -> (f64, f64) {
+    let (dx, dy) = (tip.x - from.x, tip.y - from.y);
+    let len = dx.hypot(dy);
+    if len < EPS {
+        (1.0, 0.0)
+    } else {
+        (dx / len, dy / len)
     }
 }
 

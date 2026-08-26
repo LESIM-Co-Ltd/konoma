@@ -48,11 +48,12 @@
 //! `right of` and the floating `note "text" as id`, and nothing else — so a `note over A` is
 //! dropped by the parser rather than guessed at.
 
-use crate::preview::mermaid::flowchart::{Arrow, Shape, Stroke};
+use crate::preview::mermaid::flowchart::{Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::state::{self, Direction, Kind, NotePosition, StateDiagram};
 use crate::preview::mermaid::text_metrics;
 
+use super::edges::Tip;
 use super::shapes::{self, Glyph, Size};
 use super::svg;
 use super::{
@@ -131,6 +132,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
             glyph,
             label,
             size,
+            panel: None,
         });
     }
 
@@ -151,9 +153,12 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
                 .as_deref()
                 .map(Label::measure)
                 .filter(|l| !l.is_blank()),
-            arrow: Arrow::Point,
+            tip_start: Tip::None,
+            tip_end: Tip::Arrow,
             stroke: Stroke::Normal,
             minlen: 1,
+            start_label: None,
+            end_label: None,
         })
         .collect();
 
@@ -243,14 +248,18 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             center,
             size,
             label,
+            panel: None,
         });
         out.edges.push(PlacedEdge {
             from: link.from.clone(),
             to: link.to.clone(),
             points,
-            arrow: Arrow::None,
+            tip_start: Tip::None,
+            tip_end: Tip::None,
             stroke: Stroke::Dotted,
             label: None,
+            start_label: None,
+            end_label: None,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

@@ -1115,6 +1115,60 @@ pub(super) fn check_cluster_titles(name: &str, d: &Diagram, tree: &clusters::Tre
     }
 }
 
+/// (12) Every row of a compartmented box is **inside the box**, and every rule that separates the
+/// rows lies on the box.
+///
+/// The one thing a [`Panel`](super::panel::Panel) can get wrong that nothing else notices: it is
+/// the only geometry in the renderer that is stated in coordinates *relative to a node*, so a
+/// sizing mistake shows up as text hanging out of a class box rather than as an overlap the other
+/// invariants would catch. Both halves are needed — a panel sized too small clips its own rows,
+/// and a rule computed from the wrong height draws across the diagram.
+pub(super) fn check_panels_stay_inside_their_box(name: &str, d: &Diagram) {
+    for n in &d.nodes {
+        let Some(panel) = &n.panel else { continue };
+        assert!(
+            (panel.size.w - n.size.w).abs() < 0.01 && (panel.size.h - n.size.h).abs() < 0.01,
+            "{name}: {} is {}x{} but its panel is {}x{}",
+            n.id,
+            num(n.size.w),
+            num(n.size.h),
+            num(panel.size.w),
+            num(panel.size.h)
+        );
+        for (l, t, r, b) in panel.cell_bounds() {
+            assert!(
+                l >= -0.01 && t >= -0.01 && r <= n.size.w + 0.01 && b <= n.size.h + 0.01,
+                "{name}: a row of {} runs from ({}, {}) to ({}, {}), outside its {}x{} box",
+                n.id,
+                num(l),
+                num(t),
+                num(r),
+                num(b),
+                num(n.size.w),
+                num(n.size.h)
+            );
+        }
+        for y in &panel.rules {
+            assert!(
+                *y >= -0.01 && *y <= n.size.h + 0.01,
+                "{name}: a rule of {} is at y={} in a box {} tall",
+                n.id,
+                num(*y),
+                num(n.size.h)
+            );
+        }
+        for x in &panel.columns {
+            assert!(
+                *x >= -0.01 && *x <= n.size.w + 0.01,
+                "{name}: a column rule of {} is at x={} in a box {} wide",
+                n.id,
+                num(*x),
+                num(n.size.w)
+            );
+        }
+    }
+}
+
 #[test]
 fn invariant_cluster_titles_stay_in_the_frame_and_off_the_members() {
     if !text_metrics::fonts_available() {
@@ -1373,6 +1427,7 @@ fn every_shape_holds_the_label_it_was_sized_for() {
                 width: L.w,
                 height: L.h,
             },
+            panel: None,
         };
         let outline = boundary(&node);
         for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -1950,6 +2005,7 @@ fn synthetic_diagram() -> Diagram {
             ),
             size,
             label: l,
+            panel: None,
         });
     }
 
@@ -1986,8 +2042,11 @@ fn synthetic_diagram() -> Diagram {
                 label: l,
             }),
             points,
-            arrow,
+            tip_start: super::Tip::of_arrow(arrow).0,
+            tip_end: super::Tip::of_arrow(arrow).1,
             stroke,
+            start_label: None,
+            end_label: None,
         });
     }
 

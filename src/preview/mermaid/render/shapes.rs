@@ -16,12 +16,14 @@
 //!
 //! # Two families, one interface
 //!
-//! [`Glyph`] is what a node is drawn as, and it has two kinds of member: the fifteen a flowchart
-//! can ask for, wrapped in [`Glyph::Flow`], and the six a state diagram adds — the two `[*]`
-//! markers, a choice diamond, a fork/join bar, a note, and a state box with a rule under its
-//! first line. Everything downstream of this module (layout, clipping, emission, the geometric
-//! invariants) is written against `Glyph` and knows nothing about which family a node came from,
-//! which is what lets stage 2 reuse stage 1's pipeline whole rather than growing a second one.
+//! [`Glyph`] is what a node is drawn as, and it has three kinds of member: the fifteen a
+//! flowchart can ask for, wrapped in [`Glyph::Flow`]; the six a state diagram adds — the two
+//! `[*]` markers, a choice diamond, a fork/join bar, a note, and a state box with a rule under
+//! its first line; and the two compartmented boxes stage 3 adds, [`Glyph::ClassBox`] and
+//! [`Glyph::ErBox`]. Everything downstream of this module (layout, clipping, emission, the
+//! geometric invariants) is written against `Glyph` and knows nothing about which family a node
+//! came from, which is what lets each stage reuse the pipeline whole rather than growing a
+//! second one.
 //!
 //! # Shapes konoma folds together
 //!
@@ -111,6 +113,11 @@ pub enum Glyph {
     /// A state box whose label arrived as more than one description, drawn with a rule under
     /// the first of them (mermaid's `SHAPE_STATE_WITH_DESC`).
     TitledBox,
+    /// A class diagram's `classBox`: a square-cornered rectangle divided into compartments. What
+    /// goes in them is the node's [`Panel`](super::panel::Panel), which is also what sized it.
+    ClassBox,
+    /// An ER diagram's `erBox`: a name band over a grid of attributes. Sized by its panel too.
+    ErBox,
 }
 
 impl From<Shape> for Glyph {
@@ -494,6 +501,11 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         ),
         // The rule sits between the label's first and second line, so no extra height is needed.
         Glyph::TitledBox => Size::new(label.w + PADDING * 2.0, label.h + PADDING * 2.0),
+        // A box that holds a table is measured by its table. `panel::class_panel` /
+        // `panel::er_panel` decide the width from the widest row and the height from how many
+        // rows there are, and the caller passes that size straight through here — a second
+        // opinion about it would be a second thing to keep in step (see `panel`'s module docs).
+        Glyph::ClassBox | Glyph::ErBox => label,
     }
 }
 
@@ -521,6 +533,14 @@ pub fn outline(glyph: Glyph, size: Size) -> Outline {
             h: size.h,
             r: CORNER_RADIUS,
         },
+        // Square corners, unlike everything else konoma rounds: a UML class and an ER entity are
+        // drawn square everywhere they are drawn at all, and the corner is the only thing that
+        // tells a compartmented box from a subgraph frame at a glance.
+        Glyph::ClassBox | Glyph::ErBox => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: 0.0,
+        },
     }
 }
 
@@ -545,7 +565,7 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         // A bar, a note and a titled box all clip against their box. The note's folded corner is
         // a detail of the drawing: cutting the line there would leave a visible gap where the
         // fold is, and the fold is at most ten pixels of a corner an edge rarely meets.
-        Glyph::Bar { .. } | Glyph::Note | Glyph::TitledBox => {
+        Glyph::Bar { .. } | Glyph::Note | Glyph::TitledBox | Glyph::ClassBox | Glyph::ErBox => {
             intersect_rect(center.x, center.y, size.w, size.h, target)
         }
     }

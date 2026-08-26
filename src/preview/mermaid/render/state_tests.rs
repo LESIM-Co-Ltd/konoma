@@ -36,7 +36,7 @@ use super::tests::{
     tree_of,
 };
 use super::{clusters, labels, shapes, svg, Diagram, Glyph, Label, PlacedNode, RenderError, Size};
-use crate::preview::mermaid::flowchart::{Arrow, Shape, Stroke};
+use crate::preview::mermaid::flowchart::{Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::state::{self, Kind};
 use crate::preview::mermaid::text_metrics;
@@ -569,7 +569,8 @@ fn a_notes_connector_is_dotted_headless_and_lands_on_both_boxes() {
         .collect();
     assert_eq!(ties.len(), 2);
     for e in ties {
-        assert_eq!(e.arrow, Arrow::None, "a note is not a transition");
+        assert_eq!(e.tip_end, super::Tip::None, "a note is not a transition");
+        assert_eq!(e.tip_start, super::Tip::None);
         assert_eq!(e.stroke, Stroke::Dotted);
         assert_eq!(e.points.len(), 2, "a straight connector");
         for (end, p) in [("start", &e.points[0]), ("end", &e.points[1])] {
@@ -851,6 +852,7 @@ fn synthetic_state_diagram() -> Diagram {
             center: Point::new(90.0 + (i % 4) as f64 * 180.0, 90.0 + (i / 4) as f64 * 180.0),
             size,
             label: l,
+            panel: None,
         });
     }
 
@@ -859,21 +861,27 @@ fn synthetic_state_diagram() -> Diagram {
             from: "n0".to_string(),
             to: "n7".to_string(),
             points: vec![Point::new(60.0, 420.0), Point::new(260.0, 420.0)],
-            arrow: Arrow::Point,
+            tip_start: super::Tip::None,
+            tip_end: super::Tip::Arrow,
             stroke: Stroke::Normal,
             label: Some(super::PlacedEdgeLabel {
                 center: Point::new(160.0, 420.0),
                 size: Size::new(50.0 + super::LABEL_PAD_X * 2.0, 20.0),
                 label: label("on", 50.0),
             }),
+            start_label: None,
+            end_label: None,
         },
         super::PlacedEdge {
             from: "n7".to_string(),
             to: "n5".to_string(),
             points: vec![Point::new(60.0, 460.0), Point::new(260.0, 460.0)],
-            arrow: Arrow::None,
+            tip_start: super::Tip::None,
+            tip_end: super::Tip::None,
             stroke: Stroke::Dotted,
             label: None,
+            start_label: None,
+            end_label: None,
         },
     ];
 

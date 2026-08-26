@@ -23,13 +23,15 @@
 //! everything, so a frame reads as ground rather than as another box; mermaid does the same. Their
 //! titles go **last**, which mermaid does not — see [`emit_cluster_title`].
 
-use crate::preview::mermaid::flowchart::{Arrow, Stroke};
+use crate::preview::mermaid::flowchart::Stroke;
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics::{FONT_FAMILY, FONT_SIZE};
 
 use super::clusters;
 use super::edges;
+use super::edges::Tip;
 use super::labels::Label;
+use super::panel::Panel;
 use super::shapes::{Glyph, Outline};
 use super::theme::Theme;
 use super::{shapes, Diagram, PlacedCluster, PlacedEdge, PlacedNode};
@@ -125,6 +127,17 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
                 num(l.size.h),
                 theme.background_ref
             ));
+            emit_text(
+                &mut out,
+                &l.label,
+                l.center.x,
+                l.center.y,
+                theme.edge_label_text,
+            );
+        }
+        // A cardinality gets **no patch behind it**: it is placed clear of its own line rather
+        // than on it, so the only thing a patch could hide is another part of the drawing.
+        for l in [&e.start_label, &e.end_label].into_iter().flatten() {
             emit_text(
                 &mut out,
                 &l.label,
@@ -360,6 +373,11 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
         }
         Outline::None => {}
     }
+    // A box that holds a table draws its table instead of a centred label.
+    if let Some(panel) = &node.panel {
+        emit_panel(out, panel, node, stroke, text);
+        return;
+    }
     // A titled box keeps its first line apart from the rest with a rule, which is what mermaid's
     // `SHAPE_STATE_WITH_DESC` does. The rule goes where the first line ends, so it is derived
     // from the label rather than declared: a box whose label grew a line moves it by itself.
@@ -387,7 +405,7 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     if points.len() < 2 {
         return;
     }
-    let (start_room, end_room) = edges::terminator_lengths(edge.arrow);
+    let (start_room, end_room) = edges::terminator_lengths(edge.tip_start, edge.tip_end);
     let trimmed = edges::trim_start(&edges::trim_end(&points, end_room), start_room);
 
     let (width, dash) = match edge.stroke {
@@ -405,25 +423,170 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
         dash.map_or(String::new(), |d| format!(" stroke-dasharray=\"{d}\""))
     ));
 
+    // The head end first, then the tail end. That order is not cosmetic: it is the order the
+    // flowchart renderer emitted a `<-->`'s two heads in before terminators became per-end, and
+    // the golden pins the sequence of elements.
     let n = points.len();
     let (tail_dir, tail_tip) = (&points[1], &points[0]);
     let (head_dir, head_tip) = (&points[n - 2], &points[n - 1]);
-    match edge.arrow {
-        Arrow::None | Arrow::Invalid => {}
-        Arrow::Point => emit_arrow_head(out, head_dir, head_tip, theme),
-        Arrow::Cross => emit_cross(out, head_dir, head_tip, theme),
-        Arrow::Circle => emit_circle_end(out, head_dir, head_tip, theme),
-        Arrow::DoublePoint => {
-            emit_arrow_head(out, head_dir, head_tip, theme);
-            emit_arrow_head(out, tail_dir, tail_tip, theme);
+    emit_tip(out, head_dir, head_tip, edge.tip_end, theme);
+    emit_tip(out, tail_dir, tail_tip, edge.tip_start, theme);
+}
+
+/// One end of a line, whatever kind of mark it carries.
+fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Theme) {
+    match kind {
+        Tip::None => {}
+        Tip::Arrow => emit_arrow_head(out, from, tip, theme),
+        Tip::Cross => emit_cross(out, from, tip, theme),
+        Tip::Circle => emit_circle_end(out, from, tip, theme),
+        Tip::HollowTriangle => emit_polygon_tip(out, &edges::triangle(from, tip), theme, false),
+        Tip::FilledDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, true),
+        Tip::HollowDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, false),
+        // A ring sitting *on* the boundary, which is how UML draws a provided interface.
+        Tip::Lollipop => {
+            let c = edges::back_along(from, tip, edges::LOLLIPOP_RADIUS);
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{}\" \
+                 stroke-width=\"{}\"/>\n",
+                num(c.x),
+                num(c.y),
+                num(edges::LOLLIPOP_RADIUS),
+                theme.node_fill,
+                theme.arrowhead,
+                num(NODE_STROKE_WIDTH)
+            ));
         }
-        Arrow::DoubleCross => {
-            emit_cross(out, head_dir, head_tip, theme);
-            emit_cross(out, tail_dir, tail_tip, theme);
+        Tip::ErOnlyOne => {
+            emit_er_bar(out, from, tip, edges::ER_NEAR, theme);
+            emit_er_bar(out, from, tip, edges::ER_FAR, theme);
         }
-        Arrow::DoubleCircle => {
-            emit_circle_end(out, head_dir, head_tip, theme);
-            emit_circle_end(out, tail_dir, tail_tip, theme);
+        Tip::ErZeroOrOne => {
+            emit_er_bar(out, from, tip, edges::ER_NEAR, theme);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme);
+        }
+        Tip::ErOneOrMore => {
+            emit_crows_foot(out, from, tip, theme);
+            emit_er_bar(out, from, tip, edges::ER_FAR, theme);
+        }
+        Tip::ErZeroOrMore => {
+            emit_crows_foot(out, from, tip, theme);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme);
+        }
+    }
+}
+
+/// A triangle or a diamond at the end of a line. `filled` picks between "this end owns the other"
+/// (composition, a solid mark) and "this end is the general case" (inheritance and aggregation,
+/// an outline the terminal's own ground shows through).
+fn emit_polygon_tip(out: &mut String, points: &[Point], theme: &Theme, filled: bool) {
+    let pts = points
+        .iter()
+        .map(|p| format!("{},{}", num(p.x), num(p.y)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let fill = if filled {
+        theme.arrowhead
+    } else {
+        theme.node_fill
+    };
+    out.push_str(&format!(
+        "<polygon points=\"{pts}\" fill=\"{fill}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+        theme.arrowhead,
+        num(NODE_STROKE_WIDTH)
+    ));
+}
+
+/// The bar that means "one" on an ER relationship, drawn across the line.
+fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, theme: &Theme) {
+    let (a, b) = edges::cross_bar(from, tip, distance, edges::ER_BAR_HALF);
+    out.push_str(&format!(
+        "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" \
+         stroke-width=\"{}\"/>\n",
+        num(a.x),
+        num(a.y),
+        num(b.x),
+        num(b.y),
+        theme.arrowhead,
+        num(EDGE_STROKE_WIDTH)
+    ));
+}
+
+/// The ring that means "zero" on an ER relationship. Filled with the node colour rather than left
+/// open, so the shaft it sits on does not run through the middle of it.
+fn emit_er_ring(out: &mut String, from: &Point, tip: &Point, distance: f64, theme: &Theme) {
+    let c = edges::back_along(from, tip, distance);
+    out.push_str(&format!(
+        "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{}\" \
+         stroke-width=\"{}\"/>\n",
+        num(c.x),
+        num(c.y),
+        num(edges::ER_RING_RADIUS),
+        theme.node_fill,
+        theme.arrowhead,
+        num(EDGE_STROKE_WIDTH)
+    ));
+}
+
+/// The crow's foot that means "many": three prongs opening onto the entity.
+fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
+    let mut d = String::new();
+    for (a, b) in edges::crows_foot(from, tip) {
+        d.push_str(&format!(
+            "M{},{} L{},{} ",
+            num(a.x),
+            num(a.y),
+            num(b.x),
+            num(b.y)
+        ));
+    }
+    out.push_str(&format!(
+        "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+        d.trim_end(),
+        theme.arrowhead,
+        num(EDGE_STROKE_WIDTH)
+    ));
+}
+
+/// The compartments inside a class box or an entity box.
+///
+/// Everything here is a translation of numbers [`super::panel`] already worked out, in the order
+/// rules-then-text so a rule never lands on top of a word.
+fn emit_panel(out: &mut String, panel: &Panel, node: &PlacedNode, stroke: &str, text: &str) {
+    let (left, top, right, bottom) = node.bounds();
+    for y in &panel.rules {
+        out.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{stroke}\" \
+             stroke-width=\"{}\"/>\n",
+            num(left),
+            num(right),
+            num(clusters::STROKE_WIDTH),
+            y = num(top + y)
+        ));
+    }
+    // A column rule starts under the name band — the first horizontal rule — because above it
+    // there is one centred name, not a row of cells.
+    let column_top = panel.rules.first().map_or(top, |y| top + y);
+    for x in &panel.columns {
+        out.push_str(&format!(
+            "<line x1=\"{x}\" y1=\"{}\" x2=\"{x}\" y2=\"{}\" stroke=\"{stroke}\" \
+             stroke-width=\"{}\"/>\n",
+            num(column_top),
+            num(bottom),
+            num(clusters::STROKE_WIDTH),
+            x = num(left + x)
+        ));
+    }
+    for row in &panel.rows {
+        for cell in &row.cells {
+            emit_line_of_text(
+                out,
+                &cell.label,
+                left + cell.x,
+                top + row.y,
+                text,
+                cell.centered,
+            );
         }
     }
 }
@@ -497,6 +660,28 @@ fn emit_circle_end(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
 /// `text-anchor="middle"` does the horizontal centring, so the emitted markup does not depend on
 /// konoma and resvg agreeing about the text's width — but the box around it does, which is what
 /// the measurement instrument in `tests` checks.
+/// One row of a panel: a single line, anchored at its centre or at its left edge.
+///
+/// `text-anchor="start"` is the whole reason a class member reads as a list rather than as a
+/// column of centred fragments — `+String owner` over `+deposit(amount)` only lines up if both
+/// start at the same x.
+fn emit_line_of_text(out: &mut String, label: &Label, x: f64, cy: f64, fill: &str, centered: bool) {
+    if label.is_blank() {
+        return;
+    }
+    out.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" text-anchor=\"{}\" font-family=\"{}\" font-size=\"{}\" \
+         fill=\"{}\">{}</text>\n",
+        num(x),
+        num(cy + FONT_SIZE as f64 * super::labels::BASELINE_RATIO),
+        if centered { "middle" } else { "start" },
+        FONT_FAMILY,
+        num(FONT_SIZE as f64),
+        fill,
+        escape(&label.lines.join(" "))
+    ));
+}
+
 fn emit_text(out: &mut String, label: &Label, cx: f64, cy: f64, fill: &str) {
     if label.is_blank() {
         return;

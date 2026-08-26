@@ -1,0 +1,450 @@
+=== dark ===
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+<rect width="660" height="660" fill="none"/>
+<g class="clusters">
+<rect x="70" y="490" width="500" height="140" rx="5" ry="5" fill="#2b2b38" stroke="#8a8a8a" stroke-width="1"/>
+</g>
+<g class="edges">
+<path d="M72,240L568,240" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<polygon points="580,240 568,247 568,233" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<polygon points="60,240 72,233 72,247" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<path d="M76,274L564,274" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="580,274 572,279.5 564,274 572,268.5" fill="#d3d3d3" stroke="#d3d3d3" stroke-width="1.5"/>
+<polygon points="60,274 68,268.5 76,274 68,279.5" fill="#d3d3d3" stroke="#d3d3d3" stroke-width="1.5"/>
+<path d="M76,308L564,308" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<polygon points="580,308 572,313.5 564,308 572,302.5" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<polygon points="60,308 68,302.5 76,308 68,313.5" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<path d="M70,342L570,342" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<circle cx="575" cy="342" r="5" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<circle cx="65" cy="342" r="5" fill="#1f2020" stroke="#d3d3d3" stroke-width="1.5"/>
+<path d="M60,376L580,376" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="572" y1="382" x2="572" y2="370" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="562" y1="382" x2="562" y2="370" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="68" y1="370" x2="68" y2="382" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="78" y1="370" x2="78" y2="382" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M60,410L580,410" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<line x1="572" y1="416" x2="572" y2="404" stroke="#d3d3d3" stroke-width="2"/>
+<circle cx="562" cy="410" r="4" fill="#1f2020" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="68" y1="404" x2="68" y2="416" stroke="#d3d3d3" stroke-width="2"/>
+<circle cx="78" cy="410" r="4" fill="#1f2020" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M70,444L570,444" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M570,444 L580,444 M570,444 L580,453 M570,444 L580,435" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="562" y1="450" x2="562" y2="438" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M70,444 L60,444 M70,444 L60,435 M70,444 L60,453" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<line x1="78" y1="438" x2="78" y2="450" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M70,478L570,478" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M570,478 L580,478 M570,478 L580,487 M570,478 L580,469" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<circle cx="562" cy="478" r="4" fill="#1f2020" stroke="#d3d3d3" stroke-width="2"/>
+<path d="M70,478 L60,478 M70,478 L60,469 M70,478 L60,487" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+<circle cx="78" cy="478" r="4" fill="#1f2020" stroke="#d3d3d3" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="62" y="23.5" width="116" height="113" rx="0" ry="0" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<line x1="62" y1="66.3" x2="178" y2="66.3" stroke="#cccccc" stroke-width="1"/>
+<line x1="62" y1="109.1" x2="178" y2="109.1" stroke="#cccccc" stroke-width="1"/>
+<text x="120" y="42.1" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc">«interface»</text>
+<text x="120" y="57.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc">Shape</text>
+<text x="74" y="84.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">+int sides</text>
+<text x="74" y="100.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">-String name</text>
+<text x="74" y="127.7" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">+draw() : bool</text>
+<rect x="271" y="42.9" width="298" height="74.2" rx="0" ry="0" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<line x1="271" y1="70.3" x2="569" y2="70.3" stroke="#cccccc" stroke-width="1"/>
+<line x1="271" y1="93.7" x2="569" y2="93.7" stroke="#cccccc" stroke-width="1"/>
+<line x1="327" y1="70.3" x2="327" y2="117.1" stroke="#cccccc" stroke-width="1"/>
+<line x1="435" y1="70.3" x2="435" y2="117.1" stroke="#cccccc" stroke-width="1"/>
+<line x1="469" y1="70.3" x2="469" y2="117.1" stroke="#cccccc" stroke-width="1"/>
+<text x="420" y="61.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc">PERSON</text>
+<text x="279" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">string</text>
+<text x="335" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">driversLicense</text>
+<text x="443" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">PK</text>
+<text x="477" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">The license #</text>
+<text x="279" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">int</text>
+<text x="335" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#cccccc">age</text>
+<rect x="30" y="185" width="60" height="30" rx="0" ry="0" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="60" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="60" dy="0">left</tspan></text>
+<rect x="550" y="185" width="60" height="30" rx="0" ry="0" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="580" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="580" dy="0">right</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="90" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="550" dy="0">0..*</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="320" y="504.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="320" dy="0">A namespace</tspan></text>
+</g>
+</svg>
+
+=== light ===
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+<rect width="660" height="660" fill="none"/>
+<g class="clusters">
+<rect x="70" y="490" width="500" height="140" rx="5" ry="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1"/>
+</g>
+<g class="edges">
+<path d="M72,240L568,240" fill="none" stroke="#64748b" stroke-width="2"/>
+<polygon points="580,240 568,247 568,233" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<polygon points="60,240 72,233 72,247" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<path d="M76,274L564,274" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="580,274 572,279.5 564,274 572,268.5" fill="#64748b" stroke="#64748b" stroke-width="1.5"/>
+<polygon points="60,274 68,268.5 76,274 68,279.5" fill="#64748b" stroke="#64748b" stroke-width="1.5"/>
+<path d="M76,308L564,308" fill="none" stroke="#64748b" stroke-width="2"/>
+<polygon points="580,308 572,313.5 564,308 572,302.5" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<polygon points="60,308 68,302.5 76,308 68,313.5" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<path d="M70,342L570,342" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<circle cx="575" cy="342" r="5" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<circle cx="65" cy="342" r="5" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+<path d="M60,376L580,376" fill="none" stroke="#64748b" stroke-width="2"/>
+<line x1="572" y1="382" x2="572" y2="370" stroke="#64748b" stroke-width="2"/>
+<line x1="562" y1="382" x2="562" y2="370" stroke="#64748b" stroke-width="2"/>
+<line x1="68" y1="370" x2="68" y2="382" stroke="#64748b" stroke-width="2"/>
+<line x1="78" y1="370" x2="78" y2="382" stroke="#64748b" stroke-width="2"/>
+<path d="M60,410L580,410" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<line x1="572" y1="416" x2="572" y2="404" stroke="#64748b" stroke-width="2"/>
+<circle cx="562" cy="410" r="4" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+<line x1="68" y1="404" x2="68" y2="416" stroke="#64748b" stroke-width="2"/>
+<circle cx="78" cy="410" r="4" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+<path d="M70,444L570,444" fill="none" stroke="#64748b" stroke-width="2"/>
+<path d="M570,444 L580,444 M570,444 L580,453 M570,444 L580,435" fill="none" stroke="#64748b" stroke-width="2"/>
+<line x1="562" y1="450" x2="562" y2="438" stroke="#64748b" stroke-width="2"/>
+<path d="M70,444 L60,444 M70,444 L60,435 M70,444 L60,453" fill="none" stroke="#64748b" stroke-width="2"/>
+<line x1="78" y1="438" x2="78" y2="450" stroke="#64748b" stroke-width="2"/>
+<path d="M70,478L570,478" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M570,478 L580,478 M570,478 L580,487 M570,478 L580,469" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="562" cy="478" r="4" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+<path d="M70,478 L60,478 M70,478 L60,469 M70,478 L60,487" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="78" cy="478" r="4" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="62" y="23.5" width="116" height="113" rx="0" ry="0" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<line x1="62" y1="66.3" x2="178" y2="66.3" stroke="#94a3b8" stroke-width="1"/>
+<line x1="62" y1="109.1" x2="178" y2="109.1" stroke="#94a3b8" stroke-width="1"/>
+<text x="120" y="42.1" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a">«interface»</text>
+<text x="120" y="57.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a">Shape</text>
+<text x="74" y="84.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">+int sides</text>
+<text x="74" y="100.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">-String name</text>
+<text x="74" y="127.7" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">+draw() : bool</text>
+<rect x="271" y="42.9" width="298" height="74.2" rx="0" ry="0" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<line x1="271" y1="70.3" x2="569" y2="70.3" stroke="#94a3b8" stroke-width="1"/>
+<line x1="271" y1="93.7" x2="569" y2="93.7" stroke="#94a3b8" stroke-width="1"/>
+<line x1="327" y1="70.3" x2="327" y2="117.1" stroke="#94a3b8" stroke-width="1"/>
+<line x1="435" y1="70.3" x2="435" y2="117.1" stroke="#94a3b8" stroke-width="1"/>
+<line x1="469" y1="70.3" x2="469" y2="117.1" stroke="#94a3b8" stroke-width="1"/>
+<text x="420" y="61.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a">PERSON</text>
+<text x="279" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">string</text>
+<text x="335" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">driversLicense</text>
+<text x="443" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">PK</text>
+<text x="477" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">The license #</text>
+<text x="279" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">int</text>
+<text x="335" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#0f172a">age</text>
+<rect x="30" y="185" width="60" height="30" rx="0" ry="0" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="60" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="60" dy="0">left</tspan></text>
+<rect x="550" y="185" width="60" height="30" rx="0" ry="0" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="580" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="580" dy="0">right</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="90" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="550" dy="0">0..*</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="320" y="504.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="320" dy="0">A namespace</tspan></text>
+</g>
+</svg>
+
+=== classic ===
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+<rect width="660" height="660" fill="none"/>
+<g class="clusters">
+<rect x="70" y="490" width="500" height="140" rx="5" ry="5" fill="#ffffde" stroke="#aaaa33" stroke-width="1"/>
+</g>
+<g class="edges">
+<path d="M72,240L568,240" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<polygon points="580,240 568,247 568,233" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<polygon points="60,240 72,233 72,247" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<path d="M76,274L564,274" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="580,274 572,279.5 564,274 572,268.5" fill="#5c6b8a" stroke="#5c6b8a" stroke-width="1.5"/>
+<polygon points="60,274 68,268.5 76,274 68,279.5" fill="#5c6b8a" stroke="#5c6b8a" stroke-width="1.5"/>
+<path d="M76,308L564,308" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<polygon points="580,308 572,313.5 564,308 572,302.5" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<polygon points="60,308 68,302.5 76,308 68,313.5" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<path d="M70,342L570,342" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<circle cx="575" cy="342" r="5" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<circle cx="65" cy="342" r="5" fill="#ececff" stroke="#5c6b8a" stroke-width="1.5"/>
+<path d="M60,376L580,376" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="572" y1="382" x2="572" y2="370" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="562" y1="382" x2="562" y2="370" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="68" y1="370" x2="68" y2="382" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="78" y1="370" x2="78" y2="382" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M60,410L580,410" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<line x1="572" y1="416" x2="572" y2="404" stroke="#5c6b8a" stroke-width="2"/>
+<circle cx="562" cy="410" r="4" fill="#ececff" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="68" y1="404" x2="68" y2="416" stroke="#5c6b8a" stroke-width="2"/>
+<circle cx="78" cy="410" r="4" fill="#ececff" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M70,444L570,444" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M570,444 L580,444 M570,444 L580,453 M570,444 L580,435" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="562" y1="450" x2="562" y2="438" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M70,444 L60,444 M70,444 L60,435 M70,444 L60,453" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<line x1="78" y1="438" x2="78" y2="450" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M70,478L570,478" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M570,478 L580,478 M570,478 L580,487 M570,478 L580,469" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<circle cx="562" cy="478" r="4" fill="#ececff" stroke="#5c6b8a" stroke-width="2"/>
+<path d="M70,478 L60,478 M70,478 L60,469 M70,478 L60,487" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+<circle cx="78" cy="478" r="4" fill="#ececff" stroke="#5c6b8a" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="62" y="23.5" width="116" height="113" rx="0" ry="0" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<line x1="62" y1="66.3" x2="178" y2="66.3" stroke="#7b88a8" stroke-width="1"/>
+<line x1="62" y1="109.1" x2="178" y2="109.1" stroke="#7b88a8" stroke-width="1"/>
+<text x="120" y="42.1" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">«interface»</text>
+<text x="120" y="57.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">Shape</text>
+<text x="74" y="84.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+int sides</text>
+<text x="74" y="100.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">-String name</text>
+<text x="74" y="127.7" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+draw() : bool</text>
+<rect x="271" y="42.9" width="298" height="74.2" rx="0" ry="0" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<line x1="271" y1="70.3" x2="569" y2="70.3" stroke="#7b88a8" stroke-width="1"/>
+<line x1="271" y1="93.7" x2="569" y2="93.7" stroke="#7b88a8" stroke-width="1"/>
+<line x1="327" y1="70.3" x2="327" y2="117.1" stroke="#7b88a8" stroke-width="1"/>
+<line x1="435" y1="70.3" x2="435" y2="117.1" stroke="#7b88a8" stroke-width="1"/>
+<line x1="469" y1="70.3" x2="469" y2="117.1" stroke="#7b88a8" stroke-width="1"/>
+<text x="420" y="61.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">PERSON</text>
+<text x="279" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">string</text>
+<text x="335" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">driversLicense</text>
+<text x="443" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">PK</text>
+<text x="477" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">The license #</text>
+<text x="279" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">int</text>
+<text x="335" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">age</text>
+<rect x="30" y="185" width="60" height="30" rx="0" ry="0" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="60" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="60" dy="0">left</tspan></text>
+<rect x="550" y="185" width="60" height="30" rx="0" ry="0" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="580" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="580" dy="0">right</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="90" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="320" y="504.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="320" dy="0">A namespace</tspan></text>
+</g>
+</svg>
+
+=== forest ===
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+<rect width="660" height="660" fill="none"/>
+<g class="clusters">
+<rect x="70" y="490" width="500" height="140" rx="5" ry="5" fill="#cdffb2" stroke="#6eaa49" stroke-width="1"/>
+</g>
+<g class="edges">
+<path d="M72,240L568,240" fill="none" stroke="#008000" stroke-width="2"/>
+<polygon points="580,240 568,247 568,233" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<polygon points="60,240 72,233 72,247" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<path d="M76,274L564,274" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="580,274 572,279.5 564,274 572,268.5" fill="#008000" stroke="#008000" stroke-width="1.5"/>
+<polygon points="60,274 68,268.5 76,274 68,279.5" fill="#008000" stroke="#008000" stroke-width="1.5"/>
+<path d="M76,308L564,308" fill="none" stroke="#008000" stroke-width="2"/>
+<polygon points="580,308 572,313.5 564,308 572,302.5" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<polygon points="60,308 68,302.5 76,308 68,313.5" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<path d="M70,342L570,342" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<circle cx="575" cy="342" r="5" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<circle cx="65" cy="342" r="5" fill="#cde498" stroke="#008000" stroke-width="1.5"/>
+<path d="M60,376L580,376" fill="none" stroke="#008000" stroke-width="2"/>
+<line x1="572" y1="382" x2="572" y2="370" stroke="#008000" stroke-width="2"/>
+<line x1="562" y1="382" x2="562" y2="370" stroke="#008000" stroke-width="2"/>
+<line x1="68" y1="370" x2="68" y2="382" stroke="#008000" stroke-width="2"/>
+<line x1="78" y1="370" x2="78" y2="382" stroke="#008000" stroke-width="2"/>
+<path d="M60,410L580,410" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<line x1="572" y1="416" x2="572" y2="404" stroke="#008000" stroke-width="2"/>
+<circle cx="562" cy="410" r="4" fill="#cde498" stroke="#008000" stroke-width="2"/>
+<line x1="68" y1="404" x2="68" y2="416" stroke="#008000" stroke-width="2"/>
+<circle cx="78" cy="410" r="4" fill="#cde498" stroke="#008000" stroke-width="2"/>
+<path d="M70,444L570,444" fill="none" stroke="#008000" stroke-width="2"/>
+<path d="M570,444 L580,444 M570,444 L580,453 M570,444 L580,435" fill="none" stroke="#008000" stroke-width="2"/>
+<line x1="562" y1="450" x2="562" y2="438" stroke="#008000" stroke-width="2"/>
+<path d="M70,444 L60,444 M70,444 L60,435 M70,444 L60,453" fill="none" stroke="#008000" stroke-width="2"/>
+<line x1="78" y1="438" x2="78" y2="450" stroke="#008000" stroke-width="2"/>
+<path d="M70,478L570,478" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M570,478 L580,478 M570,478 L580,487 M570,478 L580,469" fill="none" stroke="#008000" stroke-width="2"/>
+<circle cx="562" cy="478" r="4" fill="#cde498" stroke="#008000" stroke-width="2"/>
+<path d="M70,478 L60,478 M70,478 L60,469 M70,478 L60,487" fill="none" stroke="#008000" stroke-width="2"/>
+<circle cx="78" cy="478" r="4" fill="#cde498" stroke="#008000" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="62" y="23.5" width="116" height="113" rx="0" ry="0" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<line x1="62" y1="66.3" x2="178" y2="66.3" stroke="#13540c" stroke-width="1"/>
+<line x1="62" y1="109.1" x2="178" y2="109.1" stroke="#13540c" stroke-width="1"/>
+<text x="120" y="42.1" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">«interface»</text>
+<text x="120" y="57.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">Shape</text>
+<text x="74" y="84.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+int sides</text>
+<text x="74" y="100.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">-String name</text>
+<text x="74" y="127.7" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+draw() : bool</text>
+<rect x="271" y="42.9" width="298" height="74.2" rx="0" ry="0" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<line x1="271" y1="70.3" x2="569" y2="70.3" stroke="#13540c" stroke-width="1"/>
+<line x1="271" y1="93.7" x2="569" y2="93.7" stroke="#13540c" stroke-width="1"/>
+<line x1="327" y1="70.3" x2="327" y2="117.1" stroke="#13540c" stroke-width="1"/>
+<line x1="435" y1="70.3" x2="435" y2="117.1" stroke="#13540c" stroke-width="1"/>
+<line x1="469" y1="70.3" x2="469" y2="117.1" stroke="#13540c" stroke-width="1"/>
+<text x="420" y="61.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">PERSON</text>
+<text x="279" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">string</text>
+<text x="335" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">driversLicense</text>
+<text x="443" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">PK</text>
+<text x="477" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">The license #</text>
+<text x="279" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">int</text>
+<text x="335" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">age</text>
+<rect x="30" y="185" width="60" height="30" rx="0" ry="0" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="60" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="60" dy="0">left</tspan></text>
+<rect x="550" y="185" width="60" height="30" rx="0" ry="0" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="580" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="580" dy="0">right</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="90" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="320" y="504.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="320" dy="0">A namespace</tspan></text>
+</g>
+</svg>
+
+=== neutral ===
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+<rect width="660" height="660" fill="none"/>
+<g class="clusters">
+<rect x="70" y="490" width="500" height="140" rx="5" ry="5" fill="#eaeaea" stroke="#999999" stroke-width="1"/>
+</g>
+<g class="edges">
+<path d="M72,240L568,240" fill="none" stroke="#666666" stroke-width="2"/>
+<polygon points="580,240 568,247 568,233" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<polygon points="60,240 72,233 72,247" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<path d="M76,274L564,274" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<polygon points="580,274 572,279.5 564,274 572,268.5" fill="#666666" stroke="#666666" stroke-width="1.5"/>
+<polygon points="60,274 68,268.5 76,274 68,279.5" fill="#666666" stroke="#666666" stroke-width="1.5"/>
+<path d="M76,308L564,308" fill="none" stroke="#666666" stroke-width="2"/>
+<polygon points="580,308 572,313.5 564,308 572,302.5" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<polygon points="60,308 68,302.5 76,308 68,313.5" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<path d="M70,342L570,342" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<circle cx="575" cy="342" r="5" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<circle cx="65" cy="342" r="5" fill="#eeeeee" stroke="#666666" stroke-width="1.5"/>
+<path d="M60,376L580,376" fill="none" stroke="#666666" stroke-width="2"/>
+<line x1="572" y1="382" x2="572" y2="370" stroke="#666666" stroke-width="2"/>
+<line x1="562" y1="382" x2="562" y2="370" stroke="#666666" stroke-width="2"/>
+<line x1="68" y1="370" x2="68" y2="382" stroke="#666666" stroke-width="2"/>
+<line x1="78" y1="370" x2="78" y2="382" stroke="#666666" stroke-width="2"/>
+<path d="M60,410L580,410" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<line x1="572" y1="416" x2="572" y2="404" stroke="#666666" stroke-width="2"/>
+<circle cx="562" cy="410" r="4" fill="#eeeeee" stroke="#666666" stroke-width="2"/>
+<line x1="68" y1="404" x2="68" y2="416" stroke="#666666" stroke-width="2"/>
+<circle cx="78" cy="410" r="4" fill="#eeeeee" stroke="#666666" stroke-width="2"/>
+<path d="M70,444L570,444" fill="none" stroke="#666666" stroke-width="2"/>
+<path d="M570,444 L580,444 M570,444 L580,453 M570,444 L580,435" fill="none" stroke="#666666" stroke-width="2"/>
+<line x1="562" y1="450" x2="562" y2="438" stroke="#666666" stroke-width="2"/>
+<path d="M70,444 L60,444 M70,444 L60,435 M70,444 L60,453" fill="none" stroke="#666666" stroke-width="2"/>
+<line x1="78" y1="438" x2="78" y2="450" stroke="#666666" stroke-width="2"/>
+<path d="M70,478L570,478" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M570,478 L580,478 M570,478 L580,487 M570,478 L580,469" fill="none" stroke="#666666" stroke-width="2"/>
+<circle cx="562" cy="478" r="4" fill="#eeeeee" stroke="#666666" stroke-width="2"/>
+<path d="M70,478 L60,478 M70,478 L60,469 M70,478 L60,487" fill="none" stroke="#666666" stroke-width="2"/>
+<circle cx="78" cy="478" r="4" fill="#eeeeee" stroke="#666666" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="62" y="23.5" width="116" height="113" rx="0" ry="0" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<line x1="62" y1="66.3" x2="178" y2="66.3" stroke="#999999" stroke-width="1"/>
+<line x1="62" y1="109.1" x2="178" y2="109.1" stroke="#999999" stroke-width="1"/>
+<text x="120" y="42.1" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">«interface»</text>
+<text x="120" y="57.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">Shape</text>
+<text x="74" y="84.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+int sides</text>
+<text x="74" y="100.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">-String name</text>
+<text x="74" y="127.7" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">+draw() : bool</text>
+<rect x="271" y="42.9" width="298" height="74.2" rx="0" ry="0" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<line x1="271" y1="70.3" x2="569" y2="70.3" stroke="#999999" stroke-width="1"/>
+<line x1="271" y1="93.7" x2="569" y2="93.7" stroke="#999999" stroke-width="1"/>
+<line x1="327" y1="70.3" x2="327" y2="117.1" stroke="#999999" stroke-width="1"/>
+<line x1="435" y1="70.3" x2="435" y2="117.1" stroke="#999999" stroke-width="1"/>
+<line x1="469" y1="70.3" x2="469" y2="117.1" stroke="#999999" stroke-width="1"/>
+<text x="420" y="61.5" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333">PERSON</text>
+<text x="279" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">string</text>
+<text x="335" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">driversLicense</text>
+<text x="443" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">PK</text>
+<text x="477" y="86.9" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">The license #</text>
+<text x="279" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">int</text>
+<text x="335" y="110.3" text-anchor="start" font-family="sans-serif" font-size="14" fill="#333333">age</text>
+<rect x="30" y="185" width="60" height="30" rx="0" ry="0" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="60" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="60" dy="0">left</tspan></text>
+<rect x="550" y="185" width="60" height="30" rx="0" ry="0" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="580" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="580" dy="0">right</tspan></text>
+</g>
+<g class="edge-labels">
+<text x="90" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="232.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="266.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="300.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="334.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="368.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="402.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="436.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+<text x="90" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="90" dy="0">1</tspan></text>
+<text x="550" y="470.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="550" dy="0">0..*</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="320" y="504.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="320" dy="0">A namespace</tspan></text>
+</g>
+</svg>
+

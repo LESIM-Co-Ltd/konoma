@@ -23,7 +23,17 @@
 //!   diagrams konoma can draw). A flowchart this module refuses is **not** handed to the crate:
 //!   it degrades to the Unicode text diagram, so a bug here stays visible instead of being
 //!   painted over by the renderer it is replacing.
+//! * **Stage 2** added [`state`], the `stateDiagram` language, and — this is the part worth
+//!   copying — added *no layout*. It builds the same language-neutral `render::GraphSpec` a
+//!   flowchart does and shares everything downstream of it.
+//! * **Stage 3** added [`class`] and [`er`] the same way, which takes §2-1's running total to
+//!   90% of the mermaid people actually write. Between them they needed one new idea: a node
+//!   whose contents are a *table* rather than one centred label, which is
+//!   [`render::panel`](render::panel). Everything else — the layout, the frames, the clipping,
+//!   the curve, the viewBox, the eleven geometric invariants — is stage 1's, unchanged.
 
+pub mod class;
+pub mod er;
 pub mod flowchart;
 pub mod layout;
 pub mod render;

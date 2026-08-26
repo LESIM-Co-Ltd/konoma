@@ -7,7 +7,7 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
-- **Mermaid flowcharts and state diagrams are now drawn by konoma itself.** They used to go through
+- **Mermaid flowcharts, state diagrams, class diagrams and entity-relationship diagrams are now drawn by konoma itself.** They used to go through
   `mermaid-rs-renderer`, which measured text with a font database of its own — a different one from
   the database that later drew the picture, so boxes were sized for glyphs that were never used and
   came out visibly too wide. konoma now parses the diagram, lays it out, and writes the SVG, using

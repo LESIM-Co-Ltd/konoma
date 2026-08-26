@@ -2661,6 +2661,10 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
 /// * **`flowchart` / `graph` / `flowchart-elk` → konoma's own renderer**
 ///   ([`crate::preview::mermaid::render`]). Three quarters of the mermaid people write
 ///   (`docs/FEATURE-MERMAID-RENDERER.md` §2-1).
+/// * **`stateDiagram` (stage 2), `classDiagram` and `erDiagram` (stage 3) → konoma's own
+///   renderer** as well, through [`crate::preview::mermaid::render::state`],
+///   [`crate::preview::mermaid::render::class`] and [`crate::preview::mermaid::render::er`].
+///   With ER at 10% of what people write, §2-1's running total is 90%.
 /// * **every other diagram kind → `mermaid-rs-renderer`**, as before. §7 makes keeping them the
 ///   first requirement of the migration: dropping a kind konoma draws today would be a
 ///   regression, and the crate stays until the later stages take those over one by one.
@@ -2699,6 +2703,10 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
         render_konoma(code, theme, crate::preview::mermaid::render::render)
     } else if state_is_ours(code) {
         render_konoma(code, theme, crate::preview::mermaid::render::state::render)
+    } else if class_is_ours(code) {
+        render_konoma(code, theme, crate::preview::mermaid::render::class::render)
+    } else if er_is_ours(code) {
+        render_konoma(code, theme, crate::preview::mermaid::render::er::render)
     } else {
         render_via_mermaid_rs(code, theme)
     }
@@ -2726,6 +2734,26 @@ fn state_is_ours(code: &str) -> bool {
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::preview::mermaid::state::is_state_diagram(code)
+        }))
+    });
+    caught.unwrap_or(false)
+}
+
+/// Whether this is a class diagram, made panic-safe the same way (stage 3).
+fn class_is_ours(code: &str) -> bool {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::class::is_class_diagram(code)
+        }))
+    });
+    caught.unwrap_or(false)
+}
+
+/// Whether this is an ER diagram, made panic-safe the same way (stage 3).
+fn er_is_ours(code: &str) -> bool {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::er::is_er_diagram(code)
         }))
     });
     caught.unwrap_or(false)
@@ -8936,10 +8964,31 @@ plain body
             );
         }
         for code in [
-            "sequenceDiagram\n  A->>B: hi",
             "classDiagram\n  class A\n  class B\n  A --> B",
+            "classDiagram-v2\n  Animal <|-- Duck",
+            "  \n%% a comment first\nclassDiagram\n  class A\n  A : +x",
+            "---\ntitle: t\n---\nclassDiagram\n  class A\n  A : +x",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段3・クラス図): {code:?}"
+            );
+        }
+        for code in [
             "erDiagram\n  CUSTOMER ||--o{ ORDER : places",
+            "ERDIAGRAM\n  A ||--|| B : x",
+            "  \n%% a comment first\nerDiagram\n  A ||--|| B : x",
+            "---\ntitle: t\n---\nerDiagram\n  A ||--|| B : x",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段3・ER図): {code:?}"
+            );
+        }
+        for code in [
+            "sequenceDiagram\n  A->>B: hi",
             "pie title P\n  \"a\" : 10\n  \"b\" : 20",
+            "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
         ] {
             assert!(
                 !drawn_by_konoma(code),
@@ -8968,6 +9017,22 @@ plain body
             "stateDiagram-v2\n  state S {\n    A --> B\n    --\n    C --> D\n  }",
             "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
             "journey\n  title J\n  section S\n    Do: 5: Me",
+            // Stage 3. Every construct the two languages' documentation shows, in the shape it
+            // shows it — the point being that the *set of diagrams that draw* only ever grows.
+            "classDiagram\n  class BankAccount\n  BankAccount : +String owner",
+            "classDiagram\n  class BankAccount{\n    +String owner\n    +deposit(amount) bool\n  }",
+            "classDiagram\n  classA <|-- classB\n  classC *-- classD\n  classE o-- classF",
+            "classDiagram\n  Customer \"1\" --> \"*\" Ticket",
+            "classDiagram\n  class Shape <<interface>>\n  Shape : draw()",
+            "classDiagram\n  namespace BaseShapes {\n    class Triangle\n  }",
+            "classDiagram\n  note \"a note\"\n  class MyClass{\n  }",
+            "classDiagram\n  bar ()-- foo",
+            "classDiagram\n  direction RL\n  class A\n  A : +x",
+            "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n    string name PK\n  }",
+            "erDiagram\n  CAR 1 to zero or more NAMED-DRIVER : allows",
+            "erDiagram\n  p[Person] {\n    string firstName\n  }\n  a[\"Customer Account\"] {\n    string email\n  }\n  p ||--o| a : has",
+            "erDiagram\n  subgraph title1\n    CUSTOMER\n  end",
+            "erDiagram\n  direction LR\n  A ||--|| B : x",
         ] {
             assert!(
                 mermaid_to_svg(code, "dark").is_some(),
@@ -9033,6 +9098,96 @@ plain body
             );
             assert_eq!(
                 is_state_diagram(code),
+                !parser_says_not_ours,
+                "振り分けとパーサの見解が食い違った: {code:?}"
+            );
+        }
+    }
+
+    /// The same guarantee for stage 3's class diagrams. `classDiagram` with a body that declares
+    /// nothing is the witness: konoma refuses it, and the crate answers it with an SVG, so a
+    /// fallthrough would be invisible.
+    #[test]
+    fn a_refused_class_diagram_is_not_quietly_redrawn_by_the_crate() {
+        assert!(
+            render_via_mermaid_rs("classDiagram\n", "dark").is_ok(),
+            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("classDiagram\n", "dark"),
+            Err("class diagram declares no classes".to_string())
+        );
+        assert!(mermaid_to_svg("classDiagram\n", "dark").is_none());
+    }
+
+    /// And for ER.
+    #[test]
+    fn a_refused_er_diagram_is_not_quietly_redrawn_by_the_crate() {
+        assert!(
+            render_via_mermaid_rs("erDiagram\n", "dark").is_ok(),
+            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("erDiagram\n", "dark"),
+            Err("ER diagram declares no entities".to_string())
+        );
+        assert!(mermaid_to_svg("erDiagram\n", "dark").is_none());
+    }
+
+    /// The routing predicate and the class parser agree about what a class diagram is.
+    #[test]
+    fn the_class_routing_predicate_agrees_with_the_parser() {
+        use crate::preview::mermaid::class::{is_class_diagram, parse, ParseError};
+        for code in [
+            "classDiagram\n  A --> B",
+            "classDiagram-v2\n  A --> B",
+            "classDiagram",
+            "classDiagram\n  class A {\n    +x",
+            "flowchart TD\n  A --> B",
+            "stateDiagram-v2\n  [*] --> A",
+            "erDiagram\n  A ||--|| B : x",
+            "sequenceDiagram\n  A->>B: hi",
+            "classDiagrams --> B",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ] {
+            let parser_says_not_ours = matches!(
+                parse(code),
+                Err(ParseError::NotAClassDiagram { .. }) | Err(ParseError::Empty)
+            );
+            assert_eq!(
+                is_class_diagram(code),
+                !parser_says_not_ours,
+                "振り分けとパーサの見解が食い違った: {code:?}"
+            );
+        }
+    }
+
+    /// The routing predicate and the ER parser agree about what an ER diagram is.
+    #[test]
+    fn the_er_routing_predicate_agrees_with_the_parser() {
+        use crate::preview::mermaid::er::{is_er_diagram, parse, ParseError};
+        for code in [
+            "erDiagram\n  A ||--|| B : x",
+            "ERDIAGRAM\n  A ||--|| B : x",
+            "erdiagram\n  A",
+            "erDiagram",
+            "erDiagram\n  A {\n    string x",
+            "flowchart TD\n  A --> B",
+            "classDiagram\n  A --> B",
+            "stateDiagram-v2\n  [*] --> A",
+            "erDiagrams --> B",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ] {
+            let parser_says_not_ours = matches!(
+                parse(code),
+                Err(ParseError::NotAnErDiagram { .. }) | Err(ParseError::Empty)
+            );
+            assert_eq!(
+                is_er_diagram(code),
                 !parser_says_not_ours,
                 "振り分けとパーサの見解が食い違った: {code:?}"
             );

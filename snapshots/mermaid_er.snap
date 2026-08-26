@@ -1,0 +1,669 @@
+=== order ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CUSTOMER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">ORDER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">LINE-ITEM</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">DELIVERY-ADDRESS</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">places</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">contains</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">uses</tspan></text>
+</g>
+</svg>
+
+=== attributes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CUSTOMER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">name</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">custNumber</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">sector</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">ORDER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">orderNumber</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">deliveryAddress</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">LINE-ITEM</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">productCode</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">quantity</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">float</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">pricePerUnit</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">places</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">contains</tspan></text>
+</g>
+</svg>
+
+=== keys-and-comments ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CAR</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">registrationNumber</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">make</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">model</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string[]</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">parts</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">NAMED-DRIVER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">carRegistrationNumber</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK, FK</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">driverLicence</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK, FK</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">driversLicense</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">The license #</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string(99)</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">Only 99 characters are allowed</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">lastName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">phone</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">UK</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">age</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">MANUFACTURER</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">allows</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">is</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">makes</tspan></text>
+</g>
+</svg>
+
+=== no-attributes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CAR</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">NAMED-DRIVER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">allows</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">is</tspan></text>
+</g>
+</svg>
+
+=== words ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CAR</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">NAMED-DRIVER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">allows</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">is</tspan></text>
+</g>
+</svg>
+
+=== cardinalities ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">A</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">B</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">C</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">D</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">E</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">F</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">G</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">H</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">I</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">J</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">zeroOrOne</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">zeroOrMore</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">oneOrMore</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">mixed</tspan></text>
+</g>
+</svg>
+
+=== aliases ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Person</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">lastName</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Customer Account</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">email</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">has</tspan></text>
+</g>
+</svg>
+
+=== comments-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">E</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">first</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">second</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">F</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">c</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">has</tspan></text>
+</g>
+</svg>
+
+=== optional-types ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string?</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">middleName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">lastName</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== unicode-name ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">This ❤ Unicode</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">OTHER</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">links</tspan></text>
+</g>
+</svg>
+
+=== direction-lr ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CUSTOMER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">name</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">ORDER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">orderNumber</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">places</tspan></text>
+</g>
+</svg>
+
+=== subgraph ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CUSTOMER</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">name</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">custNumber</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CAR</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">NAMED-DRIVER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">age</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">allows</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title3</tspan></text>
+</g>
+</svg>
+
+=== subgraph-endpoint ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">A1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">A2</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">B1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">B2</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">links</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">links</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">links</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title2</tspan></text>
+</g>
+</svg>
+
+=== subgraph-titled ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CUSTOMER</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">ORDER</text>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">title 1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Customer Domain</tspan></text>
+</g>
+</svg>
+
+=== styled ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">CAR</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">registrationNumber</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">make</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">HOUSE</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">顧客</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">名前</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">PK</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">表示名</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">電話番号</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">UK</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">注文</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">int</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">注文番号</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">配送先住所</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">発注する</tspan></text>
+</g>
+</svg>
+
+=== self ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">NODE</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">parent-of</tspan></text>
+</g>
+</svg>
+

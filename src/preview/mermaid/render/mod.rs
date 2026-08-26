@@ -1,7 +1,11 @@
-//! Drawing a parsed flowchart — stages 1c and 1d of konoma's own mermaid renderer.
+//! Drawing a parsed diagram — stages 1c and 1d of konoma's own mermaid renderer, and the shared
+//! half of every stage after them.
 //!
 //! Stage 1b produced a [`Flowchart`]: what the author wrote. This module turns that into a
-//! picture, and it is the first stage whose output a person can look at.
+//! picture, and it is the first stage whose output a person can look at. Three more languages
+//! have since joined it — [`state`], [`class`] and [`er`] — and each of them contributed a
+//! translation into [`GraphSpec`] and nothing else: [`lay_out_spec`] and everything below it is
+//! written once.
 //!
 //! ```text
 //! Flowchart ──▶ measure labels ──▶ size the shapes ──▶ dagre ──▶ clip / curve / place ──▶ SVG
@@ -27,26 +31,42 @@
 //!
 //! **`direction` inside a block is read and not applied** — see [`lay_out`] for why.
 //!
+//! # Boxes that hold a table (stage 3)
+//!
+//! A class and an entity say several things at once, in compartments a reader scans down. That is
+//! the one thing the seam could not express, so a node may now carry a [`Panel`]: rows, cells and
+//! rules, in coordinates relative to the box, worked out by [`panel`] and only *translated* by
+//! [`svg`]. It is geometry, so the invariant tests can state things about it.
+//!
 //! # On the drawing path (stage 1e)
 //!
 //! [`render`] is what `preview::markdown::mermaid_to_svg` calls for every `flowchart` / `graph` /
-//! `flowchart-elk` konoma shows. Other diagram kinds still come from `mermaid-rs-renderer`, and a
-//! flowchart this module *refuses* is not sent there as a second opinion — it degrades to the
-//! Unicode text diagram, so a failure here is visible rather than papered over.
+//! `flowchart-elk` konoma shows, and its three siblings — [`state::render`], [`class::render`],
+//! [`er::render`] — own the other three languages. Every remaining diagram kind still comes from
+//! `mermaid-rs-renderer`, and a diagram one of these four modules *refuses* is not sent there as
+//! a second opinion — it degrades to the Unicode text diagram, so a failure here is visible
+//! rather than papered over.
 
 // konoma is a binary crate, so `pub` marks nothing as used: the parts of this module's surface that
 // exist for the tests and for the stages still to come look unreachable to rustc. Same reasoning,
 // and the same lint, as the sibling `flowchart` and `layout` modules.
 #![allow(dead_code)]
 
+pub mod class;
 pub mod clusters;
 pub mod edges;
+pub mod er;
 pub mod labels;
+pub mod panel;
 pub mod shapes;
 pub mod state;
 pub mod svg;
 pub mod theme;
 
+#[cfg(test)]
+mod class_tests;
+#[cfg(test)]
+mod er_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
@@ -55,14 +75,16 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::preview::mermaid::flowchart::{self, Arrow, Direction, Flowchart, ParseError, Stroke};
+use crate::preview::mermaid::flowchart::{self, Direction, Flowchart, ParseError, Stroke};
 use crate::preview::mermaid::layout::{
     graph::{Graph, GraphOptions},
     layout, EdgeLabel, LayoutOptions, NodeLabel, Point, RankDir,
 };
 use crate::preview::mermaid::text_metrics;
 
+pub use edges::Tip;
 pub use labels::Label;
+pub use panel::Panel;
 pub use shapes::{Glyph, Size};
 pub use theme::Theme;
 
@@ -91,6 +113,10 @@ pub enum RenderError {
     Parse(ParseError),
     /// The source is not a state diagram konoma can read.
     StateParse(crate::preview::mermaid::state::ParseError),
+    /// The source is not a class diagram konoma can read.
+    ClassParse(crate::preview::mermaid::class::ParseError),
+    /// The source is not an ER diagram konoma can read.
+    ErParse(crate::preview::mermaid::er::ParseError),
     /// No sans-serif font could be resolved, so usvg would draw the boxes and silently drop every
     /// glyph inside them. Checked *before* an SVG is built, because there is no error later.
     NoFonts,
@@ -103,6 +129,8 @@ impl fmt::Display for RenderError {
         match self {
             RenderError::Parse(e) => write!(f, "{e}"),
             RenderError::StateParse(e) => write!(f, "{e}"),
+            RenderError::ClassParse(e) => write!(f, "{e}"),
+            RenderError::ErParse(e) => write!(f, "{e}"),
             RenderError::NoFonts => write!(f, "no sans-serif font available for diagram labels"),
             RenderError::NothingToDraw => write!(f, "flowchart has nothing to draw"),
         }
@@ -123,6 +151,18 @@ impl From<crate::preview::mermaid::state::ParseError> for RenderError {
     }
 }
 
+impl From<crate::preview::mermaid::class::ParseError> for RenderError {
+    fn from(e: crate::preview::mermaid::class::ParseError) -> RenderError {
+        RenderError::ClassParse(e)
+    }
+}
+
+impl From<crate::preview::mermaid::er::ParseError> for RenderError {
+    fn from(e: crate::preview::mermaid::er::ParseError) -> RenderError {
+        RenderError::ErParse(e)
+    }
+}
+
 /// One node, placed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedNode {
@@ -134,8 +174,13 @@ pub struct PlacedNode {
     pub center: Point,
     /// Bounding box, as [`shapes::size`] computed it and as dagre laid it out.
     pub size: Size,
-    /// The measured label drawn inside.
+    /// The measured label drawn inside. Blank for a node whose text lives in its [`panel`].
+    ///
+    /// [`panel`]: PlacedNode::panel
     pub label: Label,
+    /// The compartments drawn inside a `classBox` / `erBox`, in coordinates relative to the box's
+    /// top-left corner. `None` for every glyph whose whole content is one centred label.
+    pub panel: Option<Panel>,
 }
 
 impl PlacedNode {
@@ -171,12 +216,18 @@ pub struct PlacedEdge {
     /// The polyline **after clipping to the two shapes** and before the corners are rounded.
     /// This is what the geometric invariants are stated about, and what the label is centred on.
     pub points: Vec<Point>,
-    /// Arrow heads.
-    pub arrow: Arrow,
+    /// What is drawn where the line meets `from`.
+    pub tip_start: Tip,
+    /// What is drawn where the line meets `to`.
+    pub tip_end: Tip,
     /// Line style.
     pub stroke: Stroke,
     /// The label, if the edge carries one.
     pub label: Option<PlacedEdgeLabel>,
+    /// Text drawn beside the line at the `from` end — a class diagram's cardinality.
+    pub start_label: Option<PlacedEdgeLabel>,
+    /// Text drawn beside the line at the `to` end.
+    pub end_label: Option<PlacedEdgeLabel>,
 }
 
 impl PlacedEdge {
@@ -334,6 +385,7 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
                 glyph,
                 label,
                 size,
+                panel: None,
             }
         })
         .collect();
@@ -359,9 +411,12 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
                 .as_deref()
                 .map(Label::measure)
                 .filter(|l| !l.is_blank()),
-            arrow: edge.arrow,
+            tip_start: edges::Tip::of_arrow(edge.arrow).0,
+            tip_end: edges::Tip::of_arrow(edge.arrow).1,
             stroke: edge.stroke,
             minlen: edge.length,
+            start_label: None,
+            end_label: None,
         })
         .collect();
     GraphSpec {
@@ -383,6 +438,9 @@ pub struct SpecNode {
     pub label: Label,
     /// The bounding box dagre lays out.
     pub size: Size,
+    /// The compartments drawn inside it, for a glyph whose content is a table rather than one
+    /// centred label. Sized already: `size` is the panel's own size for such a node.
+    pub panel: Option<Panel>,
 }
 
 /// One edge to lay out. `from`/`to` are as the author wrote them, so either may name a block.
@@ -396,12 +454,18 @@ pub struct SpecEdge {
     pub to: String,
     /// The measured label, if the edge carries one.
     pub label: Option<Label>,
-    /// Arrow heads.
-    pub arrow: Arrow,
+    /// What is drawn where the line meets `from`.
+    pub tip_start: Tip,
+    /// What is drawn where the line meets `to`.
+    pub tip_end: Tip,
     /// Line style.
     pub stroke: Stroke,
     /// How many ranks the edge should try to span (mermaid's link length; dagre's `minlen`).
     pub minlen: usize,
+    /// Text drawn beside the line at the `from` end — a class diagram's cardinality.
+    pub start_label: Option<Label>,
+    /// Text drawn beside the line at the `to` end.
+    pub end_label: Option<Label>,
 }
 
 /// One frame to lay out: a flowchart's `subgraph`, or a state diagram's composite state.
@@ -595,6 +659,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             center,
             size: node.size,
             label: node.label.clone(),
+            panel: node.panel.clone(),
         });
     }
     if nodes.is_empty() {
@@ -648,13 +713,28 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             })
         });
 
+        let side_label = |label: &Option<Label>, at_start: bool| -> Option<PlacedEdgeLabel> {
+            let l = label.clone()?;
+            let center = edges::end_label_anchor(&points, at_start, l.width, l.height)?;
+            Some(PlacedEdgeLabel {
+                center,
+                size: Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0),
+                label: l,
+            })
+        };
+        let start_label = side_label(&edge.start_label, true);
+        let end_label = side_label(&edge.end_label, false);
+
         placed_edges.push(PlacedEdge {
             from: edge.from.clone(),
             to: edge.to.clone(),
             points,
-            arrow: edge.arrow,
+            tip_start: edge.tip_start,
+            tip_end: edge.tip_end,
             stroke: edge.stroke,
             label: placed_label,
+            start_label,
+            end_label,
         });
     }
 
@@ -825,7 +905,10 @@ fn normalise(diagram: &mut Diagram) {
         for p in e.drawn_points() {
             grow(p.x, p.y, p.x, p.y);
         }
-        if let Some(l) = &e.label {
+        for l in [&e.label, &e.start_label, &e.end_label]
+            .into_iter()
+            .flatten()
+        {
             grow(
                 l.center.x - l.size.w / 2.0,
                 l.center.y - l.size.h / 2.0,
@@ -849,7 +932,10 @@ fn normalise(diagram: &mut Diagram) {
         for p in &mut e.points {
             *p = Point::new(p.x + dx, p.y + dy);
         }
-        if let Some(l) = &mut e.label {
+        for l in [&mut e.label, &mut e.start_label, &mut e.end_label]
+            .into_iter()
+            .flatten()
+        {
             l.center = Point::new(l.center.x + dx, l.center.y + dy);
         }
     }
