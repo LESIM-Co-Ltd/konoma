@@ -317,7 +317,7 @@ code_theme = "TwoDark"
 # Preview rules are evaluated top to bottom; the first match wins.
 # builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "code" | "text")
-#   markdown = decorated by tui-markdown (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
+#   markdown = decorated by konoma's own renderer (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
 #   mermaid  = a standalone .mmd/.mermaid shown as a diagram. Default is an image (mermaid-rs-renderer → resvg,
 #              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
 #   image    = full-screen display via the terminal's graphics protocol (zoom/pan). GIFs animate automatically.

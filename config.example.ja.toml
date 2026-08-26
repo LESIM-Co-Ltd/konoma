@@ -303,7 +303,7 @@ code_theme = "TwoDark"
 # プレビュールールは上から評価し、最初にマッチしたものを使う。
 # builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
 #          "archive" | "code" | "text")
-#   markdown=tui-markdown で装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
+#   markdown=konoma 自前のレンダラで装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
 #   mermaid =.mmd/.mermaid 単体を図として表示。既定は画像(mermaid-rs-renderer→resvg・純Rust・
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
 #   image  =端末のグラフィックプロトコルで全画面表示(ズーム/パン)。GIF は自動でアニメーション再生。

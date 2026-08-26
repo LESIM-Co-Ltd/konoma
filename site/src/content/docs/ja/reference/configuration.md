@@ -146,9 +146,9 @@ command = "mpv {path}"      # {path} = 対象ファイル, {out} = 一時出力�
 detached = true             # TUI をブロックしない(別プロセスで開く)
 
 [[preview.rules]]
-glob = "*.mmd"
-command = "merman -i {path} -o {out}.png --scale 2"
-render_as = "image"         # コマンドの出力を画像として表示
+glob = "*.{puml,plantuml}"  # PlantUML は内蔵が無いので委譲する。
+render_as = "image"         # (mermaid はルール不要＝konoma が内蔵で描く。) render_as=出力を画像として表示
+command = "plantuml -tpng -pipe < {path} > {out}.png"
 ```
 
 `render_as` を省略する(または `"image"` 以外を指定する)と、コマンドの出力をキャプチャして

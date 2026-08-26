@@ -146,9 +146,9 @@ command = "mpv {path}"      # {path} = the file, {out} = a temp output path
 detached = true             # don't block the TUI (opens in a separate process)
 
 [[preview.rules]]
-glob = "*.mmd"
-command = "merman -i {path} -o {out}.png --scale 2"
-render_as = "image"         # treat the command's output as an image
+glob = "*.{puml,plantuml}"  # No builtin for PlantUML -- delegate it. (Mermaid needs no rule: konoma
+render_as = "image"         # renders it natively.) render_as = treat the command's output as an image.
+command = "plantuml -tpng -pipe < {path} > {out}.png"
 ```
 
 Omitting `render_as` (or setting it to anything other than `"image"`) captures the
