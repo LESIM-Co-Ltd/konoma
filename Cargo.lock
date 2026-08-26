@@ -1684,6 +1684,7 @@ dependencies = [
  "rust_h265",
  "serde",
  "similar",
+ "skrifa 0.44.0",
  "svgtypes",
  "symphonia-core",
  "symphonia-format-mkv",

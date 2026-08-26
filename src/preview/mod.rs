@@ -11,6 +11,7 @@ pub mod image;
 pub mod kitty;
 pub mod markdown;
 pub mod math;
+pub mod mermaid;
 pub mod pdf;
 pub mod svg;
 pub mod table;
