@@ -14,6 +14,15 @@
 //! the padded label, and draws a square of side `s` rotated 45°. Sizing it as `w × h` instead
 //! makes the branch labels collide with the box on every decision node.
 //!
+//! # Two families, one interface
+//!
+//! [`Glyph`] is what a node is drawn as, and it has two kinds of member: the fifteen a flowchart
+//! can ask for, wrapped in [`Glyph::Flow`], and the six a state diagram adds — the two `[*]`
+//! markers, a choice diamond, a fork/join bar, a note, and a state box with a rule under its
+//! first line. Everything downstream of this module (layout, clipping, emission, the geometric
+//! invariants) is written against `Glyph` and knows nothing about which family a node came from,
+//! which is what lets stage 2 reuse stage 1's pipeline whole rather than growing a second one.
+//!
 //! # Shapes konoma folds together
 //!
 //! §2-4 settles that all 53 names must be *recognised* but need not be *drawn* apart. The parser
@@ -55,6 +64,67 @@ pub const SUBROUTINE_FRAME: f64 = 8.0;
 /// deviation well under a tenth of a pixel.
 const CAP_SEGMENTS: usize = 24;
 
+/// Radius of the dot `[*]` becomes. `stateStart.ts` draws a circle of `r = 7`.
+pub const STATE_MARKER_RADIUS: f64 = 7.0;
+
+/// Radius of the filled core inside the end marker (`stateEnd.ts`'s inner circle).
+pub const STATE_END_INNER_RADIUS: f64 = 4.0;
+
+/// Side of the square a `<<choice>>` diamond is cut from. `choice.ts` uses 40 and draws no text.
+pub const CHOICE_SIZE: f64 = 40.0;
+
+/// Long side of a `<<fork>>` / `<<join>>` bar (`forkJoin.ts`).
+pub const BAR_LENGTH: f64 = 70.0;
+
+/// Short side of a `<<fork>>` / `<<join>>` bar (`forkJoin.ts`).
+pub const BAR_THICKNESS: f64 = 10.0;
+
+/// How far a note's folded corner reaches in from its top-right corner.
+///
+/// konoma's own: mermaid draws a note as a plain rectangle. The fold is the one thing that says
+/// "this is an aside, not a state" without a colour the terminal might be showing through
+/// (§0-1 is what allows the difference).
+pub const NOTE_FOLD: f64 = 10.0;
+
+/// What a node is drawn as.
+///
+/// See the module docs: one enum over both diagram families, so that everything downstream is
+/// written once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Glyph {
+    /// One of a flowchart's fifteen outlines.
+    Flow(Shape),
+    /// The `[*]` an arrow leaves: a filled dot.
+    StateStart,
+    /// The `[*]` an arrow enters: a ring around a filled dot.
+    StateEnd,
+    /// `state x <<choice>>`: a diamond with no text.
+    Choice,
+    /// `state x <<fork>>` / `<<join>>`: a solid bar. `horizontal` is true when the bar lies
+    /// across the page, which is what a top-to-bottom diagram wants.
+    Bar {
+        /// Whether the long axis is horizontal.
+        horizontal: bool,
+    },
+    /// A `note left of` / `note right of`: a box with a folded corner.
+    Note,
+    /// A state box whose label arrived as more than one description, drawn with a rule under
+    /// the first of them (mermaid's `SHAPE_STATE_WITH_DESC`).
+    TitledBox,
+}
+
+impl From<Shape> for Glyph {
+    fn from(shape: Shape) -> Glyph {
+        Glyph::Flow(shape)
+    }
+}
+
+impl Default for Glyph {
+    fn default() -> Glyph {
+        Glyph::Flow(Shape::default())
+    }
+}
+
 /// A width and a height, in px.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Size {
@@ -76,7 +146,7 @@ impl Size {
 /// This is the size handed to dagre, which lays out rectangles; the outline is drawn inside it.
 /// For the slanted shapes that means the box is wider than mermaid's intermediate `w`, because
 /// mermaid's own `updateNodeBounds` measures the drawn polygon, overhang included.
-pub fn size(shape: Shape, label: Size) -> Size {
+fn flow_size(shape: Shape, label: Size) -> Size {
     let (lw, lh) = (label.w, label.h);
     match shape {
         // squareRect.ts -> drawRect.ts: labelPaddingX = padding*2, labelPaddingY = padding,
@@ -200,12 +270,40 @@ pub enum Outline {
         /// Vertical radius of a cap.
         ry: f64,
     },
+    /// A filled dot with no outline — the `[*]` an arrow leaves.
+    Disc {
+        /// Radius.
+        r: f64,
+    },
+    /// A ring around a filled dot — the `[*]` an arrow enters.
+    Target {
+        /// Radius of the ring.
+        outer: f64,
+        /// Radius of the filled core.
+        inner: f64,
+    },
+    /// A solid bar — `<<fork>>` and `<<join>>`.
+    Bar {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+    },
+    /// A box with its top-right corner folded over — a note.
+    Note {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+        /// How far the fold reaches in from the corner, along both axes.
+        fold: f64,
+    },
     /// Nothing is drawn.
     None,
 }
 
 /// The outline of `shape` inside a bounding box of `size`.
-pub fn outline(shape: Shape, size: Size) -> Outline {
+fn flow_outline(shape: Shape, size: Size) -> Outline {
     let (w, h) = (size.w, size.h);
     match shape {
         Shape::Rect => Outline::Rect { w, h, r: 0.0 },
@@ -231,7 +329,7 @@ pub fn outline(shape: Shape, size: Size) -> Outline {
             ry: cylinder_ry(w),
         },
         Shape::Text => Outline::None,
-        _ => Outline::Polygon(polygon(shape, size)),
+        _ => Outline::Polygon(flow_polygon(shape, size)),
     }
 }
 
@@ -239,7 +337,7 @@ pub fn outline(shape: Shape, size: Size) -> Outline {
 ///
 /// Shapes that are not polygons return their own boundary sampled densely enough to intersect
 /// against (the stadium) or an empty list.
-pub fn polygon(shape: Shape, size: Size) -> Vec<Point> {
+fn flow_polygon(shape: Shape, size: Size) -> Vec<Point> {
     let (w, h) = (size.w, size.h);
     let (hw, hh) = (w / 2.0, h / 2.0);
     match shape {
@@ -339,7 +437,7 @@ pub fn polygon(shape: Shape, size: Size) -> Vec<Point> {
 ///
 /// This is the step that makes an edge come out of the shape the reader sees rather than out of
 /// the bounding box dagre reasoned about.
-pub fn intersect(shape: Shape, center: Point, size: Size, target: &Point) -> Point {
+fn flow_intersect(shape: Shape, center: Point, size: Size, target: &Point) -> Point {
     match shape {
         // circle.ts / doubleCircle.ts both clip against the outer ring.
         Shape::Circle | Shape::DoubleCircle => {
@@ -352,7 +450,7 @@ pub fn intersect(shape: Shape, center: Point, size: Size, target: &Point) -> Poi
             intersect_rect(center.x, center.y, size.w, size.h, target)
         }
         _ => {
-            let verts: Vec<Point> = polygon(shape, size)
+            let verts: Vec<Point> = flow_polygon(shape, size)
                 .into_iter()
                 .map(|p| Point::new(center.x + p.x, center.y + p.y))
                 .collect();
@@ -360,6 +458,95 @@ pub fn intersect(shape: Shape, center: Point, size: Size, target: &Point) -> Poi
                 return intersect_rect(center.x, center.y, size.w, size.h, target);
             }
             intersect_polygon(&verts, &center, target)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The `Glyph` layer: one interface over both diagram families
+// ---------------------------------------------------------------------------------------------
+
+/// The bounding box a node drawn as `glyph` needs for a label of size `label`.
+///
+/// The state markers ignore the label entirely, because mermaid draws no text inside them —
+/// see [`Glyph`].
+pub fn size(glyph: Glyph, label: Size) -> Size {
+    match glyph {
+        Glyph::Flow(shape) => flow_size(shape, label),
+        // stateStart.ts / stateEnd.ts: a fixed dot, whatever the state was called.
+        Glyph::StateStart | Glyph::StateEnd => {
+            Size::new(STATE_MARKER_RADIUS * 2.0, STATE_MARKER_RADIUS * 2.0)
+        }
+        // choice.ts: a fixed 40x40 square on its corner, with no text.
+        Glyph::Choice => Size::new(CHOICE_SIZE, CHOICE_SIZE),
+        // forkJoin.ts: a bar whose long axis follows the diagram's own axis.
+        Glyph::Bar { horizontal } => {
+            if horizontal {
+                Size::new(BAR_LENGTH, BAR_THICKNESS)
+            } else {
+                Size::new(BAR_THICKNESS, BAR_LENGTH)
+            }
+        }
+        // A note is a rounded-rect-shaped box with room for the fold at its corner.
+        Glyph::Note => Size::new(
+            (label.w + PADDING * 2.0).max(NOTE_FOLD * 3.0),
+            (label.h + PADDING * 2.0).max(NOTE_FOLD * 2.0),
+        ),
+        // The rule sits between the label's first and second line, so no extra height is needed.
+        Glyph::TitledBox => Size::new(label.w + PADDING * 2.0, label.h + PADDING * 2.0),
+    }
+}
+
+/// The outline of `glyph` inside a bounding box of `size`.
+pub fn outline(glyph: Glyph, size: Size) -> Outline {
+    match glyph {
+        Glyph::Flow(shape) => flow_outline(shape, size),
+        Glyph::StateStart => Outline::Disc { r: size.w / 2.0 },
+        Glyph::StateEnd => Outline::Target {
+            outer: size.w / 2.0,
+            inner: STATE_END_INNER_RADIUS.min(size.w / 2.0),
+        },
+        Glyph::Choice => Outline::Polygon(flow_polygon(Shape::Diamond, size)),
+        Glyph::Bar { .. } => Outline::Bar {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Note => Outline::Note {
+            w: size.w,
+            h: size.h,
+            fold: NOTE_FOLD.min(size.w / 2.0).min(size.h / 2.0),
+        },
+        Glyph::TitledBox => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: CORNER_RADIUS,
+        },
+    }
+}
+
+/// The vertices of a polygonal glyph, relative to the node centre, in boundary order. Empty for
+/// a glyph whose boundary is not a polygon.
+pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
+    match glyph {
+        Glyph::Flow(shape) => flow_polygon(shape, size),
+        Glyph::Choice => flow_polygon(Shape::Diamond, size),
+        _ => Vec::new(),
+    }
+}
+
+/// Where a line aimed at `target` leaves a `glyph` of `size` centred on `center`.
+pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Point {
+    match glyph {
+        Glyph::Flow(shape) => flow_intersect(shape, center, size, target),
+        Glyph::StateStart | Glyph::StateEnd => {
+            intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
+        Glyph::Choice => flow_intersect(Shape::Diamond, center, size, target),
+        // A bar, a note and a titled box all clip against their box. The note's folded corner is
+        // a detail of the drawing: cutting the line there would leave a visible gap where the
+        // fold is, and the fold is at most ten pixels of a corner an edge rarely meets.
+        Glyph::Bar { .. } | Glyph::Note | Glyph::TitledBox => {
+            intersect_rect(center.x, center.y, size.w, size.h, target)
         }
     }
 }

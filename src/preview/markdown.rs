@@ -2696,13 +2696,15 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
     // see identical input.
     let code = code.trim_end_matches('\n');
     if flowchart_is_ours(code) {
-        render_flowchart_konoma(code, theme)
+        render_konoma(code, theme, crate::preview::mermaid::render::render)
+    } else if state_is_ours(code) {
+        render_konoma(code, theme, crate::preview::mermaid::render::state::render)
     } else {
         render_via_mermaid_rs(code, theme)
     }
 }
 
-/// The routing predicate, made panic-safe.
+/// The routing predicate for a flowchart, made panic-safe.
 ///
 /// Classifying reads only the header — [`preprocess`](crate::preview::mermaid::flowchart::preprocess)
 /// plus the keyword scan — so a source of some other kind never reaches the flowchart grammar
@@ -2719,12 +2721,28 @@ fn flowchart_is_ours(code: &str) -> bool {
     caught.unwrap_or(false)
 }
 
-/// konoma's own renderer. A failure is a failure: no second opinion from the crate.
-fn render_flowchart_konoma(code: &str, theme: &str) -> Result<String, String> {
+/// Whether this is a state diagram, made panic-safe the same way (stage 2).
+fn state_is_ours(code: &str) -> bool {
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::preview::mermaid::render::render(code, theme)
+            crate::preview::mermaid::state::is_state_diagram(code)
         }))
+    });
+    caught.unwrap_or(false)
+}
+
+/// konoma's own renderer. A failure is a failure: no second opinion from the crate.
+///
+/// `draw` is the entry point of whichever of konoma's renderers owns this diagram kind. Routing
+/// picked it *before* either renderer ran, and that is the whole point: falling through to the
+/// crate on failure would let the old renderer quietly redraw whatever the new one got wrong.
+fn render_konoma(
+    code: &str,
+    theme: &str,
+    draw: fn(&str, &str) -> Result<String, crate::preview::mermaid::render::RenderError>,
+) -> Result<String, String> {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(code, theme)))
     });
     match caught {
         Ok(Ok(svg)) => Ok(svg),
@@ -2780,6 +2798,7 @@ fn render_via_mermaid_rs(code: &str, theme: &str) -> Result<String, String> {
 /// whichever kind the user opens first.
 pub fn warm_mermaid() {
     let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
+    let _ = mermaid_to_svg("stateDiagram-v2\n  [*] --> A", "dark");
     let _ = mermaid_to_svg("sequenceDiagram\n  A->>B: hi", "dark");
 }
 
@@ -8906,11 +8925,21 @@ plain body
             assert!(drawn_by_konoma(code), "自作レンダラが描くはず: {code:?}");
         }
         for code in [
+            "stateDiagram-v2\n  [*] --> S1\n  S1 --> [*]",
+            "stateDiagram\n  A --> B",
+            "  \n%% a comment first\nstateDiagram-v2\n  [*] --> A",
+            "---\ntitle: t\n---\nstateDiagram-v2\n  [*] --> A",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段2): {code:?}"
+            );
+        }
+        for code in [
             "sequenceDiagram\n  A->>B: hi",
             "classDiagram\n  class A\n  class B\n  A --> B",
             "erDiagram\n  CUSTOMER ||--o{ ORDER : places",
             "pie title P\n  \"a\" : 10\n  \"b\" : 20",
-            "stateDiagram-v2\n  [*] --> S1\n  S1 --> [*]",
         ] {
             assert!(
                 !drawn_by_konoma(code),
@@ -8931,6 +8960,12 @@ plain body
             "erDiagram\n  CUSTOMER ||--o{ ORDER : places",
             "pie title P\n  \"a\" : 10\n  \"b\" : 20",
             "stateDiagram-v2\n  [*] --> S1\n  S1 --> [*]",
+            "stateDiagram\n  [*] --> S1\n  S1 --> [*]",
+            "stateDiagram-v2\n  state S { [*] --> a }\n  [*] --> S",
+            "stateDiagram-v2\n  state c <<choice>>\n  A --> c\n  c --> B",
+            "stateDiagram-v2\n  state f <<fork>>\n  A --> f\n  f --> B\n  f --> C",
+            "stateDiagram-v2\n  A --> B\n  note right of A : hi",
+            "stateDiagram-v2\n  state S {\n    A --> B\n    --\n    C --> D\n  }",
             "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
             "journey\n  title J\n  section S\n    Do: 5: Me",
         ] {
@@ -8957,6 +8992,51 @@ plain body
             Err("flowchart declares no nodes".to_string())
         );
         assert!(mermaid_to_svg("graph TD", "dark").is_none());
+    }
+
+    /// The same guarantee for stage 2: a state diagram konoma's own renderer refuses is **not**
+    /// handed to the crate either. `stateDiagram-v2` with no body is the cheapest witness — the
+    /// crate answers it with an SVG, so a fallthrough would be invisible.
+    #[test]
+    fn a_refused_state_diagram_is_not_quietly_redrawn_by_the_crate() {
+        assert!(
+            render_via_mermaid_rs("stateDiagram-v2\n", "dark").is_ok(),
+            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("stateDiagram-v2\n", "dark"),
+            Err("state diagram declares no states".to_string())
+        );
+        assert!(mermaid_to_svg("stateDiagram-v2\n", "dark").is_none());
+    }
+
+    /// The routing predicate and the state parser agree about what a state diagram is, the same
+    /// way `the_routing_predicate_agrees_with_the_parser` pins it for a flowchart.
+    #[test]
+    fn the_state_routing_predicate_agrees_with_the_parser() {
+        use crate::preview::mermaid::state::{is_state_diagram, parse, ParseError};
+        for code in [
+            "stateDiagram-v2\n  A --> B",
+            "stateDiagram\n  A --> B",
+            "stateDiagram-v2",
+            "stateDiagram-v2\n  state S {\n    A --> B",
+            "flowchart TD\n  A --> B",
+            "sequenceDiagram\n  A->>B: hi",
+            "stateDiagrams --> B",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ] {
+            let parser_says_not_ours = matches!(
+                parse(code),
+                Err(ParseError::NotAStateDiagram { .. }) | Err(ParseError::Empty)
+            );
+            assert_eq!(
+                is_state_diagram(code),
+                !parser_says_not_ours,
+                "振り分けとパーサの見解が食い違った: {code:?}"
+            );
+        }
     }
 
     /// The reason survives the seam. §8 lists throwing these away as one of the things this work

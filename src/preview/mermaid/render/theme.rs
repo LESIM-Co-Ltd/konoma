@@ -61,6 +61,19 @@ pub struct Theme {
     /// A subgraph's title. §4-1 flags this for the same reason as `lineColor`: mermaid's light
     /// themes put it at `#333`.
     pub cluster_text: &'static str,
+    /// The solid marks a state diagram is built out of: the `[*]` dots and the fork/join bars.
+    ///
+    /// These are *filled* shapes with nothing behind them, so §4-1's problem bites here harder
+    /// than anywhere else — a black dot on a dark terminal is not a faint line, it is nothing at
+    /// all. Every palette therefore points this at the same colour as [`Theme::line`], which the
+    /// contrast test already holds to both grounds.
+    pub state_marker: &'static str,
+    /// Interior of a note's box.
+    pub note_fill: &'static str,
+    /// Outline of a note's box.
+    pub note_stroke: &'static str,
+    /// Text inside a note.
+    pub note_text: &'static str,
 }
 
 /// mermaid's `dark`, which is konoma's default and the only theme tuned for a dark terminal
@@ -79,6 +92,10 @@ pub const DARK: Theme = Theme {
     cluster_fill: "#2b2b38",
     cluster_stroke: "#8a8a8a",
     cluster_text: "#cccccc",
+    state_marker: "#d3d3d3",
+    note_fill: "#3d3a2a",
+    note_stroke: "#b8a94e",
+    note_text: "#f0e6bf",
 };
 
 /// konoma's `light` (the crate calls it `modern`): a slate palette for a light terminal.
@@ -95,6 +112,10 @@ pub const LIGHT: Theme = Theme {
     cluster_fill: "#f1f5f9",
     cluster_stroke: "#cbd5e1",
     cluster_text: "#0f172a",
+    state_marker: "#64748b",
+    note_fill: "#fff8d5",
+    note_stroke: "#b8a94e",
+    note_text: "#3a3524",
 };
 
 /// mermaid's `default`, which konoma spells `classic`. The lavender boxes are the look most
@@ -113,6 +134,10 @@ pub const CLASSIC: Theme = Theme {
     cluster_fill: "#ffffde",
     cluster_stroke: "#aaaa33",
     cluster_text: "#333333",
+    state_marker: "#5c6b8a",
+    note_fill: "#fff5ad",
+    note_stroke: "#aaaa33",
+    note_text: "#333333",
 };
 
 /// mermaid's `forest`. The deliberate deviation §4-1 asks to keep: the line stays green instead
@@ -130,6 +155,10 @@ pub const FOREST: Theme = Theme {
     cluster_fill: "#cdffb2",
     cluster_stroke: "#6eaa49",
     cluster_text: "#333333",
+    state_marker: "#008000",
+    note_fill: "#fff5ad",
+    note_stroke: "#aaaa33",
+    note_text: "#333333",
 };
 
 /// mermaid's `neutral`: greyscale, and the one light theme whose own line colour already sits in
@@ -147,6 +176,10 @@ pub const NEUTRAL: Theme = Theme {
     cluster_fill: "#eaeaea",
     cluster_stroke: "#999999",
     cluster_text: "#333333",
+    state_marker: "#666666",
+    note_fill: "#f0f0e0",
+    note_stroke: "#999999",
+    note_text: "#333333",
 };
 
 /// Every palette, for the tests that have to hold each one to the same rule.

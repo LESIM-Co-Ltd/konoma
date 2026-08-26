@@ -30,7 +30,7 @@ use crate::preview::mermaid::text_metrics::{FONT_FAMILY, FONT_SIZE};
 use super::clusters;
 use super::edges;
 use super::labels::Label;
-use super::shapes::Outline;
+use super::shapes::{Glyph, Outline};
 use super::theme::Theme;
 use super::{shapes, Diagram, PlacedCluster, PlacedEdge, PlacedNode};
 
@@ -45,6 +45,9 @@ pub const THICK_STROKE_WIDTH: f64 = 3.5;
 
 /// Dash pattern of a `-.-` edge.
 pub const DOTTED_DASH: &str = "4 4";
+
+/// Dash pattern of the frame around one concurrent region of a state diagram.
+pub const CLUSTER_DASH: &str = "6 4";
 
 /// A number as SVG writes it: at most three decimals, no trailing zeros, no negative zero.
 ///
@@ -147,9 +150,16 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
 /// docs for why.
 fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     let (l, t, _, _) = cluster.bounds();
+    // A dashed frame is a concurrent region of a state diagram's `--`: it has no title, so the
+    // outline is the only thing that can say "this is one of several things happening at once".
+    let dash = if cluster.dashed {
+        format!(" stroke-dasharray=\"{CLUSTER_DASH}\"")
+    } else {
+        String::new()
+    };
     out.push_str(&format!(
         "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
-         fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+         fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>\n",
         num(l),
         num(t),
         num(cluster.size.w),
@@ -183,8 +193,16 @@ fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) 
 /// One node: its outline, then its label.
 fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
     let (cx, cy) = (node.center.x, node.center.y);
-    let fill = theme.node_fill;
-    let stroke = theme.node_stroke;
+    // Which of the palette's three families of colour this node belongs to. A flowchart only
+    // ever reaches the last arm, so its output is byte for byte what it was before state
+    // diagrams existed.
+    let (fill, stroke, text) = match node.shape {
+        Glyph::Note => (theme.note_fill, theme.note_stroke, theme.note_text),
+        Glyph::StateStart | Glyph::StateEnd | Glyph::Bar { .. } => {
+            (theme.state_marker, theme.state_marker, theme.node_text)
+        }
+        _ => (theme.node_fill, theme.node_stroke, theme.node_text),
+    };
     let sw = num(NODE_STROKE_WIDTH);
     match shapes::outline(node.shape, node.size) {
         Outline::Rect { w, h, r } => {
@@ -279,9 +297,84 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
                  stroke-width=\"{sw}\"/>\n"
             ));
         }
+        // A solid dot: the `[*]` an arrow leaves. No stroke — a filled mark with an outline in
+        // the same colour just reads as a slightly bigger dot.
+        Outline::Disc { r } => {
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\"/>\n",
+                num(cx),
+                num(cy),
+                num(r)
+            ));
+        }
+        // A ring around a solid core: the `[*]` an arrow enters. The gap between the two is what
+        // tells the two markers apart at the size a terminal shows them at.
+        Outline::Target { outer, inner } => {
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"none\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                num(cx),
+                num(cy),
+                num(outer - NODE_STROKE_WIDTH / 2.0)
+            ));
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\"/>\n",
+                num(cx),
+                num(cy),
+                num(inner)
+            ));
+        }
+        // `<<fork>>` / `<<join>>`: a solid bar across the flow.
+        Outline::Bar { w, h } => {
+            out.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\"/>\n",
+                num(cx - w / 2.0),
+                num(cy - h / 2.0),
+                num(w),
+                num(h)
+            ));
+        }
+        // A note: a box with its top-right corner turned down, drawn as the outline plus the
+        // little triangle that makes the fold read as a fold rather than as a chamfer.
+        Outline::Note { w, h, fold } => {
+            let (l, r) = (cx - w / 2.0, cx + w / 2.0);
+            let (t, b) = (cy - h / 2.0, cy + h / 2.0);
+            out.push_str(&format!(
+                "<path d=\"M{l},{t} L{fx},{t} L{r},{fy} L{r},{b} L{l},{b} Z\" fill=\"{fill}\" \
+                 stroke=\"{stroke}\" stroke-width=\"{sw}\"/>\n",
+                l = num(l),
+                t = num(t),
+                r = num(r),
+                b = num(b),
+                fx = num(r - fold),
+                fy = num(t + fold)
+            ));
+            out.push_str(&format!(
+                "<path d=\"M{fx},{t} L{fx},{fy} L{r},{fy}\" fill=\"none\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                t = num(t),
+                r = num(r),
+                fx = num(r - fold),
+                fy = num(t + fold)
+            ));
+        }
         Outline::None => {}
     }
-    emit_text(out, &node.label, cx, cy, theme.node_text);
+    // A titled box keeps its first line apart from the rest with a rule, which is what mermaid's
+    // `SHAPE_STATE_WITH_DESC` does. The rule goes where the first line ends, so it is derived
+    // from the label rather than declared: a box whose label grew a line moves it by itself.
+    if node.shape == Glyph::TitledBox && node.label.lines.len() > 1 {
+        let y = cy - node.label.height / 2.0 + super::labels::line_height();
+        out.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{stroke}\" \
+             stroke-width=\"{}\"/>\n",
+            num(cx - node.size.w / 2.0),
+            num(cx + node.size.w / 2.0),
+            num(clusters::STROKE_WIDTH),
+            y = num(y)
+        ));
+    }
+    emit_text(out, &node.label, cx, cy, text);
 }
 
 /// One edge: the curve, then whatever sits at its ends.

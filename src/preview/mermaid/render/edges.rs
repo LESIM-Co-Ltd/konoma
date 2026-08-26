@@ -21,11 +21,11 @@
 //! the clipped polyline's last segment keeps the invariant "the tip is on the target's boundary"
 //! something the tests can check on konoma's own model.
 
-use crate::preview::mermaid::flowchart::{Arrow, Shape};
+use crate::preview::mermaid::flowchart::Arrow;
 use crate::preview::mermaid::layout::Point;
 
 use super::clusters;
-use super::shapes::{self, Size};
+use super::shapes::{self, Glyph, Size};
 use super::svg::num;
 
 /// Radius mermaid rounds a right-angle corner to (`edges.js`'s `fixCorners`).
@@ -57,8 +57,8 @@ const EPS: f64 = 1e-6;
 /// exists so dagre had a leaf to aim at.
 #[derive(Debug, Clone, PartialEq)]
 pub enum End {
-    /// An ordinary node: its shape, its centre, its bounding box.
-    Node(Shape, Point, Size),
+    /// An ordinary node: what it is drawn as, its centre, its bounding box.
+    Node(Glyph, Point, Size),
     /// A subgraph frame the author named as this end of the edge.
     Cluster(clusters::Rect),
 }
@@ -135,8 +135,8 @@ pub fn route(points: &[Point], tail: &End, head: &End) -> Vec<Point> {
 /// upstream would dereference `undefined` here, which is not a behaviour worth reproducing.
 pub fn clip(
     points: &[Point],
-    tail: (Shape, Point, Size),
-    head: (Shape, Point, Size),
+    tail: (Glyph, Point, Size),
+    head: (Glyph, Point, Size),
 ) -> Vec<Point> {
     let (tail_shape, tail_center, tail_size) = tail;
     let (head_shape, head_center, head_size) = head;

@@ -43,18 +43,19 @@ pub mod clusters;
 pub mod edges;
 pub mod labels;
 pub mod shapes;
+pub mod state;
 pub mod svg;
 pub mod theme;
 
+#[cfg(test)]
+mod state_tests;
 #[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::preview::mermaid::flowchart::{
-    self, Arrow, Direction, Flowchart, ParseError, Shape, Stroke,
-};
+use crate::preview::mermaid::flowchart::{self, Arrow, Direction, Flowchart, ParseError, Stroke};
 use crate::preview::mermaid::layout::{
     graph::{Graph, GraphOptions},
     layout, EdgeLabel, LayoutOptions, NodeLabel, Point, RankDir,
@@ -62,7 +63,7 @@ use crate::preview::mermaid::layout::{
 use crate::preview::mermaid::text_metrics;
 
 pub use labels::Label;
-pub use shapes::Size;
+pub use shapes::{Glyph, Size};
 pub use theme::Theme;
 
 /// Blank space kept around the drawing, in px. mermaid's `marginx`/`marginy` for dagre.
@@ -88,6 +89,8 @@ pub enum RenderError {
     /// The source is not a flowchart konoma can read. Carries the parser's own reason, which is
     /// worth keeping: §8 notes that the current crate throws its error messages away.
     Parse(ParseError),
+    /// The source is not a state diagram konoma can read.
+    StateParse(crate::preview::mermaid::state::ParseError),
     /// No sans-serif font could be resolved, so usvg would draw the boxes and silently drop every
     /// glyph inside them. Checked *before* an SVG is built, because there is no error later.
     NoFonts,
@@ -99,6 +102,7 @@ impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RenderError::Parse(e) => write!(f, "{e}"),
+            RenderError::StateParse(e) => write!(f, "{e}"),
             RenderError::NoFonts => write!(f, "no sans-serif font available for diagram labels"),
             RenderError::NothingToDraw => write!(f, "flowchart has nothing to draw"),
         }
@@ -113,13 +117,19 @@ impl From<ParseError> for RenderError {
     }
 }
 
+impl From<crate::preview::mermaid::state::ParseError> for RenderError {
+    fn from(e: crate::preview::mermaid::state::ParseError) -> RenderError {
+        RenderError::StateParse(e)
+    }
+}
+
 /// One node, placed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedNode {
     /// The id from the source.
     pub id: String,
     /// The outline to draw.
-    pub shape: Shape,
+    pub shape: Glyph,
     /// Centre of the bounding box.
     pub center: Point,
     /// Bounding box, as [`shapes::size`] computed it and as dagre laid it out.
@@ -196,6 +206,8 @@ pub struct PlacedCluster {
     pub parent: Option<String>,
     /// 0 for a top-level block, 1 for a block inside it, and so on.
     pub depth: usize,
+    /// Whether the frame is drawn dashed — one concurrent region of a state diagram's `--`.
+    pub dashed: bool,
 }
 
 impl PlacedCluster {
@@ -300,11 +312,170 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
     if chart.nodes.is_empty() {
         return Err(RenderError::NothingToDraw);
     }
+    lay_out_spec(&spec_of(chart))
+}
 
-    // The subgraph tree, resolved before anything is measured: it decides which nodes get a
-    // parent, and a block that holds no node at all never reaches dagre (`clusters::Tree::build`).
-    let node_ids: HashSet<&str> = chart.nodes.iter().map(|n| n.id.as_str()).collect();
-    let tree = clusters::Tree::build(chart, |id| node_ids.contains(id));
+/// A flowchart, measured and sized, as the language-neutral [`GraphSpec`] the layout reads.
+///
+/// This is the whole of what is specific to the flowchart language: a label is measured, a shape
+/// is sized around it, and a `subgraph` becomes a block. Everything after this point —
+/// [`lay_out_spec`] — is shared with the state diagram, and that sharing is the point
+/// (`docs/FEATURE-MERMAID-RENDERER.md` §7: stage 2 reuses stage 1's layout).
+fn spec_of(chart: &Flowchart) -> GraphSpec {
+    let nodes = chart
+        .nodes
+        .iter()
+        .map(|node| {
+            let label = Label::measure(&node.label);
+            let glyph = Glyph::Flow(node.shape);
+            let size = shapes::size(glyph, Size::new(label.width, label.height));
+            SpecNode {
+                id: node.id.clone(),
+                glyph,
+                label,
+                size,
+            }
+        })
+        .collect();
+    let blocks = chart
+        .subgraphs
+        .iter()
+        .map(|s| SpecBlock {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            members: s.members.clone(),
+            dashed: false,
+        })
+        .collect();
+    let edges = chart
+        .edges
+        .iter()
+        .map(|edge| SpecEdge {
+            id: edge.id.clone(),
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+            label: edge
+                .label
+                .as_deref()
+                .map(Label::measure)
+                .filter(|l| !l.is_blank()),
+            arrow: edge.arrow,
+            stroke: edge.stroke,
+            minlen: edge.length,
+        })
+        .collect();
+    GraphSpec {
+        direction: chart.direction,
+        nodes,
+        edges,
+        blocks,
+    }
+}
+
+/// One node to lay out: already measured, already sized, and no longer tied to a language.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecNode {
+    /// The id edges refer to it by.
+    pub id: String,
+    /// What it is drawn as.
+    pub glyph: Glyph,
+    /// The measured label drawn inside it.
+    pub label: Label,
+    /// The bounding box dagre lays out.
+    pub size: Size,
+}
+
+/// One edge to lay out. `from`/`to` are as the author wrote them, so either may name a block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecEdge {
+    /// Unique within the spec; used as dagre's edge name so parallel edges stay apart.
+    pub id: String,
+    /// Source, as written.
+    pub from: String,
+    /// Target, as written.
+    pub to: String,
+    /// The measured label, if the edge carries one.
+    pub label: Option<Label>,
+    /// Arrow heads.
+    pub arrow: Arrow,
+    /// Line style.
+    pub stroke: Stroke,
+    /// How many ranks the edge should try to span (mermaid's link length; dagre's `minlen`).
+    pub minlen: usize,
+}
+
+/// One frame to lay out: a flowchart's `subgraph`, or a state diagram's composite state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecBlock {
+    /// The block's id, which an edge may name as an endpoint.
+    pub id: String,
+    /// The text on the frame. Empty for a block with no title.
+    pub title: String,
+    /// Direct members by id, in declaration order — nodes and nested blocks alike.
+    pub members: Vec<String>,
+    /// Whether the frame is drawn dashed.
+    pub dashed: bool,
+}
+
+/// Everything the layout needs, and nothing about which diagram language it came from.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GraphSpec {
+    /// The axis the ranks run along.
+    pub direction: Direction,
+    /// Nodes, in the order they should be drawn.
+    pub nodes: Vec<SpecNode>,
+    /// Edges, in the order they should be drawn.
+    pub edges: Vec<SpecEdge>,
+    /// Frames, innermost first (a nested block before the one that contains it).
+    pub blocks: Vec<SpecBlock>,
+}
+
+/// Lays out and routes a spec — everything except turning geometry into markup.
+///
+/// # `direction` inside a block is read and deliberately not applied
+///
+/// Both parsers keep it and neither this function nor its callers act on it; the whole diagram is
+/// laid out with one `rankdir`. That is a choice, so here is the reasoning.
+///
+/// dagre has exactly one `rankdir` per layout. Honouring a per-block direction therefore means
+/// laying that block out in a **graph of its own** and inserting the result into the parent as an
+/// opaque box — which is what mermaid does, and it is why mermaid can only do it for a block that
+/// has *no edge crossing its border*: a member laid out in a separate coordinate space cannot be
+/// ranked against a node outside it. Three things follow, and together they decide it:
+///
+/// 1. **It would work only sometimes, silently.** Upstream's own documentation says "if any of a
+///    subgraph's nodes are linked to the outside, subgraph direction will be ignored" — and
+///    linking to the outside is the ordinary case. A statement that does nothing, with no way to
+///    tell that it did nothing, reads as a bug rather than as a limitation.
+/// 2. **Upstream tried the other way and took it back.** 11.16.0 made dagre respect it; 11.17.0
+///    reverted because the arrows *between* subgraphs broke. Those arrows are the part of a
+///    diagram that carries the meaning, so trading them for an internal axis is the wrong trade
+///    under §0-1 ("the same source read correctly").
+/// 3. **One layout is one coordinate space, and that is what the tests can check.** Every cluster
+///    invariant this stage adds — a frame holds its members, a nested frame is inside its parent,
+///    a line does not run through a frame it has nothing to do with — is a statement about one
+///    geometry. A second, independent layout inside a box would be geometry nothing checks;
+///    upstream's own code says as much, in the note on `applyDagreLayoutResult` that consumers
+///    "must not assume it is a complete description of the rendered output for cluster diagrams".
+///
+/// What the reader loses is the internal axis of a block. What they keep is every node, every
+/// edge, and every frame the source declared, which is the degradation §0-1 asks for. If a later
+/// stage wants the axis back, the place to start is a nested layout — and
+/// [`super::tests::a_block_direction_does_not_move_anything`] is the test it has to change.
+pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
+    // The gate. usvg does not fail on a missing font, it just drops the glyphs, so the only place
+    // this can be caught is before anything is built (PRD design principle #3).
+    if !text_metrics::fonts_available() {
+        return Err(RenderError::NoFonts);
+    }
+    if spec.nodes.is_empty() {
+        return Err(RenderError::NothingToDraw);
+    }
+
+    // The block tree, resolved before anything reaches dagre: it decides which nodes get a
+    // parent, and a block that holds no node at all never reaches it (`clusters::Tree::build`).
+    let node_ids: HashSet<&str> = spec.nodes.iter().map(|n| n.id.as_str()).collect();
+    let tree = clusters::Tree::from_blocks(&spec.blocks, |id| node_ids.contains(id));
 
     let mut g: Graph<NodeLabel, EdgeLabel> = Graph::with_options(GraphOptions {
         directed: true,
@@ -315,20 +486,18 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
         compound: !tree.is_empty(),
     });
 
-    // --- nodes: measure the label, then size the shape around it -------------------------------
-    let mut measured: HashMap<&str, (Shape, Size, Label)> = HashMap::new();
-    for node in &chart.nodes {
-        let label = Label::measure(&node.label);
-        let size = shapes::size(node.shape, Size::new(label.width, label.height));
+    // --- nodes: the caller already measured the label and sized the shape around it -------------
+    let mut measured: HashMap<&str, &SpecNode> = HashMap::new();
+    for node in &spec.nodes {
         g.set_node(
             node.id.clone(),
             Some(NodeLabel {
-                width: size.w,
-                height: size.h,
+                width: node.size.w,
+                height: node.size.h,
                 ..NodeLabel::default()
             }),
         );
-        measured.insert(node.id.as_str(), (node.shape, size, label));
+        measured.insert(node.id.as_str(), node);
     }
 
     // --- blocks: a node in dagre with no size of its own ----------------------------------------
@@ -367,7 +536,7 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
     // against a representative descendant and cuts the line back to the frame when it draws it.
     // The anchor is remembered here because it is also what the layout has to be read back from.
     let mut drawable: Vec<Drawable> = Vec::new();
-    for edge in &chart.edges {
+    for edge in &spec.edges {
         let is_node = |id: &str| measured.contains_key(id);
         let (Some(tail), Some(head)) = (
             tree.anchor(&edge.from, &is_node),
@@ -377,35 +546,28 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
             continue;
         };
         let (tail, head) = (tail.to_string(), head.to_string());
-        let label = edge
+        let (w, h) = edge
             .label
-            .as_deref()
-            .map(Label::measure)
-            .filter(|l| !l.is_blank());
-        let (w, h) = label.as_ref().map_or((0.0, 0.0), |l| (l.width, l.height));
+            .as_ref()
+            .map_or((0.0, 0.0), |l| (l.width, l.height));
         g.set_edge(
             tail.clone(),
             head.clone(),
             Some(EdgeLabel {
                 width: w,
                 height: h,
-                minlen: edge.length.max(1) as i32,
+                minlen: edge.minlen.max(1) as i32,
                 ..EdgeLabel::default()
             }),
             Some(edge.id.as_str()),
         );
-        drawable.push(Drawable {
-            edge,
-            label,
-            tail,
-            head,
-        });
+        drawable.push(Drawable { edge, tail, head });
     }
 
     layout(
         &mut g,
         Some(LayoutOptions {
-            rankdir: rank_dir(chart.direction),
+            rankdir: rank_dir(spec.direction),
             nodesep: NODE_SEP,
             edgesep: EDGE_SEP,
             ranksep: RANK_SEP,
@@ -420,12 +582,8 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
     );
 
     // --- read the layout back -------------------------------------------------------------------
-    let mut nodes: Vec<PlacedNode> = Vec::with_capacity(chart.nodes.len());
-    for node in &chart.nodes {
-        let (shape, size, label) = match measured.remove(node.id.as_str()) {
-            Some(v) => v,
-            None => continue,
-        };
+    let mut nodes: Vec<PlacedNode> = Vec::with_capacity(spec.nodes.len());
+    for node in &spec.nodes {
         let placed = g.node(&node.id);
         let center = Point::new(
             placed.and_then(|n| n.x).unwrap_or(0.0),
@@ -433,10 +591,10 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
         );
         nodes.push(PlacedNode {
             id: node.id.clone(),
-            shape,
+            shape: node.glyph,
             center,
-            size,
-            label,
+            size: node.size,
+            label: node.label.clone(),
         });
     }
     if nodes.is_empty() {
@@ -455,7 +613,6 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
     let mut placed_edges: Vec<PlacedEdge> = Vec::with_capacity(drawable.len());
     for Drawable {
         edge,
-        label,
         tail: tail_id,
         head: head_id,
     } in drawable
@@ -483,7 +640,7 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
 
         // The second half of "the label stays on the line": put it at the half-way point of the
         // line as clipped, not where dagre parked it.
-        let placed_label = label.and_then(|l| {
+        let placed_label = edge.label.clone().and_then(|l| {
             edges::arc_midpoint(&points).map(|center| PlacedEdgeLabel {
                 center,
                 size: Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0),
@@ -517,8 +674,7 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
 /// `tail`/`head` are the nodes dagre was actually asked to route between, which are the endpoints
 /// the author wrote unless one of them named a block — see [`clusters::Tree::anchor`].
 struct Drawable<'a> {
-    edge: &'a flowchart::Edge,
-    label: Option<Label>,
+    edge: &'a SpecEdge,
     tail: String,
     head: String,
 }
@@ -560,6 +716,7 @@ fn read_clusters(
             size: Size::new(n.width, n.height),
             parent: c.parent.clone(),
             depth: c.depth,
+            dashed: c.dashed,
         });
     }
     let placed: HashSet<String> = out.iter().map(|c| c.id.clone()).collect();

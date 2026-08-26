@@ -34,10 +34,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::preview::mermaid::flowchart::{Flowchart, Subgraph};
+use crate::preview::mermaid::flowchart::Flowchart;
 use crate::preview::mermaid::layout::Point;
 
 use super::shapes::Size;
+use super::SpecBlock;
 
 /// Gap between the frame's top edge and the top of the title's line block.
 ///
@@ -75,6 +76,9 @@ pub struct Cluster {
     pub member_nodes: Vec<String>,
     /// Direct members that are blocks, in declaration order.
     pub child_clusters: Vec<String>,
+    /// Whether the frame is drawn with a dashed outline. A `subgraph` never is; one concurrent
+    /// region of a state diagram's `--` always is, because it has no title to say what it is.
+    pub dashed: bool,
 }
 
 /// The subgraph tree of one chart.
@@ -96,11 +100,27 @@ impl Tree {
     /// too (there is nothing to point at), which is the same honest degradation the renderer
     /// already applies to a node it could not place.
     pub fn build(chart: &Flowchart, is_node: impl Fn(&str) -> bool) -> Tree {
-        let ids: HashSet<&str> = chart.subgraphs.iter().map(|s| s.id.as_str()).collect();
+        let blocks: Vec<SpecBlock> = chart
+            .subgraphs
+            .iter()
+            .map(|s| SpecBlock {
+                id: s.id.clone(),
+                title: s.title.clone(),
+                members: s.members.clone(),
+                dashed: false,
+            })
+            .collect();
+        Tree::from_blocks(&blocks, is_node)
+    }
+
+    /// [`Tree::build`] over the language-neutral block list, which is what the renderer's own
+    /// spec carries. Both diagram families reach the same tree through this.
+    pub fn from_blocks(blocks: &[SpecBlock], is_node: impl Fn(&str) -> bool) -> Tree {
+        let ids: HashSet<&str> = blocks.iter().map(|s| s.id.as_str()).collect();
 
         // Parent of each block: the block that lists it as a member.
         let mut parent_of: HashMap<&str, &str> = HashMap::new();
-        for s in &chart.subgraphs {
+        for s in blocks {
             for m in &s.members {
                 if ids.contains(m.as_str()) {
                     parent_of.insert(m.as_str(), s.id.as_str());
@@ -109,15 +129,14 @@ impl Tree {
         }
 
         // Does this block hold a node, anywhere below it? Memoised over the tree.
-        let by_id: HashMap<&str, &Subgraph> =
-            chart.subgraphs.iter().map(|s| (s.id.as_str(), s)).collect();
+        let by_id: HashMap<&str, &SpecBlock> = blocks.iter().map(|s| (s.id.as_str(), s)).collect();
         let mut holds: HashMap<&str, bool> = HashMap::new();
-        for s in &chart.subgraphs {
+        for s in blocks {
             holds_a_node(s, &by_id, &is_node, &mut holds, 0);
         }
 
         let mut clusters: Vec<Cluster> = Vec::new();
-        for s in &chart.subgraphs {
+        for s in blocks {
             if !holds.get(s.id.as_str()).copied().unwrap_or(false) {
                 continue;
             }
@@ -140,6 +159,7 @@ impl Tree {
                 depth: 0,
                 member_nodes,
                 child_clusters,
+                dashed: s.dashed,
             });
         }
 
@@ -265,8 +285,8 @@ impl Tree {
 
 /// Recursive half of [`Tree::build`]'s "does this block hold a node" question.
 fn holds_a_node<'a>(
-    s: &'a Subgraph,
-    by_id: &HashMap<&'a str, &'a Subgraph>,
+    s: &'a SpecBlock,
+    by_id: &HashMap<&'a str, &'a SpecBlock>,
     is_node: &impl Fn(&str) -> bool,
     memo: &mut HashMap<&'a str, bool>,
     depth: usize,

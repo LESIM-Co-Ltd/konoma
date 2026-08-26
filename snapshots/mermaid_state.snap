@@ -1,0 +1,779 @@
+=== basic ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Still</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Moving</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Crash</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== v1-header ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Still</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Moving</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== described ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">This is a state description</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Another</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A transition</tspan></text>
+</g>
+</svg>
+
+=== titled ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Waiting for input</tspan><tspan x="#" dy="#">press any key</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== composite ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">second</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">First</tspan></text>
+</g>
+</svg>
+
+=== composite-named ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Another simple</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Another Composite</tspan></text>
+</g>
+</svg>
+
+=== nested ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">second</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">third</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">First</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Second</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Third</tspan></text>
+</g>
+</svg>
+
+=== composite-siblings ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">fir</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">sec</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">thi</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">First</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Second</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Third</tspan></text>
+</g>
+</svg>
+
+=== choice ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<polygon points="#,# #,# #,# #,#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">IsPositive</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">False</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">True</tspan></text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">if n &lt; 0</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">if n &gt;= 0</tspan></text>
+</g>
+</svg>
+
+=== fork ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">State2</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">State3</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">State4</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== fork-lr ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== notes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">The state with a note</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">State2</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">Important information! You can write</tspan><tspan x="#" dy="#">notes.</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">This is the note to the left.</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== notes-crowded ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">C</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">D</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">first</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">second</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">third</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== note-lr ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">C</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">D</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">second</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== concurrent ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#" stroke-dasharray="# #"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#" stroke-dasharray="# #"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">NumLockOff</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">NumLockOn</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">CapsLockOff</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">CapsLockOn</tspan></text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">EvNumLockPressed</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">EvNumLockPressed</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">EvCapsLockPressed</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">EvCapsLockPressed</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Active</tspan></text>
+</g>
+</svg>
+
+=== direction-lr ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">C</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">D</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+</g>
+</svg>
+
+=== styled ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Still</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Moving</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Crash</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== style-separator ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Still</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Moving</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== spaces-in-names ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Your state with spaces in it</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">SomeOtherState</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">YetAnotherState</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">ツリー</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">種別を解決</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">全画面描画</tspan></text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Enter</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">q</tspan></text>
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">プレビュー</tspan></text>
+</g>
+</svg>
+
+=== cjk-note ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">ツリー</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">全画面</tspan></text>
+<path d="M#,# L#,# L#,# L#,# L#,# Z" fill="#3d3a2a" stroke="#b8a94e" stroke-width="#"/>
+<path d="M#,# L#,# L#,#" fill="none" stroke="#b8a94e" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f0e6bf"><tspan x="#" dy="#">全画面のファイル一覧</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== multiline-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan><tspan x="#" dy="#">two</tspan><tspan x="#" dy="#">three</tspan></text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">first</tspan><tspan x="#" dy="#">second</tspan></text>
+</g>
+</svg>
+
+=== self-loop ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Retry</tspan></text>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#d3d3d3"/>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">again</tspan></text>
+</g>
+</svg>
+
+=== block-endpoint ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="clusters">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#2b2b38" stroke="#8a8a8a" stroke-width="#"/>
+</g>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<polygon points="#,# #,# #,#" fill="#d3d3d3"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Outside</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Done</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+<g class="cluster-labels">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Inner</tspan></text>
+</g>
+</svg>
+
